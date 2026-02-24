@@ -6,6 +6,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 
 **Phase 1 (Core Rendering MVP): COMPLETE** — committed as `fa187b5`
 **Phase 2 (Multi-Pass Rendering): COMPLETE** — multi-pass rendering infrastructure
+**GPU Particle System: COMPLETE** — compute shader particles with ping-pong buffers
 
 ### What's Built
 
@@ -30,6 +31,22 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - 2 new effects: feedback_test (spinning dot with trails), singularity_feedback (multi-pass demo)
 - New uniforms: `feedback_decay`, `frame_index` (256-byte uniform struct maintained)
 
+#### GPU Particle System
+- GPU compute particle simulation with ping-pong storage buffers (avoids read-write hazards)
+- Atomic emission counter — dead particles claim new emission slots via `atomicAdd`
+- Vertex-pulling instanced rendering: 6 vertices per particle, no vertex buffer needed
+- Additive blending (SrcAlpha + One) — particles glow and stack
+- Particles render INTO the HDR target with `LoadOp::Load` — bloom, feedback, post-processing all apply automatically
+- Configurable emitter shapes: point, ring, line, screen
+- Audio-reactive: beat burst emission, RMS/centroid-driven color and size
+- Custom compute shaders per effect via `compute_shader` field in .pfx
+- Compute shader hot-reload: edit simulation code while running (content-change detection prevents spam)
+- 128-byte `ParticleUniforms` (includes resolution for aspect ratio correction) separate from main 256-byte `ShaderUniforms`
+- Aspect-ratio-corrected orbital physics: all distance/force calculations in screen space
+- Particle count shown in status bar when active
+- 2 new effects: particle_test (fountain), spectral_eye (orbital light trails with feedback)
+- Feedback + particles requires HDR clamp in background shader (`min(col, vec3f(1.5))`) to prevent runaway accumulation
+
 ### Known Issues
 - ~30 compiler warnings (mostly unused items reserved for future phases)
 - `compiler.rs` has an unused `compile_shader` function
@@ -48,7 +65,11 @@ No mutexes in hot path. Three threads + cpal callback.
 
 ### Render Pipeline
 ```
+Compute Dispatch (particle sim, if active)
+                      ↓
 Effect Pass(es) → PingPong HDR Target(s) [Rgba16Float]
+                      ↓
+Particle Render Pass (instanced quads, additive blend, LoadOp::Load)
                       ↓
 PostProcessChain (if enabled):
   Bloom Extract (quarter-res) → Blur H → Blur V → Composite → Surface [sRGB]
@@ -66,6 +87,9 @@ egui Overlay → Surface
 - cpal 0.17: `SampleRate` is `u32` (not tuple struct), `description()` returns `Result<DeviceDescription>`, field access via `.name()` method.
 - Feedback bind group uses 3 entries: uniform buffer (binding 0), prev_frame texture (binding 1), prev_sampler (binding 2). Effects that don't use feedback get a 1x1 placeholder texture bound.
 - Bloom operates at quarter resolution for performance. Post-processing uses separate uniform buffers per stage.
+- Particle storage buffers use ping-pong pattern (read from A, write to B, flip). Compute bind groups pre-created for both states.
+- Particle Struct is 64 bytes (4 x vec4f): pos_life, vel_size, color, flags. Size chosen for GPU cache-line friendliness.
+- Particle render uses vertex-pulling (no vertex buffer) — 6 vertices per instance expand to screen-space quads with aspect ratio correction.
 
 ### Controls
 - `D` — Toggle egui overlay
@@ -89,11 +113,11 @@ RUST_LOG=phosphor_app=debug cargo run  # verbose logging
 ### Full Plan
 The complete 28-week, 4-phase plan is at `~/ai/audio/phosphor-internal/cross-platform particle and shader engine.md`. Phases 1-2 are done. Phases 3-4 cover: particle system, performance profiling, preset management, plugin architecture.
 
-### Phase 2 Remaining Roadmap
+### Remaining Roadmap
 1. ~~Multi-pass rendering~~ ✓
-2. Beat detection (bass energy peak tracking)
-3. MIDI input with MIDI learn
-4. Preset save/load
-5. GPU compute particle system
+2. ~~GPU compute particle system~~ ✓
+3. Beat detection (bass energy peak tracking)
+4. MIDI input with MIDI learn
+5. Preset save/load
 6. Layer-based composition with blend modes
 7. OSC input/output

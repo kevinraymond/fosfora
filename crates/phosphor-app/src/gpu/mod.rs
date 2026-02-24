@@ -1,5 +1,6 @@
 pub mod context;
 pub mod fullscreen_quad;
+pub mod particle;
 pub mod pass_executor;
 pub mod pipeline;
 pub mod placeholder;

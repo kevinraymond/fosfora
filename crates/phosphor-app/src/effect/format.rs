@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::gpu::particle::types::ParticleDef;
 use crate::params::ParamDef;
 
 /// A render pass definition within a multi-pass effect.
@@ -80,6 +81,9 @@ pub struct PfxEffect {
     /// Per-effect post-processing overrides.
     #[serde(default)]
     pub postprocess: Option<PostProcessDef>,
+    /// GPU particle system definition.
+    #[serde(default)]
+    pub particles: Option<ParticleDef>,
 }
 
 impl PfxEffect {

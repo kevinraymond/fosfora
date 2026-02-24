@@ -7,6 +7,7 @@ pub fn draw_status_bar(
     ui: &mut Ui,
     shader_error: &Option<String>,
     uniforms: &ShaderUniforms,
+    particle_count: Option<u32>,
 ) {
     ui.horizontal(|ui| {
         // FPS
@@ -29,6 +30,15 @@ pub fn draw_status_bar(
             ui.colored_label(
                 Color32::from_rgb(0x50, 0xC0, 0x70),
                 "Shader OK",
+            );
+        }
+
+        // Particle count
+        if let Some(count) = particle_count {
+            ui.separator();
+            ui.colored_label(
+                Color32::from_rgb(0x80, 0xB0, 0xE0),
+                format!("{count} particles"),
             );
         }
 

@@ -110,6 +110,11 @@ impl ApplicationHandler for PhosphorApp {
                 app.egui_overlay.begin_frame(&app.window);
                 {
                     let ctx = app.egui_overlay.context();
+                    let particle_count = app
+                        .pass_executor
+                        .particle_system
+                        .as_ref()
+                        .map(|ps| ps.max_particles);
                     crate::ui::panels::draw_panels(
                         &ctx,
                         app.egui_overlay.visible,
@@ -119,6 +124,7 @@ impl ApplicationHandler for PhosphorApp {
                         &app.uniforms,
                         &app.effect_loader,
                         &mut app.post_process.enabled,
+                        particle_count,
                     );
                 }
                 app.egui_overlay.end_frame(&app.window);

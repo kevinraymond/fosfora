@@ -20,13 +20,14 @@ pub fn draw_panels(
     uniforms: &ShaderUniforms,
     effect_loader: &EffectLoader,
     post_process_enabled: &mut bool,
+    particle_count: Option<u32>,
 ) {
     if !visible {
         return;
     }
 
     egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-        status_bar::draw_status_bar(ui, shader_error, uniforms);
+        status_bar::draw_status_bar(ui, shader_error, uniforms, particle_count);
     });
 
     egui::SidePanel::left("left_panel")

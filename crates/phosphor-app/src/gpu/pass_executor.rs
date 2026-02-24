@@ -3,6 +3,7 @@ use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
 use crate::effect::format::PassDef;
 use crate::effect::EffectLoader;
 
+use super::particle::ParticleSystem;
 use super::placeholder::PlaceholderTexture;
 use super::render_target::{PingPongTarget, RenderTarget};
 use super::uniforms::UniformBuffer;
@@ -24,6 +25,7 @@ struct CompiledPass {
 /// Executes a sequence of render passes for a multi-pass effect.
 pub struct PassExecutor {
     passes: Vec<CompiledPass>,
+    pub particle_system: Option<ParticleSystem>,
 }
 
 impl PassExecutor {
@@ -69,7 +71,10 @@ impl PassExecutor {
             });
         }
 
-        Ok(Self { passes })
+        Ok(Self {
+            passes,
+            particle_system: None,
+        })
     }
 
     /// Build a single-pass executor (the common case for backward-compatible effects).
@@ -98,6 +103,7 @@ impl PassExecutor {
                 scale: 1.0,
                 has_feedback: true,
             }],
+            particle_system: None,
         }
     }
 
@@ -111,6 +117,12 @@ impl PassExecutor {
     ) -> &RenderTarget {
         uniform_buffer.update(queue, uniforms);
 
+        // 1. Particle compute dispatch (before fragment passes)
+        if let Some(ref ps) = self.particle_system {
+            ps.dispatch(encoder, queue);
+        }
+
+        // 2. Fragment shader passes
         for pass in &self.passes {
             let write_view = &pass.target.write_target().view;
             let bind_group = &pass.bind_groups[pass.target.current];
@@ -136,8 +148,14 @@ impl PassExecutor {
             rp.draw(0..3, 0..1);
         }
 
-        // Return the last pass's write target
-        self.passes.last().unwrap().target.write_target()
+        let final_target = self.passes.last().unwrap().target.write_target();
+
+        // 3. Particle render pass — composites on top of last fragment pass with LoadOp::Load
+        if let Some(ref ps) = self.particle_system {
+            ps.render(encoder, queue, &final_target.view);
+        }
+
+        final_target
     }
 
     /// Flip all feedback-enabled passes for next frame.
@@ -146,6 +164,9 @@ impl PassExecutor {
             if pass.has_feedback {
                 pass.target.flip();
             }
+        }
+        if let Some(ref mut ps) = self.particle_system {
+            ps.flip();
         }
     }
 

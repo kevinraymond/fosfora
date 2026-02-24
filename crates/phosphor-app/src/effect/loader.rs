@@ -130,6 +130,15 @@ impl EffectLoader {
         Ok(self.prepend_library(&source))
     }
 
+    /// Load a compute shader source. Prepends the noise library but NOT the fragment
+    /// uniform block (compute shaders have their own uniform struct).
+    pub fn load_compute_source(&self, shader_rel: &str) -> Result<String> {
+        let path = self.resolve_shader_path(shader_rel);
+        let source = std::fs::read_to_string(&path)?;
+        // Compute shaders get the noise library but not the fragment uniform block
+        Ok(format!("{}\n{}", self.lib_source, source))
+    }
+
     /// Prepend the uniform block and library functions to a shader source.
     pub fn prepend_library(&self, source: &str) -> String {
         // Check if the source already has the uniform block
