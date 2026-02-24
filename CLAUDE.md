@@ -9,6 +9,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 **GPU Particle System: COMPLETE** — compute shader particles with ping-pong buffers
 **Audio Upgrade + Beat Detection: COMPLETE** — multi-resolution FFT, adaptive normalization, 3-stage beat detector
 **BPM Detection Rewrite: COMPLETE** — FFT autocorrelation, Kalman filter, octave disambiguation
+**MIDI Input: COMPLETE** — midir integration, MIDI learn, auto-connect, hot-plug, config persistence
 
 ### What's Built
 
@@ -69,6 +70,17 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - ShaderUniforms: 256 bytes with 20 audio fields + params + feedback uniforms
 - ParticleUniforms: 128 bytes with 10 most useful audio fields (sub_bass, bass, mid, rms, kick, onset, centroid, flux, beat, beat_phase)
 
+#### MIDI Input
+- midir 0.10 integration: callback thread → crossbeam bounded(64) channel → main thread drain in `App::update()`
+- Auto-connect to saved port on startup, fallback to first available
+- Hot-plug detection: polls `list_ports()` every 2s, auto-disconnect on removal, auto-reconnect on reappear
+- MIDI learn: click "M" on any param or trigger, move a knob/press a button to bind
+- Params: Float and Bool mappable via CC (raw 0-127 scaled to param range, no smoothing)
+- Triggers: NextEffect, PrevEffect, TogglePostProcess, ToggleOverlay with rising-edge detection
+- Config persists to `~/.config/phosphor/midi.json` (JSON via `dirs` crate)
+- Channel 0 = omni (respond to all channels)
+- UI: port dropdown + activity dot + learn prompt in left panel, per-param MIDI badges + trigger learn in right panel, MIDI status in status bar
+
 ### Known Issues
 - ~29 compiler warnings (mostly unused items reserved for future phases)
 - Fonts directory (`assets/fonts/`) is empty — Inter and JetBrains Mono not yet bundled
@@ -76,12 +88,13 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 
 ### Architecture
 ```
-Main Thread: winit event loop → drain audio/shader channels → update uniforms → PassExecutor (effect passes) → PostProcessChain (bloom/tonemap) → egui overlay → present
+Main Thread: winit event loop → drain audio/midi/shader channels → update uniforms → PassExecutor (effect passes) → PostProcessChain (bloom/tonemap) → egui overlay → present
 Audio Thread: cpal callback → ring buffer → multi-res FFT → adaptive normalize → beat detect → smooth → send AudioFeatures
+MIDI Thread: midir callback → parse 3-byte MIDI → send MidiMessage via crossbeam bounded(64)
 File Watcher Thread: notify → debounce → send changed paths
 ```
 
-No mutexes in hot path. Three threads + cpal callback.
+No mutexes in hot path. Three threads + cpal callback + midir callback.
 
 ### Render Pipeline
 ```
@@ -110,6 +123,7 @@ egui Overlay → Surface
 - Particle storage buffers use ping-pong pattern (read from A, write to B, flip). Compute bind groups pre-created for both states.
 - Particle Struct is 64 bytes (4 x vec4f): pos_life, vel_size, color, flags. Size chosen for GPU cache-line friendliness.
 - Particle render uses vertex-pulling (no vertex buffer) — 6 vertices per instance expand to screen-space quads with aspect ratio correction.
+- midir 0.10: `MidiInputConnection<()>` is RAII — drop closes the port. No explicit close needed.
 
 ### Controls
 - `D` — Toggle egui overlay
@@ -137,7 +151,7 @@ The complete 28-week, 4-phase plan is at `~/ai/audio/phosphor-internal/cross-pla
 1. ~~Multi-pass rendering~~ ✓
 2. ~~GPU compute particle system~~ ✓
 3. ~~Beat detection~~ ✓ (3-stage: onset → tempo → scheduler)
-4. MIDI input with MIDI learn
+4. ~~MIDI input with MIDI learn~~ ✓
 5. Preset save/load
 6. Layer-based composition with blend modes
 7. OSC input/output
