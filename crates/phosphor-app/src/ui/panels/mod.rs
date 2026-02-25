@@ -65,8 +65,8 @@ pub fn draw_panels(
     };
 
     egui::SidePanel::left("left_panel")
-        .default_width(260.0)
-        .max_width(400.0)
+        .exact_width(240.0)
+        .resizable(false)
         .frame(panel_frame)
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
@@ -170,7 +170,8 @@ pub fn draw_panels(
         });
 
     egui::SidePanel::right("right_panel")
-        .default_width(280.0)
+        .exact_width(240.0)
+        .resizable(false)
         .frame(panel_frame)
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {

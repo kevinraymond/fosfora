@@ -7,20 +7,50 @@ use crate::ui::theme::tokens::*;
 
 const OSC_GREEN: Color32 = Color32::from_rgb(0x50, 0xC0, 0x70);
 
+/// Trigger pairs for 2-column grid layout (same pairing as MIDI).
+const TRIGGER_PAIRS: &[(TriggerAction, TriggerAction)] = &[
+    (TriggerAction::NextEffect, TriggerAction::PrevEffect),
+    (TriggerAction::NextPreset, TriggerAction::PrevPreset),
+    (TriggerAction::NextLayer, TriggerAction::PrevLayer),
+    (TriggerAction::TogglePostProcess, TriggerAction::ToggleOverlay),
+];
+
 pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
-    // Master toggle
-    let mut enabled = osc.config.enabled;
-    if ui
-        .checkbox(&mut enabled, RichText::new("Enable OSC").size(SMALL_SIZE))
-        .changed()
-    {
-        osc.set_enabled(enabled);
-    }
-    ui.add_space(2.0);
+    // Enable + activity on one row
+    ui.horizontal(|ui| {
+        let mut enabled = osc.config.enabled;
+        if ui
+            .checkbox(&mut enabled, RichText::new("Enable OSC").size(SMALL_SIZE))
+            .changed()
+        {
+            osc.set_enabled(enabled);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Last address (right-aligned)
+            if let Some(ref addr) = osc.last_address {
+                let short = abbreviate_address(addr);
+                ui.label(
+                    RichText::new(short)
+                        .size(SMALL_SIZE)
+                        .color(DARK_TEXT_SECONDARY),
+                );
+            }
+            // Activity dot
+            let color = if osc.is_recently_active() {
+                OSC_GREEN
+            } else if osc.config.enabled {
+                Color32::from_rgb(0x55, 0x55, 0x55)
+            } else {
+                Color32::from_rgb(0x33, 0x33, 0x33)
+            };
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.0, color);
+        });
+    });
 
     // RX port
     ui.horizontal(|ui| {
-        ui.label(RichText::new("RX Port").size(SMALL_SIZE));
+        ui.label(RichText::new("RX").size(SMALL_SIZE));
         let mut port = osc.config.rx_port;
         let resp = ui.add(
             egui::DragValue::new(&mut port)
@@ -34,34 +64,22 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         }
     });
 
-    ui.add_space(4.0);
+    ui.separator();
 
-    // TX section
-    ui.label(
-        RichText::new("TRANSMIT")
-            .size(HEADING_SIZE)
-            .color(DARK_TEXT_SECONDARY)
-            .strong(),
-    );
-    ui.add_space(2.0);
-
-    let mut tx_enabled = osc.config.tx_enabled;
-    if ui
-        .checkbox(
-            &mut tx_enabled,
-            RichText::new("Enable TX").size(SMALL_SIZE),
-        )
-        .changed()
-    {
-        osc.set_tx_enabled(tx_enabled);
-    }
-
+    // TX: enable + host on one line
     ui.horizontal(|ui| {
+        let mut tx_enabled = osc.config.tx_enabled;
+        if ui
+            .checkbox(&mut tx_enabled, RichText::new("TX").size(SMALL_SIZE))
+            .changed()
+        {
+            osc.set_tx_enabled(tx_enabled);
+        }
         ui.label(RichText::new("Host").size(SMALL_SIZE));
         let mut host = osc.config.tx_host.clone();
         let resp = ui.add(
             egui::TextEdit::singleline(&mut host)
-                .desired_width(100.0)
+                .desired_width(ui.available_width().max(60.0))
                 .font(egui::TextStyle::Small),
         );
         if resp.changed() {
@@ -74,8 +92,10 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         }
     });
 
+    // TX: port + rate on one line
     ui.horizontal(|ui| {
-        ui.label(RichText::new("TX Port").size(SMALL_SIZE));
+        ui.add_space(20.0); // indent to align under TX fields
+        ui.label(RichText::new("Port").size(SMALL_SIZE));
         let mut port = osc.config.tx_port;
         let resp = ui.add(
             egui::DragValue::new(&mut port)
@@ -90,9 +110,6 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
                     .configure(&osc.config.tx_host, osc.config.tx_port);
             }
         }
-    });
-
-    ui.horizontal(|ui| {
         ui.label(RichText::new("Rate").size(SMALL_SIZE));
         let mut rate = osc.config.tx_rate_hz;
         let resp = ui.add(
@@ -107,35 +124,9 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         }
     });
 
-    ui.add_space(4.0);
-
-    // Activity indicator
-    ui.horizontal(|ui| {
-        let color = if osc.is_recently_active() {
-            OSC_GREEN
-        } else if osc.config.enabled {
-            Color32::from_rgb(0x55, 0x55, 0x55)
-        } else {
-            Color32::from_rgb(0x33, 0x33, 0x33)
-        };
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 4.0, color);
-
-        if let Some(ref addr) = osc.last_address {
-            ui.label(
-                RichText::new(addr)
-                    .size(SMALL_SIZE)
-                    .color(DARK_TEXT_SECONDARY),
-            );
-        } else if osc.config.enabled {
-            ui.label(RichText::new("Listening...").size(SMALL_SIZE).weak());
-        } else {
-            ui.label(RichText::new("Disabled").size(SMALL_SIZE).weak());
-        }
-    });
-
-    // Learn status
+    // Learn status (conditional)
     if let Some(ref learn_target) = osc.learn_target {
+        ui.separator();
         let label = match learn_target {
             OscLearnTarget::Param(name) => format!("Send OSC for \"{name}\""),
             OscLearnTarget::Trigger(action) => {
@@ -149,24 +140,27 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         ui.ctx().request_repaint();
     }
 
-    // OSC Triggers section
-    ui.add_space(4.0);
+    // Triggers
+    ui.separator();
     ui.label(
         RichText::new("TRIGGERS")
             .size(HEADING_SIZE)
             .color(DARK_TEXT_SECONDARY)
             .strong(),
     );
-    ui.add_space(2.0);
 
-    for action in TriggerAction::ALL {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(action.display_name()).size(SMALL_SIZE));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                draw_osc_trigger_badge(ui, osc, *action);
-            });
+    egui::Grid::new("osc_triggers")
+        .num_columns(4)
+        .spacing([4.0, 2.0])
+        .show(ui, |ui| {
+            for (left, right) in TRIGGER_PAIRS {
+                ui.label(RichText::new(left.short_name()).size(SMALL_SIZE));
+                draw_osc_trigger_badge(ui, osc, *left);
+                ui.label(RichText::new(right.short_name()).size(SMALL_SIZE));
+                draw_osc_trigger_badge(ui, osc, *right);
+                ui.end_row();
+            }
         });
-    }
 }
 
 fn draw_osc_trigger_badge(ui: &mut Ui, osc: &mut OscSystem, action: TriggerAction) {
@@ -190,7 +184,10 @@ fn draw_osc_trigger_badge(ui: &mut Ui, osc: &mut OscSystem, action: TriggerActio
         let label = abbreviate_address(&mapping.address);
         let resp = ui
             .button(RichText::new(&label).color(OSC_GREEN).size(SMALL_SIZE))
-            .on_hover_text(format!("{}\nClick to re-learn, right-click to clear", mapping.address));
+            .on_hover_text(format!(
+                "{}\nClick to re-learn, right-click to clear",
+                mapping.address
+            ));
         if resp.clicked() {
             osc.start_learn(OscLearnTarget::Trigger(action));
         }

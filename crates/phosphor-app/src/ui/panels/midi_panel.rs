@@ -6,13 +6,48 @@ use crate::ui::theme::tokens::*;
 
 const MIDI_BLUE: Color32 = Color32::from_rgb(0x60, 0xA0, 0xE0);
 
+/// Trigger pairs for 2-column grid layout.
+const TRIGGER_PAIRS: &[(TriggerAction, TriggerAction)] = &[
+    (TriggerAction::NextEffect, TriggerAction::PrevEffect),
+    (TriggerAction::NextPreset, TriggerAction::PrevPreset),
+    (TriggerAction::NextLayer, TriggerAction::PrevLayer),
+    (TriggerAction::TogglePostProcess, TriggerAction::ToggleOverlay),
+];
+
 pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
-    // Master toggle
-    let mut enabled = midi.config.enabled;
-    if ui.checkbox(&mut enabled, RichText::new("Enable MIDI").size(SMALL_SIZE)).changed() {
-        midi.set_enabled(enabled);
-    }
-    ui.add_space(2.0);
+    // Enable + activity on one row
+    ui.horizontal(|ui| {
+        let mut enabled = midi.config.enabled;
+        if ui
+            .checkbox(&mut enabled, RichText::new("Enable MIDI").size(SMALL_SIZE))
+            .changed()
+        {
+            midi.set_enabled(enabled);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Last message summary (right-aligned)
+            if let Some(msg) = midi.last_message {
+                ui.label(
+                    RichText::new(format!(
+                        "CC#{} v:{}",
+                        msg.number, msg.value
+                    ))
+                    .size(SMALL_SIZE)
+                    .color(DARK_TEXT_SECONDARY),
+                );
+            }
+            // Activity dot
+            let color = if midi.is_recently_active() {
+                DARK_SUCCESS
+            } else if midi.connected_port().is_some() {
+                Color32::from_rgb(0x55, 0x55, 0x55)
+            } else {
+                Color32::from_rgb(0x33, 0x33, 0x33)
+            };
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.0, color);
+        });
+    });
 
     // Port selector
     let current_label = midi
@@ -41,37 +76,7 @@ pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
             }
         });
 
-    ui.add_space(2.0);
-
-    // Activity indicator + last message
-    ui.horizontal(|ui| {
-        let color = if midi.is_recently_active() {
-            DARK_SUCCESS
-        } else if midi.connected_port().is_some() {
-            Color32::from_rgb(0x55, 0x55, 0x55)
-        } else {
-            Color32::from_rgb(0x33, 0x33, 0x33)
-        };
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 4.0, color);
-
-        if let Some(msg) = midi.last_message {
-            ui.label(
-                RichText::new(format!(
-                    "{:?} #{} v:{} ch:{}",
-                    msg.msg_type, msg.number, msg.value, msg.channel
-                ))
-                .size(SMALL_SIZE)
-                .color(DARK_TEXT_SECONDARY),
-            );
-        } else if midi.connected_port().is_some() {
-            ui.label(RichText::new("Waiting...").size(SMALL_SIZE).weak());
-        } else {
-            ui.label(RichText::new("No device").size(SMALL_SIZE).weak());
-        }
-    });
-
-    // Learn status
+    // Learn status (conditional)
     if let Some(ref learn_target) = midi.learn_target {
         let label = match learn_target {
             LearnTarget::Param(name) => format!("Move knob for \"{name}\""),
@@ -84,19 +89,27 @@ pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
         ui.ctx().request_repaint();
     }
 
-    // MIDI Triggers section
-    ui.add_space(4.0);
-    ui.label(RichText::new("TRIGGERS").size(HEADING_SIZE).color(DARK_TEXT_SECONDARY).strong());
-    ui.add_space(2.0);
+    // Triggers
+    ui.separator();
+    ui.label(
+        RichText::new("TRIGGERS")
+            .size(HEADING_SIZE)
+            .color(DARK_TEXT_SECONDARY)
+            .strong(),
+    );
 
-    for action in TriggerAction::ALL {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(action.display_name()).size(SMALL_SIZE));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                draw_trigger_badge(ui, midi, *action);
-            });
+    egui::Grid::new("midi_triggers")
+        .num_columns(4)
+        .spacing([4.0, 2.0])
+        .show(ui, |ui| {
+            for (left, right) in TRIGGER_PAIRS {
+                ui.label(RichText::new(left.short_name()).size(SMALL_SIZE));
+                draw_trigger_badge(ui, midi, *left);
+                ui.label(RichText::new(right.short_name()).size(SMALL_SIZE));
+                draw_trigger_badge(ui, midi, *right);
+                ui.end_row();
+            }
         });
-    }
 }
 
 fn draw_trigger_badge(ui: &mut Ui, midi: &mut MidiSystem, action: TriggerAction) {

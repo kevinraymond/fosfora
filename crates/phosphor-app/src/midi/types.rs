@@ -53,6 +53,19 @@ impl TriggerAction {
             TriggerAction::PrevLayer => "Prev Layer",
         }
     }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            TriggerAction::NextEffect => "Next Fx",
+            TriggerAction::PrevEffect => "Prev Fx",
+            TriggerAction::TogglePostProcess => "Post-Fx",
+            TriggerAction::ToggleOverlay => "Overlay",
+            TriggerAction::NextPreset => "Next Pre",
+            TriggerAction::PrevPreset => "Prev Pre",
+            TriggerAction::NextLayer => "Next Lyr",
+            TriggerAction::PrevLayer => "Prev Lyr",
+        }
+    }
 }
 
 /// What we're learning a MIDI mapping for.

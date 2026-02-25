@@ -1,4 +1,4 @@
-use egui::{collapsing_header::CollapsingState, Color32, CornerRadius, Frame, Margin, RichText, Stroke, Ui};
+use egui::{collapsing_header::CollapsingState, pos2, Color32, CornerRadius, Frame, Margin, RichText, Shape, Stroke, Ui};
 
 use super::theme::tokens::*;
 
@@ -30,8 +30,7 @@ pub fn section(
     card_frame().show(ui, |ui| {
         // Header row
         let header_response = ui.horizontal(|ui| {
-            let arrow = if state.is_open() { "\u{25BE}" } else { "\u{25B8}" }; // ▾ / ▸
-            ui.label(RichText::new(arrow).size(HEADING_SIZE).color(DARK_TEXT_SECONDARY));
+            draw_section_arrow(ui, state.is_open());
             ui.label(
                 RichText::new(title.to_uppercase())
                     .size(HEADING_SIZE)
@@ -62,6 +61,34 @@ pub fn section(
             add_body(ui);
         }
     });
+}
+
+/// Draw a solid triangle indicator for collapsible sections.
+fn draw_section_arrow(ui: &mut Ui, is_open: bool) {
+    let size = HEADING_SIZE;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let c = rect.center();
+    let half = size * 0.3;
+    let points = if is_open {
+        // Down-pointing triangle
+        vec![
+            pos2(c.x - half, c.y - half * 0.5),
+            pos2(c.x + half, c.y - half * 0.5),
+            pos2(c.x, c.y + half * 0.5),
+        ]
+    } else {
+        // Right-pointing triangle
+        vec![
+            pos2(c.x - half * 0.5, c.y - half),
+            pos2(c.x + half * 0.5, c.y),
+            pos2(c.x - half * 0.5, c.y + half),
+        ]
+    };
+    ui.painter().add(Shape::convex_polygon(
+        points,
+        DARK_TEXT_SECONDARY,
+        Stroke::NONE,
+    ));
 }
 
 /// Badge label in accent color at small size.
