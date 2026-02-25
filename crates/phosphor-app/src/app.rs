@@ -569,6 +569,8 @@ impl App {
                     blend_mode: l.blend_mode,
                     opacity: l.opacity,
                     enabled: l.enabled,
+                    locked: l.locked,
+                    pinned: l.pinned,
                 }
             })
             .collect();
@@ -642,6 +644,8 @@ impl App {
                 layer.blend_mode = lp.blend_mode;
                 layer.opacity = lp.opacity;
                 layer.enabled = lp.enabled;
+                layer.locked = lp.locked;
+                layer.pinned = lp.pinned;
             }
         }
 

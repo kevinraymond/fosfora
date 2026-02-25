@@ -20,6 +20,10 @@ pub struct LayerPreset {
     pub opacity: f32,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 fn default_opacity() -> f32 {

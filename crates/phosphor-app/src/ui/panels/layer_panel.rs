@@ -185,10 +185,9 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                     1.0
                 };
 
-                let text_color = {
-                    let base = if layer.locked {
-                        DARK_TEXT_SECONDARY
-                    } else if is_active {
+                // Title/pin color: not dimmed by lock
+                let title_color = {
+                    let base = if is_active {
                         Color32::WHITE
                     } else if !layer.enabled {
                         DARK_TEXT_SECONDARY
@@ -205,6 +204,23 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                     } else {
                         base
                     }
+                };
+
+                // Controls color: dimmed when locked
+                let ctrl_color = if layer.locked {
+                    let base = DARK_TEXT_SECONDARY;
+                    if alpha < 1.0 {
+                        Color32::from_rgba_unmultiplied(
+                            base.r(),
+                            base.g(),
+                            base.b(),
+                            (base.a() as f32 * alpha) as u8,
+                        )
+                    } else {
+                        base
+                    }
+                } else {
+                    title_color
                 };
 
                 let outer_stroke = {
@@ -283,7 +299,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                                 (100.0 * alpha) as u8,
                                             )
                                         } else {
-                                            text_color
+                                            ctrl_color
                                         };
                                         let handle = drag_handle(ui, handle_color);
                                         if handle.drag_started() {
@@ -319,7 +335,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                     let lock_color = if layer.locked {
                                         Color32::from_rgb(255, 180, 60)
                                     } else {
-                                        text_color
+                                        title_color
                                     };
                                     let lock = lock_button(
                                         ui,
@@ -345,7 +361,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                     let pin_color = if layer.pinned {
                                         Color32::from_rgb(100, 180, 255)
                                     } else {
-                                        text_color
+                                        title_color
                                     };
                                     let pin = pin_button(
                                         ui,
@@ -385,7 +401,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                         egui::Label::new(
                                             RichText::new(&display)
                                                 .size(BODY_SIZE)
-                                                .color(text_color),
+                                                .color(title_color),
                                         )
                                         .selectable(false)
                                         .sense(egui::Sense::click()),
@@ -407,7 +423,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                         let del = close_button(
                                             ui,
                                             &format!("layer_del_{i}"),
-                                            text_color,
+                                            ctrl_color,
                                         );
                                         if del.clicked() {
                                             ui.ctx().data_mut(|d| {
