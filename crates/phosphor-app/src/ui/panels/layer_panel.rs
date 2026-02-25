@@ -63,162 +63,178 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
     for (i, layer) in layers.iter().enumerate() {
         let is_active = i == active_layer;
 
-        let (row_fill, text_color) = if is_active {
-            (DARK_ACCENT, Color32::WHITE)
+        let text_color = if is_active {
+            Color32::WHITE
         } else if !layer.enabled {
-            (CARD_BG, DARK_TEXT_SECONDARY)
+            DARK_TEXT_SECONDARY
         } else {
-            (CARD_BG, DARK_TEXT_PRIMARY)
+            DARK_TEXT_PRIMARY
         };
 
-        let row_stroke = if is_active {
-            Stroke::NONE
+        // Outer container: groups header + blend/opacity controls per layer
+        let outer_stroke = if is_active {
+            Stroke::new(1.0, DARK_ACCENT)
         } else {
             Stroke::new(1.0, CARD_BORDER)
         };
 
         egui::Frame::new()
-            .fill(row_fill)
-            .stroke(row_stroke)
+            .fill(CARD_BG)
+            .stroke(outer_stroke)
             .corner_radius(CornerRadius::same(4))
-            .inner_margin(egui::Margin::symmetric(6, 3))
+            .inner_margin(egui::Margin::same(0))
             .outer_margin(egui::Margin::symmetric(0, 1))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
+                // Header row
+                let header_fill = if is_active { DARK_ACCENT } else { CARD_BG };
+                egui::Frame::new()
+                    .fill(header_fill)
+                    .corner_radius(if is_active && num_layers > 1 {
+                        CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }
+                    } else {
+                        CornerRadius::same(4)
+                    })
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
 
-                    // Enable checkbox
-                    let mut enabled = layer.enabled;
-                    let cb = ui.checkbox(&mut enabled, "");
-                    if cb.changed() {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("layer_toggle_enable"), (i, enabled));
+                            // Enable checkbox
+                            let mut enabled = layer.enabled;
+                            let cb = ui.checkbox(&mut enabled, "");
+                            if cb.changed() {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(egui::Id::new("layer_toggle_enable"), (i, enabled));
+                                });
+                            }
+                            cb.on_hover_text(if enabled { "Disable layer" } else { "Enable layer" });
+
+                            // Layer name / effect — fills remaining space, clickable to select
+                            let effect_display = layer.effect_name.as_deref().unwrap_or("(empty)");
+                            let display = format!("{} {}", i + 1, effect_display);
+
+                            // Calculate how much space the right buttons take
+                            let btn_count = (if i > 0 { 1 } else { 0 })
+                                + (if i < num_layers - 1 { 1 } else { 0 })
+                                + (if num_layers > 1 { 1 } else { 0 });
+                            let btns_width = btn_count as f32 * 19.0;
+                            let label_width = (ui.available_width() - btns_width).max(20.0);
+
+                            let label = ui.add_sized(
+                                Vec2::new(label_width, ui.spacing().interact_size.y),
+                                egui::Label::new(
+                                    RichText::new(&display).size(BODY_SIZE).color(text_color),
+                                )
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                            );
+                            if label.clicked() {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(egui::Id::new("select_layer"), i);
+                                });
+                            }
+                            if !is_active {
+                                label.on_hover_text("Click to select layer");
+                            }
+
+                            // Move up
+                            if i > 0 {
+                                let up = arrow_up_button(ui, &format!("layer_up_{i}"), text_color);
+                                if up.clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("layer_move"), (i, i - 1));
+                                    });
+                                }
+                                up.on_hover_text("Move up");
+                            }
+
+                            // Move down
+                            if i < num_layers - 1 {
+                                let down = arrow_down_button(ui, &format!("layer_dn_{i}"), text_color);
+                                if down.clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("layer_move"), (i, i + 1));
+                                    });
+                                }
+                                down.on_hover_text("Move down");
+                            }
+
+                            // Delete
+                            if num_layers > 1 {
+                                let del = close_button(ui, &format!("layer_del_{i}"), text_color);
+                                if del.clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("remove_layer"), i);
+                                    });
+                                }
+                                del.on_hover_text("Delete layer");
+                            }
                         });
-                    }
-                    cb.on_hover_text(if enabled { "Disable layer" } else { "Enable layer" });
+                    });
 
-                    // Layer name / effect — fills remaining space, clickable to select
-                    let effect_display = layer.effect_name.as_deref().unwrap_or("(empty)");
-                    let display = format!("{} {}", i + 1, effect_display);
-
-                    // Calculate how much space the right buttons take
-                    let btn_count = (if i > 0 { 1 } else { 0 })
-                        + (if i < num_layers - 1 { 1 } else { 0 })
-                        + (if num_layers > 1 { 1 } else { 0 });
-                    let btns_width = btn_count as f32 * 19.0;
-                    let label_width = (ui.available_width() - btns_width).max(20.0);
-
-                    let label = ui.add_sized(
-                        Vec2::new(label_width, ui.spacing().interact_size.y),
-                        egui::Label::new(
-                            RichText::new(&display).size(BODY_SIZE).color(text_color),
-                        )
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                    );
-                    if label.clicked() {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("select_layer"), i);
-                        });
-                    }
-                    if !is_active {
-                        label.on_hover_text("Click to select layer");
-                    }
-
-                    // Move up
-                    if i > 0 {
-                        let up = arrow_up_button(ui, &format!("layer_up_{i}"), text_color);
-                        if up.clicked() {
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(egui::Id::new("layer_move"), (i, i - 1));
-                            });
-                        }
-                        up.on_hover_text("Move up");
-                    }
-
-                    // Move down
-                    if i < num_layers - 1 {
-                        let down = arrow_down_button(ui, &format!("layer_dn_{i}"), text_color);
-                        if down.clicked() {
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(egui::Id::new("layer_move"), (i, i + 1));
-                            });
-                        }
-                        down.on_hover_text("Move down");
-                    }
-
-                    // Delete
-                    if num_layers > 1 {
-                        let del = close_button(ui, &format!("layer_del_{i}"), text_color);
-                        if del.clicked() {
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(egui::Id::new("remove_layer"), i);
-                            });
-                        }
-                        del.on_hover_text("Delete layer");
-                    }
-                });
-            });
-
-        // Blend mode + opacity shown BELOW the active layer row
-        if is_active && num_layers > 1 {
-            egui::Frame::new()
-                .fill(DARK_WIDGET_BG)
-                .corner_radius(CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .outer_margin(egui::Margin::symmetric(0, 0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Blend")
-                                .size(SMALL_SIZE)
-                                .color(DARK_TEXT_SECONDARY),
-                        );
-                        let current_mode = layer.blend_mode;
-                        egui::ComboBox::from_id_salt(format!("blend_mode_{i}"))
-                            .selected_text(
-                                RichText::new(current_mode.display_name()).size(SMALL_SIZE),
-                            )
-                            .width(ui.available_width() - 4.0)
-                            .show_ui(ui, |ui| {
-                                for &mode in BlendMode::ALL {
-                                    let r = ui.selectable_label(
-                                        mode == current_mode,
-                                        RichText::new(mode.display_name()).size(SMALL_SIZE),
-                                    );
-                                    if r.clicked() && mode != current_mode {
-                                        ui.ctx().data_mut(|d| {
-                                            d.insert_temp(
-                                                egui::Id::new("layer_blend"),
-                                                mode.as_u32(),
+                // Blend mode + opacity shown BELOW the active layer header
+                if is_active && num_layers > 1 {
+                    egui::Frame::new()
+                        .fill(DARK_WIDGET_BG)
+                        .corner_radius(CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 })
+                        .inner_margin(egui::Margin::symmetric(6, 4))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Blend")
+                                        .size(SMALL_SIZE)
+                                        .color(DARK_TEXT_SECONDARY),
+                                );
+                                let current_mode = layer.blend_mode;
+                                egui::ComboBox::from_id_salt(format!("blend_mode_{i}"))
+                                    .selected_text(
+                                        RichText::new(current_mode.display_name()).size(SMALL_SIZE),
+                                    )
+                                    .width(ui.available_width() - 4.0)
+                                    .show_ui(ui, |ui| {
+                                        for &mode in BlendMode::ALL {
+                                            let r = ui.selectable_label(
+                                                mode == current_mode,
+                                                RichText::new(mode.display_name()).size(SMALL_SIZE),
                                             );
-                                        });
-                                    }
+                                            if r.clicked() && mode != current_mode {
+                                                ui.ctx().data_mut(|d| {
+                                                    d.insert_temp(
+                                                        egui::Id::new("layer_blend"),
+                                                        mode.as_u32(),
+                                                    );
+                                                });
+                                            }
+                                        }
+                                    });
+                            });
+
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Opacity")
+                                        .size(SMALL_SIZE)
+                                        .color(DARK_TEXT_SECONDARY),
+                                );
+                                // Override slider rail color so it's visible against DARK_WIDGET_BG
+                                let saved_bg = ui.visuals().widgets.inactive.bg_fill;
+                                ui.visuals_mut().widgets.inactive.bg_fill = METER_BG;
+                                let mut opacity = layer.opacity;
+                                let slider = ui.add(
+                                    egui::Slider::new(&mut opacity, 0.0..=1.0)
+                                        .show_value(true)
+                                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                                        .text(""),
+                                );
+                                ui.visuals_mut().widgets.inactive.bg_fill = saved_bg;
+                                if slider.changed() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("layer_opacity"), opacity);
+                                    });
                                 }
                             });
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Opacity")
-                                .size(SMALL_SIZE)
-                                .color(DARK_TEXT_SECONDARY),
-                        );
-                        let mut opacity = layer.opacity;
-                        let slider = ui.add(
-                            egui::Slider::new(&mut opacity, 0.0..=1.0)
-                                .show_value(true)
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
-                                .text(""),
-                        );
-                        if slider.changed() {
-                            ui.ctx().data_mut(|d| {
-                                d.insert_temp(egui::Id::new("layer_opacity"), opacity);
-                            });
-                        }
-                    });
-                });
-        }
+                        });
+                }
+            });
     }
 
     // Add Layer button

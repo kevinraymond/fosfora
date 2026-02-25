@@ -717,6 +717,9 @@ impl App {
                 layer_outputs.push((target, blend, opacity));
             }
 
+            // Reverse so top-of-UI-list renders visually on top
+            layer_outputs.reverse();
+
             // Composite layers
             let composited = self.compositor.composite(
                 &self.gpu.device,
