@@ -69,7 +69,7 @@ impl MediaLayer {
 
         let total_frames = source.frame_count();
         let duration = match &source {
-            MediaSource::AnimatedGif { delays_ms, .. } => {
+            MediaSource::Animated { delays_ms, .. } => {
                 delays_ms.iter().map(|&d| d as f64).sum::<f64>()
             }
             MediaSource::Static(_) => 0.0,
@@ -110,7 +110,7 @@ impl MediaLayer {
         // Upload first frame
         let first_frame_data = match &source {
             MediaSource::Static(f) => &f.data,
-            MediaSource::AnimatedGif { frames, .. } => &frames[0].data,
+            MediaSource::Animated { frames, .. } => &frames[0].data,
         };
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -298,7 +298,7 @@ impl MediaLayer {
         }
 
         let delays_ms = match &self.source {
-            MediaSource::AnimatedGif { delays_ms, .. } => delays_ms,
+            MediaSource::Animated { delays_ms, .. } => delays_ms,
             MediaSource::Static(_) => return,
         };
 
@@ -371,7 +371,7 @@ impl MediaLayer {
 
         let frame_data = match &self.source {
             MediaSource::Static(f) => &f.data,
-            MediaSource::AnimatedGif { frames, .. } => {
+            MediaSource::Animated { frames, .. } => {
                 &frames[self.current_frame.min(frames.len() - 1)].data
             }
         };

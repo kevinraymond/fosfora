@@ -46,7 +46,9 @@ dirs = "6"
 # WebSocket server
 tungstenite = "0.28"
 # Image loading (particle sprites, media layers)
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# WebP animation decoding (image crate only decodes first frame)
+image-webp = "0.2"
 # GIF decoding (animated GIF frame extraction)
 gif = "0.13"
 # Native file dialogs

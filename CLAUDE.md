@@ -14,6 +14,8 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 **Layer Composition: COMPLETE** — up to 8 layers with blend modes, opacity, lock/pin, drag-and-drop reorder, GPU compositing
 **OSC Input/Output: COMPLETE** — rosc UDP, RX on port 9000, TX opt-in on 9001, OSC learn, config persistence
 **Web Control Surface: COMPLETE** — tungstenite WebSocket server, embedded HTML touch UI, bidirectional JSON state sync, multi-client
+**Media Layers: COMPLETE** — PNG/JPEG/GIF as compositing layers, GPU blit with letterbox, animated GIF playback, transport controls, preset save/load
+**Advanced Particles: COMPLETE** — sprite atlas textures, dual blend pipelines, image decomposition with spring-reform compute shader
 
 ### What's Built
 
@@ -53,6 +55,20 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - Aspect-ratio-corrected orbital physics: all distance/force calculations in screen space
 - Particle count shown in status bar when active
 - Feedback + particles requires HDR clamp in background shader (`min(col, vec3f(1.5))`) to prevent runaway accumulation
+- Advanced particles: sprite atlas textures (dual render pipelines: additive/alpha), image decomposition (grid/threshold/random sampling), ParticleAux buffer (binding 4, per-particle home positions + packed RGBA)
+
+#### Media Layers
+- Load PNG/JPEG/GIF as compositing layers via `rfd::FileDialog` ("+ Media" button in layer panel)
+- `MediaLayer` struct: owns GPU frame texture (Rgba8UnormSrgb), HDR output RenderTarget, blit pipeline
+- Blit shader (`media_blit.wgsl`): letterbox UV transform with aspect-ratio-correct fit mode, transparent black outside
+- Animated GIF playback: forward/reverse/ping-pong direction, speed control (0.1–4.0x), loop toggle
+- Frame upload via `queue.write_texture()` only on frame change (no per-frame upload for static images)
+- Transport controls UI in right sidebar when active layer is media (replaces Parameters panel)
+- Media layers composite through existing Compositor (all 7 blend modes + opacity work)
+- Preset save/load: `media_path` (absolute), `media_speed`, `media_looping` in `LayerPreset` (serde defaults for backward compat)
+- Loading an effect on a media layer converts it back to Effect (creates fresh UniformBuffer + PassExecutor)
+- Layer panel: truncated names with hover tooltip, media file name displayed, "IMG"/"GIF" type indication
+- Dependencies: `gif = "0.13"` for direct GIF frame decoding
 
 #### Audio Upgrade + Beat Detection
 - Multi-resolution FFT: 4096-pt (sub_bass, bass, kick), 1024-pt (low_mid, mid, upper_mid), 512-pt (presence, brilliance)
@@ -229,6 +245,13 @@ egui Overlay → Surface
 - tungstenite 0.28: `Message::text()` constructor (not `Message::Text(String)`), text payload is `Utf8Bytes` not `String`. Client handler is generic over `S: Read + Write` for `ReplayStream` wrapper.
 - Web same-port HTTP+WS: `ReplayStream` wrapper replays already-read request bytes then delegates to `TcpStream`. Avoids needing separate HTTP server.
 - OSC TX uses fire-and-forget nonblocking UDP. Rate limited by `Instant` comparison (default 30Hz). Sends ~15 messages per frame.
+- Media layers use single RenderTarget (no ping-pong) — no feedback for media. Frame texture is Rgba8UnormSrgb (GPU auto-converts sRGB→linear on sample).
+- Media bind group created once in `new()`, rebuilt only on `resize()` — texture object unchanged, only data written via `write_texture()`.
+- Media frame upload in `update()` (mutable phase), blit in `execute()` (immutable) — matches existing Effect pattern.
+- Media resize needs `&Queue` (for uniform upload) — separate `resize_media()` method on Layer since normal `resize()` only takes `&Device`.
+- Loading an effect on a media layer: converts back by creating fresh UniformBuffer + EffectLayer, then proceeds with normal effect load.
+- `gif = "0.13"` as direct dep (decoder.rs uses gif crate API for frame-by-frame compositing with canvas accumulator).
+- UI panels widened to 270px (from 240px). Layer names use egui `Label::truncate()` with full name on hover.
 
 ### Controls
 - `D` — Toggle egui overlay
@@ -262,3 +285,8 @@ The complete 28-week, 4-phase plan is at `~/ai/audio/phosphor-internal/cross-pla
 6. ~~Layer-based composition with blend modes~~ ✓
 7. ~~OSC input/output~~ ✓
 8. ~~Web control surface~~ ✓ (WebSocket server + embedded touch UI)
+9. ~~Media layers~~ ✓ (PNG/JPEG/GIF with letterbox, GIF playback, transport controls)
+10. ~~Advanced particles~~ ✓ (sprite textures, image decomposition, aux buffer)
+11. AI shader assistant (planned: local LLM via llama.cpp/Ollama, naga validation)
+12. Video playback (feature-gated, ffmpeg-next)
+13. 3D Gaussian Splatting (deferred: blocked on wgpu 28 / egui-wgpu update)

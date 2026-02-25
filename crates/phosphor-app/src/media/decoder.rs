@@ -2,12 +2,12 @@ use std::path::Path;
 
 use super::types::DecodedFrame;
 
-/// Decoded media source: either a static image or animated GIF frames.
+/// Decoded media source: either a static image or animated frames.
 pub enum MediaSource {
     /// Single static image.
     Static(DecodedFrame),
-    /// Animated GIF: pre-decoded frames + frame delays in milliseconds.
-    AnimatedGif {
+    /// Animated image (GIF or WebP): pre-decoded frames + frame delays in milliseconds.
+    Animated {
         frames: Vec<DecodedFrame>,
         delays_ms: Vec<u32>,
     },
@@ -17,26 +17,26 @@ impl MediaSource {
     pub fn frame_count(&self) -> usize {
         match self {
             MediaSource::Static(_) => 1,
-            MediaSource::AnimatedGif { frames, .. } => frames.len(),
+            MediaSource::Animated { frames, .. } => frames.len(),
         }
     }
 
     pub fn is_animated(&self) -> bool {
-        matches!(self, MediaSource::AnimatedGif { .. })
+        matches!(self, MediaSource::Animated { .. })
     }
 
     /// Get frame dimensions.
     pub fn dimensions(&self) -> (u32, u32) {
         match self {
             MediaSource::Static(f) => (f.width, f.height),
-            MediaSource::AnimatedGif { frames, .. } => {
+            MediaSource::Animated { frames, .. } => {
                 frames.first().map_or((1, 1), |f| (f.width, f.height))
             }
         }
     }
 }
 
-/// Load an image or animated GIF from a file path.
+/// Load an image or animation from a file path.
 pub fn load_media(path: &Path) -> Result<MediaSource, String> {
     let ext = path
         .extension()
@@ -44,10 +44,10 @@ pub fn load_media(path: &Path) -> Result<MediaSource, String> {
         .unwrap_or("")
         .to_lowercase();
 
-    if ext == "gif" {
-        load_gif(path)
-    } else {
-        load_static_image(path)
+    match ext.as_str() {
+        "gif" => load_gif(path),
+        "webp" => load_webp(path),
+        _ => load_static_image(path),
     }
 }
 
@@ -128,5 +128,88 @@ fn load_gif(path: &Path) -> Result<MediaSource, String> {
         frames.len()
     );
 
-    Ok(MediaSource::AnimatedGif { frames, delays_ms })
+    Ok(MediaSource::Animated { frames, delays_ms })
+}
+
+/// Load a WebP image, detecting animation automatically.
+fn load_webp(path: &Path) -> Result<MediaSource, String> {
+    use image_webp::WebPDecoder;
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let file = File::open(path).map_err(|e| format!("Failed to open WebP: {e}"))?;
+    let mut decoder =
+        WebPDecoder::new(BufReader::new(file)).map_err(|e| format!("Failed to decode WebP: {e}"))?;
+
+    let (width, height) = decoder.dimensions();
+
+    if !decoder.is_animated() {
+        // Static WebP — decode single frame
+        let buf_size = decoder
+            .output_buffer_size()
+            .ok_or("Cannot determine WebP buffer size")?;
+        let mut buf = vec![0u8; buf_size];
+        decoder
+            .read_image(&mut buf)
+            .map_err(|e| format!("Failed to read WebP image: {e}"))?;
+
+        // Ensure RGBA (WebP without alpha returns RGB)
+        let data = if decoder.has_alpha() {
+            buf
+        } else {
+            rgb_to_rgba(&buf)
+        };
+
+        return Ok(MediaSource::Static(DecodedFrame { data, width, height }));
+    }
+
+    // Animated WebP — decode all frames
+    let num_frames = decoder.num_frames() as usize;
+    let mut frames = Vec::with_capacity(num_frames);
+    let mut delays_ms = Vec::with_capacity(num_frames);
+    let buf_size = decoder
+        .output_buffer_size()
+        .ok_or("Cannot determine WebP buffer size")?;
+
+    loop {
+        let mut buf = vec![0u8; buf_size];
+        match decoder.read_frame(&mut buf) {
+            Ok(duration_ms) => {
+                delays_ms.push(duration_ms.max(20)); // minimum 20ms
+
+                let data = if decoder.has_alpha() {
+                    buf
+                } else {
+                    rgb_to_rgba(&buf)
+                };
+
+                frames.push(DecodedFrame { data, width, height });
+            }
+            Err(_) => break, // NoMoreFrames
+        }
+    }
+
+    if frames.is_empty() {
+        return Err("Animated WebP has no frames".to_string());
+    }
+
+    log::info!(
+        "Loaded animated WebP: {}x{}, {} frames",
+        width,
+        height,
+        frames.len()
+    );
+
+    Ok(MediaSource::Animated { frames, delays_ms })
+}
+
+/// Convert RGB buffer to RGBA (opaque).
+fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+    let pixel_count = rgb.len() / 3;
+    let mut rgba = Vec::with_capacity(pixel_count * 4);
+    for chunk in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(chunk);
+        rgba.push(255);
+    }
+    rgba
 }
