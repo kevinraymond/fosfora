@@ -44,7 +44,7 @@ fn draw_bar(ui: &mut Ui, name: &str, value: f32, color: Color32, available_width
         ui.label(format!("{name:>10}"));
         let bar_height = 14.0;
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(available_width - 130.0, bar_height),
+            Vec2::new((available_width - 130.0).max(1.0), bar_height),
             egui::Sense::hover(),
         );
 

@@ -45,7 +45,7 @@ impl ParamDef {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ParamValue {
     Float(f32),
     Color([f32; 4]),

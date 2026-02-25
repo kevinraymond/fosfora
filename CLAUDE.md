@@ -10,6 +10,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 **Audio Upgrade + Beat Detection: COMPLETE** — multi-resolution FFT, adaptive normalization, 3-stage beat detector
 **BPM Detection Rewrite: COMPLETE** — FFT autocorrelation, Kalman filter, octave disambiguation
 **MIDI Input: COMPLETE** — midir integration, MIDI learn, auto-connect, hot-plug, config persistence
+**Preset Save/Load: COMPLETE** — global presets with effect + params + postprocess, MIDI next/prev
 
 ### What's Built
 
@@ -76,10 +77,21 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - Hot-plug detection: polls `list_ports()` every 2s, auto-disconnect on removal, auto-reconnect on reappear
 - MIDI learn: click "M" on any param or trigger, move a knob/press a button to bind
 - Params: Float and Bool mappable via CC (raw 0-127 scaled to param range, no smoothing)
-- Triggers: NextEffect, PrevEffect, TogglePostProcess, ToggleOverlay with rising-edge detection
+- Triggers: NextEffect, PrevEffect, TogglePostProcess, ToggleOverlay, NextPreset, PrevPreset with rising-edge detection
 - Config persists to `~/.config/phosphor/midi.json` (JSON via `dirs` crate)
 - Channel 0 = omni (respond to all channels)
 - UI: port dropdown + activity dot + learn prompt in left panel, per-param MIDI badges + trigger learn in right panel, MIDI status in status bar
+
+#### Preset Save/Load
+- `PresetStore`: scan/save/load/delete presets from `~/.config/phosphor/presets/*.json`
+- `Preset` struct: version, effect_name, params (HashMap<String, ParamValue>), postprocess (PostProcessDef)
+- Preset panel in left sidebar: text input + Save button, selectable list with delete buttons
+- Save captures current effect + tweaked params + postprocess overrides
+- Load switches effect, applies saved params (unknown params skipped with warning), applies postprocess
+- Overwrite on save (standard VJ workflow), graceful mismatch handling
+- Name sanitization: strip `/ \ .`, trim whitespace, max 64 chars
+- MIDI triggers: NextPreset/PrevPreset cycle through preset list
+- Persists to disk as JSON, survives app restart
 
 ### Known Issues
 - ~29 compiler warnings (mostly unused items reserved for future phases)
@@ -124,6 +136,7 @@ egui Overlay → Surface
 - Particle Struct is 64 bytes (4 x vec4f): pos_life, vel_size, color, flags. Size chosen for GPU cache-line friendliness.
 - Particle render uses vertex-pulling (no vertex buffer) — 6 vertices per instance expand to screen-space quads with aspect ratio correction.
 - midir 0.10: `MidiInputConnection<()>` is RAII — drop closes the port. No explicit close needed.
+- Presets stored at `~/.config/phosphor/presets/{name}.json`. `PresetStore` re-scans after every save/delete.
 
 ### Controls
 - `D` — Toggle egui overlay
@@ -152,6 +165,6 @@ The complete 28-week, 4-phase plan is at `~/ai/audio/phosphor-internal/cross-pla
 2. ~~GPU compute particle system~~ ✓
 3. ~~Beat detection~~ ✓ (3-stage: onset → tempo → scheduler)
 4. ~~MIDI input with MIDI learn~~ ✓
-5. Preset save/load
+5. ~~Preset save/load~~ ✓
 6. Layer-based composition with blend modes
 7. OSC input/output

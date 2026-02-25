@@ -4,6 +4,7 @@ mod effect;
 mod gpu;
 mod midi;
 mod params;
+mod preset;
 mod shader;
 mod ui;
 
@@ -127,6 +128,7 @@ impl ApplicationHandler for PhosphorApp {
                         &mut app.post_process.enabled,
                         particle_count,
                         &mut app.midi,
+                        &app.preset_store,
                     );
                 }
                 app.egui_overlay.end_frame(&app.window);
@@ -137,6 +139,28 @@ impl ApplicationHandler for PhosphorApp {
                 });
                 if let Some(idx) = pending.or(app.egui_overlay.pending_effect_load.take()) {
                     app.load_effect(idx);
+                }
+
+                // Handle preset signals from UI
+                let pending_preset: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("pending_preset"))
+                });
+                if let Some(idx) = pending_preset {
+                    app.load_preset(idx);
+                }
+                let save_preset: Option<String> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("save_preset"))
+                });
+                if let Some(name) = save_preset {
+                    app.save_preset(&name);
+                }
+                let delete_preset: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("delete_preset"))
+                });
+                if let Some(idx) = delete_preset {
+                    if let Err(e) = app.preset_store.delete(idx) {
+                        log::error!("Failed to delete preset: {e}");
+                    }
                 }
 
                 // Handle MIDI triggers
@@ -160,6 +184,16 @@ impl ApplicationHandler for PhosphorApp {
                         }
                         TriggerAction::ToggleOverlay => {
                             app.egui_overlay.toggle_visible();
+                        }
+                        TriggerAction::NextPreset if !app.preset_store.presets.is_empty() => {
+                            let num = app.preset_store.presets.len();
+                            let current = app.preset_store.current_preset.unwrap_or(0);
+                            app.load_preset((current + 1) % num);
+                        }
+                        TriggerAction::PrevPreset if !app.preset_store.presets.is_empty() => {
+                            let num = app.preset_store.presets.len();
+                            let current = app.preset_store.current_preset.unwrap_or(0);
+                            app.load_preset(if current == 0 { num - 1 } else { current - 1 });
                         }
                         _ => {}
                     }

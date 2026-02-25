@@ -2,6 +2,7 @@ pub mod audio_panel;
 pub mod effect_panel;
 pub mod midi_panel;
 pub mod param_panel;
+pub mod preset_panel;
 pub mod status_bar;
 
 use egui::Context;
@@ -11,6 +12,7 @@ use crate::effect::EffectLoader;
 use crate::gpu::ShaderUniforms;
 use crate::midi::MidiSystem;
 use crate::params::ParamStore;
+use crate::preset::PresetStore;
 
 /// Draw all UI panels when overlay is visible.
 pub fn draw_panels(
@@ -24,6 +26,7 @@ pub fn draw_panels(
     post_process_enabled: &mut bool,
     particle_count: Option<u32>,
     midi: &mut MidiSystem,
+    preset_store: &PresetStore,
 ) {
     if !visible {
         return;
@@ -46,6 +49,7 @@ pub fn draw_panels(
 
     egui::SidePanel::left("left_panel")
         .default_width(280.0)
+        .max_width(320.0)
         .show(ctx, |ui| {
             ui.heading("Audio");
             ui.separator();
@@ -55,6 +59,11 @@ pub fn draw_panels(
             ui.heading("Effects");
             ui.separator();
             effect_panel::draw_effect_panel(ui, effect_loader);
+
+            ui.add_space(16.0);
+            ui.heading("Presets");
+            ui.separator();
+            preset_panel::draw_preset_panel(ui, preset_store);
 
             ui.add_space(16.0);
             ui.heading("MIDI");

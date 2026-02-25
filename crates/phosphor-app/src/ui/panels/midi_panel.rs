@@ -11,7 +11,7 @@ pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
 
     egui::ComboBox::from_id_salt("midi_port")
         .selected_text(&current_label)
-        .width(ui.available_width() - 8.0)
+        .width((ui.available_width() - 8.0).max(1.0))
         .show_ui(ui, |ui| {
             // Disconnect option
             if ui

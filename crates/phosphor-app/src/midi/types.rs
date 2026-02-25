@@ -23,6 +23,8 @@ pub enum TriggerAction {
     PrevEffect,
     TogglePostProcess,
     ToggleOverlay,
+    NextPreset,
+    PrevPreset,
 }
 
 impl TriggerAction {
@@ -31,6 +33,8 @@ impl TriggerAction {
         TriggerAction::PrevEffect,
         TriggerAction::TogglePostProcess,
         TriggerAction::ToggleOverlay,
+        TriggerAction::NextPreset,
+        TriggerAction::PrevPreset,
     ];
 
     pub fn display_name(&self) -> &'static str {
@@ -39,6 +43,8 @@ impl TriggerAction {
             TriggerAction::PrevEffect => "Prev Effect",
             TriggerAction::TogglePostProcess => "Toggle Post-Process",
             TriggerAction::ToggleOverlay => "Toggle Overlay",
+            TriggerAction::NextPreset => "Next Preset",
+            TriggerAction::PrevPreset => "Prev Preset",
         }
     }
 }

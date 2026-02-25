@@ -16,6 +16,7 @@ use crate::gpu::{GpuContext, ShaderPipeline, ShaderUniforms, UniformBuffer};
 use crate::midi::types::TriggerAction;
 use crate::midi::MidiSystem;
 use crate::params::ParamStore;
+use crate::preset::PresetStore;
 use crate::shader::ShaderWatcher;
 use crate::ui::EguiOverlay;
 
@@ -37,6 +38,8 @@ pub struct App {
     // MIDI
     pub midi: MidiSystem,
     pub pending_midi_triggers: Vec<TriggerAction>,
+    // Presets
+    pub preset_store: PresetStore,
     // Multi-pass rendering
     pub pass_executor: PassExecutor,
     pub post_process: PostProcessChain,
@@ -127,6 +130,8 @@ impl App {
         let shader_watcher = ShaderWatcher::new()?;
         let audio = AudioSystem::new();
         let midi = MidiSystem::new();
+        let mut preset_store = PresetStore::new();
+        preset_store.scan();
         let egui_overlay = EguiOverlay::new(&gpu.device, gpu.format, &window);
 
         let now = Instant::now();
@@ -144,6 +149,7 @@ impl App {
             audio,
             midi,
             pending_midi_triggers: Vec::new(),
+            preset_store,
             egui_overlay,
             effect_loader,
             window,
@@ -409,6 +415,66 @@ impl App {
                     log::error!("Failed to load effect '{}': {e}", effect.name);
                     self.shader_error = Some(format!("Load error: {e}"));
                 }
+            }
+        }
+    }
+
+    pub fn save_preset(&mut self, name: &str) {
+        let effect_name = self
+            .effect_loader
+            .current_effect
+            .and_then(|i| self.effect_loader.effects.get(i))
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        if effect_name.is_empty() {
+            log::warn!("No effect loaded, cannot save preset");
+            return;
+        }
+        match self.preset_store.save(
+            name,
+            &effect_name,
+            &self.param_store.values,
+            &self.current_postprocess,
+        ) {
+            Ok(idx) => log::info!("Saved preset '{}' at index {}", name, idx),
+            Err(e) => log::error!("Failed to save preset: {e}"),
+        }
+    }
+
+    pub fn load_preset(&mut self, index: usize) {
+        let preset = match self.preset_store.load(index) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        // Find and load the effect by name
+        let effect_idx = self
+            .effect_loader
+            .effects
+            .iter()
+            .position(|e| e.name == preset.effect_name);
+        match effect_idx {
+            Some(idx) => {
+                self.load_effect(idx);
+                // Apply saved params (skip unknown)
+                for (name, value) in &preset.params {
+                    if self.param_store.values.contains_key(name) {
+                        self.param_store.set(name, value.clone());
+                    } else {
+                        log::warn!("Preset param '{}' not found in effect, skipping", name);
+                    }
+                }
+                // Apply postprocess
+                self.current_postprocess = preset.postprocess.clone();
+                self.post_process.enabled = preset.postprocess.enabled;
+                self.preset_store.current_preset = Some(index);
+                log::info!("Loaded preset '{}'", self.preset_store.presets[index].0);
+            }
+            None => {
+                log::warn!(
+                    "Effect '{}' not found for preset, skipping load",
+                    preset.effect_name
+                );
             }
         }
     }
