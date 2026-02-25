@@ -177,7 +177,10 @@ impl ApplicationHandler for PhosphorApp {
                     d.remove_temp(egui::Id::new("pending_effect"))
                 });
                 if let Some(idx) = pending.or(app.egui_overlay.pending_effect_load.take()) {
-                    app.load_effect(idx);
+                    let active_locked = app.layer_stack.active().map_or(false, |l| l.locked);
+                    if !active_locked {
+                        app.load_effect(idx);
+                    }
                 }
 
                 // Handle preset signals from UI
@@ -228,21 +231,42 @@ impl ApplicationHandler for PhosphorApp {
                     }
                 }
 
+                // Handle lock/pin toggles
+                let toggle_lock: Option<(usize, bool)> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("layer_toggle_lock"))
+                });
+                if let Some((idx, locked)) = toggle_lock {
+                    if let Some(layer) = app.layer_stack.layers.get_mut(idx) {
+                        layer.locked = locked;
+                    }
+                }
+
+                let toggle_pin: Option<(usize, bool)> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("layer_toggle_pin"))
+                });
+                if let Some((idx, pinned)) = toggle_pin {
+                    if let Some(layer) = app.layer_stack.layers.get_mut(idx) {
+                        layer.pinned = pinned;
+                    }
+                }
+
                 let layer_blend: Option<u32> = app.egui_overlay.context().data_mut(|d| {
                     d.remove_temp(egui::Id::new("layer_blend"))
                 });
                 if let Some(mode_u32) = layer_blend {
                     if let Some(layer) = app.layer_stack.active_mut() {
-                        layer.blend_mode = match mode_u32 {
-                            0 => BlendMode::Normal,
-                            1 => BlendMode::Add,
-                            2 => BlendMode::Multiply,
-                            3 => BlendMode::Screen,
-                            4 => BlendMode::Overlay,
-                            5 => BlendMode::SoftLight,
-                            6 => BlendMode::Difference,
-                            _ => BlendMode::Normal,
-                        };
+                        if !layer.locked {
+                            layer.blend_mode = match mode_u32 {
+                                0 => BlendMode::Normal,
+                                1 => BlendMode::Add,
+                                2 => BlendMode::Multiply,
+                                3 => BlendMode::Screen,
+                                4 => BlendMode::Overlay,
+                                5 => BlendMode::SoftLight,
+                                6 => BlendMode::Difference,
+                                _ => BlendMode::Normal,
+                            };
+                        }
                     }
                 }
 
@@ -251,7 +275,9 @@ impl ApplicationHandler for PhosphorApp {
                 });
                 if let Some(opacity) = layer_opacity {
                     if let Some(layer) = app.layer_stack.active_mut() {
-                        layer.opacity = opacity;
+                        if !layer.locked {
+                            layer.opacity = opacity;
+                        }
                     }
                 }
 
@@ -268,7 +294,9 @@ impl ApplicationHandler for PhosphorApp {
                 });
                 if let Some((idx, enabled)) = toggle_enable {
                     if let Some(layer) = app.layer_stack.layers.get_mut(idx) {
-                        layer.enabled = enabled;
+                        if !layer.locked {
+                            layer.enabled = enabled;
+                        }
                     }
                 }
 

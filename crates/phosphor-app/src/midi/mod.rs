@@ -241,4 +241,79 @@ impl MidiSystem {
 
         result
     }
+
+    /// Drain MIDI messages but only process triggers (skip param CC). Used when active layer is locked.
+    pub fn update_triggers_only(&mut self) -> MidiFrameResult {
+        let mut result = MidiFrameResult {
+            triggers: Vec::new(),
+        };
+
+        // Hot-plug detection (same as update)
+        if self.last_port_poll.elapsed().as_secs() >= 2 {
+            self.last_port_poll = Instant::now();
+            self.available_ports = MidiPort::list_ports();
+
+            if let Some(ref port) = self.connection {
+                if !self.available_ports.contains(&port.port_name) {
+                    log::warn!("MIDI port '{}' disconnected", port.port_name);
+                    self.disconnect();
+                }
+            } else if let Some(ref saved) = self.config.port_name.clone() {
+                if self.available_ports.contains(saved) {
+                    log::info!("MIDI port '{}' reappeared, reconnecting", saved);
+                    self.connect(saved);
+                }
+            }
+        }
+
+        let Some(ref rx) = self.receiver else {
+            return result;
+        };
+
+        let messages: Vec<MidiMessage> = rx.try_iter().collect();
+        if messages.is_empty() {
+            return result;
+        }
+
+        self.last_activity = Some(Instant::now());
+
+        for msg in messages {
+            self.last_message = Some(msg);
+
+            // MIDI Learn still works (so you can bind triggers while locked)
+            if let Some(ref target) = self.learn_target.clone() {
+                if msg.msg_type == MidiMsgType::Note && msg.value == 0 {
+                    continue;
+                }
+                let mapping = MidiMapping::from_learn(msg.number, msg.channel, msg.msg_type);
+                match target {
+                    LearnTarget::Param(name) => {
+                        self.config.params.insert(name.clone(), mapping);
+                    }
+                    LearnTarget::Trigger(action) => {
+                        self.config.triggers.insert(*action, mapping);
+                    }
+                }
+                self.learn_target = None;
+                self.config.save();
+                continue;
+            }
+
+            // Skip param mappings — only process triggers
+            if let Some(action) =
+                self.config
+                    .find_trigger(msg.number, msg.channel, msg.msg_type)
+            {
+                let key = (action, msg.number, msg.channel);
+                let prev = self.trigger_prev_values.get(&key).copied().unwrap_or(0);
+                let threshold = 64u8;
+                if msg.value >= threshold && prev < threshold {
+                    result.triggers.push(action);
+                }
+                self.trigger_prev_values.insert(key, msg.value);
+            }
+        }
+
+        result
+    }
 }

@@ -127,6 +127,8 @@ impl App {
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
             enabled: true,
+            locked: false,
+            pinned: false,
             shader_sources: vec![shader_source],
             shader_error: None,
             postprocess: PostProcessDef::default(),
@@ -233,11 +235,18 @@ impl App {
             self.uniforms.beat_strength = features.beat_strength;
         }
 
-        // Drain MIDI and apply to active layer's param_store
+        // Drain MIDI and apply to active layer's param_store (skip if locked)
         if let Some(layer) = self.layer_stack.active_mut() {
+            let locked = layer.locked;
             let defs = layer.param_store.defs.clone();
-            let midi_result = self.midi.update(&mut layer.param_store, &defs);
-            self.pending_midi_triggers = midi_result.triggers;
+            if locked {
+                // Still drain MIDI messages but only collect triggers, don't apply CC to params
+                let midi_result = self.midi.update_triggers_only();
+                self.pending_midi_triggers = midi_result.triggers;
+            } else {
+                let midi_result = self.midi.update(&mut layer.param_store, &defs);
+                self.pending_midi_triggers = midi_result.triggers;
+            }
         }
 
         // Update each layer's uniforms from global template + per-layer params
@@ -520,6 +529,8 @@ impl App {
                     blend_mode: BlendMode::Normal,
                     opacity: 1.0,
                     enabled: true,
+                    locked: false,
+                    pinned: false,
                     shader_sources: vec![source],
                     shader_error: None,
                     postprocess: PostProcessDef::default(),
@@ -596,8 +607,15 @@ impl App {
             self.add_layer();
         }
 
-        // Load each layer
+        // Load each layer (skip locked layers)
         for (i, lp) in preset.layers.iter().enumerate() {
+            if let Some(layer) = self.layer_stack.layers.get(i) {
+                if layer.locked {
+                    log::info!("Layer {} is locked, skipping preset load", i);
+                    continue;
+                }
+            }
+
             if !lp.effect_name.is_empty() {
                 let effect_idx = self
                     .effect_loader
