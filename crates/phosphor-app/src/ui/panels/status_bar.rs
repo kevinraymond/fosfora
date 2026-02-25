@@ -56,12 +56,18 @@ pub fn draw_status_bar(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
 
-            // FPS (rightmost)
-            let fps = if uniforms.delta_time > 0.0 {
-                (1.0 / uniforms.delta_time) as u32
+            // FPS (rightmost) — EMA-smoothed to avoid jitter
+            let fps_raw = if uniforms.delta_time > 0.0 {
+                1.0 / uniforms.delta_time
             } else {
-                0
+                0.0
             };
+            let fps_id = ui.id().with("smoothed_fps");
+            let prev: f32 = ui.ctx().data_mut(|d| d.get_temp(fps_id).unwrap_or(fps_raw));
+            let alpha = 0.02_f32;
+            let smoothed = prev + alpha * (fps_raw - prev);
+            ui.ctx().data_mut(|d| d.insert_temp(fps_id, smoothed));
+            let fps = smoothed as u32;
             fixed_value(ui, &format!("{fps}"), 24.0, DARK_TEXT_SECONDARY);
             label(ui, "FPS");
 
