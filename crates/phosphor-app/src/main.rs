@@ -3,6 +3,7 @@ mod audio;
 mod effect;
 mod gpu;
 mod midi;
+mod osc;
 mod params;
 mod preset;
 mod shader;
@@ -164,6 +165,7 @@ impl ApplicationHandler for PhosphorApp {
                             &mut app.post_process.enabled,
                             particle_count,
                             &mut app.midi,
+                            &mut app.osc,
                             &app.preset_store,
                             &layer_infos,
                             active_layer,
@@ -344,8 +346,9 @@ impl ApplicationHandler for PhosphorApp {
                     }
                 }
 
-                // Handle MIDI triggers
-                let triggers: Vec<_> = app.pending_midi_triggers.drain(..).collect();
+                // Handle MIDI + OSC triggers
+                let mut triggers: Vec<_> = app.pending_midi_triggers.drain(..).collect();
+                triggers.extend(app.pending_osc_triggers.drain(..));
                 for trigger in triggers {
                     use crate::midi::types::TriggerAction;
                     let num_effects = app.effect_loader.effects.len();

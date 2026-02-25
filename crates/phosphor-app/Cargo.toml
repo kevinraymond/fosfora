@@ -39,5 +39,7 @@ pollster = "0.4"
 dark-light = "2"
 # MIDI input
 midir = "0.10"
+# OSC input/output
+rosc = "0.11"
 # XDG config paths
 dirs = "6"

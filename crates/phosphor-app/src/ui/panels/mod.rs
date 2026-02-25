@@ -2,6 +2,7 @@ pub mod audio_panel;
 pub mod effect_panel;
 pub mod layer_panel;
 pub mod midi_panel;
+pub mod osc_panel;
 pub mod param_panel;
 pub mod preset_panel;
 pub mod status_bar;
@@ -13,6 +14,7 @@ use crate::effect::EffectLoader;
 use crate::gpu::layer::LayerInfo;
 use crate::gpu::ShaderUniforms;
 use crate::midi::MidiSystem;
+use crate::osc::OscSystem;
 use crate::params::ParamStore;
 use crate::preset::PresetStore;
 use crate::ui::theme::tokens::*;
@@ -30,6 +32,7 @@ pub fn draw_panels(
     post_process_enabled: &mut bool,
     particle_count: Option<u32>,
     midi: &mut MidiSystem,
+    osc: &mut OscSystem,
     preset_store: &PresetStore,
     layers: &[LayerInfo],
     active_layer: usize,
@@ -50,6 +53,8 @@ pub fn draw_panels(
             midi_port,
             midi_active,
             midi_recently_active,
+            osc.config.enabled,
+            osc.is_recently_active(),
         );
     });
 
@@ -144,6 +149,23 @@ pub fn draw_panels(
                         midi_panel::draw_midi_panel(ui, midi);
                     },
                 );
+
+                // OSC section (default collapsed)
+                let osc_badge = if !osc.config.enabled {
+                    Some("OFF")
+                } else {
+                    Some("ON")
+                };
+                widgets::section(
+                    ui,
+                    "sec_osc",
+                    "OSC",
+                    osc_badge,
+                    false,
+                    |ui| {
+                        osc_panel::draw_osc_panel(ui, osc);
+                    },
+                );
             });
         });
 
@@ -160,7 +182,7 @@ pub fn draw_panels(
                     None,
                     true,
                     |ui| {
-                        param_panel::draw_param_panel(ui, params, midi);
+                        param_panel::draw_param_panel(ui, params, midi, osc);
                     },
                 );
 

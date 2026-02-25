@@ -11,6 +11,8 @@ pub fn draw_status_bar(
     _midi_port: &str,
     midi_active: bool,
     midi_recently_active: bool,
+    osc_enabled: bool,
+    osc_recently_active: bool,
 ) {
     ui.horizontal(|ui| {
         // Left: RMS mini meter bar
@@ -49,6 +51,17 @@ pub fn draw_status_bar(
                 0
             };
             ui.label(RichText::new(format!("{fps}")).size(SMALL_SIZE).color(DARK_TEXT_SECONDARY));
+
+            // OSC dot
+            if osc_enabled {
+                let color = if osc_recently_active {
+                    DARK_SUCCESS
+                } else {
+                    Color32::from_rgb(0x55, 0x55, 0x55)
+                };
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 3.0, color);
+            }
 
             // MIDI dot
             if midi_active {

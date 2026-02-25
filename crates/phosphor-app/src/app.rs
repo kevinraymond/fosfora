@@ -17,7 +17,8 @@ use crate::gpu::render_target::PingPongTarget;
 use crate::gpu::{GpuContext, ShaderPipeline, ShaderUniforms, UniformBuffer};
 use crate::midi::types::TriggerAction;
 use crate::midi::MidiSystem;
-use crate::params::ParamStore;
+use crate::osc::OscSystem;
+use crate::params::{ParamStore, ParamValue};
 use crate::preset::store::LayerPreset;
 use crate::preset::PresetStore;
 use crate::shader::ShaderWatcher;
@@ -36,6 +37,10 @@ pub struct App {
     // MIDI
     pub midi: MidiSystem,
     pub pending_midi_triggers: Vec<TriggerAction>,
+    // OSC
+    pub osc: OscSystem,
+    pub pending_osc_triggers: Vec<TriggerAction>,
+    pub latest_audio: Option<crate::audio::features::AudioFeatures>,
     // Presets
     pub preset_store: PresetStore,
     // Layers
@@ -158,6 +163,7 @@ impl App {
         let shader_watcher = ShaderWatcher::new()?;
         let audio = AudioSystem::new();
         let midi = MidiSystem::new();
+        let osc = OscSystem::new();
         let mut preset_store = PresetStore::new();
         preset_store.scan();
         let egui_overlay = EguiOverlay::new(&gpu.device, gpu.format, &window);
@@ -173,6 +179,9 @@ impl App {
             audio,
             midi,
             pending_midi_triggers: Vec::new(),
+            osc,
+            pending_osc_triggers: Vec::new(),
+            latest_audio: None,
             preset_store,
             egui_overlay,
             effect_loader,
@@ -214,6 +223,7 @@ impl App {
 
         // Drain audio features
         if let Some(features) = self.audio.latest_features() {
+            self.latest_audio = Some(features);
             self.uniforms.sub_bass = features.sub_bass;
             self.uniforms.bass = features.bass;
             self.uniforms.low_mid = features.low_mid;
@@ -248,6 +258,83 @@ impl App {
                 let midi_result = self.midi.update(&mut layer.param_store, &defs);
                 self.pending_midi_triggers = midi_result.triggers;
             }
+        }
+
+        // Drain OSC and apply to active layer's param_store (runs after MIDI — last-write-wins)
+        if let Some(layer) = self.layer_stack.active_mut() {
+            let locked = layer.locked;
+            let defs = layer.param_store.defs.clone();
+            let osc_result = if locked {
+                self.osc.update_triggers_only()
+            } else {
+                self.osc.update(&mut layer.param_store, &defs)
+            };
+            self.pending_osc_triggers = osc_result.triggers;
+
+            // Apply layer-targeted OSC messages
+            for (layer_idx, name, value) in osc_result.layer_params {
+                if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
+                    if !target_layer.locked {
+                        if let Some(def) = target_layer.param_store.defs.iter().find(|d| d.name() == name) {
+                            match def.clone() {
+                                crate::params::ParamDef::Float { min, max, .. } => {
+                                    let val = min + (max - min) * value.clamp(0.0, 1.0);
+                                    target_layer.param_store.set(&name, ParamValue::Float(val));
+                                }
+                                crate::params::ParamDef::Bool { .. } => {
+                                    target_layer.param_store.set(&name, ParamValue::Bool(value > 0.5));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            for (layer_idx, value) in osc_result.layer_opacity {
+                if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
+                    if !target_layer.locked {
+                        target_layer.opacity = value;
+                    }
+                }
+            }
+            for (layer_idx, value) in osc_result.layer_blend {
+                if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
+                    if !target_layer.locked {
+                        use crate::gpu::layer::BlendMode;
+                        target_layer.blend_mode = match value {
+                            0 => BlendMode::Normal,
+                            1 => BlendMode::Add,
+                            2 => BlendMode::Multiply,
+                            3 => BlendMode::Screen,
+                            4 => BlendMode::Overlay,
+                            5 => BlendMode::SoftLight,
+                            6 => BlendMode::Difference,
+                            _ => BlendMode::Normal,
+                        };
+                    }
+                }
+            }
+            for (layer_idx, value) in osc_result.layer_enabled {
+                if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
+                    if !target_layer.locked {
+                        target_layer.enabled = value;
+                    }
+                }
+            }
+            if let Some(pp_enabled) = osc_result.postprocess_enabled {
+                self.post_process.enabled = pp_enabled;
+            }
+        }
+
+        // OSC TX: send audio features + state (throttled internally)
+        if let Some(features) = self.latest_audio {
+            let active = self.layer_stack.active_layer;
+            let effect_name = self.layer_stack.active()
+                .and_then(|l| l.effect_index)
+                .and_then(|i| self.effect_loader.effects.get(i))
+                .map(|e| e.name.as_str())
+                .unwrap_or("");
+            self.osc.send_state(&features, active, effect_name);
         }
 
         // Update each layer's uniforms from global template + per-layer params

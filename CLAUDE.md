@@ -12,6 +12,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 **MIDI Input: COMPLETE** — midir integration, MIDI learn, auto-connect, hot-plug, config persistence
 **Preset Save/Load: COMPLETE** — multi-layer presets with effect + params + postprocess, MIDI next/prev
 **Layer Composition: COMPLETE** — up to 8 layers with blend modes, opacity, lock/pin, drag-and-drop reorder, GPU compositing
+**OSC Input/Output: COMPLETE** — rosc UDP, RX on port 9000, TX opt-in on 9001, OSC learn, config persistence
 
 ### What's Built
 
@@ -80,6 +81,18 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - Channel 0 = omni (respond to all channels)
 - UI: port dropdown + activity dot + learn prompt in left panel, per-param MIDI badges + trigger learn in right panel, MIDI status in status bar
 
+#### OSC Input/Output
+- rosc 0.11 integration: UDP receiver thread → crossbeam bounded(64) channel → main thread drain in `App::update()`
+- RX default port 9000 (0.0.0.0), TX default port 9001 (127.0.0.1), configurable via UI
+- RX on by default, TX off by default (user opts in via UI)
+- Address scheme: `/phosphor/param/{name}`, `/phosphor/layer/{n}/param/{name}`, `/phosphor/trigger/{action}`, `/phosphor/layer/{n}/opacity|blend|enabled`, `/phosphor/postprocess/enabled`
+- TX broadcasts at 30Hz (configurable): 13 audio messages (7 bands + aggregates/beat) + 2 state messages (active layer, effect name)
+- OSC learn: click "O" on any param or trigger, send any OSC message to bind address
+- Coexistence with MIDI: last-write-wins per frame (OSC runs after MIDI so it takes priority)
+- Layer-targeted messages: set params, opacity, blend mode, enable on specific layers by index
+- Config persists to `~/.config/phosphor/osc.json` (JSON via `dirs` crate)
+- UI: OSC panel in left sidebar (enable toggle, RX/TX port config, activity dot, trigger learn), per-param OSC badges in right panel, OSC status dot in status bar
+
 #### Preset Save/Load
 - `PresetStore`: scan/save/load/delete presets from `~/.config/phosphor/presets/*.json`
 - `Preset` struct: version, layers (Vec<LayerPreset>), active_layer, postprocess (PostProcessDef)
@@ -143,13 +156,14 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 
 ### Architecture
 ```
-Main Thread: winit event loop → drain audio/midi/shader channels → update per-layer uniforms → per-layer PassExecutor → Compositor (multi-layer blend) → PostProcessChain (bloom/tonemap) → egui overlay → present
+Main Thread: winit event loop → drain audio/midi/osc/shader channels → update per-layer uniforms → per-layer PassExecutor → Compositor (multi-layer blend) → PostProcessChain (bloom/tonemap) → egui overlay → present
 Audio Thread: cpal callback → ring buffer → multi-res FFT → adaptive normalize → beat detect → smooth → send AudioFeatures
 MIDI Thread: midir callback → parse 3-byte MIDI → send MidiMessage via crossbeam bounded(64)
+OSC Thread: UdpSocket recv → rosc decode → send OscInMessage via crossbeam bounded(64)
 File Watcher Thread: notify → debounce → send changed paths
 ```
 
-No mutexes in hot path. Three threads + cpal callback + midir callback.
+No mutexes in hot path. Four threads + cpal callback + midir callback.
 
 ### Render Pipeline
 ```
@@ -189,6 +203,9 @@ egui Overlay → Surface
 - Layer system: each Layer owns its own `PassExecutor` + `UniformBuffer` + `ParamStore` + `ShaderUniforms`. Compositor is separate App field (not inside LayerStack) to avoid borrow conflicts when passing layer render targets to compositor.
 - `LayerInfo` snapshot struct: collected before mutable UI borrow to avoid simultaneous mutable+immutable borrow of layers vec.
 - Compositor uses ping-pong accumulator: blit first layer, then composite(accumulator.read, layer[i]) → accumulator.write for each subsequent layer, tracking read/write indices manually without flipping.
+- rosc 0.11: pure Rust OSC. `decode_udp` returns `(usize, OscPacket)`. Bundles recursively flattened. `UdpSocket` with 100ms read timeout for clean shutdown.
+- OSC coexists with MIDI: last-write-wins per frame. OSC drain runs after MIDI drain in `App::update()`.
+- OSC TX uses fire-and-forget nonblocking UDP. Rate limited by `Instant` comparison (default 30Hz). Sends ~15 messages per frame.
 
 ### Controls
 - `D` — Toggle egui overlay
@@ -220,4 +237,4 @@ The complete 28-week, 4-phase plan is at `~/ai/audio/phosphor-internal/cross-pla
 4. ~~MIDI input with MIDI learn~~ ✓
 5. ~~Preset save/load~~ ✓
 6. ~~Layer-based composition with blend modes~~ ✓
-7. OSC input/output
+7. ~~OSC input/output~~ ✓

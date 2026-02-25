@@ -2,7 +2,9 @@ use egui::{Color32, RichText, Ui};
 
 use crate::midi::types::{LearnTarget, MidiMsgType};
 use crate::midi::MidiSystem;
+use crate::osc::OscSystem;
 use crate::params::{ParamDef, ParamStore, ParamValue};
+use crate::ui::panels::osc_panel;
 use crate::ui::theme::tokens::*;
 
 const MIDI_BLUE: Color32 = Color32::from_rgb(0x60, 0xA0, 0xE0);
@@ -65,7 +67,7 @@ fn fmt_val(v: f32) -> String {
     }
 }
 
-pub fn draw_param_panel(ui: &mut Ui, store: &mut ParamStore, midi: &mut MidiSystem) {
+pub fn draw_param_panel(ui: &mut Ui, store: &mut ParamStore, midi: &mut MidiSystem, osc: &mut OscSystem) {
     if store.defs.is_empty() {
         ui.label(RichText::new("No parameters").size(SMALL_SIZE).color(DARK_TEXT_SECONDARY));
         return;
@@ -87,10 +89,11 @@ pub fn draw_param_panel(ui: &mut Ui, store: &mut ParamStore, midi: &mut MidiSyst
                 };
                 let mut val = current;
 
-                // Row 1: name (left) ... value + MIDI badge (right)
+                // Row 1: name (left) ... value + OSC/MIDI badges (right)
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(name).size(SMALL_SIZE).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        osc_panel::draw_osc_badge(ui, osc, name);
                         draw_midi_badge(ui, midi, name);
                         ui.label(
                             RichText::new(fmt_val(val))
@@ -153,6 +156,7 @@ pub fn draw_param_panel(ui: &mut Ui, store: &mut ParamStore, midi: &mut MidiSyst
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut val, RichText::new(name).size(SMALL_SIZE));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        osc_panel::draw_osc_badge(ui, osc, name);
                         draw_midi_badge(ui, midi, name);
                     });
                 });
