@@ -171,8 +171,9 @@ impl EffectLoader {
         for entry in entries {
             match std::fs::read_to_string(entry.path()) {
                 Ok(json) => match serde_json::from_str::<PfxEffect>(&json) {
-                    Ok(effect) => {
+                    Ok(mut effect) => {
                         log::info!("Found effect: {} ({})", effect.name, entry.path().display());
+                        effect.source_path = Some(entry.path());
                         self.effects.push(effect);
                     }
                     Err(e) => {
@@ -216,5 +217,155 @@ impl EffectLoader {
         } else {
             format!("{}\n{}\n{}", UNIFORM_BLOCK, self.lib_source, source)
         }
+    }
+
+    /// Returns true if the effect is a built-in (shipped) effect.
+    pub fn is_builtin(effect: &PfxEffect) -> bool {
+        effect.author == "Phosphor"
+    }
+
+    /// Delete a user effect: removes the .pfx and its .wgsl shader files, then rescans.
+    pub fn delete_effect(&mut self, index: usize) -> Result<String> {
+        let effect = self.effects.get(index)
+            .ok_or_else(|| anyhow::anyhow!("Effect index {} out of range", index))?;
+        if Self::is_builtin(effect) {
+            anyhow::bail!("Cannot delete built-in effect '{}'", effect.name);
+        }
+        let name = effect.name.clone();
+
+        // Delete .pfx file
+        if let Some(ref pfx_path) = effect.source_path {
+            if pfx_path.exists() {
+                std::fs::remove_file(pfx_path)?;
+                log::info!("Deleted .pfx: {}", pfx_path.display());
+            }
+        }
+
+        // Delete shader files referenced by the effect
+        let mut shader_files = Vec::new();
+        if !effect.shader.is_empty() {
+            shader_files.push(effect.shader.clone());
+        }
+        for pass in &effect.passes {
+            if !pass.shader.is_empty() && !shader_files.contains(&pass.shader) {
+                shader_files.push(pass.shader.clone());
+            }
+        }
+        for shader_rel in &shader_files {
+            let path = self.resolve_shader_path(shader_rel);
+            if path.exists() {
+                std::fs::remove_file(&path)?;
+                log::info!("Deleted shader: {}", path.display());
+            }
+        }
+
+        // Rescan
+        self.scan_effects_directory();
+        Ok(name)
+    }
+
+    /// Copy a built-in effect to a new user effect with the given name.
+    /// Returns (pfx_path, first_wgsl_path) so the caller can load + open editor.
+    pub fn copy_builtin_effect(&self, index: usize, new_name: &str) -> Result<(PathBuf, PathBuf)> {
+        let effect = self.effects.get(index)
+            .ok_or_else(|| anyhow::anyhow!("Effect index {} out of range", index))?;
+        if !Self::is_builtin(effect) {
+            anyhow::bail!("Effect '{}' is not a built-in", effect.name);
+        }
+
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            anyhow::bail!("Effect name cannot be empty");
+        }
+
+        // Sanitize to snake_case filename
+        let snake: String = new_name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .collect();
+        let snake = snake.trim_matches('_').to_string();
+        if snake.is_empty() {
+            anyhow::bail!("Invalid effect name");
+        }
+
+        let effects_dir = assets_dir().join("effects");
+        let shaders_dir = assets_dir().join("shaders");
+        let new_pfx_path = effects_dir.join(format!("{snake}.pfx"));
+        if new_pfx_path.exists() {
+            anyhow::bail!("Effect '{}' already exists", new_name);
+        }
+
+        // Collect all shader files from the effect and copy each
+        let passes = effect.normalized_passes();
+        let mut shader_map: Vec<(String, String)> = Vec::new(); // (old_rel, new_rel)
+        for pass in &passes {
+            if !pass.shader.is_empty() && !shader_map.iter().any(|(old, _)| old == &pass.shader) {
+                let new_shader = format!("{snake}.wgsl");
+                // If multi-pass, use {snake}_{pass_name}.wgsl
+                let new_rel = if passes.len() > 1 {
+                    let pass_snake: String = pass.name.chars()
+                        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                        .collect();
+                    format!("{snake}_{pass_snake}.wgsl")
+                } else {
+                    new_shader
+                };
+                let new_path = shaders_dir.join(&new_rel);
+                if new_path.exists() {
+                    anyhow::bail!("Shader '{}' already exists", new_rel);
+                }
+                shader_map.push((pass.shader.clone(), new_rel));
+            }
+        }
+
+        // Copy shader files
+        let mut first_wgsl = PathBuf::new();
+        for (old_rel, new_rel) in &shader_map {
+            let src = self.resolve_shader_path(old_rel);
+            let dst = shaders_dir.join(new_rel);
+            std::fs::copy(&src, &dst)?;
+            log::info!("Copied shader: {} -> {}", src.display(), dst.display());
+            if first_wgsl.as_os_str().is_empty() {
+                first_wgsl = dst;
+            }
+        }
+
+        // Build new .pfx with updated name, author, and shader references
+        let mut new_effect = effect.clone();
+        new_effect.name = new_name.to_string();
+        new_effect.author = String::new(); // user effect
+        new_effect.source_path = None;
+
+        // Update shader references
+        for (old_rel, new_rel) in &shader_map {
+            if new_effect.shader == *old_rel {
+                new_effect.shader = new_rel.clone();
+            }
+            for pass in &mut new_effect.passes {
+                if pass.shader == *old_rel {
+                    pass.shader = new_rel.clone();
+                }
+            }
+        }
+
+        // Also update compute_shader if present in particles
+        if let Some(ref mut particles) = new_effect.particles {
+            if !particles.compute_shader.is_empty() {
+                let compute_new = format!("{snake}_sim.wgsl");
+                let compute_src = self.resolve_shader_path(&particles.compute_shader);
+                let compute_dst = shaders_dir.join(&compute_new);
+                if !compute_dst.exists() {
+                    std::fs::copy(&compute_src, &compute_dst)?;
+                    log::info!("Copied compute shader: {} -> {}", compute_src.display(), compute_dst.display());
+                }
+                particles.compute_shader = compute_new;
+            }
+        }
+
+        let pfx_json = serde_json::to_string_pretty(&new_effect)?;
+        std::fs::write(&new_pfx_path, pfx_json)?;
+        log::info!("Created effect copy: {} -> {}", effect.name, new_pfx_path.display());
+
+        Ok((new_pfx_path, first_wgsl))
     }
 }

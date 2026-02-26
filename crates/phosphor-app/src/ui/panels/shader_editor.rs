@@ -22,6 +22,7 @@ pub struct ShaderEditorState {
     pub compile_error: Option<String>,
     pub new_effect_prompt: bool,
     pub new_effect_name: String,
+    pub copy_builtin_mode: bool,
 }
 
 impl Default for ShaderEditorState {
@@ -38,6 +39,7 @@ impl Default for ShaderEditorState {
             compile_error: None,
             new_effect_prompt: false,
             new_effect_name: String::new(),
+            copy_builtin_mode: false,
         }
     }
 }
@@ -507,14 +509,18 @@ pub fn draw_new_effect_prompt(ctx: &egui::Context, state: &mut ShaderEditorState
 
     let tc = theme_colors(ctx);
 
-    egui::Window::new("New Effect")
+    let title = if state.copy_builtin_mode { "Copy Effect" } else { "New Effect" };
+    let label = if state.copy_builtin_mode { "New effect name:" } else { "Effect name:" };
+    let btn_label = if state.copy_builtin_mode { "Copy" } else { "Create" };
+
+    egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
         .fixed_size(Vec2::new(300.0, 0.0))
         .show(ctx, |ui| {
             ui.label(
-                RichText::new("Effect name:")
+                RichText::new(label)
                     .size(13.0)
                     .color(tc.text_primary),
             );
@@ -534,17 +540,23 @@ pub fn draw_new_effect_prompt(ctx: &egui::Context, state: &mut ShaderEditorState
                 if ui
                     .add_enabled(
                         name_valid,
-                        egui::Button::new("Create"),
+                        egui::Button::new(btn_label),
                     )
                     .clicked()
                     || (enter_pressed && name_valid)
                 {
                     let name = state.new_effect_name.trim().to_string();
+                    let signal = if state.copy_builtin_mode {
+                        "create_copy_effect"
+                    } else {
+                        "create_new_effect"
+                    };
                     ctx.data_mut(|d| {
-                        d.insert_temp(Id::new("create_new_effect"), name);
+                        d.insert_temp(Id::new(signal), name);
                     });
                     state.new_effect_prompt = false;
                     state.new_effect_name.clear();
+                    state.copy_builtin_mode = false;
                 }
 
                 if ui.button("Cancel").clicked()
@@ -552,6 +564,7 @@ pub fn draw_new_effect_prompt(ctx: &egui::Context, state: &mut ShaderEditorState
                 {
                     state.new_effect_prompt = false;
                     state.new_effect_name.clear();
+                    state.copy_builtin_mode = false;
                 }
             });
         });

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::gpu::particle::types::ParticleDef;
@@ -116,6 +118,9 @@ pub struct PfxEffect {
     /// Audio feature → visual target mappings (read-only display in UI).
     #[serde(default)]
     pub audio_mappings: Vec<AudioMapping>,
+    /// Path to the .pfx file on disk (not serialized).
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl PfxEffect {
@@ -159,6 +164,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            source_path: None,
         };
         let passes = effect.normalized_passes();
         assert_eq!(passes.len(), 1);
@@ -180,6 +186,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            source_path: None,
         };
         assert!(effect.normalized_passes().is_empty());
     }
@@ -203,6 +210,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            source_path: None,
         };
         let passes = effect.normalized_passes();
         assert_eq!(passes.len(), 1);

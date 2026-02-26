@@ -1318,6 +1318,36 @@ impl App {
     }
 
     /// Create a new effect from template (.pfx + .wgsl), scan, load, and open in editor.
+    pub fn copy_builtin_effect(&mut self, new_name: &str) -> Result<()> {
+        let idx = self
+            .effect_loader
+            .current_effect
+            .ok_or_else(|| anyhow::anyhow!("No effect selected"))?;
+
+        let (_pfx_path, wgsl_path) = self.effect_loader.copy_builtin_effect(idx, new_name)?;
+
+        // Rescan effects
+        self.effect_loader.scan_effects_directory();
+
+        // Find and load the new effect
+        let new_idx = self
+            .effect_loader
+            .effects
+            .iter()
+            .position(|e| e.name == new_name);
+        if let Some(new_idx) = new_idx {
+            self.load_effect(new_idx);
+        }
+
+        // Open in editor
+        if wgsl_path.exists() {
+            let content = std::fs::read_to_string(&wgsl_path)?;
+            self.shader_editor.open_file(new_name, wgsl_path, content);
+        }
+
+        Ok(())
+    }
+
     pub fn create_new_effect(&mut self, name: &str) -> Result<()> {
         use std::io::Write;
 

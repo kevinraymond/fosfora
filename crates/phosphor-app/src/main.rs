@@ -366,6 +366,50 @@ impl ApplicationHandler for PhosphorApp {
                     app.shader_editor.new_effect_prompt = true;
                 }
 
+                // Handle "Copy Shader" prompt for built-in effects
+                let copy_prompt: Option<bool> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("copy_builtin_prompt"))
+                });
+                if copy_prompt.is_some() {
+                    app.shader_editor.new_effect_prompt = true;
+                    app.shader_editor.copy_builtin_mode = true;
+                }
+
+                // Handle copy built-in effect creation
+                let copy_effect: Option<String> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("create_copy_effect"))
+                });
+                if let Some(name) = copy_effect {
+                    if let Err(e) = app.copy_builtin_effect(&name) {
+                        log::error!("Failed to copy effect: {e}");
+                        app.status_error = Some((format!("Copy failed: {e}"), std::time::Instant::now()));
+                    }
+                }
+
+                // Handle delete effect signal
+                let delete_effect: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("delete_effect"))
+                });
+                if let Some(idx) = delete_effect {
+                    match app.effect_loader.delete_effect(idx) {
+                        Ok(name) => {
+                            log::info!("Deleted effect: {name}");
+                            // Close shader editor if it was editing the deleted effect
+                            if app.shader_editor.open {
+                                app.shader_editor.open = false;
+                            }
+                            // Fix up current_effect after rescan
+                            // The active layer's effect_index refers to the old list,
+                            // so just clear it — the effect stays rendered but is gone from panel
+                            app.effect_loader.current_effect = None;
+                        }
+                        Err(e) => {
+                            log::error!("Failed to delete effect: {e}");
+                            app.status_error = Some((format!("Delete failed: {e}"), std::time::Instant::now()));
+                        }
+                    }
+                }
+
                 let create_effect: Option<String> = app.egui_overlay.context().data_mut(|d| {
                     d.remove_temp(egui::Id::new("create_new_effect"))
                 });
