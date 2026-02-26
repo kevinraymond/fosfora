@@ -85,8 +85,9 @@ jobs:
           [ -f LICENSE-APACHE ] && cp LICENSE-APACHE "$STAGING/"
           [ -f LICENSE ] && cp LICENSE "$STAGING/"
 
-          # Create DMG
-          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          # Create DMG (retry once if resource busy)
+          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG" || \
+            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG")
 
           # Notarize and staple the DMG
           xcrun notarytool submit "$DMG" \
@@ -205,7 +206,8 @@ jobs:
           codesign --verify --verbose "$STAGING/phosphor"
 
           # Create DMG, notarize, staple
-          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG" || \
+            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG")
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
