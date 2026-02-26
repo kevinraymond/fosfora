@@ -11,9 +11,11 @@ mod shader;
 mod ui;
 mod web;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use crossbeam_channel::Receiver;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -26,6 +28,7 @@ use gpu::layer::BlendMode;
 struct PhosphorApp {
     app: Option<App>,
     window: Option<Arc<Window>>,
+    file_dialog_rx: Option<Receiver<PathBuf>>,
 }
 
 impl PhosphorApp {
@@ -33,6 +36,7 @@ impl PhosphorApp {
         Self {
             app: None,
             window: None,
+            file_dialog_rx: None,
         }
     }
 }
@@ -242,13 +246,37 @@ impl ApplicationHandler for PhosphorApp {
                 let add_media: Option<bool> = app.egui_overlay.context().data_mut(|d| {
                     d.remove_temp(egui::Id::new("add_media_layer"))
                 });
-                if add_media.is_some() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
-                        .pick_file()
-                    {
-                        app.add_media_layer(path);
-                        app.preset_store.mark_dirty();
+                if add_media.is_some() && self.file_dialog_rx.is_none() {
+                    let (tx, rx) = crossbeam_channel::bounded(1);
+                    self.file_dialog_rx = Some(rx);
+                    std::thread::Builder::new()
+                        .name("file-dialog".into())
+                        .spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Images", &["png", "jpg", "jpeg", "gif", "bmp", "webp"])
+                                .pick_file()
+                            {
+                                let _ = tx.send(path);
+                            }
+                        })
+                        .ok();
+                }
+
+                // Drain file dialog result (non-blocking)
+                if let Some(ref rx) = self.file_dialog_rx {
+                    match rx.try_recv() {
+                        Ok(path) => {
+                            app.add_media_layer(path);
+                            app.preset_store.mark_dirty();
+                            self.file_dialog_rx = None;
+                        }
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                            // Dialog was cancelled (sender dropped without sending)
+                            self.file_dialog_rx = None;
+                        }
+                        Err(crossbeam_channel::TryRecvError::Empty) => {
+                            // Still open, keep waiting
+                        }
                     }
                 }
 
