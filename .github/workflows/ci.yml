@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
   lint:
     name: Lint
@@ -60,3 +63,29 @@ jobs:
         run: cargo build --target ${{ matrix.target }}
       - name: Build (video feature)
         run: cargo build --target ${{ matrix.target }} --features video
+
+  tag-release:
+    name: Tag release if version changed
+    needs: [lint, build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version and tag
+        run: |
+          # Read version from Cargo.toml
+          VERSION=$(grep '^version' crates/phosphor-app/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v${VERSION}"
+          echo "Cargo.toml version: ${VERSION} (tag: ${TAG})"
+
+          # Check if this tag already exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — skipping"
+          else
+            echo "New version detected — creating tag ${TAG}"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
