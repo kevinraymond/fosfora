@@ -47,12 +47,19 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} --features video
 
-      - name: Codesign (macOS)
+      - name: Package and sign (macOS)
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+
+          # Import certificate
           KEYCHAIN="build.keychain"
           KEYCHAIN_PASSWORD="actions"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -63,33 +70,24 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           rm certificate.p12
 
-          BINARY="target/${{ matrix.target }}/release/phosphor-app"
-          codesign --force --options runtime --sign "Developer ID Application" "$BINARY" --timestamp
-          codesign --verify --verbose "$BINARY"
+          # Create .app bundle
+          APP="Phosphor.app"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/phosphor-app" "$APP/Contents/MacOS/Phosphor"
+          cp -r assets "$APP/Contents/Resources/assets"
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 
-      - name: Package (macOS)
-        if: runner.os == 'macOS'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          STAGING="phosphor-${TAG}-${{ matrix.target }}"
-          DMG="${STAGING}.dmg"
-          mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/phosphor-app" "$STAGING/phosphor"
-          cp -r assets "$STAGING/assets"
-          [ -f README.md ] && cp README.md "$STAGING/"
-          [ -f LICENSE-MIT ] && cp LICENSE-MIT "$STAGING/"
-          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE "$STAGING/"
-          [ -f LICENSE ] && cp LICENSE "$STAGING/"
+          # Codesign the bundle
+          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP" --timestamp
+          codesign --verify --verbose "$APP"
 
-          # Create DMG (retry once if resource busy)
-          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG" || \
-            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG")
+          # Create DMG containing the .app
+          DMG="phosphor-${TAG}-${{ matrix.target }}.dmg"
+          hdiutil create -volname "Phosphor" -srcfolder "$APP" -ov -format UDZO "$DMG" || \
+            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$APP" -ov -format UDZO "$DMG")
 
-          # Notarize and staple the DMG
+          # Notarize and staple
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
@@ -155,11 +153,18 @@ jobs:
           name: phosphor-x86_64-apple-darwin
           path: artifacts/x86_64
 
-      - name: Import certificate
+      - name: Create universal .app, sign, notarize, and staple
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+
+          # Import certificate
           KEYCHAIN="build.keychain"
           KEYCHAIN_PASSWORD="actions"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
@@ -170,44 +175,34 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           rm certificate.p12
 
-      - name: Create universal binary, sign, notarize, and staple
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-
           # Mount per-arch DMGs and extract binaries
           ARM_MNT=$(mktemp -d)
           X86_MNT=$(mktemp -d)
           hdiutil attach artifacts/arm64/*.dmg -mountpoint "$ARM_MNT" -nobrowse -quiet
           hdiutil attach artifacts/x86_64/*.dmg -mountpoint "$X86_MNT" -nobrowse -quiet
-          ARM_BIN=$(find "$ARM_MNT" -name phosphor -type f)
-          X86_BIN=$(find "$X86_MNT" -name phosphor -type f)
+          ARM_BIN=$(find "$ARM_MNT" -name Phosphor -type f -path "*/MacOS/*")
+          X86_BIN=$(find "$X86_MNT" -name Phosphor -type f -path "*/MacOS/*")
 
-          # Create universal binary
-          STAGING="phosphor-${TAG}-universal-apple-darwin"
-          DMG="${STAGING}.dmg"
-          mkdir -p "$STAGING"
-          lipo -create "$ARM_BIN" "$X86_BIN" -output "$STAGING/phosphor"
-          chmod +x "$STAGING/phosphor"
-          cp -r assets "$STAGING/assets"
-          [ -f README.md ] && cp README.md "$STAGING/"
-          [ -f LICENSE-MIT ] && cp LICENSE-MIT "$STAGING/"
-          [ -f LICENSE-APACHE ] && cp LICENSE-APACHE "$STAGING/"
-          [ -f LICENSE ] && cp LICENSE "$STAGING/"
+          # Create universal .app bundle
+          APP="Phosphor.app"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+          lipo -create "$ARM_BIN" "$X86_BIN" -output "$APP/Contents/MacOS/Phosphor"
+          chmod +x "$APP/Contents/MacOS/Phosphor"
+          cp -r assets "$APP/Contents/Resources/assets"
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 
           hdiutil detach "$ARM_MNT" -quiet
           hdiutil detach "$X86_MNT" -quiet
 
-          # Codesign the universal binary
-          codesign --force --options runtime --sign "Developer ID Application" "$STAGING/phosphor" --timestamp
-          codesign --verify --verbose "$STAGING/phosphor"
+          # Codesign the bundle
+          codesign --force --deep --options runtime --sign "Developer ID Application" "$APP" --timestamp
+          codesign --verify --verbose "$APP"
 
           # Create DMG, notarize, staple
-          hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG" || \
-            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$STAGING" -ov -format UDZO "$DMG")
+          DMG="phosphor-${TAG}-universal-apple-darwin.dmg"
+          hdiutil create -volname "Phosphor" -srcfolder "$APP" -ov -format UDZO "$DMG" || \
+            (sleep 5 && hdiutil create -volname "Phosphor" -srcfolder "$APP" -ov -format UDZO "$DMG")
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
