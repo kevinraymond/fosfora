@@ -978,11 +978,15 @@ impl App {
         }
     }
 
-    /// Remove all layers and create one fresh empty layer.
+    /// Remove all layers and create one fresh layer with the Phosphor default effect.
     pub fn clear_all_layers(&mut self) {
         self.layer_stack.layers.clear();
         self.layer_stack.active_layer = 0;
         self.add_layer();
+        // Load Phosphor as default on the fresh layer
+        if let Some(idx) = self.effect_loader.effects.iter().position(|e| e.name == "Phosphor") {
+            self.load_effect(idx);
+        }
     }
 
     /// Add a new media layer from a file path.

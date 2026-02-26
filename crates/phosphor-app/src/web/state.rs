@@ -142,6 +142,7 @@ pub fn build_full_state(
     let effect_list: Vec<EffectInfo> = effects
         .iter()
         .enumerate()
+        .filter(|(_, e)| !e.hidden)
         .map(|(i, e)| EffectInfo {
             index: i,
             name: e.name.clone(),

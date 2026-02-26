@@ -118,6 +118,9 @@ pub struct PfxEffect {
     /// Audio feature → visual target mappings (read-only display in UI).
     #[serde(default)]
     pub audio_mappings: Vec<AudioMapping>,
+    /// If true, effect is hidden from UI (not shown in effects panel or next/prev cycling).
+    #[serde(default)]
+    pub hidden: bool,
     /// Path to the .pfx file on disk (not serialized).
     #[serde(skip)]
     pub source_path: Option<PathBuf>,
@@ -164,6 +167,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            hidden: false,
             source_path: None,
         };
         let passes = effect.normalized_passes();
@@ -186,6 +190,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            hidden: false,
             source_path: None,
         };
         assert!(effect.normalized_passes().is_empty());
@@ -210,6 +215,7 @@ mod tests {
             postprocess: None,
             particles: None,
             audio_mappings: vec![],
+            hidden: false,
             source_path: None,
         };
         let passes = effect.normalized_passes();

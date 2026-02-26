@@ -19,13 +19,13 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader) {
         .effects
         .iter()
         .enumerate()
-        .filter(|(_, e)| EffectLoader::is_builtin(e))
+        .filter(|(_, e)| EffectLoader::is_builtin(e) && !e.hidden)
         .collect();
     let user: Vec<(usize, &crate::effect::format::PfxEffect)> = loader
         .effects
         .iter()
         .enumerate()
-        .filter(|(_, e)| !EffectLoader::is_builtin(e))
+        .filter(|(_, e)| !EffectLoader::is_builtin(e) && !e.hidden)
         .collect();
 
     // Read pending delete state

@@ -789,24 +789,34 @@ impl ApplicationHandler for PhosphorApp {
                 triggers.extend(app.pending_web_triggers.drain(..));
                 for trigger in triggers {
                     use crate::midi::types::TriggerAction;
-                    let num_effects = app.effect_loader.effects.len();
+                    // Build visible (non-hidden) effect indices for cycling
+                    let visible: Vec<usize> = app
+                        .effect_loader
+                        .effects
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| !e.hidden)
+                        .map(|(i, _)| i)
+                        .collect();
                     match trigger {
-                        TriggerAction::NextEffect if num_effects > 0 => {
+                        TriggerAction::NextEffect if !visible.is_empty() => {
                             let current = app
                                 .layer_stack
                                 .active()
                                 .and_then(|l| l.effect_index())
                                 .unwrap_or(0);
-                            app.load_effect((current + 1) % num_effects);
+                            let pos = visible.iter().position(|&i| i == current).unwrap_or(0);
+                            app.load_effect(visible[(pos + 1) % visible.len()]);
                         }
-                        TriggerAction::PrevEffect if num_effects > 0 => {
+                        TriggerAction::PrevEffect if !visible.is_empty() => {
                             let current = app
                                 .layer_stack
                                 .active()
                                 .and_then(|l| l.effect_index())
                                 .unwrap_or(0);
+                            let pos = visible.iter().position(|&i| i == current).unwrap_or(0);
                             app.load_effect(
-                                if current == 0 { num_effects - 1 } else { current - 1 },
+                                visible[if pos == 0 { visible.len() - 1 } else { pos - 1 }],
                             );
                         }
                         TriggerAction::TogglePostProcess => {
