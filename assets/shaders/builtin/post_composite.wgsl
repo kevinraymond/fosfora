@@ -66,5 +66,6 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     let grain = (hash_grain(uv * 1000.0 + post.time * 100.0) - 0.5) * post.grain_intensity;
     color += vec3f(grain);
 
-    return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), 1.0);
+    let scene_alpha = textureSample(scene_texture, scene_sampler, uv).a;
+    return vec4f(clamp(color, vec3f(0.0), vec3f(1.0)), scene_alpha);
 }

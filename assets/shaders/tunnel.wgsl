@@ -100,5 +100,5 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let mask = 1.0 - smoothstep(mask_r - 0.2, mask_r, d);
     col *= mask;
 
-    return vec4f(col, 1.0);
+    return vec4f(col, mask);
 }

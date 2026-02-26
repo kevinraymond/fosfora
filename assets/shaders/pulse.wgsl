@@ -66,6 +66,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Feedback blend: new frame on top, old trails fade
     let result = max(col, prev.rgb * decay);
+    let new_alpha = clamp(max(col.r, max(col.g, col.b)) * 2.0, 0.0, 1.0);
+    let result_alpha = max(new_alpha, prev.a * decay);
 
-    return vec4f(result, 1.0);
+    return vec4f(result, result_alpha);
 }

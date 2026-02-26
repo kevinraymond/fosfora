@@ -29,5 +29,5 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     let brightness = max(luminance - threshold, contribution);
     let factor = brightness / (luminance + 0.0001);
 
-    return vec4f(color.rgb * factor, 1.0);
+    return vec4f(color.rgb * factor, color.a);
 }

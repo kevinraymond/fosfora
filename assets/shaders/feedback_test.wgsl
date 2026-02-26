@@ -37,6 +37,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Combine: faded previous frame + new dot
     let new_color = col * glow * (1.5 + u.onset * 3.0);
     let result = max(prev.rgb, new_color);
+    let new_alpha = clamp(max(new_color.r, max(new_color.g, new_color.b)) * 2.0, 0.0, 1.0);
+    let result_alpha = max(prev.a * decay, new_alpha);
 
-    return vec4f(result, 1.0);
+    return vec4f(result, result_alpha);
 }
