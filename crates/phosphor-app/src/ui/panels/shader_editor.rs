@@ -1,18 +1,19 @@
 use std::path::PathBuf;
 
 use egui::{
-    Color32, CornerRadius, Frame, Id, Key, Margin, Modifiers, Order, RichText, Stroke, Vec2,
+    Color32, CornerRadius, Frame, Id, Key, Margin, Modifiers, Order, Rect, RichText, Stroke,
+    StrokeKind, Vec2,
 };
-use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
+use egui_code_editor::{ColorTheme, Syntax, Token, TokenType};
 
 use crate::ui::theme::ThemeMode;
 use crate::ui::theme::colors::theme_colors;
 
 /// State for the shader editor overlay.
-#[derive(Default)]
 pub struct ShaderEditorState {
     pub open: bool,
     pub minimized: bool,
+    pub editor_opacity: f32,
     pub file_path: Option<PathBuf>,
     pub file_name: String,
     pub effect_name: String,
@@ -21,6 +22,24 @@ pub struct ShaderEditorState {
     pub compile_error: Option<String>,
     pub new_effect_prompt: bool,
     pub new_effect_name: String,
+}
+
+impl Default for ShaderEditorState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            minimized: false,
+            editor_opacity: 0.85,
+            file_path: None,
+            file_name: String::new(),
+            effect_name: String::new(),
+            code: String::new(),
+            disk_content: String::new(),
+            compile_error: None,
+            new_effect_prompt: false,
+            new_effect_name: String::new(),
+        }
+    }
 }
 
 impl ShaderEditorState {
@@ -49,6 +68,66 @@ impl ShaderEditorState {
         self.disk_content.clear();
         self.compile_error = None;
     }
+}
+
+// --- Vector icon buttons (no font dependency) ---
+
+fn icon_button(
+    ui: &mut egui::Ui,
+    _id: &str,
+    color: Color32,
+    paint: impl FnOnce(&egui::Painter, Rect, Color32),
+) -> egui::Response {
+    let size = Vec2::splat(16.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let c = if response.hovered() { Color32::WHITE } else { color };
+    paint(ui.painter(), rect, c);
+    response
+}
+
+fn close_icon(ui: &mut egui::Ui, id: &str, color: Color32) -> egui::Response {
+    icon_button(ui, id, color, |painter, rect, c| {
+        let center = rect.center();
+        let s = 3.5;
+        let stroke = Stroke::new(1.5, c);
+        painter.line_segment(
+            [
+                egui::pos2(center.x - s, center.y - s),
+                egui::pos2(center.x + s, center.y + s),
+            ],
+            stroke,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(center.x + s, center.y - s),
+                egui::pos2(center.x - s, center.y + s),
+            ],
+            stroke,
+        );
+    })
+}
+
+fn minimize_icon(ui: &mut egui::Ui, id: &str, color: Color32) -> egui::Response {
+    icon_button(ui, id, color, |painter, rect, c| {
+        let center = rect.center();
+        let s = 4.0;
+        let stroke = Stroke::new(1.5, c);
+        let y = center.y + 3.0;
+        painter.line_segment(
+            [egui::pos2(center.x - s, y), egui::pos2(center.x + s, y)],
+            stroke,
+        );
+    })
+}
+
+fn restore_icon(ui: &mut egui::Ui, id: &str, color: Color32) -> egui::Response {
+    icon_button(ui, id, color, |painter, rect, c| {
+        let center = rect.center();
+        let s = 4.0;
+        let stroke = Stroke::new(1.5, c);
+        let r = Rect::from_center_size(center, Vec2::splat(s * 2.0));
+        painter.rect_stroke(r, 1.0, stroke, StrokeKind::Outside);
+    })
 }
 
 /// Build a WGSL syntax definition for the code editor.
@@ -83,48 +162,60 @@ fn wgsl_syntax() -> Syntax {
         ])
 }
 
-/// Map the app theme to a code editor ColorTheme, with transparent background.
+/// Get the color theme for syntax highlighting (no bg hacking needed).
 fn editor_color_theme(theme: ThemeMode) -> ColorTheme {
-    let mut ct = match theme {
+    match theme {
         ThemeMode::Light => ColorTheme::GITHUB_LIGHT,
         _ => ColorTheme::AYU_DARK,
-    };
-    // Set bg to fully transparent (hex #00000000)
-    ct.bg = "#00000000";
-    ct
+    }
 }
 
-/// Draw the shader editor as an overlay with transparent code area.
+/// Draw the shader editor as an overlay with semi-transparent code area.
 /// Returns true if the editor is open.
 pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState, theme: ThemeMode) -> bool {
+    use egui::TextBuffer;
+
     if !state.open {
         return false;
     }
 
     let tc = theme_colors(ctx);
     let screen = ctx.input(|i| i.screen_rect());
+    let color_theme = editor_color_theme(theme);
+    let fontsize = 13.0f32;
 
     // Header bar height + toolbar + separators
     let header_height = 60.0;
     let error_height = if state.compile_error.is_some() { 28.0 } else { 0.0 };
 
-    // Minimized: header + 5 lines (~100px). Maximized: ~85% of screen.
+    // Minimized shows ~5 lines, normal uses 80% of screen height
     let code_height = if state.minimized {
-        5.0 * 17.0 // ~5 lines at 13pt + line spacing
+        5.0 * 17.0
     } else {
-        (screen.height() * 0.85).max(300.0) - header_height - error_height
+        (screen.height() * 0.80 - header_height - error_height).max(200.0)
     };
+
     let panel_h = header_height + code_height + error_height;
     let panel_w = (screen.width() * 0.85).max(500.0).min(screen.width() - 20.0);
 
-    // Position: centered horizontally, anchored to bottom (with small margin)
+    // Centered when normal, anchored to bottom when minimized
     let panel_pos = egui::pos2(
         (screen.width() - panel_w) * 0.5,
-        screen.height() - panel_h - 30.0, // 30px from bottom for status bar
+        if state.minimized {
+            screen.height() - panel_h - 30.0 // 30px from bottom for status bar
+        } else {
+            (screen.height() - panel_h) * 0.5
+        },
     );
 
-    // Opaque header fill
-    let header_fill = tc.panel;
+    // Semi-transparent code background from theme bg + opacity
+    let bg_base = color_theme.bg();
+    let code_bg = Color32::from_rgba_unmultiplied(
+        bg_base.r(),
+        bg_base.g(),
+        bg_base.b(),
+        (state.editor_opacity * 255.0) as u8,
+    );
 
     let editor_id = Id::new("shader_editor_overlay");
     egui::Area::new(editor_id)
@@ -136,14 +227,14 @@ pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState, th
 
             // --- Opaque header frame ---
             Frame {
-                fill: header_fill,
+                fill: tc.panel,
                 inner_margin: Margin::same(0),
                 stroke: Stroke::new(1.0, tc.card_border),
                 corner_radius: CornerRadius {
                     nw: 8,
                     ne: 8,
-                    sw: if state.minimized && state.compile_error.is_none() { 8 } else { 0 },
-                    se: if state.minimized && state.compile_error.is_none() { 8 } else { 0 },
+                    sw: 0,
+                    se: 0,
                 },
                 ..Default::default()
             }
@@ -169,36 +260,30 @@ pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState, th
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(10.0);
-                        // Close button
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("\u{2715}").size(14.0).color(tc.text_secondary),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                            )
+
+                        if close_icon(ui, "editor_close", tc.text_secondary)
                             .on_hover_text("Close (Esc)")
                             .clicked()
                         {
                             state.close();
                         }
 
-                        // Minimize/maximize toggle
-                        let toggle_label = if state.minimized { "\u{25B3}" } else { "\u{25BD}" };
-                        let toggle_tip = if state.minimized { "Expand" } else { "Minimize" };
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new(toggle_label).size(14.0).color(tc.text_secondary),
-                                )
-                                .fill(Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE),
-                            )
-                            .on_hover_text(toggle_tip)
-                            .clicked()
-                        {
-                            state.minimized = !state.minimized;
+                        ui.add_space(4.0);
+
+                        if state.minimized {
+                            if restore_icon(ui, "editor_restore", tc.text_secondary)
+                                .on_hover_text("Expand")
+                                .clicked()
+                            {
+                                state.minimized = false;
+                            }
+                        } else {
+                            if minimize_icon(ui, "editor_min", tc.text_secondary)
+                                .on_hover_text("Minimize")
+                                .clicked()
+                            {
+                                state.minimized = true;
+                            }
                         }
                     });
                 });
@@ -206,7 +291,7 @@ pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState, th
                 ui.add_space(2.0);
                 ui.separator();
 
-                // Toolbar: Save / Revert
+                // Toolbar: Save / Revert / Opacity
                 ui.horizontal(|ui| {
                     ui.add_space(10.0);
 
@@ -243,63 +328,159 @@ pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState, th
                     {
                         state.code = state.disk_content.clone();
                     }
+
+                    // Right-aligned opacity slider
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(10.0);
+                        ui.spacing_mut().slider_width = 80.0;
+                        let slider = egui::Slider::new(&mut state.editor_opacity, 0.25..=1.0)
+                            .show_value(false)
+                            .text("BG");
+                        ui.add(slider)
+                            .on_hover_text(format!("Background opacity: {:.0}%", state.editor_opacity * 100.0));
+                    });
                 });
                 ui.add_space(2.0);
             });
 
-            // --- Transparent code area ---
-            if !state.minimized || state.compile_error.is_some() {
-                Frame {
-                    fill: Color32::TRANSPARENT,
-                    inner_margin: Margin::same(0),
-                    stroke: Stroke::new(1.0, tc.card_border),
-                    corner_radius: CornerRadius {
-                        nw: 0,
-                        ne: 0,
-                        sw: 8,
-                        se: 8,
-                    },
-                    ..Default::default()
-                }
-                .show(ui, |ui| {
-                    if !state.minimized {
-                        // Code editor
-                        let syntax = wgsl_syntax();
-                        let color_theme = editor_color_theme(theme);
-
-                        egui::ScrollArea::vertical()
-                            .max_height(code_height)
-                            .show(ui, |ui| {
-                                CodeEditor::default()
-                                    .id_source("shader_code_editor")
-                                    .with_rows(if state.minimized { 5 } else { 60 })
-                                    .with_fontsize(13.0)
-                                    .with_theme(color_theme)
-                                    .with_syntax(syntax)
-                                    .with_numlines(true)
-                                    .vscroll(false)
-                                    .desired_width(f32::INFINITY)
-                                    .show(ui, &mut state.code);
-                            });
-                    }
-
-                    // Compile error bar
-                    if let Some(ref error) = state.compile_error {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            ui.add_space(10.0);
-                            ui.label(
-                                RichText::new(truncate_error(error, 200))
-                                    .size(11.0)
-                                    .color(tc.error),
-                            );
-                        });
-                    }
-                });
+            // --- Semi-transparent code area ---
+            // Outer Frame provides the semi-transparent fill; TextEdit bg set to transparent
+            // so the shader effect shows through at the desired opacity.
+            Frame {
+                fill: code_bg,
+                inner_margin: Margin::same(0),
+                stroke: Stroke::new(1.0, tc.card_border),
+                corner_radius: CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 8,
+                    se: 8,
+                },
+                ..Default::default()
             }
+            .show(ui, |ui| {
+                // Override visuals so TextEdit bg is transparent (outer Frame provides color)
+                let style = ui.style_mut();
+                style.visuals.extreme_bg_color = Color32::TRANSPARENT;
+                style.visuals.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
+                style.visuals.selection.stroke.color = color_theme.cursor();
+                style.visuals.selection.bg_fill = color_theme.selection();
+                style.override_font_id = Some(egui::FontId::monospace(fontsize));
+                style.visuals.text_cursor.stroke.width = fontsize * 0.1;
+
+                let syntax = wgsl_syntax();
+                let num_color = color_theme.type_color(TokenType::Comment(true));
+
+                // State-dependent ids force egui to recreate widgets on minimize/expand toggle
+                let mode_salt = if state.minimized { "min" } else { "full" };
+                egui::ScrollArea::vertical()
+                    .id_salt(format!("shader_scroll_{mode_salt}"))
+                    .min_scrolled_height(code_height)
+                    .max_height(code_height)
+                    .show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            // Line numbers
+                            let text = &state.code;
+                            let line_count = if text.ends_with('\n') || text.is_empty() {
+                                text.lines().count() + 1
+                            } else {
+                                text.lines().count()
+                            }
+                            .max(5);
+                            let max_digits = line_count.to_string().len();
+                            let mut nums = (1..=line_count)
+                                .map(|i| {
+                                    let label = i.to_string();
+                                    format!(
+                                        "{}{label}",
+                                        " ".repeat(max_digits.saturating_sub(label.len()))
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            #[allow(clippy::cast_precision_loss)]
+                            let num_width = max_digits as f32 * fontsize * 0.5;
+
+                            let mut num_layouter =
+                                |ui: &egui::Ui,
+                                 buf: &dyn TextBuffer,
+                                 _wrap: f32| {
+                                    let job = egui::text::LayoutJob::single_section(
+                                        buf.as_str().to_string(),
+                                        egui::text::TextFormat::simple(
+                                            egui::FontId::monospace(fontsize),
+                                            num_color,
+                                        ),
+                                    );
+                                    ui.fonts_mut(|f| f.layout_job(job))
+                                };
+
+                            ui.add(
+                                egui::TextEdit::multiline(&mut nums)
+                                    .id_source(format!("shader_numlines_{mode_salt}"))
+                                    .interactive(false)
+                                    .frame(false)
+                                    .desired_rows(5)
+                                    .desired_width(num_width)
+                                    .layouter(&mut num_layouter),
+                            );
+
+                            // Code editor with syntax highlighting
+                            egui::ScrollArea::horizontal()
+                                .id_salt(format!("shader_hscroll_{mode_salt}"))
+                                .show(ui, |ui| {
+                                    let mut code_layouter =
+                                        |ui: &egui::Ui,
+                                         buf: &dyn TextBuffer,
+                                         _wrap: f32| {
+                                            let mut token = Token::default();
+                                            let tokens = token.tokens(&syntax, buf.as_str());
+                                            let mut job = egui::text::LayoutJob::default();
+                                            for t in tokens {
+                                                if !t.buffer().is_empty() {
+                                                    job.append(
+                                                        t.buffer(),
+                                                        0.0,
+                                                        egui_code_editor::format_token(
+                                                            &color_theme,
+                                                            fontsize,
+                                                            t.ty(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                            ui.fonts_mut(|f| f.layout_job(job))
+                                        };
+
+                                    egui::TextEdit::multiline(&mut state.code)
+                                        .id_source(format!("shader_code_{mode_salt}"))
+                                        .lock_focus(true)
+                                        .desired_rows(60)
+                                        .frame(true)
+                                        .desired_width(f32::INFINITY)
+                                        .layouter(&mut code_layouter)
+                                        .show(ui);
+                                });
+                        });
+                    });
+
+                // Compile error bar
+                if let Some(ref error) = state.compile_error {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(truncate_error(error, 200))
+                                .size(11.0)
+                                .color(tc.error),
+                        );
+                    });
+                }
+            });
         });
 
-    // Handle Ctrl+S (extract key check first to avoid nested ctx locks)
+    // Handle Ctrl+S
     let ctrl_s = ctx.input(|i| {
         i.key_pressed(Key::S) && i.modifiers.matches_exact(Modifiers::COMMAND)
     });
