@@ -28,8 +28,11 @@ pub fn section(
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
     card_frame().show(ui, |ui| {
-        // Header row
+        let full_width = ui.available_width();
+
+        // Header row — always full width
         let header_response = ui.horizontal(|ui| {
+            ui.set_min_width(full_width);
             draw_section_arrow(ui, state.is_open());
             ui.label(
                 RichText::new(title.to_uppercase())
@@ -37,15 +40,15 @@ pub fn section(
                     .color(DARK_TEXT_SECONDARY)
                     .strong(),
             );
-            if let Some(badge_text) = badge {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(badge_text) = badge {
                     ui.label(
                         RichText::new(badge_text)
                             .size(SMALL_SIZE)
                             .color(DARK_ACCENT),
                     );
-                });
-            }
+                }
+            });
         });
 
         // Toggle on header click

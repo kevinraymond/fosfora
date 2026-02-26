@@ -177,18 +177,20 @@ pub fn draw_panels(
                 );
 
                 // Web section (default collapsed)
+                let web_badge_text;
                 let web_badge = if !web.config.enabled {
-                    Some("OFF")
+                    "OFF"
                 } else if web.client_count > 0 {
-                    Some("ON")
+                    web_badge_text = format!("{} client{}", web.client_count, if web.client_count == 1 { "" } else { "s" });
+                    &web_badge_text
                 } else {
-                    None
+                    "ON"
                 };
                 widgets::section(
                     ui,
                     "sec_web",
                     "Web",
-                    web_badge,
+                    Some(web_badge),
                     false,
                     |ui| {
                         web_panel::draw_web_panel(ui, web);
