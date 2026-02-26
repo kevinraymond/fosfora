@@ -210,7 +210,6 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 
 ### Known Issues
 - ~33 compiler warnings (mostly unused items reserved for future phases)
-- Fonts directory (`assets/fonts/`) is empty — Inter and JetBrains Mono not yet bundled
 - Reduced motion detection (`ui/accessibility/motion.rs`) is stubbed for macOS/Windows
 
 ### Architecture

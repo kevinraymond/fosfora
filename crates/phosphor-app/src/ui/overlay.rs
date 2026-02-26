@@ -1,9 +1,15 @@
+use std::sync::Arc;
+
 use egui::Context;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
 use super::theme::ThemeMode;
 use super::theme::colors::set_theme_colors;
+
+const INTER_REGULAR: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Regular.ttf");
+const INTER_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Bold.ttf");
+const JETBRAINS_MONO: &[u8] = include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf");
 
 pub struct EguiOverlay {
     pub state: egui_winit::State,
@@ -26,6 +32,32 @@ impl EguiOverlay {
         let ctx = Context::default();
         ctx.set_visuals(theme.visuals());
         set_theme_colors(&ctx, theme.colors());
+
+        // Register bundled fonts (Inter proportional, JetBrains Mono monospace)
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "Inter-Regular".into(),
+            Arc::new(egui::FontData::from_static(INTER_REGULAR)),
+        );
+        fonts.font_data.insert(
+            "Inter-Bold".into(),
+            Arc::new(egui::FontData::from_static(INTER_BOLD)),
+        );
+        fonts.font_data.insert(
+            "JetBrainsMono".into(),
+            Arc::new(egui::FontData::from_static(JETBRAINS_MONO)),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .insert(0, "Inter-Regular".into());
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Monospace)
+            .unwrap()
+            .insert(0, "JetBrainsMono".into());
+        ctx.set_fonts(fonts);
 
         // Dense VJ typography and spacing
         let mut style = (*ctx.style()).clone();
