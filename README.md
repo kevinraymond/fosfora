@@ -2,9 +2,23 @@
 
 ![CI](https://github.com/kevinraymond/phosphor/actions/workflows/ci.yml/badge.svg)
 
-**Real-time audio-reactive shader engine for live VJ performance.**
+**Cross-platform real-time particle and shader engine for live performance. Welcome to the light.**
 
-Phosphor turns your audio input into layered, beat-synced visuals using GPU shaders, particles, and compositing — all driven by WGSL and controlled via MIDI, OSC, or a phone browser. Built with raw wgpu, no game engine required.
+## Note from Dev
+
+Thanks for checking this project out! I've gone through a couple experimental iterations - [EASE](https://github.com/kevinraymond/ease) and [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) - mostly just having a good time exploring stuff I've always been loosely interested in (e.g., pretty colors).
+
+I hope this project is genuinely useful. I've tried to make it as easy to use as possible, but I'm no kind of performer so I'm open to suggestions for improvements (drop an issue)!
+
+Everything below here is AI-assisted, like this entire project, except for this first section. I've been writing software since the days of C-64 and TRaSh-80, so it's not "just another vibe-coded slop fest" or whatever we're calling it these days.
+
+Give it a try! Let me know how I can make it better.
+
+_NOTE: Everything below here is AI-assisted content. I keep involved 100% of the time, though I AM human so sometimes I don't catch every dumb thing it does. Please drop an issue if you see something!_
+
+---
+
+Phosphor turns your audio input into layered, beat-synced visuals using GPU shaders, particles, and compositing — all driven by WGSL and controlled via MIDI, OSC, or a phone browser.
 
 <!-- TODO: hero image/gif -->
 
