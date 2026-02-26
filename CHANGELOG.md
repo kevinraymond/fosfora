@@ -3,6 +3,15 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## v0.3.1 — 2026-02-26
+
+### Fixes
+- Audio not working in release (CI-built) binaries on macOS and Linux
+- macOS: add audio-input entitlement for hardened runtime codesigning
+- Linux: filter device list to only usable devices (removes raw ALSA entries)
+- Device switch race condition: join old audio thread before opening new device
+- Show actual error message on audio capture failure
+
 ## v0.3.0 — 2026-02-26
 
 ### New Features
@@ -22,11 +31,6 @@
 - 236 new unit tests across 27+ modules (coverage 11% → 13%)
 
 ### Fixes
-- Audio not working in release (CI-built) binaries on macOS and Linux
-- macOS: add audio-input entitlement for hardened runtime codesigning
-- Linux: filter device list to only usable devices (removes raw ALSA entries)
-- Device switch race condition: join old audio thread before opening new device
-- Show actual error message on audio capture failure instead of generic "No audio input"
 - Clippy approx_constant warnings
 - Auto-release CI when Cargo.toml version changes
 
