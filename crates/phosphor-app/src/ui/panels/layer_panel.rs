@@ -528,7 +528,9 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                                     .size(SMALL_SIZE)
                                                     .color(tc.text_secondary),
                                             );
+                                            let help_id = egui::Id::new(format!("blend_help_{i}"));
                                             let current_mode = layer.blend_mode;
+                                            let combo_width = ui.available_width() - 22.0;
                                             egui::ComboBox::from_id_salt(format!(
                                                 "blend_mode_{i}"
                                             ))
@@ -538,7 +540,7 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                                 )
                                                 .size(SMALL_SIZE),
                                             )
-                                            .width(ui.available_width() - 4.0)
+                                            .width(combo_width)
                                             .show_ui(ui, |ui| {
                                                 for &mode in BlendMode::ALL {
                                                     let r = ui.selectable_label(
@@ -561,6 +563,62 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                                     }
                                                 }
                                             });
+                                            // Info button — painted as circled "i"
+                                            let btn_size = Vec2::splat(16.0);
+                                            let (rect, help_btn) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                                            if ui.is_rect_visible(rect) {
+                                                let center = rect.center();
+                                                let radius = 7.0;
+                                                let color = if help_btn.hovered() {
+                                                    tc.text_primary
+                                                } else {
+                                                    tc.text_secondary
+                                                };
+                                                ui.painter().circle_stroke(center, radius, Stroke::new(1.0, color));
+                                                ui.painter().text(
+                                                    center,
+                                                    egui::Align2::CENTER_CENTER,
+                                                    "i",
+                                                    egui::FontId::proportional(SMALL_SIZE),
+                                                    color,
+                                                );
+                                            }
+                                            if help_btn.clicked() {
+                                                let open: bool = ui.ctx().data(|d| d.get_temp(help_id).unwrap_or(false));
+                                                ui.ctx().data_mut(|d| d.insert_temp(help_id, !open));
+                                            }
+                                            let blend_help_open: bool = ui.ctx().data(|d| d.get_temp(help_id).unwrap_or(false));
+                                            if blend_help_open {
+                                                let area_resp = egui::Area::new(help_id.with("popup"))
+                                                    .order(egui::Order::Foreground)
+                                                    .fixed_pos(help_btn.rect.right_bottom())
+                                                    .show(ui.ctx(), |ui| {
+                                                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                                            for &mode in BlendMode::ALL {
+                                                                ui.horizontal(|ui| {
+                                                                    ui.label(
+                                                                        RichText::new(mode.display_name())
+                                                                            .size(SMALL_SIZE)
+                                                                            .strong()
+                                                                            .color(tc.text_primary),
+                                                                    );
+                                                                    ui.label(
+                                                                        RichText::new(mode.description())
+                                                                            .size(SMALL_SIZE)
+                                                                            .color(tc.text_secondary),
+                                                                    );
+                                                                });
+                                                            }
+                                                        });
+                                                    });
+                                                // Close on click outside popup
+                                                if ui.input(|i| i.pointer.any_click())
+                                                    && !area_resp.response.hovered()
+                                                    && !help_btn.hovered()
+                                                {
+                                                    ui.ctx().data_mut(|d| d.insert_temp(help_id, false));
+                                                }
+                                            }
                                         });
 
                                         ui.horizontal(|ui| {

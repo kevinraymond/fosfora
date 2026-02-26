@@ -384,7 +384,7 @@ body { display: flex; flex-direction: column; }
     layersContainer.innerHTML = '';
     if (!state || !state.layers) return;
 
-    const blendNames = ['Normal','Add','Multiply','Screen','Overlay','Soft Light','Difference'];
+    const blendNames = ['Normal','Add','Screen','Color Dodge','Multiply','Overlay','Hard Light','Difference','Exclusion','Subtract'];
 
     state.layers.forEach(function(layer, i) {
       const card = document.createElement('div');

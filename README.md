@@ -8,7 +8,7 @@
 |---|---|
 | **Rendering** | Native GPU app (Vulkan/Metal via wgpu) · Shader hot-reload (edit WGSL live) |
 | **Audio** | BPM detection (FFT autocorrelation + Kalman filter) · 7-band spectral analysis · Beat sync |
-| **Compositing** | 8-layer stack · 7 blend modes · GPU compute particles · Media/video layers (GIF/PNG/MP4) |
+| **Compositing** | 8-layer stack · 10 blend modes · GPU compute particles · Media/video layers (GIF/PNG/MP4) |
 | **Control** | MIDI input with learn + auto-connect · OSC in/out with learn · Web touch surface (phone/tablet) |
 | **Output** | NDI (`--features ndi`, runtime-loaded) · Preset save/load (full layer stack) |
 
@@ -107,7 +107,7 @@ All effects are audio-reactive out of the box. Parameters are exposed as sliders
 ## Layers
 
 - Up to **8 layers** composited on the GPU
-- **7 blend modes**: Normal, Add, Multiply, Screen, Overlay, Soft Light, Difference
+- **10 blend modes**: Normal, Add, Screen, Color Dodge, Multiply, Overlay, Hard Light, Difference, Exclusion, Subtract
 - Per-layer **opacity**, **enable/disable**, **lock** (freezes all settings), **pin** (prevents reorder)
 - **Drag-and-drop** reordering in the layer panel
 - **Media layers**: load PNG/JPEG/GIF/WebP as compositing layers with letterbox fit and animated playback

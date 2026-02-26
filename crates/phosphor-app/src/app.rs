@@ -394,16 +394,7 @@ impl App {
                 if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
                     if !target_layer.locked {
                         use crate::gpu::layer::BlendMode;
-                        target_layer.blend_mode = match value {
-                            0 => BlendMode::Normal,
-                            1 => BlendMode::Add,
-                            2 => BlendMode::Multiply,
-                            3 => BlendMode::Screen,
-                            4 => BlendMode::Overlay,
-                            5 => BlendMode::SoftLight,
-                            6 => BlendMode::Difference,
-                            _ => BlendMode::Normal,
-                        };
+                        target_layer.blend_mode = BlendMode::from_u32(value);
                     }
                 }
             }
@@ -463,16 +454,7 @@ impl App {
                 if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
                     if !target_layer.locked {
                         use crate::gpu::layer::BlendMode;
-                        target_layer.blend_mode = match value {
-                            0 => BlendMode::Normal,
-                            1 => BlendMode::Add,
-                            2 => BlendMode::Multiply,
-                            3 => BlendMode::Screen,
-                            4 => BlendMode::Overlay,
-                            5 => BlendMode::SoftLight,
-                            6 => BlendMode::Difference,
-                            _ => BlendMode::Normal,
-                        };
+                        target_layer.blend_mode = BlendMode::from_u32(value);
                     }
                 }
             }

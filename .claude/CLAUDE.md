@@ -67,7 +67,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - Animated GIF/WebP playback: forward/reverse/ping-pong direction, speed control (0.1–4.0x), loop toggle
 - Frame upload via `queue.write_texture()` only on frame change (no per-frame upload for static images)
 - Transport controls UI in right sidebar when active layer is media (replaces Parameters panel)
-- Media layers composite through existing Compositor (all 7 blend modes + opacity work)
+- Media layers composite through existing Compositor (all 10 blend modes + opacity work)
 - Preset save/load: `media_path` (absolute), `media_speed`, `media_looping` in `LayerPreset` (serde defaults for backward compat)
 - Loading an effect on a media layer converts it back to Effect (creates fresh UniformBuffer + PassExecutor)
 - Layer panel: truncated names with hover tooltip, media file name displayed, "IMG"/"GIF" type indication
@@ -165,7 +165,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 
 #### Layer Composition
 - Up to 8 layers, each with own `PassExecutor`, `UniformBuffer`, `ParamStore`, `ShaderUniforms`
-- 7 blend modes: Normal, Add, Multiply, Screen, Overlay, SoftLight, Difference
+- 10 blend modes: Normal, Add, Screen, ColorDodge, Multiply, Overlay, HardLight, Difference, Exclusion, Subtract
 - Per-layer opacity (0-1), enable/disable toggle
 - Per-layer lock (prevents all setting changes, blocks MIDI CC params, blocks effect loading, skipped during preset load)
 - Per-layer pin (prevents drag reordering, hides drag handle)

@@ -14,33 +14,59 @@ use crate::params::ParamStore;
 pub enum BlendMode {
     Normal,
     Add,
-    Multiply,
     Screen,
+    ColorDodge,
+    Multiply,
+    #[serde(alias = "SoftLight")]
     Overlay,
-    SoftLight,
+    HardLight,
     Difference,
+    Exclusion,
+    Subtract,
 }
 
 impl BlendMode {
     pub const ALL: &[BlendMode] = &[
         BlendMode::Normal,
         BlendMode::Add,
-        BlendMode::Multiply,
         BlendMode::Screen,
+        BlendMode::ColorDodge,
+        BlendMode::Multiply,
         BlendMode::Overlay,
-        BlendMode::SoftLight,
+        BlendMode::HardLight,
         BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Subtract,
     ];
 
     pub fn as_u32(&self) -> u32 {
         match self {
             BlendMode::Normal => 0,
             BlendMode::Add => 1,
-            BlendMode::Multiply => 2,
-            BlendMode::Screen => 3,
-            BlendMode::Overlay => 4,
-            BlendMode::SoftLight => 5,
-            BlendMode::Difference => 6,
+            BlendMode::Screen => 2,
+            BlendMode::ColorDodge => 3,
+            BlendMode::Multiply => 4,
+            BlendMode::Overlay => 5,
+            BlendMode::HardLight => 6,
+            BlendMode::Difference => 7,
+            BlendMode::Exclusion => 8,
+            BlendMode::Subtract => 9,
+        }
+    }
+
+    pub fn from_u32(value: u32) -> Self {
+        match value {
+            0 => BlendMode::Normal,
+            1 => BlendMode::Add,
+            2 => BlendMode::Screen,
+            3 => BlendMode::ColorDodge,
+            4 => BlendMode::Multiply,
+            5 => BlendMode::Overlay,
+            6 => BlendMode::HardLight,
+            7 => BlendMode::Difference,
+            8 => BlendMode::Exclusion,
+            9 => BlendMode::Subtract,
+            _ => BlendMode::Normal,
         }
     }
 
@@ -48,11 +74,29 @@ impl BlendMode {
         match self {
             BlendMode::Normal => "Normal",
             BlendMode::Add => "Add",
-            BlendMode::Multiply => "Multiply",
             BlendMode::Screen => "Screen",
+            BlendMode::ColorDodge => "Color Dodge",
+            BlendMode::Multiply => "Multiply",
             BlendMode::Overlay => "Overlay",
-            BlendMode::SoftLight => "Soft Light",
+            BlendMode::HardLight => "Hard Light",
             BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::Subtract => "Subtract",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Replaces background with foreground",
+            BlendMode::Add => "Brightens — adds colors together (glow, fire)",
+            BlendMode::Screen => "Lightens — like projecting two slides together",
+            BlendMode::ColorDodge => "Intense brighten — burns through to white",
+            BlendMode::Multiply => "Darkens — like stacking two transparencies",
+            BlendMode::Overlay => "Contrast boost — darks darker, lights lighter",
+            BlendMode::HardLight => "Strong contrast — like Overlay from the other side",
+            BlendMode::Difference => "Inverts where bright — psychedelic color shifts",
+            BlendMode::Exclusion => "Softer Difference — grays out similar colors",
+            BlendMode::Subtract => "Darkens — removes foreground color from background",
         }
     }
 }
@@ -357,7 +401,7 @@ mod tests {
 
     #[test]
     fn blend_mode_all_count() {
-        assert_eq!(BlendMode::ALL.len(), 7);
+        assert_eq!(BlendMode::ALL.len(), 10);
     }
 
     #[test]
@@ -452,11 +496,29 @@ mod tests {
     fn blend_mode_exact_display_names() {
         assert_eq!(BlendMode::Normal.display_name(), "Normal");
         assert_eq!(BlendMode::Add.display_name(), "Add");
-        assert_eq!(BlendMode::Multiply.display_name(), "Multiply");
         assert_eq!(BlendMode::Screen.display_name(), "Screen");
+        assert_eq!(BlendMode::ColorDodge.display_name(), "Color Dodge");
+        assert_eq!(BlendMode::Multiply.display_name(), "Multiply");
         assert_eq!(BlendMode::Overlay.display_name(), "Overlay");
-        assert_eq!(BlendMode::SoftLight.display_name(), "Soft Light");
+        assert_eq!(BlendMode::HardLight.display_name(), "Hard Light");
         assert_eq!(BlendMode::Difference.display_name(), "Difference");
+        assert_eq!(BlendMode::Exclusion.display_name(), "Exclusion");
+        assert_eq!(BlendMode::Subtract.display_name(), "Subtract");
+    }
+
+    #[test]
+    fn blend_mode_from_u32_roundtrip() {
+        for mode in BlendMode::ALL {
+            assert_eq!(BlendMode::from_u32(mode.as_u32()), *mode);
+        }
+        // Out of range falls back to Normal
+        assert_eq!(BlendMode::from_u32(99), BlendMode::Normal);
+    }
+
+    #[test]
+    fn blend_mode_serde_alias_soft_light() {
+        let m: BlendMode = serde_json::from_str("\"SoftLight\"").unwrap();
+        assert_eq!(m, BlendMode::Overlay);
     }
 
     #[test]
