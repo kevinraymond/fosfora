@@ -3,6 +3,8 @@ pub mod beat;
 pub mod capture;
 pub mod features;
 pub mod normalizer;
+#[cfg(target_os = "linux")]
+pub mod pulse_capture;
 pub mod smoother;
 
 pub use features::AudioFeatures;
@@ -16,9 +18,17 @@ use crossbeam_channel::{Receiver, Sender};
 
 use self::analyzer::FftAnalyzer;
 use self::beat::BeatDetector;
-use self::capture::AudioCapture;
+use self::capture::{AudioCapture, RingBuffer};
 use self::normalizer::AdaptiveNormalizer;
 use self::smoother::FeatureSmoother;
+
+/// Holds the capture backend, keeping it alive while the audio processing thread runs.
+/// On Linux, this may be either PulseAudio (preferred) or cpal/ALSA (fallback).
+enum CaptureBackend {
+    Cpal(AudioCapture),
+    #[cfg(target_os = "linux")]
+    Pulse(pulse_capture::PulseCapture),
+}
 
 /// Manages the audio pipeline: capture -> FFT -> normalize -> beat detect -> smooth -> send to main thread.
 pub struct AudioSystem {
@@ -31,6 +41,7 @@ pub struct AudioSystem {
     thread_handle: Option<thread::JoinHandle<()>>,
     callback_count: Arc<AtomicU64>,
     started_at: Instant,
+    _capture: Option<CaptureBackend>,
 }
 
 impl AudioSystem {
@@ -48,28 +59,72 @@ impl AudioSystem {
         let mut active = false;
         let mut last_error = None;
         let mut thread_handle = None;
+        let mut capture_backend: Option<CaptureBackend> = None;
 
+        // On Linux, try PulseAudio first (bypasses ALSA, works reliably with PipeWire).
+        // PulseAudio uses the system default input device (configurable via pavucontrol/pipewire).
+        #[cfg(target_os = "linux")]
+        {
+            match pulse_capture::PulseCapture::new() {
+                Ok(pulse) => {
+                    resolved_name = pulse.device_name.clone();
+                    active = true;
+                    let sample_rate = pulse.sample_rate as f32;
+                    let ring = pulse.ring.clone();
+                    let cb_count = pulse.callback_count.clone();
+                    let shutdown_flag = shutdown.clone();
+
+                    thread_handle = Some(
+                        thread::Builder::new()
+                            .name("phosphor-audio".into())
+                            .spawn(move || {
+                                audio_thread(ring, sample_rate, tx, shutdown_flag);
+                            })
+                            .expect("Failed to spawn audio thread"),
+                    );
+
+                    capture_backend = Some(CaptureBackend::Pulse(pulse));
+
+                    return Self {
+                        receiver: rx,
+                        latest: None,
+                        device_name: resolved_name,
+                        active,
+                        last_error,
+                        shutdown,
+                        thread_handle,
+                        callback_count: cb_count,
+                        started_at: Instant::now(),
+                        _capture: capture_backend,
+                    };
+                }
+                Err(e) => {
+                    log::info!("PulseAudio unavailable ({e}), falling back to ALSA");
+                }
+            }
+        }
+
+        // cpal/ALSA backend (primary on macOS/Windows, fallback on Linux)
         match AudioCapture::new_with_device(device_name) {
             Ok(capture) => {
                 resolved_name = capture.device_name.clone();
                 active = true;
                 let sample_rate = capture.sample_rate as f32;
-                let shutdown_flag = shutdown.clone();
+                let ring = capture.ring.clone();
                 let cb_count = capture.callback_count.clone();
-                // Share the callback counter so AudioSystem can monitor health
-                callback_count.store(0, Ordering::Relaxed);
-                let cb_count_for_system = cb_count.clone();
+                let shutdown_flag = shutdown.clone();
 
                 thread_handle = Some(
                     thread::Builder::new()
                         .name("phosphor-audio".into())
                         .spawn(move || {
-                            audio_thread(capture, sample_rate, tx, shutdown_flag);
+                            audio_thread(ring, sample_rate, tx, shutdown_flag);
                         })
                         .expect("Failed to spawn audio thread"),
                 );
 
-                // Use the capture's callback counter directly
+                capture_backend = Some(CaptureBackend::Cpal(capture));
+
                 return Self {
                     receiver: rx,
                     latest: None,
@@ -78,8 +133,9 @@ impl AudioSystem {
                     last_error,
                     shutdown,
                     thread_handle,
-                    callback_count: cb_count_for_system,
+                    callback_count: cb_count,
                     started_at: Instant::now(),
+                    _capture: capture_backend,
                 };
             }
             Err(e) => {
@@ -98,6 +154,7 @@ impl AudioSystem {
             thread_handle,
             callback_count,
             started_at: Instant::now(),
+            _capture: None,
         }
     }
 
@@ -111,6 +168,9 @@ impl AudioSystem {
             let _ = handle.join();
         }
 
+        // Drop old capture backend before creating new one
+        self._capture = None;
+
         // Create new system
         let new = Self::new_with_device(device_name);
         self.receiver = new.receiver;
@@ -122,6 +182,7 @@ impl AudioSystem {
         self.thread_handle = new.thread_handle;
         self.callback_count = new.callback_count;
         self.started_at = new.started_at;
+        self._capture = new._capture;
     }
 
     /// List available input devices.
@@ -136,7 +197,8 @@ impl AudioSystem {
         }
 
         // Health check: detect stalled audio callbacks
-        if self.active && self.last_error.is_none()
+        if self.active
+            && self.last_error.is_none()
             && self.callback_count.load(Ordering::Relaxed) == 0
             && self.started_at.elapsed() > Duration::from_secs(3)
         {
@@ -149,7 +211,7 @@ impl AudioSystem {
     }
 }
 
-fn audio_thread(capture: AudioCapture, sample_rate: f32, tx: Sender<AudioFeatures>, shutdown: Arc<AtomicBool>) {
+fn audio_thread(ring: Arc<RingBuffer>, sample_rate: f32, tx: Sender<AudioFeatures>, shutdown: Arc<AtomicBool>) {
     let mut analyzer = FftAnalyzer::new(sample_rate);
     let mut normalizer = AdaptiveNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);
@@ -165,13 +227,13 @@ fn audio_thread(capture: AudioCapture, sample_rate: f32, tx: Sender<AudioFeature
         }
         thread::sleep(Duration::from_millis(10));
 
-        let available = capture.ring.available();
+        let available = ring.available();
         if available == 0 {
             continue;
         }
 
         let to_read = available.min(read_buf.len());
-        let read = capture.ring.read(&mut read_buf[..to_read]);
+        let read = ring.read(&mut read_buf[..to_read]);
         if read == 0 {
             continue;
         }

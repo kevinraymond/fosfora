@@ -6,7 +6,8 @@
 ## v0.3.5 — 2026-02-27
 
 ### Fixes
-- Auto-restart audio when PipeWire callbacks stall (up to 3 retries with full pipeline teardown/rebuild)
+- Use PulseAudio capture on Linux (bypasses ALSA, fixes audio not working in release binaries on PipeWire systems)
+- Fall back to cpal/ALSA if PulseAudio unavailable
 
 ## v0.3.4 — 2026-02-27
 

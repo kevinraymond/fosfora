@@ -1,6 +1,6 @@
 [package]
 name = "phosphor-app"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -60,6 +60,11 @@ glam = "0.29"
 egui_code_editor = "0.2"
 # Dynamic library loading (NDI runtime)
 libloading = { version = "0.8", optional = true }
+
+# PulseAudio capture (Linux) — bypasses ALSA, works reliably with PipeWire
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = "2.30"
+libpulse-simple-binding = "2.29"
 
 [dev-dependencies]
 tempfile = "3"
