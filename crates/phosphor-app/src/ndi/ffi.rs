@@ -195,22 +195,75 @@ pub fn ndi_available() -> bool {
     })
 }
 
+/// Try to load the NDI library from a specific directory.
+fn try_load_from_dir(dir: &std::path::Path) -> Option<libloading::Library> {
+    for name in platform_lib_names() {
+        let full = dir.join(name);
+        if full.exists() {
+            match unsafe { libloading::Library::new(&full) } {
+                Ok(lib) => return Some(lib),
+                Err(e) => log::debug!("NDI lib exists at {} but failed to load: {e}", full.display()),
+            }
+        }
+    }
+    None
+}
+
 /// Try to find and load the NDI shared library.
 fn load_ndi_library() -> Result<libloading::Library, String> {
-    // Check NDILIB_REDIST_FOLDER environment variable first.
+    let mut checked: Vec<String> = Vec::new();
+
+    // 1. NDILIB_REDIST_FOLDER env var (official NDI SDK recommendation).
     if let Ok(folder) = std::env::var("NDILIB_REDIST_FOLDER") {
-        let path = std::path::Path::new(&folder);
-        for name in platform_lib_names() {
-            let full = path.join(name);
-            if full.exists() {
-                return unsafe {
-                    libloading::Library::new(&full).map_err(|e| format!("Failed to load {}: {e}", full.display()))
-                };
+        checked.push(format!("NDILIB_REDIST_FOLDER={folder}"));
+        if let Some(lib) = try_load_from_dir(std::path::Path::new(&folder)) {
+            return Ok(lib);
+        }
+    }
+
+    // 2. Platform-specific env vars and well-known paths.
+    #[cfg(target_os = "windows")]
+    {
+        // NDI 6/5 Runtime installer sets these env vars.
+        for var in &["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"] {
+            if let Ok(folder) = std::env::var(var) {
+                checked.push(format!("{var}={folder}"));
+                if let Some(lib) = try_load_from_dir(std::path::Path::new(&folder)) {
+                    return Ok(lib);
+                }
+            }
+        }
+        // Hardcoded fallback paths for standard installs.
+        for path in &[
+            r"C:\Program Files\NDI\NDI 6 Runtime\v6",
+            r"C:\Program Files\NDI\NDI 5 Runtime\v5",
+        ] {
+            checked.push(path.to_string());
+            if let Some(lib) = try_load_from_dir(std::path::Path::new(path)) {
+                return Ok(lib);
             }
         }
     }
 
-    // Try platform-specific standard names (system library paths).
+    #[cfg(target_os = "macos")]
+    {
+        let mut mac_paths = vec![
+            "/usr/local/lib".to_string(),
+            "/Library/NDI SDK for Apple/lib/macOS".to_string(),
+        ];
+        if let Ok(home) = std::env::var("HOME") {
+            mac_paths.push(format!("{home}/NDI SDK for Apple/lib/macOS"));
+        }
+        for path in &mac_paths {
+            checked.push(path.clone());
+            if let Some(lib) = try_load_from_dir(std::path::Path::new(path)) {
+                return Ok(lib);
+            }
+        }
+    }
+
+    // 3. Bare library names via system linker (LD_LIBRARY_PATH, /usr/lib, etc.).
+    checked.push("system linker search".to_string());
     for name in platform_lib_names() {
         match unsafe { libloading::Library::new(name) } {
             Ok(lib) => return Ok(lib),
@@ -219,8 +272,9 @@ fn load_ndi_library() -> Result<libloading::Library, String> {
     }
 
     Err(format!(
-        "NDI library not found. Install NDI Tools from https://ndi.video/tools/ (tried: {:?})",
-        platform_lib_names()
+        "NDI library not found. Install the NDI Runtime from https://ndi.video/tools/\n\
+         Searched: {}",
+        checked.join(", ")
     ))
 }
 

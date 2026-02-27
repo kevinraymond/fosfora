@@ -6,6 +6,7 @@
 ## v0.3.6 — 2026-02-27
 
 ### Fixes
+- Fix NDI runtime discovery on Windows and macOS — check `NDI_RUNTIME_DIR_V6`/`V5` env vars and well-known install paths
 - Fix PulseAudio capture delivering audio only ~2x/sec (set explicit fragsize=4096, was using PA default ~88KB)
 - Runtime-load PulseAudio via dlopen — release binaries no longer crash on systems without libpulse installed
 - Truncate long audio device names in UI to prevent panel width blowout
