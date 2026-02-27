@@ -18,6 +18,7 @@
 
 ### Fixes
 - Show actual dlopen error messages in NDI diagnostics panel (exposes quarantine, signature, and architecture mismatch issues); upgrade failed-path logging to `warn` level; add macOS troubleshooting tips for quarantine removal and ad-hoc signing
+- Fix Storm lightning flashes clustering on left/top-left — replace sin-based hash (degrades at large float32 inputs) with fract-based `phosphor_hash2` using decorrelated seeds
 - **Fix macOS NDI library validation error** — add `com.apple.security.cs.disable-library-validation` entitlement so Hardened Runtime signed builds can dlopen NDI dylib (signed by Vizrt with different Team ID); update NDI panel troubleshooting tips
 
 ## v0.3.8 — 2026-02-27

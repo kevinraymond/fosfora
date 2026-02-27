@@ -24,11 +24,6 @@ fn storm_worley(p: vec2f) -> f32 {
     return sqrt(max(0.0, -(1.0 / k) * log(res)));
 }
 
-fn storm_hash2v(p: vec2f) -> vec2f {
-    let sv = vec2f(dot(p, vec2f(127.1, 311.7)), dot(p, vec2f(269.5, 183.3)));
-    return fract(sin(sv) * 43758.5453);
-}
-
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let res = u.resolution;
@@ -92,8 +87,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let flash_env = pow(1.0 - smoothstep(0.0, 0.3, u.beat_phase), 2.0);
     let bpm_hz = max(u.bpm * 300.0, 60.0) / 60.0;
     let beat_idx = floor(t * bpm_hz);
-    let fh = storm_hash2v(vec2f(beat_idx * 13.37, beat_idx * 7.91));
-    let flash_center = (fh - 0.5) * vec2f(aspect * 0.6, 0.4);
+    let flash_x = phosphor_hash2(vec2f(beat_idx, 0.0));
+    let flash_y = phosphor_hash2(vec2f(beat_idx, 1.0));
+    let flash_center = (vec2f(flash_x, flash_y) - 0.5) * vec2f(aspect * 0.6, 0.4);
     let fd = length(p - flash_center);
     let flash_local = exp(-fd * fd / (flash_spread * 0.15)) * flash_env;
 
