@@ -31,7 +31,7 @@ fn draw_device_selector(ui: &mut Ui, audio: &AudioSystem) {
     let last_scan: f64 = ui.ctx().data(|d| d.get_temp(list_time_id)).unwrap_or(0.0);
 
     let devices: Vec<String> = if now - last_scan > 2.0 {
-        let devs = AudioSystem::list_devices();
+        let devs = audio.list_devices();
         ui.ctx().data_mut(|d| {
             d.insert_temp(list_id, devs.clone());
             d.insert_temp(list_time_id, now);
@@ -44,11 +44,7 @@ fn draw_device_selector(ui: &mut Ui, audio: &AudioSystem) {
     // Current selection: device name or "Default"
     let current = &audio.device_name;
 
-    let selected_text = if devices.iter().any(|d| d == current) {
-        truncate_device_name(current, 30)
-    } else {
-        current.clone()
-    };
+    let selected_text = truncate_device_name(current, 24);
 
     ui.horizontal(|ui| {
         ui.label(RichText::new("Input").size(SMALL_SIZE).color(tc.text_secondary));

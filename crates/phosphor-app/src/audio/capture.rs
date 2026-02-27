@@ -8,7 +8,7 @@ use cpal::Stream;
 /// Suppress noisy ALSA/JACK stderr messages during device enumeration.
 /// ALSA/JACK C libraries print errors for missing JACK server, OSS devices, etc.
 #[cfg(target_os = "linux")]
-pub fn suppress_alsa_errors() {
+pub fn suppress_audio_library_noise() {
     // Install a no-op ALSA error handler (the actual C type is variadic, but our
     // handler never reads va_args so a non-variadic extern "C" fn works fine).
     type AlsaErrorHandler = unsafe extern "C" fn(
@@ -38,7 +38,7 @@ pub fn suppress_alsa_errors() {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn suppress_alsa_errors() {}
+pub fn suppress_audio_library_noise() {}
 
 /// Ring buffer size (power of 2 for fast modular arithmetic).
 const RING_SIZE: usize = 65536;

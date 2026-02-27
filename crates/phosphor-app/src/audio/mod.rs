@@ -30,6 +30,50 @@ enum CaptureBackend {
     Pulse(pulse_capture::PulseCapture),
 }
 
+/// Result of successfully opening an audio backend.
+struct OpenedBackend {
+    ring: Arc<RingBuffer>,
+    sample_rate: f32,
+    device_name: String,
+    callback_count: Arc<AtomicU64>,
+    backend: CaptureBackend,
+    using_pulse: bool,
+}
+
+/// Try PulseAudio first (Linux), then cpal/ALSA. Returns the opened backend or an error.
+fn open_backend(device_name: Option<&str>) -> Result<OpenedBackend, String> {
+    #[cfg(target_os = "linux")]
+    {
+        match pulse_capture::PulseCapture::new() {
+            Ok(pulse) => {
+                return Ok(OpenedBackend {
+                    ring: pulse.ring.clone(),
+                    sample_rate: pulse.sample_rate as f32,
+                    device_name: pulse.device_name.clone(),
+                    callback_count: pulse.callback_count.clone(),
+                    backend: CaptureBackend::Pulse(pulse),
+                    using_pulse: true,
+                });
+            }
+            Err(e) => {
+                log::info!("PulseAudio unavailable ({e}), falling back to ALSA");
+            }
+        }
+    }
+
+    match AudioCapture::new_with_device(device_name) {
+        Ok(capture) => Ok(OpenedBackend {
+            ring: capture.ring.clone(),
+            sample_rate: capture.sample_rate as f32,
+            device_name: capture.device_name.clone(),
+            callback_count: capture.callback_count.clone(),
+            backend: CaptureBackend::Cpal(capture),
+            using_pulse: false,
+        }),
+        Err(e) => Err(format!("{e}")),
+    }
+}
+
 /// Manages the audio pipeline: capture -> FFT -> normalize -> beat detect -> smooth -> send to main thread.
 pub struct AudioSystem {
     receiver: Receiver<AudioFeatures>,
@@ -42,6 +86,8 @@ pub struct AudioSystem {
     callback_count: Arc<AtomicU64>,
     started_at: Instant,
     _capture: Option<CaptureBackend>,
+    /// True when using PulseAudio backend (skip cpal device enumeration to avoid JACK noise).
+    using_pulse: bool,
 }
 
 impl AudioSystem {
@@ -54,107 +100,50 @@ impl AudioSystem {
             crossbeam_channel::bounded(4);
 
         let shutdown = Arc::new(AtomicBool::new(false));
-        let callback_count = Arc::new(AtomicU64::new(0));
-        let mut resolved_name = device_name.unwrap_or("Default").to_string();
-        let mut active = false;
-        let mut last_error = None;
-        let mut thread_handle = None;
-        let mut capture_backend: Option<CaptureBackend> = None;
 
-        // On Linux, try PulseAudio first (bypasses ALSA, works reliably with PipeWire).
-        // PulseAudio uses the system default input device (configurable via pavucontrol/pipewire).
-        #[cfg(target_os = "linux")]
-        {
-            match pulse_capture::PulseCapture::new() {
-                Ok(pulse) => {
-                    resolved_name = pulse.device_name.clone();
-                    active = true;
-                    let sample_rate = pulse.sample_rate as f32;
-                    let ring = pulse.ring.clone();
-                    let cb_count = pulse.callback_count.clone();
-                    let shutdown_flag = shutdown.clone();
-
-                    thread_handle = Some(
-                        thread::Builder::new()
-                            .name("phosphor-audio".into())
-                            .spawn(move || {
-                                audio_thread(ring, sample_rate, tx, shutdown_flag);
-                            })
-                            .expect("Failed to spawn audio thread"),
-                    );
-
-                    capture_backend = Some(CaptureBackend::Pulse(pulse));
-
-                    return Self {
-                        receiver: rx,
-                        latest: None,
-                        device_name: resolved_name,
-                        active,
-                        last_error,
-                        shutdown,
-                        thread_handle,
-                        callback_count: cb_count,
-                        started_at: Instant::now(),
-                        _capture: capture_backend,
-                    };
-                }
-                Err(e) => {
-                    log::info!("PulseAudio unavailable ({e}), falling back to ALSA");
-                }
-            }
-        }
-
-        // cpal/ALSA backend (primary on macOS/Windows, fallback on Linux)
-        match AudioCapture::new_with_device(device_name) {
-            Ok(capture) => {
-                resolved_name = capture.device_name.clone();
-                active = true;
-                let sample_rate = capture.sample_rate as f32;
-                let ring = capture.ring.clone();
-                let cb_count = capture.callback_count.clone();
+        match open_backend(device_name) {
+            Ok(opened) => {
                 let shutdown_flag = shutdown.clone();
+                let ring = opened.ring.clone();
+                let sample_rate = opened.sample_rate;
 
-                thread_handle = Some(
-                    thread::Builder::new()
-                        .name("phosphor-audio".into())
-                        .spawn(move || {
-                            audio_thread(ring, sample_rate, tx, shutdown_flag);
-                        })
-                        .expect("Failed to spawn audio thread"),
-                );
+                let thread_handle = thread::Builder::new()
+                    .name("phosphor-audio".into())
+                    .spawn(move || {
+                        audio_thread(ring, sample_rate, tx, shutdown_flag);
+                    })
+                    .expect("Failed to spawn audio thread");
 
-                capture_backend = Some(CaptureBackend::Cpal(capture));
-
-                return Self {
+                Self {
                     receiver: rx,
                     latest: None,
-                    device_name: resolved_name,
-                    active,
-                    last_error,
+                    device_name: opened.device_name,
+                    active: true,
+                    last_error: None,
                     shutdown,
-                    thread_handle,
-                    callback_count: cb_count,
+                    thread_handle: Some(thread_handle),
+                    callback_count: opened.callback_count,
                     started_at: Instant::now(),
-                    _capture: capture_backend,
-                };
+                    _capture: Some(opened.backend),
+                    using_pulse: opened.using_pulse,
+                }
             }
             Err(e) => {
                 log::warn!("Audio capture unavailable: {e}");
-                last_error = Some(format!("{e}"));
+                Self {
+                    receiver: rx,
+                    latest: None,
+                    device_name: device_name.unwrap_or("Default").to_string(),
+                    active: false,
+                    last_error: Some(e),
+                    shutdown,
+                    thread_handle: None,
+                    callback_count: Arc::new(AtomicU64::new(0)),
+                    started_at: Instant::now(),
+                    _capture: None,
+                    using_pulse: false,
+                }
             }
-        }
-
-        Self {
-            receiver: rx,
-            latest: None,
-            device_name: resolved_name,
-            active,
-            last_error,
-            shutdown,
-            thread_handle,
-            callback_count,
-            started_at: Instant::now(),
-            _capture: None,
         }
     }
 
@@ -171,22 +160,28 @@ impl AudioSystem {
         // Drop old capture backend before creating new one
         self._capture = None;
 
-        // Create new system
-        let new = Self::new_with_device(device_name);
-        self.receiver = new.receiver;
+        // Create new system and swap all fields (mem::replace avoids move-out-of-Drop)
+        let mut new = Self::new_with_device(device_name);
+        self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
-        self.device_name = new.device_name;
+        self.device_name = std::mem::take(&mut new.device_name);
         self.active = new.active;
-        self.last_error = new.last_error;
-        self.shutdown = new.shutdown;
-        self.thread_handle = new.thread_handle;
-        self.callback_count = new.callback_count;
+        self.last_error = new.last_error.take();
+        self.shutdown = std::mem::replace(&mut new.shutdown, Arc::new(AtomicBool::new(true)));
+        self.thread_handle = new.thread_handle.take();
+        self.callback_count = std::mem::replace(&mut new.callback_count, Arc::new(AtomicU64::new(0)));
         self.started_at = new.started_at;
-        self._capture = new._capture;
+        self._capture = new._capture.take();
+        self.using_pulse = new.using_pulse;
+        // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
     }
 
     /// List available input devices.
-    pub fn list_devices() -> Vec<String> {
+    /// Returns empty when PulseAudio backend is active (avoids JACK noise from cpal enumeration).
+    pub fn list_devices(&self) -> Vec<String> {
+        if self.using_pulse {
+            return vec![];
+        }
         AudioCapture::list_devices()
     }
 
@@ -200,7 +195,7 @@ impl AudioSystem {
         if self.active
             && self.last_error.is_none()
             && self.callback_count.load(Ordering::Relaxed) == 0
-            && self.started_at.elapsed() > Duration::from_secs(3)
+            && self.started_at.elapsed() > Duration::from_secs(5)
         {
             let msg = "Device opened but no audio data received — check audio routing";
             log::warn!("{msg}");
@@ -208,6 +203,16 @@ impl AudioSystem {
         }
 
         self.latest
+    }
+}
+
+impl Drop for AudioSystem {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
+        // _capture is dropped automatically
     }
 }
 

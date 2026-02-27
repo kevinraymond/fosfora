@@ -58,13 +58,8 @@ rfd = "0.15"
 glam = "0.29"
 # Code editor widget (shader editor)
 egui_code_editor = "0.2"
-# Dynamic library loading (NDI runtime)
-libloading = { version = "0.8", optional = true }
-
-# PulseAudio capture (Linux) — bypasses ALSA, works reliably with PipeWire
-[target.'cfg(target_os = "linux")'.dependencies]
-libpulse-binding = "2.30"
-libpulse-simple-binding = "2.29"
+# Dynamic library loading (NDI runtime, PulseAudio runtime on Linux)
+libloading = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
@@ -72,4 +67,4 @@ tempfile = "3"
 [features]
 default = []
 video = []
-ndi = ["libloading"]
+ndi = []

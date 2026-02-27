@@ -890,7 +890,21 @@ fn main() -> Result<()> {
         .init();
 
     // Suppress noisy ALSA/JACK C library messages on Linux (missing JACK server, OSS, dsnoop)
-    crate::audio::capture::suppress_alsa_errors();
+    crate::audio::capture::suppress_audio_library_noise();
+
+    // --audio-test: run standalone audio diagnostic (no GPU, no window)
+    if std::env::args().any(|a| a == "--audio-test") {
+        #[cfg(target_os = "linux")]
+        {
+            crate::audio::pulse_capture::PulseCapture::run_diagnostic(3);
+            return Ok(());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("--audio-test is only supported on Linux (PulseAudio backend)");
+            std::process::exit(1);
+        }
+    }
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
