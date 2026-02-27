@@ -5,8 +5,17 @@
 
 ## v0.3.7 — 2026-02-26
 
+### Added
+- **Webcam input layers** — live camera feed as a compositing layer (`--features webcam`), cross-platform via nokhwa (v4l2/AVFoundation/MediaFoundation)
+  - Capture thread with bounded channel, automatic frame drain (latest-only)
+  - "+ Webcam" button in layer panel, webcam controls panel (device name, resolution, mirror, disconnect)
+  - Preset save/load with webcam device reconnection
+- `ParticleSystem::set_compute_shader()` and `clear_customization()` for runtime particle shader management (infrastructure for future particle design system)
+- **Combined "All Media" file filter** — media file picker defaults to showing all supported types (images + video) when video feature is enabled
+
 ### Fixes
 - Fix NDI runtime discovery on Windows and macOS — check `NDI_RUNTIME_DIR_V6`/`V5` env vars and well-known install paths
+- **Webcam robustness** — validate camera access before spawning capture thread (user-friendly EBUSY error), catch libjpeg panics on corrupted MJPEG frames (skip frame instead of dying), detect dead capture threads with status bar notification, clean up capture when deleting webcam layers
 
 ## v0.3.6 — 2026-02-27
 

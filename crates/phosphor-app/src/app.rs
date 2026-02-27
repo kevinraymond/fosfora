@@ -70,6 +70,9 @@ pub struct App {
     pub quit_requested: bool,
     // Transient status error (displayed in status bar, auto-clears)
     pub status_error: Option<(String, Instant)>,
+    // Webcam capture (feature-gated)
+    #[cfg(feature = "webcam")]
+    pub webcam_capture: Option<crate::media::webcam::WebcamCapture>,
 }
 
 impl App {
@@ -273,6 +276,8 @@ impl App {
             shader_editor: ShaderEditorState::default(),
             quit_requested: false,
             status_error: None,
+            #[cfg(feature = "webcam")]
+            webcam_capture: None,
         })
     }
 
@@ -550,6 +555,33 @@ impl App {
             if let LayerContent::Media(ref mut m) = layer.content {
                 m.advance(dt);
                 m.upload_frame(&self.gpu.queue);
+            }
+        }
+
+        // Drain webcam frames into live media layers; detect dead capture thread
+        #[cfg(feature = "webcam")]
+        {
+            let webcam_dead = self
+                .webcam_capture
+                .as_ref()
+                .map_or(false, |c| !c.is_running());
+            if webcam_dead {
+                log::warn!("Webcam capture thread died unexpectedly");
+                self.status_error =
+                    Some(("Webcam capture stopped unexpectedly".into(), Instant::now()));
+                self.webcam_capture = None;
+            }
+            if let Some(ref capture) = self.webcam_capture {
+                if let Some(frame) = capture.try_recv_frame() {
+                    for layer in &mut self.layer_stack.layers {
+                        if let LayerContent::Media(ref mut m) = layer.content {
+                            if m.is_live() {
+                                m.set_live_frame(frame.data.clone());
+                                m.upload_frame(&self.gpu.queue);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -906,6 +938,12 @@ impl App {
                 }
             }
         }
+
+        // If we converted a live webcam layer, clean up capture if no live layers remain
+        #[cfg(feature = "webcam")]
+        if is_media {
+            self.cleanup_webcam_if_unused();
+        }
     }
 
     /// Add a new empty layer with the default shader.
@@ -1007,6 +1045,72 @@ impl App {
         }
     }
 
+    /// Add a webcam layer. Starts capture if not already running.
+    #[cfg(feature = "webcam")]
+    pub fn add_webcam_layer(&mut self, device_index: u32) {
+        let num = self.layer_stack.layers.len();
+        if num >= 8 {
+            log::warn!("Maximum 8 layers reached");
+            return;
+        }
+
+        // Start capture if not already running
+        if self.webcam_capture.is_none() {
+            match crate::media::webcam::WebcamCapture::start(device_index, Some((1280, 720))) {
+                Ok(capture) => {
+                    self.webcam_capture = Some(capture);
+                }
+                Err(e) => {
+                    log::error!("Failed to start webcam: {e}");
+                    self.status_error = Some((format!("Webcam failed: {e}"), Instant::now()));
+                    return;
+                }
+            }
+        }
+
+        let capture = self.webcam_capture.as_ref().unwrap();
+        let (w, h) = capture.resolution;
+        let device_name = capture.device_name.clone();
+
+        let source = crate::media::decoder::MediaSource::Live {
+            width: w,
+            height: h,
+        };
+        let hdr_format = GpuContext::hdr_format();
+        let media_layer = MediaLayer::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            hdr_format,
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+            source,
+            std::path::PathBuf::from(&device_name),
+        );
+        let name = format!("Layer {}", num + 1);
+        self.layer_stack
+            .layers
+            .push(Layer::new_media(name, media_layer));
+        self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
+        self.sync_active_layer();
+        log::info!("Added webcam layer: {device_name}");
+    }
+
+    /// Stop webcam capture if no live webcam layers remain.
+    #[cfg(feature = "webcam")]
+    pub fn cleanup_webcam_if_unused(&mut self) {
+        let has_live = self
+            .layer_stack
+            .layers
+            .iter()
+            .any(|l| l.as_media().map_or(false, |m| m.is_live()));
+        if !has_live {
+            if self.webcam_capture.is_some() {
+                log::info!("No live webcam layers remain, stopping capture");
+            }
+            self.webcam_capture = None;
+        }
+    }
+
     /// Replace active layer content with media from a file path.
     pub fn load_media_on_layer(&mut self, layer_idx: usize, path: std::path::PathBuf) {
         if layer_idx >= self.layer_stack.layers.len() {
@@ -1058,6 +1162,9 @@ impl App {
                 let media_path = l.as_media().map(|m| m.file_path.to_string_lossy().to_string());
                 let media_speed = l.as_media().map(|m| m.transport.speed);
                 let media_looping = l.as_media().map(|m| m.transport.looping);
+                let webcam_device = l.as_media()
+                    .filter(|m| m.is_live())
+                    .map(|m| m.file_name.clone());
                 LayerPreset {
                     effect_name,
                     params: l.param_store.values.clone(),
@@ -1070,11 +1177,12 @@ impl App {
                     media_path,
                     media_speed,
                     media_looping,
+                    webcam_device,
                 }
             })
             .collect();
 
-        if layer_presets.iter().all(|l| l.effect_name.is_empty() && l.media_path.is_none()) {
+        if layer_presets.iter().all(|l| l.effect_name.is_empty() && l.media_path.is_none() && l.webcam_device.is_none()) {
             log::warn!("No effects or media loaded, cannot save preset");
             return;
         }
@@ -1117,39 +1225,50 @@ impl App {
                 }
             }
 
-            if let Some(ref media_path) = lp.media_path {
-                // Load media layer
-                let path = std::path::PathBuf::from(media_path);
-                if path.exists() {
-                    self.load_media_on_layer(i, path);
-                    // Apply transport settings
-                    if let Some(layer) = self.layer_stack.layers.get_mut(i) {
-                        if let Some(ref mut m) = layer.as_media_mut() {
-                            if let Some(speed) = lp.media_speed {
-                                m.transport.speed = speed;
-                            }
-                            if let Some(looping) = lp.media_looping {
-                                m.transport.looping = looping;
+            // Determine what to load for this layer
+            let is_webcam_layer = lp.webcam_device.is_some();
+
+            #[cfg(feature = "webcam")]
+            if is_webcam_layer {
+                // Webcam preset: reconnect to first available camera
+                self.add_webcam_layer(0);
+            }
+
+            if !is_webcam_layer {
+                if let Some(ref media_path) = lp.media_path {
+                    // Load media layer
+                    let path = std::path::PathBuf::from(media_path);
+                    if path.exists() {
+                        self.load_media_on_layer(i, path);
+                        // Apply transport settings
+                        if let Some(layer) = self.layer_stack.layers.get_mut(i) {
+                            if let Some(ref mut m) = layer.as_media_mut() {
+                                if let Some(speed) = lp.media_speed {
+                                    m.transport.speed = speed;
+                                }
+                                if let Some(looping) = lp.media_looping {
+                                    m.transport.looping = looping;
+                                }
                             }
                         }
+                    } else {
+                        log::warn!("Media file '{}' not found for layer {}", media_path, i);
                     }
-                } else {
-                    log::warn!("Media file '{}' not found for layer {}", media_path, i);
-                }
-            } else if !lp.effect_name.is_empty() {
-                let effect_idx = self
-                    .effect_loader
-                    .effects
-                    .iter()
-                    .position(|e| e.name == lp.effect_name);
-                if let Some(idx) = effect_idx {
-                    self.load_effect_on_layer(i, idx);
-                } else {
-                    log::warn!(
-                        "Effect '{}' not found for layer {}, skipping",
-                        lp.effect_name,
-                        i
-                    );
+                } else if !lp.effect_name.is_empty() {
+                    let effect_idx = self
+                        .effect_loader
+                        .effects
+                        .iter()
+                        .position(|e| e.name == lp.effect_name);
+                    if let Some(idx) = effect_idx {
+                        self.load_effect_on_layer(i, idx);
+                    } else {
+                        log::warn!(
+                            "Effect '{}' not found for layer {}, skipping",
+                            lp.effect_name,
+                            i
+                        );
+                    }
                 }
             }
 
