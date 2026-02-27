@@ -8,6 +8,18 @@ use crate::effect::format::PostProcessDef;
 use crate::gpu::layer::BlendMode;
 use crate::params::ParamValue;
 
+// Embedded built-in presets
+const BUILTIN_CRUCIBLE: &str =
+    include_str!("../../../../assets/presets/Crucible.json");
+const BUILTIN_SPECTRAL_EYE: &str =
+    include_str!("../../../../assets/presets/Spectral Eye.json");
+
+/// Built-in preset names in display order.
+const BUILTIN_PRESETS: &[(&str, &str)] = &[
+    ("Crucible", BUILTIN_CRUCIBLE),
+    ("Spectral Eye", BUILTIN_SPECTRAL_EYE),
+];
+
 /// Per-layer state saved in a preset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerPreset {
@@ -32,6 +44,8 @@ pub struct LayerPreset {
     pub media_speed: Option<f32>,
     #[serde(default)]
     pub media_looping: Option<bool>,
+    #[serde(default)]
+    pub webcam_device: Option<String>,
 }
 
 fn default_opacity() -> f32 {
@@ -61,6 +75,8 @@ pub struct PresetStore {
     pub presets: Vec<(String, Preset)>,
     pub current_preset: Option<usize>,
     pub dirty: bool,
+    /// Number of built-in presets at the start of the `presets` vec.
+    pub builtin_count: usize,
 }
 
 impl PresetStore {
@@ -69,7 +85,13 @@ impl PresetStore {
             presets: Vec::new(),
             current_preset: None,
             dirty: false,
+            builtin_count: 0,
         }
+    }
+
+    /// Returns true if the preset at `index` is a built-in preset.
+    pub fn is_builtin(&self, index: usize) -> bool {
+        index < self.builtin_count
     }
 
     /// Mark the current preset as dirty (modified since last save/load).
@@ -91,14 +113,50 @@ impl PresetStore {
         config_dir.join("phosphor").join("presets")
     }
 
+    /// Returns the set of built-in preset names (lowercase) for shadow detection.
+    fn builtin_names() -> Vec<String> {
+        BUILTIN_PRESETS
+            .iter()
+            .map(|(name, _)| name.to_lowercase())
+            .collect()
+    }
+
     pub fn scan(&mut self) {
-        let dir = Self::presets_dir();
         self.presets.clear();
+        self.builtin_count = 0;
+
+        // 1. Parse embedded built-in presets
+        for &(name, json) in BUILTIN_PRESETS {
+            match serde_json::from_str::<Preset>(json) {
+                Ok(preset) => {
+                    self.presets.push((name.to_string(), preset));
+                    self.builtin_count += 1;
+                }
+                Err(e) => {
+                    log::error!("Failed to parse built-in preset '{}': {e}", name);
+                }
+            }
+        }
+
+        // 2. Load user presets from disk, skip names that shadow built-ins
+        let dir = Self::presets_dir();
+        let builtin_names = Self::builtin_names();
 
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(_) => return,
+            Err(_) => {
+                log::info!(
+                    "Scanned {} presets ({} built-in, 0 user)",
+                    self.presets.len(),
+                    self.builtin_count
+                );
+                self.current_preset = None;
+                self.dirty = false;
+                return;
+            }
         };
+
+        let mut user_presets: Vec<(String, Preset)> = Vec::new();
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -113,10 +171,15 @@ impl PresetStore {
             if name.is_empty() {
                 continue;
             }
+            // Skip user presets that shadow built-in names
+            if builtin_names.contains(&name.to_lowercase()) {
+                log::info!("Skipping user preset '{}' (shadows built-in)", name);
+                continue;
+            }
             match std::fs::read_to_string(&path) {
                 Ok(contents) => match serde_json::from_str::<Preset>(&contents) {
                     Ok(preset) => {
-                        self.presets.push((name, preset));
+                        user_presets.push((name, preset));
                     }
                     Err(e) => {
                         log::warn!("Failed to parse preset {}: {e}", path.display());
@@ -128,11 +191,21 @@ impl PresetStore {
             }
         }
 
-        self.presets.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort user presets alphabetically
+        user_presets.sort_by(|a, b| a.0.cmp(&b.0));
+        self.presets.extend(user_presets);
+
         self.current_preset = None;
         self.dirty = false;
 
-        log::info!("Scanned {} presets from {}", self.presets.len(), dir.display());
+        let user_count = self.presets.len() - self.builtin_count;
+        log::info!(
+            "Scanned {} presets ({} built-in, {} user) from {}",
+            self.presets.len(),
+            self.builtin_count,
+            user_count,
+            dir.display()
+        );
     }
 
     fn sanitize_name(name: &str) -> String {
@@ -158,6 +231,12 @@ impl PresetStore {
         let name = Self::sanitize_name(name);
         if name.is_empty() {
             anyhow::bail!("Preset name cannot be empty");
+        }
+
+        // Reject saving with a built-in name
+        let builtin_names = Self::builtin_names();
+        if builtin_names.contains(&name.to_lowercase()) {
+            anyhow::bail!("Cannot overwrite built-in preset '{}'", name);
         }
 
         let dir = Self::presets_dir();
@@ -191,6 +270,11 @@ impl PresetStore {
     }
 
     pub fn delete(&mut self, index: usize) -> Result<()> {
+        // Reject deleting built-in presets
+        if self.is_builtin(index) {
+            anyhow::bail!("Cannot delete built-in preset");
+        }
+
         let (name, _) = self
             .presets
             .get(index)
@@ -204,6 +288,47 @@ impl PresetStore {
 
         self.scan();
         Ok(())
+    }
+
+    /// Copy a preset to disk as a user preset with the given name.
+    /// Returns the index of the new preset after re-scan.
+    pub fn copy_preset(&mut self, source_index: usize, new_name: &str) -> Result<usize> {
+        let new_name = Self::sanitize_name(new_name);
+        if new_name.is_empty() {
+            anyhow::bail!("Copy name cannot be empty");
+        }
+
+        // Reject copying to a built-in name
+        let builtin_names = Self::builtin_names();
+        if builtin_names.contains(&new_name.to_lowercase()) {
+            anyhow::bail!("Cannot overwrite built-in preset '{}'", new_name);
+        }
+
+        let preset = self
+            .presets
+            .get(source_index)
+            .ok_or_else(|| anyhow::anyhow!("Invalid source preset index"))?
+            .1
+            .clone();
+
+        let dir = Self::presets_dir();
+        std::fs::create_dir_all(&dir)?;
+
+        let path = dir.join(format!("{new_name}.json"));
+        let json = serde_json::to_string_pretty(&preset)?;
+        std::fs::write(&path, json)?;
+        log::info!("Copied preset to '{}'", new_name);
+
+        self.scan();
+
+        let idx = self
+            .presets
+            .iter()
+            .position(|(n, _)| n == &new_name)
+            .unwrap_or(0);
+        self.current_preset = Some(idx);
+        self.dirty = false;
+        Ok(idx)
     }
 }
 
@@ -238,6 +363,7 @@ mod tests {
         assert!(s.presets.is_empty());
         assert!(s.current_preset.is_none());
         assert!(!s.dirty);
+        assert_eq!(s.builtin_count, 0);
     }
 
     #[test]
@@ -322,6 +448,7 @@ mod tests {
                 media_path: None,
                 media_speed: None,
                 media_looping: None,
+                webcam_device: None,
             }],
             active_layer: 0,
             postprocess: PostProcessDef::default(),
@@ -339,5 +466,82 @@ mod tests {
     fn current_name_none_when_no_preset() {
         let s = PresetStore::new();
         assert!(s.current_name().is_none());
+    }
+
+    // ---- Built-in preset tests ----
+
+    #[test]
+    fn builtin_presets_parse() {
+        // Verify all embedded built-in presets parse correctly
+        for &(name, json) in BUILTIN_PRESETS {
+            let preset: Preset = serde_json::from_str(json)
+                .unwrap_or_else(|e| panic!("Built-in preset '{}' failed to parse: {}", name, e));
+            assert!(!preset.layers.is_empty(), "Built-in preset '{}' has no layers", name);
+        }
+    }
+
+    #[test]
+    fn is_builtin_for_indices() {
+        let mut s = PresetStore::new();
+        s.builtin_count = 2;
+        let empty_preset = Preset {
+            layers: vec![],
+            active_layer: 0,
+            postprocess: PostProcessDef::default(),
+        };
+        s.presets.push(("Crucible".into(), empty_preset.clone()));
+        s.presets.push(("Spectral Eye".into(), empty_preset.clone()));
+        s.presets.push(("User Preset".into(), empty_preset));
+
+        assert!(s.is_builtin(0));
+        assert!(s.is_builtin(1));
+        assert!(!s.is_builtin(2));
+        assert!(!s.is_builtin(99));
+    }
+
+    #[test]
+    fn delete_builtin_returns_error() {
+        let mut s = PresetStore::new();
+        s.builtin_count = 1;
+        let empty_preset = Preset {
+            layers: vec![],
+            active_layer: 0,
+            postprocess: PostProcessDef::default(),
+        };
+        s.presets.push(("Crucible".into(), empty_preset));
+
+        let result = s.delete(0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("built-in"));
+    }
+
+    #[test]
+    fn save_builtin_name_fails() {
+        let mut s = PresetStore::new();
+        s.builtin_count = 1;
+        let empty_preset = Preset {
+            layers: vec![],
+            active_layer: 0,
+            postprocess: PostProcessDef::default(),
+        };
+        s.presets.push(("Crucible".into(), empty_preset));
+
+        let result = s.save(
+            "Crucible",
+            vec![],
+            0,
+            &PostProcessDef::default(),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("built-in"));
+
+        // Case-insensitive check
+        let result2 = s.save(
+            "crucible",
+            vec![],
+            0,
+            &PostProcessDef::default(),
+        );
+        assert!(result2.is_err());
     }
 }

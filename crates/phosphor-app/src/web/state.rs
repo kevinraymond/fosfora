@@ -55,6 +55,7 @@ pub struct ParamInfo {
 pub struct PresetInfo {
     pub index: usize,
     pub name: String,
+    pub builtin: bool,
 }
 
 /// Audio snapshot broadcast at 10Hz.
@@ -181,6 +182,7 @@ pub fn build_full_state(
         .map(|(i, (name, _))| PresetInfo {
             index: i,
             name: name.clone(),
+            builtin: preset_store.is_builtin(i),
         })
         .collect();
 
@@ -263,6 +265,7 @@ pub fn build_presets_changed(preset_store: &PresetStore) -> String {
         .map(|(i, (name, _))| PresetInfo {
             index: i,
             name: name.clone(),
+            builtin: preset_store.is_builtin(i),
         })
         .collect();
     serde_json::to_string(&PresetsChanged {
@@ -439,6 +442,7 @@ mod tests {
             media_file_name: None,
             media_is_animated: false,
             media_is_video: false,
+            media_is_live: false,
         };
         let json = build_layer_changed(&info, 2);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -458,5 +462,27 @@ mod tests {
         assert_eq!(v["type"], "presets");
         assert!(v["presets"].as_array().unwrap().is_empty());
         assert!(v["current"].is_null());
+    }
+
+    #[test]
+    fn build_presets_changed_includes_builtin_field() {
+        use crate::preset::Preset;
+        use crate::effect::format::PostProcessDef;
+        let mut store = PresetStore::new();
+        let empty = Preset {
+            layers: vec![],
+            active_layer: 0,
+            postprocess: PostProcessDef::default(),
+        };
+        store.presets.push(("Crucible".into(), empty.clone()));
+        store.presets.push(("My Preset".into(), empty));
+        store.builtin_count = 1;
+
+        let json = build_presets_changed(&store);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let presets = v["presets"].as_array().unwrap();
+        assert_eq!(presets.len(), 2);
+        assert!(presets[0]["builtin"].as_bool().unwrap());
+        assert!(!presets[1]["builtin"].as_bool().unwrap());
     }
 }

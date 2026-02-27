@@ -13,6 +13,7 @@ pub mod settings_panel;
 pub mod shader_editor;
 pub mod status_bar;
 pub mod web_panel;
+pub mod webcam_panel;
 
 use egui::{Context, Frame, Margin, ScrollArea};
 
@@ -48,6 +49,7 @@ pub fn draw_panels(
     layers: &[LayerInfo],
     active_layer: usize,
     media_info: Option<media_panel::MediaInfo>,
+    webcam_info: Option<webcam_panel::WebcamInfo>,
     status_error: &Option<(String, std::time::Instant)>,
     current_theme: ThemeMode,
 ) {
@@ -127,19 +129,6 @@ pub fn draw_panels(
                     },
                 );
 
-                // Layers section
-                let layer_badge = format!("{}", layers.len());
-                widgets::section(
-                    ui,
-                    "sec_layers",
-                    "Layers",
-                    Some(&layer_badge),
-                    true,
-                    |ui| {
-                        layer_panel::draw_layer_panel(ui, layers, active_layer);
-                    },
-                );
-
                 // Presets section
                 let preset_badge = if preset_store.presets.is_empty() {
                     None
@@ -154,6 +143,19 @@ pub fn draw_panels(
                     true,
                     |ui| {
                         preset_panel::draw_preset_panel(ui, preset_store);
+                    },
+                );
+
+                // Layers section
+                let layer_badge = format!("{}", layers.len());
+                widgets::section(
+                    ui,
+                    "sec_layers",
+                    "Layers",
+                    Some(&layer_badge),
+                    true,
+                    |ui| {
+                        layer_panel::draw_layer_panel(ui, layers, active_layer);
                     },
                 );
 
@@ -255,7 +257,19 @@ pub fn draw_panels(
         .frame(panel_frame)
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                if let Some(ref info) = media_info {
+                if let Some(ref info) = webcam_info {
+                    // Webcam layer: show webcam controls
+                    widgets::section(
+                        ui,
+                        "sec_webcam",
+                        "Webcam",
+                        None,
+                        true,
+                        |ui| {
+                            webcam_panel::draw_webcam_panel(ui, info);
+                        },
+                    );
+                } else if let Some(ref info) = media_info {
                     // Media layer: show media controls instead of params
                     widgets::section(
                         ui,

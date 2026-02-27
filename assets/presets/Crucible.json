@@ -1,0 +1,222 @@
+{
+  "layers": [
+    {
+      "effect_name": "Aurora",
+      "params": {
+        "band_spread": {
+          "Float": 0.5
+        },
+        "glow_width": {
+          "Float": 0.3
+        },
+        "curtain_speed": {
+          "Float": 0.5
+        }
+      },
+      "blend_mode": "ColorDodge",
+      "opacity": 0.6,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Drift",
+      "params": {
+        "color_mode": {
+          "Float": 0.0
+        },
+        "warp_intensity": {
+          "Float": 0.4
+        },
+        "flow_speed": {
+          "Float": 0.5
+        },
+        "density": {
+          "Float": 0.5
+        }
+      },
+      "blend_mode": "ColorDodge",
+      "opacity": 0.4,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Tunnel",
+      "params": {
+        "pinch_h": {
+          "Float": 0.0
+        },
+        "rib_density": {
+          "Float": 0.5
+        },
+        "pinch_v": {
+          "Float": 0.0
+        },
+        "twist_amount": {
+          "Float": 0.6
+        },
+        "speed": {
+          "Float": 0.35
+        },
+        "tunnel_radius": {
+          "Float": 0.5
+        }
+      },
+      "blend_mode": "Subtract",
+      "opacity": 0.3,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Prism",
+      "params": {
+        "bass_pulse": {
+          "Bool": true
+        },
+        "complexity": {
+          "Float": 0.62
+        },
+        "sparkle": {
+          "Bool": true
+        },
+        "fold_count": {
+          "Float": 0.61
+        },
+        "zoom": {
+          "Float": 0.57
+        },
+        "beat_flash": {
+          "Bool": true
+        },
+        "rotation_speed": {
+          "Float": 0.3
+        }
+      },
+      "blend_mode": "Multiply",
+      "opacity": 1.0,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Shards",
+      "params": {
+        "cell_scale": {
+          "Float": 1.0
+        },
+        "saturation": {
+          "Float": 0.87
+        },
+        "fill_amount": {
+          "Float": 0.65
+        },
+        "edge_glow": {
+          "Float": 1.0
+        }
+      },
+      "blend_mode": "Difference",
+      "opacity": 0.01,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Pulse",
+      "params": {
+        "ring_count": {
+          "Float": 0.5
+        },
+        "expansion_speed": {
+          "Float": 0.5
+        },
+        "ring_width": {
+          "Float": 0.4
+        }
+      },
+      "blend_mode": "Exclusion",
+      "opacity": 0.45,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Iris",
+      "params": {
+        "trail_length": {
+          "Float": 0.99
+        },
+        "orbit_radius": {
+          "Float": 0.17
+        }
+      },
+      "blend_mode": "ColorDodge",
+      "opacity": 1.0,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    },
+    {
+      "effect_name": "Swarm",
+      "params": {
+        "orbit_speed": {
+          "Float": 2.0
+        },
+        "trail_decay": {
+          "Float": 0.98
+        }
+      },
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null
+    }
+  ],
+  "active_layer": 4,
+  "postprocess": {
+    "enabled": true,
+    "bloom_threshold": 0.8,
+    "bloom_intensity": 0.35,
+    "vignette": 0.3,
+    "ca_intensity": 0.5,
+    "grain_intensity": 0.5,
+    "bloom_enabled": true,
+    "ca_enabled": true,
+    "vignette_enabled": true,
+    "grain_enabled": true
+  }
+}

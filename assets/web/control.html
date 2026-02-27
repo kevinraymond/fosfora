@@ -94,6 +94,7 @@ body { display: flex; flex-direction: column; }
 .preset-btn { display: block; width: 100%; padding: 16px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; margin-bottom: 8px; min-height: var(--btn-min); }
 .preset-btn.active { background: var(--accent2); border-color: var(--accent); color: #fff; }
 .preset-btn:active { opacity: 0.8; }
+.preset-section-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0 4px; }
 
 /* Triggers — bigger */
 .trigger-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -456,20 +457,42 @@ body { display: flex; flex-direction: column; }
   function renderPresets() {
     presetsContainer.innerHTML = '';
     if (!state || !state.presets || state.presets.length === 0) {
-      presetsContainer.innerHTML = '<div class="empty-msg">No presets saved</div>';
+      presetsContainer.innerHTML = '<div class="empty-msg">No presets</div>';
       return;
     }
-    state.presets.forEach(function(p) {
-      const btn = document.createElement('div');
-      btn.className = 'preset-btn' + (p.index === state.current_preset ? ' active' : '');
-      btn.textContent = p.name;
-      btn.addEventListener('click', function() {
-        state.current_preset = p.index;
-        renderPresets();
-        send({ type: 'load_preset', index: p.index });
+    var builtins = state.presets.filter(function(p) { return p.builtin; });
+    var userPresets = state.presets.filter(function(p) { return !p.builtin; });
+    if (builtins.length > 0) {
+      var lbl = document.createElement('div');
+      lbl.className = 'preset-section-label';
+      lbl.textContent = 'Built-in';
+      presetsContainer.appendChild(lbl);
+      builtins.forEach(function(p) {
+        presetsContainer.appendChild(makePresetBtn(p));
       });
-      presetsContainer.appendChild(btn);
+    }
+    var lbl2 = document.createElement('div');
+    lbl2.className = 'preset-section-label';
+    lbl2.textContent = 'User';
+    presetsContainer.appendChild(lbl2);
+    if (userPresets.length === 0) {
+      presetsContainer.appendChild(Object.assign(document.createElement('div'), { className: 'empty-msg', textContent: '(none)' }));
+    } else {
+      userPresets.forEach(function(p) {
+        presetsContainer.appendChild(makePresetBtn(p));
+      });
+    }
+  }
+  function makePresetBtn(p) {
+    var btn = document.createElement('div');
+    btn.className = 'preset-btn' + (p.index === state.current_preset ? ' active' : '');
+    btn.textContent = p.name;
+    btn.addEventListener('click', function() {
+      state.current_preset = p.index;
+      renderPresets();
+      send({ type: 'load_preset', index: p.index });
     });
+    return btn;
   }
 
   function updatePP() {

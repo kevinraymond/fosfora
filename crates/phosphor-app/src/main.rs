@@ -571,6 +571,36 @@ impl ApplicationHandler for PhosphorApp {
                     app.preset_store.current_preset = None;
                     app.preset_store.dirty = false;
                 }
+                let copy_preset_index: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    d.remove_temp(egui::Id::new("copy_preset_index"))
+                });
+                if let Some(src_idx) = copy_preset_index {
+                    if let Some((src_name, _)) = app.preset_store.presets.get(src_idx) {
+                        let base = format!("{} Copy", src_name);
+                        // Generate unique name
+                        let existing: Vec<&str> = app.preset_store.presets.iter().map(|(n, _)| n.as_str()).collect();
+                        let copy_name = if !existing.contains(&base.as_str()) {
+                            base.clone()
+                        } else {
+                            let mut n = 2;
+                            loop {
+                                let candidate = format!("{} {}", base, n);
+                                if !existing.contains(&candidate.as_str()) {
+                                    break candidate;
+                                }
+                                n += 1;
+                            }
+                        };
+                        match app.preset_store.copy_preset(src_idx, &copy_name) {
+                            Ok(new_idx) => {
+                                app.load_preset(new_idx);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to copy preset: {e}");
+                            }
+                        }
+                    }
+                }
 
                 // Handle media layer signals
                 let add_media: Option<bool> = app.egui_overlay.context().data_mut(|d| {

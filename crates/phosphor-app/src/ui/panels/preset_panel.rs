@@ -16,27 +16,34 @@ pub fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
         .data_mut(|d| d.get_temp::<String>(egui::Id::new("preset_save_name")))
         .unwrap_or_default();
 
-    // "Update" button when dirty and a preset is loaded
+    // "Update" button when dirty and a user preset is loaded
     if store.dirty {
-        if let Some(current_name) = store.current_name() {
-            let current_name = current_name.to_string();
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("*{}", current_name))
-                        .size(SMALL_SIZE)
-                        .color(warning_color),
-                );
-                if ui
-                    .button(RichText::new("Update").size(SMALL_SIZE).strong())
-                    .on_hover_text("Save changes to current preset")
-                    .clicked()
-                {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("save_preset"), current_name.clone());
+        if let Some(current_idx) = store.current_preset {
+            if !store.is_builtin(current_idx) {
+                if let Some(current_name) = store.current_name() {
+                    let current_name = current_name.to_string();
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("*{}", current_name))
+                                .size(SMALL_SIZE)
+                                .color(warning_color),
+                        );
+                        if ui
+                            .button(RichText::new("Update").size(SMALL_SIZE).strong())
+                            .on_hover_text("Save changes to current preset")
+                            .clicked()
+                        {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("save_preset"),
+                                    current_name.clone(),
+                                );
+                            });
+                        }
                     });
+                    ui.add_space(2.0);
                 }
-            });
-            ui.add_space(2.0);
+            }
         }
     }
 
@@ -86,21 +93,169 @@ pub fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
     // Expire after 3 seconds
     let pending_delete = pending_delete.filter(|(_, t)| now - t < 3.0);
 
-    let available_width = ui.available_width();
-    let gap = 4.0;
-    let total_gaps = (COLS - 1) as f32 * gap;
-    let btn_width = ((available_width - total_gaps) / COLS as f32).max(40.0);
-    let btn_height = 22.0;
-
     let mut new_pending: Option<(usize, f64)> = pending_delete;
 
-    let presets: Vec<_> = store.presets.iter().enumerate().collect();
+    let gap = 4.0;
+    let btn_height = 22.0;
+
+    // Split into built-in and user presets
+    let builtin: Vec<(usize, &(String, _))> = store
+        .presets
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| store.is_builtin(*i))
+        .collect();
+    let user: Vec<(usize, &(String, _))> = store
+        .presets
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !store.is_builtin(*i))
+        .collect();
+
+    // Built-in section
+    if !builtin.is_empty() {
+        egui::CollapsingHeader::new(
+            RichText::new("Built-in").size(SMALL_SIZE).color(tc.text_secondary),
+        )
+        .id_salt("preset_builtin")
+        .default_open(true)
+        .show(ui, |ui| {
+            draw_preset_grid(
+                ui,
+                &builtin,
+                store,
+                btn_height,
+                gap,
+                &tc,
+                true,
+                pending_delete,
+                warning_color,
+                &mut new_pending,
+            );
+        });
+    }
+
+    // User section
+    egui::CollapsingHeader::new(
+        RichText::new("User").size(SMALL_SIZE).color(tc.text_secondary),
+    )
+    .id_salt("preset_user")
+    .default_open(true)
+    .show(ui, |ui| {
+        if user.is_empty() {
+            ui.label(RichText::new("(none)").size(SMALL_SIZE).color(tc.text_secondary));
+        } else {
+            draw_preset_grid(
+                ui,
+                &user,
+                store,
+                btn_height,
+                gap,
+                &tc,
+                false,
+                pending_delete,
+                warning_color,
+                &mut new_pending,
+            );
+        }
+    });
+
+    // Persist pending delete state
+    ui.ctx().data_mut(|d| {
+        if let Some(pd) = new_pending {
+            d.insert_temp(egui::Id::new("pending_delete_preset"), pd);
+        } else {
+            d.remove_temp::<(usize, f64)>(egui::Id::new("pending_delete_preset"));
+        }
+    });
+
+    // Request repaint while armed (for timeout expiry)
+    if new_pending.is_some() {
+        ui.ctx().request_repaint();
+    }
+
+    // Bottom button row
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+
+        let current_is_builtin = store
+            .current_preset
+            .map_or(false, |i| store.is_builtin(i));
+
+        if current_is_builtin {
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Copy Preset")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_primary),
+                    )
+                    .fill(tc.card_bg)
+                    .stroke(Stroke::new(1.0, tc.card_border))
+                    .corner_radius(CornerRadius::same(4)),
+                )
+                .on_hover_text("Copy built-in to a new editable user preset")
+                .clicked()
+            {
+                if let Some(idx) = store.current_preset {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("copy_preset_index"), idx);
+                    });
+                }
+            }
+        }
+
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("+ New")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_primary),
+                )
+                .fill(tc.card_bg)
+                .stroke(Stroke::new(1.0, tc.card_border))
+                .corner_radius(CornerRadius::same(4)),
+            )
+            .on_hover_text("Deselect current preset to save as new")
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("deselect_preset"), true);
+            });
+            // Focus the name input by clearing it
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("preset_save_name"), String::new());
+            });
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_preset_grid(
+    ui: &mut Ui,
+    presets: &[(usize, &(String, crate::preset::Preset))],
+    store: &PresetStore,
+    btn_height: f32,
+    gap: f32,
+    tc: &crate::ui::theme::colors::ThemeColors,
+    is_builtin_section: bool,
+    pending_delete: Option<(usize, f64)>,
+    warning_color: Color32,
+    new_pending: &mut Option<(usize, f64)>,
+) {
+    let now = ui.input(|i| i.time);
+    let available_width = ui.available_width();
+    let total_gaps = (COLS - 1) as f32 * gap;
+    let btn_width = ((available_width - total_gaps) / COLS as f32).max(40.0);
+
     for row in presets.chunks(COLS) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for &(i, (pname, _)) in row {
                 let is_current = store.current_preset == Some(i);
-                let is_armed = pending_delete.map_or(false, |(idx, _)| idx == i);
+                let is_armed = !is_builtin_section
+                    && pending_delete.map_or(false, |(idx, _)| idx == i);
 
                 let (fill, text_color, stroke) = if is_armed {
                     (warning_color, Color32::WHITE, Stroke::NONE)
@@ -126,31 +281,45 @@ pub fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
 
                 // Left click: load/reload preset (also clears pending delete)
                 if response.clicked() {
-                    new_pending = None;
+                    *new_pending = None;
                     ui.ctx()
                         .data_mut(|d| d.insert_temp(egui::Id::new("pending_preset"), i));
                 }
 
-                // Right click: deselect current, or two-stage delete on others
-                if response.secondary_clicked() {
+                // Right click: two-stage delete for user presets only
+                if !is_builtin_section && response.secondary_clicked() {
                     if is_armed {
                         // Second right-click: confirm delete
                         ui.ctx()
                             .data_mut(|d| d.insert_temp(egui::Id::new("delete_preset"), i));
-                        new_pending = None;
+                        *new_pending = None;
                     } else if is_current && !store.dirty {
                         // Right-click current (clean) preset: deselect
                         ui.ctx()
-                            .data_mut(|d| d.insert_temp(egui::Id::new("deselect_preset"), true));
-                        new_pending = None;
+                            .data_mut(|d| {
+                                d.insert_temp(egui::Id::new("deselect_preset"), true);
+                            });
+                        *new_pending = None;
                     } else {
                         // First right-click: arm for delete
-                        new_pending = Some((i, now));
+                        *new_pending = Some((i, now));
+                    }
+                }
+
+                // Right-click on built-in: deselect if current + clean
+                if is_builtin_section && response.secondary_clicked() {
+                    if is_current && !store.dirty {
+                        ui.ctx()
+                            .data_mut(|d| {
+                                d.insert_temp(egui::Id::new("deselect_preset"), true);
+                            });
                     }
                 }
 
                 let hover_text = if is_armed {
                     "Right-click again to DELETE".to_string()
+                } else if is_builtin_section {
+                    pname.to_string()
                 } else if is_current && store.dirty {
                     format!("{pname} — click to reload, right-click to delete")
                 } else if is_current {
@@ -161,20 +330,6 @@ pub fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                 response.on_hover_text(hover_text);
             }
         });
-    }
-
-    // Persist pending delete state
-    ui.ctx().data_mut(|d| {
-        if let Some(pd) = new_pending {
-            d.insert_temp(egui::Id::new("pending_delete_preset"), pd);
-        } else {
-            d.remove_temp::<(usize, f64)>(egui::Id::new("pending_delete_preset"));
-        }
-    });
-
-    // Request repaint while armed (for timeout expiry)
-    if new_pending.is_some() {
-        ui.ctx().request_repaint();
     }
 }
 
