@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## v0.3.9 — 2026-02-27
+## v0.3.10 — 2026-02-27
 
 ### Added
 - **Three new particle effects** — Veil (flowing silk curtain with displacement field physics), Nova (fireworks with burst emission and gravity), Vortex (black hole with 1/r² orbital mechanics, accretion disk, and polar jets)
