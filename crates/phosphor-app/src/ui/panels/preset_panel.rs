@@ -40,6 +40,18 @@ pub fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                                 );
                             });
                         }
+                        if ui
+                            .button(RichText::new("Reset").size(SMALL_SIZE))
+                            .on_hover_text("Discard changes and reload preset")
+                            .clicked()
+                        {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("pending_preset"),
+                                    current_idx,
+                                );
+                            });
+                        }
                     });
                     ui.add_space(2.0);
                 }
