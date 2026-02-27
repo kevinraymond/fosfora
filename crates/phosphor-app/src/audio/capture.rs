@@ -153,45 +153,80 @@ impl AudioCapture {
         let channels = config.channels() as usize;
         log::info!("Audio config: {sample_rate}Hz, {channels}ch, {:?}", config.sample_format());
 
-        let ring = Arc::new(RingBuffer::new());
-        let ring_clone = ring.clone();
-        let callback_count = Arc::new(AtomicU64::new(0));
-        let callback_count_clone = callback_count.clone();
+        // Retry loop: PipeWire's ALSA plugin can race with stream setup,
+        // causing callbacks to never fire. Rebuilding the stream gives PipeWire
+        // time to finish routing setup.
+        let max_attempts = 3;
+        for attempt in 1..=max_attempts {
+            let ring = Arc::new(RingBuffer::new());
+            let ring_clone = ring.clone();
+            let callback_count = Arc::new(AtomicU64::new(0));
+            let callback_count_clone = callback_count.clone();
 
-        let stream = device.build_input_stream(
-            &config.into(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let count = callback_count_clone.fetch_add(1, Ordering::Relaxed);
-                if count == 0 {
-                    log::info!("Audio callback fired (first data: {} samples)", data.len());
-                }
-                // Downmix to mono
-                if channels == 1 {
-                    ring_clone.push(data);
-                } else {
-                    let mono: Vec<f32> = data
-                        .chunks(channels)
-                        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-                        .collect();
-                    ring_clone.push(&mono);
-                }
-            },
-            |err| {
-                log::error!("Audio stream error: {err}");
-            },
-            None,
-        )?;
+            let stream = device.build_input_stream(
+                &config.clone().into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let count = callback_count_clone.fetch_add(1, Ordering::Relaxed);
+                    if count == 0 {
+                        log::info!("Audio callback fired (first data: {} samples)", data.len());
+                    }
+                    // Downmix to mono
+                    if channels == 1 {
+                        ring_clone.push(data);
+                    } else {
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+                            .collect();
+                        ring_clone.push(&mono);
+                    }
+                },
+                |err| {
+                    log::error!("Audio stream error: {err}");
+                },
+                None,
+            )?;
 
-        stream.play()?;
-        log::info!("Audio capture started");
+            stream.play()?;
 
-        Ok(Self {
-            _stream: stream,
-            ring,
-            sample_rate,
-            device_name,
-            callback_count,
-        })
+            // Wait briefly for callbacks to start arriving
+            let wait_ms = 200 * attempt as u64;
+            std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+
+            if callback_count.load(Ordering::Relaxed) > 0 {
+                log::info!("Audio capture started (attempt {attempt})");
+                return Ok(Self {
+                    _stream: stream,
+                    ring,
+                    sample_rate,
+                    device_name,
+                    callback_count,
+                });
+            }
+
+            if attempt < max_attempts {
+                log::warn!(
+                    "Audio callbacks not firing after {wait_ms}ms (attempt {attempt}/{max_attempts}), retrying..."
+                );
+                // Drop stream before retry — releases ALSA device
+                drop(stream);
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            } else {
+                // Last attempt: return the stream anyway; health monitoring will warn later
+                log::warn!(
+                    "Audio callbacks not firing after {max_attempts} attempts — stream may be stalled"
+                );
+                return Ok(Self {
+                    _stream: stream,
+                    ring,
+                    sample_rate,
+                    device_name,
+                    callback_count,
+                });
+            }
+        }
+
+        unreachable!()
     }
 
     pub fn callback_count(&self) -> u64 {

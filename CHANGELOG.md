@@ -7,6 +7,7 @@
 
 ### Fixes
 - Rebuild release binaries with clean CI cache (fixes audio callbacks not firing in CI-built binaries)
+- Auto-retry audio stream on PipeWire when callbacks stall (race condition workaround)
 - Suppress noisy ALSA/JACK/OSS stderr messages on Linux during device enumeration
 - Overhaul blend modes: replace SoftLight with ColorDodge, HardLight, Exclusion, Subtract
 
