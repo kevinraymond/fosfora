@@ -815,7 +815,10 @@ impl ParticleSystem {
         }
 
         // 4. Copy counter buffer to staging for CPU readback (1-frame latency)
-        encoder.copy_buffer_to_buffer(&self.counter_buffer, 0, &self.counter_readback, 0, 16);
+        // Skip if previous map is still pending (buffer would be mapped → submit error)
+        if !self.counter_map_pending.load(std::sync::atomic::Ordering::Relaxed) {
+            encoder.copy_buffer_to_buffer(&self.counter_buffer, 0, &self.counter_readback, 0, 16);
+        }
     }
 
     /// Request async map of the counter readback buffer.
