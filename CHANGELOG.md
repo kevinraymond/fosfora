@@ -3,132 +3,91 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## v0.3.11 — 2026-02-27
+## v1.0.0 — 2026-02-27
 
-### Added
-- **Async preset loading** — presets with media/video layers decode in a background thread, keeping current content playing; atomic swap on completion with pulsing status bar indicator and preset button highlight
-- Generation-based cancellation for rapid MIDI preset cycling (only final preset applies)
+### Rendering
+- HDR multi-pass pipeline with Rgba16Float render targets and ping-pong feedback
+- Post-processing chain: bloom extract, separable Gaussian blur, chromatic aberration, ACES tonemapping, vignette, film grain
+- Audio-reactive post-processing (RMS → bloom, onset → chromatic aberration, flatness → film grain)
+- Shader hot-reload via file watcher with 100ms debounce and error recovery
 
-### Fixed
-- **Webcam layer preset ordering** — loading a preset with a webcam layer no longer appends it to the end of the stack; webcam content is now placed in-place at its correct index, preventing extra stray layers and layer count growth on repeated save/load cycles
-- **Webcam decode panic hardening** — backoff (50ms sleep) after corrupted frame decode panics to avoid hammering a broken camera; auto-stop capture thread after 10 consecutive panics with user-visible error log
-- Log GPU present mode and available modes on startup for easier driver issue diagnosis
-- **Clippy `never_loop` lint** — replace `while`+`break` with `match` drain-and-retry in preset loader, unblocking CI for v0.3.11 release
+### Effects
+- 12 curated audio-reactive effects: Aurora, Drift, Tunnel, Prism, Shards, Pulse, Iris, Swarm, Storm, Veil, Nova, Vortex
+- .pfx JSON effect format with multi-pass pipeline support
+- WGSL shader library auto-prepended (noise, palette, SDF, tonemap)
+- In-app WGSL shader editor with live hot-reload, built-in/user sections, copy-shader
 
-## v0.3.10 — 2026-02-27
+### GPU Particles
+- Compute shader particle simulation with ping-pong storage buffers and atomic emission
+- Vertex-pulling instanced rendering with additive and alpha-blend pipelines
+- Sprite atlas textures, image decomposition (grid/threshold/random sampling)
+- Per-particle aux buffer for home positions and packed RGBA
+- Configurable emitters: point, ring, line, screen
 
-### Added
-- **Three new particle effects** — Veil (flowing silk curtain with displacement field physics), Nova (fireworks with burst emission and gravity), Vortex (black hole with 1/r² orbital mechanics, accretion disk, and polar jets)
-- **Keyboard hints in status bar** — "D toggle overlay · F fullscreen" shown when overlay is hidden
-- **Auto-show panels** — overlay panels fade in with 2s delay + 1s alpha fade on first launch, bypassed by manual toggle
-- BPM convergence tests at 90/120/140/170/200/230 BPM with extracted `run_bpm_convergence_test` helper
-
-### Changed
-- Rename Settings panel to Global
-- Replace CVD themes (Deuteranopia/Protanopia/Tritanopia) with visually distinct VJ themes (Midnight/Ember/Neon)
-- **Tune Veil effect** — higher particle density (750 emit rate), larger sizes, boosted brightness, softer vignette, fold-boost alpha for richer fabric appearance
-
-### Fixes
-- Show actual dlopen error messages in NDI diagnostics panel (exposes quarantine, signature, and architecture mismatch issues); upgrade failed-path logging to `warn` level; add macOS troubleshooting tips for quarantine removal and ad-hoc signing
-- Fix Storm lightning flashes clustering on left/top-left — replace sin-based hash (degrades at large float32 inputs) with fract-based `phosphor_hash2` using decorrelated seeds
-- **Fix macOS NDI library validation error** — add `com.apple.security.cs.disable-library-validation` entitlement so Hardened Runtime signed builds can dlopen NDI dylib (signed by Vizrt with different Team ID); update NDI panel troubleshooting tips
-
-## v0.3.8 — 2026-02-27
-
-### Added
-- **Webcam input layers** — live camera feed as a compositing layer (`--features webcam`), cross-platform via nokhwa (v4l2/AVFoundation/MediaFoundation)
-  - Capture thread with bounded channel, automatic frame drain (latest-only)
-  - "+ Webcam" button in layer panel, webcam controls panel (device name, resolution, mirror, disconnect)
-  - Preset save/load with webcam device reconnection
-- `ParticleSystem::set_compute_shader()` and `clear_customization()` for runtime particle shader management (infrastructure for future particle design system)
-- **Combined "All Media" file filter** — media file picker defaults to showing all supported types (images + video) when video feature is enabled
-
-### Changed
-- **Image scatter shader** — spring-damper physics with hardcoded constants, random scatter direction on beat, skip transparent particles, remove audio color shift (preserve original image colors)
-- CI: add `libclang-dev` dependency, clippy/test/build steps for `webcam` feature, release builds include `webcam` feature
-
-### Fixes
-- Fix NDI runtime discovery on macOS — remove non-existent versioned dylib names, skip `exists()` check (works around NDI 6.0.0 installer permissions bug), add `/opt/homebrew/lib` + `NDI_RUNTIME_DIR_V6`/`V5` env vars, show searched paths in UI when not found
-- **Webcam robustness** — validate camera access before spawning capture thread (user-friendly EBUSY error), catch libjpeg panics on corrupted MJPEG frames (skip frame instead of dying), detect dead capture threads with status bar notification, clean up capture when deleting webcam layers
-
-## v0.3.6 — 2026-02-27
-
-### Fixes
-- Fix PulseAudio capture delivering audio only ~2x/sec (set explicit fragsize=4096, was using PA default ~88KB)
-- Runtime-load PulseAudio via dlopen — release binaries no longer crash on systems without libpulse installed
-- Truncate long audio device names in UI to prevent panel width blowout
-
-### Added
-- `--audio-test` CLI flag: standalone audio diagnostic (no GPU, works over SSH)
-- Periodic audio health logging (reads/s, latency stats, throughput) every 5s
-- `PHOSPHOR_AUDIO_DEBUG=1` env var for per-read verbose logging
-- `AudioSystem::Drop` for clean thread shutdown on exit
-
-### Changed
-- Skip cpal device enumeration when PulseAudio is active (eliminates JACK "cannot connect" noise)
-- CI no longer requires `libpulse-dev` build dependency
-
-## v0.3.5 — 2026-02-27
-
-### Fixes
-- Use PulseAudio capture on Linux (bypasses ALSA, fixes audio not working in release binaries on PipeWire systems)
-- Fall back to cpal/ALSA if PulseAudio unavailable
-
-## v0.3.4 — 2026-02-27
-
-### Fixes
-- Auto-retry audio stream on PipeWire when callbacks stall (synchronous retry — insufficient)
-
-## v0.3.3 — 2026-02-27
-
-### Fixes
-- Rebuild release binaries with clean CI cache (fixes audio callbacks not firing in CI-built binaries)
-- Suppress noisy ALSA/JACK/OSS stderr messages on Linux during device enumeration
-- Overhaul blend modes: replace SoftLight with ColorDodge, HardLight, Exclusion, Subtract
-
-## v0.3.2 — 2026-02-26
-
-### Fixes
-- Fix audio not working on Linux with PipeWire (upgrade cpal to 0.17.3 — fixes ALSA start threshold)
-- Add audio health monitoring: detect and warn when device opens but callbacks never fire
-- Add diagnostic logging for first audio callback (visible with `RUST_LOG=phosphor_app=info`)
-
-## v0.3.1 — 2026-02-26
-
-### Fixes
-- Audio not working in release (CI-built) binaries on macOS and Linux
-- macOS: add audio-input entitlement for hardened runtime codesigning
-- Linux: filter device list to only usable devices (removes raw ALSA entries)
-- Device switch race condition: join old audio thread before opening new device
-- Show actual error message on audio capture failure
-
-## v0.3.0 — 2026-02-26
-
-### New Features
-- In-app WGSL shader editor with live hot-reload
+### Audio
+- Multi-resolution FFT (4096/1024/512-pt) with 20 audio features across 7 frequency bands
+- Adaptive normalization with per-feature running min/max
+- 3-stage beat detection: onset detector → FFT autocorrelation tempo estimator → predictive beat scheduler
+- Kalman filter BPM tracking with octave disambiguation
 - Audio input device selector with runtime switching and persistence
-- Built-in/user sections in effects panel with delete and copy-shader
-- NDI® luma-to-alpha toggle for downstream compositing
-- Per-effect shader alpha for NDI compositing transparency
+- PulseAudio capture on Linux with dlopen (no libpulse build dependency), cpal/ALSA fallback
+- `--audio-test` CLI flag for standalone audio diagnostics (no GPU required)
 
-### Improvements
-- macOS app icon and polished DMG installer with drag-to-Applications
-- Shader editor UI refinements (transparent background, vector icons, minimize/expand)
-- NDI feature enabled in release builds
-- Hide default Phosphor effect from UI, reduce particle count
+### Layer Composition
+- Up to 8 compositing layers, each with independent effect/params/particles
+- 10 blend modes: Normal, Add, Screen, ColorDodge, Multiply, Overlay, HardLight, Difference, Exclusion, Subtract
+- Per-layer opacity, enable/disable, lock (prevent changes), pin (prevent reorder)
+- Drag-and-drop layer reordering
+- GPU compositor with single-layer fast path (zero overhead for one layer)
+
+### MIDI + OSC
+- MIDI input via midir: MIDI learn, auto-connect, hot-plug detection, CC mapping for params and triggers
+- OSC input/output via rosc: RX on port 9000, TX on port 9001, OSC learn, layer-targeted messages
+- Config persistence for both MIDI and OSC bindings
+
+### Web Control Surface
+- Same-port HTTP + WebSocket server with embedded single-file touch UI
+- Bidirectional JSON state sync with full snapshot on connect
+- Multi-client support, audio broadcast at 10Hz, mobile-first dark theme
+- Auto-reconnect with exponential backoff
+
+### Media Layers
+- PNG/JPEG/GIF/WebP as compositing layers with aspect-ratio-correct letterbox
+- Animated GIF/WebP playback with forward/reverse/ping-pong, speed control, loop toggle
+- Video playback (feature-gated `video`): MP4/MOV/AVI/MKV/WebM via ffmpeg pre-decode, seek slider, 60s max
+
+### Webcam Input
+- Live camera feed as compositing layer (feature-gated `webcam`) via nokhwa
+- Cross-platform: v4l2, AVFoundation, MediaFoundation
+- Capture thread with frame drain, device controls, mirror, preset save/load with device reconnection
+- Corrupted frame recovery, dead thread detection, panic hardening
+
+### NDI Output
+- Runtime-loaded NDI SDK via libloading (feature-gated `ndi`), no build-time dependency
+- GPU capture with double-buffered staging and 1-frame latency readback
+- Per-effect alpha preserved end-to-end through compositor and post-processing
+- Luma-to-alpha toggle, configurable source name and resolution
+- Sender thread with bounded channel (drops frames to maintain VJ performance)
+
+### Preset System
+- Save/load multi-layer compositions with effect params, blend modes, opacity, lock/pin state
+- Async preset loading for media/video layers with background decoding thread
+- Generation-based cancellation for rapid MIDI preset cycling
+- MIDI triggers for next/prev preset navigation
+- Bundled "Crucible" preset showcasing all 8 layers
+
+### UI & Accessibility
+- egui overlay (D key toggle) with WCAG 2.2 AA dark/light themes plus Midnight, Ember, Neon VJ themes
+- Auto-generated parameter controls, 7-band audio spectrum, BPM display with beat flash
+- Status bar with keyboard hints, particle count, audio health, NDI/MIDI/OSC/Web status dots
+- macOS app icon and polished DMG installer
 
 ### Testing
-- 236 new unit tests across 27+ modules (coverage 11% → 13%)
-
-### Fixes
-- Clippy approx_constant warnings
-- Auto-release CI when Cargo.toml version changes
+- ~251 unit tests across 17 modules covering audio, params, effects, layers, presets, MIDI, OSC, web, NDI, themes
 
 ## v0.2.0
 
-Initial public release with multi-layer composition, GPU particles, audio-reactive
-shaders, MIDI/OSC input, web control surface, preset system, media layers, video
-playback, and NDI® output.
+Initial development release.
 
 ---
 NDI® is a registered trademark of Vizrt NDI AB.
