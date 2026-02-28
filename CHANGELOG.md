@@ -5,7 +5,7 @@
 
 ## v1.2.0 — 2026-02-28
 
-### GPU Particle Engine
+### GPU Particle System
 - GPU-driven pipeline: counter buffer, indirect draw, alive/dead index lists — zero dead particle processing
 - `particle_lib.wgsl` auto-prepended to all compute shaders: shared structs, bindings, hash/rand, emit/alive helpers
 - Alive/dead protocol: atomic emission claims, compact alive index rendering

@@ -61,7 +61,7 @@ fn emit_particle(idx: u32) -> Particle {
     let r_c = abs(hue * 6.0 - 3.0) - 1.0;
     let g_c = 2.0 - abs(hue * 6.0 - 2.0);
     let b_c = 2.0 - abs(hue * 6.0 - 4.0);
-    let brightness = 0.15 + u.rms * 0.1;
+    let brightness = 0.03 + u.rms * 0.02;
     let col = clamp(vec3f(r_c, g_c, b_c), vec3f(0.0), vec3f(1.0)) * brightness;
 
     // Store 3D position: xy in pos_life, z in pos_life.z (was reserved)
@@ -73,7 +73,7 @@ fn emit_particle(idx: u32) -> Particle {
 
     p.pos_life = vec4f(projected, 0.0, 1.0);
     p.vel_size = vec4f(0.0, 0.0, 0.0, u.initial_size * (0.6 + hash(seed_base + 6.0) * 0.8));
-    p.color = vec4f(col, 0.5 + hash(seed_base + 7.0) * 0.3);
+    p.color = vec4f(col, 0.12 + hash(seed_base + 7.0) * 0.08);
     // flags: x=age, y=lifetime, z=3D_x (packed), w=3D_y (packed)
     // We store 3D coords in flags.z/w and use vel_size.z for 3D_z
     p.flags = vec4f(initial_age, u.lifetime, px, py);

@@ -17,15 +17,15 @@ fn emit_particle(idx: u32) -> Particle {
     let vel = vec2f(cos(angle), sin(angle)) * speed;
 
     // Color: warm grays/whites like real starlings
-    let tone = 0.15 + hash(seed_base + 5.0) * 0.1 + u.rms * 0.05;
-    let hue_shift = u.centroid * 0.1;
-    let col = vec3f(tone + hue_shift, tone, tone - hue_shift * 0.5);
+    let tone = 0.04 + hash(seed_base + 5.0) * 0.03 + u.rms * 0.02;
+    let hue_shift = u.centroid * 0.05;
+    let col = vec3f(tone + hue_shift, tone, tone - hue_shift * 0.3);
 
     let initial_age = hash(seed_base + 9.0) * u.lifetime * 0.5;
 
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(vel, 0.0, u.initial_size * (0.7 + hash(seed_base + 6.0) * 0.6));
-    p.color = vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 0.6 + hash(seed_base + 7.0) * 0.2);
+    p.color = vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 0.15 + hash(seed_base + 7.0) * 0.1);
     p.flags = vec4f(initial_age, u.lifetime, angle, 0.0); // flags.z stores heading angle
     return p;
 }

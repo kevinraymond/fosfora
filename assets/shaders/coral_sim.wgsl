@@ -50,14 +50,14 @@ fn emit_particle(idx: u32) -> Particle {
     let r_c = abs(hue * 6.0 - 3.0) - 1.0;
     let g_c = 2.0 - abs(hue * 6.0 - 2.0);
     let b_c = 2.0 - abs(hue * 6.0 - 4.0);
-    let brightness = 0.1 + u.rms * 0.12;
+    let brightness = 0.03 + u.rms * 0.03;
     let col = clamp(vec3f(r_c, g_c, b_c), vec3f(0.0), vec3f(1.0)) * brightness;
 
     let initial_age = hash(seed_base + 9.0) * u.lifetime * 0.3;
 
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(vel, 0.0, u.initial_size * (0.7 + hash(seed_base + 6.0) * 0.6));
-    p.color = vec4f(col, 0.35 + hash(seed_base + 7.0) * 0.2);
+    p.color = vec4f(col, 0.1 + hash(seed_base + 7.0) * 0.08);
     p.flags = vec4f(initial_age, u.lifetime, 0.0, 0.0);
     return p;
 }

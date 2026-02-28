@@ -89,6 +89,9 @@ pub struct ParticleSystem {
     // Spatial hash grid for particle-particle interaction
     spatial_hash: Option<SpatialHashGrid>,
 
+    // Placeholder empty BGL for padding bind group layouts (contiguous group indices)
+    empty_bgl: BindGroupLayout,
+
     // Emission accumulator (fractional particles per frame)
     emit_accumulator: f32,
     pub emit_rate: f32,
@@ -572,12 +575,37 @@ impl ParticleSystem {
             trail_prepare_indirect_pipeline: None,
             trail_prepare_indirect_bind_group: None,
             spatial_hash: None,
+            empty_bgl: device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("empty-bgl"),
+                entries: &[],
+            }),
             emit_accumulator: 0.0,
             emit_rate: def.emit_rate,
             burst_on_beat: def.burst_on_beat,
             def: def.clone(),
             current_compute_source: compute_source.to_string(),
         })
+    }
+
+    /// Build the list of bind group layouts for compute pipeline creation.
+    /// Groups: 0=core, 1=flow field, 2=trails (or empty placeholder), 3=spatial hash (if enabled).
+    fn compute_bind_group_layouts(&self) -> Vec<&BindGroupLayout> {
+        let mut layouts: Vec<&BindGroupLayout> = vec![&self.compute_bgl, &self.flow_field_bgl];
+
+        if let Some(hash) = &self.spatial_hash {
+            // Group 3 requires group 2 to exist (contiguous indices).
+            // Use trail BGL if available, otherwise empty placeholder.
+            if let Some(trail_bgl) = &self.trail_compute_bgl {
+                layouts.push(trail_bgl);
+            } else {
+                layouts.push(&self.empty_bgl);
+            }
+            layouts.push(&hash.query_bgl);
+        } else if let Some(trail_bgl) = &self.trail_compute_bgl {
+            layouts.push(trail_bgl);
+        }
+
+        layouts
     }
 
     /// Replace the compute shader and rebuild the pipeline (for switching shader at runtime).
@@ -604,12 +632,8 @@ impl ParticleSystem {
             source: wgpu::ShaderSource::Wgsl(source.into()),
         });
 
-        // Build layout with optional trail bind group
-        let mut bind_group_layouts: Vec<&BindGroupLayout> =
-            vec![&self.compute_bgl, &self.flow_field_bgl];
-        if let Some(trail_bgl) = &self.trail_compute_bgl {
-            bind_group_layouts.push(trail_bgl);
-        }
+        // Build layout with optional trail (group 2) and spatial hash (group 3)
+        let bind_group_layouts = self.compute_bind_group_layouts();
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("particle-compute-layout"),
             bind_group_layouts: &bind_group_layouts,
@@ -921,6 +945,11 @@ impl ParticleSystem {
             &self.uniform_buffer,
         );
         self.spatial_hash = Some(hash);
+
+        // Recompile pipeline with spatial hash BGL (group 3) now included
+        if let Err(e) = self.recompile_compute(device, &self.current_compute_source.clone()) {
+            log::error!("Failed to recompile compute pipeline with spatial hash: {e}");
+        }
     }
 
     /// Get the spatial hash query bind group layout, if interaction is enabled.
@@ -1108,28 +1137,14 @@ impl ParticleSystem {
                 cache: None,
             });
 
-        // Recompile compute pipeline with trail bind group
-        // The compute pipeline layout now includes group 2 for trails
-        let compute_pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("particle-compute-layout-trail"),
-            bind_group_layouts: &[&self.compute_bgl, &self.flow_field_bgl, &trail_compute_bgl],
-            push_constant_ranges: &[],
-        });
+        // Store trail compute BGL/BG now so recompile can see them
+        self.trail_compute_bgl = Some(trail_compute_bgl);
+        self.trail_compute_bind_group = Some(trail_compute_bind_group);
 
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("particle-compute-trail"),
-            source: wgpu::ShaderSource::Wgsl(self.current_compute_source.as_str().into()),
-        });
-
-        self.compute_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("particle-compute-pipeline-trail"),
-                layout: Some(&compute_pipeline_layout),
-                module: &compute_shader,
-                entry_point: Some("cs_main"),
-                compilation_options: PipelineCompilationOptions::default(),
-                cache: None,
-            });
+        // Recompile compute pipeline with trail bind group (group 2)
+        if let Err(e) = self.recompile_compute(device, &self.current_compute_source.clone()) {
+            log::error!("Failed to recompile compute pipeline with trails: {e}");
+        }
 
         // Trail indirect args buffer (vertex_count = 6*(trail_length-1), instance_count from alive)
         let trail_indirect_args_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1153,8 +1168,7 @@ impl ParticleSystem {
         self.trail_render_pipeline = Some(trail_render_pipeline);
         self.trail_render_bgl = Some(trail_render_bgl);
         self.trail_render_bind_groups = Some(trail_render_bind_groups);
-        self.trail_compute_bgl = Some(trail_compute_bgl);
-        self.trail_compute_bind_group = Some(trail_compute_bind_group);
+        // trail_compute_bgl and trail_compute_bind_group already stored above (before recompile)
         self.trail_indirect_args_buffer = Some(trail_indirect_args_buffer);
         self.trail_prepare_indirect_pipeline = Some(trail_prepare_pipeline);
         self.trail_prepare_indirect_bind_group = Some(trail_prepare_bg);
