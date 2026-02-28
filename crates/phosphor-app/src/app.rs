@@ -1896,6 +1896,15 @@ impl App {
             .map(|(i, _)| i)
             .collect();
 
+        // Poll particle counter readback from previous frame (non-blocking)
+        for layer in &mut self.layer_stack.layers {
+            if let Some(effect) = layer.as_effect_mut() {
+                if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
+                    ps.poll_counter_readback();
+                }
+            }
+        }
+
         // Compute the HDR source from layer execution + compositing.
         let (source, postprocess) = if enabled_layers.is_empty() {
             (
@@ -2054,6 +2063,15 @@ impl App {
 
             self.gpu.queue.submit(std::iter::once(encoder.finish()));
 
+            // Request particle counter readback (async, read next frame)
+            for layer in &self.layer_stack.layers {
+                if let Some(effect) = layer.as_effect() {
+                    if let Some(ps) = &effect.pass_executor.particle_system {
+                        ps.request_counter_readback();
+                    }
+                }
+            }
+
             #[cfg(feature = "ndi")]
             if self.ndi.is_running() {
                 self.ndi.post_submit();
@@ -2132,6 +2150,15 @@ impl App {
             .render(&self.gpu.device, &self.gpu.queue, &mut encoder, &surface_view);
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
+
+        // Request particle counter readback (async, read next frame)
+        for layer in &self.layer_stack.layers {
+            if let Some(effect) = layer.as_effect() {
+                if let Some(ps) = &effect.pass_executor.particle_system {
+                    ps.request_counter_readback();
+                }
+            }
+        }
 
         // NDI: request async map on staging buffer (must be after queue.submit)
         #[cfg(feature = "ndi")]

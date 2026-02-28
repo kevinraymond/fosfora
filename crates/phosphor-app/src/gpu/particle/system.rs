@@ -92,6 +92,10 @@ pub struct ParticleSystem {
     // Placeholder empty BGL for padding bind group layouts (contiguous group indices)
     empty_bgl: BindGroupLayout,
 
+    // Counter readback: staging buffer + async map state
+    counter_readback: wgpu::Buffer,
+    counter_map_pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+
     // Emission accumulator (fractional particles per frame)
     emit_accumulator: f32,
     pub emit_rate: f32,
@@ -134,7 +138,9 @@ impl ParticleSystem {
         let counter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle-counters"),
             size: 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -579,6 +585,13 @@ impl ParticleSystem {
                 label: Some("empty-bgl"),
                 entries: &[],
             }),
+            counter_readback: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("particle-counter-readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            counter_map_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             emit_accumulator: 0.0,
             emit_rate: def.emit_rate,
             burst_on_beat: def.burst_on_beat,
@@ -800,6 +813,42 @@ impl ParticleSystem {
             pass.set_bind_group(0, bg, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
+
+        // 4. Copy counter buffer to staging for CPU readback (1-frame latency)
+        encoder.copy_buffer_to_buffer(&self.counter_buffer, 0, &self.counter_readback, 0, 16);
+    }
+
+    /// Request async map of the counter readback buffer.
+    /// Call once per frame after queue.submit().
+    pub fn request_counter_readback(&self) {
+        use std::sync::atomic::Ordering;
+        if self.counter_map_pending.load(Ordering::Relaxed) {
+            return; // Previous map still pending
+        }
+        let flag = self.counter_map_pending.clone();
+        self.counter_readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                if result.is_ok() {
+                    flag.store(true, Ordering::Release);
+                }
+            });
+    }
+
+    /// Poll the counter readback. If the map completed, read alive count and unmap.
+    /// Call once per frame before dispatch.
+    pub fn poll_counter_readback(&mut self) {
+        use std::sync::atomic::Ordering;
+        if !self.counter_map_pending.load(Ordering::Acquire) {
+            return;
+        }
+        {
+            let view = self.counter_readback.slice(..).get_mapped_range();
+            let data: &[u32] = bytemuck::cast_slice(&view);
+            self.alive_count = data[0];
+        }
+        self.counter_readback.unmap();
+        self.counter_map_pending.store(false, Ordering::Release);
     }
 
     /// Render particles into the given target using indirect draw.
