@@ -3,6 +3,16 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Audio
+- Add WASAPI loopback capture for Windows — auto-captures desktop audio (what's playing through speakers) without requiring Stereo Mix
+- WASAPI backend uses `windows` crate COM APIs: `IMMDeviceEnumerator` → `IAudioClient` (loopback) → `IAudioCaptureClient`
+- Same fallback pattern as Linux: try WASAPI loopback first, fall back to cpal input devices
+- Supports float32, int16, and int24 formats with stereo→mono downmix
+- Device friendly name shown in status bar (e.g. "Speakers (Realtek Audio)")
+- Renamed internal `using_pulse` to `using_native_backend` (covers both PulseAudio and WASAPI)
+
 ## v1.2.1 — 2026-03-05
 
 ### Bug Fixes

@@ -6,6 +6,8 @@ pub mod normalizer;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
 pub mod smoother;
+#[cfg(target_os = "windows")]
+pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
 
@@ -24,10 +26,13 @@ use self::smoother::FeatureSmoother;
 
 /// Holds the capture backend, keeping it alive while the audio processing thread runs.
 /// On Linux, this may be either PulseAudio (preferred) or cpal/ALSA (fallback).
+/// On Windows, this may be WASAPI loopback (preferred) or cpal (fallback).
 enum CaptureBackend {
     Cpal(AudioCapture),
     #[cfg(target_os = "linux")]
     Pulse(pulse_capture::PulseCapture),
+    #[cfg(target_os = "windows")]
+    Wasapi(wasapi_capture::WasapiCapture),
 }
 
 /// Result of successfully opening an audio backend.
@@ -37,10 +42,10 @@ struct OpenedBackend {
     device_name: String,
     callback_count: Arc<AtomicU64>,
     backend: CaptureBackend,
-    using_pulse: bool,
+    using_native_backend: bool,
 }
 
-/// Try PulseAudio first (Linux), then cpal/ALSA. Returns the opened backend or an error.
+/// Try native loopback first (PulseAudio on Linux, WASAPI on Windows), then cpal.
 fn open_backend(device_name: Option<&str>) -> Result<OpenedBackend, String> {
     #[cfg(target_os = "linux")]
     {
@@ -52,11 +57,30 @@ fn open_backend(device_name: Option<&str>) -> Result<OpenedBackend, String> {
                     device_name: pulse.device_name.clone(),
                     callback_count: pulse.callback_count.clone(),
                     backend: CaptureBackend::Pulse(pulse),
-                    using_pulse: true,
+                    using_native_backend: true,
                 });
             }
             Err(e) => {
                 log::info!("PulseAudio unavailable ({e}), falling back to ALSA");
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match wasapi_capture::WasapiCapture::new() {
+            Ok(wasapi) => {
+                return Ok(OpenedBackend {
+                    ring: wasapi.ring.clone(),
+                    sample_rate: wasapi.sample_rate as f32,
+                    device_name: wasapi.device_name.clone(),
+                    callback_count: wasapi.callback_count.clone(),
+                    backend: CaptureBackend::Wasapi(wasapi),
+                    using_native_backend: true,
+                });
+            }
+            Err(e) => {
+                log::info!("WASAPI loopback unavailable ({e}), falling back to cpal");
             }
         }
     }
@@ -68,7 +92,7 @@ fn open_backend(device_name: Option<&str>) -> Result<OpenedBackend, String> {
             device_name: capture.device_name.clone(),
             callback_count: capture.callback_count.clone(),
             backend: CaptureBackend::Cpal(capture),
-            using_pulse: false,
+            using_native_backend: false,
         }),
         Err(e) => Err(format!("{e}")),
     }
@@ -86,8 +110,8 @@ pub struct AudioSystem {
     callback_count: Arc<AtomicU64>,
     started_at: Instant,
     _capture: Option<CaptureBackend>,
-    /// True when using PulseAudio backend (skip cpal device enumeration to avoid JACK noise).
-    using_pulse: bool,
+    /// True when using a native backend (PulseAudio/WASAPI) — skip cpal device enumeration.
+    using_native_backend: bool,
 }
 
 impl AudioSystem {
@@ -125,7 +149,7 @@ impl AudioSystem {
                     callback_count: opened.callback_count,
                     started_at: Instant::now(),
                     _capture: Some(opened.backend),
-                    using_pulse: opened.using_pulse,
+                    using_native_backend: opened.using_native_backend,
                 }
             }
             Err(e) => {
@@ -141,7 +165,7 @@ impl AudioSystem {
                     callback_count: Arc::new(AtomicU64::new(0)),
                     started_at: Instant::now(),
                     _capture: None,
-                    using_pulse: false,
+                    using_native_backend: false,
                 }
             }
         }
@@ -172,14 +196,14 @@ impl AudioSystem {
         self.callback_count = std::mem::replace(&mut new.callback_count, Arc::new(AtomicU64::new(0)));
         self.started_at = new.started_at;
         self._capture = new._capture.take();
-        self.using_pulse = new.using_pulse;
+        self.using_native_backend = new.using_native_backend;
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
     }
 
     /// List available input devices.
-    /// Returns empty when PulseAudio backend is active (avoids JACK noise from cpal enumeration).
+    /// Returns empty when native backend is active (PulseAudio/WASAPI auto-detect the right source).
     pub fn list_devices(&self) -> Vec<String> {
-        if self.using_pulse {
+        if self.using_native_backend {
             return vec![];
         }
         AudioCapture::list_devices()

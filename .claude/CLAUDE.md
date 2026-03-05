@@ -26,7 +26,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 - winit 0.30 window with wgpu 27 Vulkan rendering (fullscreen triangle technique)
 - Shader hot-reload (notify file watcher, 100ms debounce, error recovery keeps old pipeline)
 - Parameter system: ParamDef (Float/Color/Bool/Point2D), ParamStore, uniform packing
-- Audio pipeline: cpal capture → lock-free ring buffer → dedicated thread → multi-resolution FFT (4096/1024/512-pt) → 20 features (7 bands + aggregates + spectral + beat) → adaptive normalization → 3-stage beat detection → asymmetric EMA smoothing → crossbeam channel to main thread
+- Audio pipeline: capture (WASAPI loopback on Windows, PulseAudio on Linux, cpal fallback) → lock-free ring buffer → dedicated thread → multi-resolution FFT (4096/1024/512-pt) → 20 features (7 bands + aggregates + spectral + beat) → adaptive normalization → 3-stage beat detection → asymmetric EMA smoothing → crossbeam channel to main thread
 - egui overlay (D key toggle): WCAG 2.2 AA dark/light themes, audio spectrum bars, auto-generated param controls, effect browser, status bar
 - .pfx JSON effect format with WGSL shader library (noise, palette, sdf, tonemap) auto-prepended
 - 12 curated effects (see Effect Set below)
@@ -226,7 +226,7 @@ Cross-platform particle and shader engine for live VJ performance. Built with ra
 ### Architecture
 ```
 Main Thread: winit event loop → drain audio/midi/osc/shader channels → update per-layer uniforms → per-layer PassExecutor → Compositor (multi-layer blend) → PostProcessChain (bloom/tonemap) → egui overlay → present
-Audio Thread: cpal callback → ring buffer → multi-res FFT → adaptive normalize → beat detect → smooth → send AudioFeatures
+Audio Thread: capture backend (WASAPI loopback / PulseAudio / cpal) → ring buffer → multi-res FFT → adaptive normalize → beat detect → smooth → send AudioFeatures
 MIDI Thread: midir callback → parse 3-byte MIDI → send MidiMessage via crossbeam bounded(64)
 OSC Thread: UdpSocket recv → rosc decode → send OscInMessage via crossbeam bounded(64)
 Web Accept Thread: TcpListener → HTTP serve or WS upgrade → spawn client thread
@@ -301,6 +301,7 @@ egui Overlay → Surface
 - NDI staging buffers use `align_to(width*4, COPY_BYTES_PER_ROW_ALIGNMENT)` for wgpu row padding, stripped on readback.
 - NDI frame channel is bounded(2) with `try_send` — drops frames if sender thread is behind (VJ performance > NDI latency).
 - NDI state passes through egui temp data (NdiInfo snapshot struct) to avoid `&mut NdiSystem` in `draw_panels` signature (feature-gated types can't be conditional function params).
+- WASAPI loopback (`wasapi_capture.rs`, `#[cfg(target_os = "windows")]`): uses `windows` crate COM APIs to capture render device output. `eRender` + `AUDCLNT_STREAMFLAGS_LOOPBACK` on default endpoint. Shared mode, 10ms polling. Supports float32/int16/int24 with stereo→mono downmix. Same interface as `PulseCapture` (ring, sample_rate, device_name, callback_count, shutdown). Fallback chain: WASAPI → cpal.
 
 ### Controls
 - `D` — Toggle egui overlay
