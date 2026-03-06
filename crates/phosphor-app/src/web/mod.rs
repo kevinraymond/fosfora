@@ -78,7 +78,10 @@ impl WebSystem {
                 self.accept_handle = Some(handle);
             }
             Err(e) => {
-                log::error!("Failed to start web server on port {}: {e}", self.config.port);
+                log::error!(
+                    "Failed to start web server on port {}: {e}",
+                    self.config.port
+                );
             }
         }
     }
@@ -120,7 +123,9 @@ impl WebSystem {
 
     /// Whether the server is running.
     pub fn is_running(&self) -> bool {
-        self.shutdown.as_ref().map_or(false, |s| !s.load(Ordering::Relaxed))
+        self.shutdown
+            .as_ref()
+            .map_or(false, |s| !s.load(Ordering::Relaxed))
     }
 
     /// Main per-frame update. Drains WS messages, returns structured results.

@@ -10,7 +10,11 @@ pub enum WsInMessage {
     /// Set param on active layer (normalized 0-1).
     SetParam { name: String, value: f32 },
     /// Set param on a specific layer (normalized 0-1).
-    SetLayerParam { layer: usize, name: String, value: f32 },
+    SetLayerParam {
+        layer: usize,
+        name: String,
+        value: f32,
+    },
     /// Load an effect by index on the active layer.
     LoadEffect { index: usize },
     /// Select the active layer.
@@ -67,8 +71,12 @@ pub struct WebConfig {
     pub port: u16,
 }
 
-fn default_true() -> bool { true }
-fn default_port() -> u16 { 9002 }
+fn default_true() -> bool {
+    true
+}
+fn default_port() -> u16 {
+    9002
+}
 
 impl Default for WebConfig {
     fn default() -> Self {
@@ -164,7 +172,10 @@ mod tests {
 
     #[test]
     fn web_config_disabled_roundtrip() {
-        let c = WebConfig { enabled: false, port: 8080 };
+        let c = WebConfig {
+            enabled: false,
+            port: 8080,
+        };
         let json = serde_json::to_string(&c).unwrap();
         let c2: WebConfig = serde_json::from_str(&json).unwrap();
         assert!(!c2.enabled);

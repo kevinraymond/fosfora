@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 use crate::params::ParamValue;
 
 /// How to transition between cues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TransitionType {
     /// Instant switch (load new preset immediately).
+    #[default]
     Cut,
     /// GPU crossfade between outgoing and incoming.
     Dissolve,
@@ -32,12 +33,6 @@ impl TransitionType {
     }
 }
 
-impl Default for TransitionType {
-    fn default() -> Self {
-        TransitionType::Cut
-    }
-}
-
 impl fmt::Display for TransitionType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.display_name())
@@ -45,20 +40,15 @@ impl fmt::Display for TransitionType {
 }
 
 /// How the timeline advances between cues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AdvanceMode {
     /// Manual advance only (Space / MIDI / OSC).
+    #[default]
     Manual,
     /// Auto-advance after hold_secs timer.
     Timer,
     /// Beat-synced: advance every N beats from MIDI clock.
     BeatSync { beats_per_cue: u32 },
-}
-
-impl Default for AdvanceMode {
-    fn default() -> Self {
-        AdvanceMode::Manual
-    }
 }
 
 impl AdvanceMode {

@@ -1,12 +1,17 @@
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 use super::features::AudioFeatures;
 
 /// FFT sizes for multi-resolution analysis.
-const FFT_LARGE: usize = 4096;  // 10.8 Hz/bin — sub_bass, bass, kick
-const FFT_MED: usize = 1024;    // 43 Hz/bin — low_mid, mid, upper_mid
-const FFT_SMALL: usize = 512;   // 86 Hz/bin — presence, brilliance
+const FFT_LARGE: usize = 4096; // 10.8 Hz/bin — sub_bass, bass, kick
+const FFT_MED: usize = 1024; // 43 Hz/bin — low_mid, mid, upper_mid
+const FFT_SMALL: usize = 512; // 86 Hz/bin — presence, brilliance
+
+/// MFCC / chroma constants
+const N_MELS: usize = 26;
+const N_MFCC: usize = 13;
+const N_CHROMA: usize = 12;
 
 /// A single FFT resolution with its own window and buffers.
 struct FftResolution {
@@ -113,6 +118,17 @@ impl FftResolution {
     }
 }
 
+/// Sparse mel filterbank: for each mel band, stores (bin_index, weight) pairs.
+type MelFilter = Vec<Vec<(usize, f32)>>;
+
+fn hz_to_mel(hz: f32) -> f32 {
+    2595.0 * (1.0 + hz / 700.0).log10()
+}
+
+fn mel_to_hz(mel: f32) -> f32 {
+    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
+}
+
 /// Multi-resolution FFT analyzer with 7 frequency bands and spectral features.
 pub struct FftAnalyzer {
     large: FftResolution,  // 4096-pt for bass
@@ -125,6 +141,13 @@ pub struct FftAnalyzer {
     // Kick detection state
     prev_kick_flux: f32,
     kick_max: f32,
+
+    // MFCC precomputed data
+    mel_filters: MelFilter,              // N_MELS sparse triangular filters
+    dct_matrix: [[f32; N_MELS]; N_MFCC], // DCT-II coefficients
+
+    // Chroma precomputed data: (fft_bin_index, chroma_class 0-11)
+    chroma_bins: Vec<(usize, usize)>,
 }
 
 impl FftAnalyzer {
@@ -137,8 +160,28 @@ impl FftAnalyzer {
 
         log::info!(
             "Multi-resolution FFT: {FFT_LARGE}/{FFT_MED}/{FFT_SMALL}-pt, {:.1}/{:.1}/{:.1} Hz/bin",
-            large.bin_hz, medium.bin_hz, small.bin_hz
+            large.bin_hz,
+            medium.bin_hz,
+            small.bin_hz
         );
+
+        // Precompute mel filterbank (26 triangular filters, 20 Hz – Nyquist)
+        let mel_filters =
+            Self::build_mel_filterbank(large.num_bins, large.bin_hz, 20.0, sample_rate * 0.5);
+
+        // Precompute DCT-II matrix: dct[i][j] = cos(PI * i * (j + 0.5) / N_MELS) * sqrt(2/N_MELS)
+        let scale = (2.0 / N_MELS as f32).sqrt();
+        let mut dct_matrix = [[0.0f32; N_MELS]; N_MFCC];
+        for i in 0..N_MFCC {
+            for j in 0..N_MELS {
+                dct_matrix[i][j] =
+                    (std::f32::consts::PI * i as f32 * (j as f32 + 0.5) / N_MELS as f32).cos()
+                        * scale;
+            }
+        }
+
+        // Precompute chroma bin map: for each FFT bin in 20–5000 Hz, map to pitch class
+        let chroma_bins = Self::build_chroma_map(large.num_bins, large.bin_hz);
 
         Self {
             large,
@@ -148,7 +191,76 @@ impl FftAnalyzer {
             sample_rate,
             prev_kick_flux: 0.0,
             kick_max: 0.001,
+            mel_filters,
+            dct_matrix,
+            chroma_bins,
         }
+    }
+
+    /// Build sparse mel filterbank: N_MELS triangular filters from lo_hz to hi_hz.
+    fn build_mel_filterbank(num_bins: usize, bin_hz: f32, lo_hz: f32, hi_hz: f32) -> MelFilter {
+        let lo_mel = hz_to_mel(lo_hz);
+        let hi_mel = hz_to_mel(hi_hz);
+
+        // N_MELS + 2 mel-spaced center frequencies (edges of the triangles)
+        let n_points = N_MELS + 2;
+        let mel_points: Vec<f32> = (0..n_points)
+            .map(|i| lo_mel + (hi_mel - lo_mel) * i as f32 / (n_points - 1) as f32)
+            .collect();
+        let hz_points: Vec<f32> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
+        let bin_points: Vec<usize> = hz_points
+            .iter()
+            .map(|&hz| (hz / bin_hz).round() as usize)
+            .collect();
+
+        let mut filters = Vec::with_capacity(N_MELS);
+        for m in 0..N_MELS {
+            let left = bin_points[m];
+            let center = bin_points[m + 1];
+            let right = bin_points[m + 2];
+
+            let mut filter = Vec::new();
+            // Rising slope
+            if center > left {
+                for k in left..=center {
+                    if k < num_bins {
+                        let w = (k - left) as f32 / (center - left) as f32;
+                        if w > 0.0 {
+                            filter.push((k, w));
+                        }
+                    }
+                }
+            }
+            // Falling slope
+            if right > center {
+                for k in (center + 1)..=right {
+                    if k < num_bins {
+                        let w = (right - k) as f32 / (right - center) as f32;
+                        if w > 0.0 {
+                            filter.push((k, w));
+                        }
+                    }
+                }
+            }
+            filters.push(filter);
+        }
+        filters
+    }
+
+    /// Build chroma bin map: for each FFT bin in 20–5000 Hz, assign pitch class 0-11.
+    fn build_chroma_map(num_bins: usize, bin_hz: f32) -> Vec<(usize, usize)> {
+        let mut map = Vec::new();
+        for k in 1..num_bins {
+            let hz = k as f32 * bin_hz;
+            if !(20.0..=5000.0).contains(&hz) {
+                continue;
+            }
+            // Pitch class: 12 * log2(f / C0), mod 12, where C0 ~= 16.35 Hz
+            let semitone = 12.0 * (hz / 16.3516).log2();
+            let pitch_class = ((semitone % 12.0 + 12.0) % 12.0).round() as usize % 12;
+            map.push((k, pitch_class));
+        }
+        map
     }
 
     /// Feed new samples and compute all features.
@@ -232,8 +344,74 @@ impl FftAnalyzer {
 
         out.zcr = self.zero_crossing_rate();
 
+        // MFCC extraction (from large FFT magnitude)
+        self.compute_mfccs(&mut out);
+
+        // Chroma extraction (from large FFT magnitude)
+        self.compute_chroma(&mut out);
+
+        // Dominant chroma: argmax of chroma bins, normalized to 0-1
+        let mut max_idx = 0usize;
+        let mut max_val = out.chroma[0];
+        for i in 1..N_CHROMA {
+            if out.chroma[i] > max_val {
+                max_val = out.chroma[i];
+                max_idx = i;
+            }
+        }
+        out.dominant_chroma = max_idx as f32 / 11.0;
+
         // Beat fields left at 0.0 — filled by beat detector in audio thread
         out
+    }
+
+    /// Compute 13 MFCCs from the large FFT magnitude spectrum.
+    fn compute_mfccs(&self, out: &mut AudioFeatures) {
+        let mag = &self.large.magnitude;
+
+        // Apply mel filterbank → 26 mel energies
+        let mut mel_energies = [0.0f32; N_MELS];
+        for (m, filter) in self.mel_filters.iter().enumerate() {
+            let mut energy = 0.0f32;
+            for &(k, w) in filter {
+                energy += mag[k] * mag[k] * w;
+            }
+            mel_energies[m] = energy;
+        }
+
+        // Log compression
+        for e in &mut mel_energies {
+            *e = (*e + 1e-10).ln();
+        }
+
+        // DCT-II → 13 MFCCs
+        for i in 0..N_MFCC {
+            let mut sum = 0.0f32;
+            for j in 0..N_MELS {
+                sum += self.dct_matrix[i][j] * mel_energies[j];
+            }
+            out.mfcc[i] = sum;
+        }
+    }
+
+    /// Compute 12 chroma pitch-class energies from the large FFT magnitude spectrum.
+    fn compute_chroma(&self, out: &mut AudioFeatures) {
+        let mag = &self.large.magnitude;
+
+        let mut chroma = [0.0f32; N_CHROMA];
+        for &(k, pitch_class) in &self.chroma_bins {
+            chroma[pitch_class] += mag[k] * mag[k];
+        }
+
+        // Normalize by max
+        let max_val = chroma.iter().cloned().fold(0.0f32, f32::max);
+        if max_val > 1e-10 {
+            for c in &mut chroma {
+                *c /= max_val;
+            }
+        }
+
+        out.chroma = chroma;
     }
 
     fn spectral_centroid(&self) -> f32 {

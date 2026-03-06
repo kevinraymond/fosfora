@@ -152,14 +152,15 @@ fn serve_http(stream: &mut TcpStream, request: &str) {
             let html = get_html_content();
             ("200 OK", "text/html; charset=utf-8", html)
         }
-        "/health" => {
-            ("200 OK", "application/json", r#"{"status":"ok"}"#.to_string())
-        }
+        "/health" => (
+            "200 OK",
+            "application/json",
+            r#"{"status":"ok"}"#.to_string(),
+        ),
         _ => {
             // Redirect everything else to /
-            let response = format!(
-                "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n"
-            );
+            let response =
+                "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n".to_string();
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
             return;

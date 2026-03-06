@@ -15,7 +15,12 @@ pub struct ShaderPipeline {
 }
 
 impl ShaderPipeline {
-    pub fn new(device: &Device, format: TextureFormat, fragment_source: &str) -> Result<Self> {
+    pub fn new(
+        device: &Device,
+        format: TextureFormat,
+        fragment_source: &str,
+        cache: Option<&wgpu::PipelineCache>,
+    ) -> Result<Self> {
         let bind_group_layout = Self::create_bind_group_layout(device);
 
         // Combine vertex + fragment into one module
@@ -28,7 +33,8 @@ impl ShaderPipeline {
             source: wgpu::ShaderSource::Wgsl(full_source.into()),
         });
 
-        let pipeline = Self::create_pipeline(device, format, &bind_group_layout, &shader_module);
+        let pipeline =
+            Self::create_pipeline(device, format, &bind_group_layout, &shader_module, cache);
 
         if let Some(error) = pollster::block_on(device.pop_error_scope()) {
             return Err(anyhow::anyhow!("{error}"));
@@ -45,6 +51,7 @@ impl ShaderPipeline {
         device: &Device,
         format: TextureFormat,
         fragment_source: &str,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> Result<(), String> {
         let full_source = format!("{}\n{}", FULLSCREEN_TRIANGLE_VS, fragment_source);
 
@@ -58,7 +65,7 @@ impl ShaderPipeline {
         });
 
         let pipeline =
-            Self::create_pipeline(device, format, &self.bind_group_layout, &shader_module);
+            Self::create_pipeline(device, format, &self.bind_group_layout, &shader_module, cache);
 
         // Check if any validation errors occurred during shader/pipeline creation.
         if let Some(error) = pollster::block_on(device.pop_error_scope()) {
@@ -111,6 +118,7 @@ impl ShaderPipeline {
         format: TextureFormat,
         bind_group_layout: &BindGroupLayout,
         shader_module: &ShaderModule,
+        cache: Option<&wgpu::PipelineCache>,
     ) -> RenderPipeline {
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("phosphor-pipeline-layout"),
@@ -122,13 +130,13 @@ impl ShaderPipeline {
             label: Some("phosphor-render-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: VertexState {
-                module: &shader_module,
+                module: shader_module,
                 entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: PipelineCompilationOptions::default(),
             },
             fragment: Some(FragmentState {
-                module: &shader_module,
+                module: shader_module,
                 entry_point: Some("fs_main"),
                 targets: &[Some(ColorTargetState {
                     format,
@@ -141,7 +149,7 @@ impl ShaderPipeline {
             depth_stencil: None,
             multisample: MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache,
         })
     }
 }

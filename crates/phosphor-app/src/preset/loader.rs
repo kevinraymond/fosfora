@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
 
 use crate::media::decoder::MediaSource;
 use crate::preset::Preset;
@@ -174,18 +174,15 @@ impl PresetLoader {
                 let num_jobs = request.media_jobs.len();
                 for job_idx in 0..num_jobs {
                     // Check for cancellation between jobs
-                    match request_rx.try_recv() {
-                        Ok(newer) => {
-                            log::debug!(
-                                "Preset loader: cancelled gen {} mid-decode, starting gen {}",
-                                request.generation,
-                                newer.generation
-                            );
-                            request = newer;
-                            cancelled = true;
-                            break;
-                        }
-                        Err(_) => {}
+                    if let Ok(newer) = request_rx.try_recv() {
+                        log::debug!(
+                            "Preset loader: cancelled gen {} mid-decode, starting gen {}",
+                            request.generation,
+                            newer.generation
+                        );
+                        request = newer;
+                        cancelled = true;
+                        break;
                     }
 
                     let (layer_idx, ref path) = request.media_jobs[job_idx];

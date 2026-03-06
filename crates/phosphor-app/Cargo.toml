@@ -1,6 +1,6 @@
 [package]
 name = "phosphor-app"
-version = "1.2.1"
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
@@ -62,6 +62,17 @@ egui_code_editor = "0.2"
 libloading = "0.8"
 # Webcam capture
 nokhwa = { version = "0.10", features = ["input-native"], optional = true }
+# ONNX Runtime for depth estimation (MiDaS) — load-dynamic: runtime dylib loading, no build-time linking
+ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = ["load-dynamic"] }
+# HTTP client for model + runtime download
+ureq = { version = "3", features = ["native-tls"], optional = true }
+# Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
+flate2 = { version = "1", optional = true }
+tar = { version = "0.4", optional = true }
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+rustc-hash = "2.1.1"
+fontdue = "0.9"
+wgpu-profiler = { version = "0.25", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
@@ -77,8 +88,14 @@ windows = { version = "0.61", features = [
 [dev-dependencies]
 tempfile = "3"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 video = []
 ndi = []
 webcam = ["nokhwa"]
+depth = ["ort", "ureq", "flate2", "tar", "zip"]
+profiling = ["wgpu-profiler"]
+wgpu-profiler = ["dep:wgpu-profiler"]

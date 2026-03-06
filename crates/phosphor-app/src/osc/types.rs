@@ -11,7 +11,11 @@ pub enum OscInMessage {
     /// Set param on active layer: /phosphor/param/{name}
     Param { name: String, value: f32 },
     /// Set param on specific layer: /phosphor/layer/{n}/param/{name}
-    LayerParam { layer: usize, name: String, value: f32 },
+    LayerParam {
+        layer: usize,
+        name: String,
+        value: f32,
+    },
     /// Fire a trigger: /phosphor/trigger/{action_name}
     Trigger(TriggerAction),
     /// Set layer opacity: /phosphor/layer/{n}/opacity
@@ -72,12 +76,24 @@ pub struct OscConfig {
     pub triggers: HashMap<TriggerAction, OscMapping>,
 }
 
-fn default_version() -> u32 { 1 }
-fn default_true() -> bool { true }
-fn default_rx_port() -> u16 { 9000 }
-fn default_tx_port() -> u16 { 9001 }
-fn default_tx_host() -> String { "127.0.0.1".to_string() }
-fn default_tx_rate() -> u32 { 30 }
+fn default_version() -> u32 {
+    1
+}
+fn default_true() -> bool {
+    true
+}
+fn default_rx_port() -> u16 {
+    9000
+}
+fn default_tx_port() -> u16 {
+    9001
+}
+fn default_tx_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_tx_rate() -> u32 {
+    30
+}
 
 impl Default for OscConfig {
     fn default() -> Self {
@@ -188,7 +204,12 @@ mod tests {
     #[test]
     fn find_param_existing() {
         let mut c = OscConfig::default();
-        c.params.insert("speed".into(), OscMapping { address: "/custom/speed".into() });
+        c.params.insert(
+            "speed".into(),
+            OscMapping {
+                address: "/custom/speed".into(),
+            },
+        );
         assert_eq!(c.find_param("/custom/speed"), Some("speed"));
     }
 
@@ -201,7 +222,12 @@ mod tests {
     #[test]
     fn find_trigger() {
         let mut c = OscConfig::default();
-        c.triggers.insert(TriggerAction::NextEffect, OscMapping { address: "/pad/1".into() });
+        c.triggers.insert(
+            TriggerAction::NextEffect,
+            OscMapping {
+                address: "/pad/1".into(),
+            },
+        );
         assert_eq!(c.find_trigger("/pad/1"), Some(TriggerAction::NextEffect));
         assert_eq!(c.find_trigger("/pad/2"), None);
     }
@@ -236,6 +262,9 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         // Param != Trigger
-        assert_ne!(OscLearnTarget::Param("x".into()), OscLearnTarget::Trigger(TriggerAction::NextEffect));
+        assert_ne!(
+            OscLearnTarget::Param("x".into()),
+            OscLearnTarget::Trigger(TriggerAction::NextEffect)
+        );
     }
 }

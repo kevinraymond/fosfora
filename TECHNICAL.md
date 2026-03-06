@@ -234,7 +234,7 @@ Add a `particles` block to the `.pfx` to spawn GPU compute particles on top of t
 
 Emitter shapes: `point`, `ring`, `line`, `screen`, `image`.
 
-Particle struct is 64 bytes (4 x `vec4f`): `pos_life`, `vel_size`, `color`, `flags`. Particles render as instanced quads with additive blending into the HDR target, so bloom and post-processing apply automatically.
+Particle data uses SoA (Structure of Arrays) layout: 4 separate `vec4f` storage buffers (`pos_life`, `vel_size`, `color`, `flags`), 16 bytes each, 64 bytes total per particle. Position-only reads (spatial hash, sort keygen) load 16B instead of 64B — 4× bandwidth savings. Particles render as instanced quads with additive blending into the HDR target, so bloom and post-processing apply automatically.
 
 Custom compute shaders receive the noise library but not the fragment uniform block. They have their own 128-byte `ParticleUniforms` with 10 audio fields: `sub_bass`, `bass`, `mid`, `rms`, `kick`, `onset`, `centroid`, `flux`, `beat`, `beat_phase`.
 
@@ -347,7 +347,7 @@ Bass bands use linear RMS, mid/high bands use dB scaling (80 dB range).
 - **Rendering:** Vertex-pulling instanced draw — 6 vertices per particle expand to screen-space quads with aspect ratio correction. No vertex buffer.
 - **Blending:** Additive (SrcAlpha + One) by default, or alpha (SrcAlpha + OneMinusSrcAlpha) via `blend` field.
 - **Integration:** Particles render INTO the HDR target with `LoadOp::Load`, so bloom, feedback, and post-processing all apply automatically.
-- **Particle struct:** 64 bytes = 4 x `vec4f` (`pos_life`, `vel_size`, `color`, `flags`), chosen for GPU cache-line friendliness.
+- **Particle SoA layout:** 4 separate `vec4f` storage buffers (`pos_life`, `vel_size`, `color`, `flags`), 16 bytes each, 64 bytes total per particle. `read_particle()`/`write_particle()` helpers abstract multi-buffer access. Compute bind group has 13 entries (ping-pong × 4 buffers + counters + uniforms + aux + sort); render bind group has 6 entries. Position-only reads (spatial hash, sort keygen) load 16B instead of 64B — 4× bandwidth savings.
 - **ParticleAux buffer:** 16 bytes per particle (binding 4, read-only in compute) — `home.xy`, `home.z` = packed RGBA, `home.w` = sprite index. Used for image decomposition spring-reform.
 
 ## Layer System

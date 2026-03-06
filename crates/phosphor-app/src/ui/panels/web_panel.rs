@@ -9,36 +9,14 @@ const WEB_BLUE: Color32 = Color32::from_rgb(0x50, 0x90, 0xE0);
 pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
     let tc = theme_colors(ui.ctx());
 
-    // Enable + status on one row
-    ui.horizontal(|ui| {
-        let mut enabled = web.config.enabled;
-        if ui
-            .checkbox(&mut enabled, RichText::new("Enable Web").size(SMALL_SIZE))
-            .changed()
-        {
-            web.set_enabled(enabled);
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Client count
-            if web.client_count > 0 {
-                ui.label(
-                    RichText::new(format!("{} client{}", web.client_count, if web.client_count == 1 { "" } else { "s" }))
-                        .size(SMALL_SIZE)
-                        .color(tc.text_secondary),
-                );
-            }
-            // Activity dot
-            let color = if web.client_count > 0 {
-                WEB_BLUE
-            } else if web.is_running() {
-                Color32::from_rgb(0x55, 0x55, 0x55)
-            } else {
-                Color32::from_rgb(0x33, 0x33, 0x33)
-            };
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), 4.0, color);
-        });
-    });
+    // Enable checkbox
+    let mut enabled = web.config.enabled;
+    if ui
+        .checkbox(&mut enabled, RichText::new("Enable Web").size(SMALL_SIZE))
+        .changed()
+    {
+        web.set_enabled(enabled);
+    }
 
     // Port config
     ui.horizontal(|ui| {
@@ -66,8 +44,15 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
         // Show localhost
         let url = format!("http://localhost:{port}");
         ui.horizontal(|ui| {
-            ui.label(RichText::new("URL").size(SMALL_SIZE).color(tc.text_secondary));
-            if ui.link(RichText::new(&url).size(SMALL_SIZE).color(WEB_BLUE)).clicked() {
+            ui.label(
+                RichText::new("URL")
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
+            if ui
+                .link(RichText::new(&url).size(SMALL_SIZE).color(WEB_BLUE))
+                .clicked()
+            {
                 ui.ctx().copy_text(url.clone());
             }
         });
@@ -76,8 +61,15 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
         if let Some(ip) = get_lan_ip() {
             let lan_url = format!("http://{ip}:{port}");
             ui.horizontal(|ui| {
-                ui.label(RichText::new("LAN").size(SMALL_SIZE).color(tc.text_secondary));
-                if ui.link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE)).clicked() {
+                ui.label(
+                    RichText::new("LAN")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                if ui
+                    .link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE))
+                    .clicked()
+                {
                     ui.ctx().copy_text(lan_url.clone());
                 }
             });

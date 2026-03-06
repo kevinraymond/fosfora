@@ -3,7 +3,7 @@ pub mod input;
 pub mod mapping;
 pub mod types;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::time::Instant;
 
 use crossbeam_channel::Receiver;
@@ -41,7 +41,7 @@ impl MidiSystem {
             connection: None,
             config,
             learn_target: None,
-            trigger_prev_values: HashMap::new(),
+            trigger_prev_values: HashMap::default(),
             last_activity: None,
             last_message: None,
             last_port_poll: Instant::now(),
@@ -234,9 +234,9 @@ impl MidiSystem {
             }
 
             // Apply param mappings
-            if let Some(param_name) =
-                self.config
-                    .find_param(msg.number, msg.channel, msg.msg_type)
+            if let Some(param_name) = self
+                .config
+                .find_param(msg.number, msg.channel, msg.msg_type)
             {
                 let param_name = param_name.to_string();
                 let mapping = &self.config.params[&param_name];
@@ -258,9 +258,9 @@ impl MidiSystem {
             }
 
             // Apply trigger mappings (rising edge detection)
-            if let Some(action) =
-                self.config
-                    .find_trigger(msg.number, msg.channel, msg.msg_type)
+            if let Some(action) = self
+                .config
+                .find_trigger(msg.number, msg.channel, msg.msg_type)
             {
                 let key = (action, msg.number, msg.channel);
                 let prev = self.trigger_prev_values.get(&key).copied().unwrap_or(0);
@@ -341,9 +341,9 @@ impl MidiSystem {
             }
 
             // Skip param mappings — only process triggers
-            if let Some(action) =
-                self.config
-                    .find_trigger(msg.number, msg.channel, msg.msg_type)
+            if let Some(action) = self
+                .config
+                .find_trigger(msg.number, msg.channel, msg.msg_type)
             {
                 let key = (action, msg.number, msg.channel);
                 let prev = self.trigger_prev_values.get(&key).copied().unwrap_or(0);

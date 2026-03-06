@@ -1,6 +1,6 @@
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -29,16 +29,14 @@ pub fn spawn_receiver(
             let mut buf = [0u8; 4096];
             while !shutdown_flag.load(Ordering::Relaxed) {
                 match socket.recv_from(&mut buf) {
-                    Ok((size, _addr)) => {
-                        match rosc::decoder::decode_udp(&buf[..size]) {
-                            Ok((_, packet)) => {
-                                process_packet(&packet, &tx);
-                            }
-                            Err(e) => {
-                                log::debug!("OSC decode error: {e}");
-                            }
+                    Ok((size, _addr)) => match rosc::decoder::decode_udp(&buf[..size]) {
+                        Ok((_, packet)) => {
+                            process_packet(&packet, &tx);
                         }
-                    }
+                        Err(e) => {
+                            log::debug!("OSC decode error: {e}");
+                        }
+                    },
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // Timeout — loop back and check shutdown flag
                     }
@@ -128,7 +126,10 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                 // /phosphor/layer/{n}/opacity
                 "opacity" => {
                     let value = first_float(&msg.args)?;
-                    Some(OscInMessage::LayerOpacity { layer, value: value.clamp(0.0, 1.0) })
+                    Some(OscInMessage::LayerOpacity {
+                        layer,
+                        value: value.clamp(0.0, 1.0),
+                    })
                 }
                 // /phosphor/layer/{n}/blend
                 "blend" => {
@@ -138,11 +139,17 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                 // /phosphor/layer/{n}/enabled
                 "enabled" => {
                     let value = first_float(&msg.args)?;
-                    Some(OscInMessage::LayerEnabled { layer, value: value > 0.5 })
+                    Some(OscInMessage::LayerEnabled {
+                        layer,
+                        value: value > 0.5,
+                    })
                 }
                 _ => {
                     let value = first_float(&msg.args).unwrap_or(1.0);
-                    Some(OscInMessage::Raw { address: addr.clone(), value })
+                    Some(OscInMessage::Raw {
+                        address: addr.clone(),
+                        value,
+                    })
                 }
             }
         }
@@ -163,7 +170,10 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                 "toggle_timeline" => TriggerAction::ToggleTimeline,
                 _ => {
                     let value = first_float(&msg.args).unwrap_or(1.0);
-                    return Some(OscInMessage::Raw { address: addr.clone(), value });
+                    return Some(OscInMessage::Raw {
+                        address: addr.clone(),
+                        value,
+                    });
                 }
             };
             Some(OscInMessage::Trigger(action))
@@ -205,7 +215,10 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                 }
                 _ => {
                     let value = first_float(&msg.args).unwrap_or(1.0);
-                    Some(OscInMessage::Raw { address: addr.clone(), value })
+                    Some(OscInMessage::Raw {
+                        address: addr.clone(),
+                        value,
+                    })
                 }
             }
         }
@@ -213,7 +226,10 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
         // Unknown /phosphor/... address — capture as Raw
         _ => {
             let value = first_float(&msg.args).unwrap_or(1.0);
-            Some(OscInMessage::Raw { address: addr.clone(), value })
+            Some(OscInMessage::Raw {
+                address: addr.clone(),
+                value,
+            })
         }
     }
 }
@@ -257,7 +273,10 @@ mod tests {
 
     #[test]
     fn parse_param() {
-        let msg = OscMessage { addr: "/phosphor/param/speed".into(), args: vec![OscType::Float(0.75)] };
+        let msg = OscMessage {
+            addr: "/phosphor/param/speed".into(),
+            args: vec![OscType::Float(0.75)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Param { name, value }) => {
                 assert_eq!(name, "speed");
@@ -269,7 +288,10 @@ mod tests {
 
     #[test]
     fn parse_layer_param() {
-        let msg = OscMessage { addr: "/phosphor/layer/2/param/intensity".into(), args: vec![OscType::Float(0.5)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/2/param/intensity".into(),
+            args: vec![OscType::Float(0.5)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::LayerParam { layer, name, value }) => {
                 assert_eq!(layer, 2);
@@ -282,7 +304,10 @@ mod tests {
 
     #[test]
     fn parse_layer_opacity_clamped() {
-        let msg = OscMessage { addr: "/phosphor/layer/0/opacity".into(), args: vec![OscType::Float(1.5)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/0/opacity".into(),
+            args: vec![OscType::Float(1.5)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::LayerOpacity { layer, value }) => {
                 assert_eq!(layer, 0);
@@ -294,7 +319,10 @@ mod tests {
 
     #[test]
     fn parse_trigger() {
-        let msg = OscMessage { addr: "/phosphor/trigger/next_effect".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/trigger/next_effect".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Trigger(TriggerAction::NextEffect)) => {}
             other => panic!("expected Trigger(NextEffect), got {:?}", other),
@@ -303,7 +331,10 @@ mod tests {
 
     #[test]
     fn parse_postprocess_enabled() {
-        let msg = OscMessage { addr: "/phosphor/postprocess/enabled".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/postprocess/enabled".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::PostProcessEnabled(v)) => assert!(v),
             other => panic!("expected PostProcessEnabled, got {:?}", other),
@@ -312,7 +343,10 @@ mod tests {
 
     #[test]
     fn parse_non_phosphor_returns_raw() {
-        let msg = OscMessage { addr: "/other/thing".into(), args: vec![OscType::Float(0.5)] };
+        let msg = OscMessage {
+            addr: "/other/thing".into(),
+            args: vec![OscType::Float(0.5)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Raw { address, value }) => {
                 assert_eq!(address, "/other/thing");
@@ -326,7 +360,10 @@ mod tests {
 
     #[test]
     fn parse_layer_blend() {
-        let msg = OscMessage { addr: "/phosphor/layer/1/blend".into(), args: vec![OscType::Int(3)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/1/blend".into(),
+            args: vec![OscType::Int(3)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::LayerBlend { layer, value }) => {
                 assert_eq!(layer, 1);
@@ -338,7 +375,10 @@ mod tests {
 
     #[test]
     fn parse_layer_enabled_true() {
-        let msg = OscMessage { addr: "/phosphor/layer/0/enabled".into(), args: vec![OscType::Float(0.8)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/0/enabled".into(),
+            args: vec![OscType::Float(0.8)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::LayerEnabled { layer, value }) => {
                 assert_eq!(layer, 0);
@@ -350,7 +390,10 @@ mod tests {
 
     #[test]
     fn parse_layer_enabled_false() {
-        let msg = OscMessage { addr: "/phosphor/layer/0/enabled".into(), args: vec![OscType::Float(0.3)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/0/enabled".into(),
+            args: vec![OscType::Float(0.3)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::LayerEnabled { layer, value }) => {
                 assert_eq!(layer, 0);
@@ -362,7 +405,10 @@ mod tests {
 
     #[test]
     fn parse_unknown_trigger_returns_raw() {
-        let msg = OscMessage { addr: "/phosphor/trigger/unknown_action".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/trigger/unknown_action".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Raw { address, .. }) => {
                 assert_eq!(address, "/phosphor/trigger/unknown_action");
@@ -373,7 +419,10 @@ mod tests {
 
     #[test]
     fn parse_unknown_layer_subpath_returns_raw() {
-        let msg = OscMessage { addr: "/phosphor/layer/0/unknown".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/layer/0/unknown".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Raw { address, .. }) => {
                 assert_eq!(address, "/phosphor/layer/0/unknown");
@@ -384,7 +433,10 @@ mod tests {
 
     #[test]
     fn parse_nested_param_name() {
-        let msg = OscMessage { addr: "/phosphor/param/group/sub".into(), args: vec![OscType::Float(0.5)] };
+        let msg = OscMessage {
+            addr: "/phosphor/param/group/sub".into(),
+            args: vec![OscType::Float(0.5)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Param { name, .. }) => {
                 assert_eq!(name, "group/sub");
@@ -395,7 +447,10 @@ mod tests {
 
     #[test]
     fn parse_param_missing_float_returns_none() {
-        let msg = OscMessage { addr: "/phosphor/param/speed".into(), args: vec![] };
+        let msg = OscMessage {
+            addr: "/phosphor/param/speed".into(),
+            args: vec![],
+        };
         assert!(parse_osc_message(&msg).is_none());
     }
 
@@ -408,7 +463,10 @@ mod tests {
 
     #[test]
     fn parse_scene_goto_cue() {
-        let msg = OscMessage { addr: "/phosphor/scene/goto_cue".into(), args: vec![OscType::Int(2)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/goto_cue".into(),
+            args: vec![OscType::Int(2)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneGotoCue(idx)) => assert_eq!(idx, 2),
             other => panic!("expected SceneGotoCue, got {:?}", other),
@@ -417,7 +475,10 @@ mod tests {
 
     #[test]
     fn parse_scene_load_int() {
-        let msg = OscMessage { addr: "/phosphor/scene/load".into(), args: vec![OscType::Int(1)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/load".into(),
+            args: vec![OscType::Int(1)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneLoadIndex(idx)) => assert_eq!(idx, 1),
             other => panic!("expected SceneLoadIndex, got {:?}", other),
@@ -426,7 +487,10 @@ mod tests {
 
     #[test]
     fn parse_scene_load_string() {
-        let msg = OscMessage { addr: "/phosphor/scene/load".into(), args: vec![OscType::String("My Scene".into())] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/load".into(),
+            args: vec![OscType::String("My Scene".into())],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneLoadName(name)) => assert_eq!(name, "My Scene"),
             other => panic!("expected SceneLoadName, got {:?}", other),
@@ -435,12 +499,18 @@ mod tests {
 
     #[test]
     fn parse_scene_loop_mode() {
-        let msg = OscMessage { addr: "/phosphor/scene/loop_mode".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/loop_mode".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneLoopMode(v)) => assert!(v),
             other => panic!("expected SceneLoopMode, got {:?}", other),
         }
-        let msg = OscMessage { addr: "/phosphor/scene/loop_mode".into(), args: vec![OscType::Float(0.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/loop_mode".into(),
+            args: vec![OscType::Float(0.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneLoopMode(v)) => assert!(!v),
             other => panic!("expected SceneLoopMode, got {:?}", other),
@@ -449,7 +519,10 @@ mod tests {
 
     #[test]
     fn parse_scene_advance_mode() {
-        let msg = OscMessage { addr: "/phosphor/scene/advance_mode".into(), args: vec![OscType::Int(2)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/advance_mode".into(),
+            args: vec![OscType::Int(2)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::SceneAdvanceMode(m)) => assert_eq!(m, 2),
             other => panic!("expected SceneAdvanceMode, got {:?}", other),
@@ -458,7 +531,10 @@ mod tests {
 
     #[test]
     fn parse_scene_unknown_returns_raw() {
-        let msg = OscMessage { addr: "/phosphor/scene/unknown".into(), args: vec![OscType::Float(1.0)] };
+        let msg = OscMessage {
+            addr: "/phosphor/scene/unknown".into(),
+            args: vec![OscType::Float(1.0)],
+        };
         match parse_osc_message(&msg) {
             Some(OscInMessage::Raw { address, .. }) => {
                 assert_eq!(address, "/phosphor/scene/unknown");

@@ -9,6 +9,8 @@ pub mod placeholder;
 pub mod postprocess;
 pub mod render_target;
 pub mod uniforms;
+#[cfg(feature = "profiling")]
+pub mod profiler;
 
 pub use context::GpuContext;
 pub use pipeline::ShaderPipeline;

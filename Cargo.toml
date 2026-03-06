@@ -5,5 +5,64 @@ resolver = "3"
 # Patch midir to allow alsa 0.11 (needed for cpal 0.17.3 compatibility on Linux).
 # midir only uses alsa::seq (sequencer) APIs which are stable across 0.9-0.11.
 # Remove this patch when midir publishes a version with alsa 0.11 support.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Allow common patterns that pedantic flags but are fine in this codebase
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+wildcard_imports = "allow"
+struct_excessive_bools = "allow"
+similar_names = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+items_after_statements = "allow"
+doc_markdown = "allow"
+struct_field_names = "allow"
+match_same_arms = "allow"
+needless_pass_by_value = "allow"
+needless_raw_string_hashes = "allow"
+redundant_else = "allow"
+# Style preferences — allowed to reduce noise on existing code
+collapsible_if = "allow"
+cast_lossless = "allow"
+uninlined_format_args = "allow"
+trivially_copy_pass_by_ref = "allow"
+redundant_closure_for_method_calls = "allow"
+map_unwrap_or = "allow"
+if_not_else = "allow"
+used_underscore_binding = "allow"
+match_wildcard_for_single_variants = "allow"
+single_match_else = "allow"
+default_trait_access = "allow"
+ignored_unit_patterns = "allow"
+manual_let_else = "allow"
+unnecessary_map_or = "allow"
+collapsible_else_if = "allow"
+borrow_as_ptr = "allow"
+float_cmp = "allow"
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+unused_self = "allow"
+cast_possible_wrap = "allow"
+assigning_clones = "allow"
+cloned_instead_of_copied = "allow"
+ref_option = "allow"
+
 [patch.crates-io]
 midir = { path = "patches/midir" }

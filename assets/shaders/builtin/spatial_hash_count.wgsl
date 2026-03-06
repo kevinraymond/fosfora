@@ -1,13 +1,6 @@
 // Spatial hash pass 1: Count particles per grid cell.
 // Each alive particle hashes its position to a grid cell and atomically increments the count.
 
-struct Particle {
-    pos_life: vec4f,
-    vel_size: vec4f,
-    color: vec4f,
-    flags: vec4f,
-}
-
 struct Uniforms {
     delta_time: f32,
     time: f32,
@@ -19,7 +12,7 @@ struct Uniforms {
 const GRID_W: u32 = 40u;
 const GRID_H: u32 = 40u;
 
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
+@group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
 @group(0) @binding(1) var<storage, read_write> cell_counts: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> u: Uniforms;
 
@@ -37,11 +30,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
 
-    let p = particles[idx];
-    if p.pos_life.w <= 0.0 {
+    let pl = pos_life[idx];
+    if pl.w <= 0.0 {
         return; // Dead particle
     }
 
-    let cell = pos_to_cell(p.pos_life.xy);
+    let cell = pos_to_cell(pl.xy);
     atomicAdd(&cell_counts[cell], 1u);
 }

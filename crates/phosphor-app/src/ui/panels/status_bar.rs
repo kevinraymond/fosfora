@@ -4,6 +4,7 @@ use crate::gpu::ShaderUniforms;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
 
+const OFF: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const DIM: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
 const LABEL_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
 
@@ -19,7 +20,10 @@ fn label(ui: &mut Ui, text: &str) {
 
 /// Fixed-width value using monospace-style right-aligned layout.
 fn fixed_value(ui: &mut Ui, text: &str, width: f32, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, ui.spacing().interact_size.y), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(width, ui.spacing().interact_size.y),
+        egui::Sense::hover(),
+    );
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(SMALL_SIZE),
@@ -41,8 +45,7 @@ pub fn draw_status_bar(
     shader_error: &Option<String>,
     uniforms: &ShaderUniforms,
     particle_count: Option<u32>,
-    _midi_port: &str,
-    midi_active: bool,
+    midi_enabled: bool,
     midi_recently_active: bool,
     osc_enabled: bool,
     osc_recently_active: bool,
@@ -70,9 +73,13 @@ pub fn draw_status_bar(
         // Shader errors (dismissable)
         else if let Some(err) = shader_error {
             ui.add_space(4.0);
-            ui.colored_label(tc.error, RichText::new(format!("ERR: {err}")).size(SMALL_SIZE));
+            ui.colored_label(
+                tc.error,
+                RichText::new(format!("ERR: {err}")).size(SMALL_SIZE),
+            );
             if ui.small_button("×").clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("dismiss_shader_error"), true));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("dismiss_shader_error"), true));
             }
         }
         // Preset loading indicator
@@ -95,7 +102,11 @@ pub fn draw_status_bar(
         // Keyboard hints when idle
         else {
             ui.add_space(4.0);
-            ui.label(RichText::new("D toggle overlay · F fullscreen").size(SMALL_SIZE).color(tc.text_secondary));
+            ui.label(
+                RichText::new("D toggle overlay · F fullscreen")
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
         }
 
         // Push right-side items
@@ -119,33 +130,58 @@ pub fn draw_status_bar(
 
             ui.add_space(6.0);
 
-            // NDI
-            if ndi_running {
-                dot(ui, true, Color32::from_rgb(0x40, 0xC0, 0x40));
-                label(ui, "NDI");
-                ui.add_space(6.0);
-            }
+            // NDI — always show (no separate enabled flag; running=on)
+            dot(ui, ndi_running, Color32::from_rgb(0x40, 0xC0, 0x40));
+            label(ui, "NDI");
+            ui.add_space(6.0);
 
-            // Web
-            if web_enabled {
-                dot(ui, web_client_count > 0, Color32::from_rgb(0x50, 0x90, 0xE0));
-                label(ui, "WEB");
-                ui.add_space(6.0);
+            // Web — always show
+            {
+                let color = if web_client_count > 0 {
+                    Color32::from_rgb(0x50, 0x90, 0xE0)
+                } else if web_enabled {
+                    DIM
+                } else {
+                    OFF
+                };
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.0, color);
             }
+            label(ui, "WEB");
+            ui.add_space(6.0);
 
-            // OSC
-            if osc_enabled {
-                dot(ui, osc_recently_active, tc.success);
-                label(ui, "OSC");
-                ui.add_space(6.0);
+            // OSC — always show
+            {
+                let color = if osc_recently_active {
+                    tc.success
+                } else if osc_enabled {
+                    DIM
+                } else {
+                    OFF
+                };
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.0, color);
             }
+            label(ui, "OSC");
+            ui.add_space(6.0);
 
-            // MIDI
-            if midi_active {
-                dot(ui, midi_recently_active, tc.success);
-                label(ui, "MIDI");
-                ui.add_space(6.0);
+            // MIDI — always show
+            {
+                let color = if midi_recently_active {
+                    tc.success
+                } else if midi_enabled {
+                    DIM
+                } else {
+                    OFF
+                };
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 3.0, color);
             }
+            label(ui, "MIDI");
+            ui.add_space(6.0);
 
             // Particles
             if let Some(count) = particle_count {
@@ -161,7 +197,12 @@ pub fn draw_status_bar(
             // Scene
             if scene_active {
                 if let Some((current, total)) = scene_cue {
-                    fixed_value(ui, &format!("{}/{}", current + 1, total), 28.0, Color32::from_rgb(0xFF, 0xA0, 0x40));
+                    fixed_value(
+                        ui,
+                        &format!("{}/{}", current + 1, total),
+                        28.0,
+                        Color32::from_rgb(0xFF, 0xA0, 0x40),
+                    );
                 }
                 dot(ui, true, Color32::from_rgb(0xFF, 0xA0, 0x40));
                 label(ui, "SCN");
@@ -172,7 +213,11 @@ pub fn draw_status_bar(
             let bpm = uniforms.bpm * 300.0;
             if bpm > 1.0 {
                 let beat_on = uniforms.beat > 0.5;
-                let bpm_color = if beat_on { tc.beat_color } else { tc.text_primary };
+                let bpm_color = if beat_on {
+                    tc.beat_color
+                } else {
+                    tc.text_primary
+                };
                 // Fixed 3-char width for BPM value (prevents jitter on 2→3 digit changes)
                 fixed_value(ui, &format!("{:.0}", bpm), 24.0, bpm_color);
                 dot(ui, beat_on, tc.beat_color);

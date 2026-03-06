@@ -11,8 +11,8 @@ pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -193,7 +193,8 @@ impl AudioSystem {
         self.last_error = new.last_error.take();
         self.shutdown = std::mem::replace(&mut new.shutdown, Arc::new(AtomicBool::new(true)));
         self.thread_handle = new.thread_handle.take();
-        self.callback_count = std::mem::replace(&mut new.callback_count, Arc::new(AtomicU64::new(0)));
+        self.callback_count =
+            std::mem::replace(&mut new.callback_count, Arc::new(AtomicU64::new(0)));
         self.started_at = new.started_at;
         self._capture = new._capture.take();
         self.using_native_backend = new.using_native_backend;
@@ -240,7 +241,12 @@ impl Drop for AudioSystem {
     }
 }
 
-fn audio_thread(ring: Arc<RingBuffer>, sample_rate: f32, tx: Sender<AudioFeatures>, shutdown: Arc<AtomicBool>) {
+fn audio_thread(
+    ring: Arc<RingBuffer>,
+    sample_rate: f32,
+    tx: Sender<AudioFeatures>,
+    shutdown: Arc<AtomicBool>,
+) {
     let mut analyzer = FftAnalyzer::new(sample_rate);
     let mut normalizer = AdaptiveNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);

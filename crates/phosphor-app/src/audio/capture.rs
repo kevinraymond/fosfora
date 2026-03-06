@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use anyhow::Result;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 /// Suppress noisy ALSA/JACK stderr messages during device enumeration.
 /// ALSA/JACK C libraries print errors for missing JACK server, OSS devices, etc.
@@ -70,7 +70,7 @@ impl RingBuffer {
             // This is safe because we're the only writer and readers
             // can tolerate stale data gracefully.
             unsafe {
-                let ptr = self.data.as_ptr() as *mut f32;
+                let ptr = self.data.as_ptr().cast_mut();
                 *ptr.add(idx) = sample;
             }
             wp = wp.wrapping_add(1);
@@ -145,13 +145,19 @@ impl AudioCapture {
                 .ok_or_else(|| anyhow::anyhow!("No audio input device found"))?
         };
 
-        let device_name = device.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "Unknown".into());
+        let device_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "Unknown".into());
         log::info!("Audio capture device: {device_name}");
 
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
-        log::info!("Audio config: {sample_rate}Hz, {channels}ch, {:?}", config.sample_format());
+        log::info!(
+            "Audio config: {sample_rate}Hz, {channels}ch, {:?}",
+            config.sample_format()
+        );
 
         let ring = Arc::new(RingBuffer::new());
         let ring_clone = ring.clone();

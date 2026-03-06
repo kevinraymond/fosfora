@@ -1,6 +1,6 @@
 /// A decoded frame ready for GPU upload.
 pub struct DecodedFrame {
-    pub data: Vec<u8>,   // RGBA8
+    pub data: Vec<u8>, // RGBA8
     pub width: u32,
     pub height: u32,
 }

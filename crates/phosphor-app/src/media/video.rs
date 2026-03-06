@@ -5,10 +5,10 @@
 //! - Returns `MediaSource::Animated` — identical to GIF, instant random access
 //! - RAM cost: ~3.7MB per frame at 1280x720. A 30s@30fps clip = ~3.3GB.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::io::Read;
 
 use super::types::DecodedFrame;
 
@@ -40,8 +40,10 @@ pub struct VideoMeta {
 pub fn probe_video(path: &Path) -> Result<VideoMeta, String> {
     let output = Command::new("ffprobe")
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_streams",
             "-show_format",
         ])
@@ -68,18 +70,10 @@ pub fn probe_video(path: &Path) -> Result<VideoMeta, String> {
         .find(|s| s["codec_type"].as_str() == Some("video"))
         .ok_or("No video stream found")?;
 
-    let width = video_stream["width"]
-        .as_u64()
-        .ok_or("Missing width")? as u32;
-    let height = video_stream["height"]
-        .as_u64()
-        .ok_or("Missing height")? as u32;
+    let width = video_stream["width"].as_u64().ok_or("Missing width")? as u32;
+    let height = video_stream["height"].as_u64().ok_or("Missing height")? as u32;
 
-    let fps = parse_frame_rate(
-        video_stream["r_frame_rate"]
-            .as_str()
-            .unwrap_or("30/1"),
-    );
+    let fps = parse_frame_rate(video_stream["r_frame_rate"].as_str().unwrap_or("30/1"));
 
     let duration_secs = json["format"]["duration"]
         .as_str()
@@ -131,10 +125,14 @@ pub fn decode_all_frames(
         .args(["-i"])
         .arg(path)
         .args([
-            "-f", "rawvideo",
-            "-pix_fmt", "rgba",
-            "-s", &format!("{}x{}", meta.width, meta.height),
-            "-v", "quiet",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &format!("{}x{}", meta.width, meta.height),
+            "-v",
+            "quiet",
             "pipe:1",
         ])
         .stdin(Stdio::null())
@@ -143,10 +141,7 @@ pub fn decode_all_frames(
         .spawn()
         .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or("ffmpeg: no stdout pipe")?;
+    let mut stdout = child.stdout.take().ok_or("ffmpeg: no stdout pipe")?;
 
     let mut frames = Vec::with_capacity(est_frames);
     let mut delays_ms = Vec::with_capacity(est_frames);

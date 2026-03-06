@@ -30,6 +30,11 @@ struct PhosphorUniforms {
     params: array<vec4f, 4>,
     feedback_decay: f32,
     frame_index: f32,
+
+    dominant_chroma: f32,
+    _pad_align: f32,
+    mfcc: array<vec4f, 4>,
+    chroma: array<vec4f, 3>,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;

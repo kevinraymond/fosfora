@@ -27,9 +27,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let ambient_n = phosphor_noise2(p * 2.0 + vec2f(u.time * 0.05));
     let ambient = ambient_n * ambient_n * 0.015 * density_param * u.rms;
 
-    // Color: muted blue-green ambient
+    // Color: muted ambient, anchored to musical key
     let color_shift = param(2u);
-    let hue = 0.55 + color_shift * 0.3 + u.centroid * 0.15;
+    let hue = u.dominant_chroma + color_shift * 0.3 + u.centroid * 0.1;
     let r = abs(hue * 6.0 - 3.0) - 1.0;
     let g = 2.0 - abs(hue * 6.0 - 2.0);
     let b = 2.0 - abs(hue * 6.0 - 4.0);

@@ -1,13 +1,13 @@
 use wgpu::{CommandEncoder, Device, Queue, TextureFormat};
 
-use crate::effect::format::PassDef;
 use crate::effect::EffectLoader;
+use crate::effect::format::PassDef;
 
+use super::ShaderPipeline;
 use super::particle::ParticleSystem;
 use super::placeholder::PlaceholderTexture;
 use super::render_target::{PingPongTarget, RenderTarget};
 use super::uniforms::UniformBuffer;
-use super::ShaderPipeline;
 
 /// A compiled pass: pipeline + render target + bind groups.
 struct CompiledPass {
@@ -37,6 +37,8 @@ impl PassExecutor {
         effect_loader: &EffectLoader,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        queue: &Queue,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> Result<Self, String> {
         let mut passes = Vec::new();
 
@@ -45,10 +47,15 @@ impl PassExecutor {
                 .load_effect_source(&def.shader)
                 .map_err(|e| format!("Failed to load shader '{}': {e}", def.shader))?;
 
-            let pipeline = ShaderPipeline::new(device, hdr_format, &source)
+            let pipeline = ShaderPipeline::new(device, hdr_format, &source, pipeline_cache)
                 .map_err(|e| format!("Failed to compile shader '{}': {e}", def.shader))?;
 
-            let target = PingPongTarget::new(device, width, height, hdr_format, def.scale);
+            // Clear feedback targets to prevent NaN/garbage from uninitialized GPU memory
+            let target = if def.feedback {
+                PingPongTarget::new_cleared(device, queue, width, height, hdr_format, def.scale)
+            } else {
+                PingPongTarget::new(device, width, height, hdr_format, def.scale)
+            };
 
             let bind_groups = create_pass_bind_groups(
                 device,
@@ -167,17 +174,22 @@ impl PassExecutor {
         }
     }
 
-    /// Resize all pass targets.
+    /// Resize all pass targets (clears feedback targets to prevent NaN from uninitialized GPU memory).
     pub fn resize(
         &mut self,
         device: &Device,
+        queue: &Queue,
         width: u32,
         height: u32,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
     ) {
         for pass in &mut self.passes {
-            pass.target.resize(device, width, height);
+            if pass.has_feedback {
+                pass.target.resize_cleared(device, queue, width, height);
+            } else {
+                pass.target.resize(device, width, height);
+            }
             pass.bind_groups = create_pass_bind_groups(
                 device,
                 uniform_buffer,
@@ -186,6 +198,12 @@ impl PassExecutor {
                 placeholder,
                 pass.has_feedback,
             );
+        }
+
+        // Resize compute rasterizer framebuffer if active
+        if let Some(ref mut ps) = self.particle_system {
+            ps.resize_compute_raster(device, width, height);
+            ps.resize_wboit(device, width, height);
         }
     }
 
@@ -198,9 +216,11 @@ impl PassExecutor {
         source: &str,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> Result<(), String> {
         if let Some(pass) = self.passes.get_mut(pass_index) {
-            pass.pipeline.recreate_pipeline(device, hdr_format, source)?;
+            pass.pipeline
+                .recreate_pipeline(device, hdr_format, source, pipeline_cache)?;
             pass.bind_groups = create_pass_bind_groups(
                 device,
                 uniform_buffer,

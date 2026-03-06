@@ -33,7 +33,7 @@ impl AdaptiveNormalizer {
             // onset (16) gets normalized, beat (17), beat_phase (18), bpm (19), beat_strength (20-1=19)
             // Actually: onset=16, beat=17, beat_phase=18, bpm=19, beat_strength=19
             // Let's just skip beat, beat_phase, bpm — they come pre-normalized from beat detector
-            if i >= 17 && i <= 19 {
+            if (17..=19).contains(&i) {
                 out_slice[i] = v;
                 continue;
             }
@@ -62,7 +62,9 @@ impl AdaptiveNormalizer {
 mod tests {
     use super::*;
 
-    fn approx_eq(a: f32, b: f32, eps: f32) -> bool { (a - b).abs() < eps }
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
 
     #[test]
     fn all_zero_stays_zero() {
@@ -119,9 +121,9 @@ mod tests {
     fn beat_fields_pass_through() {
         let mut norm = AdaptiveNormalizer::new();
         let mut raw = AudioFeatures::default();
-        raw.beat = 1.0;       // index 17
+        raw.beat = 1.0; // index 17
         raw.beat_phase = 0.7; // index 18
-        raw.bpm = 0.4;        // index 19
+        raw.bpm = 0.4; // index 19
         let out = norm.normalize(&raw);
         assert!(approx_eq(out.beat, 1.0, 1e-6));
         assert!(approx_eq(out.beat_phase, 0.7, 1e-6));

@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
+use nokhwa::Camera;
 use nokhwa::pixel_format::RgbAFormat;
 use nokhwa::utils::{
     ApiBackend, CameraIndex, CameraInfo, RequestedFormat, RequestedFormatType, Resolution,
 };
-use nokhwa::Camera;
 
 /// A single decoded webcam frame (RGBA).
 pub struct WebcamFrame {
@@ -26,13 +26,13 @@ pub struct WebcamCapture {
 
 fn requested_format(resolution: Option<(u32, u32)>) -> RequestedFormat<'static> {
     match resolution {
-        Some((w, h)) => RequestedFormat::new::<RgbAFormat>(
-            RequestedFormatType::Closest(nokhwa::utils::CameraFormat::new(
+        Some((w, h)) => RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(
+            nokhwa::utils::CameraFormat::new(
                 Resolution::new(w, h),
                 nokhwa::utils::FrameFormat::MJPEG,
                 30,
-            )),
-        ),
+            ),
+        )),
         None => RequestedFormat::new::<RgbAFormat>(RequestedFormatType::AbsoluteHighestResolution),
     }
 }
@@ -161,8 +161,8 @@ impl Drop for WebcamCapture {
 
 /// List available webcam devices. Returns Vec of (index, human_name).
 pub fn list_devices() -> Result<Vec<(u32, String)>, String> {
-    let cameras = nokhwa::query(ApiBackend::Auto)
-        .map_err(|e| format!("Failed to query cameras: {e}"))?;
+    let cameras =
+        nokhwa::query(ApiBackend::Auto).map_err(|e| format!("Failed to query cameras: {e}"))?;
     Ok(cameras
         .into_iter()
         .map(|info: CameraInfo| {

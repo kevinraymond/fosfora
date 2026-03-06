@@ -17,17 +17,13 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     let color = textureSample(src_texture, src_sampler, uv);
     let luminance = dot(color.rgb, vec3f(0.2126, 0.7152, 0.0722));
 
-    // Audio-reactive threshold: RMS lowers it
-    let threshold = bloom.threshold - bloom.rms * 0.3;
-    let knee = bloom.soft_knee;
+    // Audio-reactive threshold: RMS lowers it for more bloom during loud passages
+    let threshold = bloom.threshold - bloom.rms * 0.15;
 
-    // Soft knee curve
-    let soft = luminance - threshold + knee;
-    let soft_clamped = clamp(soft, 0.0, 2.0 * knee);
-    let contribution = soft_clamped * soft_clamped / (4.0 * knee + 0.0001);
-
-    let brightness = max(luminance - threshold, contribution);
-    let factor = brightness / (luminance + 0.0001);
+    // Soft knee extraction
+    let knee = threshold * bloom.soft_knee;
+    let brightness = max(luminance - threshold + knee, 0.0);
+    let factor = min(brightness / (luminance + 0.0001), 1.0);
 
     return vec4f(color.rgb * factor, color.a);
 }

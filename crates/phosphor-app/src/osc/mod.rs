@@ -2,8 +2,8 @@ pub mod receiver;
 pub mod sender;
 pub mod types;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -84,7 +84,8 @@ impl OscSystem {
 
         // Configure sender if TX enabled
         if sys.config.tx_enabled {
-            sys.sender.configure(&sys.config.tx_host, sys.config.tx_port);
+            sys.sender
+                .configure(&sys.config.tx_host, sys.config.tx_port);
         }
 
         sys
@@ -101,7 +102,10 @@ impl OscSystem {
                 self.thread_handle = Some(handle);
             }
             Err(e) => {
-                log::error!("Failed to start OSC receiver on port {}: {e}", self.config.rx_port);
+                log::error!(
+                    "Failed to start OSC receiver on port {}: {e}",
+                    self.config.rx_port
+                );
             }
         }
     }
@@ -171,7 +175,8 @@ impl OscSystem {
     pub fn set_tx_enabled(&mut self, enabled: bool) {
         self.config.tx_enabled = enabled;
         if enabled {
-            self.sender.configure(&self.config.tx_host, self.config.tx_port);
+            self.sender
+                .configure(&self.config.tx_host, self.config.tx_port);
         } else {
             self.sender.disable();
         }
@@ -211,7 +216,9 @@ impl OscSystem {
 
             // OSC Learn mode
             if let Some(ref target) = self.learn_target.clone() {
-                let mapping = OscMapping { address: address.clone() };
+                let mapping = OscMapping {
+                    address: address.clone(),
+                };
                 match target {
                     OscLearnTarget::Param(name) => {
                         self.config.params.insert(name.clone(), mapping);
@@ -310,7 +317,9 @@ impl OscSystem {
 
             // Learn still works while locked
             if let Some(ref target) = self.learn_target.clone() {
-                let mapping = OscMapping { address: address.clone() };
+                let mapping = OscMapping {
+                    address: address.clone(),
+                };
                 match target {
                     OscLearnTarget::Param(name) => {
                         self.config.params.insert(name.clone(), mapping);
@@ -413,7 +422,9 @@ impl Drop for OscSystem {
 fn msg_address(msg: &OscInMessage) -> String {
     match msg {
         OscInMessage::Param { name, .. } => format!("/phosphor/param/{name}"),
-        OscInMessage::LayerParam { layer, name, .. } => format!("/phosphor/layer/{layer}/param/{name}"),
+        OscInMessage::LayerParam { layer, name, .. } => {
+            format!("/phosphor/layer/{layer}/param/{name}")
+        }
         OscInMessage::Trigger(action) => format!("/phosphor/trigger/{}", trigger_slug(action)),
         OscInMessage::LayerOpacity { layer, .. } => format!("/phosphor/layer/{layer}/opacity"),
         OscInMessage::LayerBlend { layer, .. } => format!("/phosphor/layer/{layer}/blend"),
@@ -487,13 +498,20 @@ mod tests {
 
     #[test]
     fn msg_address_param() {
-        let msg = OscInMessage::Param { name: "speed".into(), value: 0.5 };
+        let msg = OscInMessage::Param {
+            name: "speed".into(),
+            value: 0.5,
+        };
         assert_eq!(msg_address(&msg), "/phosphor/param/speed");
     }
 
     #[test]
     fn msg_address_layer_param() {
-        let msg = OscInMessage::LayerParam { layer: 2, name: "intensity".into(), value: 0.5 };
+        let msg = OscInMessage::LayerParam {
+            layer: 2,
+            name: "intensity".into(),
+            value: 0.5,
+        };
         assert_eq!(msg_address(&msg), "/phosphor/layer/2/param/intensity");
     }
 
@@ -507,7 +525,10 @@ mod tests {
 
     #[test]
     fn msg_address_layer_opacity() {
-        let msg = OscInMessage::LayerOpacity { layer: 3, value: 0.5 };
+        let msg = OscInMessage::LayerOpacity {
+            layer: 3,
+            value: 0.5,
+        };
         assert_eq!(msg_address(&msg), "/phosphor/layer/3/opacity");
     }
 
@@ -519,7 +540,10 @@ mod tests {
 
     #[test]
     fn msg_address_layer_enabled() {
-        let msg = OscInMessage::LayerEnabled { layer: 0, value: true };
+        let msg = OscInMessage::LayerEnabled {
+            layer: 0,
+            value: true,
+        };
         assert_eq!(msg_address(&msg), "/phosphor/layer/0/enabled");
     }
 
@@ -531,7 +555,10 @@ mod tests {
 
     #[test]
     fn msg_address_raw() {
-        let msg = OscInMessage::Raw { address: "/custom/addr".into(), value: 1.0 };
+        let msg = OscInMessage::Raw {
+            address: "/custom/addr".into(),
+            value: 1.0,
+        };
         assert_eq!(msg_address(&msg), "/custom/addr");
     }
 

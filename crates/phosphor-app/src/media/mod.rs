@@ -438,8 +438,7 @@ impl MediaLayer {
         self.output_target.resize(device, width, height);
 
         // Recompute letterbox
-        let uniforms =
-            compute_media_uniforms(self.media_width, self.media_height, width, height);
+        let uniforms = compute_media_uniforms(self.media_width, self.media_height, width, height);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // Rebuild bind group (output_target view changed but frame texture/sampler/uniform didn't)
@@ -521,7 +520,11 @@ impl MediaLayer {
     /// Current playback position in seconds (computed from current_frame).
     pub fn position_secs(&self) -> f64 {
         if let MediaSource::Animated { delays_ms, .. } = &self.source {
-            let ms: f64 = delays_ms.iter().take(self.current_frame).map(|&d| d as f64).sum();
+            let ms: f64 = delays_ms
+                .iter()
+                .take(self.current_frame)
+                .map(|&d| d as f64)
+                .sum();
             ms / 1000.0
         } else {
             0.0

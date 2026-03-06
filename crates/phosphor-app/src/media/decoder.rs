@@ -17,10 +17,7 @@ pub enum MediaSource {
     },
     /// Live webcam feed — frames arrive from capture thread, not stored here.
     #[cfg(feature = "webcam")]
-    Live {
-        width: u32,
-        height: u32,
-    },
+    Live { width: u32, height: u32 },
 }
 
 impl MediaSource {
@@ -93,7 +90,7 @@ pub fn load_media(path: &Path) -> Result<MediaSource, String> {
 /// Load a video file by pre-decoding all frames via ffmpeg.
 #[cfg(feature = "video")]
 fn load_video(path: &Path) -> Result<MediaSource, String> {
-    use super::video::{ffmpeg_available, probe_video, decode_all_frames, MAX_PREDECODE_SECS};
+    use super::video::{MAX_PREDECODE_SECS, decode_all_frames, ffmpeg_available, probe_video};
 
     if !ffmpeg_available() {
         return Err("ffmpeg/ffprobe not found on PATH".to_string());
@@ -112,8 +109,7 @@ fn load_video(path: &Path) -> Result<MediaSource, String> {
         return Err(format!(
             "Video too long for pre-decode ({:.0}s > {:.0}s max). \
              Use a shorter clip or trim with ffmpeg.",
-            meta.duration_secs,
-            MAX_PREDECODE_SECS,
+            meta.duration_secs, MAX_PREDECODE_SECS,
         ));
     }
 
@@ -158,7 +154,10 @@ fn load_gif(path: &Path) -> Result<MediaSource, String> {
     // Accumulator for compositing (GIF frames can be partial updates)
     let mut canvas = vec![0u8; (width * height * 4) as usize];
 
-    while let Some(frame) = reader.read_next_frame().map_err(|e| format!("GIF frame error: {e}"))? {
+    while let Some(frame) = reader
+        .read_next_frame()
+        .map_err(|e| format!("GIF frame error: {e}"))?
+    {
         let delay = frame.delay as u32 * 10; // GIF delay is in centiseconds
         delays_ms.push(delay.max(20)); // minimum 20ms to prevent zero-delay
 
@@ -195,12 +194,7 @@ fn load_gif(path: &Path) -> Result<MediaSource, String> {
         return Err("GIF has no frames".to_string());
     }
 
-    log::info!(
-        "Loaded GIF: {}x{}, {} frames",
-        width,
-        height,
-        frames.len()
-    );
+    log::info!("Loaded GIF: {}x{}, {} frames", width, height, frames.len());
 
     Ok(MediaSource::Animated {
         frames,
@@ -217,8 +211,8 @@ fn load_webp(path: &Path) -> Result<MediaSource, String> {
     use std::io::BufReader;
 
     let file = File::open(path).map_err(|e| format!("Failed to open WebP: {e}"))?;
-    let mut decoder =
-        WebPDecoder::new(BufReader::new(file)).map_err(|e| format!("Failed to decode WebP: {e}"))?;
+    let mut decoder = WebPDecoder::new(BufReader::new(file))
+        .map_err(|e| format!("Failed to decode WebP: {e}"))?;
 
     let (width, height) = decoder.dimensions();
 
@@ -239,7 +233,11 @@ fn load_webp(path: &Path) -> Result<MediaSource, String> {
             rgb_to_rgba(&buf)
         };
 
-        return Ok(MediaSource::Static(DecodedFrame { data, width, height }));
+        return Ok(MediaSource::Static(DecodedFrame {
+            data,
+            width,
+            height,
+        }));
     }
 
     // Animated WebP — decode all frames
@@ -262,7 +260,11 @@ fn load_webp(path: &Path) -> Result<MediaSource, String> {
                     rgb_to_rgba(&buf)
                 };
 
-                frames.push(DecodedFrame { data, width, height });
+                frames.push(DecodedFrame {
+                    data,
+                    width,
+                    height,
+                });
             }
             Err(_) => break, // NoMoreFrames
         }

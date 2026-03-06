@@ -249,7 +249,9 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 fn ihash_f(x: i32, y: i32, z: i32) -> f32 {
     let mut n = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ z.wrapping_mul(83492791);
     n = (n >> 13) ^ n;
-    n = n.wrapping_mul(n.wrapping_mul(n.wrapping_mul(60493)).wrapping_add(19990303)).wrapping_add(1376312589);
+    n = n
+        .wrapping_mul(n.wrapping_mul(n.wrapping_mul(60493)).wrapping_add(19990303))
+        .wrapping_add(1376312589);
     (n as u32 as f32) / (u32::MAX as f32)
 }
 
@@ -317,9 +319,8 @@ mod tests {
                 assert!(v.abs() < 0.001, "zero should roundtrip");
                 continue;
             }
-            let reconstructed = (-1.0f32).powf(sign)
-                * 2.0f32.powi(exp - 15)
-                * (1.0 + frac / 1024.0);
+            let reconstructed =
+                (-1.0f32).powf(sign) * 2.0f32.powi(exp - 15) * (1.0 + frac / 1024.0);
             let error = (reconstructed - v).abs();
             assert!(
                 error < 0.01,

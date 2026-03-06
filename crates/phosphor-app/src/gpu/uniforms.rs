@@ -4,7 +4,7 @@ use wgpu::{
     Device, Queue, Sampler, TextureView,
 };
 
-/// Shader uniforms packed for GPU consumption (256 bytes).
+/// Shader uniforms packed for GPU consumption (288 bytes).
 /// Must be kept in sync with the WGSL `PhosphorUniforms` struct.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -49,8 +49,19 @@ pub struct ShaderUniforms {
     pub frame_index: f32,
     // 8 bytes (168 total)
 
-    // Padding to 256 bytes
-    pub _pad: [f32; 22],
+    // Derived audio features
+    pub dominant_chroma: f32,
+    // Align to 16-byte boundary for GPU array types
+    pub _pad_align: f32,
+    // 8 bytes (176 total)
+
+    // MFCC: 13 coefficients + 3 padding (array<vec4f, 4> on GPU)
+    pub mfcc: [f32; 16],
+    // 64 bytes (240 total)
+
+    // Chroma: 12 pitch class energies (array<vec4f, 3> on GPU)
+    pub chroma: [f32; 12],
+    // 48 bytes (288 total)
 }
 
 pub struct UniformBuffer {
@@ -106,8 +117,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_uniforms_size_256() {
-        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 256);
+    fn shader_uniforms_size_288() {
+        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 288);
     }
 
     #[test]

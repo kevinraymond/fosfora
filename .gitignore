@@ -4,5 +4,4 @@
 *~
 .DS_Store
 Thumbs.db
-.claude/*
-!.claude/CLAUDE.md
+.claude/

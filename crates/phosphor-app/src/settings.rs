@@ -2,12 +2,59 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui::theme::ThemeMode;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParticleQuality {
+    Low,
+    Medium,
+    High,
+    Ultra,
+    Max,
+}
+
+impl ParticleQuality {
+    pub const ALL: &[ParticleQuality] = &[
+        ParticleQuality::Low,
+        ParticleQuality::Medium,
+        ParticleQuality::High,
+        ParticleQuality::Ultra,
+        ParticleQuality::Max,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Low => "Low (0.25x)",
+            Self::Medium => "Medium (0.5x)",
+            Self::High => "High (1x)",
+            Self::Ultra => "Ultra (2x)",
+            Self::Max => "Max (4x)",
+        }
+    }
+
+    pub fn multiplier(self) -> f32 {
+        match self {
+            Self::Low => 0.25,
+            Self::Medium => 0.5,
+            Self::High => 1.0,
+            Self::Ultra => 2.0,
+            Self::Max => 4.0,
+        }
+    }
+}
+
+impl Default for ParticleQuality {
+    fn default() -> Self {
+        Self::High
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsConfig {
     pub version: u32,
     pub theme: ThemeMode,
     #[serde(default)]
     pub audio_device: Option<String>,
+    #[serde(default)]
+    pub particle_quality: ParticleQuality,
 }
 
 impl Default for SettingsConfig {
@@ -16,6 +63,7 @@ impl Default for SettingsConfig {
             version: 1,
             theme: ThemeMode::Dark,
             audio_device: None,
+            particle_quality: ParticleQuality::default(),
         }
     }
 }
@@ -78,9 +126,30 @@ mod tests {
     // ---- Additional tests ----
 
     #[test]
+    fn particle_quality_serde_roundtrip() {
+        for &q in ParticleQuality::ALL {
+            let json = serde_json::to_string(&q).unwrap();
+            let q2: ParticleQuality = serde_json::from_str(&json).unwrap();
+            assert_eq!(q, q2);
+        }
+    }
+
+    #[test]
+    fn particle_quality_default_from_missing_field() {
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.particle_quality, ParticleQuality::High);
+    }
+
+    #[test]
     fn settings_config_all_themes_roundtrip() {
         for mode in ThemeMode::ALL {
-            let c = SettingsConfig { version: 1, theme: *mode, audio_device: None };
+            let c = SettingsConfig {
+                version: 1,
+                theme: *mode,
+                audio_device: None,
+                particle_quality: ParticleQuality::default(),
+            };
             let json = serde_json::to_string(&c).unwrap();
             let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
             assert_eq!(c2.theme, *mode);
@@ -89,7 +158,12 @@ mod tests {
 
     #[test]
     fn settings_config_non_default_theme_persists() {
-        let c = SettingsConfig { version: 1, theme: ThemeMode::HighContrast, audio_device: None };
+        let c = SettingsConfig {
+            version: 1,
+            theme: ThemeMode::HighContrast,
+            audio_device: None,
+            particle_quality: ParticleQuality::default(),
+        };
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(c2.theme, ThemeMode::HighContrast);

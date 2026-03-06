@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Emitter shape and position definition for .pfx files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EmitterDef {
     #[serde(default = "default_shape")]
     pub shape: String,
@@ -12,6 +12,10 @@ pub struct EmitterDef {
     /// Image file path (relative to assets/images/) for "image" shape emitters.
     #[serde(default)]
     pub image: String,
+    /// Video file path (relative to assets/videos/) or "webcam" for live source.
+    /// Only used with "image" shape emitters.
+    #[serde(default)]
+    pub video: String,
 }
 
 impl Default for EmitterDef {
@@ -21,6 +25,7 @@ impl Default for EmitterDef {
             radius: 0.0,
             position: [0.0, 0.0],
             image: String::new(),
+            video: String::new(),
         }
     }
 }
@@ -38,6 +43,8 @@ impl EmitterDef {
             "line" => 2,
             "screen" => 3,
             "image" => 4,
+            "disc" => 5,
+            "cone" => 6,
             _ => 0,
         }
     }
@@ -55,6 +62,8 @@ mod tests {
             ("line", 2),
             ("screen", 3),
             ("image", 4),
+            ("disc", 5),
+            ("cone", 6),
             ("unknown", 0),
         ];
         for (shape, expected) in cases {
@@ -73,6 +82,7 @@ mod tests {
         assert_eq!(e.radius, 0.0);
         assert_eq!(e.position, [0.0, 0.0]);
         assert!(e.image.is_empty());
+        assert!(e.video.is_empty());
     }
 
     #[test]
@@ -82,11 +92,30 @@ mod tests {
             radius: 0.5,
             position: [0.1, 0.2],
             image: "test.png".into(),
+            video: String::new(),
         };
         let json = serde_json::to_string(&e).unwrap();
         let e2: EmitterDef = serde_json::from_str(&json).unwrap();
         assert_eq!(e2.shape, "ring");
         assert!((e2.radius - 0.5).abs() < 1e-6);
         assert_eq!(e2.image, "test.png");
+        assert!(e2.video.is_empty());
+    }
+
+    #[test]
+    fn emitter_def_serde_with_video() {
+        let json = r#"{"shape":"image","image":"logo.png","video":"clip.mp4"}"#;
+        let e: EmitterDef = serde_json::from_str(json).unwrap();
+        assert_eq!(e.shape, "image");
+        assert_eq!(e.image, "logo.png");
+        assert_eq!(e.video, "clip.mp4");
+    }
+
+    #[test]
+    fn emitter_def_serde_video_defaults() {
+        // Old-format JSON without video field should still parse
+        let json = r#"{"shape":"image","image":"logo.png"}"#;
+        let e: EmitterDef = serde_json::from_str(json).unwrap();
+        assert!(e.video.is_empty());
     }
 }

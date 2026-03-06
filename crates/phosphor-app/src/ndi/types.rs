@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn output_resolution_fixed() {
         assert_eq!(OutputResolution::Res720p.dimensions(800, 600), (1280, 720));
-        assert_eq!(OutputResolution::Res1080p.dimensions(800, 600), (1920, 1080));
+        assert_eq!(
+            OutputResolution::Res1080p.dimensions(800, 600),
+            (1920, 1080)
+        );
         assert_eq!(OutputResolution::Res4K.dimensions(800, 600), (3840, 2160));
     }
 

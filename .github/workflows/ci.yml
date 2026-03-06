@@ -38,6 +38,8 @@ jobs:
         run: cargo clippy --all-targets --features video
       - name: Clippy (webcam feature)
         run: cargo clippy --all-targets --features webcam
+      - name: Clippy (depth feature)
+        run: cargo clippy --all-targets --features depth
 
   test:
     name: Test
@@ -54,6 +56,8 @@ jobs:
         run: cargo test --features video
       - name: Test (webcam feature)
         run: cargo test --features webcam
+      - name: Test (depth feature)
+        run: cargo test --features depth
 
   build:
     name: Build (${{ matrix.name }})
@@ -91,31 +95,34 @@ jobs:
         run: cargo build --target ${{ matrix.target }} --features video
       - name: Build (webcam feature)
         run: cargo build --target ${{ matrix.target }} --features webcam
+      - name: Build (depth feature)
+        run: cargo build --target ${{ matrix.target }} --features depth
       - name: Build (all features)
         run: cargo build --target ${{ matrix.target }} --features "video,webcam,ndi"
 
-      - name: Upload binary (Linux)
+      - name: Stage artifact (Linux)
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: phosphor-ci-${{ matrix.target }}
-          path: target/${{ matrix.target }}/debug/phosphor-app
-          retention-days: 7
-
-      - name: Upload binary (macOS)
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/debug/phosphor-app staging/
+          cp -r assets staging/
+      - name: Stage artifact (macOS)
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: phosphor-ci-${{ matrix.target }}
-          path: target/${{ matrix.target }}/debug/phosphor-app
-          retention-days: 7
-
-      - name: Upload binary (Windows)
+        run: |
+          mkdir -p staging
+          cp target/${{ matrix.target }}/debug/phosphor-app staging/
+          cp -r assets staging/
+      - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
+        run: |
+          mkdir staging
+          copy target\${{ matrix.target }}\debug\phosphor-app.exe staging\
+          xcopy assets staging\assets\ /E /I /Q
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: phosphor-ci-${{ matrix.target }}
-          path: target/${{ matrix.target }}/debug/phosphor-app.exe
+          path: staging/
           retention-days: 7
 
   tag-release:

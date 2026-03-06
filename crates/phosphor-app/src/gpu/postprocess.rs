@@ -125,10 +125,10 @@ impl PostProcessChain {
         let composite_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("post-composite-bgl"),
             entries: &[
-                tex_entry(0),       // scene
-                sampler_entry(1),   // scene sampler
-                tex_entry(2),       // bloom
-                sampler_entry(3),   // bloom sampler
+                tex_entry(0),     // scene
+                sampler_entry(1), // scene sampler
+                tex_entry(2),     // bloom
+                sampler_entry(3), // bloom sampler
                 uniform_entry(4, std::mem::size_of::<PostParams>()),
             ],
         });
@@ -149,10 +149,14 @@ impl PostProcessChain {
             create_fs_pipeline(device, "post-blit", &blit_bgl, BLIT_FS, surface_format);
 
         // Uniform buffers
-        let bloom_params_buffer = create_uniform_buffer(device, "bloom-params", std::mem::size_of::<BloomParams>());
-        let blur_h_params_buffer = create_uniform_buffer(device, "blur-h-params", std::mem::size_of::<BlurParams>());
-        let blur_v_params_buffer = create_uniform_buffer(device, "blur-v-params", std::mem::size_of::<BlurParams>());
-        let post_params_buffer = create_uniform_buffer(device, "post-params", std::mem::size_of::<PostParams>());
+        let bloom_params_buffer =
+            create_uniform_buffer(device, "bloom-params", std::mem::size_of::<BloomParams>());
+        let blur_h_params_buffer =
+            create_uniform_buffer(device, "blur-h-params", std::mem::size_of::<BlurParams>());
+        let blur_v_params_buffer =
+            create_uniform_buffer(device, "blur-v-params", std::mem::size_of::<BlurParams>());
+        let post_params_buffer =
+            create_uniform_buffer(device, "post-params", std::mem::size_of::<PostParams>());
 
         Self {
             enabled: true,
@@ -225,7 +229,11 @@ impl PostProcessChain {
             rms,
             _pad: 0.0,
         };
-        queue.write_buffer(&self.bloom_params_buffer, 0, bytemuck::bytes_of(&bloom_params));
+        queue.write_buffer(
+            &self.bloom_params_buffer,
+            0,
+            bytemuck::bytes_of(&bloom_params),
+        );
 
         // Blur directions in texel units
         let blur_w = self.bloom_extract_target.width as f32;
@@ -238,22 +246,50 @@ impl PostProcessChain {
             direction: [0.0, 1.0 / blur_h],
             _pad: [0.0; 2],
         };
-        queue.write_buffer(&self.blur_h_params_buffer, 0, bytemuck::bytes_of(&blur_h_params));
-        queue.write_buffer(&self.blur_v_params_buffer, 0, bytemuck::bytes_of(&blur_v_params));
+        queue.write_buffer(
+            &self.blur_h_params_buffer,
+            0,
+            bytemuck::bytes_of(&blur_h_params),
+        );
+        queue.write_buffer(
+            &self.blur_v_params_buffer,
+            0,
+            bytemuck::bytes_of(&blur_v_params),
+        );
 
         let bloom_active = overrides.bloom_enabled;
 
         let post_params = PostParams {
-            bloom_intensity: if bloom_active { overrides.bloom_intensity } else { 0.0 },
-            ca_intensity: if overrides.ca_enabled { onset * overrides.ca_intensity * 0.03 } else { 0.0 },
-            vignette_strength: if overrides.vignette_enabled { overrides.vignette } else { 0.0 },
-            grain_intensity: if overrides.grain_enabled { flatness * overrides.grain_intensity * 0.08 } else { 0.0 },
+            bloom_intensity: if bloom_active {
+                overrides.bloom_intensity
+            } else {
+                0.0
+            },
+            ca_intensity: if overrides.ca_enabled {
+                onset * overrides.ca_intensity * 0.03
+            } else {
+                0.0
+            },
+            vignette_strength: if overrides.vignette_enabled {
+                overrides.vignette
+            } else {
+                0.0
+            },
+            grain_intensity: if overrides.grain_enabled {
+                flatness * overrides.grain_intensity * 0.08
+            } else {
+                0.0
+            },
             time,
             rms,
             alpha_from_luma: if alpha_from_luma { 1.0 } else { 0.0 },
             _pad: 0.0,
         };
-        queue.write_buffer(&self.post_params_buffer, 0, bytemuck::bytes_of(&post_params));
+        queue.write_buffer(
+            &self.post_params_buffer,
+            0,
+            bytemuck::bytes_of(&post_params),
+        );
 
         // --- Bloom passes (skip all 3 when bloom disabled) ---
         if bloom_active {

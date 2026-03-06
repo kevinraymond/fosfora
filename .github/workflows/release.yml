@@ -45,7 +45,7 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.target }}-v2
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam"
+        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam,depth"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

@@ -1,7 +1,7 @@
 use egui::{Color32, RichText, Ui};
 
-use crate::midi::types::{LearnTarget, MidiMsgType, TriggerAction};
 use crate::midi::MidiSystem;
+use crate::midi::types::{LearnTarget, MidiMsgType, TriggerAction};
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
 
@@ -12,52 +12,27 @@ const TRIGGER_PAIRS: &[(TriggerAction, TriggerAction)] = &[
     (TriggerAction::NextEffect, TriggerAction::PrevEffect),
     (TriggerAction::NextPreset, TriggerAction::PrevPreset),
     (TriggerAction::NextLayer, TriggerAction::PrevLayer),
-    (TriggerAction::TogglePostProcess, TriggerAction::ToggleOverlay),
+    (
+        TriggerAction::TogglePostProcess,
+        TriggerAction::ToggleOverlay,
+    ),
     (TriggerAction::SceneGoNext, TriggerAction::SceneGoPrev),
 ];
 
 pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
     let tc = theme_colors(ui.ctx());
 
-    // Enable + activity on one row
-    ui.horizontal(|ui| {
-        let mut enabled = midi.config.enabled;
-        if ui
-            .checkbox(&mut enabled, RichText::new("Enable MIDI").size(SMALL_SIZE))
-            .changed()
-        {
-            midi.set_enabled(enabled);
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Last message summary (right-aligned)
-            if let Some(msg) = midi.last_message {
-                ui.label(
-                    RichText::new(format!(
-                        "CC#{} v:{}",
-                        msg.number, msg.value
-                    ))
-                    .size(SMALL_SIZE)
-                    .color(tc.text_secondary),
-                );
-            }
-            // Activity dot
-            let color = if midi.is_recently_active() {
-                tc.success
-            } else if midi.connected_port().is_some() {
-                Color32::from_rgb(0x55, 0x55, 0x55)
-            } else {
-                Color32::from_rgb(0x33, 0x33, 0x33)
-            };
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), 4.0, color);
-        });
-    });
+    // Enable checkbox
+    let mut enabled = midi.config.enabled;
+    if ui
+        .checkbox(&mut enabled, RichText::new("Enable MIDI").size(SMALL_SIZE))
+        .changed()
+    {
+        midi.set_enabled(enabled);
+    }
 
     // Port selector
-    let current_label = midi
-        .connected_port()
-        .unwrap_or("Not connected")
-        .to_string();
+    let current_label = midi.connected_port().unwrap_or("Not connected").to_string();
 
     egui::ComboBox::from_id_salt("midi_port")
         .selected_text(RichText::new(&current_label).size(SMALL_SIZE))
@@ -76,7 +51,12 @@ pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
                 }
             }
             if midi.available_ports.is_empty() {
-                ui.label(RichText::new("No MIDI ports").weak().italics().size(SMALL_SIZE));
+                ui.label(
+                    RichText::new("No MIDI ports")
+                        .weak()
+                        .italics()
+                        .size(SMALL_SIZE),
+                );
             }
         });
 
@@ -94,23 +74,47 @@ pub fn draw_midi_panel(ui: &mut Ui, midi: &mut MidiSystem) {
     }
 
     // Triggers
-    ui.separator();
+    ui.add_space(4.0);
     ui.label(
         RichText::new("TRIGGERS")
-            .size(HEADING_SIZE)
-            .color(tc.text_secondary)
-            .strong(),
+            .size(8.0)
+            .color(tc.text_secondary),
     );
+    ui.add_space(2.0);
 
+    let half = ui.available_width() / 2.0;
+    let label_w = 52.0;
+    let badge_w = half - label_w - 8.0; // remaining space for badge
     egui::Grid::new("midi_triggers")
         .num_columns(4)
-        .spacing([4.0, 2.0])
+        .min_col_width(0.0)
+        .spacing([4.0, 3.0])
         .show(ui, |ui| {
             for (left, right) in TRIGGER_PAIRS {
-                ui.label(RichText::new(left.short_name()).size(SMALL_SIZE));
-                draw_trigger_badge(ui, midi, *left);
-                ui.label(RichText::new(right.short_name()).size(SMALL_SIZE));
-                draw_trigger_badge(ui, midi, *right);
+                ui.add_sized(
+                    [label_w, MIN_INTERACT_HEIGHT],
+                    egui::Label::new(
+                        RichText::new(left.short_name())
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    ),
+                );
+                ui.add_sized([badge_w, MIN_INTERACT_HEIGHT], |ui: &mut Ui| {
+                    ui.horizontal(|ui| draw_trigger_badge(ui, midi, *left))
+                        .response
+                });
+                ui.add_sized(
+                    [label_w, MIN_INTERACT_HEIGHT],
+                    egui::Label::new(
+                        RichText::new(right.short_name())
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    ),
+                );
+                ui.add_sized([badge_w, MIN_INTERACT_HEIGHT], |ui: &mut Ui| {
+                    ui.horizontal(|ui| draw_trigger_badge(ui, midi, *right))
+                        .response
+                });
                 ui.end_row();
             }
         });

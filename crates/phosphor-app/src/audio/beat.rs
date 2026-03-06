@@ -1,8 +1,8 @@
 //! 3-stage beat detection pipeline: OnsetDetector → TempoEstimator → BeatScheduler.
 //! Ported from easey-glyph's Python implementation.
 
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -60,8 +60,8 @@ impl CircularBuffer {
         let mut vals = self.values();
         vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = vals.len() / 2;
-        if vals.len() % 2 == 0 {
-            (vals[mid - 1] + vals[mid]) / 2.0
+        if vals.len().is_multiple_of(2) {
+            f64::midpoint(vals[mid - 1], vals[mid])
         } else {
             vals[mid]
         }
@@ -75,8 +75,8 @@ impl CircularBuffer {
         let mut abs_devs: Vec<f64> = self.values().iter().map(|v| (v - med).abs()).collect();
         abs_devs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = abs_devs.len() / 2;
-        if abs_devs.len() % 2 == 0 {
-            (abs_devs[mid - 1] + abs_devs[mid]) / 2.0
+        if abs_devs.len().is_multiple_of(2) {
+            f64::midpoint(abs_devs[mid - 1], abs_devs[mid])
         } else {
             abs_devs[mid]
         }
@@ -92,10 +92,7 @@ impl CircularBuffer {
                 .cloned()
                 .fold(f64::NEG_INFINITY, f64::max)
         } else {
-            self.buf
-                .iter()
-                .cloned()
-                .fold(f64::NEG_INFINITY, f64::max)
+            self.buf.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
         }
     }
 
@@ -159,9 +156,9 @@ impl OnsetDetector {
     /// Process multi-resolution spectra and return (is_onset, onset_strength, combined_flux).
     fn process(
         &mut self,
-        bass_spectrum: &[f32],  // 4096-pt FFT magnitudes (num_bins)
-        mid_spectrum: &[f32],   // 1024-pt FFT magnitudes
-        high_spectrum: &[f32],  // 512-pt FFT magnitudes
+        bass_spectrum: &[f32], // 4096-pt FFT magnitudes (num_bins)
+        mid_spectrum: &[f32],  // 1024-pt FFT magnitudes
+        high_spectrum: &[f32], // 512-pt FFT magnitudes
         rms: f32,
     ) -> (bool, f32, f64) {
         // Silence gate
@@ -328,7 +325,8 @@ impl KalmanBpm {
             if self.snap_count >= 30 {
                 log::debug!(
                     "Kalman snap escape: accepting {:.1} BPM after {} consecutive snaps",
-                    raw_bpm, self.snap_count
+                    raw_bpm,
+                    self.snap_count
                 );
                 snapped_bpm = raw_bpm;
                 was_snapped = false;
@@ -469,7 +467,7 @@ impl TempoEstimator {
         }
 
         // Compute autocorrelation every ~6 frames (~16Hz update rate)
-        if self.frame_count % 6 != 0 {
+        if !self.frame_count.is_multiple_of(6) {
             let period_s = self.current_period_frames * self.frame_time;
             return (self.current_bpm, self.current_confidence, period_s);
         }
@@ -526,7 +524,7 @@ impl TempoEstimator {
         self.fft_forward.process(&mut buffer);
 
         // Power spectrum |X|^2 — standard autocorrelation (Wiener-Khinchin)
-        for c in buffer.iter_mut() {
+        for c in &mut buffer {
             let power = c.norm_sqr();
             *c = Complex::new(power, 0.0);
         }
@@ -610,7 +608,10 @@ impl TempoEstimator {
             let new_bpm = 60.0 / (best_candidate_lag as f64 * self.frame_time);
             log::debug!(
                 "Multi-ratio correction: lag {} ({:.1} BPM) -> lag {} ({:.1} BPM)",
-                best_lag, old_bpm, best_candidate_lag, new_bpm
+                best_lag,
+                old_bpm,
+                best_candidate_lag,
+                new_bpm
             );
         }
 
@@ -631,11 +632,7 @@ impl TempoEstimator {
 
         // Convert to BPM
         let period_s = refined_lag * self.frame_time;
-        let bpm = if period_s > 0.0 {
-            60.0 / period_s
-        } else {
-            0.0
-        };
+        let bpm = if period_s > 0.0 { 60.0 / period_s } else { 0.0 };
 
         // Confidence: peak height relative to noise floor in the BPM range
         // Generalized autocorrelation (|FFT|^1) gives lower absolute values than
@@ -643,10 +640,13 @@ impl TempoEstimator {
         let confidence = if best_lag <= acr_max {
             let range_end = max_lag.min(acr_max);
             let mut sorted_vals: Vec<f64> = autocorr[min_lag..=range_end].to_vec();
-            sorted_vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted_vals
+                .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let noise_floor = sorted_vals[sorted_vals.len() / 2]; // median
             let peak = autocorr[best_lag];
-            ((peak - noise_floor) / (1.0 - noise_floor).max(1e-6)).max(0.0).min(1.0)
+            ((peak - noise_floor) / (1.0 - noise_floor).max(1e-6))
+                .max(0.0)
+                .min(1.0)
         } else {
             0.0
         };
@@ -657,7 +657,9 @@ impl TempoEstimator {
 
         log::debug!(
             "Tempo estimate: {:.1} BPM (confidence {:.2}, lag {:.1})",
-            bpm, confidence, refined_lag
+            bpm,
+            confidence,
+            refined_lag
         );
 
         (bpm, confidence, refined_lag)
@@ -898,9 +900,7 @@ impl BeatScheduler {
         self.phase = (elapsed / self.period) % 1.0;
 
         let mut missed = 0u32;
-        while self.next_predicted > 0.0
-            && timestamp > self.next_predicted + self.beat_window
-        {
+        while self.next_predicted > 0.0 && timestamp > self.next_predicted + self.beat_window {
             self.consecutive_misses += 1;
             missed += 1;
             self.next_predicted += self.period;
@@ -991,12 +991,9 @@ impl BeatDetector {
         self.last_timestamp = timestamp;
 
         // Stage 1: Onset detection
-        let (is_onset, onset_strength, combined_flux) = self.onset_detector.process(
-            bass_spectrum,
-            mid_spectrum,
-            high_spectrum,
-            rms,
-        );
+        let (is_onset, onset_strength, combined_flux) =
+            self.onset_detector
+                .process(bass_spectrum, mid_spectrum, high_spectrum, rms);
 
         // Apply onset cooldown
         let mut onset_gated = is_onset;
@@ -1008,8 +1005,7 @@ impl BeatDetector {
         }
 
         // Stage 2: Tempo estimation
-        let (bpm, confidence, period_s) =
-            self.tempo_estimator.update(combined_flux, timestamp);
+        let (bpm, confidence, period_s) = self.tempo_estimator.update(combined_flux, timestamp);
 
         // Stage 3: Beat scheduling
         self.beat_scheduler.update_tempo(bpm, period_s, confidence);
@@ -1052,8 +1048,12 @@ impl BeatDetector {
 mod tests {
     use super::*;
 
-    fn approx_eq(a: f32, b: f32, eps: f32) -> bool { (a - b).abs() < eps }
-    fn approx_eq_f64(a: f64, b: f64, eps: f64) -> bool { (a - b).abs() < eps }
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
+    fn approx_eq_f64(a: f64, b: f64, eps: f64) -> bool {
+        (a - b).abs() < eps
+    }
 
     // ---- CircularBuffer tests ----
 
@@ -1089,7 +1089,9 @@ mod tests {
     #[test]
     fn circular_buffer_median_odd() {
         let mut buf = CircularBuffer::new(5);
-        for v in [3.0, 1.0, 4.0, 1.0, 5.0] { buf.push(v); }
+        for v in [3.0, 1.0, 4.0, 1.0, 5.0] {
+            buf.push(v);
+        }
         // sorted: [1.0, 1.0, 3.0, 4.0, 5.0], median = 3.0
         assert!(approx_eq_f64(buf.median(), 3.0, 1e-10));
     }
@@ -1097,7 +1099,9 @@ mod tests {
     #[test]
     fn circular_buffer_median_even() {
         let mut buf = CircularBuffer::new(4);
-        for v in [1.0, 2.0, 3.0, 4.0] { buf.push(v); }
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            buf.push(v);
+        }
         // sorted: [1.0, 2.0, 3.0, 4.0], median = (2.0+3.0)/2 = 2.5
         assert!(approx_eq_f64(buf.median(), 2.5, 1e-10));
     }
@@ -1111,7 +1115,9 @@ mod tests {
     #[test]
     fn circular_buffer_mad() {
         let mut buf = CircularBuffer::new(5);
-        for v in [1.0, 2.0, 3.0, 4.0, 5.0] { buf.push(v); }
+        for v in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            buf.push(v);
+        }
         // median=3.0, deviations=[2,1,0,1,2], sorted=[0,1,1,2,2], mad=1.0
         assert!(approx_eq_f64(buf.mad(), 1.0, 1e-10));
     }
@@ -1119,7 +1125,9 @@ mod tests {
     #[test]
     fn circular_buffer_max() {
         let mut buf = CircularBuffer::new(5);
-        for v in [1.0, 5.0, 3.0] { buf.push(v); }
+        for v in [1.0, 5.0, 3.0] {
+            buf.push(v);
+        }
         assert!(approx_eq_f64(buf.max(), 5.0, 1e-10));
     }
 
@@ -1132,7 +1140,9 @@ mod tests {
     #[test]
     fn circular_buffer_mean() {
         let mut buf = CircularBuffer::new(5);
-        for v in [2.0, 4.0, 6.0] { buf.push(v); }
+        for v in [2.0, 4.0, 6.0] {
+            buf.push(v);
+        }
         assert!(approx_eq_f64(buf.mean(), 4.0, 1e-10));
     }
 
@@ -1201,8 +1211,8 @@ mod tests {
     fn onset_silence_gate() {
         let mut od = OnsetDetector::new(44100.0, 50, 400);
         let bass = vec![0.0; 2049]; // 4096-pt fft
-        let mid = vec![0.0; 513];   // 1024-pt fft
-        let high = vec![0.0; 257];  // 512-pt fft
+        let mid = vec![0.0; 513]; // 1024-pt fft
+        let high = vec![0.0; 257]; // 512-pt fft
         let (is_onset, strength, _) = od.process(&bass, &mid, &high, 0.0);
         assert!(!is_onset);
         assert!(approx_eq(strength, 0.0, 1e-6));
@@ -1271,9 +1281,9 @@ mod tests {
         let sample_rate = 44100.0;
         let mut detector = BeatDetector::new(sample_rate);
 
-        let bass_len = 2049;  // 4096/2 + 1
-        let mid_len = 513;    // 1024/2 + 1
-        let high_len = 257;   // 512/2 + 1
+        let bass_len = 2049; // 4096/2 + 1
+        let mid_len = 513; // 1024/2 + 1
+        let high_len = 257; // 512/2 + 1
 
         let dt = 0.01; // 100 Hz frame rate
         let kick_interval = 60.0 / target_bpm;
@@ -1302,43 +1312,55 @@ mod tests {
             last_bpm = result.bpm;
         }
 
-        eprintln!("BPM convergence: target={target_bpm}, detected={last_bpm}, duration={duration_secs}s");
+        eprintln!(
+            "BPM convergence: target={target_bpm}, detected={last_bpm}, duration={duration_secs}s"
+        );
         last_bpm
     }
 
     #[test]
     fn bpm_converges_120() {
         let bpm = run_bpm_convergence_test(120.0, 8.0);
-        assert!(bpm > 102.0 && bpm < 138.0,
-            "120 BPM: expected 102-138, got {bpm}");
+        assert!(
+            bpm > 102.0 && bpm < 138.0,
+            "120 BPM: expected 102-138, got {bpm}"
+        );
     }
 
     #[test]
     fn bpm_converges_90() {
         let bpm = run_bpm_convergence_test(90.0, 10.0);
-        assert!(bpm > 72.0 && bpm < 108.0,
-            "90 BPM: expected 72-108, got {bpm}");
+        assert!(
+            bpm > 72.0 && bpm < 108.0,
+            "90 BPM: expected 72-108, got {bpm}"
+        );
     }
 
     #[test]
     fn bpm_converges_140() {
         let bpm = run_bpm_convergence_test(140.0, 10.0);
-        assert!(bpm > 112.0 && bpm < 168.0,
-            "140 BPM: expected 112-168, got {bpm}");
+        assert!(
+            bpm > 112.0 && bpm < 168.0,
+            "140 BPM: expected 112-168, got {bpm}"
+        );
     }
 
     #[test]
     fn bpm_converges_170() {
         let bpm = run_bpm_convergence_test(170.0, 10.0);
-        assert!(bpm > 136.0 && bpm < 204.0,
-            "170 BPM: expected 136-204, got {bpm}");
+        assert!(
+            bpm > 136.0 && bpm < 204.0,
+            "170 BPM: expected 136-204, got {bpm}"
+        );
     }
 
     #[test]
     fn bpm_converges_200() {
         let bpm = run_bpm_convergence_test(200.0, 10.0);
-        assert!(bpm > 160.0 && bpm < 240.0,
-            "200 BPM: expected 160-240, got {bpm}");
+        assert!(
+            bpm > 160.0 && bpm < 240.0,
+            "200 BPM: expected 160-240, got {bpm}"
+        );
     }
 
     #[test]

@@ -35,20 +35,15 @@ pub struct Compositor {
 }
 
 impl Compositor {
-    pub fn new(
-        device: &Device,
-        hdr_format: TextureFormat,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn new(device: &Device, hdr_format: TextureFormat, width: u32, height: u32) -> Self {
         // Composite pipeline: bg + fg + uniforms → blended output
         let composite_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("compositor-composite-bgl"),
             entries: &[
-                tex_entry(0),      // background
-                sampler_entry(1),  // bg sampler
-                tex_entry(2),      // foreground
-                sampler_entry(3),  // fg sampler
+                tex_entry(0),     // background
+                sampler_entry(1), // bg sampler
+                tex_entry(2),     // foreground
+                sampler_entry(3), // fg sampler
                 uniform_entry(4, std::mem::size_of::<CompositeUniforms>()),
             ],
         });
@@ -65,13 +60,8 @@ impl Compositor {
             label: Some("compositor-blit-bgl"),
             entries: &[tex_entry(0), sampler_entry(1)],
         });
-        let blit_pipeline = create_fs_pipeline(
-            device,
-            "compositor-blit",
-            &blit_bgl,
-            BLIT_FS,
-            hdr_format,
-        );
+        let blit_pipeline =
+            create_fs_pipeline(device, "compositor-blit", &blit_bgl, BLIT_FS, hdr_format);
 
         // One uniform buffer per composite pass (max 8: 1 for first-layer opacity + 7 for layers[1..])
         let uniform_buffers: Vec<wgpu::Buffer> = (0..8)
@@ -154,11 +144,15 @@ impl Compositor {
                 entries: &[
                     BindGroupEntry {
                         binding: 0,
-                        resource: BindingResource::TextureView(&self.accumulator.targets[bg_idx].view),
+                        resource: BindingResource::TextureView(
+                            &self.accumulator.targets[bg_idx].view,
+                        ),
                     },
                     BindGroupEntry {
                         binding: 1,
-                        resource: BindingResource::Sampler(&self.accumulator.targets[bg_idx].sampler),
+                        resource: BindingResource::Sampler(
+                            &self.accumulator.targets[bg_idx].sampler,
+                        ),
                     },
                     BindGroupEntry {
                         binding: 2,
@@ -226,7 +220,11 @@ impl Compositor {
                 _pad0: 0.0,
                 _pad1: 0.0,
             };
-            queue.write_buffer(&self.uniform_buffers[buf_idx], 0, bytemuck::bytes_of(&uniforms));
+            queue.write_buffer(
+                &self.uniform_buffers[buf_idx],
+                0,
+                bytemuck::bytes_of(&uniforms),
+            );
 
             let bg_target = &self.accumulator.targets[read_idx];
             let write_target = &self.accumulator.targets[write_idx];

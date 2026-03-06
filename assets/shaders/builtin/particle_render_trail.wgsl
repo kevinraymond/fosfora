@@ -3,13 +3,6 @@
 // Each trail segment is a quad between two adjacent trail points.
 // Trail points stored as vec4f(pos.x, pos.y, size, alpha) in ring buffer.
 
-struct Particle {
-    pos_life: vec4f,
-    vel_size: vec4f,
-    color: vec4f,
-    flags: vec4f,
-}
-
 struct RenderUniforms {
     resolution: vec2f,
     time: f32,
@@ -23,10 +16,13 @@ struct RenderUniforms {
     _pad: vec2f,
 }
 
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<uniform> ru: RenderUniforms;
-@group(0) @binding(2) var<storage, read> alive_indices: array<u32>;
-@group(0) @binding(3) var<storage, read> trail_buffer: array<vec4f>;
+@group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
+@group(0) @binding(1) var<storage, read> vel_size: array<vec4f>;
+@group(0) @binding(2) var<storage, read> color: array<vec4f>;
+@group(0) @binding(3) var<storage, read> flags: array<vec4f>;
+@group(0) @binding(4) var<uniform> ru: RenderUniforms;
+@group(0) @binding(5) var<storage, read> alive_indices: array<u32>;
+@group(0) @binding(6) var<storage, read> trail_buffer: array<vec4f>;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -42,7 +38,7 @@ fn vs_main(
     var out: VertexOutput;
 
     let particle_idx = alive_indices[instance_index];
-    let p = particles[particle_idx];
+    let p_color = color[particle_idx];
 
     let trail_len = ru.trail_length;
     if trail_len < 2u {
@@ -129,7 +125,7 @@ fn vs_main(
     // Color: particle color with alpha tapering along trail
     let trail_alpha = (1.0 - frac) * (1.0 - frac); // quadratic falloff
     let avg_alpha = mix(point_a.w, point_b.w, 0.5);
-    out.color = vec4f(p.color.rgb, avg_alpha * trail_alpha * 0.5);
+    out.color = vec4f(p_color.rgb, avg_alpha * trail_alpha * 0.5);
 
     return out;
 }

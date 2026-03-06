@@ -7,7 +7,7 @@ struct SmoothParams {
     bypass: bool, // pass-through without smoothing
 }
 
-/// Asymmetric attack/release EMA smoother for 20 audio features.
+/// Asymmetric attack/release EMA smoother for 45 audio features.
 pub struct FeatureSmoother {
     state: [f32; NUM_FEATURES],
     params: [SmoothParams; NUM_FEATURES],
@@ -17,29 +17,241 @@ impl FeatureSmoother {
     pub fn new() -> Self {
         let params = [
             // Frequency bands (7)
-            SmoothParams { attack: 0.02, release: 0.15, bypass: false },   // sub_bass
-            SmoothParams { attack: 0.02, release: 0.15, bypass: false },   // bass
-            SmoothParams { attack: 0.01, release: 0.10, bypass: false },   // low_mid
-            SmoothParams { attack: 0.01, release: 0.10, bypass: false },   // mid
-            SmoothParams { attack: 0.005, release: 0.08, bypass: false },  // upper_mid
-            SmoothParams { attack: 0.005, release: 0.08, bypass: false },  // presence
-            SmoothParams { attack: 0.005, release: 0.08, bypass: false },  // brilliance
+            SmoothParams {
+                attack: 0.02,
+                release: 0.15,
+                bypass: false,
+            }, // sub_bass
+            SmoothParams {
+                attack: 0.02,
+                release: 0.15,
+                bypass: false,
+            }, // bass
+            SmoothParams {
+                attack: 0.01,
+                release: 0.10,
+                bypass: false,
+            }, // low_mid
+            SmoothParams {
+                attack: 0.01,
+                release: 0.10,
+                bypass: false,
+            }, // mid
+            SmoothParams {
+                attack: 0.005,
+                release: 0.08,
+                bypass: false,
+            }, // upper_mid
+            SmoothParams {
+                attack: 0.005,
+                release: 0.08,
+                bypass: false,
+            }, // presence
+            SmoothParams {
+                attack: 0.005,
+                release: 0.08,
+                bypass: false,
+            }, // brilliance
             // Aggregates (2)
-            SmoothParams { attack: 0.01, release: 0.12, bypass: false },   // rms
-            SmoothParams { attack: 0.002, release: 0.06, bypass: false },  // kick (fast attack)
+            SmoothParams {
+                attack: 0.01,
+                release: 0.12,
+                bypass: false,
+            }, // rms
+            SmoothParams {
+                attack: 0.002,
+                release: 0.06,
+                bypass: false,
+            }, // kick (fast attack)
             // Spectral shape (6)
-            SmoothParams { attack: 0.03, release: 0.15, bypass: false },   // centroid
-            SmoothParams { attack: 0.005, release: 0.06, bypass: false },  // flux
-            SmoothParams { attack: 0.05, release: 0.20, bypass: false },   // flatness
-            SmoothParams { attack: 0.03, release: 0.15, bypass: false },   // rolloff
-            SmoothParams { attack: 0.03, release: 0.15, bypass: false },   // bandwidth
-            SmoothParams { attack: 0.02, release: 0.10, bypass: false },   // zcr
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // centroid
+            SmoothParams {
+                attack: 0.005,
+                release: 0.06,
+                bypass: false,
+            }, // flux
+            SmoothParams {
+                attack: 0.05,
+                release: 0.20,
+                bypass: false,
+            }, // flatness
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // rolloff
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // bandwidth
+            SmoothParams {
+                attack: 0.02,
+                release: 0.10,
+                bypass: false,
+            }, // zcr
             // Beat detection (5)
-            SmoothParams { attack: 0.001, release: 0.05, bypass: false },  // onset (very fast)
-            SmoothParams { attack: 0.0, release: 0.0, bypass: true },      // beat (pass-through)
-            SmoothParams { attack: 0.0, release: 0.0, bypass: true },      // beat_phase (pass-through)
-            SmoothParams { attack: 0.5, release: 1.0, bypass: false },     // bpm (very slow)
-            SmoothParams { attack: 0.001, release: 0.08, bypass: false },  // beat_strength (fast attack)
+            SmoothParams {
+                attack: 0.001,
+                release: 0.05,
+                bypass: false,
+            }, // onset (very fast)
+            SmoothParams {
+                attack: 0.0,
+                release: 0.0,
+                bypass: true,
+            }, // beat (pass-through)
+            SmoothParams {
+                attack: 0.0,
+                release: 0.0,
+                bypass: true,
+            }, // beat_phase (pass-through)
+            SmoothParams {
+                attack: 0.5,
+                release: 1.0,
+                bypass: false,
+            }, // bpm (very slow)
+            SmoothParams {
+                attack: 0.001,
+                release: 0.08,
+                bypass: false,
+            }, // beat_strength (fast attack)
+            // MFCC (13) — timbral content, moderate smoothing
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[0]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[1]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[2]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[3]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[4]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[5]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[6]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[7]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[8]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[9]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[10]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[11]
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // mfcc[12]
+            // Chroma (12) — pitch class energies, moderate smoothing
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[0] C
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[1] C#
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[2] D
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[3] D#
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[4] E
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[5] F
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[6] F#
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[7] G
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[8] G#
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[9] A
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[10] A#
+            SmoothParams {
+                attack: 0.03,
+                release: 0.15,
+                bypass: false,
+            }, // chroma[11] B
+            SmoothParams {
+                attack: 0.05,
+                release: 0.2,
+                bypass: false,
+            }, // dominant_chroma
         ];
 
         Self {
@@ -83,7 +295,9 @@ impl FeatureSmoother {
 mod tests {
     use super::*;
 
-    fn approx_eq(a: f32, b: f32, eps: f32) -> bool { (a - b).abs() < eps }
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
 
     #[test]
     fn beat_and_beat_phase_bypass() {

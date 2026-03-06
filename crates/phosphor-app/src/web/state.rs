@@ -159,10 +159,17 @@ pub fn build_full_state(
             } else {
                 vec![]
             };
-            let blend = if i < layers.len() { layers[i].2 } else { BlendMode::Normal };
+            let blend = if i < layers.len() {
+                layers[i].2
+            } else {
+                BlendMode::Normal
+            };
             LayerState {
                 index: i,
-                name: info.custom_name.clone().unwrap_or_else(|| info.name.clone()),
+                name: info
+                    .custom_name
+                    .clone()
+                    .unwrap_or_else(|| info.name.clone()),
                 effect_name: info.effect_name.clone(),
                 effect_index: info.effect_index,
                 blend_mode: blend.as_u32(),
@@ -290,7 +297,11 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
                     };
                     // Normalize to 0-1
                     let range = *max - *min;
-                    let normalized = if range > 0.0 { (v as f32 - *min) / range } else { 0.0 };
+                    let normalized = if range > 0.0 {
+                        (v as f32 - *min) / range
+                    } else {
+                        0.0
+                    };
                     ParamInfo {
                         name: name.clone(),
                         param_type: "float",
@@ -301,7 +312,13 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
                 }
                 ParamDef::Bool { name, .. } => {
                     let v = match value {
-                        Some(ParamValue::Bool(b)) => if *b { 1.0 } else { 0.0 },
+                        Some(ParamValue::Bool(b)) => {
+                            if *b {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
                         _ => 0.0,
                     };
                     ParamInfo {
@@ -312,24 +329,20 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
                         max: None,
                     }
                 }
-                ParamDef::Color { name, .. } => {
-                    ParamInfo {
-                        name: name.clone(),
-                        param_type: "color",
-                        value: 0.0,
-                        min: None,
-                        max: None,
-                    }
-                }
-                ParamDef::Point2D { name, .. } => {
-                    ParamInfo {
-                        name: name.clone(),
-                        param_type: "point2d",
-                        value: 0.0,
-                        min: None,
-                        max: None,
-                    }
-                }
+                ParamDef::Color { name, .. } => ParamInfo {
+                    name: name.clone(),
+                    param_type: "color",
+                    value: 0.0,
+                    min: None,
+                    max: None,
+                },
+                ParamDef::Point2D { name, .. } => ParamInfo {
+                    name: name.clone(),
+                    param_type: "point2d",
+                    value: 0.0,
+                    min: None,
+                    max: None,
+                },
             }
         })
         .collect()
@@ -369,7 +382,12 @@ mod tests {
     #[test]
     fn build_params_float_normalized() {
         let mut store = ParamStore::new();
-        let defs = vec![ParamDef::Float { name: "x".into(), default: 0.5, min: 0.0, max: 1.0 }];
+        let defs = vec![ParamDef::Float {
+            name: "x".into(),
+            default: 0.5,
+            min: 0.0,
+            max: 1.0,
+        }];
         store.load_from_defs(&defs);
         store.set("x", ParamValue::Float(0.75));
         let params = build_params(&store);
@@ -382,7 +400,10 @@ mod tests {
     #[test]
     fn build_params_bool() {
         let mut store = ParamStore::new();
-        let defs = vec![ParamDef::Bool { name: "flag".into(), default: false }];
+        let defs = vec![ParamDef::Bool {
+            name: "flag".into(),
+            default: false,
+        }];
         store.load_from_defs(&defs);
         store.set("flag", ParamValue::Bool(true));
         let params = build_params(&store);
@@ -395,7 +416,10 @@ mod tests {
     #[test]
     fn build_params_color() {
         let mut store = ParamStore::new();
-        let defs = vec![ParamDef::Color { name: "tint".into(), default: [1.0, 0.0, 0.0, 1.0] }];
+        let defs = vec![ParamDef::Color {
+            name: "tint".into(),
+            default: [1.0, 0.0, 0.0, 1.0],
+        }];
         store.load_from_defs(&defs);
         let params = build_params(&store);
         assert_eq!(params[0].param_type, "color");
@@ -407,7 +431,12 @@ mod tests {
     #[test]
     fn build_params_point2d() {
         let mut store = ParamStore::new();
-        let defs = vec![ParamDef::Point2D { name: "pos".into(), default: [0.5, 0.5], min: [0.0, 0.0], max: [1.0, 1.0] }];
+        let defs = vec![ParamDef::Point2D {
+            name: "pos".into(),
+            default: [0.5, 0.5],
+            min: [0.0, 0.0],
+            max: [1.0, 1.0],
+        }];
         store.load_from_defs(&defs);
         let params = build_params(&store);
         assert_eq!(params[0].param_type, "point2d");
@@ -417,7 +446,12 @@ mod tests {
     #[test]
     fn build_params_float_zero_range() {
         let mut store = ParamStore::new();
-        let defs = vec![ParamDef::Float { name: "x".into(), default: 5.0, min: 5.0, max: 5.0 }];
+        let defs = vec![ParamDef::Float {
+            name: "x".into(),
+            default: 5.0,
+            min: 5.0,
+            max: 5.0,
+        }];
         store.load_from_defs(&defs);
         let params = build_params(&store);
         // zero range → normalized = 0.0
@@ -466,8 +500,8 @@ mod tests {
 
     #[test]
     fn build_presets_changed_includes_builtin_field() {
-        use crate::preset::Preset;
         use crate::effect::format::PostProcessDef;
+        use crate::preset::Preset;
         let mut store = PresetStore::new();
         let empty = Preset {
             layers: vec![],

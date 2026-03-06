@@ -1,10 +1,10 @@
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
-use tungstenite::protocol::Message;
 use tungstenite::WebSocket;
+use tungstenite::protocol::Message;
 
 use super::types::WsInMessage;
 use crate::midi::types::TriggerAction;
@@ -24,7 +24,10 @@ pub fn run_client<S: Read + Write>(
     // Send initial full state
     if !initial_state.is_empty() {
         if ws.send(Message::text(initial_state)).is_err() {
-            log::info!("WebSocket client {} disconnected on initial send", client_id);
+            log::info!(
+                "WebSocket client {} disconnected on initial send",
+                client_id
+            );
             return;
         }
     }
@@ -64,7 +67,9 @@ pub fn run_client<S: Read + Write>(
         // Drain outbound messages
         let mut sent_any = false;
         for msg in outbound_rx.try_iter() {
-            if msg.is_empty() { continue; }
+            if msg.is_empty() {
+                continue;
+            }
             match ws.send(Message::text(msg)) {
                 Ok(_) => sent_any = true,
                 Err(e) => {
@@ -126,9 +131,10 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
         }
         "set_layer_enabled" => {
             let layer = v.get("layer")?.as_u64()? as usize;
-            let value = v.get("value")?.as_bool().or_else(|| {
-                v.get("value")?.as_f64().map(|f| f > 0.5)
-            })?;
+            let value = v
+                .get("value")?
+                .as_bool()
+                .or_else(|| v.get("value")?.as_f64().map(|f| f > 0.5))?;
             Some(WsInMessage::SetLayerEnabled { layer, value })
         }
         "trigger" => {
@@ -154,9 +160,10 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
             Some(WsInMessage::LoadPreset { index })
         }
         "set_postprocess_enabled" => {
-            let value = v.get("value")?.as_bool().or_else(|| {
-                v.get("value")?.as_f64().map(|f| f > 0.5)
-            })?;
+            let value = v
+                .get("value")?
+                .as_bool()
+                .or_else(|| v.get("value")?.as_f64().map(|f| f > 0.5))?;
             Some(WsInMessage::PostProcessEnabled(value))
         }
         _ => {

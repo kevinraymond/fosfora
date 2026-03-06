@@ -9,10 +9,8 @@ use crate::gpu::layer::BlendMode;
 use crate::params::ParamValue;
 
 // Embedded built-in presets
-const BUILTIN_CRUCIBLE: &str =
-    include_str!("../../../../assets/presets/Crucible.json");
-const BUILTIN_SPECTRAL_EYE: &str =
-    include_str!("../../../../assets/presets/Spectral Eye.json");
+const BUILTIN_CRUCIBLE: &str = include_str!("../../../../assets/presets/Crucible.json");
+const BUILTIN_SPECTRAL_EYE: &str = include_str!("../../../../assets/presets/Spectral Eye.json");
 
 /// Built-in preset names in display order.
 const BUILTIN_PRESETS: &[(&str, &str)] = &[
@@ -46,6 +44,34 @@ pub struct LayerPreset {
     pub media_looping: Option<bool>,
     #[serde(default)]
     pub webcam_device: Option<String>,
+    /// Absolute path to video file used as particle image source.
+    #[serde(default)]
+    pub particle_video_path: Option<String>,
+    #[serde(default)]
+    pub particle_video_speed: Option<f32>,
+    #[serde(default)]
+    pub particle_video_looping: Option<bool>,
+    /// True if particle source is webcam.
+    #[serde(default)]
+    pub particle_webcam: Option<bool>,
+    /// Absolute path to static image used as particle source.
+    #[serde(default)]
+    pub particle_image_path: Option<String>,
+    /// Obstacle collision image path.
+    #[serde(default)]
+    pub obstacle_image_path: Option<String>,
+    /// Obstacle collision mode (0=bounce, 1=stick, 2=flow).
+    #[serde(default)]
+    pub obstacle_mode: Option<u32>,
+    /// Obstacle alpha threshold.
+    #[serde(default)]
+    pub obstacle_threshold: Option<f32>,
+    /// Obstacle elasticity/restitution.
+    #[serde(default)]
+    pub obstacle_elasticity: Option<f32>,
+    /// True if obstacle source is depth estimation.
+    #[serde(default)]
+    pub obstacle_depth: Option<bool>,
 }
 
 fn default_opacity() -> f32 {
@@ -211,7 +237,13 @@ impl PresetStore {
     fn sanitize_name(name: &str) -> String {
         let sanitized: String = name
             .chars()
-            .map(|c| if c == '/' || c == '\\' || c == '.' { '_' } else { c })
+            .map(|c| {
+                if c == '/' || c == '\\' || c == '.' {
+                    '_'
+                } else {
+                    c
+                }
+            })
             .collect();
         let trimmed = sanitized.trim();
         if trimmed.len() > 64 {
@@ -431,6 +463,45 @@ mod tests {
         assert!(!lp.pinned);
         assert!(lp.custom_name.is_none());
         assert!(lp.media_path.is_none());
+        // New particle source fields default to None
+        assert!(lp.particle_video_path.is_none());
+        assert!(lp.particle_video_speed.is_none());
+        assert!(lp.particle_video_looping.is_none());
+        assert!(lp.particle_webcam.is_none());
+    }
+
+    #[test]
+    fn layer_preset_particle_source_serde() {
+        let json = r#"{
+            "effect_name": "Raster",
+            "particle_video_path": "/tmp/test.mp4",
+            "particle_video_speed": 1.5,
+            "particle_video_looping": false,
+            "particle_webcam": null
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(lp.particle_video_path.as_deref(), Some("/tmp/test.mp4"));
+        assert!((lp.particle_video_speed.unwrap() - 1.5).abs() < 1e-6);
+        assert_eq!(lp.particle_video_looping, Some(false));
+        assert!(lp.particle_webcam.is_none());
+
+        // Roundtrip
+        let serialized = serde_json::to_string(&lp).unwrap();
+        let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(lp2.particle_video_path, lp.particle_video_path);
+        assert_eq!(lp2.particle_video_speed, lp.particle_video_speed);
+        assert_eq!(lp2.particle_video_looping, lp.particle_video_looping);
+    }
+
+    #[test]
+    fn layer_preset_particle_webcam_serde() {
+        let json = r#"{
+            "effect_name": "Raster",
+            "particle_webcam": true
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(lp.particle_webcam, Some(true));
+        assert!(lp.particle_video_path.is_none());
     }
 
     #[test]
@@ -449,6 +520,16 @@ mod tests {
                 media_speed: None,
                 media_looping: None,
                 webcam_device: None,
+                particle_video_path: None,
+                particle_video_speed: None,
+                particle_video_looping: None,
+                particle_webcam: None,
+                particle_image_path: None,
+                obstacle_image_path: None,
+                obstacle_mode: None,
+                obstacle_threshold: None,
+                obstacle_elasticity: None,
+                obstacle_depth: None,
             }],
             active_layer: 0,
             postprocess: PostProcessDef::default(),
@@ -460,6 +541,87 @@ mod tests {
         assert_eq!(p2.layers[0].blend_mode, BlendMode::Add);
         assert!((p2.layers[0].opacity - 0.5).abs() < 1e-6);
         assert!(p2.layers[0].pinned);
+    }
+
+    #[test]
+    fn layer_preset_obstacle_serde() {
+        let json = r#"{
+            "effect_name": "Cascade",
+            "obstacle_image_path": "/tmp/logo.png",
+            "obstacle_mode": 2,
+            "obstacle_threshold": 0.3,
+            "obstacle_elasticity": 0.8
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(lp.obstacle_image_path, Some("/tmp/logo.png".to_string()));
+        assert_eq!(lp.obstacle_mode, Some(2));
+        assert!((lp.obstacle_threshold.unwrap() - 0.3).abs() < 1e-6);
+        assert!((lp.obstacle_elasticity.unwrap() - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn layer_preset_obstacle_backward_compat() {
+        // Old preset without obstacle fields should parse fine
+        let json = r#"{
+            "effect_name": "Flux",
+            "opacity": 0.8
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert!(lp.obstacle_image_path.is_none());
+        assert!(lp.obstacle_mode.is_none());
+        assert!(lp.obstacle_threshold.is_none());
+        assert!(lp.obstacle_elasticity.is_none());
+        assert!(lp.obstacle_depth.is_none());
+    }
+
+    #[test]
+    fn layer_preset_obstacle_depth_serde() {
+        let json = r#"{
+            "effect_name": "Cascade",
+            "obstacle_depth": true,
+            "obstacle_mode": 0,
+            "obstacle_threshold": 0.5,
+            "obstacle_elasticity": 0.7
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(lp.obstacle_depth, Some(true));
+        assert!(lp.obstacle_image_path.is_none());
+        // Roundtrip
+        let serialized = serde_json::to_string(&lp).unwrap();
+        let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(lp2.obstacle_depth, Some(true));
+    }
+
+    #[test]
+    fn layer_preset_particle_image_serde() {
+        let json = r#"{
+            "effect_name": "Raster",
+            "particle_image_path": "/home/user/images/skull.png"
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            lp.particle_image_path,
+            Some("/home/user/images/skull.png".to_string())
+        );
+        // Roundtrip
+        let serialized = serde_json::to_string(&lp).unwrap();
+        let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(lp2.particle_image_path, lp.particle_image_path);
+    }
+
+    #[test]
+    fn layer_preset_particle_image_backward_compat() {
+        // Old preset without particle_image_path should parse with None
+        let json = r#"{
+            "effect_name": "Cascade",
+            "particle_video_path": "/tmp/fire.mp4"
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert!(lp.particle_image_path.is_none());
+        assert_eq!(
+            lp.particle_video_path,
+            Some("/tmp/fire.mp4".to_string())
+        );
     }
 
     #[test]
@@ -476,7 +638,11 @@ mod tests {
         for &(name, json) in BUILTIN_PRESETS {
             let preset: Preset = serde_json::from_str(json)
                 .unwrap_or_else(|e| panic!("Built-in preset '{}' failed to parse: {}", name, e));
-            assert!(!preset.layers.is_empty(), "Built-in preset '{}' has no layers", name);
+            assert!(
+                !preset.layers.is_empty(),
+                "Built-in preset '{}' has no layers",
+                name
+            );
         }
     }
 
@@ -490,7 +656,8 @@ mod tests {
             postprocess: PostProcessDef::default(),
         };
         s.presets.push(("Crucible".into(), empty_preset.clone()));
-        s.presets.push(("Spectral Eye".into(), empty_preset.clone()));
+        s.presets
+            .push(("Spectral Eye".into(), empty_preset.clone()));
         s.presets.push(("User Preset".into(), empty_preset));
 
         assert!(s.is_builtin(0));
@@ -526,22 +693,12 @@ mod tests {
         };
         s.presets.push(("Crucible".into(), empty_preset));
 
-        let result = s.save(
-            "Crucible",
-            vec![],
-            0,
-            &PostProcessDef::default(),
-        );
+        let result = s.save("Crucible", vec![], 0, &PostProcessDef::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("built-in"));
 
         // Case-insensitive check
-        let result2 = s.save(
-            "crucible",
-            vec![],
-            0,
-            &PostProcessDef::default(),
-        );
+        let result2 = s.save("crucible", vec![], 0, &PostProcessDef::default());
         assert!(result2.is_err());
     }
 }

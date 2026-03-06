@@ -3,13 +3,6 @@
 // Only alive particles are drawn (instance_count set by prepare_indirect shader).
 // Supports: soft circle glow (mode 0), static sprite (mode 1), animated sprite (mode 2).
 
-struct Particle {
-    pos_life: vec4f,
-    vel_size: vec4f,
-    color: vec4f,
-    flags: vec4f,
-}
-
 struct RenderUniforms {
     resolution: vec2f,
     time: f32,
@@ -23,9 +16,12 @@ struct RenderUniforms {
     _pad: vec2f,
 }
 
-@group(0) @binding(0) var<storage, read> particles: array<Particle>;
-@group(0) @binding(1) var<uniform> ru: RenderUniforms;
-@group(0) @binding(2) var<storage, read> alive_indices: array<u32>;
+@group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
+@group(0) @binding(1) var<storage, read> vel_size: array<vec4f>;
+@group(0) @binding(2) var<storage, read> color: array<vec4f>;
+@group(0) @binding(3) var<storage, read> flags: array<vec4f>;
+@group(0) @binding(4) var<uniform> ru: RenderUniforms;
+@group(0) @binding(5) var<storage, read> alive_indices: array<u32>;
 
 @group(1) @binding(0) var sprite_tex: texture_2d<f32>;
 @group(1) @binding(1) var sprite_samp: sampler;
@@ -44,7 +40,10 @@ fn vs_main(
 ) -> VertexOutput {
     // Index through alive_indices for GPU-driven rendering
     let particle_idx = alive_indices[instance_index];
-    let p = particles[particle_idx];
+    let pl = pos_life[particle_idx];
+    let vs = vel_size[particle_idx];
+    let col = color[particle_idx];
+    let fl = flags[particle_idx];
     var out: VertexOutput;
 
     // Quad corners: 2 triangles from 6 vertices
@@ -61,20 +60,33 @@ fn vs_main(
         default: { corner = vec2f(0.0); }
     }
 
-    let size = p.vel_size.w;
+    let size = vs.w;
     // Correct aspect ratio so particles are circular
     let aspect = ru.resolution.x / ru.resolution.y;
-    let offset = corner * size * vec2f(1.0 / aspect, 1.0);
 
-    let pos = p.pos_life.xy + offset;
+    // Spin rotation: pos_life.z holds accumulated spin angle
+    var rotated_corner = corner;
+    let spin_angle = pl.z;
+    if spin_angle != 0.0 {
+        let ca = cos(spin_angle);
+        let sa = sin(spin_angle);
+        rotated_corner = vec2f(
+            corner.x * ca - corner.y * sa,
+            corner.x * sa + corner.y * ca
+        );
+    }
+
+    let offset = rotated_corner * size * vec2f(1.0 / aspect, 1.0);
+
+    let pos = pl.xy + offset;
     out.position = vec4f(pos, 0.0, 1.0);
-    out.color = p.color;
+    out.color = col;
     out.quad_uv = corner;
 
     // Compute sprite frame from particle age/lifetime
     if ru.render_mode == 2u && ru.sprite_frames > 0u {
-        let age = p.flags.x;
-        let lifetime = p.flags.y;
+        let age = fl.x;
+        let lifetime = fl.y;
         let life_frac = clamp(age / max(lifetime, 0.001), 0.0, 0.999);
         out.sprite_frame = u32(life_frac * f32(ru.sprite_frames));
     } else {

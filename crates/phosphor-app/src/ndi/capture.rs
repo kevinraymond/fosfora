@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use wgpu::{
     Buffer, BufferDescriptor, BufferUsages, CommandEncoder, Device, Extent3d, Texture,
@@ -44,7 +44,8 @@ impl NdiCapture {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let unpadded_bytes_per_row = width * 4;
-        let padded_bytes_per_row = align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let padded_bytes_per_row =
+            align_to(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer_size = (padded_bytes_per_row * height) as u64;
 
         let staging = [

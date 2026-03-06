@@ -27,6 +27,35 @@ impl ParamStore {
         }
     }
 
+    /// Update definitions while preserving current values for params that still exist
+    /// with the same name and type. New params get defaults, removed params are dropped.
+    pub fn merge_from_defs(&mut self, new_defs: &[ParamDef]) {
+        let mut new_values = HashMap::new();
+        for def in new_defs {
+            let name = def.name().to_string();
+            if let Some(existing) = self.values.get(&name) {
+                // Keep existing value only if type matches (discriminant check)
+                let types_match = matches!(
+                    (existing, &def.default_value()),
+                    (ParamValue::Float(_), ParamValue::Float(_))
+                        | (ParamValue::Color(_), ParamValue::Color(_))
+                        | (ParamValue::Bool(_), ParamValue::Bool(_))
+                        | (ParamValue::Point2D(_), ParamValue::Point2D(_))
+                );
+                if types_match {
+                    new_values.insert(name, existing.clone());
+                } else {
+                    new_values.insert(name, def.default_value());
+                }
+            } else {
+                new_values.insert(name, def.default_value());
+            }
+        }
+        self.defs = new_defs.to_vec();
+        self.values = new_values;
+        self.changed = true;
+    }
+
     pub fn set(&mut self, name: &str, value: ParamValue) {
         self.values.insert(name.to_string(), value);
         self.changed = true;
@@ -38,8 +67,7 @@ impl ParamStore {
 
     pub fn reset(&mut self, name: &str) {
         if let Some(def) = self.defs.iter().find(|d| d.name() == name) {
-            self.values
-                .insert(name.to_string(), def.default_value());
+            self.values.insert(name.to_string(), def.default_value());
         }
     }
 
@@ -220,8 +248,18 @@ mod tests {
     #[test]
     fn pack_to_buffer_with_point2d() {
         let defs = vec![
-            ParamDef::Float { name: "x".into(), default: 1.0, min: 0.0, max: 2.0 },
-            ParamDef::Point2D { name: "pos".into(), default: [0.3, 0.7], min: [0.0, 0.0], max: [1.0, 1.0] },
+            ParamDef::Float {
+                name: "x".into(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+            },
+            ParamDef::Point2D {
+                name: "pos".into(),
+                default: [0.3, 0.7],
+                min: [0.0, 0.0],
+                max: [1.0, 1.0],
+            },
         ];
         let mut s = ParamStore::new();
         s.load_from_defs(&defs);
@@ -241,5 +279,124 @@ mod tests {
             Some(ParamValue::Float(v)) => assert!(approx_eq(*v, 0.9, 1e-6)), // unchanged
             _ => panic!("expected Float"),
         }
+    }
+
+    // ---- merge_from_defs tests ----
+
+    #[test]
+    fn merge_preserves_existing_values() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set("speed", ParamValue::Float(0.9));
+        s.set("active", ParamValue::Bool(false));
+
+        // Same defs — values should be preserved
+        s.merge_from_defs(&test_defs());
+        match s.get("speed") {
+            Some(ParamValue::Float(v)) => assert!(approx_eq(*v, 0.9, 1e-6)),
+            _ => panic!("expected Float"),
+        }
+        match s.get("active") {
+            Some(ParamValue::Bool(v)) => assert!(!v),
+            _ => panic!("expected Bool"),
+        }
+        assert!(s.changed);
+    }
+
+    #[test]
+    fn merge_adds_new_params_at_default() {
+        let mut s = ParamStore::new();
+        let initial = vec![ParamDef::Float {
+            name: "speed".into(),
+            default: 0.5,
+            min: 0.0,
+            max: 1.0,
+        }];
+        s.load_from_defs(&initial);
+        s.set("speed", ParamValue::Float(0.8));
+
+        let extended = vec![
+            ParamDef::Float {
+                name: "speed".into(),
+                default: 0.5,
+                min: 0.0,
+                max: 1.0,
+            },
+            ParamDef::Bool {
+                name: "glow".into(),
+                default: true,
+            },
+        ];
+        s.merge_from_defs(&extended);
+
+        assert_eq!(s.defs.len(), 2);
+        // speed preserved
+        match s.get("speed") {
+            Some(ParamValue::Float(v)) => assert!(approx_eq(*v, 0.8, 1e-6)),
+            _ => panic!("expected Float"),
+        }
+        // glow added at default
+        match s.get("glow") {
+            Some(ParamValue::Bool(v)) => assert!(*v),
+            _ => panic!("expected Bool"),
+        }
+    }
+
+    #[test]
+    fn merge_drops_removed_params() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs()); // speed, active, tint
+        s.set("speed", ParamValue::Float(0.9));
+
+        let reduced = vec![ParamDef::Float {
+            name: "speed".into(),
+            default: 0.5,
+            min: 0.0,
+            max: 1.0,
+        }];
+        s.merge_from_defs(&reduced);
+
+        assert_eq!(s.defs.len(), 1);
+        assert_eq!(s.values.len(), 1);
+        assert!(s.get("active").is_none());
+        assert!(s.get("tint").is_none());
+        // speed preserved
+        match s.get("speed") {
+            Some(ParamValue::Float(v)) => assert!(approx_eq(*v, 0.9, 1e-6)),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn merge_type_mismatch_uses_default() {
+        let mut s = ParamStore::new();
+        let initial = vec![ParamDef::Float {
+            name: "val".into(),
+            default: 0.5,
+            min: 0.0,
+            max: 1.0,
+        }];
+        s.load_from_defs(&initial);
+        s.set("val", ParamValue::Float(0.9));
+
+        // Change type from Float to Bool
+        let changed = vec![ParamDef::Bool {
+            name: "val".into(),
+            default: true,
+        }];
+        s.merge_from_defs(&changed);
+
+        match s.get("val") {
+            Some(ParamValue::Bool(v)) => assert!(*v), // default, not old float
+            _ => panic!("expected Bool"),
+        }
+    }
+
+    #[test]
+    fn merge_empty_to_empty() {
+        let mut s = ParamStore::new();
+        s.merge_from_defs(&[]);
+        assert!(s.defs.is_empty());
+        assert!(s.values.is_empty());
     }
 }

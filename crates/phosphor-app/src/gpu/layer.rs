@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::effect::format::PostProcessDef;
+use crate::gpu::ShaderUniforms;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::render_target::RenderTarget;
 use crate::gpu::uniforms::UniformBuffer;
-use crate::gpu::ShaderUniforms;
 use crate::media::MediaLayer;
 use crate::params::ParamStore;
 
@@ -133,11 +133,7 @@ pub struct Layer {
 
 impl Layer {
     /// Create a new Effect layer.
-    pub fn new_effect(
-        name: String,
-        effect: EffectLayer,
-        param_store: ParamStore,
-    ) -> Self {
+    pub fn new_effect(name: String, effect: EffectLayer, param_store: ParamStore) -> Self {
         Self {
             name,
             custom_name: None,
@@ -248,14 +244,21 @@ impl Layer {
     pub fn resize(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         width: u32,
         height: u32,
         placeholder: &PlaceholderTexture,
     ) {
         match &mut self.content {
             LayerContent::Effect(e) => {
-                e.pass_executor
-                    .resize(device, width, height, &e.uniform_buffer, placeholder);
+                e.pass_executor.resize(
+                    device,
+                    queue,
+                    width,
+                    height,
+                    &e.uniform_buffer,
+                    placeholder,
+                );
             }
             LayerContent::Media(_) => {
                 // Media resize handled separately (needs queue for uniform upload)
@@ -264,7 +267,13 @@ impl Layer {
     }
 
     /// Resize media layer (needs queue for uniform upload).
-    pub fn resize_media(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) {
+    pub fn resize_media(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) {
         if let LayerContent::Media(ref mut m) = self.content {
             m.resize(device, queue, width, height);
         }
@@ -339,15 +348,25 @@ impl LayerStack {
         self.layers
             .iter()
             .map(|l| {
-                let (is_media, media_file_name, media_is_animated, media_is_video, media_is_live) = match &l.content {
-                    LayerContent::Media(m) => (true, Some(m.file_name.clone()), m.is_animated(), m.is_video(), m.is_live()),
-                    _ => (false, None, false, false, false),
-                };
+                let (is_media, media_file_name, media_is_animated, media_is_video, media_is_live) =
+                    match &l.content {
+                        LayerContent::Media(m) => (
+                            true,
+                            Some(m.file_name.clone()),
+                            m.is_animated(),
+                            m.is_video(),
+                            m.is_live(),
+                        ),
+                        _ => (false, None, false, false, false),
+                    };
                 LayerInfo {
                     name: l.name.clone(),
                     custom_name: l.custom_name.clone(),
                     effect_index: l.effect_index(),
-                    effect_name: l.effect_index().and_then(|i| effects.get(i)).map(|e| e.name.clone()),
+                    effect_name: l
+                        .effect_index()
+                        .and_then(|i| effects.get(i))
+                        .map(|e| e.name.clone()),
                     blend_mode: l.blend_mode,
                     opacity: l.opacity,
                     enabled: l.enabled,

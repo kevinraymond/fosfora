@@ -80,6 +80,11 @@ struct PhosphorUniforms {
     params: array<vec4f, 4>,
     feedback_decay: f32,
     frame_index: f32,
+
+    dominant_chroma: f32,
+    _pad_align: f32,
+    mfcc: array<vec4f, 4>,     // 13 MFCCs (indices 0-12 used, 13-15 padding)
+    chroma: array<vec4f, 3>,   // 12 pitch class energies (C=0, C#=1, ..., B=11)
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;
@@ -88,6 +93,14 @@ struct PhosphorUniforms {
 
 fn param(i: u32) -> f32 {
     return u.params[i / 4u][i % 4u];
+}
+
+fn mfcc(i: u32) -> f32 {
+    return u.mfcc[i / 4u][i % 4u];
+}
+
+fn chroma_val(i: u32) -> f32 {
+    return u.chroma[i / 4u][i % 4u];
 }
 
 fn feedback(uv: vec2f) -> vec4f {
@@ -101,6 +114,9 @@ pub struct EffectLoader {
     lib_source: String,
     /// Particle library source (structs, bindings, helpers) prepended to compute shaders.
     particle_lib_source: String,
+    /// Spatial hash grid dimensions, patched into particle_lib SH_GRID_W/H constants.
+    /// Updated when a particle system with interaction is created.
+    pub grid_dims: (u32, u32),
 }
 
 impl EffectLoader {
@@ -139,6 +155,7 @@ impl EffectLoader {
             current_effect: None,
             lib_source,
             particle_lib_source,
+            grid_dims: (40, 40),
         }
     }
 
@@ -185,11 +202,7 @@ impl EffectLoader {
             .into_iter()
             .flatten()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "pfx")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "pfx"))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -197,8 +210,9 @@ impl EffectLoader {
             match std::fs::read_to_string(entry.path()) {
                 Ok(json) => match serde_json::from_str::<PfxEffect>(&json) {
                     Ok(mut effect) => {
-                        log::info!("Found effect: {} ({})", effect.name, entry.path().display());
-                        effect.source_path = Some(entry.path());
+                        let path = entry.path().canonicalize().unwrap_or_else(|_| entry.path());
+                        log::info!("Found effect: {} ({})", effect.name, path.display());
+                        effect.source_path = Some(path);
                         self.effects.push(effect);
                     }
                     Err(e) => {
@@ -233,8 +247,20 @@ impl EffectLoader {
     }
 
     /// Prepend noise library + particle library to a compute shader source.
+    /// Patches spatial hash grid constants (SH_GRID_W/H) to match current grid_dims.
     pub fn prepend_compute_libraries(&self, source: &str) -> String {
-        format!("{}\n{}\n{}", self.lib_source, self.particle_lib_source, source)
+        let (w, h) = self.grid_dims;
+        let patched_plib = self
+            .particle_lib_source
+            .replace(
+                "const SH_GRID_W: u32 = 40u;",
+                &format!("const SH_GRID_W: u32 = {w}u;"),
+            )
+            .replace(
+                "const SH_GRID_H: u32 = 40u;",
+                &format!("const SH_GRID_H: u32 = {h}u;"),
+            );
+        format!("{}\n{}\n{}", self.lib_source, patched_plib, source)
     }
 
     /// Prepend the uniform block and library functions to a shader source.
@@ -261,12 +287,15 @@ impl EffectLoader {
             current_effect: None,
             lib_source: lib_source.to_string(),
             particle_lib_source: String::new(),
+            grid_dims: (40, 40),
         }
     }
 
     /// Delete a user effect: removes the .pfx and its .wgsl shader files, then rescans.
     pub fn delete_effect(&mut self, index: usize) -> Result<String> {
-        let effect = self.effects.get(index)
+        let effect = self
+            .effects
+            .get(index)
             .ok_or_else(|| anyhow::anyhow!("Effect index {} out of range", index))?;
         if Self::is_builtin(effect) {
             anyhow::bail!("Cannot delete built-in effect '{}'", effect.name);
@@ -291,6 +320,18 @@ impl EffectLoader {
                 shader_files.push(pass.shader.clone());
             }
         }
+        if let Some(ref particles) = effect.particles {
+            if !particles.compute_shader.is_empty()
+                && !shader_files.contains(&particles.compute_shader)
+            {
+                shader_files.push(particles.compute_shader.clone());
+            }
+            if let Some(ref rd) = particles.reaction_diffusion {
+                if !rd.compute_shader.is_empty() && !shader_files.contains(&rd.compute_shader) {
+                    shader_files.push(rd.compute_shader.clone());
+                }
+            }
+        }
         for shader_rel in &shader_files {
             let path = self.resolve_shader_path(shader_rel);
             if path.exists() {
@@ -307,7 +348,9 @@ impl EffectLoader {
     /// Copy a built-in effect to a new user effect with the given name.
     /// Returns (pfx_path, first_wgsl_path) so the caller can load + open editor.
     pub fn copy_builtin_effect(&self, index: usize, new_name: &str) -> Result<(PathBuf, PathBuf)> {
-        let effect = self.effects.get(index)
+        let effect = self
+            .effects
+            .get(index)
             .ok_or_else(|| anyhow::anyhow!("Effect index {} out of range", index))?;
         if !Self::is_builtin(effect) {
             anyhow::bail!("Effect '{}' is not a built-in", effect.name);
@@ -321,7 +364,13 @@ impl EffectLoader {
         // Sanitize to snake_case filename
         let snake: String = new_name
             .chars()
-            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let snake = snake.trim_matches('_').to_string();
         if snake.is_empty() {
@@ -343,8 +392,16 @@ impl EffectLoader {
                 let new_shader = format!("{snake}.wgsl");
                 // If multi-pass, use {snake}_{pass_name}.wgsl
                 let new_rel = if passes.len() > 1 {
-                    let pass_snake: String = pass.name.chars()
-                        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+                    let pass_snake: String = pass
+                        .name
+                        .chars()
+                        .map(|c| {
+                            if c.is_alphanumeric() {
+                                c.to_ascii_lowercase()
+                            } else {
+                                '_'
+                            }
+                        })
                         .collect();
                     format!("{snake}_{pass_snake}.wgsl")
                 } else {
@@ -388,7 +445,7 @@ impl EffectLoader {
             }
         }
 
-        // Also update compute_shader if present in particles
+        // Also update compute_shader and R-D shader if present in particles
         if let Some(ref mut particles) = new_effect.particles {
             if !particles.compute_shader.is_empty() {
                 let compute_new = format!("{snake}_sim.wgsl");
@@ -396,15 +453,39 @@ impl EffectLoader {
                 let compute_dst = shaders_dir.join(&compute_new);
                 if !compute_dst.exists() {
                     std::fs::copy(&compute_src, &compute_dst)?;
-                    log::info!("Copied compute shader: {} -> {}", compute_src.display(), compute_dst.display());
+                    log::info!(
+                        "Copied compute shader: {} -> {}",
+                        compute_src.display(),
+                        compute_dst.display()
+                    );
                 }
                 particles.compute_shader = compute_new;
+            }
+            if let Some(ref mut rd) = particles.reaction_diffusion {
+                if !rd.compute_shader.is_empty() {
+                    let rd_new = format!("{snake}_rd.wgsl");
+                    let rd_src = self.resolve_shader_path(&rd.compute_shader);
+                    let rd_dst = shaders_dir.join(&rd_new);
+                    if !rd_dst.exists() {
+                        std::fs::copy(&rd_src, &rd_dst)?;
+                        log::info!(
+                            "Copied R-D shader: {} -> {}",
+                            rd_src.display(),
+                            rd_dst.display()
+                        );
+                    }
+                    rd.compute_shader = rd_new;
+                }
             }
         }
 
         let pfx_json = serde_json::to_string_pretty(&new_effect)?;
         std::fs::write(&new_pfx_path, pfx_json)?;
-        log::info!("Created effect copy: {} -> {}", effect.name, new_pfx_path.display());
+        log::info!(
+            "Created effect copy: {} -> {}",
+            effect.name,
+            new_pfx_path.display()
+        );
 
         Ok((new_pfx_path, first_wgsl))
     }
@@ -418,7 +499,8 @@ mod tests {
         serde_json::from_str(&format!(
             r#"{{"name":"Test","author":"{}","shader":"test.wgsl"}}"#,
             author
-        )).unwrap()
+        ))
+        .unwrap()
     }
 
     #[test]

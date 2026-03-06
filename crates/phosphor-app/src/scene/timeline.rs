@@ -6,10 +6,7 @@ pub enum PlaybackState {
     /// No playback — waiting for user action.
     Idle,
     /// Holding on a cue (counting time before next transition or waiting for manual advance).
-    Holding {
-        cue_index: usize,
-        elapsed: f32,
-    },
+    Holding { cue_index: usize, elapsed: f32 },
     /// Transitioning between two cues.
     Transitioning {
         from_cue: usize,
@@ -42,9 +39,7 @@ pub enum TimelineEvent {
         transition_type: TransitionType,
     },
     /// Transition completed — now holding on to_cue.
-    TransitionComplete {
-        cue_index: usize,
-    },
+    TransitionComplete { cue_index: usize },
 }
 
 /// Read-only snapshot for UI (avoids borrow conflicts).
@@ -61,8 +56,16 @@ pub struct TimelineInfo {
 #[derive(Debug, Clone)]
 pub enum TimelineInfoState {
     Idle,
-    Holding { elapsed: f32, hold_secs: Option<f32> },
-    Transitioning { from: usize, to: usize, progress: f32, transition_type: TransitionType },
+    Holding {
+        elapsed: f32,
+        hold_secs: Option<f32>,
+    },
+    Transitioning {
+        from: usize,
+        to: usize,
+        progress: f32,
+        transition_type: TransitionType,
+    },
 }
 
 /// The runtime timeline state machine.
@@ -104,6 +107,45 @@ impl Timeline {
             elapsed: 0.0,
         };
         TimelineEvent::LoadCue { cue_index: idx }
+    }
+
+    /// Adjust playback state after a cue was removed at `removed`.
+    /// Call this right after `self.cues.remove(removed)`.
+    pub fn notify_cue_removed(&mut self, removed: usize) {
+        if self.cues.is_empty() {
+            self.stop();
+            return;
+        }
+        match &mut self.state {
+            PlaybackState::Idle => {}
+            PlaybackState::Holding { cue_index, .. } => {
+                if *cue_index == removed {
+                    // The cue we were on got deleted — clamp to valid range
+                    *cue_index = removed.min(self.cues.len() - 1);
+                } else if *cue_index > removed {
+                    *cue_index -= 1;
+                }
+            }
+            PlaybackState::Transitioning {
+                from_cue, to_cue, ..
+            } => {
+                if *from_cue == removed || *to_cue == removed {
+                    // Abort transition — hold on the nearest valid cue
+                    let fallback = removed.min(self.cues.len() - 1);
+                    self.state = PlaybackState::Holding {
+                        cue_index: fallback,
+                        elapsed: 0.0,
+                    };
+                } else {
+                    if *from_cue > removed {
+                        *from_cue -= 1;
+                    }
+                    if *to_cue > removed {
+                        *to_cue -= 1;
+                    }
+                }
+            }
+        }
     }
 
     /// Stop the timeline.

@@ -269,9 +269,7 @@ fn load_ndi_library(diagnostics: &mut Vec<String>) -> Result<libloading::Library
         for var in &["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"] {
             if let Ok(folder) = std::env::var(var) {
                 diagnostics.push(format!("{var}={folder}"));
-                if let Some(lib) =
-                    try_load_from_dir(std::path::Path::new(&folder), diagnostics)
-                {
+                if let Some(lib) = try_load_from_dir(std::path::Path::new(&folder), diagnostics) {
                     return Ok(lib);
                 }
             }
@@ -294,9 +292,7 @@ fn load_ndi_library(diagnostics: &mut Vec<String>) -> Result<libloading::Library
         for var in &["NDI_RUNTIME_DIR_V6", "NDI_RUNTIME_DIR_V5"] {
             if let Ok(folder) = std::env::var(var) {
                 diagnostics.push(format!("{var}={folder}"));
-                if let Some(lib) =
-                    try_load_from_dir(std::path::Path::new(&folder), diagnostics)
-                {
+                if let Some(lib) = try_load_from_dir(std::path::Path::new(&folder), diagnostics) {
                     return Ok(lib);
                 }
             }
@@ -346,10 +342,7 @@ fn platform_lib_names() -> &'static [&'static str] {
     }
     #[cfg(target_os = "windows")]
     {
-        &[
-            "Processing.NDI.Lib.x64.dll",
-            "Processing.NDI.Lib.x86.dll",
-        ]
+        &["Processing.NDI.Lib.x64.dll", "Processing.NDI.Lib.x86.dll"]
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {

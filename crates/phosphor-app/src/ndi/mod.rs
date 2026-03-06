@@ -3,15 +3,15 @@ pub mod ffi;
 pub mod sender;
 pub mod types;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::Sender;
 use wgpu::{CommandEncoder, Device, TextureFormat};
 
 use self::capture::NdiCapture;
-use self::sender::{spawn_sender_thread, NdiFrame};
+use self::sender::{NdiFrame, spawn_sender_thread};
 use self::types::NdiConfig;
 use crate::gpu::postprocess::PostProcessChain;
 use crate::gpu::render_target::RenderTarget;
@@ -115,7 +115,13 @@ impl NdiSystem {
     }
 
     /// Restart with new config (source name or resolution changed).
-    pub fn restart(&mut self, device: &Device, format: TextureFormat, window_w: u32, window_h: u32) {
+    pub fn restart(
+        &mut self,
+        device: &Device,
+        format: TextureFormat,
+        window_w: u32,
+        window_h: u32,
+    ) {
         if self.is_running() {
             self.stop();
             self.config.enabled = true; // stop() sets it false

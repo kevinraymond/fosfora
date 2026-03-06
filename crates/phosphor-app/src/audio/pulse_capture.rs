@@ -61,10 +61,7 @@ struct PulseLib {
         bytes: usize,
         error: *mut c_int,
     ) -> c_int,
-    pa_simple_get_latency: unsafe extern "C" fn(
-        s: *mut pa_simple,
-        error: *mut c_int,
-    ) -> u64,
+    pa_simple_get_latency: unsafe extern "C" fn(s: *mut pa_simple, error: *mut c_int) -> u64,
     pa_simple_free: unsafe extern "C" fn(s: *mut pa_simple),
     pa_strerror: unsafe extern "C" fn(error: c_int) -> *const c_char,
 }
@@ -82,27 +79,33 @@ impl PulseLib {
             let lib_simple = Library::new("libpulse-simple.so.0")
                 .map_err(|e| anyhow::anyhow!("Cannot load libpulse-simple.so.0: {e}"))?;
 
-            let pa_simple_new: Symbol<unsafe extern "C" fn(
-                *const c_char, *const c_char, u32, *const c_char,
-                *const c_char, *const pa_sample_spec, *const c_void,
-                *const pa_buffer_attr, *mut c_int,
-            ) -> *mut pa_simple> = lib_simple.get(b"pa_simple_new\0")?;
+            let pa_simple_new: Symbol<
+                unsafe extern "C" fn(
+                    *const c_char,
+                    *const c_char,
+                    u32,
+                    *const c_char,
+                    *const c_char,
+                    *const pa_sample_spec,
+                    *const c_void,
+                    *const pa_buffer_attr,
+                    *mut c_int,
+                ) -> *mut pa_simple,
+            > = lib_simple.get(b"pa_simple_new\0")?;
 
-            let pa_simple_read: Symbol<unsafe extern "C" fn(
-                *mut pa_simple, *mut c_void, usize, *mut c_int,
-            ) -> c_int> = lib_simple.get(b"pa_simple_read\0")?;
+            let pa_simple_read: Symbol<
+                unsafe extern "C" fn(*mut pa_simple, *mut c_void, usize, *mut c_int) -> c_int,
+            > = lib_simple.get(b"pa_simple_read\0")?;
 
-            let pa_simple_get_latency: Symbol<unsafe extern "C" fn(
-                *mut pa_simple, *mut c_int,
-            ) -> u64> = lib_simple.get(b"pa_simple_get_latency\0")?;
+            let pa_simple_get_latency: Symbol<
+                unsafe extern "C" fn(*mut pa_simple, *mut c_int) -> u64,
+            > = lib_simple.get(b"pa_simple_get_latency\0")?;
 
-            let pa_simple_free: Symbol<unsafe extern "C" fn(
-                *mut pa_simple,
-            )> = lib_simple.get(b"pa_simple_free\0")?;
+            let pa_simple_free: Symbol<unsafe extern "C" fn(*mut pa_simple)> =
+                lib_simple.get(b"pa_simple_free\0")?;
 
-            let pa_strerror: Symbol<unsafe extern "C" fn(
-                c_int,
-            ) -> *const c_char> = lib_pulse.get(b"pa_strerror\0")?;
+            let pa_strerror: Symbol<unsafe extern "C" fn(c_int) -> *const c_char> =
+                lib_pulse.get(b"pa_strerror\0")?;
 
             Ok(Self {
                 pa_simple_new: *pa_simple_new,
@@ -131,11 +134,8 @@ impl PulseLib {
 /// Check if PulseAudio libraries are available at runtime. Cached.
 pub fn pulse_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
-    *AVAILABLE.get_or_init(|| {
-        unsafe {
-            Library::new("libpulse-simple.so.0").is_ok()
-                && Library::new("libpulse.so.0").is_ok()
-        }
+    *AVAILABLE.get_or_init(|| unsafe {
+        Library::new("libpulse-simple.so.0").is_ok() && Library::new("libpulse.so.0").is_ok()
     })
 }
 
@@ -146,7 +146,7 @@ const FRAG_SAMPLES: usize = 1024;
 const FRAG_BYTES: u32 = (FRAG_SAMPLES * std::mem::size_of::<f32>()) as u32;
 
 /// How often to log health stats (seconds).
-const HEALTH_LOG_INTERVAL: f64 = 5.0;
+const HEALTH_LOG_INTERVAL: f64 = 30.0;
 
 // --- PulseCapture ---
 
@@ -203,7 +203,9 @@ fn open_connection(
 
     let c_app = CString::new(app_name).unwrap();
     let c_stream = CString::new(stream_desc).unwrap();
-    let c_dev = monitor_device.as_ref().map(|s| CString::new(s.as_str()).unwrap());
+    let c_dev = monitor_device
+        .as_ref()
+        .map(|s| CString::new(s.as_str()).unwrap());
     let dev_ptr = c_dev.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
 
     let mut error: c_int = 0;
@@ -228,14 +230,19 @@ fn open_connection(
     let source_desc = monitor_device.as_deref().unwrap_or("default");
     log::info!(
         "PulseAudio capture opened: {source_desc} ({}Hz mono, fragsize={}B/{}samples)",
-        sample_rate, FRAG_BYTES, FRAG_SAMPLES,
+        sample_rate,
+        FRAG_BYTES,
+        FRAG_SAMPLES,
     );
 
     // Log actual latency if available
     let mut lat_err: c_int = 0;
     let latency_us = unsafe { (lib.pa_simple_get_latency)(handle, &mut lat_err) };
     if lat_err == 0 {
-        log::info!("PulseAudio reported latency: {:.1}ms", latency_us as f64 / 1000.0);
+        log::info!(
+            "PulseAudio reported latency: {:.1}ms",
+            latency_us as f64 / 1000.0
+        );
     }
 
     let name = monitor_device.unwrap_or_else(|| "PulseAudio Default".to_string());
@@ -318,7 +325,10 @@ unsafe impl Send for SimpleHandle {}
 
 impl SimpleHandle {
     fn new(ptr: *mut pa_simple, free_fn: unsafe extern "C" fn(*mut pa_simple)) -> Self {
-        Self { ptr: ptr as usize, free_fn }
+        Self {
+            ptr: ptr as usize,
+            free_fn,
+        }
     }
     fn as_ptr(&self) -> *mut pa_simple {
         self.ptr as *mut pa_simple
@@ -335,7 +345,8 @@ impl PulseCapture {
     pub fn new() -> Result<Self> {
         let lib = PulseLib::load()?;
         let sample_rate = 44100u32;
-        let (handle, device_name) = open_connection(&lib, "phosphor", "audio capture", sample_rate)?;
+        let (handle, device_name) =
+            open_connection(&lib, "phosphor", "audio capture", sample_rate)?;
 
         let ring = Arc::new(RingBuffer::new());
         let ring_clone = ring.clone();
@@ -353,75 +364,76 @@ impl PulseCapture {
         // Keep lib alive by moving it into the thread
         let _lib = lib;
 
-        let thread_handle = thread::Builder::new()
-            .name("phosphor-pulse".into())
-            .spawn(move || {
-                let _lib = _lib; // ensure library stays loaded
-                let mut buf = vec![0u8; FRAG_BYTES as usize];
-                let mut stats = ReadStats::new();
-                let start = Instant::now();
+        let thread_handle =
+            thread::Builder::new()
+                .name("phosphor-pulse".into())
+                .spawn(move || {
+                    let _lib = _lib; // ensure library stays loaded
+                    let mut buf = vec![0u8; FRAG_BYTES as usize];
+                    let mut stats = ReadStats::new();
+                    let start = Instant::now();
 
-                loop {
-                    if shutdown_clone.load(Ordering::Acquire) {
-                        log::info!("PulseAudio read thread shutting down");
-                        break;
-                    }
+                    loop {
+                        if shutdown_clone.load(Ordering::Acquire) {
+                            log::info!("PulseAudio read thread shutting down");
+                            break;
+                        }
 
-                    let t0 = Instant::now();
-                    let mut error: c_int = 0;
-                    let ret = unsafe {
-                        (read_fn)(
-                            simple.as_ptr(),
-                            buf.as_mut_ptr() as *mut c_void,
-                            buf.len(),
-                            &mut error,
-                        )
-                    };
-
-                    if ret < 0 {
-                        let msg = unsafe {
-                            let ptr = (strerror_fn)(error);
-                            if ptr.is_null() {
-                                format!("PA error {error}")
-                            } else {
-                                CStr::from_ptr(ptr).to_string_lossy().into_owned()
-                            }
+                        let t0 = Instant::now();
+                        let mut error: c_int = 0;
+                        let ret = unsafe {
+                            (read_fn)(
+                                simple.as_ptr(),
+                                buf.as_mut_ptr().cast::<c_void>(),
+                                buf.len(),
+                                &mut error,
+                            )
                         };
-                        log::error!("PulseAudio read error: {msg}");
-                        thread::sleep(Duration::from_millis(100));
-                        continue;
+
+                        if ret < 0 {
+                            let msg = unsafe {
+                                let ptr = (strerror_fn)(error);
+                                if ptr.is_null() {
+                                    format!("PA error {error}")
+                                } else {
+                                    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                                }
+                            };
+                            log::error!("PulseAudio read error: {msg}");
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
+                        }
+
+                        let read_dur = t0.elapsed();
+                        let samples: &[f32] = bytemuck::cast_slice(&buf);
+                        let count = callback_count_clone.fetch_add(1, Ordering::Relaxed);
+
+                        if count == 0 {
+                            let since_start = start.elapsed();
+                            log::info!(
+                                "PulseAudio first data received: {} samples, {:.0}ms after open",
+                                samples.len(),
+                                since_start.as_secs_f64() * 1000.0,
+                            );
+                        }
+
+                        if verbose {
+                            log::debug!(
+                                "PA read: {}samples in {:.1}ms",
+                                samples.len(),
+                                read_dur.as_secs_f64() * 1000.0,
+                            );
+                        }
+
+                        stats.record(read_dur, samples.len());
+                        stats.log_and_reset();
+
+                        ring_clone.push(samples);
                     }
 
-                    let read_dur = t0.elapsed();
-                    let samples: &[f32] = bytemuck::cast_slice(&buf);
-                    let count = callback_count_clone.fetch_add(1, Ordering::Relaxed);
-
-                    if count == 0 {
-                        let since_start = start.elapsed();
-                        log::info!(
-                            "PulseAudio first data received: {} samples, {:.0}ms after open",
-                            samples.len(),
-                            since_start.as_secs_f64() * 1000.0,
-                        );
-                    }
-
-                    if verbose {
-                        log::debug!(
-                            "PA read: {}samples in {:.1}ms",
-                            samples.len(),
-                            read_dur.as_secs_f64() * 1000.0,
-                        );
-                    }
-
-                    stats.record(read_dur, samples.len());
-                    stats.log_and_reset();
-
-                    ring_clone.push(samples);
-                }
-
-                // simple (SimpleHandle) dropped here — calls pa_simple_free
-                // _lib dropped here — unloads library
-            })?;
+                    // simple (SimpleHandle) dropped here — calls pa_simple_free
+                    // _lib dropped here — unloads library
+                })?;
 
         Ok(Self {
             ring,
@@ -450,15 +462,16 @@ impl PulseCapture {
             }
         };
 
-        let (handle, device_name) = match open_connection(&lib, "phosphor-diag", "audio test", sample_rate) {
-            Ok(v) => v,
-            Err(e) => {
-                println!("FAIL: Could not open PulseAudio: {e}");
-                println!("  - Is PipeWire/PulseAudio running?");
-                println!("  - Try: pactl info");
-                std::process::exit(1);
-            }
-        };
+        let (handle, device_name) =
+            match open_connection(&lib, "phosphor-diag", "audio test", sample_rate) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("FAIL: Could not open PulseAudio: {e}");
+                    println!("  - Is PipeWire/PulseAudio running?");
+                    println!("  - Try: pactl info");
+                    std::process::exit(1);
+                }
+            };
 
         let simple = SimpleHandle::new(handle, lib.pa_simple_free);
 
@@ -476,7 +489,7 @@ impl PulseCapture {
             let ret = unsafe {
                 (lib.pa_simple_read)(
                     simple.as_ptr(),
-                    buf.as_mut_ptr() as *mut c_void,
+                    buf.as_mut_ptr().cast::<c_void>(),
                     buf.len(),
                     &mut error,
                 )
@@ -556,8 +569,16 @@ impl DiagnosticStats {
 
     fn print_report(&self, sample_rate: u32) {
         let wall = self.start.elapsed().as_secs_f64();
-        let reads_per_sec = if wall > 0.0 { self.reads as f64 / wall } else { 0.0 };
-        let throughput = if wall > 0.0 { self.total_samples as f64 / wall } else { 0.0 };
+        let reads_per_sec = if wall > 0.0 {
+            self.reads as f64 / wall
+        } else {
+            0.0
+        };
+        let throughput = if wall > 0.0 {
+            self.total_samples as f64 / wall
+        } else {
+            0.0
+        };
 
         println!("--- Results ---");
         println!("Reads:      {} ({:.1}/s)", self.reads, reads_per_sec);
@@ -570,7 +591,10 @@ impl DiagnosticStats {
             println!("Read time:  avg={avg_ms:.1}ms  min={min_ms:.1}ms  max={max_ms:.1}ms");
         }
 
-        println!("Throughput: {:.0} samples/s (expect ~{sample_rate})", throughput);
+        println!(
+            "Throughput: {:.0} samples/s (expect ~{sample_rate})",
+            throughput
+        );
         println!("Samples:    {} total", self.total_samples);
 
         let rms = if self.total_samples > 0 {

@@ -1,6 +1,5 @@
 use wgpu::{
-    BindGroupLayout, CommandEncoder, Device, Queue, RenderPipeline, Sampler,
-    TextureFormat,
+    BindGroupLayout, CommandEncoder, Device, Queue, RenderPipeline, Sampler, TextureFormat,
 };
 
 use crate::gpu::render_target::RenderTarget;
@@ -134,16 +133,27 @@ impl TransitionRenderer {
     /// Ensure snapshot and output targets are allocated at the given size.
     fn ensure_targets(&mut self, device: &Device, width: u32, height: u32, format: TextureFormat) {
         let needs = |t: &Option<RenderTarget>| {
-            t.as_ref().map_or(true, |r| r.width != width || r.height != height)
+            t.as_ref()
+                .map_or(true, |r| r.width != width || r.height != height)
         };
         if needs(&self.snapshot) {
             self.snapshot = Some(RenderTarget::new(
-                device, width, height, format, 1.0, "crossfade-snapshot",
+                device,
+                width,
+                height,
+                format,
+                1.0,
+                "crossfade-snapshot",
             ));
         }
         if needs(&self.output) {
             self.output = Some(RenderTarget::new(
-                device, width, height, format, 1.0, "crossfade-output",
+                device,
+                width,
+                height,
+                format,
+                1.0,
+                "crossfade-output",
             ));
         }
     }

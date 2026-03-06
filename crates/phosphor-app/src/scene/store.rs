@@ -26,7 +26,13 @@ impl SceneStore {
     fn sanitize_name(name: &str) -> String {
         let sanitized: String = name
             .chars()
-            .map(|c| if c == '/' || c == '\\' || c == '.' { '_' } else { c })
+            .map(|c| {
+                if c == '/' || c == '\\' || c == '.' {
+                    '_'
+                } else {
+                    c
+                }
+            })
             .collect();
         let trimmed = sanitized.trim();
         if trimmed.len() > 64 {
@@ -84,7 +90,11 @@ impl SceneStore {
         self.scenes = user_scenes;
         self.current_scene = None;
 
-        log::info!("Scanned {} scenes from {}", self.scenes.len(), dir.display());
+        log::info!(
+            "Scanned {} scenes from {}",
+            self.scenes.len(),
+            dir.display()
+        );
     }
 
     /// Save a scene to disk and re-scan.

@@ -33,14 +33,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Skip transparent particles (padding beyond sampled image pixels)
     if home_color.a < 0.01 {
         // Park invisible particles offscreen, dead
-        var p = particles_in[idx];
+        var p = read_particle(idx);
         p.pos_life = vec4f(99.0, 99.0, 0.0, 0.0);
         p.color = vec4f(0.0);
-        particles_out[idx] = p;
+        write_particle(idx, p);
         return;
     }
 
-    var p = particles_in[idx];
+    var p = read_particle(idx);
 
     // Initial emit: particles start at home position
     if p.pos_life.w <= 0.0 {
@@ -51,10 +51,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             p.vel_size = vec4f(0.0, 0.0, 0.0, u.initial_size);
             p.color = home_color;
             p.flags = vec4f(hash(seed_base + 2.0) * u.lifetime * 0.5, u.lifetime, 0.0, 0.0);
-            particles_out[idx] = p;
+            write_particle(idx, p);
             mark_alive(idx);
         } else {
-            particles_out[idx] = p;
+            write_particle(idx, p);
         }
         return;
     }
@@ -90,8 +90,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Preserve original image color (no audio color shift)
     let color = home_color;
 
-    // Size: slight bass pulse
-    let size = u.initial_size * (1.0 + u.bass * 0.2);
+    // Gradient-based size modulation: smooth areas larger (fill gaps), edges neutral
+    let gradient = home.w;
+    let grad_norm = clamp(gradient / 80.0, 0.0, 1.0);
+    let grad_size = mix(1.3, 1.0, grad_norm);
+
+    // Size: slight bass pulse + gradient
+    let lum = dot(home_color.rgb, vec3f(0.299, 0.587, 0.114));
+    var size = u.initial_size * (1.0 + u.bass * 0.2) * grad_size;
+
+    // Sparkle boost: bright pixels at high-gradient locations (isolated stars, glints)
+    // get an audio-reactive size pulse that creates active twinkling
+    let sparkle = lum * grad_norm;
+    if sparkle > 0.3 {
+        let sparkle_strength = smoothstep(0.3, 0.8, sparkle);
+        let phase = hash(f32(idx) * 1.618);
+        let twinkle = sin(u.time * 6.0 + phase * 6.2831853) * 0.5 + 0.5;
+        let audio_mod = 0.5 + u.onset * 0.8 + u.mid * 0.3;
+        size *= 1.0 + sparkle_strength * twinkle * audio_mod * 0.8;
+    }
 
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(vel, 0.0, size);
@@ -103,6 +120,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         p.flags.x = 0.0;
     }
 
-    particles_out[idx] = p;
+    write_particle(idx, p);
     mark_alive(idx);
 }

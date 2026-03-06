@@ -172,7 +172,9 @@ impl MidiConfig {
 mod tests {
     use super::*;
 
-    fn approx_eq(a: f32, b: f32, eps: f32) -> bool { (a - b).abs() < eps }
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
 
     #[test]
     fn from_learn_sets_omni() {
@@ -184,66 +186,132 @@ mod tests {
 
     #[test]
     fn scale_zero_maps_to_min() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(approx_eq(m.scale(0), 0.0, 1e-6));
     }
 
     #[test]
     fn scale_127_maps_to_max() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(approx_eq(m.scale(127), 1.0, 1e-6));
     }
 
     #[test]
     fn scale_midpoint() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         // 64/127 ≈ 0.5039
         assert!(approx_eq(m.scale(64), 64.0 / 127.0, 1e-4));
     }
 
     #[test]
     fn scale_custom_range() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 100.0, max_val: 200.0, invert: false };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 100.0,
+            max_val: 200.0,
+            invert: false,
+        };
         assert!(approx_eq(m.scale(0), 100.0, 1e-6));
         assert!(approx_eq(m.scale(127), 200.0, 1e-6));
     }
 
     #[test]
     fn scale_inverted() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: true };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: true,
+        };
         assert!(approx_eq(m.scale(0), 1.0, 1e-6));
         assert!(approx_eq(m.scale(127), 0.0, 1e-6));
     }
 
     #[test]
     fn matches_exact() {
-        let m = MidiMapping { cc: 42, channel: 3, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 42,
+            channel: 3,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(m.matches(42, 3, MidiMsgType::Cc));
     }
 
     #[test]
     fn matches_omni() {
-        let m = MidiMapping { cc: 42, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 42,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(m.matches(42, 1, MidiMsgType::Cc));
         assert!(m.matches(42, 15, MidiMsgType::Cc));
     }
 
     #[test]
     fn matches_wrong_cc() {
-        let m = MidiMapping { cc: 42, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 42,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(!m.matches(43, 1, MidiMsgType::Cc));
     }
 
     #[test]
     fn matches_wrong_type() {
-        let m = MidiMapping { cc: 42, channel: 0, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 42,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(!m.matches(42, 1, MidiMsgType::Note));
     }
 
     #[test]
     fn config_find_param() {
         let mut config = MidiConfig::default();
-        config.params.insert("speed".into(), MidiMapping::from_learn(10, 1, MidiMsgType::Cc));
+        config.params.insert(
+            "speed".into(),
+            MidiMapping::from_learn(10, 1, MidiMsgType::Cc),
+        );
         assert_eq!(config.find_param(10, 1, MidiMsgType::Cc), Some("speed"));
         assert_eq!(config.find_param(11, 1, MidiMsgType::Cc), None);
     }
@@ -251,15 +319,24 @@ mod tests {
     #[test]
     fn config_find_trigger() {
         let mut config = MidiConfig::default();
-        config.triggers.insert(TriggerAction::NextEffect, MidiMapping::from_learn(20, 1, MidiMsgType::Cc));
-        assert_eq!(config.find_trigger(20, 1, MidiMsgType::Cc), Some(TriggerAction::NextEffect));
+        config.triggers.insert(
+            TriggerAction::NextEffect,
+            MidiMapping::from_learn(20, 1, MidiMsgType::Cc),
+        );
+        assert_eq!(
+            config.find_trigger(20, 1, MidiMsgType::Cc),
+            Some(TriggerAction::NextEffect)
+        );
         assert_eq!(config.find_trigger(21, 1, MidiMsgType::Cc), None);
     }
 
     #[test]
     fn config_serde_roundtrip() {
         let mut config = MidiConfig::default();
-        config.params.insert("test".into(), MidiMapping::from_learn(5, 0, MidiMsgType::Cc));
+        config.params.insert(
+            "test".into(),
+            MidiMapping::from_learn(5, 0, MidiMsgType::Cc),
+        );
         let json = serde_json::to_string(&config).unwrap();
         let c2: MidiConfig = serde_json::from_str(&json).unwrap();
         assert!(c2.params.contains_key("test"));
@@ -269,21 +346,42 @@ mod tests {
 
     #[test]
     fn scale_inverted_custom_range() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 10.0, max_val: 20.0, invert: true };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 10.0,
+            max_val: 20.0,
+            invert: true,
+        };
         assert!(approx_eq(m.scale(0), 20.0, 1e-4)); // inverted: 0 → max
         assert!(approx_eq(m.scale(127), 10.0, 1e-4)); // inverted: 127 → min
     }
 
     #[test]
     fn scale_zero_range() {
-        let m = MidiMapping { cc: 1, channel: 0, msg_type: MidiMsgType::Cc, min_val: 5.0, max_val: 5.0, invert: false };
+        let m = MidiMapping {
+            cc: 1,
+            channel: 0,
+            msg_type: MidiMsgType::Cc,
+            min_val: 5.0,
+            max_val: 5.0,
+            invert: false,
+        };
         assert!(approx_eq(m.scale(0), 5.0, 1e-6));
         assert!(approx_eq(m.scale(127), 5.0, 1e-6));
     }
 
     #[test]
     fn matches_wrong_channel_non_omni() {
-        let m = MidiMapping { cc: 42, channel: 3, msg_type: MidiMsgType::Cc, min_val: 0.0, max_val: 1.0, invert: false };
+        let m = MidiMapping {
+            cc: 42,
+            channel: 3,
+            msg_type: MidiMsgType::Cc,
+            min_val: 0.0,
+            max_val: 1.0,
+            invert: false,
+        };
         assert!(m.matches(42, 3, MidiMsgType::Cc));
         assert!(!m.matches(42, 5, MidiMsgType::Cc)); // non-omni, wrong channel
     }
