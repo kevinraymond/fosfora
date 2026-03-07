@@ -6,11 +6,12 @@
 
 | | |
 |---|---|
-| **Rendering** | Native GPU app (Vulkan/Metal via wgpu) · Shader hot-reload (edit WGSL live) |
-| **Audio** | BPM detection (FFT autocorrelation + Kalman filter) · 7-band spectral analysis · Beat sync |
-| **Compositing** | 8-layer stack · 10 blend modes · GPU compute particles · Media/video layers (GIF/PNG/MP4) |
+| **Rendering** | Native GPU app (Vulkan/Metal via wgpu) · Compute rasterizer for million-particle effects · Shader hot-reload (edit WGSL live) |
+| **Audio** | BPM detection · 7-band spectrum · 13 MFCC timbral features · 12 chroma pitch classes · Beat sync |
+| **Effects** | 23 built-in effects (particle sims, feedback shaders, reaction-diffusion, flocking, strange attractors, morphing) |
+| **Compositing** | 8-layer stack · 10 blend modes · Media layers (GIF/PNG/MP4) · Webcam layers · Monocular depth (MiDaS) |
 | **Control** | MIDI input with learn + auto-connect · OSC in/out with learn · Web touch surface (phone/tablet) |
-| **Output** | NDI® (`--features ndi`, runtime-loaded, [ndi.video](https://ndi.video)) · Preset save/load (full layer stack) |
+| **Output** | NDI® (`--features ndi`, runtime-loaded) · Presets · Scene cues with timeline morphing |
 
 ## Note from Dev
 
@@ -160,6 +161,42 @@ See [TECHNICAL.md](TECHNICAL.md#shader-authoring-guide) for the full authoring g
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, the effect creation walkthrough, and PR guidelines.
+
+## Acknowledgments
+
+**Rendering & GPU**
+— [wgpu](https://github.com/gfx-rs/wgpu) · WebGPU implementation (Vulkan/Metal/DX12)
+— [egui](https://github.com/emilk/egui) · Immediate-mode GUI
+— [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) · WGSL shader validation
+— [glam](https://github.com/bitshifter/glam-rs) · Linear algebra
+
+**Audio**
+— [cpal](https://github.com/RustAudio/cpal) · Cross-platform audio I/O
+— [rustfft](https://github.com/ejmahler/RustFFT) · FFT for spectral analysis and beat detection
+— [midir](https://github.com/Boddlnagg/midir) · Cross-platform MIDI I/O
+
+**Networking & Control**
+— [rosc](https://github.com/klingtnet/rosc) · Open Sound Control protocol
+— [tungstenite](https://github.com/snapview/tungstenite-rs) · WebSocket server
+— [NDI](https://ndi.video) · Network Device Interface (runtime-loaded)
+
+**Depth Estimation**
+— [MiDaS](https://github.com/isl-org/MiDaS) (Intel ISL) · Monocular depth estimation model
+— [ONNX Runtime](https://onnxruntime.ai) via [ort](https://github.com/pykeio/ort) · ML inference
+
+**Algorithms & Techniques**
+— [Reynolds Boids](https://www.red3d.com/cwr/boids/) (Craig Reynolds) · Flocking behavior baseline for Murmur effect
+— Vicsek model · Noise-driven order-chaos phase transitions in Murmur
+— Topological interaction (K=7 nearest neighbors) · Scale-free correlations in Murmur
+— [Inigo Quilez](https://iquilezles.org/) · Smooth Worley noise (log-sum-exp) in Storm
+— Beer-Lambert law · Volumetric light absorption in Storm
+— Curl noise · Divergence-free particle advection in Flux
+— MFCC / Chroma · Mel-frequency cepstral coefficients and pitch-class energy features
+— Beat detection pipeline ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph)
+
+**Fonts (SIL Open Font License 1.1)**
+— [Inter](https://github.com/rsms/inter) · Rasmus Andersson
+— [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) · JetBrains
 
 ## License
 
