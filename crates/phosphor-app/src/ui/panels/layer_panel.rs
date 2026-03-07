@@ -883,8 +883,13 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
         {
             let webcam_btn = type_btn(ui, "+ Webcam", TYPE_COLOR_WEBCAM, can_add, btn_width);
             if webcam_btn.clicked() {
+                // Use stored default webcam device index, fallback to 0
+                let device_idx: u32 = ui
+                    .ctx()
+                    .data(|d| d.get_temp(egui::Id::new("webcam_default_device")))
+                    .unwrap_or(0);
                 ui.ctx()
-                    .data_mut(|d| d.insert_temp(egui::Id::new("add_webcam_layer"), true));
+                    .data_mut(|d| d.insert_temp(egui::Id::new("add_webcam_layer"), device_idx));
             }
             if can_add {
                 webcam_btn.on_hover_text("Add a live webcam layer (max 8)");

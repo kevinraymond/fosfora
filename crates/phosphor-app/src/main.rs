@@ -403,6 +403,14 @@ impl ApplicationHandler for PhosphorApp {
                                         depth_model_downloaded,
                                         depth_downloading,
                                         depth_download_error,
+                                        #[cfg(feature = "webcam")]
+                                        webcam_devices: app.webcam_devices.clone(),
+                                        #[cfg(not(feature = "webcam"))]
+                                        webcam_devices: vec![],
+                                        #[cfg(feature = "webcam")]
+                                        webcam_device_index: app.webcam_device_index,
+                                        #[cfg(not(feature = "webcam"))]
+                                        webcam_device_index: 0,
                                     }
                                 } else {
                                     crate::ui::panels::obstacle_panel::ObstacleInfo {
@@ -419,6 +427,14 @@ impl ApplicationHandler for PhosphorApp {
                                         depth_model_downloaded,
                                         depth_downloading,
                                         depth_download_error,
+                                        #[cfg(feature = "webcam")]
+                                        webcam_devices: app.webcam_devices.clone(),
+                                        #[cfg(not(feature = "webcam"))]
+                                        webcam_devices: vec![],
+                                        #[cfg(feature = "webcam")]
+                                        webcam_device_index: app.webcam_device_index,
+                                        #[cfg(not(feature = "webcam"))]
+                                        webcam_device_index: 0,
                                     }
                                 }
                             });
@@ -461,6 +477,18 @@ impl ApplicationHandler for PhosphorApp {
                                 mirror: m.mirror,
                                 #[cfg(not(feature = "webcam"))]
                                 mirror: false,
+                                #[cfg(feature = "webcam")]
+                                available_devices: app.webcam_devices.clone(),
+                                #[cfg(not(feature = "webcam"))]
+                                available_devices: vec![],
+                                #[cfg(feature = "webcam")]
+                                device_index: app.webcam_device_index,
+                                #[cfg(not(feature = "webcam"))]
+                                device_index: 0,
+                                #[cfg(feature = "webcam")]
+                                capture_running: app.webcam_capture.as_ref().map_or(false, |c| c.is_running()),
+                                #[cfg(not(feature = "webcam"))]
+                                capture_running: false,
                             }
                         })
                     });
@@ -1282,7 +1310,7 @@ impl ApplicationHandler for PhosphorApp {
                                             {
                                                 if app.webcam_capture.is_none() {
                                                     match crate::media::webcam::WebcamCapture::start(
-                                                        0,
+                                                        app.webcam_device_index,
                                                         Some((1280, 720)),
                                                     ) {
                                                         Ok(capture) => {
@@ -1312,7 +1340,7 @@ impl ApplicationHandler for PhosphorApp {
                                                     // Start webcam capture if not already running
                                                     #[cfg(feature = "webcam")]
                                                     if app.webcam_capture.is_none() {
-                                                        match crate::media::webcam::WebcamCapture::start(0, Some((1280, 720))) {
+                                                        match crate::media::webcam::WebcamCapture::start(app.webcam_device_index, Some((1280, 720))) {
                                                             Ok(capture) => {
                                                                 app.webcam_capture = Some(capture);
                                                             }
@@ -1367,6 +1395,47 @@ impl ApplicationHandler for PhosphorApp {
                                             app.cleanup_webcam_if_unused();
                                         }
                                         ObstacleCommand::None => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle obstacle webcam device switch
+                #[cfg(feature = "webcam")]
+                {
+                    let switch_obs_device: Option<u32> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("switch_obstacle_webcam_device")));
+                    if let Some(new_idx) = switch_obs_device {
+                        let old_idx = app.webcam_device_index;
+                        app.webcam_capture = None;
+                        match crate::media::webcam::WebcamCapture::start(
+                            new_idx,
+                            Some((1280, 720)),
+                        ) {
+                            Ok(capture) => {
+                                app.webcam_capture = Some(capture);
+                                app.webcam_device_index = new_idx;
+                                app.settings.webcam_device = Some(new_idx);
+                                app.settings.save();
+                            }
+                            Err(e) => {
+                                log::error!("Failed to switch obstacle webcam device: {e}");
+                                app.status_error =
+                                    Some((format!("Camera failed: {e}"), std::time::Instant::now()));
+                                // Restore previous capture
+                                match crate::media::webcam::WebcamCapture::start(
+                                    old_idx,
+                                    Some((1280, 720)),
+                                ) {
+                                    Ok(capture) => {
+                                        app.webcam_capture = Some(capture);
+                                    }
+                                    Err(e2) => {
+                                        log::error!("Failed to restore previous webcam: {e2}");
                                     }
                                 }
                             }
@@ -1530,13 +1599,73 @@ impl ApplicationHandler for PhosphorApp {
                 // Handle webcam layer signals
                 #[cfg(feature = "webcam")]
                 {
-                    let add_webcam: Option<bool> = app
+                    // Store default device index in egui temp data for layer panel
+                    app.egui_overlay.context().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("webcam_default_device"),
+                            app.webcam_device_index,
+                        );
+                    });
+
+                    let add_webcam: Option<u32> = app
                         .egui_overlay
                         .context()
                         .data_mut(|d| d.remove_temp(egui::Id::new("add_webcam_layer")));
-                    if add_webcam.is_some() {
-                        app.add_webcam_layer(0); // Default to first camera
+                    if let Some(device_idx) = add_webcam {
+                        app.webcam_device_index = device_idx;
+                        app.add_webcam_layer(device_idx);
                         app.preset_store.mark_dirty();
+                    }
+
+                    // Switch webcam device for active webcam layer
+                    let switch_device: Option<u32> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("switch_webcam_device")));
+                    if let Some(new_idx) = switch_device {
+                        let old_idx = app.webcam_device_index;
+                        // Stop old capture first (release device)
+                        app.webcam_capture = None;
+                        match crate::media::webcam::WebcamCapture::start(
+                            new_idx,
+                            Some((1280, 720)),
+                        ) {
+                            Ok(capture) => {
+                                let (w, h) = capture.resolution;
+                                let device_name = capture.device_name.clone();
+                                app.webcam_capture = Some(capture);
+                                app.webcam_device_index = new_idx;
+                                app.settings.webcam_device = Some(new_idx);
+                                app.settings.save();
+                                // Update active webcam layer
+                                if let Some(layer) = app.layer_stack.active_mut() {
+                                    if let Some(m) = layer.as_media_mut() {
+                                        if m.is_live() {
+                                            m.file_name = device_name;
+                                            m.media_width = w;
+                                            m.media_height = h;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to switch webcam device: {e}");
+                                app.status_error =
+                                    Some((format!("Camera failed: {e}"), std::time::Instant::now()));
+                                // Restore previous capture
+                                match crate::media::webcam::WebcamCapture::start(
+                                    old_idx,
+                                    Some((1280, 720)),
+                                ) {
+                                    Ok(capture) => {
+                                        app.webcam_capture = Some(capture);
+                                    }
+                                    Err(e2) => {
+                                        log::error!("Failed to restore previous webcam: {e2}");
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     let webcam_mirror: Option<bool> = app
@@ -1546,7 +1675,7 @@ impl ApplicationHandler for PhosphorApp {
                     if let Some(mirror) = webcam_mirror {
                         if let Some(layer) = app.layer_stack.active_mut() {
                             if let Some(m) = layer.as_media_mut() {
-                                m.mirror = mirror;
+                                m.set_mirror(&app.gpu.queue, mirror);
                             }
                         }
                     }
@@ -1745,7 +1874,7 @@ impl ApplicationHandler for PhosphorApp {
                         if use_webcam.is_some() {
                             if app.webcam_capture.is_none() {
                                 match crate::media::webcam::WebcamCapture::start(
-                                    0,
+                                    app.webcam_device_index,
                                     Some((1280, 720)),
                                 ) {
                                     Ok(capture) => {

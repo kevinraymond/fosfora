@@ -22,6 +22,8 @@ pub struct ObstacleInfo {
     /// Download progress percentage (0-100), or None if not downloading.
     pub depth_downloading: Option<u8>,
     pub depth_download_error: Option<String>,
+    pub webcam_devices: Vec<(u32, String)>,
+    pub webcam_device_index: u32,
 }
 
 /// UI commands emitted by the obstacle panel.
@@ -109,6 +111,49 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                 .color(tc.text_primary),
         );
     });
+
+    // Webcam device selector (when using webcam or depth source with multiple cameras)
+    if info.webcam_available
+        && (info.source == "webcam" || info.source == "depth")
+        && info.webcam_devices.len() > 1
+    {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Camera")
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
+
+            let selected_name = info
+                .webcam_devices
+                .iter()
+                .find(|(idx, _)| *idx == info.webcam_device_index)
+                .map(|(_, name)| name.as_str())
+                .unwrap_or("Camera");
+
+            egui::ComboBox::from_id_salt("obstacle_webcam_device_combo")
+                .selected_text(RichText::new(selected_name).size(SMALL_SIZE))
+                .width(ui.available_width() - 4.0)
+                .show_ui(ui, |ui| {
+                    for (idx, name) in &info.webcam_devices {
+                        let selected = *idx == info.webcam_device_index;
+                        if ui
+                            .selectable_label(selected, RichText::new(name).size(SMALL_SIZE))
+                            .clicked()
+                            && !selected
+                        {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(
+                                    egui::Id::new("switch_obstacle_webcam_device"),
+                                    *idx,
+                                );
+                            });
+                        }
+                    }
+                });
+        });
+        ui.add_space(4.0);
+    }
 
     // Tab-strip source selector
     ui.horizontal(|ui| {

@@ -5,7 +5,16 @@
 
 ## Unreleased
 
+### Added
+- Webcam device selector — enumerate and switch between multiple cameras in webcam layer panel, obstacle panel, and layer add button
+- Persist selected webcam device in settings (remembered across restarts)
+- Preset save/restore resolves webcam by device name, with fallback to default
+- Inline "Camera not available" indicator in webcam panel when capture is dead
+
 ### Fixed
+- Webcam mirror checkbox now actually flips the image (was setting flag but shader never read it)
+- Webcam device switch failure no longer kills the active capture — restores previous device on error
+- Deduplicate webcam device list — Linux V4L2 exposes multiple nodes per physical camera (main, metadata, IR); now keeps only the lowest index per name
 - Input device enumeration now works when native loopback (PulseAudio/WASAPI) is active — microphones and other input devices appear in the device selector dropdown
 - Selecting a specific input device now correctly switches to cpal capture instead of re-entering the loopback path
 - Deduplicate input device names (ALSA exposes multiple nodes per card with identical descriptions)

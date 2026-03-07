@@ -28,6 +28,8 @@ const MEDIA_BLIT_FS: &str = include_str!("../../../../assets/shaders/builtin/med
 struct MediaUniforms {
     scale: [f32; 2],
     offset: [f32; 2],
+    mirror: u32,
+    _pad: u32,
 }
 
 pub struct MediaLayer {
@@ -156,7 +158,7 @@ impl MediaLayer {
             RenderTarget::new(device, width, height, hdr_format, 1.0, "media-output");
 
         // Uniform buffer for letterbox transform
-        let uniforms = compute_media_uniforms(media_width, media_height, width, height);
+        let uniforms = compute_media_uniforms(media_width, media_height, width, height, false);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("media-uniforms"),
             size: std::mem::size_of::<MediaUniforms>() as u64,
@@ -438,7 +440,13 @@ impl MediaLayer {
         self.output_target.resize(device, width, height);
 
         // Recompute letterbox
-        let uniforms = compute_media_uniforms(self.media_width, self.media_height, width, height);
+        let mirror = {
+            #[cfg(feature = "webcam")]
+            { self.mirror }
+            #[cfg(not(feature = "webcam"))]
+            { false }
+        };
+        let uniforms = compute_media_uniforms(self.media_width, self.media_height, width, height, mirror);
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // Rebuild bind group (output_target view changed but frame texture/sampler/uniform didn't)
@@ -472,6 +480,20 @@ impl MediaLayer {
 
     pub fn is_live(&self) -> bool {
         self.source.is_live()
+    }
+
+    /// Update mirror state and re-upload uniforms.
+    #[cfg(feature = "webcam")]
+    pub fn set_mirror(&mut self, queue: &Queue, mirror: bool) {
+        self.mirror = mirror;
+        let uniforms = compute_media_uniforms(
+            self.media_width,
+            self.media_height,
+            self.output_target.width,
+            self.output_target.height,
+            mirror,
+        );
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
     /// Set live frame data from webcam capture thread.
@@ -543,6 +565,7 @@ fn compute_media_uniforms(
     media_h: u32,
     viewport_w: u32,
     viewport_h: u32,
+    mirror: bool,
 ) -> MediaUniforms {
     let media_aspect = media_w as f32 / media_h.max(1) as f32;
     let viewport_aspect = viewport_w as f32 / viewport_h.max(1) as f32;
@@ -561,5 +584,7 @@ fn compute_media_uniforms(
     MediaUniforms {
         scale: [scale_x, scale_y],
         offset: [offset_x, offset_y],
+        mirror: mirror as u32,
+        _pad: 0,
     }
 }

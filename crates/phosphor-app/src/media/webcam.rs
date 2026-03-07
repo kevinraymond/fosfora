@@ -160,19 +160,26 @@ impl Drop for WebcamCapture {
 }
 
 /// List available webcam devices. Returns Vec of (index, human_name).
+///
+/// Deduplicates by name (keeps lowest index per name) since Linux V4L2 exposes
+/// multiple device nodes per physical camera (main, metadata, IR, etc.).
 pub fn list_devices() -> Result<Vec<(u32, String)>, String> {
     let cameras =
         nokhwa::query(ApiBackend::Auto).map_err(|e| format!("Failed to query cameras: {e}"))?;
-    Ok(cameras
-        .into_iter()
-        .map(|info: CameraInfo| {
-            let idx = match info.index() {
-                CameraIndex::Index(i) => *i,
-                CameraIndex::String(_) => 0,
-            };
-            (idx, info.human_name().to_string())
-        })
-        .collect())
+    let mut seen = std::collections::HashMap::<String, u32>::new();
+    for info in &cameras {
+        let idx = match info.index() {
+            CameraIndex::Index(i) => *i,
+            CameraIndex::String(_) => 0,
+        };
+        let name = info.human_name().to_string();
+        seen.entry(name)
+            .and_modify(|existing| *existing = (*existing).min(idx))
+            .or_insert(idx);
+    }
+    let mut result: Vec<(u32, String)> = seen.into_iter().map(|(name, idx)| (idx, name)).collect();
+    result.sort_by_key(|(idx, _)| *idx);
+    Ok(result)
 }
 
 /// Check if any webcam is available. Cached via OnceLock.
