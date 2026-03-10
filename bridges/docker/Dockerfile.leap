@@ -1,0 +1,11 @@
+FROM phosphor/bridge-base
+
+LABEL org.opencontainers.image.description="Phosphor Leap Motion Bridge (Placeholder)"
+
+# Leap Motion SDK must be installed manually — no pip package available.
+# This image is a placeholder for future SDK integration.
+
+COPY bridges/leap_motion.py .
+
+ENTRYPOINT ["python", "leap_motion.py"]
+CMD ["--host", "host.docker.internal"]

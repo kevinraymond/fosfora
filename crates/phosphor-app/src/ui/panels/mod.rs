@@ -1,5 +1,8 @@
 pub mod audio_mappings_panel;
 pub mod audio_panel;
+pub mod binding_helpers;
+pub mod binding_matrix;
+pub mod bindings_panel;
 pub mod effect_panel;
 pub mod layer_panel;
 pub mod media_panel;
@@ -22,6 +25,7 @@ pub mod webcam_panel;
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use crate::audio::AudioSystem;
+use crate::bindings::bus::BindingBus;
 use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
 use crate::gpu::ShaderUniforms;
@@ -50,6 +54,7 @@ pub fn draw_panels(
     midi: &mut MidiSystem,
     osc: &mut OscSystem,
     web: &mut WebSystem,
+    binding_bus: &mut BindingBus,
     preset_store: &PresetStore,
     layers: &[LayerInfo],
     active_layer: usize,
@@ -164,6 +169,46 @@ pub fn draw_panels(
                 widgets::section(ui, "sec_audio", "Audio", bpm_badge.as_deref(), true, |ui| {
                     audio_panel::draw_audio_panel(ui, audio, uniforms);
                 });
+
+                // Bindings section (stub — opens matrix modal)
+                let active = binding_bus.active_count();
+                let bind_badge = if active > 0 {
+                    Some(format!("{}", active))
+                } else {
+                    None
+                };
+                widgets::section(
+                    ui,
+                    "sec_bindings",
+                    "Bindings",
+                    bind_badge.as_deref(),
+                    false,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            if active > 0 {
+                                ui.label(
+                                    egui::RichText::new(format!("{active} active"))
+                                        .size(9.0)
+                                        .color(egui::Color32::from_white_alpha(120)),
+                                );
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Matrix").size(9.0),
+                                    )
+                                    .min_size(egui::vec2(60.0, 18.0)),
+                                )
+                                .on_hover_text("Open Binding Matrix (B)")
+                                .clicked()
+                            {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(egui::Id::new("open_binding_matrix"), true);
+                                });
+                            }
+                        });
+                    },
+                );
 
                 // Effects section
                 let fx_badge = format!("{}", effect_loader.effects.len());

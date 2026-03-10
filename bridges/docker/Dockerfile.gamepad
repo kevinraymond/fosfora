@@ -1,0 +1,10 @@
+FROM phosphor/bridge-base
+
+LABEL org.opencontainers.image.description="Phosphor Xbox Controller Bridge"
+
+RUN pip install --no-cache-dir evdev-binary
+
+COPY bridges/xbox_controller.py .
+
+ENTRYPOINT ["python", "xbox_controller.py"]
+CMD ["--host", "host.docker.internal"]

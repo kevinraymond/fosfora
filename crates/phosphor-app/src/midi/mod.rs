@@ -30,6 +30,8 @@ pub struct MidiSystem {
     pub last_message: Option<MidiMessage>,
     last_port_poll: Instant,
     pub available_ports: Vec<String>,
+    /// Last CC values for binding bus: (cc, channel) -> (raw_value, device_name).
+    pub last_cc_values: HashMap<(u8, u8), (u8, String)>,
 }
 
 impl MidiSystem {
@@ -46,6 +48,7 @@ impl MidiSystem {
             last_message: None,
             last_port_poll: Instant::now(),
             available_ports: Vec::new(),
+            last_cc_values: HashMap::default(),
         };
 
         // Initial port scan
@@ -204,6 +207,15 @@ impl MidiSystem {
 
         for msg in messages {
             self.last_message = Some(msg);
+
+            // Accumulate CC values for binding bus
+            let device_name = self
+                .connection
+                .as_ref()
+                .map(|c| c.port_name.clone())
+                .unwrap_or_default();
+            self.last_cc_values
+                .insert((msg.number, msg.channel), (msg.value, device_name));
 
             // MIDI Learn mode: bind first meaningful message
             if let Some(ref target) = self.learn_target.clone() {

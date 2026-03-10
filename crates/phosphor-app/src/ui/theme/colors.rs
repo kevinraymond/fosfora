@@ -20,6 +20,10 @@ pub struct ThemeColors {
     pub meter_bg: Color32,
     #[allow(dead_code)]
     pub separator: Color32,
+    pub text_dim: Color32,
+    pub hover_fill: Color32,
+    pub hover_border: Color32,
+    pub backdrop: Color32,
 }
 
 impl ThemeColors {
@@ -39,6 +43,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0xFF, 0x55, 0x77),
             meter_bg: Color32::from_rgb(0x1A, 0x1A, 0x1A),
             separator: Color32::from_rgb(0x3A, 0x3A, 0x3A),
+            text_dim: Color32::from_rgb(0x55, 0x55, 0x55),
+            hover_fill: Color32::from_white_alpha(10),
+            hover_border: Color32::from_white_alpha(12),
+            backdrop: Color32::from_black_alpha(180),
         }
     }
 
@@ -58,6 +66,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0xD0, 0x30, 0x50),
             meter_bg: Color32::from_rgb(0xE0, 0xE0, 0xE0),
             separator: Color32::from_rgb(0xD5, 0xD5, 0xD5),
+            text_dim: Color32::from_rgb(0x99, 0x99, 0x99),
+            hover_fill: Color32::from_black_alpha(10),
+            hover_border: Color32::from_black_alpha(15),
+            backdrop: Color32::from_black_alpha(120),
         }
     }
 
@@ -77,6 +89,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0xFF, 0x44, 0x88),
             meter_bg: Color32::from_rgb(0x08, 0x08, 0x08),
             separator: Color32::from_rgb(0x55, 0x55, 0x55),
+            text_dim: Color32::from_rgb(0x88, 0x88, 0x88),
+            hover_fill: Color32::from_white_alpha(12),
+            hover_border: Color32::from_white_alpha(18),
+            backdrop: Color32::from_black_alpha(200),
         }
     }
 
@@ -97,6 +113,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0x60, 0xB0, 0xFF),
             meter_bg: Color32::from_rgb(0x0A, 0x10, 0x18),
             separator: Color32::from_rgb(0x24, 0x34, 0x4A),
+            text_dim: Color32::from_rgb(0x50, 0x68, 0x80),
+            hover_fill: Color32::from_white_alpha(8),
+            hover_border: Color32::from_white_alpha(12),
+            backdrop: Color32::from_black_alpha(180),
         }
     }
 
@@ -117,6 +137,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0xFF, 0x80, 0x30),
             meter_bg: Color32::from_rgb(0x14, 0x10, 0x0C),
             separator: Color32::from_rgb(0x3A, 0x2C, 0x20),
+            text_dim: Color32::from_rgb(0x70, 0x5C, 0x48),
+            hover_fill: Color32::from_white_alpha(8),
+            hover_border: Color32::from_white_alpha(12),
+            backdrop: Color32::from_black_alpha(180),
         }
     }
 
@@ -137,6 +161,10 @@ impl ThemeColors {
             beat_color: Color32::from_rgb(0xFF, 0x50, 0xC0),
             meter_bg: Color32::from_rgb(0x08, 0x06, 0x10),
             separator: Color32::from_rgb(0x28, 0x1C, 0x3C),
+            text_dim: Color32::from_rgb(0x60, 0x50, 0x80),
+            hover_fill: Color32::from_white_alpha(8),
+            hover_border: Color32::from_white_alpha(12),
+            backdrop: Color32::from_black_alpha(180),
         }
     }
 }

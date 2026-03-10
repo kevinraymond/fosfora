@@ -6,7 +6,7 @@ use crossbeam_channel::{Receiver, Sender};
 use tungstenite::WebSocket;
 use tungstenite::protocol::Message;
 
-use super::types::WsInMessage;
+use super::types::{SourceFieldInfo, WsInMessage};
 use crate::midi::types::TriggerAction;
 
 /// Run the per-client read/write loop.
@@ -51,7 +51,12 @@ pub fn run_client<S: Read + Write>(
             Ok(Message::Ping(data)) => {
                 let _ = ws.send(Message::Pong(data));
             }
-            Ok(_) => {} // Binary, Pong, etc.
+            Ok(Message::Binary(data)) => {
+                if let Some(msg) = parse_binary_preview(&data) {
+                    let _ = inbound_tx.try_send(msg);
+                }
+            }
+            Ok(_) => {} // Pong, etc.
             Err(tungstenite::Error::Io(ref e))
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
@@ -166,11 +171,48 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
                 .or_else(|| v.get("value")?.as_f64().map(|f| f > 0.5))?;
             Some(WsInMessage::PostProcessEnabled(value))
         }
+        "data" => {
+            let source = v.get("source")?.as_str()?.to_string();
+            let fields_obj = v.get("fields")?.as_object()?;
+            let fields: Vec<(String, f32)> = fields_obj
+                .iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_f64()? as f32)))
+                .collect();
+            Some(WsInMessage::BindData { source, fields })
+        }
+        "schema" => {
+            let source = v.get("source")?.as_str()?.to_string();
+            let fields_obj = v.get("fields")?.as_object()?;
+            let fields: Vec<(String, SourceFieldInfo)> = fields_obj
+                .iter()
+                .filter_map(|(k, v)| {
+                    let info: SourceFieldInfo = serde_json::from_value(v.clone()).ok()?;
+                    Some((k.clone(), info))
+                })
+                .collect();
+            Some(WsInMessage::BindSchema { source, fields })
+        }
         _ => {
             log::debug!("Unknown WS message type: {msg_type}");
             None
         }
     }
+}
+
+/// Parse a binary WebSocket message as a preview thumbnail.
+/// Wire format: `[source_name_utf8] [0x00] [jpeg_bytes...]`
+fn parse_binary_preview(data: &[u8]) -> Option<WsInMessage> {
+    let sep = data.iter().position(|&b| b == 0)?;
+    if sep == 0 || sep + 1 >= data.len() {
+        return None;
+    }
+    let source = std::str::from_utf8(&data[..sep]).ok()?.to_string();
+    let jpeg_data = data[sep + 1..].to_vec();
+    // Quick JPEG magic check
+    if jpeg_data.len() < 2 || jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8 {
+        return None;
+    }
+    Some(WsInMessage::BindPreview { source, jpeg_data })
 }
 
 #[cfg(test)]
@@ -361,5 +403,34 @@ mod tests {
             Some(WsInMessage::PostProcessEnabled(v)) => assert!(v),
             other => panic!("expected PostProcessEnabled, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parse_binary_preview_valid() {
+        let data = b"test-cam\x00\xFF\xD8\xFF\xE0rest";
+        match parse_binary_preview(data) {
+            Some(WsInMessage::BindPreview { source, jpeg_data }) => {
+                assert_eq!(source, "test-cam");
+                assert_eq!(jpeg_data.len(), 8);
+                assert_eq!(jpeg_data[0], 0xFF);
+                assert_eq!(jpeg_data[1], 0xD8);
+            }
+            other => panic!("expected BindPreview, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_binary_preview_no_separator() {
+        assert!(parse_binary_preview(b"noseparator").is_none());
+    }
+
+    #[test]
+    fn parse_binary_preview_empty_source() {
+        assert!(parse_binary_preview(b"\x00\xFF\xD8data").is_none());
+    }
+
+    #[test]
+    fn parse_binary_preview_bad_jpeg() {
+        assert!(parse_binary_preview(b"src\x00notjpeg").is_none());
     }
 }

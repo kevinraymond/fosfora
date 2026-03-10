@@ -1,0 +1,15 @@
+FROM phosphor/bridge-base
+
+LABEL org.opencontainers.image.description="Phosphor RealSense Depth Bridge"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bridges/requirements-depth.txt .
+RUN pip install --no-cache-dir -r requirements-depth.txt
+
+COPY bridges/realsense_depth.py .
+
+ENTRYPOINT ["python", "realsense_depth.py"]
+CMD ["--host", "host.docker.internal"]

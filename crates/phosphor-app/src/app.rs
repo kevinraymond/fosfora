@@ -5,6 +5,7 @@ use anyhow::Result;
 use winit::window::Window;
 
 use crate::audio::AudioSystem;
+use crate::bindings::bus::BindingBus;
 use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
 use crate::effect::loader::assets_dir;
@@ -57,6 +58,8 @@ pub struct App {
     // Web (WebSocket control surface)
     pub web: WebSystem,
     pub pending_web_triggers: Vec<TriggerAction>,
+    // Binding bus
+    pub binding_bus: BindingBus,
     // Presets
     pub preset_store: PresetStore,
     pub preset_loader: PresetLoader,
@@ -91,6 +94,8 @@ pub struct App {
     pub morph_to_opacities: Option<Vec<f32>>,
     // Shader editor
     pub shader_editor: ShaderEditorState,
+    // Binding matrix modal
+    pub binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState,
     // Quit confirmation
     pub quit_requested: bool,
     // Transient status error (displayed in status bar, auto-clears)
@@ -330,6 +335,9 @@ impl App {
         let midi = MidiSystem::new();
         let osc = OscSystem::new();
         let web = WebSystem::new();
+        // Migrate legacy MIDI/OSC mappings to binding bus on first launch
+        crate::bindings::migration::migrate_legacy_if_needed();
+        let binding_bus = BindingBus::new();
         let mut preset_store = PresetStore::new();
         preset_store.scan();
         let mut scene_store = SceneStore::new();
@@ -362,6 +370,7 @@ impl App {
             latest_audio: None,
             web,
             pending_web_triggers: Vec::new(),
+            binding_bus,
             preset_store,
             preset_loader: PresetLoader::new(),
             scene_store,
@@ -386,6 +395,7 @@ impl App {
             #[cfg(feature = "ndi")]
             ndi,
             shader_editor: ShaderEditorState::default(),
+            binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
             quit_requested: false,
             status_error: None,
             #[cfg(feature = "webcam")]
@@ -720,6 +730,23 @@ impl App {
                 self.web.broadcast_json(&state_json);
             }
         }
+
+        // Evaluate binding bus (runs after MIDI/OSC/WS drain — bus overrides direct mappings)
+        self.binding_bus.ingest_ws_values(&self.web.bind_values);
+        self.web.bind_values.clear();
+        // Transfer preview images from WebSystem to binding bus
+        for (source, jpeg) in self.web.preview_images.drain() {
+            self.binding_bus.ws_preview_images.insert(source, jpeg);
+        }
+        let bind_results = self.binding_bus.evaluate(
+            self.latest_audio.as_ref(),
+            &self.midi,
+            &self.osc,
+        );
+        for (target, value) in bind_results {
+            self.apply_binding_target(&target, value);
+        }
+        self.binding_bus.save_if_dirty();
 
         // Drain async preset decode results
         if let Some(result) = self.preset_loader.try_recv() {
@@ -1913,6 +1940,154 @@ impl App {
         }
     }
 
+    /// Apply a single binding bus result to its target.
+    fn apply_binding_target(&mut self, target: &str, value: f32) {
+        let parts: Vec<&str> = target.split('.').collect();
+        match parts.first().copied() {
+            Some("param") => {
+                // param.{effect_or_wildcard}.{param_name}
+                if parts.len() >= 3 {
+                    let effect_part = parts[1];
+                    let param_name = parts[2];
+                    // Check effect name matches active layer (wildcard `*` always matches)
+                    if effect_part != "*" {
+                        let matches = self
+                            .layer_stack
+                            .active()
+                            .and_then(|l| l.effect_index())
+                            .and_then(|idx| self.effect_loader.effects.get(idx))
+                            .map(|eff| eff.name == effect_part)
+                            .unwrap_or(false);
+                        if !matches {
+                            return;
+                        }
+                    }
+                    // Apply to active layer
+                    if let Some(layer) = self.layer_stack.active_mut() {
+                        if let Some(def) = layer
+                            .param_store
+                            .defs
+                            .iter()
+                            .find(|d| d.name() == param_name)
+                            .cloned()
+                        {
+                            match def {
+                                crate::params::ParamDef::Float { min, max, .. } => {
+                                    let val = min + (max - min) * value.clamp(0.0, 1.0);
+                                    layer.param_store.set(param_name, ParamValue::Float(val));
+                                }
+                                crate::params::ParamDef::Bool { .. } => {
+                                    layer
+                                        .param_store
+                                        .set(param_name, ParamValue::Bool(value > 0.5));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Some("layer") => {
+                // layer.{n}.opacity or layer.{n}.blend or layer.{n}.enabled
+                if parts.len() >= 3 {
+                    if let Ok(idx) = parts[1].parse::<usize>() {
+                        if let Some(layer) = self.layer_stack.layers.get_mut(idx) {
+                            match parts[2] {
+                                "opacity" => {
+                                    layer.opacity = value.clamp(0.0, 1.0);
+                                }
+                                "blend" => {
+                                    use crate::gpu::layer::BlendMode;
+                                    layer.blend_mode =
+                                        BlendMode::from_u32(value.round() as u32);
+                                }
+                                "enabled" => {
+                                    layer.enabled = value > 0.5;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Some("global") => {
+                // global.master_opacity
+                if parts.get(1).copied() == Some("master_opacity") {
+                    // Apply as global opacity multiplier to all layers
+                    let clamped = value.clamp(0.0, 1.0);
+                    for layer in &mut self.layer_stack.layers {
+                        layer.opacity = clamped;
+                    }
+                }
+            }
+            Some("scene") => {
+                // scene.transport.go / scene.transport.prev / scene.transport.stop
+                if parts.len() >= 3 && parts[1] == "transport" && value > 0.5 {
+                    let trigger = format!("scene.transport.{}", parts[2]);
+                    self.binding_bus.pending_triggers.push(trigger);
+                }
+            }
+            Some("postfx") => {
+                // postfx.bloom_threshold, postfx.bloom_intensity, etc.
+                if parts.len() >= 2 {
+                    if let Some(layer) = self.layer_stack.active_mut() {
+                        match parts[1] {
+                            "bloom_threshold" => {
+                                layer.postprocess.bloom_threshold = value * 1.5;
+                            }
+                            "bloom_intensity" => {
+                                layer.postprocess.bloom_intensity = value.clamp(0.0, 1.0);
+                            }
+                            "vignette" => {
+                                layer.postprocess.vignette = value.clamp(0.0, 1.0);
+                            }
+                            "ca_intensity" => {
+                                layer.postprocess.ca_intensity = value.clamp(0.0, 1.0);
+                            }
+                            "grain_intensity" => {
+                                layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Some("uniform") => {
+                // Direct shader uniform override: uniform.{field_name}
+                if parts.len() >= 2 {
+                    let v = value.clamp(0.0, 1.0);
+                    match parts[1] {
+                        "sub_bass" => self.uniforms.sub_bass = v,
+                        "bass" => self.uniforms.bass = v,
+                        "low_mid" => self.uniforms.low_mid = v,
+                        "mid" => self.uniforms.mid = v,
+                        "upper_mid" => self.uniforms.upper_mid = v,
+                        "presence" => self.uniforms.presence = v,
+                        "brilliance" => self.uniforms.brilliance = v,
+                        "rms" => self.uniforms.rms = v,
+                        "kick" => self.uniforms.kick = v,
+                        "centroid" => self.uniforms.centroid = v,
+                        "flux" => self.uniforms.flux = v,
+                        "flatness" => self.uniforms.flatness = v,
+                        "rolloff" => self.uniforms.rolloff = v,
+                        "bandwidth" => self.uniforms.bandwidth = v,
+                        "zcr" => self.uniforms.zcr = v,
+                        "onset" => self.uniforms.onset = v,
+                        "beat" => self.uniforms.beat = v,
+                        "beat_phase" => self.uniforms.beat_phase = v,
+                        "bpm" => self.uniforms.bpm = v,
+                        "beat_strength" => self.uniforms.beat_strength = v,
+                        "dominant_chroma" => self.uniforms.dominant_chroma = v,
+                        "feedback_decay" => self.uniforms.feedback_decay = v,
+                        "time" => self.uniforms.time = value, // time not clamped
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn save_preset(&mut self, name: &str) {
         let layer_presets: Vec<LayerPreset> = self
             .layer_stack
@@ -2012,7 +2187,12 @@ impl App {
             self.layer_stack.active_layer,
             &postprocess,
         ) {
-            Ok(idx) => log::info!("Saved preset '{}' at index {}", name, idx),
+            Ok(idx) => {
+                log::info!("Saved preset '{}' at index {}", name, idx);
+                // Save preset-scoped bindings as sidecar
+                self.binding_bus.save_preset_bindings(name);
+                self.binding_bus.save_global();
+            }
             Err(e) => log::error!("Failed to save preset: {e}"),
         }
     }
@@ -2029,6 +2209,9 @@ impl App {
             .get(index)
             .map(|(n, _)| n.clone())
             .unwrap_or_default();
+
+        // Load preset-scoped bindings
+        self.binding_bus.load_preset_bindings(&preset_name);
 
         // Scan for media layers that need decoding (skip locked, skip missing files)
         let mut media_jobs: Vec<(usize, std::path::PathBuf)> = Vec::new();

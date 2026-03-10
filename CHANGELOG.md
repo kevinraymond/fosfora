@@ -3,6 +3,60 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Added
+- **Xbox Controller bridge** — `xbox_controller.py` streams gamepad inputs (analog sticks, triggers, d-pad, 11 buttons → 23 fields) into Phosphor's binding bus via `evdev`. Radial deadzone (configurable `--deadzone`), Y-axis inversion, auto-detect by name matching, hot-plug reconnection, 60 FPS default. Docker support with `privileged` + `/dev/input` mount.
+- **Bridge source preview thumbnails** — vision bridges (MediaPipe hands/pose/face, YOLO) send annotated camera frame thumbnails (160x120 JPEG, ~8fps) over binary WebSocket. Phosphor decodes and renders inline previews in the binding matrix above each WS source group's fields, giving immediate visual feedback about camera position, detection quality, and model output.
+  - `PhosphorBridge.push_preview(frame)` — rate-limited JPEG thumbnail sender with `--no-preview` and `--preview-fps` CLI flags
+  - Binary WS wire format: `[source_name_utf8] [0x00] [jpeg_bytes]` — zero impact on numeric data path
+  - Thumbnails auto-clean when source fields expire; hidden when group is collapsed (no decode overhead)
+
+### Fixed
+- **Binding Matrix light theme readability** — replaced all hardcoded dark-mode colors (`from_white_alpha`, `from_black_alpha`, `from_rgb(0x22,...)`) with `ThemeColors` semantic equivalents so the UI is readable across all 6 themes (Dark, Light, Midnight, Ember, Neon, High Contrast)
+- Added `text_dim`, `hover_fill`, `hover_border`, and `backdrop` fields to `ThemeColors` for fine-grained UI element theming
+- **Binding Matrix collapse/expand all** — added ▶/▼ buttons in Sources and Targets column headers to collapse or expand all groups at once
+
+### Changed
+- **Configurable video device** — bridge docker-compose accepts `VIDEO_DEVICE` env var (e.g. `VIDEO_DEVICE=/dev/video4 docker compose up pose`) for multi-camera setups; host device is always mapped to `/dev/video0` inside the container so OpenCV finds it at index 0
+- **YOLO bridge dynamic class detection** — no longer hardcodes 4 COCO classes; discovers all 80 classes at runtime and only sends fields for classes currently detected. Schema is re-sent when a new class first appears.
+- **Per-field WS expiry** — binding bus now expires individual WS fields after 5s of no updates (was per-source). Unbound fields are removed from the picker; bound fields stay alive at 0.0 so bindings survive when a dynamic source temporarily disappears.
+- **PhosphorBridge `send_schema()`** — new method to re-send schema mid-session for dynamic field discovery
+
+### Added
+- **Bridge Scripts** — Python companion scripts in `bridges/` for streaming external data into the binding bus via WebSocket
+  - Base class `PhosphorBridge`: WS connect, schema declaration, data push, reconnect, graceful shutdown, common CLI args
+  - 9 bridge scripts: MediaPipe hands/pose/face, YOLO object detection, RealSense depth, Smart LFO generator, iPhone ARKit (UDP), Leap Motion (placeholder), Azure Kinect (placeholder)
+  - Test echo server for validating bridge output without Phosphor running
+  - Split requirements files: base, vision, depth, lfo
+  - Docker packaging: layered images (base → vision/lfo/realsense/leap), GPU variant, docker-compose with profiles
+  - All bridges use the existing WS `/bind` protocol — no Rust code changes needed
+- **Binding Bus** — universal source→transform→target system replacing per-parameter MIDI/OSC mappings
+  - Any source (audio features, MIDI CC, OSC, WebSocket) can drive any target (effect params, layer opacity/blend/enabled, global opacity)
+  - 10 composable transforms: remap, smooth, invert, quantize, deadzone, curve, gate, scale, offset, clamp
+  - Preset-scoped and global-scoped bindings with JSON persistence (sidecar files for presets)
+  - WebSocket `/bind` protocol: external apps send `{"type":"data","source":"...","fields":{...}}` for real-time control (e.g. MediaPipe hand tracking)
+  - New Bindings panel in left sidebar with source legend, live value bars, inline transform editor, learn mode
+  - Bindings panel UI overhaul: collapsible Preset/Global sections, two-line collapsed rows with accent bars and source badges, custom-painted source picker with live bars and WGSL uniform references, inline transform parameter editing with DragValues, Raw/Norm/Out preview area
+  - Source picker shows friendly names for all 46 audio sources (e.g. "Sub Bass" instead of "band.0"), sub-grouped by type (Bands, Features, Beat, MFCC, Chroma)
+  - Binding templates: 4 built-in presets (Audio Reactive, Beat Sync, Spectral Bands, MIDI Faders) with one-click apply
+  - PostFX binding targets: bloom threshold/intensity, vignette, chromatic aberration, film grain
+  - Scene transport binding targets: next cue, previous cue, stop
+  - Raw shader uniform binding targets: override any of 23 uniform fields (audio bands, features, feedback_decay, time) directly from any source
+  - One-time migration of legacy MIDI/OSC param mappings to bus bindings on first launch
+  - MIDI and OSC systems now accumulate last-seen values for bus source collection (zero overhead on existing paths)
+  - **Binding Matrix modal** — fullscreen three-column flow editor replacing sidebar bindings panel
+    - Sources (left), binding cards (center), targets (right) with collapsible groups
+    - Bezier connection lines between sources → cards → targets with animated flow dots
+    - Expanded card editing: source/target pickers, transform pills, Raw/Norm/Out preview, learn mode
+    - Effect/Global scope tabs, templates dropdown, keyboard shortcut `B` to toggle
+    - Sidebar bindings section now shows compact stub with active count + "Matrix" button
+
+### Fixed
+- Bridge containers on Linux (native Docker Engine): added `extra_hosts: host.docker.internal:host-gateway` to all services so `host.docker.internal` resolves correctly (no-op on Docker Desktop)
+- WebSocket binding sources now expire after 5 s of silence — `web.bind_values` was never cleared after ingestion, so stale keys kept refreshing `last_seen` and sources persisted forever
+- Source picker dropdown overlap: moved `max_height` from inner `set_max_height()` (which capped content area) to `ComboBox::height()` (which caps scroll viewport), fixing row pile-up when content exceeded 350 px
+
 ## v1.6.0 — 2026-03-07
 
 ### Added

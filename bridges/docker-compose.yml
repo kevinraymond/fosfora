@@ -1,0 +1,130 @@
+# Phosphor Bridge Scripts — Docker Compose
+#
+# Usage:
+#   docker compose up                    # start all enabled bridges
+#   docker compose up hands lfo          # start specific bridges
+#   docker compose --profile depth up    # include depth camera bridges
+#   docker compose --profile gpu up      # use GPU-accelerated variants
+
+services:
+
+  # ── Always-available (no hardware) ──────────────────────────────
+
+  lfo:
+    image: phosphor/bridge-smart-lfo
+    build:
+      context: ..
+      dockerfile: bridges/docker/Dockerfile.smart-lfo
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+    restart: unless-stopped
+
+  gamepad:
+    image: phosphor/bridge-gamepad
+    build:
+      context: ..
+      dockerfile: bridges/docker/Dockerfile.gamepad
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    privileged: true    # Needs access to /dev/input
+    volumes:
+      - /dev/input:/dev/input:ro
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+    restart: unless-stopped
+
+  # ── Webcam bridges ──────────────────────────────────────────────
+
+  hands:
+    image: phosphor/bridge-vision
+    build:
+      context: ..
+      dockerfile: bridges/docker/Dockerfile.vision
+    command: hands
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    devices:
+      - "${VIDEO_DEVICE:-/dev/video0}:/dev/video0"
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+      PHOSPHOR_FPS: ${PHOSPHOR_FPS:-30}
+    restart: unless-stopped
+
+  pose:
+    image: phosphor/bridge-vision
+    command: pose
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    devices:
+      - "${VIDEO_DEVICE:-/dev/video0}:/dev/video0"
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+      PHOSPHOR_FPS: ${PHOSPHOR_FPS:-30}
+    restart: unless-stopped
+
+  face:
+    image: phosphor/bridge-vision
+    command: face
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    devices:
+      - "${VIDEO_DEVICE:-/dev/video0}:/dev/video0"
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+      PHOSPHOR_FPS: ${PHOSPHOR_FPS:-30}
+    restart: unless-stopped
+
+  yolo:
+    image: phosphor/bridge-vision
+    command: yolo
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    devices:
+      - "${VIDEO_DEVICE:-/dev/video0}:/dev/video0"
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+      PHOSPHOR_FPS: ${PHOSPHOR_FPS:-15}
+    restart: unless-stopped
+
+  # ── Depth cameras (opt-in via --profile depth) ──────────────────
+
+  realsense:
+    image: phosphor/bridge-realsense
+    build:
+      context: ..
+      dockerfile: bridges/docker/Dockerfile.realsense
+    profiles: ["depth"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    privileged: true    # RealSense needs broad USB access
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+    restart: unless-stopped
+
+  # ── GPU-accelerated variants (opt-in via --profile gpu) ─────────
+
+  yolo-gpu:
+    image: phosphor/bridge-vision:gpu
+    build:
+      context: ..
+      dockerfile: bridges/docker/Dockerfile.vision-gpu
+    profiles: ["gpu"]
+    command: yolo --fps 30
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    devices:
+      - "${VIDEO_DEVICE:-/dev/video0}:/dev/video0"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      PHOSPHOR_HOST: ${PHOSPHOR_HOST:-host.docker.internal}
+      PHOSPHOR_PORT: ${PHOSPHOR_PORT:-9002}
+    restart: unless-stopped

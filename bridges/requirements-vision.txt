@@ -1,0 +1,4 @@
+-r requirements-base.txt
+mediapipe>=0.10.0,<0.10.22
+opencv-python>=4.8.0
+ultralytics>=8.0.0

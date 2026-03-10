@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+LABEL org.opencontainers.image.source="https://github.com/phosphor-live/phosphor"
+LABEL org.opencontainers.image.description="Phosphor Bridge Base"
+
+WORKDIR /app
+
+# Base dependency
+COPY bridges/requirements-base.txt .
+RUN pip install --no-cache-dir -r requirements-base.txt
+
+# Bridge base class
+COPY bridges/phosphor_bridge.py .
+
+# Default connection target (override with --host / --port)
+ENV PHOSPHOR_HOST=host.docker.internal
+ENV PHOSPHOR_PORT=9002
+
+# Healthcheck: verify the bridge process is running
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
+    CMD pgrep -f "python" || exit 1

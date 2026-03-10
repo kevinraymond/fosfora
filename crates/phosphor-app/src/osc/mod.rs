@@ -60,6 +60,8 @@ pub struct OscSystem {
     pub last_activity: Option<Instant>,
     pub last_address: Option<String>,
     last_tx_time: Instant,
+    /// Last raw OSC values for binding bus: address -> last value.
+    pub last_raw_values: std::collections::HashMap<String, f32>,
 }
 
 impl OscSystem {
@@ -75,6 +77,7 @@ impl OscSystem {
             last_activity: None,
             last_address: None,
             last_tx_time: Instant::now(),
+            last_raw_values: std::collections::HashMap::new(),
         };
 
         // Start receiver if enabled
@@ -234,6 +237,11 @@ impl OscSystem {
                 continue;
             }
 
+            // Accumulate all messages for binding bus
+            if let Some(value) = msg_value(&msg) {
+                self.last_raw_values.insert(address.clone(), value);
+            }
+
             match msg {
                 OscInMessage::Param { name, value } => {
                     apply_param(param_store, param_defs, &name, value);
@@ -272,6 +280,8 @@ impl OscSystem {
                     result.scene_advance_mode = Some(mode);
                 }
                 OscInMessage::Raw { ref address, value } => {
+                    // Accumulate for binding bus
+                    self.last_raw_values.insert(address.clone(), value);
                     // Check learned param mappings
                     if let Some(param_name) = self.config.find_param(address) {
                         let param_name = param_name.to_string();
@@ -420,6 +430,23 @@ impl Drop for OscSystem {
 }
 
 /// Extract address string from any OscInMessage variant.
+/// Extract the float value from an OSC message (for binding bus accumulation).
+fn msg_value(msg: &OscInMessage) -> Option<f32> {
+    match msg {
+        OscInMessage::Param { value, .. }
+        | OscInMessage::LayerParam { value, .. }
+        | OscInMessage::LayerOpacity { value, .. }
+        | OscInMessage::Raw { value, .. } => Some(*value),
+        OscInMessage::LayerBlend { value, .. } => Some(*value as f32),
+        OscInMessage::LayerEnabled { value, .. }
+        | OscInMessage::PostProcessEnabled(value)
+        | OscInMessage::SceneLoopMode(value) => Some(if *value { 1.0 } else { 0.0 }),
+        OscInMessage::SceneGotoCue(v) | OscInMessage::SceneLoadIndex(v) => Some(*v as f32),
+        OscInMessage::SceneAdvanceMode(v) => Some(*v as f32),
+        OscInMessage::Trigger(_) | OscInMessage::SceneLoadName(_) => None,
+    }
+}
+
 fn msg_address(msg: &OscInMessage) -> String {
     match msg {
         OscInMessage::Param { name, .. } => format!("/phosphor/param/{name}"),

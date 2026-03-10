@@ -1,0 +1,27 @@
+FROM phosphor/bridge-base
+
+LABEL org.opencontainers.image.description="Phosphor Vision Bridges (MediaPipe + YOLO)"
+
+# Vision dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bridges/requirements-vision.txt .
+RUN pip install --no-cache-dir -r requirements-vision.txt
+
+# Download YOLOv8 nano model at build time (so first run is instant)
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+
+# Copy all vision bridge scripts
+COPY bridges/mediapipe_hands.py .
+COPY bridges/mediapipe_pose.py .
+COPY bridges/mediapipe_face.py .
+COPY bridges/yolo_detect.py .
+
+# Entrypoint selects which bridge to run
+COPY bridges/docker/vision_entrypoint.sh .
+RUN chmod +x vision_entrypoint.sh
+
+ENTRYPOINT ["./vision_entrypoint.sh"]
+CMD ["hands"]

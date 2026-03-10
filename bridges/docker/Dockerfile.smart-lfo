@@ -1,0 +1,8 @@
+FROM phosphor/bridge-base
+
+LABEL org.opencontainers.image.description="Phosphor Smart LFO Bridge"
+
+COPY bridges/smart_lfo.py .
+
+ENTRYPOINT ["python", "smart_lfo.py"]
+CMD ["--host", "host.docker.internal"]

@@ -28,6 +28,10 @@ pub struct WebSystem {
     pub last_activity: Option<Instant>,
     last_audio_broadcast: Instant,
     last_state_broadcast: Instant,
+    /// Accumulated binding data values from WebSocket clients.
+    pub bind_values: std::collections::HashMap<String, f32>,
+    /// Preview thumbnail JPEG data from bridge sources.
+    pub preview_images: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl WebSystem {
@@ -47,6 +51,8 @@ impl WebSystem {
             last_activity: None,
             last_audio_broadcast: Instant::now(),
             last_state_broadcast: Instant::now(),
+            bind_values: std::collections::HashMap::new(),
+            preview_images: std::collections::HashMap::new(),
         };
 
         if sys.config.enabled {
@@ -181,6 +187,17 @@ impl WebSystem {
                 WsInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
                 }
+                WsInMessage::BindData { source, fields } => {
+                    for (field, value) in fields {
+                        self.bind_values.insert(format!("{source}.{field}"), value);
+                    }
+                }
+                WsInMessage::BindSchema { .. } => {
+                    // Schema is informational only — could be stored for UI auto-discovery
+                }
+                WsInMessage::BindPreview { source, jpeg_data } => {
+                    self.preview_images.insert(source, jpeg_data);
+                }
             }
         }
 
@@ -232,6 +249,9 @@ impl WebSystem {
                 }
                 WsInMessage::LoadPreset { index } => {
                     result.preset_loads.push(index);
+                }
+                WsInMessage::BindPreview { source, jpeg_data } => {
+                    self.preview_images.insert(source, jpeg_data);
                 }
                 _ => {} // Skip active-layer param application
             }

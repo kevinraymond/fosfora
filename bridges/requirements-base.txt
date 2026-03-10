@@ -1,0 +1,2 @@
+# Base requirement for all bridges
+websocket-client>=1.6.0

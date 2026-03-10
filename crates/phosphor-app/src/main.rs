@@ -1,5 +1,6 @@
 mod app;
 mod audio;
+mod bindings;
 #[cfg(feature = "depth")]
 mod depth;
 mod effect;
@@ -138,8 +139,10 @@ impl ApplicationHandler for PhosphorApp {
             } if !egui_consumed || !app.egui_overlay.wants_keyboard() => {
                 match key {
                     KeyCode::Escape => {
-                        // If shader editor is open, it handles Esc internally
-                        if !app.shader_editor.open {
+                        // Close binding matrix first, then shader editor, then quit
+                        if app.binding_matrix.open {
+                            app.binding_matrix.open = false;
+                        } else if !app.shader_editor.open {
                             app.quit_requested = true;
                         }
                     }
@@ -168,6 +171,11 @@ impl ApplicationHandler for PhosphorApp {
                             app.egui_overlay.context().data_mut(|d| {
                                 d.insert_temp(egui::Id::new("scene_toggle_play"), true);
                             });
+                        }
+                    }
+                    KeyCode::KeyB => {
+                        if !app.shader_editor.open {
+                            app.binding_matrix.open = !app.binding_matrix.open;
                         }
                     }
                     KeyCode::BracketLeft => {
@@ -549,6 +557,7 @@ impl ApplicationHandler for PhosphorApp {
                                 &mut app.midi,
                                 &mut app.osc,
                                 &mut app.web,
+                                &mut app.binding_bus,
                                 &app.preset_store,
                                 &layer_infos,
                                 active_layer,
@@ -577,6 +586,45 @@ impl ApplicationHandler for PhosphorApp {
                         &ctx,
                         &mut app.shader_editor,
                     );
+
+                    // Check if sidebar "Matrix" button was clicked
+                    let matrix_open_requested = ctx.data_mut(|d| {
+                        d.get_temp::<bool>(egui::Id::new("open_binding_matrix"))
+                            .unwrap_or(false)
+                    });
+                    if matrix_open_requested {
+                        app.binding_matrix.open = true;
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("open_binding_matrix"), false);
+                        });
+                    }
+
+                    // Draw binding matrix modal
+                    if app.binding_matrix.open {
+                        let active_info = layer_infos.get(active_layer);
+                        let bind_info = crate::ui::panels::binding_helpers::BindingPanelInfo {
+                            effect_name: active_info
+                                .and_then(|l| l.effect_name.clone())
+                                .unwrap_or_default(),
+                            param_names: app.layer_stack.active()
+                                .map(|l| {
+                                    l.param_store.defs
+                                        .iter()
+                                        .filter(|d| matches!(d, crate::params::ParamDef::Float { .. } | crate::params::ParamDef::Bool { .. }))
+                                        .map(|d| d.name().to_string())
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            layer_count: layer_infos.len(),
+                            preset_name: app.preset_store.current_name().unwrap_or("(unsaved)").to_string(),
+                        };
+                        crate::ui::panels::binding_matrix::draw_binding_matrix(
+                            &ctx,
+                            &mut app.binding_matrix,
+                            &mut app.binding_bus,
+                            &bind_info,
+                        );
+                    }
 
                     // GPU profiler panel
                     #[cfg(feature = "profiling")]
@@ -1145,6 +1193,26 @@ impl ApplicationHandler for PhosphorApp {
                         app.process_timeline_event(event);
                     }
                 }
+
+                // Drain scene transport triggers from binding bus
+                let pending: Vec<String> = app.binding_bus.pending_triggers.drain(..).collect();
+                for trigger in &pending {
+                    match trigger.as_str() {
+                        "scene.transport.go" => {
+                            let event = app.timeline.go_next();
+                            app.process_timeline_event(event);
+                        }
+                        "scene.transport.prev" => {
+                            let event = app.timeline.go_prev();
+                            app.process_timeline_event(event);
+                        }
+                        "scene.transport.stop" => {
+                            app.timeline.stop();
+                        }
+                        _ => {}
+                    }
+                }
+
                 let add_cue: Option<String> = app
                     .egui_overlay
                     .context()
