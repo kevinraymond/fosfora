@@ -601,20 +601,26 @@ impl ApplicationHandler for PhosphorApp {
 
                     // Draw binding matrix modal
                     if app.binding_matrix.open {
-                        let active_info = layer_infos.get(active_layer);
+                        let layers: Vec<crate::ui::panels::binding_helpers::LayerParamInfo> =
+                            app.layer_stack.layers.iter().enumerate().map(|(i, l)| {
+                                let effect_name = l.effect_index()
+                                    .and_then(|idx| app.effect_loader.effects.get(idx))
+                                    .map(|eff| eff.name.clone())
+                                    .unwrap_or_default();
+                                let param_names = l.param_store.defs
+                                    .iter()
+                                    .filter(|d| matches!(d, crate::params::ParamDef::Float { .. } | crate::params::ParamDef::Bool { .. }))
+                                    .map(|d| d.name().to_string())
+                                    .collect();
+                                crate::ui::panels::binding_helpers::LayerParamInfo {
+                                    index: i,
+                                    effect_name,
+                                    param_names,
+                                }
+                            }).collect();
                         let bind_info = crate::ui::panels::binding_helpers::BindingPanelInfo {
-                            effect_name: active_info
-                                .and_then(|l| l.effect_name.clone())
-                                .unwrap_or_default(),
-                            param_names: app.layer_stack.active()
-                                .map(|l| {
-                                    l.param_store.defs
-                                        .iter()
-                                        .filter(|d| matches!(d, crate::params::ParamDef::Float { .. } | crate::params::ParamDef::Bool { .. }))
-                                        .map(|d| d.name().to_string())
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
+                            layers,
+                            active_layer,
                             layer_count: layer_infos.len(),
                             preset_name: app.preset_store.current_name().unwrap_or("(unsaved)").to_string(),
                         };

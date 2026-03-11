@@ -95,11 +95,15 @@ pub fn draw_binding_matrix(
         return;
     }
 
-    // Area for the matrix content — inset from screen edges
+    // Area for the matrix content — centered on window width, max width capped
     let margin = 40.0;
+    let frame_pad = 12.0; // inner_margin on the frame below
+    let max_w = 1200.0;
+    let actual_w = (screen.width() - margin * 2.0).min(max_w);
+    let x_offset = (screen.width() - actual_w) / 2.0;
     let content_rect = Rect::from_min_max(
-        pos2(screen.min.x + margin, screen.min.y + margin),
-        pos2(screen.max.x - margin, screen.max.y - margin),
+        pos2(screen.min.x + x_offset, screen.min.y + margin),
+        pos2(screen.min.x + x_offset + actual_w, screen.max.y - margin),
     );
 
     let area_resp = egui::Area::new(Id::new("binding_matrix_area"))
@@ -107,14 +111,15 @@ pub fn draw_binding_matrix(
         .fixed_pos(content_rect.min)
         .show(ctx, |ui| {
             let frame = egui::Frame::new()
-                .fill(tc.panel)
+                .fill(Color32::TRANSPARENT)
                 .corner_radius(8.0)
-                .stroke(Stroke::new(1.0, tc.card_border))
                 .inner_margin(egui::Margin::same(12));
 
             frame.show(ui, |ui| {
-                ui.set_min_size(content_rect.size());
-                ui.set_max_size(content_rect.size());
+                // Subtract frame inner margin so the outer Area matches content_rect exactly
+                let inner_size = content_rect.size() - egui::vec2(frame_pad * 2.0, frame_pad * 2.0);
+                ui.set_min_size(inner_size);
+                ui.set_max_size(inner_size);
 
                 // Ensure all popup/select list backgrounds are fully opaque
                 ui.visuals_mut().window_fill = tc.card_bg;
@@ -130,7 +135,8 @@ pub fn draw_binding_matrix(
                 let col_target_w = 240.0;
                 let col_center_w = (avail.x - col_source_w - col_target_w - 24.0).max(200.0);
 
-                let side_bg = tc.card_bg;
+                // Fully opaque side panels (tc.panel may have ~90% alpha)
+                let side_bg = Color32::from_rgb(tc.panel.r(), tc.panel.g(), tc.panel.b());
                 let side_pad = 6.0;
 
                 ui.horizontal(|ui| {
@@ -151,12 +157,17 @@ pub fn draw_binding_matrix(
 
                     ui.add_space(8.0);
 
-                    // Center: Binding cards
-                    ui.vertical(|ui| {
+                    // Center: Binding cards (semi-transparent bg)
+                    let center_bg_idx = ui.painter().add(egui::Shape::Noop);
+                    let center_resp = ui.vertical(|ui| {
                         ui.set_width(col_center_w);
                         ui.set_height(avail.y - 60.0);
                         draw_center_column(ui, state, bus, info);
                     });
+                    ui.painter().set(center_bg_idx, egui::Shape::rect_filled(
+                        center_resp.response.rect, 6.0,
+                        Color32::from_rgba_unmultiplied(tc.panel.r(), tc.panel.g(), tc.panel.b(), 128),
+                    ));
 
                     ui.add_space(8.0);
 
@@ -274,7 +285,7 @@ fn draw_header(
                         .on_hover_text(tmpl.description)
                         .clicked()
                     {
-                        bus.apply_template(tmpl, &info.effect_name, &info.param_names);
+                        bus.apply_template(tmpl, info.active_effect_name(), info.active_param_names());
                     }
                 }
             });
@@ -313,29 +324,28 @@ fn draw_source_column(
                 .color(tc.text_secondary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(RichText::new("\u{25b6}").size(7.0).color(tc.text_dim))
+            let all_collapsed = !state.collapsed_source_groups.is_empty();
+            let icon = if all_collapsed { "\u{25bc}" } else { "\u{25b6}" };
+            let hint = if all_collapsed { "Expand all" } else { "Collapse all" };
+            if ui.add(egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
                 .frame(false).min_size(egui::vec2(14.0, 14.0)))
-                .on_hover_text("Collapse all")
+                .on_hover_text(hint)
                 .clicked()
             {
-                for id in ["audio_bands", "audio_features", "audio_beat", "audio_mfcc", "audio_chroma", "midi", "osc"] {
-                    state.collapsed_source_groups.insert(id.to_string());
-                }
-                // Also collapse any ws.* groups from bus snapshot
-                for key in bus.last_snapshot.keys() {
-                    if let Some(rest) = key.strip_prefix("ws.") {
-                        if let Some(name) = rest.split('.').next() {
-                            state.collapsed_source_groups.insert(format!("ws.{name}"));
+                if all_collapsed {
+                    state.collapsed_source_groups.clear();
+                } else {
+                    for id in ["audio_bands", "audio_features", "audio_beat", "audio_mfcc", "audio_chroma", "midi", "osc"] {
+                        state.collapsed_source_groups.insert(id.to_string());
+                    }
+                    for key in bus.last_snapshot.keys() {
+                        if let Some(rest) = key.strip_prefix("ws.") {
+                            if let Some(name) = rest.split('.').next() {
+                                state.collapsed_source_groups.insert(format!("ws.{name}"));
+                            }
                         }
                     }
                 }
-            }
-            if ui.add(egui::Button::new(RichText::new("\u{25bc}").size(7.0).color(tc.text_dim))
-                .frame(false).min_size(egui::vec2(14.0, 14.0)))
-                .on_hover_text("Expand all")
-                .clicked()
-            {
-                state.collapsed_source_groups.clear();
             }
         });
     });
@@ -841,21 +851,21 @@ fn draw_target_column(
                 .color(tc.text_secondary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add(egui::Button::new(RichText::new("\u{25b6}").size(7.0).color(tc.text_dim))
+            let all_collapsed = !state.collapsed_target_groups.is_empty();
+            let icon = if all_collapsed { "\u{25bc}" } else { "\u{25b6}" };
+            let hint = if all_collapsed { "Expand all" } else { "Collapse all" };
+            if ui.add(egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
                 .frame(false).min_size(egui::vec2(14.0, 14.0)))
-                .on_hover_text("Collapse all")
+                .on_hover_text(hint)
                 .clicked()
             {
-                for id in ["Params", "Layers", "PostFX", "Uniforms", "Scene", "Global"] {
-                    state.collapsed_target_groups.insert(id.to_string());
+                if all_collapsed {
+                    state.collapsed_target_groups.clear();
+                } else {
+                    for id in ["Params", "Layers", "PostFX", "Particles", "Uniforms", "Scene", "Global"] {
+                        state.collapsed_target_groups.insert(id.to_string());
+                    }
                 }
-            }
-            if ui.add(egui::Button::new(RichText::new("\u{25bc}").size(7.0).color(tc.text_dim))
-                .frame(false).min_size(egui::vec2(14.0, 14.0)))
-                .on_hover_text("Expand all")
-                .clicked()
-            {
-                state.collapsed_target_groups.clear();
             }
         });
     });
@@ -869,14 +879,40 @@ fn draw_target_column(
             let targets = build_target_options(info);
             let mut current_group: &str = "";
 
+            // Build reverse map: old-format target → new-format target id
+            // e.g. "param.Phosphor.warp" → "param.0.Phosphor.warp"
+            let old_to_new: HashMap<String, &str> = targets
+                .iter()
+                .filter_map(|opt| {
+                    // New format: param.{idx}.{effect}.{name}
+                    let parts: Vec<&str> = opt.id.split('.').collect();
+                    if parts.len() == 4 && parts[0] == "param" {
+                        // Old format would be: param.{effect}.{name}
+                        let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
+                        Some((old_key, opt.id.as_str()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
             // Build lookup: target_id → list of source colors bound to it
+            // Checks both the exact binding target and the new-format equivalent
             let mut target_bindings: HashMap<&str, Vec<Color32>> = HashMap::new();
             for b in &bus.bindings {
                 if !b.target.is_empty() {
+                    let color = source_color(&b.source);
                     target_bindings
                         .entry(b.target.as_str())
                         .or_default()
-                        .push(source_color(&b.source));
+                        .push(color);
+                    // Also index under the new-format key so target dots light up
+                    if let Some(&new_id) = old_to_new.get(&b.target) {
+                        target_bindings
+                            .entry(new_id)
+                            .or_default()
+                            .push(color);
+                    }
                 }
             }
 
@@ -950,6 +986,11 @@ fn draw_target_column(
                     // Record position at group header for collapsed targets
                     if let Some(hr) = last_header_rect {
                         let anchor = pos2(hr.left(), hr.center().y);
+                        let parts: Vec<&str> = opt.id.split('.').collect();
+                        if parts.len() == 4 && parts[0] == "param" {
+                            let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
+                            state.target_positions.insert(old_key, anchor);
+                        }
                         state.target_positions.insert(opt.id.clone(), anchor);
                     }
                     continue;
@@ -996,10 +1037,19 @@ fn draw_target_column(
                     );
 
                     // Output bar — show last value from any binding targeting this
+                    // Match both new-format (param.0.Effect.name) and old-format (param.Effect.name)
+                    let old_format_id = {
+                        let p: Vec<&str> = opt.id.split('.').collect();
+                        if p.len() == 4 && p[0] == "param" {
+                            Some(format!("{}.{}.{}", p[0], p[2], p[3]))
+                        } else {
+                            None
+                        }
+                    };
                     let output_val = bus
                         .bindings
                         .iter()
-                        .filter(|b| b.target == opt.id && b.enabled)
+                        .filter(|b| b.enabled && (b.target == opt.id || old_format_id.as_deref() == Some(b.target.as_str())))
                         .filter_map(|b| bus.runtime(&b.id).and_then(|r| r.last_output))
                         .last()
                         .unwrap_or(0.0);
@@ -1026,9 +1076,14 @@ fn draw_target_column(
 
                 // Record position: left-center of the row
                 let rect = row_resp.response.rect;
-                state
-                    .target_positions
-                    .insert(opt.id.clone(), pos2(rect.left(), rect.center().y));
+                let pos = pos2(rect.left(), rect.center().y);
+                // Also store old-format key so bezier lines find old bindings
+                let parts: Vec<&str> = opt.id.split('.').collect();
+                if parts.len() == 4 && parts[0] == "param" {
+                    let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
+                    state.target_positions.insert(old_key, pos);
+                }
+                state.target_positions.insert(opt.id.clone(), pos);
             }
         });
 }
@@ -1052,6 +1107,14 @@ fn draw_center_column(
             .color(tc.text_secondary),
     );
     ui.add_space(4.0);
+
+    // Pending delete state for two-stage confirmation
+    let now = ui.input(|i| i.time);
+    let pending_delete: Option<(String, f64)> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(Id::new("pending_delete_binding")));
+    let pending_delete = pending_delete.filter(|(_, t)| now - *t < 3.0);
+    let mut new_pending: Option<(String, f64)> = pending_delete.clone();
 
     ScrollArea::vertical()
         .id_salt("matrix_bindings")
@@ -1086,7 +1149,8 @@ fn draw_center_column(
 
             for id in &binding_ids {
                 let is_expanded = expanded_id.as_deref() == Some(id.as_str());
-                let result = draw_binding_card(ui, state, bus, id, is_expanded, info, &targets);
+                let is_armed = new_pending.as_ref().map_or(false, |(pid, _)| pid == id);
+                let result = draw_binding_card(ui, state, bus, id, is_expanded, is_armed, info, &targets);
                 match result {
                     CardAction::Expand => {
                         state.expanded_binding_id = Some(id.clone());
@@ -1096,6 +1160,10 @@ fn draw_center_column(
                     }
                     CardAction::Delete => {
                         to_remove.push(id.clone());
+                        new_pending = None;
+                    }
+                    CardAction::ArmDelete => {
+                        new_pending = Some((id.clone(), now));
                     }
                     CardAction::None => {}
                 }
@@ -1155,6 +1223,15 @@ fn draw_center_column(
                 state.expanded_binding_id = Some(new_id);
             }
         });
+
+    // Persist pending delete state
+    ui.ctx().data_mut(|d| {
+        if let Some(pd) = new_pending {
+            d.insert_temp(Id::new("pending_delete_binding"), pd);
+        } else {
+            d.remove_temp::<(String, f64)>(Id::new("pending_delete_binding"));
+        }
+    });
 }
 
 enum CardAction {
@@ -1162,6 +1239,7 @@ enum CardAction {
     Expand,
     Collapse,
     Delete,
+    ArmDelete,
 }
 
 /// Short icon for a transform type (matching JSX mockup).
@@ -1239,6 +1317,7 @@ fn draw_binding_card(
     bus: &mut BindingBus,
     id: &str,
     expanded: bool,
+    is_armed: bool,
     _info: &BindingPanelInfo,
     targets: &[TargetOption],
 ) -> CardAction {
@@ -1261,11 +1340,8 @@ fn draw_binding_card(
     let binding_transforms = binding.transforms.clone();
 
     // Card container: source-colored background & border
-    let bg = if expanded {
-        src_rgba(src_color, 20)     // ${color}14
-    } else {
-        src_rgba(src_color, 8)      // ${color}08
-    };
+    // Expanded: fully opaque panel bg + tint overlay
+    // Collapsed: semi-transparent panel bg + subtle tint
     let border_color = if expanded {
         src_rgba(src_color, 80)     // ${color}50
     } else {
@@ -1273,10 +1349,13 @@ fn draw_binding_card(
     };
 
     let frame = egui::Frame::new()
-        .fill(bg)
+        .fill(Color32::TRANSPARENT)
         .corner_radius(6.0)
         .stroke(Stroke::new(1.0, border_color))
         .inner_margin(egui::Margin::ZERO);
+
+    // Paint card background before frame content
+    let card_bg_rect_idx = ui.painter().add(egui::Shape::Noop);
 
     let frame_resp = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1344,10 +1423,14 @@ fn draw_binding_card(
                 }
             }
 
-            // Right-aligned: input value → [transforms] → output bar + value
+            // Right-aligned: chevron + input value → [transforms] → output bar + value
             // (right-to-left layout, so output first, then input)
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(10.0);
+
+                // Collapse/expand chevron
+                let chevron = if expanded { "\u{25b2}" } else { "\u{25bc}" };
+                ui.label(RichText::new(chevron).size(7.0).color(tc.text_secondary));
 
                 // Output value + bar
                 if enabled && last_output > 0.001 {
@@ -1430,12 +1513,34 @@ fn draw_binding_card(
                 .show(ui, |ui| {
                     draw_expanded_content(ui, state, bus, id, &binding_source, &binding_target,
                         &binding_name, enabled, &binding_scope, &binding_transforms,
-                        src_color, targets, &tc, &mut action);
+                        src_color, targets, &tc, is_armed, &mut action);
                 });
 
             ui.add_space(6.0);
         }
     });
+
+    // Paint card background (behind frame content via reserved index)
+    {
+        let card_rect = frame_resp.response.rect;
+        if expanded {
+            // Opaque panel bg + source tint
+            ui.painter().set(card_bg_rect_idx, egui::Shape::rect_filled(
+                card_rect, 6.0, tc.panel,
+            ));
+            // Tint overlay on top (painted after, so it's above the opaque bg)
+            ui.painter().rect_filled(card_rect, 6.0, src_rgba(src_color, 20));
+        } else {
+            // Semi-transparent panel bg + subtle tint
+            let semi_panel = Color32::from_rgba_unmultiplied(
+                tc.panel.r(), tc.panel.g(), tc.panel.b(), 128,
+            );
+            ui.painter().set(card_bg_rect_idx, egui::Shape::rect_filled(
+                card_rect, 6.0, semi_panel,
+            ));
+            ui.painter().rect_filled(card_rect, 6.0, src_rgba(src_color, 8));
+        }
+    }
 
     // Record card position for bezier lines
     let rect = frame_resp.response.rect;
@@ -1454,7 +1559,7 @@ fn draw_binding_card(
 #[allow(clippy::too_many_arguments)]
 fn draw_expanded_content(
     ui: &mut egui::Ui,
-    state: &mut BindingMatrixState,
+    _state: &mut BindingMatrixState,
     bus: &mut BindingBus,
     id: &str,
     source_init: &str,
@@ -1466,6 +1571,7 @@ fn draw_expanded_content(
     src_color: Color32,
     targets: &[TargetOption],
     tc: &crate::ui::theme::colors::ThemeColors,
+    is_armed: bool,
     action: &mut CardAction,
 ) {
     let mut source = source_init.to_string();
@@ -1476,7 +1582,6 @@ fn draw_expanded_content(
     // ─── Top row: name + collapse + delete ───
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(RichText::new("Name").size(8.0).color(tc.text_secondary));
         let auto_name = make_display_name(&source, &target);
         ui.add(
             egui::TextEdit::singleline(&mut name)
@@ -1487,65 +1592,94 @@ fn draw_expanded_content(
         ui.checkbox(&mut enabled_val, RichText::new("Enabled").size(8.0));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Delete
+            // Delete — two-stage confirmation
+            let warning_color = Color32::from_rgb(0xE0, 0x60, 0x60);
+            let (del_label, del_color) = if is_armed {
+                ("Confirm?", warning_color)
+            } else {
+                ("Delete", warning_color)
+            };
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new("Delete")
+                        RichText::new(del_label)
                             .size(8.0)
-                            .color(Color32::from_rgb(0xE0, 0x60, 0x60)),
+                            .color(del_color),
                     )
-                    .frame(false),
+                    .fill(if is_armed { Color32::from_rgba_unmultiplied(0xE0, 0x60, 0x60, 30) } else { Color32::TRANSPARENT })
+                    .frame(is_armed),
                 )
                 .clicked()
             {
-                *action = CardAction::Delete;
-            }
-            ui.add_space(6.0);
-            // Collapse
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("\u{25b2}").size(7.0).color(tc.text_secondary),
-                    )
-                    .frame(false),
-                )
-                .on_hover_text("Collapse")
-                .clicked()
-            {
-                *action = CardAction::Collapse;
-                state.expanded_binding_id = None;
+                if is_armed {
+                    *action = CardAction::Delete;
+                } else {
+                    *action = CardAction::ArmDelete;
+                }
             }
         });
     });
 
     ui.add_space(6.0);
 
-    // ─── Three-column layout: Source | Transforms | Target ───
+    // ─── Pickers row: Source | Target (above the dark inset) ───
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.spacing_mut().item_spacing.x = 8.0;
+        // Source picker
+        draw_matrix_source_picker(ui, bus, id, &mut source, tc);
+
+        ui.label(RichText::new("\u{2192}").size(10.0).color(tc.text_dim));
+
+        // Target picker
         let total_w = ui.available_width();
-        let col_w = (total_w - 16.0) / 3.0; // 8px gap × 2
-
-        // ── Source column ──
-        ui.vertical(|ui| {
-            ui.set_width(col_w);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Source").size(8.0).strong().color(tc.text_secondary));
+        let current_label = target_display_label(&target, targets);
+        egui::ComboBox::from_id_salt(format!("matrix_target_{id}"))
+            .selected_text(RichText::new(&current_label).size(9.0))
+            .width((total_w - 10.0).min(200.0))
+            .show_ui(ui, |ui| {
+                let mut current_group: &str = "";
+                for opt in targets {
+                    if opt.group != current_group {
+                        current_group = opt.group;
+                        ui.label(
+                            RichText::new(current_group)
+                                .size(8.0)
+                                .strong()
+                                .color(tc.text_secondary),
+                        );
+                    }
+                    let selected = target == opt.id;
+                    if ui
+                        .selectable_label(selected, RichText::new(&opt.label).size(9.0))
+                        .clicked()
+                    {
+                        target = opt.id.clone();
+                    }
+                }
             });
-            ui.add_space(2.0);
+    });
 
-            // Source picker
-            draw_matrix_source_picker(ui, bus, id, &mut source, tc);
+    ui.add_space(4.0);
 
-            ui.add_space(4.0);
+    // ─── Full-width dark inset: Source preview | Transforms | Output ───
+    let inset_frame = egui::Frame::new()
+        .fill(tc.meter_bg)
+        .corner_radius(egui::CornerRadius { sw: 6, se: 6, ..Default::default() })
+        .inner_margin(egui::Margin::symmetric(8, 6));
+    inset_frame.show(ui, |ui| {
+        ui.set_width(ui.available_width());
 
-            // Source preview (dark inset)
-            let preview = egui::Frame::new()
-                .fill(tc.meter_bg)
-                .corner_radius(3.0)
-                .inner_margin(egui::Margin::symmetric(6, 4));
-            preview.show(ui, |ui| {
+        // Three columns inside the inset
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let total_w = ui.available_width();
+            let source_w = 160.0;
+            let target_w = 120.0;
+            let transforms_w = (total_w - source_w - target_w - 16.0).max(160.0);
+
+            // ── Source preview ──
+            ui.vertical(|ui| {
+                ui.set_width(source_w);
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(ref raw) = runtime.last_raw {
                         ui.horizontal(|ui| {
@@ -1564,74 +1698,67 @@ fn draw_expanded_content(
                     ui.label(RichText::new("--").size(8.0).color(tc.text_dim));
                 }
             });
-        });
 
-        ui.add_space(8.0);
+            ui.add_space(8.0);
 
-        // ── Transform column ──
-        ui.vertical(|ui| {
-            ui.set_width(col_w);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Transforms").size(8.0).strong().color(tc.text_secondary));
+            // ── Transforms ──
+            ui.vertical(|ui| {
+                ui.set_width(transforms_w);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Transforms").size(8.0).strong().color(tc.text_secondary));
 
-                // "+ Transform" add button
-                let add_resp = ui.add(
-                    egui::Button::new(
-                        RichText::new("+ Add")
-                            .size(7.0)
-                            .color(tc.text_secondary),
-                    )
-                    .fill(tc.hover_fill)
-                    .corner_radius(3.0)
-                    .min_size(egui::vec2(0.0, 16.0)),
-                );
+                    // "+ Transform" add button
+                    let add_resp = ui.add(
+                        egui::Button::new(
+                            RichText::new("+ Add")
+                                .size(7.0)
+                                .color(tc.text_secondary),
+                        )
+                        .fill(tc.hover_fill)
+                        .corner_radius(3.0)
+                        .min_size(egui::vec2(0.0, 16.0)),
+                    );
 
-                let popup_id = Id::new(format!("matrix_add_xform_popup_{id}"));
-                if add_resp.clicked() {
+                    let popup_id = Id::new(format!("matrix_add_xform_popup_{id}"));
+                    if add_resp.clicked() {
+                        #[allow(deprecated)]
+                        ui.memory_mut(|m| m.toggle_popup(popup_id));
+                    }
                     #[allow(deprecated)]
-                    ui.memory_mut(|m| m.toggle_popup(popup_id));
-                }
-                #[allow(deprecated)]
-                egui::popup_below_widget(ui, popup_id, &add_resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-                    ui.set_min_width(110.0);
-                    let items = [
-                        ("~ Smooth", TransformDef::Smooth { factor: 0.8 }),
-                        ("\u{2194} Remap", TransformDef::Remap { in_lo: 0.0, in_hi: 1.0, out_lo: 0.0, out_hi: 1.0 }),
-                        ("\u{25a3} Gate", TransformDef::Gate { threshold: 0.5 }),
-                        ("\u{00d7} Scale", TransformDef::Scale { factor: 1.0 }),
-                        ("+ Offset", TransformDef::Offset { value: 0.0 }),
-                        ("# Quantize", TransformDef::Quantize { steps: 4 }),
-                        ("\u{21c5} Invert", TransformDef::Invert),
-                        ("[ ] Clamp", TransformDef::Clamp { lo: 0.0, hi: 1.0 }),
-                        ("\u{2013} Deadzone", TransformDef::Deadzone { lo: 0.45, hi: 0.55 }),
-                        ("S Curve", TransformDef::Curve { curve_type: "ease_in_out".into() }),
-                    ];
-                    for (label, default) in items {
-                        if ui
-                            .add(
-                                egui::Button::new(RichText::new(label).size(9.0).color(tc.text_primary))
-                                    .frame(false)
-                                    .min_size(egui::vec2(100.0, 22.0)),
-                            )
-                            .clicked()
-                        {
-                            if let Some(b) = bus.get_binding_mut(id) {
-                                b.transforms.push(default);
+                    egui::popup_below_widget(ui, popup_id, &add_resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                        ui.set_min_width(110.0);
+                        let items = [
+                            ("~ Smooth", TransformDef::Smooth { factor: 0.8 }),
+                            ("\u{2194} Remap", TransformDef::Remap { in_lo: 0.0, in_hi: 1.0, out_lo: 0.0, out_hi: 1.0 }),
+                            ("\u{25a3} Gate", TransformDef::Gate { threshold: 0.5 }),
+                            ("\u{00d7} Scale", TransformDef::Scale { factor: 1.0 }),
+                            ("+ Offset", TransformDef::Offset { value: 0.0 }),
+                            ("# Quantize", TransformDef::Quantize { steps: 4 }),
+                            ("\u{21c5} Invert", TransformDef::Invert),
+                            ("[ ] Clamp", TransformDef::Clamp { lo: 0.0, hi: 1.0 }),
+                            ("\u{2013} Deadzone", TransformDef::Deadzone { lo: 0.45, hi: 0.55 }),
+                            ("S Curve", TransformDef::Curve { curve_type: "ease_in_out".into() }),
+                        ];
+                        for (label, default) in items {
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new(label).size(9.0).color(tc.text_primary))
+                                        .frame(false)
+                                        .min_size(egui::vec2(100.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                if let Some(b) = bus.get_binding_mut(id) {
+                                    b.transforms.push(default);
+                                }
                             }
                         }
-                    }
+                    });
                 });
-            });
 
-            ui.add_space(2.0);
+                ui.add_space(2.0);
 
-            // Transform list with editable params
-            let xform_frame = egui::Frame::new()
-                .fill(tc.meter_bg)
-                .corner_radius(3.0)
-                .inner_margin(egui::Margin::symmetric(6, 4));
-            let label_w = 60.0; // fixed width for icon+label column
-            xform_frame.show(ui, |ui| {
+                let label_w = 60.0;
                 if transforms.is_empty() {
                     ui.label(RichText::new("passthrough").size(8.0).color(tc.text_dim));
                 } else {
@@ -1679,6 +1806,41 @@ fn draw_expanded_content(
                                 }
                             });
                         });
+                        // Remap second line: out_lo, out_hi
+                        if matches!(t, TransformDef::Remap { .. }) {
+                            let remap_out: Option<(f32, f32)> = ui.memory(|m| {
+                                m.data.get_temp(Id::new(format!("remap_out_{id}_{i}")))
+                            });
+                            if let Some((out_lo, out_hi)) = remap_out {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    ui.add_space(label_w + 4.0);
+                                    let small_drag = |ui: &mut egui::Ui, val: f32, lo: f32, hi: f32, lbl: &str| -> f32 {
+                                        let mut v = val;
+                                        ui.add(
+                                            egui::DragValue::new(&mut v)
+                                                .range(lo..=hi)
+                                                .speed(0.01)
+                                                .max_decimals(2)
+                                                .prefix(format!("{lbl}: "))
+                                                .min_decimals(1)
+                                                .update_while_editing(true),
+                                        );
+                                        v
+                                    };
+                                    let new_olo = small_drag(ui, out_lo, 0.0, 1.0, "out_lo");
+                                    let new_ohi = small_drag(ui, out_hi, 0.0, 1.0, "out_hi");
+                                    if (new_olo - out_lo).abs() > 0.001 || (new_ohi - out_hi).abs() > 0.001 {
+                                        if let Some(b) = bus.get_binding_mut(id) {
+                                            if let TransformDef::Remap { ref mut out_lo, ref mut out_hi, .. } = b.transforms[i] {
+                                                *out_lo = new_olo;
+                                                *out_hi = new_ohi;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
                     }
                     if let Some(idx) = to_remove {
                         if let Some(b) = bus.get_binding_mut(id) {
@@ -1687,53 +1849,12 @@ fn draw_expanded_content(
                     }
                 }
             });
-        });
 
-        ui.add_space(8.0);
+            ui.add_space(8.0);
 
-        // ── Target column ──
-        ui.vertical(|ui| {
-            ui.set_width(col_w);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Target").size(8.0).strong().color(tc.text_secondary));
-            });
-            ui.add_space(2.0);
-
-            // Target picker
-            let current_label = target_display_label(&target, targets);
-            egui::ComboBox::from_id_salt(format!("matrix_target_{id}"))
-                .selected_text(RichText::new(&current_label).size(9.0))
-                .width(col_w - 10.0)
-                .show_ui(ui, |ui| {
-                    let mut current_group: &str = "";
-                    for opt in targets {
-                        if opt.group != current_group {
-                            current_group = opt.group;
-                            ui.label(
-                                RichText::new(current_group)
-                                    .size(8.0)
-                                    .strong()
-                                    .color(tc.text_secondary),
-                            );
-                        }
-                        let selected = target == opt.id;
-                        if ui
-                            .selectable_label(selected, RichText::new(&opt.label).size(9.0))
-                            .clicked()
-                        {
-                            target = opt.id.clone();
-                        }
-                    }
-                });
-
-            ui.add_space(4.0);
-
-            // Output preview (dark inset)
-            let preview = egui::Frame::new()
-                .fill(tc.meter_bg)
-                .corner_radius(3.0)
-                .inner_margin(egui::Margin::symmetric(6, 4));
-            preview.show(ui, |ui| {
+            // ── Output preview ──
+            ui.vertical(|ui| {
+                ui.set_width(target_w);
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(output) = runtime.last_output {
                         ui.horizontal(|ui| {
@@ -1854,17 +1975,20 @@ fn draw_transform_params_inline(
         TransformDef::Remap { in_lo, in_hi, out_lo, out_hi } => {
             let new_ilo = small_drag(ui, in_lo, 0.0, 1.0, "in_lo");
             let new_ihi = small_drag(ui, in_hi, 0.0, 1.0, "in_hi");
-            let new_olo = small_drag(ui, out_lo, 0.0, 1.0, "out_lo");
-            let new_ohi = small_drag(ui, out_hi, 0.0, 1.0, "out_hi");
-            if (new_ilo - in_lo).abs() > 0.001 || (new_ihi - in_hi).abs() > 0.001
-                || (new_olo - out_lo).abs() > 0.001 || (new_ohi - out_hi).abs() > 0.001
-            {
+            // out_lo / out_hi drawn on second line via remap_second_line flag
+            if (new_ilo - in_lo).abs() > 0.001 || (new_ihi - in_hi).abs() > 0.001 {
                 if let Some(b) = bus.get_binding_mut(binding_id) {
-                    b.transforms[transform_idx] = TransformDef::Remap {
-                        in_lo: new_ilo, in_hi: new_ihi, out_lo: new_olo, out_hi: new_ohi,
-                    };
+                    if let TransformDef::Remap { ref mut in_lo, ref mut in_hi, .. } = b.transforms[transform_idx] {
+                        *in_lo = new_ilo;
+                        *in_hi = new_ihi;
+                    }
                 }
             }
+            // Store out values for second line
+            ui.memory_mut(|m| m.data.insert_temp(
+                Id::new(format!("remap_out_{binding_id}_{transform_idx}")),
+                (out_lo, out_hi),
+            ));
         }
         TransformDef::Curve { ref curve_type } => {
             let curves = ["ease_in", "ease_out", "ease_in_out", "ease_in_quad", "ease_out_quad", "ease_in_cubic", "ease_out_cubic"];
@@ -1900,11 +2024,9 @@ fn draw_matrix_source_picker(
     bus: &mut BindingBus,
     id: &str,
     source: &mut String,
-    tc: &crate::ui::theme::colors::ThemeColors,
+    _tc: &crate::ui::theme::colors::ThemeColors,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Source").size(9.0).color(tc.text_secondary));
-
         let current_display = if source.is_empty() {
             "(select source)".to_string()
         } else if source.starts_with("audio.") {

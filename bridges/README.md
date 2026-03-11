@@ -4,23 +4,57 @@ Companion scripts that stream external data sources into Phosphor's
 binding bus via websocket. Run any bridge alongside Phosphor to add
 new source types to the Binding Matrix.
 
+## What's a Bridge?
+
+Phosphor generates visuals from audio. Bridges let you *also* control
+visuals with your body, a gamepad, your face, and more. A bridge is a
+small Python script that reads data from a device (webcam, controller,
+etc.) and sends it to Phosphor over the network. You pick a bridge, run
+it, and new controls appear in Phosphor's Binding Matrix automatically —
+no configuration needed.
+
 ## Quick Start
 
-```bash
-# 1. Start Phosphor (websocket server runs on port 9002 automatically)
+**1. Start Phosphor** (the websocket server runs on port 9002 automatically).
 
-# 2. Run a bridge:
-pip install websocket-client
+**2. Pick a bridge** based on what you have:
+
+### No extra hardware
+
+```bash
+pip install -r bridges/requirements-lfo.txt
 python bridges/smart_lfo.py
-
-# 3. Open the Binding Matrix in Phosphor — new sources appear automatically
 ```
 
-Or with Docker (no Python/pip needed):
+This generates smoothly moving values on its own — great for testing
+bindings without any devices.
+
+### Webcam (wave your hands)
 
 ```bash
-docker run phosphor/bridge-smart-lfo
+pip install -r bridges/requirements-vision.txt
+python bridges/mediapipe_hands.py
 ```
+
+Hold your hands up in front of the camera. The bridge tracks your
+fingers and sends their positions to Phosphor.
+
+### Xbox / gamepad controller
+
+```bash
+pip install -r bridges/requirements-gamepad.txt
+python bridges/xbox_controller.py
+```
+
+Sticks, triggers, and buttons all show up as bindable sources.
+
+**3. Open the Binding Matrix** in Phosphor (press **B**). You'll see
+new sources from the bridge. Drag a source onto any parameter to bind
+it — for example, bind hand X position to warp intensity, and moving
+your hand left/right will warp the visuals.
+
+> **Tip:** You can also use Docker instead of pip — see the
+> [Docker](#docker) section below.
 
 ## Available Bridges
 

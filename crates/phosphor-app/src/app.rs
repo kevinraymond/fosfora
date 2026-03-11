@@ -1945,44 +1945,59 @@ impl App {
         let parts: Vec<&str> = target.split('.').collect();
         match parts.first().copied() {
             Some("param") => {
-                // param.{effect_or_wildcard}.{param_name}
-                if parts.len() >= 3 {
-                    let effect_part = parts[1];
-                    let param_name = parts[2];
-                    // Check effect name matches active layer (wildcard `*` always matches)
-                    if effect_part != "*" {
-                        let matches = self
-                            .layer_stack
-                            .active()
-                            .and_then(|l| l.effect_index())
-                            .and_then(|idx| self.effect_loader.effects.get(idx))
-                            .map(|eff| eff.name == effect_part)
-                            .unwrap_or(false);
-                        if !matches {
-                            return;
-                        }
+                // New format: param.{layer_idx}.{effect}.{param_name} (4 parts)
+                // Old format: param.{effect_or_wildcard}.{param_name} (3 parts)
+                let (layer_idx, effect_part, param_name) = if parts.len() >= 4 {
+                    if let Ok(idx) = parts[1].parse::<usize>() {
+                        (Some(idx), parts[2], parts[3])
+                    } else {
+                        return;
                     }
-                    // Apply to active layer
-                    if let Some(layer) = self.layer_stack.active_mut() {
-                        if let Some(def) = layer
-                            .param_store
-                            .defs
-                            .iter()
-                            .find(|d| d.name() == param_name)
-                            .cloned()
-                        {
-                            match def {
-                                crate::params::ParamDef::Float { min, max, .. } => {
-                                    let val = min + (max - min) * value.clamp(0.0, 1.0);
-                                    layer.param_store.set(param_name, ParamValue::Float(val));
-                                }
-                                crate::params::ParamDef::Bool { .. } => {
-                                    layer
-                                        .param_store
-                                        .set(param_name, ParamValue::Bool(value > 0.5));
-                                }
-                                _ => {}
+                } else if parts.len() >= 3 {
+                    (None, parts[1], parts[2])
+                } else {
+                    return;
+                };
+
+                // Resolve the target layer
+                let target_layer_idx = if let Some(idx) = layer_idx {
+                    idx
+                } else if effect_part == "*" {
+                    self.layer_stack.active_layer
+                } else {
+                    // Legacy: match effect name against active layer
+                    let matches = self
+                        .layer_stack
+                        .active()
+                        .and_then(|l| l.effect_index())
+                        .and_then(|idx| self.effect_loader.effects.get(idx))
+                        .map(|eff| eff.name == effect_part)
+                        .unwrap_or(false);
+                    if !matches {
+                        return;
+                    }
+                    self.layer_stack.active_layer
+                };
+
+                if let Some(layer) = self.layer_stack.layers.get_mut(target_layer_idx) {
+                    if let Some(def) = layer
+                        .param_store
+                        .defs
+                        .iter()
+                        .find(|d| d.name() == param_name)
+                        .cloned()
+                    {
+                        match def {
+                            crate::params::ParamDef::Float { min, max, .. } => {
+                                let val = min + (max - min) * value.clamp(0.0, 1.0);
+                                layer.param_store.set(param_name, ParamValue::Float(val));
                             }
+                            crate::params::ParamDef::Bool { .. } => {
+                                layer
+                                    .param_store
+                                    .set(param_name, ParamValue::Bool(value > 0.5));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -2048,6 +2063,49 @@ impl App {
                                 layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
                             }
                             _ => {}
+                        }
+                    }
+                }
+            }
+            Some("particle") => {
+                // particle.{setting_name} — applies to all layers' particle systems
+                if parts.len() >= 2 {
+                    let v = value.clamp(0.0, 1.0);
+                    for layer in &mut self.layer_stack.layers {
+                        if let Some(effect) = layer.as_effect_mut() {
+                            if let Some(ps) =
+                                effect.pass_executor.particle_system.as_mut()
+                            {
+                                match parts[1] {
+                                    "emit_rate" => {
+                                        let r = v * 10000.0;
+                                        ps.emit_rate = r;
+                                        ps.def.emit_rate = r;
+                                    }
+                                    "burst_on_beat" => {
+                                        let r = (v * 2000.0).round() as u32;
+                                        ps.burst_on_beat = r;
+                                        ps.def.burst_on_beat = r;
+                                    }
+                                    "lifetime" => ps.def.lifetime = 0.5 + v * 29.5,
+                                    "speed" => ps.def.initial_speed = v * 2.0,
+                                    "size" => {
+                                        ps.def.initial_size = 0.001 + v * 0.099;
+                                    }
+                                    "drag" => ps.def.drag = 0.8 + v * 0.2,
+                                    "turbulence" => ps.def.turbulence = v * 2.0,
+                                    "gravity_x" => {
+                                        ps.def.gravity[0] = -2.0 + v * 4.0;
+                                    }
+                                    "gravity_y" => {
+                                        ps.def.gravity[1] = -2.0 + v * 4.0;
+                                    }
+                                    "vortex_strength" => {
+                                        ps.def.vortex_strength = -5.0 + v * 10.0;
+                                    }
+                                    _ => {}
+                                }
+                            }
                         }
                     }
                 }
@@ -2210,8 +2268,21 @@ impl App {
             .map(|(n, _)| n.clone())
             .unwrap_or_default();
 
-        // Load preset-scoped bindings
+        // Load preset-scoped bindings and migrate old 3-part targets to 4-part format
         self.binding_bus.load_preset_bindings(&preset_name);
+        for binding in &mut self.binding_bus.bindings {
+            if binding.scope != crate::bindings::types::BindingScope::Preset {
+                continue;
+            }
+            let parts: Vec<&str> = binding.target.split('.').collect();
+            if parts.len() == 3 && parts[0] == "param" {
+                let effect_name = parts[1];
+                if let Some(idx) = preset.layers.iter().position(|l| l.effect_name == effect_name)
+                {
+                    binding.target = format!("param.{}.{}.{}", idx, parts[1], parts[2]);
+                }
+            }
+        }
 
         // Scan for media layers that need decoding (skip locked, skip missing files)
         let mut media_jobs: Vec<(usize, std::path::PathBuf)> = Vec::new();

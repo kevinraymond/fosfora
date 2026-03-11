@@ -9,17 +9,47 @@ pub const MIDI_COLOR: Color32 = Color32::from_rgb(0xA0, 0x60, 0xD0); // purple
 pub const OSC_COLOR: Color32 = Color32::from_rgb(0x50, 0x90, 0xE0); // blue
 pub const WS_COLOR: Color32 = Color32::from_rgb(0xE0, 0x90, 0x40); // orange
 
+/// Per-layer parameter info for binding targets.
+pub struct LayerParamInfo {
+    /// Layer index.
+    pub index: usize,
+    /// Effect name on this layer (e.g. "Phosphor"), empty if no effect.
+    pub effect_name: String,
+    /// Param names available on this layer (Float and Bool only).
+    pub param_names: Vec<String>,
+}
+
 /// Context passed to the bindings panel/matrix for building target/source pickers.
 pub struct BindingPanelInfo {
-    /// Effect name on the active layer (e.g. "Phosphor").
-    pub effect_name: String,
-    /// Param names available on the active layer (Float and Bool only).
-    pub param_names: Vec<String>,
+    /// Per-layer parameter info for all layers in the preset.
+    pub layers: Vec<LayerParamInfo>,
+    /// Active layer index (for templates).
+    pub active_layer: usize,
     /// Number of layers.
     pub layer_count: usize,
     /// Current preset name (for preset-scoped bindings).
     #[allow(dead_code)]
     pub preset_name: String,
+}
+
+impl BindingPanelInfo {
+    /// Get the active layer's effect name (for templates).
+    pub fn active_effect_name(&self) -> &str {
+        self.layers
+            .iter()
+            .find(|l| l.index == self.active_layer)
+            .map(|l| l.effect_name.as_str())
+            .unwrap_or("")
+    }
+
+    /// Get the active layer's param names (for templates).
+    pub fn active_param_names(&self) -> &[String] {
+        self.layers
+            .iter()
+            .find(|l| l.index == self.active_layer)
+            .map(|l| l.param_names.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -35,13 +65,26 @@ pub struct TargetOption {
 pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     let mut targets = Vec::new();
 
-    // Params (active layer)
-    for name in &info.param_names {
-        targets.push(TargetOption {
-            id: format!("param.{}.{}", info.effect_name, name),
-            label: name.clone(),
-            group: "Params",
-        });
+    // Params — per layer
+    for lp in &info.layers {
+        if lp.param_names.is_empty() || lp.effect_name.is_empty() {
+            continue;
+        }
+        let group_label: &str = if info.layer_count == 1 {
+            "Params"
+        } else {
+            // Leak a string to get a &'static str for the group label.
+            // These are small and bounded by layer count, so this is fine.
+            let s = format!("Layer {} \u{2022} {}", lp.index, lp.effect_name);
+            Box::leak(s.into_boxed_str())
+        };
+        for name in &lp.param_names {
+            targets.push(TargetOption {
+                id: format!("param.{}.{}.{}", lp.index, lp.effect_name, name),
+                label: name.clone(),
+                group: group_label,
+            });
+        }
     }
 
     // Layer targets
@@ -69,6 +112,26 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
             id: id.into(),
             label: label.into(),
             group: "PostFX",
+        });
+    }
+
+    // Particle targets
+    for (id, label) in [
+        ("particle.emit_rate", "Emit rate"),
+        ("particle.burst_on_beat", "Burst on beat"),
+        ("particle.lifetime", "Lifetime"),
+        ("particle.speed", "Speed"),
+        ("particle.size", "Size"),
+        ("particle.drag", "Drag"),
+        ("particle.turbulence", "Turbulence"),
+        ("particle.gravity_x", "Gravity X"),
+        ("particle.gravity_y", "Gravity Y"),
+        ("particle.vortex_strength", "Vortex strength"),
+    ] {
+        targets.push(TargetOption {
+            id: id.into(),
+            label: label.into(),
+            group: "Particles",
         });
     }
 
@@ -515,7 +578,17 @@ pub fn friendly_target(target: &str) -> String {
     }
     let parts: Vec<&str> = target.split('.').collect();
     match parts.first().copied() {
-        Some("param") => parts.get(2).unwrap_or(&"?").to_string(),
+        Some("param") => {
+            // New format: param.{layer}.{effect}.{name} (4 parts)
+            // Old format: param.{effect}.{name} (3 parts)
+            if parts.len() >= 4 {
+                let idx = parts[1];
+                let name = parts[3];
+                format!("L{idx} {name}")
+            } else {
+                parts.get(2).unwrap_or(&"?").to_string()
+            }
+        }
         Some("layer") => {
             let idx = parts.get(1).unwrap_or(&"?");
             let field = parts.get(2).unwrap_or(&"?");
@@ -526,6 +599,10 @@ pub fn friendly_target(target: &str) -> String {
             field.replace('_', " ")
         }
         Some("postfx") => {
+            let field = parts.get(1).unwrap_or(&"?");
+            field.replace('_', " ")
+        }
+        Some("particle") => {
             let field = parts.get(1).unwrap_or(&"?");
             field.replace('_', " ")
         }
