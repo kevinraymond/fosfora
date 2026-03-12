@@ -671,10 +671,7 @@ impl ApplicationHandler for PhosphorApp {
                         app.binding_matrix.open = true;
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("open_binding_matrix"), false);
-                            d.insert_temp(
-                                egui::Id::new("binding_matrix_just_opened"),
-                                true,
-                            );
+                            d.insert_temp(egui::Id::new("binding_matrix_just_opened"), true);
                         });
                     }
 
