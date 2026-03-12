@@ -2376,8 +2376,7 @@ impl App {
                         .iter()
                         .position(|l| l.effect_name == effect_name)
                     {
-                        binding.target =
-                            format!("param.{idx}.{effect_name}.{param_name}");
+                        binding.target = format!("param.{idx}.{effect_name}.{param_name}");
                     }
                 }
             }
@@ -3137,8 +3136,7 @@ impl App {
             });
 
         // Execute all enabled layers
-        let mut enabled_layers: Vec<usize> =
-            Vec::with_capacity(self.layer_stack.layers.len());
+        let mut enabled_layers: Vec<usize> = Vec::with_capacity(self.layer_stack.layers.len());
         for (i, l) in self.layer_stack.layers.iter().enumerate() {
             if l.enabled {
                 enabled_layers.push(i);
@@ -3210,8 +3208,7 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("phosphor-encoder-dissolve"),
                 });
-            let mut enabled_layers2: Vec<usize> =
-                Vec::with_capacity(self.layer_stack.layers.len());
+            let mut enabled_layers2: Vec<usize> = Vec::with_capacity(self.layer_stack.layers.len());
             for (i, l) in self.layer_stack.layers.iter().enumerate() {
                 if l.enabled {
                     enabled_layers2.push(i);
