@@ -781,8 +781,9 @@ Multiple devices can connect simultaneously. All clients receive real-time state
 NDI (Network Device Interface) lets you send Phosphor's output to other software over the network — OBS, vMix, Resolume, TouchDesigner, and any NDI-compatible receiver.
 
 **Requirements:**
-- Build with `cargo run --features ndi`
-- Install NDI runtime from [ndi.video](https://ndi.video)
+- **Official release downloads** (macOS/Windows/Linux): NDI is already built in — you only need the NDI runtime.
+- **Building from source:** add `--features ndi` (e.g. `cargo run --release --features ndi`).
+- Install the NDI runtime from [ndi.video](https://ndi.video). Phosphor loads it dynamically at startup; if it's missing, the NDI panel lists the locations it searched and a download link.
 
 **Setup:**
 1. Open the **Outputs** section in the left sidebar

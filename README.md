@@ -11,7 +11,7 @@
 | **Effects** | 23 built-in effects (particle sims, feedback shaders, reaction-diffusion, flocking, strange attractors, morphing) |
 | **Compositing** | 8-layer stack · 10 blend modes · Media layers (GIF/PNG/MP4) · Webcam layers · Monocular depth (MiDaS) |
 | **Control** | Binding matrix (flow editor) · MIDI learn + auto-connect · OSC in/out with learn · Web touch surface (phone/tablet) |
-| **Output** | NDI® (`--features ndi`, runtime-loaded) · Presets · Scene cues with timeline morphing |
+| **Output** | NDI® (built in, runtime-loaded) · Presets · Scene cues with timeline morphing |
 
 ## Note from Dev
 
@@ -43,6 +43,8 @@ Grab the latest release for your platform from [**GitHub Releases**](https://git
 - **macOS** — download the `.dmg`, open it, drag Phosphor to Applications (signed & notarized)
 - **Windows** — download the `.zip`, extract, run `phosphor.exe`
 - **Linux** — download the `.tar.gz`, extract, run `./phosphor`
+
+NDI® output is built into the official downloads — to use it, install the [NDI® runtime](https://ndi.video) (the only extra step needed).
 
 <details>
 <summary><strong>Build from source</strong></summary>

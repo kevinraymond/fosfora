@@ -14,6 +14,7 @@
 
 ### Changed
 - **README** — expanded build-from-source section with per-feature prerequisites; added Binding Matrix section and `B` keyboard shortcut
+- **NDI docs** — clarified that NDI output is built into official release downloads (only the NDI runtime needs installing); the `--features ndi` flag now framed as a from-source-only step in README and TUTORIALS
 
 ## v1.7.1 — 2026-03-12
 
