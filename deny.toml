@@ -5,6 +5,15 @@ all-features = true
 [advisories]
 unmaintained = "workspace"
 yanked = "warn"
+ignore = [
+    # quick-xml < 0.41 DoS advisories (quadratic duplicate-attribute check,
+    # unbounded namespace allocation). Our only quick-xml consumer is
+    # wayland-scanner, a build-time proc-macro that parses the trusted Wayland
+    # protocol XML bundled in the crates — no untrusted XML is parsed at
+    # runtime. Remove once wayland-scanner allows quick-xml >= 0.41.
+    { id = "RUSTSEC-2026-0194", reason = "build-time only; parses trusted bundled protocol XML" },
+    { id = "RUSTSEC-2026-0195", reason = "build-time only; parses trusted bundled protocol XML" },
+]
 
 [licenses]
 allow = [
