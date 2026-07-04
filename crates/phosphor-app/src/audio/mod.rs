@@ -11,7 +11,7 @@ pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -126,6 +126,22 @@ pub struct AudioSystem {
     pub recording_ring: Arc<RingBuffer>,
     /// Audio sample rate in Hz.
     pub sample_rate: u32,
+    /// Total beats detected, incremented by the audio thread. The consumer compares
+    /// this against `beats_seen` so a 1-frame beat pulse survives channel overflow
+    /// and the drain-to-newest loop in `latest_features()`.
+    beat_counter: Arc<AtomicU32>,
+    /// Value of `beat_counter` at the end of the previous `latest_features()` poll.
+    beats_seen: u32,
+    /// When the last frame arrived over the channel (for stale-feature decay).
+    last_frame_at: Instant,
+    /// When `latest_features()` was last polled (for frame-rate-independent decay).
+    last_poll_at: Instant,
+    /// `callback_count` value at the last `poll_health()` call.
+    last_cb_count: u64,
+    /// When `callback_count` last advanced.
+    cb_changed_at: Instant,
+    /// Whether the current stall episode has already been reported.
+    stall_reported: bool,
 }
 
 impl AudioSystem {
@@ -140,6 +156,7 @@ impl AudioSystem {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let recording_ring = Arc::new(RingBuffer::new());
+        let beat_counter = Arc::new(AtomicU32::new(0));
 
         match open_backend(device_name) {
             Ok(opened) => {
@@ -147,11 +164,12 @@ impl AudioSystem {
                 let ring = opened.ring.clone();
                 let sample_rate = opened.sample_rate;
                 let rec_ring = recording_ring.clone();
+                let beats = beat_counter.clone();
 
                 let thread_handle = thread::Builder::new()
                     .name("phosphor-audio".into())
                     .spawn(move || {
-                        audio_thread(ring, sample_rate, tx, shutdown_flag, rec_ring);
+                        audio_thread(ring, sample_rate, tx, shutdown_flag, rec_ring, beats);
                     })
                     .expect("Failed to spawn audio thread");
 
@@ -174,6 +192,13 @@ impl AudioSystem {
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     sample_rate: sample_rate as u32,
+                    beat_counter,
+                    beats_seen: 0,
+                    last_frame_at: Instant::now(),
+                    last_poll_at: Instant::now(),
+                    last_cb_count: 0,
+                    cb_changed_at: Instant::now(),
+                    stall_reported: false,
                 }
             }
             Err(e) => {
@@ -197,6 +222,13 @@ impl AudioSystem {
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     sample_rate: 44100,
+                    beat_counter,
+                    beats_seen: 0,
+                    last_frame_at: Instant::now(),
+                    last_poll_at: Instant::now(),
+                    last_cb_count: 0,
+                    cb_changed_at: Instant::now(),
+                    stall_reported: false,
                 }
             }
         }
@@ -232,6 +264,14 @@ impl AudioSystem {
         self.recording_ring =
             std::mem::replace(&mut new.recording_ring, Arc::new(RingBuffer::new()));
         self.sample_rate = new.sample_rate;
+        self.beat_counter = std::mem::replace(&mut new.beat_counter, Arc::new(AtomicU32::new(0)));
+        self.beats_seen = self.beat_counter.load(Ordering::Relaxed);
+        // Reset stale-feature decay and watchdog state for the fresh backend.
+        self.last_frame_at = Instant::now();
+        self.last_poll_at = Instant::now();
+        self.last_cb_count = 0;
+        self.cb_changed_at = Instant::now();
+        self.stall_reported = false;
         // Keep existing cached_devices/scan_in_flight/last_scan — no need to re-scan on switch
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
     }
@@ -265,8 +305,26 @@ impl AudioSystem {
 
     /// Drain the channel and return the most recent features.
     pub fn latest_features(&mut self) -> Option<AudioFeatures> {
+        let now = Instant::now();
+        let poll_dt = now.duration_since(self.last_poll_at).as_secs_f32();
+        self.last_poll_at = now;
+
+        let mut got_frame = false;
         while let Ok(features) = self.receiver.try_recv() {
             self.latest = Some(features);
+            got_frame = true;
+        }
+
+        if got_frame {
+            self.last_frame_at = now;
+        } else if self.last_frame_at.elapsed() > Duration::from_millis(250) {
+            // No frames for a while (device stalled or removed): decay the held
+            // features toward silence instead of freezing on the last loud frame.
+            // Compounds per poll, so visuals settle to zero in roughly a second.
+            if let Some(ref mut latest) = self.latest {
+                let k = (-poll_dt / 0.3).exp();
+                decay_features(latest, k);
+            }
         }
 
         // Health check: detect stalled audio callbacks
@@ -280,8 +338,71 @@ impl AudioSystem {
             self.last_error = Some(msg.to_string());
         }
 
-        self.latest
+        // Beat pulses are 1-frame events that the drain-to-newest loop above (and
+        // the channel's drop-on-full policy) can lose. The audio thread counts
+        // beats in an atomic, so derive `beat` from the counter instead of the
+        // channel's field: any advance since the last poll means a beat fired.
+        let beats_now = self.beat_counter.load(Ordering::Relaxed);
+        let result = self.latest.map(|mut features| {
+            features.beat = if beats_now == self.beats_seen {
+                0.0
+            } else {
+                1.0
+            };
+            features
+        });
+        self.beats_seen = beats_now;
+
+        result
     }
+
+    /// Watchdog: detect a device that stopped delivering data mid-session and
+    /// report it once per stall episode. Detection only — automatically tearing
+    /// down a stalled backend is unsafe: dropping it joins a capture thread that
+    /// may be blocked in a timeout-less read (e.g. `pa_simple_read`), which would
+    /// hang the render thread for as long as the stall lasts. The 5-second
+    /// startup check in `latest_features()` covers devices that never delivered.
+    pub fn poll_health(&mut self) -> Option<String> {
+        let cb = self.callback_count.load(Ordering::Relaxed);
+        if cb != self.last_cb_count {
+            self.last_cb_count = cb;
+            self.cb_changed_at = Instant::now();
+            self.stall_reported = false;
+            return None;
+        }
+
+        // Only trip once callbacks have flowed at least once and then stalled.
+        // WASAPI loopback delivers no packets while nothing is playing, so a
+        // long playback pause on Windows can look like a stall — hence the
+        // neutral wording and once-per-episode reporting.
+        if self.active
+            && cb > 0
+            && !self.stall_reported
+            && self.cb_changed_at.elapsed() > Duration::from_secs(10)
+        {
+            self.stall_reported = true;
+            let msg =
+                "No audio data for 10s — device may be idle or disconnected (Settings → Audio)";
+            self.last_error = Some(msg.to_string());
+            log::warn!("{msg}");
+            return Some(msg.to_string());
+        }
+        None
+    }
+}
+
+/// Exponentially decay all features by `k`, except `bpm` (index 18 — a tempo
+/// estimate, not an energy level, so it should hold its last value). `beat` is
+/// forced to 0 so a stalled device can never hold a beat pulse high.
+fn decay_features(features: &mut AudioFeatures, k: f32) {
+    /// Index of `bpm` in `AudioFeatures::as_slice()` order.
+    const BPM_INDEX: usize = 18;
+    for (i, v) in features.as_slice_mut().iter_mut().enumerate() {
+        if i != BPM_INDEX {
+            *v *= k;
+        }
+    }
+    features.beat = 0.0;
 }
 
 impl Drop for AudioSystem {
@@ -300,6 +421,7 @@ fn audio_thread(
     tx: Sender<AudioFeatures>,
     shutdown: Arc<AtomicBool>,
     recording_ring: Arc<RingBuffer>,
+    beat_counter: Arc<AtomicU32>,
 ) {
     let mut analyzer = FftAnalyzer::new(sample_rate);
     let mut normalizer = AdaptiveNormalizer::new();
@@ -357,10 +479,69 @@ fn audio_thread(
         raw.bpm = beat_result.bpm / 300.0; // normalize to 0-1
         raw.beat_strength = beat_result.beat_strength;
 
+        // Count beats in an atomic so the consumer can't miss a 1-frame pulse
+        // when the channel overflows or it drains multiple frames at once.
+        if beat_result.beat > 0.5 {
+            beat_counter.fetch_add(1, Ordering::Relaxed);
+        }
+
         // Smoothing (per-feature asymmetric EMA; beat/beat_phase pass through)
         let smoothed = smoother.smooth(&raw, dt);
 
         // Non-blocking send; drop if main thread is behind
         let _ = tx.try_send(smoothed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
+        (a - b).abs() < eps
+    }
+
+    #[test]
+    fn decay_scales_everything_except_bpm() {
+        let mut f = AudioFeatures::default();
+        for v in f.as_slice_mut().iter_mut() {
+            *v = 1.0;
+        }
+        decay_features(&mut f, 0.5);
+        for (i, &v) in f.as_slice().iter().enumerate() {
+            match i {
+                16 => assert!(approx_eq(v, 0.0, 1e-6), "beat (16) must be forced to 0"),
+                18 => assert!(approx_eq(v, 1.0, 1e-6), "bpm (18) must not decay"),
+                _ => assert!(approx_eq(v, 0.5, 1e-6), "index {i} should decay to 0.5"),
+            }
+        }
+    }
+
+    #[test]
+    fn decay_forces_beat_to_zero() {
+        let mut f = AudioFeatures {
+            beat: 1.0,
+            bpm: 0.4,
+            rms: 0.8,
+            ..Default::default()
+        };
+        decay_features(&mut f, 0.9);
+        assert!(approx_eq(f.beat, 0.0, 1e-6));
+        assert!(approx_eq(f.bpm, 0.4, 1e-6));
+        assert!(approx_eq(f.rms, 0.72, 1e-6));
+    }
+
+    #[test]
+    fn decay_compounds_toward_silence() {
+        let mut f = AudioFeatures {
+            rms: 1.0,
+            ..Default::default()
+        };
+        // ~60 polls at 16.7ms with tau=0.3s should settle well below 5%
+        let k = (-0.0167f32 / 0.3).exp();
+        for _ in 0..60 {
+            decay_features(&mut f, k);
+        }
+        assert!(f.rms < 0.05, "rms should settle near zero, got {}", f.rms);
     }
 }

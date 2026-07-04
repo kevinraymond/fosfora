@@ -508,6 +508,14 @@ impl App {
             self.uniforms.dominant_chroma = features.dominant_chroma;
         }
 
+        // Watchdog: if the device stopped delivering data mid-session, surface
+        // it (once per stall episode). Detection only — auto-reconnect would
+        // drop the stalled backend, whose capture thread may be blocked in a
+        // timeout-less read; joining it would hang the render thread.
+        if let Some(msg) = self.audio.poll_health() {
+            self.status_error = Some((msg, Instant::now()));
+        }
+
         // Drain MIDI and apply to active layer's param_store (skip if locked)
         if let Some(layer) = self.layer_stack.active_mut() {
             let locked = layer.locked;

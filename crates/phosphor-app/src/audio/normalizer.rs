@@ -19,7 +19,7 @@ impl AdaptiveNormalizer {
     }
 
     /// Normalize all features to 0-1 using adaptive running min/max.
-    /// Beat detection fields (indices 16-19: beat, beat_phase, bpm, beat_strength)
+    /// Beat detection fields (indices 15-19: onset, beat, beat_phase, bpm, beat_strength)
     /// are passed through unchanged — they're already normalized by the beat detector.
     pub fn normalize(&mut self, raw: &AudioFeatures) -> AudioFeatures {
         let raw_slice = raw.as_slice();
@@ -29,11 +29,11 @@ impl AdaptiveNormalizer {
         for i in 0..NUM_FEATURES {
             let v = raw_slice[i];
 
-            // Skip beat detection fields (onset through beat_strength, indices 16-19)
-            // onset (16) gets normalized, beat (17), beat_phase (18), bpm (19), beat_strength (20-1=19)
-            // Actually: onset=16, beat=17, beat_phase=18, bpm=19, beat_strength=19
-            // Let's just skip beat, beat_phase, bpm — they come pre-normalized from beat detector
-            if (17..=19).contains(&i) {
+            // Pass through detector-owned fields unchanged:
+            // onset=15, beat=16, beat_phase=17, bpm=18, beat_strength=19.
+            // The beat detector already emits them normalized (or binary), so
+            // adaptive min/max scaling would only distort them.
+            if (15..=19).contains(&i) {
                 out_slice[i] = v;
                 continue;
             }
@@ -127,32 +127,35 @@ mod tests {
     fn beat_fields_pass_through() {
         let mut norm = AdaptiveNormalizer::new();
         let raw = AudioFeatures {
-            beat: 1.0,       // index 17
-            beat_phase: 0.7, // index 18
-            bpm: 0.4,        // index 19
+            beat: 1.0,          // index 16
+            beat_phase: 0.7,    // index 17
+            bpm: 0.4,           // index 18
+            beat_strength: 0.9, // index 19
             ..Default::default()
         };
         let out = norm.normalize(&raw);
         assert!(approx_eq(out.beat, 1.0, 1e-6));
         assert!(approx_eq(out.beat_phase, 0.7, 1e-6));
         assert!(approx_eq(out.bpm, 0.4, 1e-6));
+        assert!(approx_eq(out.beat_strength, 0.9, 1e-6));
     }
 
     #[test]
-    fn onset_is_normalized() {
+    fn onset_passes_through() {
         let mut norm = AdaptiveNormalizer::new();
         let mut raw = AudioFeatures {
             onset: 0.5,
             ..Default::default()
         };
-        // Feed onset values to build range
+        // Onset (index 15) is detector-owned and must pass through unchanged,
+        // no matter how much history the normalizer has accumulated.
         for _ in 0..50 {
-            norm.normalize(&raw);
+            let out = norm.normalize(&raw);
+            assert!(approx_eq(out.onset, 0.5, 1e-6));
         }
         raw.onset = 1.0; // spike
         let out = norm.normalize(&raw);
-        // Onset (index 16) should be normalized, not passed through
-        assert!((0.0..=1.0).contains(&out.onset));
+        assert!(approx_eq(out.onset, 1.0, 1e-6));
     }
 
     #[test]

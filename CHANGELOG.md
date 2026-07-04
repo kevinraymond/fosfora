@@ -9,6 +9,9 @@
 - **Dependency advisories** — bumped `rustls-webpki` 0.103.9 → 0.103.13 (RUSTSEC-2026-0049, RUSTSEC-2026-0098) and `tar` 0.4.44 → 0.4.46 (RUSTSEC-2026-0067, RUSTSEC-2026-0068) to clear the cargo-deny audit
 
 ### Fixed
+- **Beat pulses no longer dropped** — beats are latched via an atomic counter so 1-frame beat triggers survive channel overflow and multi-frame drains; burst-on-beat effects fire on every beat even under load
+- **Visuals settle on audio stall** — held audio features now decay to silence in ~1s instead of freezing at the last loud frame when the device stops delivering data (BPM readout preserved); a watchdog surfaces a status toast once per stall episode (detection only — no auto-reconnect, which could hang on a capture thread blocked in a timeout-less read; on Windows a >10s playback pause may trigger the toast since WASAPI loopback delivers no packets during silence)
+- **Normalizer field pass-through** — all beat-detector-owned features (onset, beat, beat_phase, bpm, beat_strength) now bypass adaptive normalization; an off-by-one index range previously misclassified onset and beat
 - **Recording A/V sync** — audio recording now starts from the moment recording begins instead of draining minutes of stale ring-buffer history into the encoder; ring-buffer reads are also clamped to capacity so a lapped consumer recovers with the newest window
 - **Save errors surfaced** — effect saves (particle definition and debounced parameter saves) and recording-start failures now show a status-bar error toast instead of failing silently; a failed parameter save no longer marks the shader editor's paired `.pfx` as clean
 - **Clippy warnings** — cleared 13 default-feature clippy lints (collapsible match guards in `app.rs`/`main.rs`/`web/state.rs`, derivable `Default` for `ParticleQuality`, redundant `String` clones in UI panels)
