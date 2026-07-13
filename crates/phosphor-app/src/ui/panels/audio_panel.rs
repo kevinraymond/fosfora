@@ -636,7 +636,7 @@ fn draw_footer(ui: &mut Ui) {
     ui.add_space(4.0);
     ui.separator();
     ui.label(
-        RichText::new("7 bands · 7 dynamics · 12 chroma · 13 mfcc · 512 fft")
+        RichText::new("7 bands · 7 dynamics · 12 chroma · 13 mfcc · 4096/1024/512 fft")
             .size(7.0)
             .color(tc.text_secondary),
     );

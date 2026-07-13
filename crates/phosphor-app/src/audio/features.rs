@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 
-/// 45 audio features, all normalized to 0.0-1.0 range.
+/// 46 audio features, all normalized to 0.0-1.0 range.
 /// Multi-resolution FFT bands + spectral shape + beat detection + MFCC + chroma.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn size_is_180_bytes() {
+    fn size_is_184_bytes() {
         assert_eq!(std::mem::size_of::<AudioFeatures>(), 184);
     }
 }

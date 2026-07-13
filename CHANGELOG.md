@@ -27,6 +27,9 @@
 - **README** — expanded build-from-source section with per-feature prerequisites; added Binding Matrix section and `B` keyboard shortcut
 - **NDI docs** — clarified that NDI output is built into official release downloads (only the NDI runtime needs installing); the `--features ndi` flag now framed as a from-source-only step in README and TUTORIALS
 
+### Documentation
+- **Stale-docs sweep** — corrected the `AudioFeatures` doc comment (45 → 46 features) and renamed the byte-size test to match its 184-byte assertion; fixed the audio-panel footer to report the real multi-resolution FFT sizes (`4096/1024/512` rather than a bare `512`)
+
 ## v1.7.1 — 2026-03-12
 
 ### Fixed
