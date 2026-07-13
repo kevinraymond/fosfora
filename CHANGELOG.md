@@ -22,6 +22,7 @@
 
 ### Added
 - **Pre-commit hook** — `.githooks/pre-commit` runs `cargo fmt --check` and `cargo clippy -D warnings`
+- **Reduced-motion detection (macOS/Windows)** — implemented the platform detection that was previously stubbed to always return `false`: macOS via `NSWorkspace.accessibilityDisplayShouldReduceMotion` (objc2-app-kit), Windows via `SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)`. Linux (gsettings) already worked. This is the detection backend only — `ReducedMotion` is not yet consumed by any effect/animation, so there is no user-visible behavior change until it is wired in
 
 ### Changed
 - **README** — expanded build-from-source section with per-feature prerequisites; added Binding Matrix section and `B` keyboard shortcut

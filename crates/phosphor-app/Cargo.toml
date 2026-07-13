@@ -87,6 +87,16 @@ windows = { version = "0.61", features = [
     "Win32_System_Variant",
     "Win32_Devices_FunctionDiscovery",
     "Win32_UI_Shell_PropertiesSystem",
+    # SystemParametersInfoW / SPI_GETCLIENTAREAANIMATION (reduced-motion detection)
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# NSWorkspace.accessibilityDisplayShouldReduceMotion (reduced-motion detection).
+# The accessor lives in the NSAccessibility module gated on its own feature.
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "NSWorkspace",
+    "NSAccessibility",
 ] }
 
 [dev-dependencies]

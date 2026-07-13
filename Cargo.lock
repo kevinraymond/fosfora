@@ -3274,6 +3274,7 @@ dependencies = [
  "nokhwa",
  "notify",
  "notify-debouncer-mini",
+ "objc2-app-kit 0.3.2",
  "ort",
  "pollster",
  "rfd",
