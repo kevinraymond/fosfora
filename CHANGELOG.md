@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.8.0 — 2026-07-15
 
 ### Changed
 - **Rebranded to Fosfora** — the project, app, window title, NDI source name, macOS bundle, release binaries (`fosfora` / `Fosfora.app`), and documentation are now "Fosfora" (Northern Sami for phosphorus). The signature **Phosphor** effect keeps its name as a heritage nod. Two runtime surfaces are intentionally unchanged this release to avoid breaking existing setups and will migrate later: the config directory (`~/.config/phosphor/`) and the OSC namespace (`/phosphor/*`), along with the Python `bridges/` tooling that targets it. The macOS bundle identifier (`com.kevinraymond.phosphor`) is also unchanged so existing microphone permissions are preserved.
