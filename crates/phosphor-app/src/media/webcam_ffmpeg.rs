@@ -403,13 +403,16 @@ fn spawn_ffmpeg(format_flag: &str, input: &str, size: &str) -> Result<Child, Str
 }
 
 /// Parse ffmpeg device list output. Platform-specific parsing.
+// `Result` is kept for parity with `list_devices()` (which can fail to spawn
+// ffmpeg); this parser itself never errors.
 #[cfg(not(target_os = "linux"))]
+#[allow(clippy::unnecessary_wraps)]
 fn parse_device_list(stderr: &str) -> Result<Vec<(u32, String)>, String> {
     let mut devices = Vec::new();
-    let mut idx = 0u32;
 
     #[cfg(target_os = "windows")]
     {
+        let mut idx = 0u32;
         // Parse dshow output: lines like [dshow @ ...] "Device Name" (video)
         for line in stderr.lines() {
             if line.contains("(video)") {
