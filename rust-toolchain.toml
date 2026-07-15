@@ -1,0 +1,8 @@
+# Pinned so local dev and CI use the same rustc/clippy. Rolling `stable` plus the
+# `-D warnings` gate in CI breaks the build whenever a new release adds a lint,
+# with no code change — e.g. 1.97 activated `float_literal_f32_fallback`. Bump this
+# deliberately (and clear any new lints in the same change). CI's
+# dtolnay/rust-toolchain action is pinned to the same version.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]
