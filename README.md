@@ -4,6 +4,18 @@
 
 **Cross-platform real-time particle and shader engine for live performance. Welcome to the light.**
 
+<p align="center">
+  <img src="assets/fosfora-teaser.gif" alt="Fosfora reacting to music" width="100%" />
+</p>
+
+<!-- Placeholder hero clip. Replace with a fresh 10–15s screen capture of a few effects reacting to music — the single biggest thing that shows what Fosfora does. -->
+
+## What is this?
+
+Fosfora is a **free, open-source app that turns whatever audio your computer is playing into live, beat-synced visuals** — a music visualizer built for actually performing with. There's nothing to code, no account to create, and no setup: open it, play music, and it reacts.
+
+At a glance:
+
 | | |
 |---|---|
 | **Rendering** | Native GPU app (Vulkan/Metal via wgpu) · Compute rasterizer for million-particle effects · Shader hot-reload (edit WGSL live) |
@@ -25,7 +37,7 @@ Give it a try! Let me know how I can make it better for you.
 
 ---
 
-Fosfora turns your audio input into layered, beat-synced visuals using GPU shaders, particles, and compositing — all driven by WGSL and controlled via MIDI, OSC, or a phone browser.
+Under the hood it's a GPU engine — WGSL shaders, compute particles, and layer compositing — that you drive from the panels below, or from MIDI, OSC, or a phone browser:
 
 <p align="center">
   <img width="1518" height="1222" alt="Fosfora UI" src="https://github.com/user-attachments/assets/3072dd58-17d4-4ce4-8166-429bee57f780" />
@@ -34,20 +46,26 @@ Fosfora turns your audio input into layered, beat-synced visuals using GPU shade
 
 ## Quick Start
 
-### Download
+Three steps, and you can't break anything — every setting saves to its own file and can be reset.
 
-Grab the latest release for your platform from [**GitHub Releases**](https://github.com/kevinraymond/fosfora/releases/latest):
+**1. Download it** for your platform from [**GitHub Releases**](https://github.com/kevinraymond/fosfora/releases/latest):
 
 - **macOS** — download the `.dmg`, open it, drag Fosfora to Applications (signed & notarized)
 - **Windows** — download the `.zip`, extract, run `fosfora.exe`
 - **Linux** — download the `.tar.gz`, extract, run `./fosfora`
+
+**2. Open it.** A visual is already running when the window appears. The control UI fades in after a second or two — or press **D** to show it right away.
+
+**3. Play some music** — anything your computer can hear. The visuals react immediately from your default input device.
+
+**What to expect in the first 10 seconds:** the window opens with a visual already moving → the panels fade in → press **D** to toggle them → click an effect on the left → press **F** for fullscreen. That's the whole loop.
 
 NDI® output is built into the official downloads — to use it, install the [NDI® runtime](https://ndi.video) (the only extra step needed).
 
 <details>
 <summary><strong>Build from source</strong></summary>
 
-**Prerequisites:** Rust 1.90+, a Vulkan-capable GPU.
+**Prerequisites:** Rust 1.97+ (pinned via `rust-toolchain.toml`), a Vulkan-capable GPU.
 
 ```bash
 git clone https://github.com/kevinraymond/fosfora.git
@@ -61,9 +79,16 @@ cargo run --release --features depth   # requires: libssl-dev, libclang-dev (inc
 
 </details>
 
-On first launch: the UI fades in automatically after a couple seconds (or press **D** to show it immediately). Pick an effect from the browser and press **F** for fullscreen. Audio reactivity works immediately from your default input device.
-
 **New to Fosfora?** Check out the [Tutorials](TUTORIALS.md) for in-depth guides on every feature — effects, audio, layers, MIDI, OSC, and more.
+
+## Make it yours
+
+A few ideas, in plain terms:
+
+- **Effects** are like TV channels — flip through them in the left panel until one grabs you.
+- **Layers** are stacked transparent sheets (think Photoshop or OBS): stack one effect over another, set each sheet's opacity and blend mode, and drag to reorder.
+- **Presets** are saved looks — build a layer stack you love, save it, and recall it instantly later or from a MIDI/OSC trigger.
+- The **binding matrix** is a patch bay: draw a line from any source (a MIDI knob, an OSC message, an audio feature, your phone, even hand tracking) to any target (a slider, layer opacity, a particle setting) to make it move with the music or your hands.
 
 ## Controls
 
@@ -71,12 +96,15 @@ On first launch: the UI fades in automatically after a couple seconds (or press 
 
 | Key | Action |
 |-----|--------|
-| `D` | Toggle UI overlay |
+| `D` | Toggle the UI overlay |
 | `F` | Toggle fullscreen |
-| `B` | Open binding matrix |
-| `[` / `]` | Cycle active layer |
-| `Tab` | Cycle UI widgets |
-| `Esc` | Quit |
+| `B` | Open the binding matrix |
+| `[` / `]` | Previous / next layer (when you have more than one) |
+| `Space` | Go to the next scene cue (when a timeline has cues) |
+| `T` | Play / pause the scene timeline (when a timeline has cues) |
+| `Esc` | Quit — or close the binding matrix first if it's open |
+
+`Tab` and the arrow keys navigate the UI itself (widget focus, slider nudges) — see [QUICK-REFERENCE.md](QUICK-REFERENCE.md) for the full accessibility shortcuts.
 
 ### Binding Matrix
 
@@ -115,18 +143,39 @@ Open it on a phone or tablet on the same network. Supports multiple simultaneous
 
 ## Effects
 
-| Effect | Description | Features |
-|--------|-------------|----------|
-| **Aurora** | Horizontal flowing curtains driven by 7 frequency bands | |
-| **Drift** | Triple domain-warped FBM fluid smoke | Feedback |
-| **Tunnel** | Log-polar infinite cylindrical flythrough | |
-| **Prism** | Kaleidoscopic N-fold mirror symmetry with FBM | |
-| **Shards** | Animated Voronoi cells with stained-glass fill | |
-| **Pulse** | Beat-synced concentric rings with trails | Feedback |
-| **Iris** | Spinning dot with fading feedback trails | Feedback |
-| **Storm** | Volumetric clouds with beat-triggered lightning | Feedback |
+**24 built-in effects** — 22 you can browse and cycle through, plus 2 hidden ones (the signature **Phosphor** intro visual and a rasterizer stress test). All are audio-reactive out of the box, and every parameter is a slider in the UI that you can map to MIDI/OSC.
 
-All effects are audio-reactive out of the box. Parameters are exposed as sliders in the UI and mappable to MIDI/OSC.
+**Shader effects** (pure GPU shaders):
+
+| Effect | Description |
+|--------|-------------|
+| **Aurora** | Flowing curtain bands driven by 7 frequency bands |
+| **Drift** | Triple domain-warped FBM fluid smoke with advected feedback |
+| **Iris** | Spinning dot with fading feedback trails |
+| **Prism** | Kaleidoscopic N-fold mirror symmetry over FBM patterns |
+| **Pulse** | Beat-synced concentric rings with feedback trails |
+| **Shards** | Animated Voronoi cells with glowing fracture edges |
+| **Storm** | Billowing dark clouds lit from within by lightning |
+| **Tunnel** | Raymarched infinite cylindrical flythrough with twist and glow |
+
+**Particle effects** (GPU compute simulations):
+
+| Effect | Description |
+|--------|-------------|
+| **Accretion** | Gravitational N-body — audio seeds attract swarms into discs and orbits |
+| **Array** | Toroidal per-band speaker emitters firing rings of particles outward |
+| **Cascade** | Screen edges emit audio-segmented particle streams that interfere |
+| **Chaos** | Strange-attractor system (Lorenz, Rössler, Chen…) with feedback trails |
+| **Cymatics** | Chladni standing-wave nodal patterns synced to frequency bands |
+| **Flux** | Organic smoke following a 3D curl-noise flow field |
+| **Genesis** | Multi-species Particle Lenia self-organizing into predator/prey |
+| **Morph** | Particles spring between images and geometry on beat drops |
+| **Murmur** | Starling murmuration with topological K=7 flocking |
+| **Mycelium** | Branching tendrils that grow at the tips and decay at the roots |
+| **Raster** | Video wall — particles map to image pixels with audio displacement |
+| **Symbiosis** | Particle Life multi-species ecosystems from a force matrix |
+| **Tesla** | Charged particles spiraling through magnetic dipole fields |
+| **Turing** | Reaction-diffusion (Gray-Scott) sculpting particles into organic patterns |
 
 ## Layers
 
@@ -144,7 +193,7 @@ All effects are audio-reactive out of the box. Parameters are exposed as sliders
 - Stored in `~/.config/phosphor/presets/` as JSON
 - Cycle presets via MIDI/OSC triggers or the preset panel
 - Locked layers are preserved during preset load
-- Bundled preset: **Crucible** (all 8 layers composited)
+- Bundled presets: **Crucible** and **Spectral Eye** — full multi-layer compositions to start from
 
 ## Configuration
 
@@ -156,6 +205,23 @@ All config is stored in `~/.config/phosphor/`:
 | `osc.json` | OSC ports, address bindings |
 | `web.json` | Web control surface port, enable state |
 | `presets/*.json` | Named presets |
+
+## FAQ / Troubleshooting
+
+**The visuals aren't reacting to my music.**
+Fosfora listens to an *input* device. Open the **Audio** panel (right sidebar) and pick the right source:
+- **Linux** — choose the **Monitor** of your output device (that's your system audio via PulseAudio/PipeWire); a plain microphone only hears the room.
+- **Windows** — pick the WASAPI **loopback** device for system audio, or a mic to react to the room.
+- **macOS** — the default input is your mic; to visualize system audio, route it with a loopback tool (e.g. BlackHole).
+
+**I just get a black screen / it won't start.**
+Fosfora needs a Vulkan-capable GPU (Vulkan on Linux/Windows, Metal on macOS). Update your graphics drivers, and if you built from source make sure the release build ran cleanly.
+
+**macOS says it can't verify the app / it's from an unidentified developer.**
+The official `.dmg` is signed and notarized, so a normal download-and-drag should just work. If macOS still blocks it, right-click the app → **Open** the first time, or allow it under **System Settings → Privacy & Security**.
+
+**Where do my settings and presets live?**
+In a per-user config folder — see [Configuration](#configuration) for the exact files. Deleting them resets Fosfora to defaults; nothing else on your system is touched.
 
 ## Writing Effects
 

@@ -6,6 +6,8 @@ A comprehensive guide to using Fosfora — a real-time particle and shader engin
 
 ## Table of Contents
 
+**New here? Start with [Your First 5 Minutes](#your-first-5-minutes).**
+
 1. [Effects](#effects)
 2. [Audio](#audio)
 3. [Audio Reactivity](#audio-reactivity)
@@ -22,6 +24,20 @@ A comprehensive guide to using Fosfora — a real-time particle and shader engin
 
 ---
 
+## Your First 5 Minutes
+
+**Goal: go from a fresh launch to music-reactive visuals on your screen.** No setup, no accounts, and you can't break anything.
+
+1. **Open Fosfora.** A visual starts running right away. After a couple of seconds the control UI fades in on its own — or press **D** any time to show/hide it.
+2. **Play some music** — anything your computer can hear. The visuals start reacting immediately using your default input device. (Hearing nothing react? See [Audio → Choosing an Input](#audio).)
+3. **Pick a look.** In the **Effects** panel on the left, click any effect to load it onto the active layer. Try Aurora, Storm, or Tesla to feel the range.
+4. **Go big.** Press **F** for borderless fullscreen. Press **F** again (or **Esc**) to come back.
+5. **Make it yours.** Drag the sliders in the right panel to reshape the effect — every one is audio-mappable later. When something looks great, save it as a preset.
+
+That's the whole loop: **open → play music → pick an effect → fullscreen**. Everything below goes deeper on each piece.
+
+---
+
 ## Effects
 
 Effects are the core visual building blocks of Fosfora. Each effect is a WGSL shader (or set of shaders) that generates audio-reactive visuals in real time.
@@ -35,22 +51,32 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with 12 curated effects:
+Fosfora ships with **24 built-in effects** — 22 you can browse and cycle through, plus 2 hidden ones (the signature **Phosphor** intro visual and a rasterizer stress test). The 22 browsable effects:
 
 | Effect | Description | Uses Feedback | Uses Particles |
 |--------|-------------|:---:|:---:|
-| **Aurora** | Flowing northern light curtains driven by 7 frequency bands | | |
-| **Drift** | Triple domain-warped fluid smoke with advected feedback | Yes | |
-| **Tunnel** | Infinite cylindrical flythrough with twist and wall panels | | |
-| **Prism** | Kaleidoscopic N-fold mirror symmetry over fractal patterns | | |
-| **Shards** | Animated Voronoi stained-glass cells with glowing edges | | |
+| **Aurora** | Flowing curtain bands driven by 7 frequency bands | Yes | |
+| **Drift** | Triple domain-warped FBM fluid smoke with advected feedback | Yes | |
+| **Iris** | Spinning dot with fading feedback trails | Yes | |
+| **Prism** | Kaleidoscopic N-fold mirror symmetry over FBM patterns | Yes | |
 | **Pulse** | Beat-synced concentric rings with feedback trails | Yes | |
-| **Iris** | Spinning dot with fading trails | Yes | |
-| **Swarm** | Orbital particle cloud with custom compute simulation | Yes | Yes |
-| **Storm** | Volumetric dark clouds with beat-triggered lightning | Yes | |
-| **Veil** | Flowing silk curtain with 6000 particles | Yes | Yes |
-| **Nova** | Fireworks with burst emission, shells and sparks | Yes | Yes |
-| **Vortex** | Gravity well with accretion disk, polar jets, and lensing | Yes | Yes |
+| **Shards** | Animated Voronoi cells with glowing fracture edges | Yes | |
+| **Storm** | Billowing dark clouds lit from within by lightning | Yes | |
+| **Tunnel** | Raymarched infinite cylindrical flythrough with twist and glow | Yes | |
+| **Accretion** | Gravitational N-body — audio seeds attract swarms into discs and orbits | Yes | Yes |
+| **Array** | Toroidal per-band speaker emitters firing rings of particles outward | Yes | Yes |
+| **Cascade** | Screen edges emit audio-segmented particle streams that interfere | Yes | Yes |
+| **Chaos** | Strange-attractor system (Lorenz, Rössler, Chen…) with feedback trails | Yes | Yes |
+| **Cymatics** | Chladni standing-wave nodal patterns synced to frequency bands | Yes | Yes |
+| **Flux** | Organic smoke following a 3D curl-noise flow field | Yes | Yes |
+| **Genesis** | Multi-species Particle Lenia self-organizing into predator/prey | Yes | Yes |
+| **Morph** | Particles spring between images and geometry on beat drops | | Yes |
+| **Murmur** | Starling murmuration with topological K=7 flocking | | Yes |
+| **Mycelium** | Branching tendrils that grow at the tips and decay at the roots | Yes | Yes |
+| **Raster** | Video wall — particles map to image pixels with audio displacement | Yes | Yes |
+| **Symbiosis** | Particle Life multi-species ecosystems from a force matrix | | Yes |
+| **Tesla** | Charged particles spiraling through magnetic dipole fields | Yes | Yes |
+| **Turing** | Reaction-diffusion (Gray-Scott) sculpting particles into organic patterns | | Yes |
 
 ### Creating Your Own Effects
 
@@ -197,8 +223,8 @@ Fosfora extracts 46 audio features from multi-resolution FFT analysis:
 **7 Frequency Bands** (normalized 0–1):
 | Band | Range | Typical Content |
 |------|-------|----------------|
-| sub_bass | 0–100 Hz | Sub-bass rumble, kick drum fundamental |
-| bass | 100–250 Hz | Bass guitar, kick body |
+| sub_bass | 20–60 Hz | Sub-bass rumble, kick drum fundamental |
+| bass | 60–250 Hz | Bass guitar, kick body |
 | low_mid | 250–500 Hz | Low vocals, warmth |
 | mid | 500–2000 Hz | Vocals, guitars, snare |
 | upper_mid | 2000–4000 Hz | Vocal clarity, guitar bite |
@@ -272,7 +298,14 @@ beat          // Beat trigger (0 or 1)
 beat_phase    // 0→1 sawtooth at detected tempo
 bpm           // Detected BPM / 300
 beat_strength // Detection confidence
+
+// Pitch / timbre (accessed via helper functions)
+dominant_chroma       // Strongest pitch class, normalized 0–1
+mfcc(i)               // 13 MFCC timbral coefficients, i = 0..12
+chroma_val(i)         // 12 chroma pitch-class energies, i = 0..11 (C, C#, D … B)
 ```
+
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, and the 12 chroma values are the full set of **46 audio features** — all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 ### Common Patterns
 

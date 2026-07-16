@@ -8,6 +8,9 @@
 ### Added
 - **Community health files** — added `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1), `SECURITY.md` (private disclosure via GitHub security advisories), and a `.github/pull_request_template.md`, completing GitHub's recommended community standards checklist.
 
+### Changed (docs)
+- **ELI5 README + TUTORIALS pass** — rewrote the README for newcomers (plain "What is this?", a 3-step Quick Start with first-10-seconds expectations, a "Make it yours" analogy section, and an FAQ/Troubleshooting section covering audio-input selection, black screen/GPU, and macOS notarization), and embedded a hero clip (`assets/fosfora-teaser.gif`, renamed from `phosphor-teaser.gif`; placeholder for a fresh capture). Fixed the README effects list (was 8 of the old set) and the TUTORIALS effects table (listed 4 non-existent effects — Swarm/Veil/Nova/Vortex) to the real **24 built-in effects (22 browsable + 2 hidden)**, split into shader vs particle. Corrected the keyboard table (added `Space`/`T` timeline keys, clarified `Esc`), the build prerequisite (Rust 1.90+ → 1.97+), the bundled preset list (added Spectral Eye), and the TUTORIALS audio band ranges (`sub_bass` 20–60 Hz, `bass` 60–250 Hz) and shader-uniform reference (now shows the `mfcc(i)` / `chroma_val(i)` helpers so the "46 audio features in shaders" claim is self-consistent). Config-path and OSC-namespace sections were intentionally left on their current `~/.config/phosphor/` / `/phosphor/*` values, to be swept with the pending rename Phase 2.
+
 ## v1.8.0 — 2026-07-15
 
 ### Changed
