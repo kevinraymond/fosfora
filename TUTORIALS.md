@@ -258,7 +258,10 @@ Fosfora extracts 46 audio features from multi-resolution FFT analysis (the shade
 - **pan / stereo_width / stereo_corr** — stereo field
 - **section_novelty / buildup / drop** — song-structure cues
 
-Alongside these, three audio *textures* are reserved (`waveform`, `spectrum`, `spectrogram`) for oscilloscopes, spectrum bars and waterfalls — 1×1 placeholders for now.
+Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls — sample them with the built-in helpers:
+- **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x` — a min/max-decimated, zero-crossing-triggered scope trace.
+- **`spectrum(x)`** → `f32` log-frequency magnitude (0–1) at `x` — spectrum-bar heights.
+- **`spectrogram(uv)`** → `f32` mel energy (0–1); `uv.x` is time (0 = oldest, 1 = newest), `uv.y` is frequency (mel) — a scrolling waterfall.
 
 ### Adaptive Normalization
 

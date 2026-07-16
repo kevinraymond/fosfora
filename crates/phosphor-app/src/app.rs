@@ -9,6 +9,7 @@ use crate::bindings::bus::BindingBus;
 use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
 use crate::effect::loader::assets_dir;
+use crate::gpu::audio_textures::{AudioTextures, WAVEFORM_PEEK};
 use crate::gpu::compositor::Compositor;
 use crate::gpu::layer::{BlendMode, EffectLayer, Layer, LayerContent, LayerInfo, LayerStack};
 use crate::gpu::particle::ParticleSystem;
@@ -73,6 +74,9 @@ pub struct App {
     pub compositor: Compositor,
     pub post_process: PostProcessChain,
     pub placeholder: PlaceholderTexture,
+    /// A17 audio textures (waveform / spectrum / spectrogram) filling the reserved
+    /// bind-group slots; refreshed each frame in `update` (#1468).
+    pub audio_textures: AudioTextures,
     // Global uniforms template (time, audio, etc. — params overwritten per-layer)
     pub uniforms: ShaderUniforms,
     // NDI output (feature-gated)
@@ -146,6 +150,8 @@ impl App {
             });
         // Placeholder 1x1 black texture
         let placeholder = PlaceholderTexture::new(&gpu.device, &gpu.queue, hdr_format);
+        // A17 audio textures (waveform / spectrum / spectrogram), zero-initialized (#1468).
+        let audio_textures = AudioTextures::new(&gpu.device, &gpu.queue);
 
         // Build initial layer with default effect (use normalized_passes for multi-pass effects)
         let uniform_buffer = UniformBuffer::new(&gpu.device);
@@ -163,6 +169,7 @@ impl App {
                         &effect_loader,
                         &uniform_buffer,
                         &placeholder,
+                        &audio_textures,
                         &gpu.queue,
                         gpu.pipeline_cache.as_ref(),
                     ) {
@@ -199,6 +206,7 @@ impl App {
                                 &uniform_buffer,
                                 &gpu.device,
                                 &placeholder,
+                                &audio_textures,
                             );
                             (executor, vec![source], ParamStore::new(), None)
                         }
@@ -229,6 +237,7 @@ impl App {
                         &uniform_buffer,
                         &gpu.device,
                         &placeholder,
+                        &audio_textures,
                     );
                     (executor, vec![source], ParamStore::new(), None)
                 }
@@ -254,6 +263,7 @@ impl App {
                     &uniform_buffer,
                     &gpu.device,
                     &placeholder,
+                    &audio_textures,
                 );
                 (executor, vec![source], ParamStore::new(), None)
             };
@@ -403,6 +413,7 @@ impl App {
             compositor,
             post_process,
             placeholder,
+            audio_textures,
             #[cfg(feature = "ndi")]
             ndi,
             recording,
@@ -441,6 +452,7 @@ impl App {
                 width,
                 height,
                 &self.placeholder,
+                &self.audio_textures,
             );
             layer.resize_media(&self.gpu.device, &self.gpu.queue, width, height);
         }
@@ -524,6 +536,20 @@ impl App {
             self.uniforms.buildup = features.buildup;
             self.uniforms.drop = features.drop;
         }
+
+        // A17 (#1468): refresh the audio textures every frame. The waveform peeks the
+        // freshest PCM straight from the recording ring (no audio-thread involvement);
+        // the spectrum and spectrogram consume the data `latest_features` just drained
+        // (spectrum held newest, mel columns accumulated). Uploads only rewrite texture
+        // contents — the bind groups' texture views are stable.
+        let mut wav = [0.0f32; WAVEFORM_PEEK];
+        self.audio.recording_ring.peek_latest(&mut wav);
+        self.audio_textures.upload_waveform(&self.gpu.queue, &wav);
+        self.audio_textures
+            .upload_spectrum(&self.gpu.queue, self.audio.latest_spectrum());
+        let mel_columns = self.audio.take_mel_columns();
+        self.audio_textures
+            .upload_spectrogram(&self.gpu.queue, &mel_columns);
 
         // Watchdog: if the device stopped delivering data mid-session, surface
         // it (once per stall episode). Detection only — auto-reconnect would
@@ -1121,6 +1147,7 @@ impl App {
                                 &self.gpu.device,
                                 &e.uniform_buffer,
                                 &self.placeholder,
+                                &self.audio_textures,
                             ) {
                                 Ok(()) => {
                                     if pass_idx < e.shader_sources.len() {
@@ -1684,6 +1711,7 @@ impl App {
                     &uniform_buffer,
                     &self.gpu.device,
                     &self.placeholder,
+                    &self.audio_textures,
                 );
                 self.layer_stack.layers[layer_idx].content =
                     LayerContent::Effect(Box::new(EffectLayer {
@@ -1711,6 +1739,7 @@ impl App {
             &self.effect_loader,
             uniform_buffer_ref,
             &self.placeholder,
+            &self.audio_textures,
             &self.gpu.queue,
             self.gpu.pipeline_cache.as_ref(),
         );
@@ -1821,6 +1850,7 @@ impl App {
                     &uniform_buffer,
                     &self.gpu.device,
                     &self.placeholder,
+                    &self.audio_textures,
                 );
 
                 self.layer_stack.layers.push(Layer::new_effect(

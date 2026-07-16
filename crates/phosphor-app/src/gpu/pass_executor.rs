@@ -4,6 +4,7 @@ use crate::effect::EffectLoader;
 use crate::effect::format::PassDef;
 
 use super::ShaderPipeline;
+use super::audio_textures::AudioTextures;
 use super::particle::ParticleSystem;
 use super::placeholder::PlaceholderTexture;
 use super::render_target::{PingPongTarget, RenderTarget};
@@ -37,6 +38,7 @@ impl PassExecutor {
         effect_loader: &EffectLoader,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
         queue: &Queue,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> Result<Self, String> {
@@ -63,6 +65,7 @@ impl PassExecutor {
                 &pipeline.bind_group_layout,
                 &target,
                 placeholder,
+                audio,
                 def.feedback,
             );
 
@@ -88,6 +91,7 @@ impl PassExecutor {
         uniform_buffer: &UniformBuffer,
         device: &Device,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
     ) -> Self {
         let bind_groups = create_pass_bind_groups(
             device,
@@ -95,6 +99,7 @@ impl PassExecutor {
             &pipeline.bind_group_layout,
             &feedback,
             placeholder,
+            audio,
             true, // always enable feedback for single-pass mode
         );
 
@@ -188,6 +193,7 @@ impl PassExecutor {
         height: u32,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
     ) {
         for pass in &mut self.passes {
             if pass.has_feedback {
@@ -201,6 +207,7 @@ impl PassExecutor {
                 &pass.pipeline.bind_group_layout,
                 &pass.target,
                 placeholder,
+                audio,
                 pass.has_feedback,
             );
         }
@@ -224,6 +231,7 @@ impl PassExecutor {
         source: &str,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
         pipeline_cache: Option<&wgpu::PipelineCache>,
     ) -> Result<(), String> {
         if let Some(pass) = self.passes.get_mut(pass_index) {
@@ -235,6 +243,7 @@ impl PassExecutor {
                 &pass.pipeline.bind_group_layout,
                 &pass.target,
                 placeholder,
+                audio,
                 pass.has_feedback,
             );
             Ok(())
@@ -252,6 +261,7 @@ impl PassExecutor {
         device: &Device,
         uniform_buffer: &UniformBuffer,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
     ) -> Result<(), String> {
         if let Some(pass) = self.passes.get_mut(pass_index) {
             pass.bind_groups = create_pass_bind_groups(
@@ -260,6 +270,7 @@ impl PassExecutor {
                 &pipeline.bind_group_layout,
                 &pass.target,
                 placeholder,
+                audio,
                 pass.has_feedback,
             );
             pass.pipeline = pipeline;
@@ -276,14 +287,16 @@ fn create_pass_bind_groups(
     layout: &wgpu::BindGroupLayout,
     target: &PingPongTarget,
     placeholder: &PlaceholderTexture,
+    audio: &AudioTextures,
     has_feedback: bool,
 ) -> [wgpu::BindGroup; 2] {
-    // A17 audio textures (batched ABI bump #1505) are reserved as placeholders for
-    // now: bind the 1x1 placeholder view to bindings 3/4/5 and its sampler to 6.
-    // The A17 DSP swaps in the real waveform/spectrum/spectrogram textures without
-    // touching this layout.
-    let audio_view = &placeholder.view;
-    let audio_sampler = &placeholder.sampler;
+    // A17 (#1468): bindings 3/4/5 = real waveform/spectrum/spectrogram views, 6 = shared
+    // sampler. The textures are fixed-size, so these views are stable — per-frame uploads
+    // refresh their contents without rebuilding the bind group.
+    let waveform_view = &audio.waveform_view;
+    let spectrum_view = &audio.spectrum_view;
+    let spectrogram_view = &audio.spectrogram_view;
+    let audio_sampler = &audio.sampler;
     if has_feedback {
         // Read from the other target in the pair
         let bg0 = uniform_buffer.create_bind_group(
@@ -291,9 +304,9 @@ fn create_pass_bind_groups(
             layout,
             &target.targets[1].view,
             &target.targets[1].sampler,
-            audio_view,
-            audio_view,
-            audio_view,
+            waveform_view,
+            spectrum_view,
+            spectrogram_view,
             audio_sampler,
         );
         let bg1 = uniform_buffer.create_bind_group(
@@ -301,22 +314,22 @@ fn create_pass_bind_groups(
             layout,
             &target.targets[0].view,
             &target.targets[0].sampler,
-            audio_view,
-            audio_view,
-            audio_view,
+            waveform_view,
+            spectrum_view,
+            spectrogram_view,
             audio_sampler,
         );
         [bg0, bg1]
     } else {
-        // Use placeholder (1x1 black) for both states
+        // No feedback: placeholder (1x1 black) prev-frame for both states.
         let bg = uniform_buffer.create_bind_group(
             device,
             layout,
             &placeholder.view,
             &placeholder.sampler,
-            audio_view,
-            audio_view,
-            audio_view,
+            waveform_view,
+            spectrum_view,
+            spectrogram_view,
             audio_sampler,
         );
         let bg2 = uniform_buffer.create_bind_group(
@@ -324,9 +337,9 @@ fn create_pass_bind_groups(
             layout,
             &placeholder.view,
             &placeholder.sampler,
-            audio_view,
-            audio_view,
-            audio_view,
+            waveform_view,
+            spectrum_view,
+            spectrogram_view,
             audio_sampler,
         );
         [bg, bg2]

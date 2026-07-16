@@ -1,7 +1,9 @@
+pub mod audio_textures;
 pub mod compositor;
 pub mod context;
 pub mod frame_capture;
 pub mod fullscreen_quad;
+pub mod half;
 pub mod layer;
 pub mod particle;
 pub mod pass_executor;

@@ -12,6 +12,21 @@ pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
 
+/// A single analyzed audio frame handed from the audio thread to the render thread.
+/// Carries the scalar [`AudioFeatures`] plus the two array streams the A17 audio textures
+/// need (#1468): a log-frequency magnitude spectrum and one mel-spectrogram column.
+/// Bundling them in one message keeps all three consistent for the same frame and reuses
+/// the existing bounded crossbeam channel — no extra handoff.
+pub struct AudioFrame {
+    pub features: AudioFeatures,
+    /// Log-frequency magnitude spectrum, [`analyzer::SPECTRUM_BINS`] bins in 0..1
+    /// (fills the `audio_spectrum` texture).
+    pub spectrum: Box<[f32]>,
+    /// One mel-spectrogram column, [`analyzer::SPECTROGRAM_MELS`] bands in 0..1
+    /// (scrolls into the `audio_spectrogram` texture).
+    pub mel: Box<[f32]>,
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -105,8 +120,14 @@ fn open_backend(device_name: Option<&str>) -> Result<OpenedBackend, String> {
 
 /// Manages the audio pipeline: capture -> FFT -> normalize -> beat detect -> smooth -> send to main thread.
 pub struct AudioSystem {
-    receiver: Receiver<AudioFeatures>,
+    receiver: Receiver<AudioFrame>,
     latest: Option<AudioFeatures>,
+    /// Newest log-frequency spectrum column received (A17 `audio_spectrum`, #1468).
+    /// Held between polls so the render thread always has a value to upload.
+    latest_spectrum: Vec<f32>,
+    /// Mel-spectrogram columns received since the last `latest_features` poll, oldest
+    /// first (A17 `audio_spectrogram`, #1468). Drained by the render thread each frame.
+    pending_mel: Vec<Box<[f32]>>,
     pub device_name: String,
     pub active: bool,
     pub last_error: Option<String>,
@@ -152,8 +173,7 @@ impl AudioSystem {
     }
 
     pub fn new_with_device(device_name: Option<&str>) -> Self {
-        let (tx, rx): (Sender<AudioFeatures>, Receiver<AudioFeatures>) =
-            crossbeam_channel::bounded(4);
+        let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::bounded(4);
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let recording_ring = Arc::new(RingBuffer::new());
@@ -177,6 +197,8 @@ impl AudioSystem {
                 Self {
                     receiver: rx,
                     latest: None,
+                    latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
+                    pending_mel: Vec::new(),
                     device_name: opened.device_name,
                     active: true,
                     last_error: None,
@@ -207,6 +229,8 @@ impl AudioSystem {
                 Self {
                     receiver: rx,
                     latest: None,
+                    latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
+                    pending_mel: Vec::new(),
                     device_name: device_name.unwrap_or("Default").to_string(),
                     active: false,
                     last_error: Some(e),
@@ -252,6 +276,8 @@ impl AudioSystem {
         let mut new = Self::new_with_device(device_name);
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
+        self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
+        self.pending_mel.clear();
         self.device_name = std::mem::take(&mut new.device_name);
         self.active = new.active;
         self.last_error = new.last_error.take();
@@ -311,8 +337,13 @@ impl AudioSystem {
         self.last_poll_at = now;
 
         let mut got_frame = false;
-        while let Ok(features) = self.receiver.try_recv() {
-            self.latest = Some(features);
+        while let Ok(frame) = self.receiver.try_recv() {
+            self.latest = Some(frame.features);
+            // Keep the newest spectrum; accumulate every mel column so the spectrogram
+            // scrolls smoothly even when several audio frames arrive between polls.
+            self.latest_spectrum.clear();
+            self.latest_spectrum.extend_from_slice(&frame.spectrum);
+            self.pending_mel.push(frame.mel);
             got_frame = true;
         }
 
@@ -355,6 +386,20 @@ impl AudioSystem {
         self.beats_seen = beats_now;
 
         result
+    }
+
+    /// Newest log-frequency magnitude spectrum (A17 `audio_spectrum`, #1468), 0..1 per
+    /// bin. Call after `latest_features` each frame; returns zeros until the first frame
+    /// arrives. Length is [`analyzer::SPECTRUM_BINS`].
+    pub fn latest_spectrum(&self) -> &[f32] {
+        &self.latest_spectrum
+    }
+
+    /// Take the mel-spectrogram columns accumulated since the last call (oldest first),
+    /// leaving the pending buffer empty (A17 `audio_spectrogram`, #1468). The render
+    /// thread scrolls these into the spectrogram texture.
+    pub fn take_mel_columns(&mut self) -> Vec<Box<[f32]>> {
+        std::mem::take(&mut self.pending_mel)
     }
 
     /// Watchdog: detect a device that stopped delivering data mid-session and
@@ -420,7 +465,7 @@ impl Drop for AudioSystem {
 fn audio_thread(
     ring: Arc<RingBuffer>,
     sample_rate: f32,
-    tx: Sender<AudioFeatures>,
+    tx: Sender<AudioFrame>,
     shutdown: Arc<AtomicBool>,
     recording_ring: Arc<RingBuffer>,
     beat_counter: Arc<AtomicU32>,
@@ -490,8 +535,16 @@ fn audio_thread(
         // Smoothing (per-feature asymmetric EMA; beat/beat_phase pass through)
         let smoothed = smoother.smooth(&raw, dt);
 
+        // A17 (#1468): sample the render-facing spectrum + mel column from the analyzer's
+        // fresh magnitude, so all three ride the same frame across the channel.
+        let frame = AudioFrame {
+            features: smoothed,
+            spectrum: Box::new(analyzer.log_spectrum_512()),
+            mel: Box::new(analyzer.spectrogram_column()),
+        };
+
         // Non-blocking send; drop if main thread is behind
-        let _ = tx.try_send(smoothed);
+        let _ = tx.try_send(frame);
     }
 }
 

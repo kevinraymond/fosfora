@@ -152,6 +152,27 @@ impl RingBuffer {
         to_read
     }
 
+    /// Copy the newest `dst.len()` samples without advancing the read cursor.
+    ///
+    /// Non-consuming: unlike `read`, this leaves `read_pos` untouched, so the recording
+    /// consumer's stream is unaffected. Used render-side by the A17 waveform texture
+    /// (#1468), which wants the freshest window every frame regardless of what the
+    /// recorder has drained. Returns the number of samples copied (`dst.len()`, capped at
+    /// the ring capacity). Before the ring has produced a full window the leading slots
+    /// read as zero-initialized silence, which is harmless for a scope trace.
+    pub fn peek_latest(&self, dst: &mut [f32]) -> usize {
+        let wp = self.write_pos.load(Ordering::Acquire);
+        // Newest window is [wp - n, wp), read via wrapping_sub so it stays correct across
+        // the u32 write_pos wraparound (the ring is zero-filled, so pre-roll slots are 0).
+        let n = dst.len().min(RING_SIZE);
+        let start = wp.wrapping_sub(n as u32);
+        for (i, slot) in dst[..n].iter_mut().enumerate() {
+            let idx = (start.wrapping_add(i as u32) & RING_MASK) as usize;
+            *slot = self.data[idx];
+        }
+        n
+    }
+
     /// Number of samples available to read, capped at the ring capacity
     /// (anything older has already been overwritten by the producer).
     pub fn available(&self) -> usize {
@@ -367,6 +388,39 @@ mod tests {
         let n = ring.read(&mut dst);
         assert_eq!(n, 10);
         assert_eq!(&dst[..10], fresh.as_slice());
+    }
+
+    #[test]
+    fn peek_latest_is_non_consuming_and_newest() {
+        let ring = RingBuffer::new();
+        let samples: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        ring.push(&samples);
+
+        // Newest 4 samples are 996..1000, and peeking must not advance read_pos.
+        let before = ring.available();
+        let mut dst = [0.0f32; 4];
+        let n = ring.peek_latest(&mut dst);
+        assert_eq!(n, 4);
+        assert_eq!(dst, [996.0, 997.0, 998.0, 999.0]);
+        assert_eq!(ring.available(), before, "peek must not consume");
+
+        // A subsequent consuming read still sees the full history from the start.
+        let mut rd = [0.0f32; 8];
+        let m = ring.read(&mut rd);
+        assert_eq!(m, 8);
+        assert_eq!(&rd, &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn peek_latest_warmup_zero_padded() {
+        let ring = RingBuffer::new();
+        // Only 3 samples pushed; a peek of 5 returns the newest window with the two
+        // leading slots reading as zero-initialized silence.
+        ring.push(&[7.0, 8.0, 9.0]);
+        let mut dst = [-1.0f32; 5];
+        let n = ring.peek_latest(&mut dst);
+        assert_eq!(n, 5);
+        assert_eq!(dst, [0.0, 0.0, 7.0, 8.0, 9.0]);
     }
 
     #[test]

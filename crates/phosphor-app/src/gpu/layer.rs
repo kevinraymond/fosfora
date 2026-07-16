@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::effect::format::PostProcessDef;
 use crate::gpu::ShaderUniforms;
+use crate::gpu::audio_textures::AudioTextures;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::render_target::RenderTarget;
@@ -249,6 +250,7 @@ impl Layer {
         width: u32,
         height: u32,
         placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
     ) {
         match &mut self.content {
             LayerContent::Effect(e) => {
@@ -259,6 +261,7 @@ impl Layer {
                     height,
                     &e.uniform_buffer,
                     placeholder,
+                    audio,
                 );
             }
             LayerContent::Media(_) => {

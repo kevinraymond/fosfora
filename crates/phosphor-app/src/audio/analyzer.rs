@@ -13,6 +13,16 @@ const N_MELS: usize = 26;
 const N_MFCC: usize = 13;
 const N_CHROMA: usize = 12;
 
+/// Mel bands for the A17 scrolling spectrogram texture (#1468). Independent of the
+/// MFCC filterbank (N_MELS) — a higher band count gives finer vertical detail in the
+/// waterfall (Strata #1479) without touching MFCC output. Also the height of the
+/// R8Unorm spectrogram texture (consumed by `gpu::audio_textures`).
+pub const SPECTROGRAM_MELS: usize = 64;
+
+/// Bins in the A17 log-frequency spectrum texture (#1468). Matches the R16Float 512x1
+/// texture width declared in the shader ABI.
+pub const SPECTRUM_BINS: usize = 512;
+
 /// A single FFT resolution with its own window and buffers.
 struct FftResolution {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
@@ -129,6 +139,16 @@ fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
+/// Map a linear amplitude to 0..1 over an 80 dB range (−80..0 dB → 0..1). Shared by the
+/// A17 spectrum/spectrogram textures so their brightness matches the dB-scaled bands.
+fn amp_to_db01(amp: f32) -> f32 {
+    if amp < 1e-10 {
+        return 0.0;
+    }
+    let db = 20.0 * amp.log10();
+    ((db + 80.0) / 80.0).clamp(0.0, 1.0)
+}
+
 /// Multi-resolution FFT analyzer with 7 frequency bands and spectral features.
 pub struct FftAnalyzer {
     large: FftResolution,  // 4096-pt for bass
@@ -145,6 +165,9 @@ pub struct FftAnalyzer {
     // MFCC precomputed data
     mel_filters: MelFilter,              // N_MELS sparse triangular filters
     dct_matrix: [[f32; N_MELS]; N_MFCC], // DCT-II coefficients
+
+    // A17 spectrogram filterbank: SPECTROGRAM_MELS sparse triangular filters (#1468)
+    spectrogram_mel: MelFilter,
 
     // Chroma precomputed data: (fft_bin_index, chroma_class 0-11)
     chroma_bins: Vec<(usize, usize)>,
@@ -166,8 +189,23 @@ impl FftAnalyzer {
         );
 
         // Precompute mel filterbank (26 triangular filters, 20 Hz – Nyquist)
-        let mel_filters =
-            Self::build_mel_filterbank(large.num_bins, large.bin_hz, 20.0, sample_rate * 0.5);
+        let mel_filters = Self::build_mel_filterbank(
+            large.num_bins,
+            large.bin_hz,
+            20.0,
+            sample_rate * 0.5,
+            N_MELS,
+        );
+
+        // Precompute the A17 spectrogram filterbank (64 bands, 20 Hz – Nyquist) — a
+        // higher-resolution bank dedicated to the scrolling mel-spectrogram texture (#1468).
+        let spectrogram_mel = Self::build_mel_filterbank(
+            large.num_bins,
+            large.bin_hz,
+            20.0,
+            sample_rate * 0.5,
+            SPECTROGRAM_MELS,
+        );
 
         // Precompute DCT-II matrix: dct[i][j] = cos(PI * i * (j + 0.5) / N_MELS) * sqrt(2/N_MELS)
         let scale = (2.0 / N_MELS as f32).sqrt();
@@ -193,17 +231,24 @@ impl FftAnalyzer {
             kick_max: 0.001,
             mel_filters,
             dct_matrix,
+            spectrogram_mel,
             chroma_bins,
         }
     }
 
-    /// Build sparse mel filterbank: N_MELS triangular filters from lo_hz to hi_hz.
-    fn build_mel_filterbank(num_bins: usize, bin_hz: f32, lo_hz: f32, hi_hz: f32) -> MelFilter {
+    /// Build sparse mel filterbank: `n_mels` triangular filters from lo_hz to hi_hz.
+    fn build_mel_filterbank(
+        num_bins: usize,
+        bin_hz: f32,
+        lo_hz: f32,
+        hi_hz: f32,
+        n_mels: usize,
+    ) -> MelFilter {
         let lo_mel = hz_to_mel(lo_hz);
         let hi_mel = hz_to_mel(hi_hz);
 
-        // N_MELS + 2 mel-spaced center frequencies (edges of the triangles)
-        let n_points = N_MELS + 2;
+        // n_mels + 2 mel-spaced center frequencies (edges of the triangles)
+        let n_points = n_mels + 2;
         let mel_points: Vec<f32> = (0..n_points)
             .map(|i| lo_mel + (hi_mel - lo_mel) * i as f32 / (n_points - 1) as f32)
             .collect();
@@ -213,8 +258,8 @@ impl FftAnalyzer {
             .map(|&hz| (hz / bin_hz).round() as usize)
             .collect();
 
-        let mut filters = Vec::with_capacity(N_MELS);
-        for m in 0..N_MELS {
+        let mut filters = Vec::with_capacity(n_mels);
+        for m in 0..n_mels {
             let left = bin_points[m];
             let center = bin_points[m + 1];
             let right = bin_points[m + 2];
@@ -299,6 +344,57 @@ impl FftAnalyzer {
     /// Expose the small (512-pt) magnitude spectrum for beat detection.
     pub fn high_magnitude(&self) -> &[f32] {
         &self.small.magnitude
+    }
+
+    /// A17 (#1468): log-frequency-resampled magnitude spectrum for the `audio_spectrum`
+    /// texture (R16Float 512x1). Each output bin takes the peak magnitude in its
+    /// log-spaced frequency slice of the large (4096-pt) spectrum, dB-normalized to 0..1
+    /// (−80..0 dB → 0..1, matching `band_energy_db`). Peak (not mean) keeps narrow tones
+    /// visible in the bars.
+    pub fn log_spectrum_512(&self) -> [f32; SPECTRUM_BINS] {
+        let mag = &self.large.magnitude;
+        let bin_hz = self.large.bin_hz;
+        let nyquist = self.sample_rate * 0.5;
+        let lo_hz = 30.0f32;
+        let hi_hz = nyquist.max(lo_hz * 2.0);
+        let ratio = (hi_hz / lo_hz).ln();
+
+        let mut out = [0.0f32; SPECTRUM_BINS];
+        for (j, o) in out.iter_mut().enumerate() {
+            // Log-spaced frequency edges for this output bin.
+            let f0 = lo_hz * (ratio * j as f32 / SPECTRUM_BINS as f32).exp();
+            let f1 = lo_hz * (ratio * (j + 1) as f32 / SPECTRUM_BINS as f32).exp();
+            let k0 = (f0 / bin_hz).floor() as usize;
+            let k1 = ((f1 / bin_hz).ceil() as usize).max(k0 + 1).min(mag.len());
+            let k0 = k0.min(mag.len().saturating_sub(1));
+
+            let mut peak = 0.0f32;
+            for &m in &mag[k0..k1] {
+                if m > peak {
+                    peak = m;
+                }
+            }
+            *o = amp_to_db01(peak);
+        }
+        out
+    }
+
+    /// A17 (#1468): one column of the scrolling mel-spectrogram for the
+    /// `audio_spectrogram` texture (R8Unorm width=frames × height=SPECTROGRAM_MELS).
+    /// Applies the dedicated 64-band mel filterbank to the large magnitude spectrum and
+    /// dB-normalizes each band to 0..1.
+    pub fn spectrogram_column(&self) -> [f32; SPECTROGRAM_MELS] {
+        let mag = &self.large.magnitude;
+        let mut out = [0.0f32; SPECTROGRAM_MELS];
+        for (m, filter) in self.spectrogram_mel.iter().enumerate() {
+            // Weighted power sum over the triangular filter, back to an amplitude.
+            let mut power = 0.0f32;
+            for &(k, w) in filter {
+                power += mag[k] * mag[k] * w;
+            }
+            out[m] = amp_to_db01(power.sqrt());
+        }
+        out
     }
 
     fn extract_features(&mut self) -> AudioFeatures {
@@ -504,5 +600,78 @@ impl FftAnalyzer {
             }
         }
         crossings as f32 / (td.len() - 1) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SR: f32 = 44100.0;
+
+    /// Feed a pure sine of `freq` Hz through the analyzer for a few FFT windows.
+    fn analyze_sine(analyzer: &mut FftAnalyzer, freq: f32) {
+        let mut phase = 0.0f32;
+        let step = 2.0 * std::f32::consts::PI * freq / SR;
+        // Several FFT_LARGE-sized blocks so the sliding time-domain buffer fills fully.
+        for _ in 0..4 {
+            let block: Vec<f32> = (0..FFT_LARGE)
+                .map(|_| {
+                    let s = phase.sin();
+                    phase += step;
+                    s
+                })
+                .collect();
+            analyzer.analyze(&block);
+        }
+    }
+
+    #[test]
+    fn log_spectrum_512_shape_and_bounds() {
+        let mut a = FftAnalyzer::new(SR);
+        analyze_sine(&mut a, 1000.0);
+        let spec = a.log_spectrum_512();
+        assert_eq!(spec.len(), SPECTRUM_BINS);
+        assert!(
+            spec.iter().all(|&v| (0.0..=1.0).contains(&v)),
+            "spectrum values must be normalized to 0..1"
+        );
+        // A 1 kHz tone should light up at least one bin above silence.
+        assert!(
+            spec.iter().cloned().fold(0.0f32, f32::max) > 0.1,
+            "1 kHz tone should produce a visible spectrum peak"
+        );
+    }
+
+    #[test]
+    fn spectrogram_column_shape_and_bounds() {
+        let mut a = FftAnalyzer::new(SR);
+        analyze_sine(&mut a, 440.0);
+        let col = a.spectrogram_column();
+        assert_eq!(col.len(), SPECTROGRAM_MELS);
+        assert!(
+            col.iter().all(|&v| (0.0..=1.0).contains(&v)),
+            "mel-column values must be normalized to 0..1"
+        );
+        assert!(
+            col.iter().cloned().fold(0.0f32, f32::max) > 0.1,
+            "440 Hz tone should light a mel band"
+        );
+    }
+
+    #[test]
+    fn silence_produces_zero_textures() {
+        let a = FftAnalyzer::new(SR);
+        // No samples fed: magnitude is all zero → both textures read 0.0.
+        assert!(a.log_spectrum_512().iter().all(|&v| v == 0.0));
+        assert!(a.spectrogram_column().iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn mfcc_filterbank_unchanged_size() {
+        // MFCC path still uses the 26-band bank; the spectrogram bank is separate.
+        let a = FftAnalyzer::new(SR);
+        assert_eq!(a.mel_filters.len(), N_MELS);
+        assert_eq!(a.spectrogram_mel.len(), SPECTROGRAM_MELS);
     }
 }
