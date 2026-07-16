@@ -57,6 +57,10 @@ impl OscSender {
         self.send_float("/phosphor/audio/beat", f.beat);
         self.send_float("/phosphor/audio/beat_phase", f.beat_phase);
         self.send_float("/phosphor/audio/bpm", f.bpm * 300.0); // raw BPM, not normalized
+        // A11 key (#1462): pitch-class index (×11 → 0..11), minor flag, confidence.
+        self.send_float("/phosphor/audio/key/class", f.key_class * 11.0);
+        self.send_float("/phosphor/audio/key/is_minor", f.key_is_minor);
+        self.send_float("/phosphor/audio/key/confidence", f.key_confidence);
     }
 
     /// Send current state (active layer, effect name).

@@ -1,7 +1,9 @@
 pub mod analyzer;
 pub mod beat;
 pub mod capture;
+pub mod chroma;
 pub mod features;
+pub mod key;
 pub mod normalizer;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
@@ -37,6 +39,7 @@ use crossbeam_channel::{Receiver, Sender};
 use self::analyzer::FftAnalyzer;
 use self::beat::BeatDetector;
 use self::capture::{AudioCapture, RingBuffer};
+use self::key::KeyDetector;
 use self::normalizer::AdaptiveNormalizer;
 use self::smoother::FeatureSmoother;
 
@@ -473,6 +476,7 @@ fn audio_thread(
     let mut analyzer = FftAnalyzer::new(sample_rate);
     let mut normalizer = AdaptiveNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);
+    let mut key_detector = KeyDetector::new(sample_rate);
     let mut smoother = FeatureSmoother::new();
     let mut read_buf = vec![0.0f32; 8192]; // larger for 4096-pt FFT
     let mut last_time = Instant::now();
@@ -508,6 +512,13 @@ fn audio_thread(
 
         // Multi-resolution FFT + feature extraction
         let mut raw = analyzer.analyze(&read_buf[..read]);
+
+        // A11 (#1462): key detection on the fresh CQT chroma, before normalization
+        // rescales it. Key fields are Passthrough, so they survive normalize/smooth.
+        let key_result = key_detector.process(&raw.chroma, dt);
+        raw.key_class = key_result.key_class;
+        raw.key_is_minor = key_result.is_minor;
+        raw.key_confidence = key_result.confidence;
 
         // Adaptive normalization (replaces fixed gains)
         raw = normalizer.normalize(&raw);
@@ -557,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn decay_scales_everything_except_bpm() {
+    fn decay_scales_everything_except_holds() {
         let mut f = AudioFeatures::default();
         for v in f.as_slice_mut().iter_mut() {
             *v = 1.0;
@@ -566,7 +577,9 @@ mod tests {
         for (i, &v) in f.as_slice().iter().enumerate() {
             match i {
                 16 => assert!(approx_eq(v, 0.0, 1e-6), "beat (16) must be forced to 0"),
-                18 => assert!(approx_eq(v, 1.0, 1e-6), "bpm (18) must not decay"),
+                // bpm (18) and the categorical key fields key_class (49) / key_is_minor
+                // (50) hold their last value rather than sweeping toward silence.
+                18 | 49 | 50 => assert!(approx_eq(v, 1.0, 1e-6), "index {i} must hold"),
                 _ => assert!(approx_eq(v, 0.5, 1e-6), "index {i} should decay to 0.5"),
             }
         }

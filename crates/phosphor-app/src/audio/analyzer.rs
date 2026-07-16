@@ -1,6 +1,7 @@
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 
+use super::chroma::CqtChroma;
 use super::features::AudioFeatures;
 
 /// FFT sizes for multi-resolution analysis.
@@ -169,8 +170,8 @@ pub struct FftAnalyzer {
     // A17 spectrogram filterbank: SPECTROGRAM_MELS sparse triangular filters (#1468)
     spectrogram_mel: MelFilter,
 
-    // Chroma precomputed data: (fft_bin_index, chroma_class 0-11)
-    chroma_bins: Vec<(usize, usize)>,
+    // A11 (#1462): CQT-lite constant-Q chroma with tuning compensation.
+    cqt: CqtChroma,
 }
 
 impl FftAnalyzer {
@@ -218,8 +219,8 @@ impl FftAnalyzer {
             }
         }
 
-        // Precompute chroma bin map: for each FFT bin in 20–5000 Hz, map to pitch class
-        let chroma_bins = Self::build_chroma_map(large.num_bins, large.bin_hz);
+        // A11 (#1462): CQT-lite constant-Q chroma over the large (4096-pt) spectrum.
+        let cqt = CqtChroma::new(large.num_bins, large.bin_hz);
 
         Self {
             large,
@@ -232,7 +233,7 @@ impl FftAnalyzer {
             mel_filters,
             dct_matrix,
             spectrogram_mel,
-            chroma_bins,
+            cqt,
         }
     }
 
@@ -290,22 +291,6 @@ impl FftAnalyzer {
             filters.push(filter);
         }
         filters
-    }
-
-    /// Build chroma bin map: for each FFT bin in 20–5000 Hz, assign pitch class 0-11.
-    fn build_chroma_map(num_bins: usize, bin_hz: f32) -> Vec<(usize, usize)> {
-        let mut map = Vec::new();
-        for k in 1..num_bins {
-            let hz = k as f32 * bin_hz;
-            if !(20.0..=5000.0).contains(&hz) {
-                continue;
-            }
-            // Pitch class: 12 * log2(f / C0), mod 12, where C0 ~= 16.35 Hz
-            let semitone = 12.0 * (hz / 16.3516).log2();
-            let pitch_class = ((semitone % 12.0 + 12.0) % 12.0).round() as usize % 12;
-            map.push((k, pitch_class));
-        }
-        map
     }
 
     /// Feed new samples and compute all features.
@@ -439,8 +424,8 @@ impl FftAnalyzer {
         // MFCC extraction (from large FFT magnitude)
         self.compute_mfccs(&mut out);
 
-        // Chroma extraction (from large FFT magnitude)
-        self.compute_chroma(&mut out);
+        // A11 (#1462): CQT-lite constant-Q chroma (also advances tuning estimation)
+        out.chroma = self.cqt.compute(&self.large.magnitude);
 
         // Dominant chroma: argmax of chroma bins, normalized to 0-1
         let mut max_idx = 0usize;
@@ -484,26 +469,6 @@ impl FftAnalyzer {
             }
             out.mfcc[i] = sum;
         }
-    }
-
-    /// Compute 12 chroma pitch-class energies from the large FFT magnitude spectrum.
-    fn compute_chroma(&self, out: &mut AudioFeatures) {
-        let mag = &self.large.magnitude;
-
-        let mut chroma = [0.0f32; N_CHROMA];
-        for &(k, pitch_class) in &self.chroma_bins {
-            chroma[pitch_class] += mag[k] * mag[k];
-        }
-
-        // Normalize by max
-        let max_val = chroma.iter().cloned().fold(0.0f32, f32::max);
-        if max_val > 1e-10 {
-            for c in &mut chroma {
-                *c /= max_val;
-            }
-        }
-
-        out.chroma = chroma;
     }
 
     fn spectral_centroid(&self) -> f32 {
@@ -673,5 +638,53 @@ mod tests {
         let a = FftAnalyzer::new(SR);
         assert_eq!(a.mel_filters.len(), N_MELS);
         assert_eq!(a.spectrogram_mel.len(), SPECTROGRAM_MELS);
+    }
+
+    /// A11 (#1462): real audio → CQT chroma → key detection, end to end. A C-major
+    /// triad (C4/E4/G4) must light exactly those three pitch classes and resolve to
+    /// C major.
+    #[test]
+    fn c_major_triad_chroma_and_key() {
+        use super::super::key::KeyDetector;
+
+        let mut a = FftAnalyzer::new(SR);
+        let freqs = [261.63f32, 329.63, 392.00]; // C4, E4, G4
+        let mut phase = [0.0f32; 3];
+        let mut feats = AudioFeatures::default();
+        for _ in 0..8 {
+            let block: Vec<f32> = (0..FFT_LARGE)
+                .map(|_| {
+                    let mut s = 0.0f32;
+                    for (p, &f) in phase.iter_mut().zip(&freqs) {
+                        s += p.sin();
+                        *p += 2.0 * std::f32::consts::PI * f / SR;
+                    }
+                    s / 3.0
+                })
+                .collect();
+            feats = a.analyze(&block);
+        }
+
+        // The three chord tones (C=0, E=4, G=7) must be the top three pitch classes.
+        let c = feats.chroma;
+        let mut ranked: Vec<usize> = (0..12).collect();
+        ranked.sort_by(|&x, &y| c[y].partial_cmp(&c[x]).unwrap());
+        let mut top3 = ranked[..3].to_vec();
+        top3.sort_unstable();
+        assert_eq!(
+            top3,
+            vec![0, 4, 7],
+            "top-3 chroma should be C/E/G; chroma={c:?}"
+        );
+
+        // The real chroma should drive the key detector to C major.
+        let mut det = KeyDetector::new(SR);
+        let mut r = det.process(&c, 0.01);
+        for _ in 0..4000 {
+            r = det.process(&c, 0.01);
+        }
+        assert_eq!(r.key_class, 0.0, "expected C tonic; chroma={c:?}");
+        assert_eq!(r.is_minor, 0.0, "C-major triad should read major");
+        assert!(r.confidence > 0.7, "confidence {}", r.confidence);
     }
 }

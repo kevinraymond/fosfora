@@ -164,18 +164,17 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.03, 0.15),
         Scale,
     ),
-    // A11 key (#1462)
-    def("key_class", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def(
-        "key_is_minor",
-        Adaptive,
-        SmoothParams::ar(0.03, 0.15),
-        Scale,
-    ),
+    // A11 key (#1462) — detector-owned. `key_class`/`key_is_minor` are categorical
+    // (a pitch-class index and a 0/1 flag), so they pass through the normalizer (no
+    // percentile rescale), bypass the smoother (no EMA blend across key changes), and
+    // Hold on silence (no sweep toward C). `key_confidence` is already 0..1: gently
+    // smoothed and Scales toward 0 when the signal drops out.
+    def("key_class", Passthrough, SmoothParams::bypass(), Hold),
+    def("key_is_minor", Passthrough, SmoothParams::bypass(), Hold),
     def(
         "key_confidence",
-        Adaptive,
-        SmoothParams::ar(0.03, 0.15),
+        Passthrough,
+        SmoothParams::ar(0.1, 0.3),
         Scale,
     ),
     // A12 downbeat (#1463)
@@ -268,12 +267,13 @@ mod tests {
         assert_eq!(FEATURES[60].name, "drop");
     }
 
-    /// The detector-owned block (onset..beat_strength) is exactly the set the
-    /// normalizer passes through — the property the old `15..=19` literal encoded.
+    /// The detector-owned fields are exactly the set the normalizer passes through:
+    /// the beat block (onset..beat_strength, 15..=19) plus the categorical key fields
+    /// (key_class/key_is_minor/key_confidence, 49..=51).
     #[test]
-    fn passthrough_is_the_beat_block() {
+    fn passthrough_is_detector_owned() {
         for (i, def) in FEATURES.iter().enumerate() {
-            let expected = if (15..=19).contains(&i) {
+            let expected = if (15..=19).contains(&i) || (49..=51).contains(&i) {
                 Passthrough
             } else {
                 Adaptive
@@ -286,12 +286,13 @@ mod tests {
         }
     }
 
-    /// Decay exemptions: only `bpm` holds, only `beat` is forced to zero.
+    /// Decay exemptions: `bpm` and the categorical key fields hold their last value on
+    /// silence, only `beat` is forced to zero, everything else scales toward silence.
     #[test]
     fn decay_exemptions() {
         for (i, def) in FEATURES.iter().enumerate() {
             let expected = match def.name {
-                "bpm" => Hold,
+                "bpm" | "key_class" | "key_is_minor" => Hold,
                 "beat" => ForceZero,
                 _ => Scale,
             };

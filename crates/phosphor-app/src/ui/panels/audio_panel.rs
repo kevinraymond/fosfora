@@ -575,8 +575,48 @@ fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
     }
 
     wheel_resp.on_hover_text(
-        "Pitch Class Energy\nConstant-Q chromagram \u{2014} segment size\nshows energy of each note (C through B)",
+        "Pitch Class Energy\nConstant-Q chromagram (tuning-compensated) \u{2014} segment\nsize shows energy of each note (C through B)",
     );
+}
+
+// ── Key readout ────────────────────────────────────────────────────────
+
+fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
+    let tc = theme_colors(ui.ctx());
+    let conf = uniforms.key_confidence.clamp(0.0, 1.0);
+
+    ui.vertical_centered(|ui| {
+        let resp = ui
+            .horizontal(|ui| {
+                ui.label(RichText::new("KEY").size(9.0).color(tc.text_secondary));
+                if conf < 0.15 {
+                    // Too little tonal evidence (silence / atonal) to name a key.
+                    ui.label(RichText::new("\u{2014}").size(12.0).color(tc.text_secondary));
+                } else {
+                    let pc = ((uniforms.key_class * 11.0).round() as i32).clamp(0, 11) as usize;
+                    let quality = if uniforms.key_is_minor > 0.5 {
+                        "min"
+                    } else {
+                        "maj"
+                    };
+                    ui.label(
+                        RichText::new(format!("{} {quality}", CHROMA_LABELS[pc]))
+                            .size(12.0)
+                            .strong()
+                            .color(chroma_color(pc, conf.max(0.35))),
+                    );
+                    ui.label(
+                        RichText::new(format!("\u{00b7} {:.0}%", conf * 100.0))
+                            .size(9.0)
+                            .color(tc.text_secondary),
+                    );
+                }
+            })
+            .response;
+        resp.on_hover_text(
+            "Detected musical key (Krumhansl-Kessler profile match)\nConfidence is the correlation strength",
+        );
+    });
 }
 
 // ── MFCC heatmap ───────────────────────────────────────────────────────
@@ -683,6 +723,7 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
     ui.vertical_centered(|ui| {
         draw_chroma_wheel(ui, &uniforms.chroma);
     });
+    draw_key_readout(ui, uniforms);
 
     // MFCC
     draw_section_header(ui, "TIMBRE · MFCC", "13 coefficients");
