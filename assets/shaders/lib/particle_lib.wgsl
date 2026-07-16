@@ -119,7 +119,7 @@ struct ParticleUniforms {
     bandwidth: f32,     // Spectral spread
     bpm: f32,           // BPM / 300 (normalized 0-1)
     beat_strength: f32, // Strength of the detected beat
-    _pad_zcr_f: f32,
+    bar_phase: f32,     // A12 0-1 sawtooth over the current bar (#1505; 0.0 until DSP)
     _pad_zcr_g: f32,
 }
 

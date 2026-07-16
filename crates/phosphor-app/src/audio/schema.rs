@@ -150,6 +150,56 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.05, 0.2),
         Scale,
     ),
+    // ---- Reserved tail (batched ABI bump #1505) — 0.0 until each detector lands ----
+    // These rows describe the reserved slots so the positional stages stay aligned.
+    // Policies are conservative placeholders (Adaptive/Scale like the timbral block);
+    // each detector's follow-up task sets the final trigger/phase/hold policy when it
+    // wires real data (CPU-side only — no ABI churn).
+    // A10 loudness (#1461)
+    def("loudness_m", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def("loudness_s", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "loudness_trend",
+        Adaptive,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    // A11 key (#1462)
+    def("key_class", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "key_is_minor",
+        Adaptive,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "key_confidence",
+        Adaptive,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    // A12 downbeat (#1463)
+    def("downbeat", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def("bar_phase", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def("beat_in_bar", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    // A13 stereo (#1464)
+    def("pan", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "stereo_width",
+        Adaptive,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def("stereo_corr", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    // A18 structure (#1469)
+    def(
+        "section_novelty",
+        Adaptive,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def("buildup", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def("drop", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
 ];
 
 /// Terse constructor so the table above reads as one row per feature.
@@ -198,6 +248,12 @@ mod tests {
         assert_eq!(f.chroma[0], 33.0);
         assert_eq!(f.chroma[11], 44.0);
         assert_eq!(f.dominant_chroma, 45.0);
+        // Reserved tail (#1505): boundary pins for the appended block.
+        assert_eq!(f.loudness_m, 46.0);
+        assert_eq!(f.downbeat, 52.0);
+        assert_eq!(f.bar_phase, 53.0);
+        assert_eq!(f.pan, 55.0);
+        assert_eq!(f.drop, 60.0);
 
         assert_eq!(FEATURES[0].name, "sub_bass");
         assert_eq!(FEATURES[14].name, "zcr");
@@ -205,6 +261,11 @@ mod tests {
         assert_eq!(FEATURES[20].name, "mfcc.0");
         assert_eq!(FEATURES[33].name, "chroma.0");
         assert_eq!(FEATURES[45].name, "dominant_chroma");
+        assert_eq!(FEATURES[46].name, "loudness_m");
+        assert_eq!(FEATURES[52].name, "downbeat");
+        assert_eq!(FEATURES[53].name, "bar_phase");
+        assert_eq!(FEATURES[55].name, "pan");
+        assert_eq!(FEATURES[60].name, "drop");
     }
 
     /// The detector-owned block (onset..beat_strength) is exactly the set the

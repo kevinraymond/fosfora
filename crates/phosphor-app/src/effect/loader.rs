@@ -49,6 +49,12 @@ const LIB_FILENAMES: &[&str] = &[
 ];
 
 /// Standard uniform block prepended to all effect shaders.
+///
+/// Shader ABI v2 (352-byte `PhosphorUniforms`), set by the batched bump #1505:
+/// the reserved audio tail (loudness / key / downbeat / stereo / structure) and
+/// the A17 audio textures (bindings 3-6). Reserved scalars read 0.0 and the audio
+/// textures are 1x1 placeholders until their detectors land. Keep this byte-for-byte
+/// in sync with `ShaderUniforms` (gpu/uniforms.rs) and `assets/shaders/default.wgsl`.
 const UNIFORM_BLOCK: &str = r#"
 struct PhosphorUniforms {
     time: f32,
@@ -85,11 +91,34 @@ struct PhosphorUniforms {
     _pad_align: f32,
     mfcc: array<vec4f, 4>,     // 13 MFCCs (indices 0-12 used, 13-15 padding)
     chroma: array<vec4f, 3>,   // 12 pitch class energies (C=0, C#=1, ..., B=11)
+
+    // Reserved audio features (batched ABI bump #1505) — 0.0 until each detector lands.
+    loudness_m: f32,       // A10 momentary loudness (#1461)
+    loudness_s: f32,       // A10 short-term loudness
+    loudness_trend: f32,   // A10 loudness slope/direction
+    key_class: f32,        // A11 key root pitch class / 11 (#1462)
+    key_is_minor: f32,     // A11 0.0 major, 1.0 minor
+    key_confidence: f32,   // A11 key estimate confidence
+    downbeat: f32,         // A12 1.0 on bar-start frame (#1463)
+    bar_phase: f32,        // A12 0-1 sawtooth over the current bar
+    beat_in_bar: f32,      // A12 beat index within the bar, 0-1
+    pan: f32,              // A13 stereo balance, 0..1 (#1464)
+    stereo_width: f32,     // A13 mid/side width
+    stereo_corr: f32,      // A13 L/R correlation, 0..1
+    section_novelty: f32,  // A18 self-similarity novelty (#1469)
+    buildup: f32,          // A18 riser/tension estimate
+    drop: f32,             // A18 drop/impact detection
+    _pad_features: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;
 @group(0) @binding(1) var prev_frame: texture_2d<f32>;
 @group(0) @binding(2) var prev_sampler: sampler;
+// A17 audio textures (#1505) — 1x1 placeholders until the A17 DSP uploads real data.
+@group(0) @binding(3) var audio_waveform: texture_2d<f32>;    // Rg16Float 1024x1: r=min, g=max
+@group(0) @binding(4) var audio_spectrum: texture_2d<f32>;    // R16Float 512x1: log-magnitude
+@group(0) @binding(5) var audio_spectrogram: texture_2d<f32>; // R8Unorm mel x frames history
+@group(0) @binding(6) var audio_sampler: sampler;
 
 fn param(i: u32) -> f32 {
     return u.params[i / 4u][i % 4u];
@@ -105,6 +134,20 @@ fn chroma_val(i: u32) -> f32 {
 
 fn feedback(uv: vec2f) -> vec4f {
     return textureSample(prev_frame, prev_sampler, uv);
+}
+
+// A17 audio-texture accessors (x in 0..1). Placeholder textures return 0.0
+// until the A17 DSP lands.
+fn waveform(x: f32) -> vec2f {
+    return textureSampleLevel(audio_waveform, audio_sampler, vec2f(x, 0.5), 0.0).rg;
+}
+
+fn spectrum(x: f32) -> f32 {
+    return textureSampleLevel(audio_spectrum, audio_sampler, vec2f(x, 0.5), 0.0).r;
+}
+
+fn spectrogram(uv: vec2f) -> f32 {
+    return textureSampleLevel(audio_spectrogram, audio_sampler, uv, 0.0).r;
 }
 "#;
 

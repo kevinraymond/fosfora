@@ -35,11 +35,34 @@ struct PhosphorUniforms {
     _pad_align: f32,
     mfcc: array<vec4f, 4>,
     chroma: array<vec4f, 3>,
+
+    // Reserved audio features (batched ABI bump #1505) — 0.0 until each detector lands.
+    loudness_m: f32,
+    loudness_s: f32,
+    loudness_trend: f32,
+    key_class: f32,
+    key_is_minor: f32,
+    key_confidence: f32,
+    downbeat: f32,
+    bar_phase: f32,
+    beat_in_bar: f32,
+    pan: f32,
+    stereo_width: f32,
+    stereo_corr: f32,
+    section_novelty: f32,
+    buildup: f32,
+    drop: f32,
+    _pad_features: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;
 @group(0) @binding(1) var prev_frame: texture_2d<f32>;
 @group(0) @binding(2) var prev_sampler: sampler;
+// A17 audio textures (#1505) — 1x1 placeholders until the A17 DSP uploads real data.
+@group(0) @binding(3) var audio_waveform: texture_2d<f32>;
+@group(0) @binding(4) var audio_spectrum: texture_2d<f32>;
+@group(0) @binding(5) var audio_spectrogram: texture_2d<f32>;
+@group(0) @binding(6) var audio_sampler: sampler;
 
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {

@@ -154,7 +154,10 @@ pub struct ParticleUniforms {
     pub bandwidth: f32,     // Spectral spread
     pub bpm: f32,           // BPM / 300 (normalized 0-1)
     pub beat_strength: f32, // Strength of the detected beat
-    pub _pad_zcr: [f32; 2],
+    // A12 bar clock (batched ABI bump #1505) — 0.0 until the downbeat detector lands.
+    // Consumes one of the two spare pad slots left after V0, so the struct stays 832B.
+    pub bar_phase: f32, // 0-1 sawtooth over the current bar
+    pub _pad_zcr: f32,
     // Total = 832 bytes
 }
 

@@ -506,6 +506,23 @@ impl App {
             self.uniforms.mfcc[13..].fill(0.0);
             self.uniforms.chroma.copy_from_slice(&features.chroma);
             self.uniforms.dominant_chroma = features.dominant_chroma;
+            // Reserved audio features (batched ABI bump #1505) — forwarded now so
+            // each detector's follow-up only has to fill the AudioFeatures field.
+            self.uniforms.loudness_m = features.loudness_m;
+            self.uniforms.loudness_s = features.loudness_s;
+            self.uniforms.loudness_trend = features.loudness_trend;
+            self.uniforms.key_class = features.key_class;
+            self.uniforms.key_is_minor = features.key_is_minor;
+            self.uniforms.key_confidence = features.key_confidence;
+            self.uniforms.downbeat = features.downbeat;
+            self.uniforms.bar_phase = features.bar_phase;
+            self.uniforms.beat_in_bar = features.beat_in_bar;
+            self.uniforms.pan = features.pan;
+            self.uniforms.stereo_width = features.stereo_width;
+            self.uniforms.stereo_corr = features.stereo_corr;
+            self.uniforms.section_novelty = features.section_novelty;
+            self.uniforms.buildup = features.buildup;
+            self.uniforms.drop = features.drop;
         }
 
         // Watchdog: if the device stopped delivering data mid-session, surface
@@ -2232,6 +2249,23 @@ impl App {
                         "bpm" => self.uniforms.bpm = v,
                         "beat_strength" => self.uniforms.beat_strength = v,
                         "dominant_chroma" => self.uniforms.dominant_chroma = v,
+                        // Reserved audio features (batched ABI bump #1505) — allow
+                        // manual override before their detectors land.
+                        "loudness_m" => self.uniforms.loudness_m = v,
+                        "loudness_s" => self.uniforms.loudness_s = v,
+                        "loudness_trend" => self.uniforms.loudness_trend = v,
+                        "key_class" => self.uniforms.key_class = v,
+                        "key_is_minor" => self.uniforms.key_is_minor = v,
+                        "key_confidence" => self.uniforms.key_confidence = v,
+                        "downbeat" => self.uniforms.downbeat = v,
+                        "bar_phase" => self.uniforms.bar_phase = v,
+                        "beat_in_bar" => self.uniforms.beat_in_bar = v,
+                        "pan" => self.uniforms.pan = v,
+                        "stereo_width" => self.uniforms.stereo_width = v,
+                        "stereo_corr" => self.uniforms.stereo_corr = v,
+                        "section_novelty" => self.uniforms.section_novelty = v,
+                        "buildup" => self.uniforms.buildup = v,
+                        "drop" => self.uniforms.drop = v,
                         "feedback_decay" => self.uniforms.feedback_decay = v,
                         "time" => self.uniforms.time = value, // time not clamped
                         _ => {}

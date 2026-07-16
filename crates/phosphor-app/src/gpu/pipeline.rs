@@ -115,6 +115,49 @@ impl ShaderPipeline {
                     ty: BindingType::Sampler(SamplerBindingType::Filtering),
                     count: None,
                 },
+                // A17 audio textures (batched ABI bump #1505). All are
+                // Float{filterable} 2D views, so a 1x1 placeholder and the real
+                // waveform/spectrum/spectrogram textures satisfy the same layout.
+                // binding(3): waveform (min/max-decimated PCM)
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // binding(4): spectrum (log-resampled magnitude)
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // binding(5): spectrogram (scrolling mel-band history)
+                BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // binding(6): shared sampler for the audio textures
+                BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         })
     }

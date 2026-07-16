@@ -12,7 +12,7 @@ pub type SourceSnapshot = HashMap<String, (f32, SourceRaw)>;
 
 /// Collect audio features into source snapshot.
 pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(46);
+    let mut map = HashMap::with_capacity(61);
 
     let raw = |v: f32| SourceRaw {
         display: format!("{:.3}", v),
@@ -68,6 +68,29 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         "audio.dominant_chroma".to_string(),
         (features.dominant_chroma, raw(features.dominant_chroma)),
     );
+
+    // Reserved audio features (batched ABI bump #1505) — 0.0 until each detector
+    // lands, but exposed as sources now so bindings can target them ahead of time.
+    let reserved = [
+        ("audio.loudness_m", features.loudness_m),
+        ("audio.loudness_s", features.loudness_s),
+        ("audio.loudness_trend", features.loudness_trend),
+        ("audio.key_class", features.key_class),
+        ("audio.key_is_minor", features.key_is_minor),
+        ("audio.key_confidence", features.key_confidence),
+        ("audio.downbeat", features.downbeat),
+        ("audio.bar_phase", features.bar_phase),
+        ("audio.beat_in_bar", features.beat_in_bar),
+        ("audio.pan", features.pan),
+        ("audio.stereo_width", features.stereo_width),
+        ("audio.stereo_corr", features.stereo_corr),
+        ("audio.section_novelty", features.section_novelty),
+        ("audio.buildup", features.buildup),
+        ("audio.drop", features.drop),
+    ];
+    for (key, val) in reserved {
+        map.insert(key.to_string(), (val, raw(val)));
+    }
 
     map
 }
@@ -159,13 +182,18 @@ mod tests {
     fn test_collect_audio() {
         let features = AudioFeatures::default();
         let snap = collect_audio(&features);
-        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant = 46
-        assert_eq!(snap.len(), 46);
+        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 15 reserved = 61
+        assert_eq!(snap.len(), 61);
         assert!(snap.contains_key("audio.kick"));
         assert!(snap.contains_key("audio.band.0"));
         assert!(snap.contains_key("audio.mfcc.12"));
         assert!(snap.contains_key("audio.chroma.11"));
         assert!(snap.contains_key("audio.dominant_chroma"));
+        // Reserved tail (#1505)
+        assert!(snap.contains_key("audio.loudness_m"));
+        assert!(snap.contains_key("audio.downbeat"));
+        assert!(snap.contains_key("audio.bar_phase"));
+        assert!(snap.contains_key("audio.drop"));
     }
 
     #[test]

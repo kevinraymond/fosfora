@@ -278,6 +278,12 @@ fn create_pass_bind_groups(
     placeholder: &PlaceholderTexture,
     has_feedback: bool,
 ) -> [wgpu::BindGroup; 2] {
+    // A17 audio textures (batched ABI bump #1505) are reserved as placeholders for
+    // now: bind the 1x1 placeholder view to bindings 3/4/5 and its sampler to 6.
+    // The A17 DSP swaps in the real waveform/spectrum/spectrogram textures without
+    // touching this layout.
+    let audio_view = &placeholder.view;
+    let audio_sampler = &placeholder.sampler;
     if has_feedback {
         // Read from the other target in the pair
         let bg0 = uniform_buffer.create_bind_group(
@@ -285,12 +291,20 @@ fn create_pass_bind_groups(
             layout,
             &target.targets[1].view,
             &target.targets[1].sampler,
+            audio_view,
+            audio_view,
+            audio_view,
+            audio_sampler,
         );
         let bg1 = uniform_buffer.create_bind_group(
             device,
             layout,
             &target.targets[0].view,
             &target.targets[0].sampler,
+            audio_view,
+            audio_view,
+            audio_view,
+            audio_sampler,
         );
         [bg0, bg1]
     } else {
@@ -300,12 +314,20 @@ fn create_pass_bind_groups(
             layout,
             &placeholder.view,
             &placeholder.sampler,
+            audio_view,
+            audio_view,
+            audio_view,
+            audio_sampler,
         );
         let bg2 = uniform_buffer.create_bind_group(
             device,
             layout,
             &placeholder.view,
             &placeholder.sampler,
+            audio_view,
+            audio_view,
+            audio_view,
+            audio_sampler,
         );
         [bg, bg2]
     }
