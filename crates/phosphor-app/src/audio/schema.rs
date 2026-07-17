@@ -256,15 +256,23 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     def_hold("downbeat", Passthrough, SmoothParams::bypass(), ForceZero),
     def_hold("bar_phase", Passthrough, SmoothParams::bypass(), Scale),
     def_hold("beat_in_bar", Passthrough, SmoothParams::bypass(), Scale),
-    // A13 stereo (#1464)
-    def("pan", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    // A13 stereo (#1464) — detector-owned. `pan`/`stereo_corr` are bipolar values the
+    // StereoAnalyzer remaps to 0..1, and `stereo_width` is a mid/side ratio already in 0..1, so all
+    // three pass through the normalizer (percentile ranging would distort a producer-normalized
+    // value). Smoothed to steady the field; Scale toward 0 on a stalled device.
+    def("pan", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
     def(
         "stereo_width",
-        Adaptive,
+        Passthrough,
         SmoothParams::ar(0.03, 0.15),
         Scale,
     ),
-    def("stereo_corr", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "stereo_corr",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
     // A18 structure (#1469) — detector-owned. `section_novelty` is self-normalized 0..1 and
     // `buildup` is a logistic 0..1, so both pass through the normalizer; each is smoothed to
     // iron out the ~10 Hz decimation stairs, and Scales toward 0 on silence. `drop` is a
@@ -371,18 +379,17 @@ mod tests {
     /// - **ZScore** (standardized): the 13 signed MFCC coefficients (20..=32).
     /// - **Passthrough** (producer-owned): kick (8, single-normalized by the A3 #1454
     ///   detector); the beat block (15..=19); chroma + dominant_chroma + loudness + key +
-    ///   bar clock, which happen to be contiguous (33..=54); and the A18 structure block
-    ///   (58..=60).
+    ///   bar clock, which happen to be contiguous (33..=54); the A13 stereo block (55..=57,
+    ///   producer-remapped to 0..1); and the A18 structure block (58..=60) — 33..=60 contiguous.
     /// - **Adaptive** (gated percentile ranging): everything else — the 7 bands, rms (7),
-    ///   flux (10), and the A13 stereo slots (55..=57) which stay Adaptive until that
-    ///   detector lands.
+    ///   and flux (10).
     #[test]
     fn norm_policy_assignment() {
         for (i, def) in FEATURES.iter().enumerate() {
             let expected = match i {
                 9 | 11 | 12 | 13 | 14 => FixedRange,
                 20..=32 => ZScore,
-                8 | 15..=19 | 33..=54 | 58..=60 => Passthrough,
+                8 | 15..=19 | 33..=60 => Passthrough,
                 _ => Adaptive,
             };
             assert_eq!(

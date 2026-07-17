@@ -218,7 +218,7 @@ On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of syst
 
 ### What Gets Detected
 
-Fosfora extracts 46 audio features from multi-resolution FFT analysis (the shader ABI reserves 15 more slots — loudness, key, downbeat, stereo, structure — for detectors in progress; those read 0.0 for now, see [Reserved features](#reserved-features)):
+Fosfora extracts **61 audio features** from multi-resolution FFT analysis. The core set below is joined by five detector groups — loudness, key, downbeat, stereo, and structure — that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
 
 **7 Frequency Bands** (normalized 0–1):
 | Band | Range | Typical Content |
@@ -251,7 +251,7 @@ Fosfora extracts 46 audio features from multi-resolution FFT analysis (the shade
 - **beat_strength** — Detection confidence (0–1)
 
 <a name="reserved-features"></a>
-**Reserved features (coming soon):** The shader ABI reserves 15 slots for detectors under development, so effects can bind them today and light up automatically when each detector ships. Until then they read `0.0`:
+**Detector features:** Five detector groups fill the reserved tail of the shader ABI — all live as of the A13 stereo detector (they read `0.0` in earlier builds while each detector was still in progress):
 - **loudness_m / loudness_s / loudness_trend** — perceptual loudness envelope
 - **key_class / key_is_minor / key_confidence** — musical key estimate
 - **downbeat / bar_phase / beat_in_bar** — bar-level clock
@@ -278,7 +278,7 @@ This is where the magic happens — audio features drive every aspect of the vis
 
 ### How It Works
 
-Every frame, Fosfora packs all 46 live audio features (plus the 15 reserved slots, which stay 0.0 for now) into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
+Every frame, Fosfora packs all **61 live audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
 
 ### Available Uniforms in Shaders
 
@@ -317,20 +317,20 @@ dominant_chroma       // Strongest pitch class, normalized 0–1
 mfcc(i)               // 13 MFCC timbral coefficients, i = 0..12
 chroma_val(i)         // 12 chroma pitch-class energies, i = 0..11 (C, C#, D … B)
 
-// Reserved — read 0.0 until each detector ships (bind them now; they light up later)
+// Detector features — the reserved tail, all live
 loudness_m, loudness_s, loudness_trend        // perceptual loudness
 key_class, key_is_minor, key_confidence       // musical key estimate
 downbeat, bar_phase, beat_in_bar              // bar-level clock
 pan, stereo_width, stereo_corr                // stereo field
 section_novelty, buildup, drop                // song-structure cues
 
-// Reserved audio textures (placeholder 1×1 until the DSP lands)
+// Audio textures — read the signal directly
 waveform(x)           // vec2f min/max of the PCM waveform at x = 0..1
 spectrum(x)           // magnitude at log-frequency x = 0..1
 spectrogram(uv)       // scrolling mel-band history
 ```
 
-The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, and the 12 chroma values are the full set of **46 live audio features** — all available in every effect shader. A further 15 reserved scalars (listed above) round the ABI out to 61 slots. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 15 detector scalars (listed above) are the full set of **61 live audio features** — all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 ### Common Patterns
 

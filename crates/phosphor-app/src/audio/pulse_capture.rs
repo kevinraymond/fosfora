@@ -153,8 +153,9 @@ pub fn pulse_available() -> bool {
 
 // --- Fragment sizing ---
 
-/// Fragment size: 1024 f32 mono samples = 4096 bytes ≈ 23ms at 44.1kHz.
-const FRAG_SAMPLES: usize = 1024;
+/// Fragment size: 2048 interleaved f32 samples = 1024 stereo frames = 8192 bytes ≈ 23ms at 44.1kHz.
+/// A13 (#1464): the stream is stereo, so a fragment holds `FRAG_SAMPLES/2` L/R frames.
+const FRAG_SAMPLES: usize = 2048;
 const FRAG_BYTES: u32 = (FRAG_SAMPLES * std::mem::size_of::<f32>()) as u32;
 
 /// How often to log health stats (seconds).
@@ -216,7 +217,9 @@ fn open_connection(
     let spec = pa_sample_spec {
         format: PA_SAMPLE_FLOAT32LE,
         rate: sample_rate,
-        channels: 1,
+        // A13 (#1464): capture native stereo. The server delivers interleaved L,R, which is exactly
+        // the layout the capture ring expects; the analysis thread derives the mono mix.
+        channels: 2,
     };
 
     let attr = pa_buffer_attr {
@@ -260,7 +263,7 @@ fn open_connection(
 
     let source_desc = monitor_device.as_deref().unwrap_or("default");
     log::info!(
-        "PulseAudio capture opened: {source_desc} ({}Hz mono, fragsize={}B/{}samples)",
+        "PulseAudio capture opened: {source_desc} ({}Hz stereo, fragsize={}B/{}samples)",
         sample_rate,
         FRAG_BYTES,
         FRAG_SAMPLES,

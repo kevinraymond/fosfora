@@ -330,14 +330,14 @@ fn wasapi_capture_loop(
                         let total_bytes = num_frames as usize * block_align;
                         let raw_data = std::slice::from_raw_parts(buffer_ptr, total_bytes);
 
-                        let mono = convert_to_mono_f32(
+                        let stereo = convert_to_stereo_f32(
                             raw_data,
                             channels,
                             is_float,
                             bits_per_sample,
                             block_align,
                         );
-                        ring.push(&mono);
+                        ring.push(&stereo);
                     }
                 }
 
@@ -350,8 +350,60 @@ fn wasapi_capture_loop(
     }
 }
 
-/// Convert raw audio bytes to mono f32 samples.
-fn convert_to_mono_f32(
+/// Decode one channel of one interleaved frame to f32. Out-of-range offsets read as 0.
+fn decode_sample(
+    data: &[u8],
+    frame_start: usize,
+    ch: usize,
+    is_float: bool,
+    bits_per_sample: u16,
+) -> f32 {
+    if is_float && bits_per_sample == 32 {
+        let offset = frame_start + ch * 4;
+        if offset + 4 <= data.len() {
+            f32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ])
+        } else {
+            0.0
+        }
+    } else if bits_per_sample == 16 {
+        let offset = frame_start + ch * 2;
+        if offset + 2 <= data.len() {
+            i16::from_le_bytes([data[offset], data[offset + 1]]) as f32 / 32768.0
+        } else {
+            0.0
+        }
+    } else if bits_per_sample == 24 {
+        let offset = frame_start + ch * 3;
+        if offset + 3 <= data.len() {
+            let raw = (data[offset] as i32)
+                | ((data[offset + 1] as i32) << 8)
+                | ((data[offset + 2] as i32) << 16);
+            // Sign extend from 24 bits
+            let raw = if raw & 0x800000 != 0 {
+                raw | !0xFFFFFF
+            } else {
+                raw
+            };
+            raw as f32 / 8388608.0
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    }
+}
+
+/// Convert raw interleaved audio bytes to interleaved `L,R` stereo f32.
+///
+/// A13 (#1464): keep the front L/R pair (channels 0/1) rather than downmixing — the analysis thread
+/// derives the mono mix. A mono source is duplicated to both. Output is always even-length, upholding
+/// the capture ring's L/R parity invariant.
+fn convert_to_stereo_f32(
     data: &[u8],
     channels: usize,
     is_float: bool,
@@ -359,57 +411,19 @@ fn convert_to_mono_f32(
     frame_bytes: usize,
 ) -> Vec<f32> {
     let num_frames = data.len() / frame_bytes;
-    let mut mono = Vec::with_capacity(num_frames);
+    let mut stereo = Vec::with_capacity(num_frames * 2);
 
     for i in 0..num_frames {
         let frame_start = i * frame_bytes;
-        let mut sum = 0.0f32;
-
-        for ch in 0..channels {
-            let sample = if is_float && bits_per_sample == 32 {
-                let offset = frame_start + ch * 4;
-                if offset + 4 <= data.len() {
-                    f32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ])
-                } else {
-                    0.0
-                }
-            } else if bits_per_sample == 16 {
-                let offset = frame_start + ch * 2;
-                if offset + 2 <= data.len() {
-                    let raw = i16::from_le_bytes([data[offset], data[offset + 1]]);
-                    raw as f32 / 32768.0
-                } else {
-                    0.0
-                }
-            } else if bits_per_sample == 24 {
-                let offset = frame_start + ch * 3;
-                if offset + 3 <= data.len() {
-                    let raw = (data[offset] as i32)
-                        | ((data[offset + 1] as i32) << 8)
-                        | ((data[offset + 2] as i32) << 16);
-                    // Sign extend from 24 bits
-                    let raw = if raw & 0x800000 != 0 {
-                        raw | !0xFFFFFF
-                    } else {
-                        raw
-                    };
-                    raw as f32 / 8388608.0
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-            sum += sample;
-        }
-
-        mono.push(sum / channels as f32);
+        let l = decode_sample(data, frame_start, 0, is_float, bits_per_sample);
+        let r = if channels >= 2 {
+            decode_sample(data, frame_start, 1, is_float, bits_per_sample)
+        } else {
+            l
+        };
+        stereo.push(l);
+        stereo.push(r);
     }
 
-    mono
+    stereo
 }

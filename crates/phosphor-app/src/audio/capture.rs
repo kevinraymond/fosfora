@@ -352,7 +352,12 @@ impl AudioCapture {
     }
 }
 
-/// Convert any cpal sample type to f32, downmix to mono, and push to ring buffer.
+/// Convert any cpal sample type to f32 and push interleaved `L,R` stereo to the ring buffer.
+///
+/// A13 (#1464): the ring carries native stereo (front L/R pair) so the analysis thread can measure
+/// pan/width/correlation; it derives the mono mix downstream. For >2 channels we take channels 0/1
+/// as L/R; a mono source is duplicated to both. The push is always even-length, which the ring's
+/// L/R parity invariant relies on (see [`RingBuffer::read`]).
 fn push_samples<T: Sample>(
     ring: &RingBuffer,
     callback_count: &AtomicU64,
@@ -365,27 +370,21 @@ fn push_samples<T: Sample>(
     if count == 0 {
         log::info!("Audio callback fired (first data: {} samples)", data.len());
     }
+    let conv = |s: T| <f32 as cpal::FromSample<T>>::from_sample_(s);
+    let mut stereo: Vec<f32> = Vec::with_capacity(data.len() / channels.max(1) * 2);
     if channels == 1 {
-        let mono: Vec<f32> = data
-            .iter()
-            .copied()
-            .map(|s| cpal::FromSample::from_sample_(s))
-            .collect();
-        ring.push(&mono);
+        for &s in data {
+            let v = conv(s);
+            stereo.push(v);
+            stereo.push(v);
+        }
     } else {
-        let mono: Vec<f32> = data
-            .chunks(channels)
-            .map(|frame| {
-                frame
-                    .iter()
-                    .copied()
-                    .map(|s| <f32 as cpal::FromSample<T>>::from_sample_(s))
-                    .sum::<f32>()
-                    / channels as f32
-            })
-            .collect();
-        ring.push(&mono);
+        for frame in data.chunks(channels) {
+            stereo.push(conv(frame[0]));
+            stereo.push(conv(frame[1]));
+        }
     }
+    ring.push(&stereo);
 }
 
 #[cfg(test)]

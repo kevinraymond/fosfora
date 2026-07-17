@@ -80,6 +80,11 @@ impl OscSender {
         self.send_float("/phosphor/audio/section_novelty", f.section_novelty);
         self.send_float("/phosphor/audio/buildup", f.buildup);
         self.send_float("/phosphor/audio/drop", f.drop);
+        // A13 stereo (#1464): balance (-1=L..+1=R), mid/side width 0..1, L/R correlation (-1..+1).
+        // pan/corr are stored remapped to 0..1; emit them bipolar, matching the key/bpm convention.
+        self.send_float("/phosphor/audio/pan", f.pan * 2.0 - 1.0);
+        self.send_float("/phosphor/audio/stereo_width", f.stereo_width);
+        self.send_float("/phosphor/audio/stereo_corr", f.stereo_corr * 2.0 - 1.0);
     }
 
     /// Send current state (active layer, effect name).

@@ -14,6 +14,7 @@ pub mod ranging;
 pub mod reconnect;
 pub mod schema;
 pub mod smoother;
+pub mod stereo;
 pub mod structure;
 #[cfg(target_os = "windows")]
 pub mod wasapi_capture;
@@ -71,6 +72,7 @@ use self::key::KeyDetector;
 use self::loudness::LoudnessMeter;
 use self::normalizer::FeatureNormalizer;
 use self::smoother::FeatureSmoother;
+use self::stereo::StereoAnalyzer;
 pub use self::structure::StructureConfig;
 use self::structure::StructureTracker;
 use crate::settings::BandScale;
@@ -1149,12 +1151,19 @@ fn audio_thread(
     let mut downbeat_tracker = DownbeatTracker::new();
     let mut structure_tracker = StructureTracker::new(sample_rate / ANALYSIS_HOP as f32);
     let mut smoother = FeatureSmoother::new();
-    let mut read_buf = vec![0.0f32; 8192]; // larger for 4096-pt FFT
+    let mut stereo_analyzer = StereoAnalyzer::new();
+    // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
+    // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
+    let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
+    let mut mono_scratch: Vec<f32> = Vec::with_capacity(read_buf.len() / 2);
 
     // A5 (#1456): accumulate capture reads here and analyze exactly ANALYSIS_HOP samples at
     // a time. `samples_consumed` is a sample clock — each frame's timestamp is derived from
     // it, so frame timing is exact and independent of scheduler jitter or read-burst size.
     let mut fifo: Vec<f32> = Vec::with_capacity(read_buf.len() + ANALYSIS_HOP);
+    // A13 (#1464): interleaved L/R queued in lockstep with `fifo` (2 samples per mono frame), so
+    // each hop's stereo slice aligns exactly with its mono hop.
+    let mut fifo_stereo: Vec<f32> = Vec::with_capacity((read_buf.len() + ANALYSIS_HOP) * 2);
     let mut samples_consumed: u64 = 0;
     // Fixed per-frame delta for time-constant smoothing (attack/release EMAs, onset decay).
     let dt = ANALYSIS_HOP as f32 / sample_rate;
@@ -1176,16 +1185,27 @@ fn audio_thread(
         if read == 0 {
             continue;
         }
+        // Interleaved L,R off the capture ring — always even-length (ring L/R parity invariant).
+        let stereo = &read_buf[..read];
 
-        // Mirror samples to recording ring (lock-free, no overhead if nobody reads).
-        recording_ring.push(&read_buf[..read]);
-        // Queue for hop-aligned analysis.
-        fifo.extend_from_slice(&read_buf[..read]);
+        // A13 (#1464): derive the mono mix once from the stereo frames. Everything mono-facing — the
+        // recording mirror and the FFT feed — consumes this, so their behavior is unchanged (for a
+        // 2ch source it equals the old capture-time downmix).
+        mono_scratch.clear();
+        mono_scratch.extend(stereo.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5));
+
+        // Mirror the mono mix to the recording ring (lock-free, no overhead if nobody reads).
+        recording_ring.push(&mono_scratch);
+        // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
+        fifo.extend_from_slice(&mono_scratch);
+        fifo_stereo.extend_from_slice(stereo);
 
         // Process every complete hop the read produced (>=2 when catching up after a stall).
         let mut offset = 0;
         while fifo.len() - offset >= ANALYSIS_HOP {
             let hop = &fifo[offset..offset + ANALYSIS_HOP];
+            // A13 (#1464): the interleaved L/R for this same hop (2 samples per mono frame).
+            let hop_stereo = &fifo_stereo[offset * 2..(offset + ANALYSIS_HOP) * 2];
             offset += ANALYSIS_HOP;
             samples_consumed += ANALYSIS_HOP as u64;
             let timestamp = samples_consumed as f64 / sample_rate as f64;
@@ -1203,6 +1223,15 @@ fn audio_thread(
             raw.loudness_trend = loud.trend;
             // A6 (#1457): the onset detector gates on this perceptual silence flag.
             let loud_silent = loudness_meter.is_silent();
+
+            // A13 (#1464): stereo field over the rolling window. Gated inside the analyzer on total
+            // stereo energy — NOT the mono `loud_silent` flag, which a fully anti-phase (maximally
+            // wide) signal would trip by cancelling to mono silence. The fields are Passthrough, so
+            // they survive normalize()/smooth() unrescaled, like the loudness/key blocks below.
+            let stereo_field = stereo_analyzer.process(hop_stereo);
+            raw.pan = stereo_field.pan;
+            raw.stereo_width = stereo_field.stereo_width;
+            raw.stereo_corr = stereo_field.stereo_corr;
 
             // A3 (#1454): fill `kick` now that the silence flag is known — a single
             // detector-owned P95 normalizer, gated so noise-floor log-flux can't fire. Set
@@ -1329,6 +1358,7 @@ fn audio_thread(
         // Drop the samples we consumed; keep the sub-hop remainder for next time.
         if offset > 0 {
             fifo.drain(..offset);
+            fifo_stereo.drain(..offset * 2);
         }
     }
 }

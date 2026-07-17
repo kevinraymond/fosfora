@@ -225,7 +225,7 @@ In a per-user config folder — see [Configuration](#configuration) for the exac
 
 ## Writing Effects
 
-Effects are WGSL fragment shaders paired with a JSON `.pfx` definition. Shaders have access to time, resolution, 46 audio features (7 frequency bands, beat detection, spectral shape, 13 MFCC timbral coefficients, 12 chroma pitch classes), three live audio textures (`waveform`/`spectrum`/`spectrogram` — for oscilloscopes, spectrum bars and waterfalls) — plus 15 reserved scalar slots for loudness, key, downbeat, stereo and structure detectors landing in upcoming releases — up to 16 parameters, feedback from the previous frame, and a built-in library (noise, palette, SDF, tonemap).
+Effects are WGSL fragment shaders paired with a JSON `.pfx` definition. Shaders have access to time, resolution, 61 audio features (7 frequency bands, beat detection, spectral shape, 13 MFCC timbral coefficients, 12 chroma pitch classes, plus loudness, key, downbeat, stereo and structure detectors), three live audio textures (`waveform`/`spectrum`/`spectrogram` — for oscilloscopes, spectrum bars and waterfalls), up to 16 parameters, feedback from the previous frame, and a built-in library (noise, palette, SDF, tonemap).
 
 Edit a shader while running — it hot-reloads on save with error recovery.
 
