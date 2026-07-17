@@ -139,6 +139,10 @@ pub struct AudioSystem {
     /// Mel-spectrogram columns received since the last `latest_features` poll, oldest
     /// first (A17 `audio_spectrogram`, #1468). Drained by the render thread each frame.
     pending_mel: Vec<Box<[f32]>>,
+    /// Newest mel-spectrogram column received (A1b, #1512). Held between polls (like
+    /// `latest_spectrum`) so the binding bus can expose `audio.mel.N` sources without
+    /// stealing columns from the draining spectrogram-texture path (`pending_mel`).
+    latest_mel: Vec<f32>,
     pub device_name: String,
     pub active: bool,
     pub last_error: Option<String>,
@@ -239,6 +243,7 @@ impl AudioSystem {
                     latest: None,
                     latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
                     pending_mel: Vec::new(),
+                    latest_mel: Vec::new(),
                     device_name: opened.device_name,
                     active: true,
                     last_error: None,
@@ -276,6 +281,7 @@ impl AudioSystem {
                     latest: None,
                     latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
                     pending_mel: Vec::new(),
+                    latest_mel: Vec::new(),
                     device_name: device_name.unwrap_or("Default").to_string(),
                     active: false,
                     last_error: Some(e),
@@ -329,6 +335,7 @@ impl AudioSystem {
         self.latest = None;
         self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
         self.pending_mel.clear();
+        self.latest_mel.clear();
         self.device_name = std::mem::take(&mut new.device_name);
         self.active = new.active;
         self.last_error = new.last_error.take();
@@ -416,6 +423,10 @@ impl AudioSystem {
             // scrolls smoothly even when several audio frames arrive between polls.
             self.latest_spectrum.clear();
             self.latest_spectrum.extend_from_slice(&frame.spectrum);
+            // Keep the newest mel column for the binding bus (A1b, #1512) before pushing
+            // it onto the drain-once texture queue.
+            self.latest_mel.clear();
+            self.latest_mel.extend_from_slice(&frame.mel);
             self.pending_mel.push(frame.mel);
             got_frame = true;
         }
@@ -482,6 +493,14 @@ impl AudioSystem {
     /// arrives. Length is [`analyzer::SPECTRUM_BINS`].
     pub fn latest_spectrum(&self) -> &[f32] {
         &self.latest_spectrum
+    }
+
+    /// Newest mel-spectrogram column (A1b `audio.mel.N` binding sources, #1512), 0..1 per
+    /// band. Call after `latest_features` each frame; empty until the first frame arrives.
+    /// Length is [`analyzer::SPECTROGRAM_MELS`]. Unlike `take_mel_columns`, this does not
+    /// drain — the render thread's spectrogram-texture path is unaffected.
+    pub fn latest_mel(&self) -> &[f32] {
+        &self.latest_mel
     }
 
     /// Take the mel-spectrogram columns accumulated since the last call (oldest first),

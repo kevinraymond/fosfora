@@ -180,14 +180,19 @@ impl BindingBus {
     pub fn evaluate(
         &mut self,
         audio: Option<&AudioFeatures>,
+        mel: &[f32],
         midi: &MidiSystem,
         osc: &OscSystem,
     ) -> Vec<(String, f32)> {
         // Collect source snapshots (always, even with no bindings — needed for matrix meters)
-        let mut snapshot = HashMap::with_capacity(64);
+        let mut snapshot = HashMap::with_capacity(128);
 
         if let Some(features) = audio {
             snapshot.extend(sources::collect_audio(features));
+        }
+        // Mel bands (A1b `audio.mel.N`, #1512) — empty until the first audio frame arrives.
+        if !mel.is_empty() {
+            snapshot.extend(sources::collect_mel_bands(mel));
         }
         snapshot.extend(sources::collect_midi(midi));
         snapshot.extend(sources::collect_osc(osc));

@@ -538,6 +538,37 @@ fn draw_source_column(ui: &mut egui::Ui, state: &mut BindingMatrixState, bus: &B
                 }
             }
 
+            // Mel bands (A1b #1512, dynamic)
+            let mut mel_keys: Vec<String> = bus
+                .last_snapshot
+                .keys()
+                .filter(|k| k.starts_with("audio.mel."))
+                .cloned()
+                .collect();
+            if !mel_keys.is_empty() {
+                mel_keys.sort_by_key(|k| {
+                    k.strip_prefix("audio.mel.")
+                        .and_then(|n| n.parse::<u32>().ok())
+                        .unwrap_or(99)
+                });
+                let mel_refs: Vec<&str> = mel_keys.iter().map(|s| s.as_str()).collect();
+                let mapped = mel_refs
+                    .iter()
+                    .filter(|k| bound_sources.contains(*k))
+                    .count();
+                draw_source_group(
+                    ui,
+                    state,
+                    bus,
+                    "Audio \u{00b7} Mel",
+                    "audio_mel",
+                    AUDIO_COLOR,
+                    &mel_refs,
+                    mapped,
+                    &bound_sources,
+                );
+            }
+
             // MIDI sources (dynamic)
             let mut midi_keys: Vec<String> = bus
                 .last_snapshot
@@ -2303,6 +2334,40 @@ fn draw_matrix_source_picker(
                         });
                         group_header(ui, "Audio \u{2014} Chroma", AUDIO_COLOR);
                         for key in &chroma_keys {
+                            let info = audio_source_info(key);
+                            let val = bus
+                                .last_snapshot
+                                .get(key.as_str())
+                                .map(|(v, _)| *v)
+                                .unwrap_or(0.0);
+                            draw_source_row(
+                                ui,
+                                key,
+                                &info.friendly,
+                                &info.uniform,
+                                val,
+                                AUDIO_COLOR,
+                                source.as_str() == key.as_str(),
+                                source,
+                            );
+                        }
+                    }
+
+                    // Mel bands (A1b #1512)
+                    let mut mel_keys: Vec<String> = bus
+                        .last_snapshot
+                        .keys()
+                        .filter(|k| k.starts_with("audio.mel."))
+                        .cloned()
+                        .collect();
+                    if !mel_keys.is_empty() {
+                        mel_keys.sort_by_key(|k| {
+                            k.strip_prefix("audio.mel.")
+                                .and_then(|n| n.parse::<u32>().ok())
+                                .unwrap_or(99)
+                        });
+                        group_header(ui, "Audio \u{2014} Mel", AUDIO_COLOR);
+                        for key in &mel_keys {
                             let info = audio_source_info(key);
                             let val = bus
                                 .last_snapshot

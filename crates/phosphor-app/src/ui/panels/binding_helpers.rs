@@ -353,6 +353,15 @@ pub fn audio_source_info(key: &str) -> AudioSourceInfo {
                     sub_group: "Chroma",
                 };
             }
+            if let Some(n) = key.strip_prefix("audio.mel.") {
+                // A1b (#1512): mel bands come from the A17 spectrogram column, not a GPU
+                // uniform — they drive parameter bindings only, so there's no `u.*` to show.
+                return AudioSourceInfo {
+                    friendly: format!("Mel {n}"),
+                    uniform: "(binding only)".into(),
+                    sub_group: "Mel",
+                };
+            }
             // Fallback
             let short = key.strip_prefix("audio.").unwrap_or(key);
             AudioSourceInfo {

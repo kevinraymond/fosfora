@@ -823,9 +823,12 @@ impl App {
         for (source, jpeg) in self.web.preview_images.drain() {
             self.binding_bus.ws_preview_images.insert(source, jpeg);
         }
-        let bind_results =
-            self.binding_bus
-                .evaluate(self.latest_audio.as_ref(), &self.midi, &self.osc);
+        let bind_results = self.binding_bus.evaluate(
+            self.latest_audio.as_ref(),
+            self.audio.latest_mel(),
+            &self.midi,
+            &self.osc,
+        );
         for (target, value) in bind_results {
             self.apply_binding_target(&target, value);
         }

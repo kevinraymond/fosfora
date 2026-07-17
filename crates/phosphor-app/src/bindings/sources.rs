@@ -95,6 +95,24 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
     map
 }
 
+/// Collect mel-spectrogram bands into source snapshot as `audio.mel.N` (A1b, #1512).
+///
+/// `mel` is the newest A17 mel column ([`crate::audio::AudioSystem::latest_mel`]), already
+/// dB-normalized to 0..1 per band — so the values drop straight in with no schema/normalizer
+/// involvement (mel bands are not part of the `AudioFeatures` ABI). Empty slice yields no
+/// sources.
+pub fn collect_mel_bands(mel: &[f32]) -> SourceSnapshot {
+    let raw = |v: f32| SourceRaw {
+        display: format!("{:.3}", v),
+        numeric: v as f64,
+    };
+    let mut map = HashMap::with_capacity(mel.len());
+    for (i, &val) in mel.iter().enumerate() {
+        map.insert(format!("audio.mel.{i}"), (val, raw(val)));
+    }
+    map
+}
+
 /// Collect MIDI CC values into source snapshot.
 pub fn collect_midi(midi: &MidiSystem) -> SourceSnapshot {
     let mut map = HashMap::with_capacity(midi.last_cc_values.len());
@@ -194,6 +212,19 @@ mod tests {
         assert!(snap.contains_key("audio.downbeat"));
         assert!(snap.contains_key("audio.bar_phase"));
         assert!(snap.contains_key("audio.drop"));
+    }
+
+    #[test]
+    fn test_collect_mel_bands() {
+        // 64-band A17 column -> audio.mel.0..63 (A1b, #1512).
+        let mel = [0.0f32; 64];
+        let snap = collect_mel_bands(&mel);
+        assert_eq!(snap.len(), 64);
+        assert!(snap.contains_key("audio.mel.0"));
+        assert!(snap.contains_key("audio.mel.63"));
+        assert!(!snap.contains_key("audio.mel.64"));
+        // Empty column yields no sources (before the first audio frame arrives).
+        assert!(collect_mel_bands(&[]).is_empty());
     }
 
     #[test]
