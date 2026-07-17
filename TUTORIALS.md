@@ -218,7 +218,7 @@ On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of syst
 
 ### What Gets Detected
 
-Fosfora extracts **61 audio features** from multi-resolution FFT analysis. The core set below is joined by five detector groups — loudness, key, downbeat, stereo, and structure — that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
+Fosfora extracts **74 audio features** from multi-resolution FFT analysis. The core set below is joined by eight detector groups — loudness, key, downbeat, stereo, structure, harmonic/percussive split, pitch, and spectral contrast — that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
 
 **7 Frequency Bands** (normalized 0–1):
 | Band | Range | Typical Content |
@@ -251,12 +251,17 @@ Fosfora extracts **61 audio features** from multi-resolution FFT analysis. The c
 - **beat_strength** — Detection confidence (0–1)
 
 <a name="reserved-features"></a>
-**Detector features:** Five detector groups fill the reserved tail of the shader ABI — all live as of the A13 stereo detector (they read `0.0` in earlier builds while each detector was still in progress):
+**Detector features:** Eight detector groups fill the reserved tail of the shader ABI. The first five are live as of the A13 stereo detector (they read `0.0` in earlier builds while each detector was still in progress):
 - **loudness_m / loudness_s / loudness_trend** — perceptual loudness envelope
 - **key_class / key_is_minor / key_confidence** — musical key estimate
 - **downbeat / bar_phase / beat_in_bar** — bar-level clock
 - **pan / stereo_width / stereo_corr** — stereo field
 - **section_novelty / buildup / drop** — song-structure cues
+
+The last three groups were reserved by the shader ABI v3 bump and read `0.0` until their detectors land:
+- **percussive_energy / harmonic_energy / harmonic_ratio** — harmonic/percussive split (A14)
+- **pitch / pitch_confidence** — monophonic pitch estimate (A15)
+- **contrast_0 … contrast_5 / contrast_mean / timbre_flux** — spectral contrast + timbre dynamics (A16)
 
 Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls — sample them with the built-in helpers:
 - **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x` — a min/max-decimated, zero-crossing-triggered scope trace.
@@ -278,7 +283,7 @@ This is where the magic happens — audio features drive every aspect of the vis
 
 ### How It Works
 
-Every frame, Fosfora packs all **61 live audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
+Every frame, Fosfora packs all **74 audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
 
 ### Available Uniforms in Shaders
 
@@ -317,12 +322,18 @@ dominant_chroma       // Strongest pitch class, normalized 0–1
 mfcc(i)               // 13 MFCC timbral coefficients, i = 0..12
 chroma_val(i)         // 12 chroma pitch-class energies, i = 0..11 (C, C#, D … B)
 
-// Detector features — the reserved tail, all live
+// Detector features — the reserved tail (first five groups live)
 loudness_m, loudness_s, loudness_trend        // perceptual loudness
 key_class, key_is_minor, key_confidence       // musical key estimate
 downbeat, bar_phase, beat_in_bar              // bar-level clock
 pan, stereo_width, stereo_corr                // stereo field
 section_novelty, buildup, drop                // song-structure cues
+
+// Reserved by shader ABI v3 — read 0.0 until their detectors land
+percussive_energy, harmonic_energy, harmonic_ratio  // harmonic/percussive split (A14)
+pitch, pitch_confidence                             // monophonic pitch (A15)
+contrast_0, contrast_1, contrast_2, contrast_3,     // spectral contrast (A16)
+contrast_4, contrast_5, contrast_mean, timbre_flux
 
 // Audio textures — read the signal directly
 waveform(x)           // vec2f min/max of the PCM waveform at x = 0..1
@@ -330,7 +341,7 @@ spectrum(x)           // magnitude at log-frequency x = 0..1
 spectrogram(uv)       // scrolling mel-band history
 ```
 
-The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 15 detector scalars (listed above) are the full set of **61 live audio features** — all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 28 detector scalars (listed above) are the full set of **74 audio features** — all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 ### Common Patterns
 

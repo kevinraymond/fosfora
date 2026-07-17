@@ -553,6 +553,20 @@ impl App {
             self.uniforms.section_novelty = features.section_novelty;
             self.uniforms.buildup = features.buildup;
             self.uniforms.drop = features.drop;
+            // Reserved audio features (batched ABI bump #1629, "v3").
+            self.uniforms.percussive_energy = features.percussive_energy;
+            self.uniforms.harmonic_energy = features.harmonic_energy;
+            self.uniforms.harmonic_ratio = features.harmonic_ratio;
+            self.uniforms.pitch = features.pitch;
+            self.uniforms.pitch_confidence = features.pitch_confidence;
+            self.uniforms.contrast_0 = features.contrast_0;
+            self.uniforms.contrast_1 = features.contrast_1;
+            self.uniforms.contrast_2 = features.contrast_2;
+            self.uniforms.contrast_3 = features.contrast_3;
+            self.uniforms.contrast_4 = features.contrast_4;
+            self.uniforms.contrast_5 = features.contrast_5;
+            self.uniforms.contrast_mean = features.contrast_mean;
+            self.uniforms.timbre_flux = features.timbre_flux;
         }
 
         // A17 (#1468): refresh the audio textures every frame. The waveform peeks the
@@ -2335,6 +2349,20 @@ impl App {
                         "section_novelty" => self.uniforms.section_novelty = v,
                         "buildup" => self.uniforms.buildup = v,
                         "drop" => self.uniforms.drop = v,
+                        // Reserved audio features (batched ABI bump #1629, "v3").
+                        "percussive_energy" => self.uniforms.percussive_energy = v,
+                        "harmonic_energy" => self.uniforms.harmonic_energy = v,
+                        "harmonic_ratio" => self.uniforms.harmonic_ratio = v,
+                        "pitch" => self.uniforms.pitch = v,
+                        "pitch_confidence" => self.uniforms.pitch_confidence = v,
+                        "contrast_0" => self.uniforms.contrast_0 = v,
+                        "contrast_1" => self.uniforms.contrast_1 = v,
+                        "contrast_2" => self.uniforms.contrast_2 = v,
+                        "contrast_3" => self.uniforms.contrast_3 = v,
+                        "contrast_4" => self.uniforms.contrast_4 = v,
+                        "contrast_5" => self.uniforms.contrast_5 = v,
+                        "contrast_mean" => self.uniforms.contrast_mean = v,
+                        "timbre_flux" => self.uniforms.timbre_flux = v,
                         "feedback_decay" => self.uniforms.feedback_decay = v,
                         "time" => self.uniforms.time = value, // time not clamped
                         _ => {}

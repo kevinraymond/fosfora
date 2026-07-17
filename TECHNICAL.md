@@ -146,7 +146,7 @@ All fields are accessible in WGSL as `u.field_name`:
 | `frame_index` | `u32` | Frame counter |
 | `feedback_decay` | `f32` | Feedback blend factor |
 
-**Audio (20 fields):**
+**Audio (core scalar fields — 74 total incl. the MFCC/chroma arrays and the reserved detector tail):**
 
 | Field | Type | Range | Description |
 |-------|------|-------|-------------|

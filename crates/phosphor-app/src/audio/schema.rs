@@ -106,7 +106,7 @@ pub struct FeatureDef {
     /// A8 (#1459). Orthogonal to `smooth.bypass`, which cannot stand in for it:
     /// `dominant_chroma` is an argmax index that must not be lerped yet is smoothed, and
     /// `bpm` Holds on decay yet lerps fine. Set via [`def_hold`]; [`def`] defaults to
-    /// `Lerp` since 52 of the 61 slots are continuous.
+    /// `Lerp` since 65 of the 74 slots are continuous.
     pub interp: InterpPolicy,
 }
 
@@ -285,6 +285,86 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     ),
     def("buildup", Passthrough, SmoothParams::ar(0.08, 0.25), Scale),
     def_hold("drop", Passthrough, SmoothParams::bypass(), ForceZero),
+    // ---- Reserved tail (batched ABI bump #1629, "v3") — 0.0 until each detector lands ----
+    // Conservative placeholders (Passthrough/Scale/gently-smoothed) like the v2 tail above;
+    // each DSP fill sets the final policy when it wires real data (CPU-side only — no ABI churn).
+    // A14 HPSS (#1465): the analyzer dB-maps these to 0..1 in-module, so pass them through the
+    // normalizer; gently smoothed, Scale toward 0 on silence.
+    def(
+        "percussive_energy",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "harmonic_energy",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "harmonic_ratio",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    // A15 pitch (#1466).
+    def("pitch", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "pitch_confidence",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    // A16 spectral contrast (#1467).
+    def(
+        "contrast_0",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_1",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_2",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_3",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_4",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_5",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "contrast_mean",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "timbre_flux",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
 ];
 
 /// Terse constructor so the table above reads as one row per feature. Interpolates
@@ -352,12 +432,17 @@ mod tests {
         assert_eq!(f.chroma[0], 33.0);
         assert_eq!(f.chroma[11], 44.0);
         assert_eq!(f.dominant_chroma, 45.0);
-        // Reserved tail (#1505): boundary pins for the appended block.
+        // Reserved v2 tail (#1505): boundary pins for the appended block.
         assert_eq!(f.loudness_m, 46.0);
         assert_eq!(f.downbeat, 52.0);
         assert_eq!(f.bar_phase, 53.0);
         assert_eq!(f.pan, 55.0);
         assert_eq!(f.drop, 60.0);
+        // Reserved v3 tail (#1629): boundary pins for the appended block.
+        assert_eq!(f.percussive_energy, 61.0);
+        assert_eq!(f.pitch, 64.0);
+        assert_eq!(f.contrast_0, 66.0);
+        assert_eq!(f.timbre_flux, 73.0);
 
         assert_eq!(FEATURES[0].name, "sub_bass");
         assert_eq!(FEATURES[14].name, "zcr");
@@ -370,6 +455,10 @@ mod tests {
         assert_eq!(FEATURES[53].name, "bar_phase");
         assert_eq!(FEATURES[55].name, "pan");
         assert_eq!(FEATURES[60].name, "drop");
+        assert_eq!(FEATURES[61].name, "percussive_energy");
+        assert_eq!(FEATURES[64].name, "pitch");
+        assert_eq!(FEATURES[66].name, "contrast_0");
+        assert_eq!(FEATURES[73].name, "timbre_flux");
     }
 
     /// Pins the A2 (#1453) per-feature normalization policy for every slot:
@@ -380,7 +469,9 @@ mod tests {
     /// - **Passthrough** (producer-owned): kick (8, single-normalized by the A3 #1454
     ///   detector); the beat block (15..=19); chroma + dominant_chroma + loudness + key +
     ///   bar clock, which happen to be contiguous (33..=54); the A13 stereo block (55..=57,
-    ///   producer-remapped to 0..1); and the A18 structure block (58..=60) — 33..=60 contiguous.
+    ///   producer-remapped to 0..1); the A18 structure block (58..=60); and the v3 (#1629)
+    ///   reserved tail — A14 HPSS (61..=63, dB-mapped in-module), A15 pitch (64..=65), A16
+    ///   contrast (66..=73) — all producer-scaled to 0..1, so 33..=73 contiguous.
     /// - **Adaptive** (gated percentile ranging): everything else — the 7 bands, rms (7),
     ///   and flux (10).
     #[test]
@@ -389,7 +480,7 @@ mod tests {
             let expected = match i {
                 9 | 11 | 12 | 13 | 14 => FixedRange,
                 20..=32 => ZScore,
-                8 | 15..=19 | 33..=60 => Passthrough,
+                8 | 15..=19 | 33..=73 => Passthrough,
                 _ => Adaptive,
             };
             assert_eq!(
@@ -419,7 +510,7 @@ mod tests {
         }
     }
 
-    /// A8 (#1459) interp exemptions: 9 of 61 slots must never be blended between audio
+    /// A8 (#1459) interp exemptions: 9 of 74 slots must never be blended between audio
     /// frames — the 1-frame triggers, the two wrapping sawtooths, and the categorical
     /// indices. Everything else is a continuous quantity and lerps.
     ///

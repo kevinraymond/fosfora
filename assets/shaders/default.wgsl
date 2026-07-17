@@ -52,7 +52,21 @@ struct PhosphorUniforms {
     section_novelty: f32,
     buildup: f32,
     drop: f32,
-    _pad_features: f32,
+
+    // Reserved audio features (batched ABI bump #1629, "v3") — 0.0 until each detector lands.
+    percussive_energy: f32,
+    harmonic_energy: f32,
+    harmonic_ratio: f32,
+    pitch: f32,
+    pitch_confidence: f32,
+    contrast_0: f32,
+    contrast_1: f32,
+    contrast_2: f32,
+    contrast_3: f32,
+    contrast_4: f32,
+    contrast_5: f32,
+    contrast_mean: f32,
+    timbre_flux: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;

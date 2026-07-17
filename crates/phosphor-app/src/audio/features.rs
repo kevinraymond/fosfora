@@ -1,11 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 
-/// 61 audio features, all normalized to 0.0-1.0 range.
+/// 74 audio features, all normalized to 0.0-1.0 range.
 /// Multi-resolution FFT bands + spectral shape + beat detection + MFCC + chroma,
-/// plus a reserved tail (loudness / key / downbeat / stereo / structure) laid out
-/// by the batched shader-ABI bump (#1505). The reserved fields read 0.0 until
-/// their detectors land; wiring them now means the DSP fills already-reserved
-/// slots with zero further ABI churn.
+/// plus a reserved tail laid out by two batched shader-ABI bumps: v2 (#1505 —
+/// loudness / key / downbeat / stereo / structure) and v3 (#1629 — hpss / pitch /
+/// spectral contrast). The reserved fields read 0.0 until their detectors land;
+/// wiring them now means the DSP fills already-reserved slots with zero further
+/// ABI churn.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct AudioFeatures {
@@ -71,9 +72,29 @@ pub struct AudioFeatures {
     pub section_novelty: f32, // self-similarity novelty curve
     pub buildup: f32,         // riser/tension estimate
     pub drop: f32,            // drop/impact detection
+
+    // ---- Reserved tail (batched ABI bump #1629, "v3") — 0.0 until each detector lands ----
+    // A14 HPSS (#1465): harmonic/percussive split energies
+    pub percussive_energy: f32, // transient (percussive-masked) energy, dB-mapped 0-1
+    pub harmonic_energy: f32,   // sustained (harmonic-masked) energy, dB-mapped 0-1
+    pub harmonic_ratio: f32,    // harmonic vs percussive balance, 0-1
+
+    // A15 pitch (#1466): monophonic f0 estimate
+    pub pitch: f32,            // log-frequency f0, normalized 0-1
+    pub pitch_confidence: f32, // YIN dip confidence, 0-1
+
+    // A16 spectral contrast (#1467): per-band peak-vs-valley tonality + timbre dynamics
+    pub contrast_0: f32,    // octave band ~200 Hz
+    pub contrast_1: f32,    // ~400 Hz
+    pub contrast_2: f32,    // ~800 Hz
+    pub contrast_3: f32,    // ~1600 Hz
+    pub contrast_4: f32,    // ~3200 Hz
+    pub contrast_5: f32,    // ~6400 Hz+
+    pub contrast_mean: f32, // mean contrast across bands
+    pub timbre_flux: f32,   // L2 norm of the delta-MFCC vector
 }
 
-pub const NUM_FEATURES: usize = 61;
+pub const NUM_FEATURES: usize = 74;
 
 impl AudioFeatures {
     pub fn as_slice(&self) -> &[f32; NUM_FEATURES] {
@@ -108,7 +129,7 @@ mod tests {
     #[test]
     fn as_slice_len() {
         let f = AudioFeatures::default();
-        assert_eq!(f.as_slice().len(), 61);
+        assert_eq!(f.as_slice().len(), 74);
     }
 
     #[test]
@@ -123,20 +144,23 @@ mod tests {
         let f = AudioFeatures {
             sub_bass: 0.11,
             dominant_chroma: 0.55,
-            drop: 0.99,
+            drop: 0.44,
+            timbre_flux: 0.99,
             ..Default::default()
         };
         let s = f.as_slice();
         assert!((s[0] - 0.11).abs() < 1e-6);
         // dominant_chroma keeps its original index (reserved tail appends after it)
         assert!((s[45] - 0.55).abs() < 1e-6);
-        // `drop` is the new last slot (index 60)
-        assert!((s[60] - 0.99).abs() < 1e-6);
+        // `drop` closed the v2 reserved tail at index 60
+        assert!((s[60] - 0.44).abs() < 1e-6);
+        // `timbre_flux` is the new last slot (index 73) after the v3 bump
+        assert!((s[73] - 0.99).abs() < 1e-6);
     }
 
     #[test]
-    fn size_is_244_bytes() {
-        // 61 f32 features (was 184 bytes / 46 before the #1505 batched ABI bump)
-        assert_eq!(std::mem::size_of::<AudioFeatures>(), 244);
+    fn size_is_296_bytes() {
+        // 74 f32 features (was 244 bytes / 61 before the #1629 "v3" batched ABI bump)
+        assert_eq!(std::mem::size_of::<AudioFeatures>(), 296);
     }
 }

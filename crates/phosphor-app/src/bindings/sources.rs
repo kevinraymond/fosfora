@@ -12,7 +12,7 @@ pub type SourceSnapshot = HashMap<String, (f32, SourceRaw)>;
 
 /// Collect audio features into source snapshot.
 pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
-    let mut map = HashMap::with_capacity(61);
+    let mut map = HashMap::with_capacity(74);
 
     let raw = |v: f32| SourceRaw {
         display: format!("{:.3}", v),
@@ -69,9 +69,10 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         (features.dominant_chroma, raw(features.dominant_chroma)),
     );
 
-    // Reserved audio features (batched ABI bump #1505) — 0.0 until each detector
-    // lands, but exposed as sources now so bindings can target them ahead of time.
+    // Reserved audio features (batched ABI bumps #1505 "v2" + #1629 "v3") — 0.0 until each
+    // detector lands, but exposed as sources now so bindings can target them ahead of time.
     let reserved = [
+        // v2 (#1505)
         ("audio.loudness_m", features.loudness_m),
         ("audio.loudness_s", features.loudness_s),
         ("audio.loudness_trend", features.loudness_trend),
@@ -87,6 +88,20 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.section_novelty", features.section_novelty),
         ("audio.buildup", features.buildup),
         ("audio.drop", features.drop),
+        // v3 (#1629)
+        ("audio.percussive_energy", features.percussive_energy),
+        ("audio.harmonic_energy", features.harmonic_energy),
+        ("audio.harmonic_ratio", features.harmonic_ratio),
+        ("audio.pitch", features.pitch),
+        ("audio.pitch_confidence", features.pitch_confidence),
+        ("audio.contrast_0", features.contrast_0),
+        ("audio.contrast_1", features.contrast_1),
+        ("audio.contrast_2", features.contrast_2),
+        ("audio.contrast_3", features.contrast_3),
+        ("audio.contrast_4", features.contrast_4),
+        ("audio.contrast_5", features.contrast_5),
+        ("audio.contrast_mean", features.contrast_mean),
+        ("audio.timbre_flux", features.timbre_flux),
     ];
     for (key, val) in reserved {
         map.insert(key.to_string(), (val, raw(val)));
@@ -200,18 +215,24 @@ mod tests {
     fn test_collect_audio() {
         let features = AudioFeatures::default();
         let snap = collect_audio(&features);
-        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 15 reserved = 61
-        assert_eq!(snap.len(), 61);
+        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 28 reserved = 74
+        assert_eq!(snap.len(), 74);
         assert!(snap.contains_key("audio.kick"));
         assert!(snap.contains_key("audio.band.0"));
         assert!(snap.contains_key("audio.mfcc.12"));
         assert!(snap.contains_key("audio.chroma.11"));
         assert!(snap.contains_key("audio.dominant_chroma"));
-        // Reserved tail (#1505)
+        // Reserved v2 tail (#1505)
         assert!(snap.contains_key("audio.loudness_m"));
         assert!(snap.contains_key("audio.downbeat"));
         assert!(snap.contains_key("audio.bar_phase"));
         assert!(snap.contains_key("audio.drop"));
+        // Reserved v3 tail (#1629)
+        assert!(snap.contains_key("audio.percussive_energy"));
+        assert!(snap.contains_key("audio.harmonic_ratio"));
+        assert!(snap.contains_key("audio.pitch"));
+        assert!(snap.contains_key("audio.contrast_0"));
+        assert!(snap.contains_key("audio.timbre_flux"));
     }
 
     #[test]

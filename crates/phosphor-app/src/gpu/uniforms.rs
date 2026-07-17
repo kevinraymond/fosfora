@@ -4,7 +4,7 @@ use wgpu::{
     Device, Queue, Sampler, TextureView,
 };
 
-/// Shader uniforms packed for GPU consumption (352 bytes).
+/// Shader uniforms packed for GPU consumption (400 bytes).
 /// Must be kept in sync with the WGSL `PhosphorUniforms` struct in
 /// `effect/loader.rs` (UNIFORM_BLOCK) and `assets/shaders/default.wgsl`.
 #[repr(C)]
@@ -65,8 +65,9 @@ pub struct ShaderUniforms {
     pub chroma: [f32; 12],
     // 48 bytes (288 total)
 
-    // ---- Reserved audio features (batched ABI bump #1505) ----
-    // 15 scalars + 1 pad = 64 bytes, keeping the struct 16-byte aligned.
+    // ---- Reserved audio features (batched ABI bump #1505, "v2") ----
+    // 15 scalars = 60 bytes. The single trailing pad the v2 bump added is now
+    // consumed by the v3 tail below (percussive_energy), so no pad remains here.
     // All read 0.0 until each detector lands (then filled with zero ABI churn).
     // A10 loudness (#1461)
     pub loudness_m: f32,
@@ -88,9 +89,29 @@ pub struct ShaderUniforms {
     pub section_novelty: f32,
     pub buildup: f32,
     pub drop: f32,
-    // Pad to the next 16-byte boundary; reserved for a future scalar.
-    pub _pad_features: f32,
-    // 64 bytes (352 total)
+    // 60 bytes (348 total)
+
+    // ---- Reserved audio features (batched ABI bump #1629, "v3") ----
+    // 13 scalars = 52 bytes. 288 base + 28 reserved scalars = 400, a multiple of 16
+    // (no trailing pad needed — the former _pad_features slot is now percussive_energy).
+    // All read 0.0 until each detector lands (then filled with zero ABI churn).
+    // A14 HPSS (#1465)
+    pub percussive_energy: f32,
+    pub harmonic_energy: f32,
+    pub harmonic_ratio: f32,
+    // A15 pitch (#1466)
+    pub pitch: f32,
+    pub pitch_confidence: f32,
+    // A16 spectral contrast (#1467)
+    pub contrast_0: f32,
+    pub contrast_1: f32,
+    pub contrast_2: f32,
+    pub contrast_3: f32,
+    pub contrast_4: f32,
+    pub contrast_5: f32,
+    pub contrast_mean: f32,
+    pub timbre_flux: f32,
+    // 52 bytes (400 total)
 }
 
 pub struct UniformBuffer {
@@ -173,11 +194,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_uniforms_size_352() {
-        // Was 288 before the #1505 batched ABI bump (+15 reserved audio features
-        // + 1 pad = +64 bytes). Must stay a multiple of 16 for the array<vec4f>
-        // members and match the WGSL PhosphorUniforms struct byte-for-byte.
-        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 352);
+    fn shader_uniforms_size_400() {
+        // 288 (through chroma) + 28 reserved audio scalars = 400. The #1629 "v3" bump
+        // added 13 scalars (A14/A15/A16), absorbing the single pad the #1505 "v2" bump
+        // left at 352. Must stay a multiple of 16 for the array<vec4f> members and
+        // match the WGSL PhosphorUniforms struct byte-for-byte.
+        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 400);
     }
 
     #[test]

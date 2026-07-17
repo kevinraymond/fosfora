@@ -741,7 +741,7 @@ impl AudioSystem {
             self.latest = Some(frame.features);
             self.interp.push(
                 frame.timestamp,
-                frame.features,
+                &frame.features,
                 frame.phase_frozen,
                 frame.bar_duration,
             );
@@ -790,7 +790,7 @@ impl AudioSystem {
         // `beat_phase` (and `bar_phase`, A8b #1554) locally, falling back to the newest held
         // frame when the ring can't bracket it (startup, stall, device switch) — the pre-A8
         // behaviour.
-        let interpolated = self.interp.sample(dt, self.latest);
+        let interpolated = self.interp.sample(dt, self.latest.as_ref());
 
         // Beat pulses are 1-frame events that the drain-to-newest loop above (and
         // the channel's drop-on-full policy) can lose. The audio thread counts

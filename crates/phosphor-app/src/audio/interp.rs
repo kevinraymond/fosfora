@@ -120,7 +120,7 @@ impl FeatureInterpolator {
     pub fn push(
         &mut self,
         ts: f64,
-        features: AudioFeatures,
+        features: &AudioFeatures,
         phase_frozen: bool,
         bar_duration: f64,
     ) {
@@ -136,7 +136,7 @@ impl FeatureInterpolator {
         }
         self.frames.push_back(TimedFrame {
             ts,
-            features,
+            features: *features,
             phase_frozen,
             bar_duration,
         });
@@ -150,7 +150,7 @@ impl FeatureInterpolator {
     ///
     /// Note the caller must still apply its beat/downbeat/drop counter latch *after* this:
     /// those pulses are derived from atomics, not from the interpolated vector.
-    pub fn sample(&mut self, dt: f32, fallback: Option<AudioFeatures>) -> Option<AudioFeatures> {
+    pub fn sample(&mut self, dt: f32, fallback: Option<&AudioFeatures>) -> Option<AudioFeatures> {
         self.advance_playhead(dt);
 
         let (mut features, phase_frozen, bar_duration) = self
@@ -162,8 +162,8 @@ impl FeatureInterpolator {
             // so a stalled device can't free-run either local phase.
             .or_else(|| {
                 fallback.map(|f| match self.frames.back() {
-                    Some(t) => (f, t.phase_frozen, t.bar_duration),
-                    None => (f, true, 0.0),
+                    Some(t) => (*f, t.phase_frozen, t.bar_duration),
+                    None => (*f, true, 0.0),
                 })
             })?;
 
@@ -424,7 +424,7 @@ mod tests {
         let mut next_hop = 0.0f64;
         for _ in 0..n {
             while next_hop <= clock {
-                interp.push(next_hop, f(next_hop), false, bar_duration);
+                interp.push(next_hop, &f(next_hop), false, bar_duration);
                 next_hop += HOP;
             }
             if let Some(s) = interp.sample(RENDER_DT, None) {
@@ -438,8 +438,8 @@ mod tests {
     #[test]
     fn lerps_continuous_features() {
         let mut it = FeatureInterpolator::new(SR);
-        it.push(0.0, feats(0.0, 0.0, 120.0), false, 0.0);
-        it.push(HOP, feats(1.0, 0.0, 120.0), false, 0.0);
+        it.push(0.0, &feats(0.0, 0.0, 120.0), false, 0.0);
+        it.push(HOP, &feats(1.0, 0.0, 120.0), false, 0.0);
         // Sample the midpoint of the only bracketing pair directly.
         let (f, _, _) = it
             .sample_at(HOP / 2.0)
@@ -454,8 +454,8 @@ mod tests {
     #[test]
     fn never_extrapolates_past_the_ring() {
         let mut it = FeatureInterpolator::new(SR);
-        it.push(0.0, feats(0.0, 0.0, 120.0), false, 0.0);
-        it.push(HOP, feats(1.0, 0.0, 120.0), false, 0.0);
+        it.push(0.0, &feats(0.0, 0.0, 120.0), false, 0.0);
+        it.push(HOP, &feats(1.0, 0.0, 120.0), false, 0.0);
         // Well past the newest frame: must clamp to it, not extrapolate to rms > 1.
         let (f, _, _) = it.sample_at(HOP * 5.0).expect("clamps to the last pair");
         assert!(
@@ -611,7 +611,7 @@ mod tests {
         let mut last = None;
         for _ in 0..600 {
             while next_hop <= clock {
-                it.push(next_hop, feats(0.5, 0.0, 120.0), false, 0.0);
+                it.push(next_hop, &feats(0.5, 0.0, 120.0), false, 0.0);
                 next_hop += HOP;
             }
             it.sample(RENDER_DT, None);
@@ -636,7 +636,7 @@ mod tests {
         let mut next_hop = 0.0f64;
         for _ in 0..600 {
             while next_hop <= clock {
-                it.push(next_hop, feats(0.5, 0.0, 120.0), false, 0.0);
+                it.push(next_hop, &feats(0.5, 0.0, 120.0), false, 0.0);
                 next_hop += HOP;
             }
             it.sample(RENDER_DT, None);
@@ -657,18 +657,18 @@ mod tests {
         let mut it = FeatureInterpolator::new(SR);
         // Build up a session at t≈100s...
         for i in 0..4 {
-            it.push(100.0 + i as f64 * HOP, feats(0.5, 0.0, 120.0), false, 0.0);
+            it.push(100.0 + i as f64 * HOP, &feats(0.5, 0.0, 120.0), false, 0.0);
         }
         it.sample(RENDER_DT, None);
         assert!(it.playhead.expect("seeded") > 99.0);
         // ...then a device switch restarts `samples_consumed` at 0.
-        it.push(0.0, feats(0.5, 0.0, 120.0), false, 0.0);
+        it.push(0.0, &feats(0.5, 0.0, 120.0), false, 0.0);
         assert!(
             it.playhead.is_none(),
             "backwards clock must drop the playhead"
         );
         assert_eq!(it.frames.len(), 1, "stale window must be dropped");
-        it.push(HOP, feats(0.5, 0.0, 120.0), false, 0.0);
+        it.push(HOP, &feats(0.5, 0.0, 120.0), false, 0.0);
         it.sample(RENDER_DT, None);
         let p = it.playhead.expect("re-seeded on the new clock");
         assert!(p < 1.0, "playhead must re-seed near the new clock, got {p}");
@@ -679,7 +679,7 @@ mod tests {
         let mut it = FeatureInterpolator::new(SR);
         let held = feats(0.7, 0.0, 120.0);
         // Nothing pushed yet: must serve the caller's held frame, not None.
-        let f = it.sample(RENDER_DT, Some(held)).expect("falls back");
+        let f = it.sample(RENDER_DT, Some(&held)).expect("falls back");
         assert!((f.rms - 0.7).abs() < 1e-6);
         // And with nothing held either, there's nothing to serve.
         let mut it2 = FeatureInterpolator::new(SR);
@@ -699,7 +699,7 @@ mod tests {
     fn reset_makes_sample_serve_the_fallback() {
         let mut it = FeatureInterpolator::new(SR);
         for i in 0..4 {
-            it.push(i as f64 * HOP, feats(1.0, 0.0, 120.0), false, 0.0);
+            it.push(i as f64 * HOP, &feats(1.0, 0.0, 120.0), false, 0.0);
         }
         it.sample(RENDER_DT, None);
         it.reset();
@@ -707,7 +707,7 @@ mod tests {
         // Stand in for a decayed `self.latest`: the ring still "remembers" rms 1.0.
         let decayed = feats(0.02, 0.0, 120.0);
         let f = it
-            .sample(RENDER_DT, Some(decayed))
+            .sample(RENDER_DT, Some(&decayed))
             .expect("serves the fallback");
         assert!(
             (f.rms - 0.02).abs() < 1e-6,
@@ -720,7 +720,7 @@ mod tests {
     fn reset_clears_everything() {
         let mut it = FeatureInterpolator::new(SR);
         for i in 0..4 {
-            it.push(i as f64 * HOP, feats(0.5, 0.3, 120.0), false, 0.0);
+            it.push(i as f64 * HOP, &feats(0.5, 0.3, 120.0), false, 0.0);
         }
         it.sample(RENDER_DT, None);
         it.reset();
@@ -819,14 +819,14 @@ mod tests {
     fn bar_phase_follows_the_stall_fallback() {
         let mut it = FeatureInterpolator::new(SR);
         for i in 0..4 {
-            it.push(i as f64 * HOP, bar_feats(0.5), false, BAR_2S);
+            it.push(i as f64 * HOP, &bar_feats(0.5), false, BAR_2S);
         }
         it.sample(RENDER_DT, None);
         it.reset();
 
         let decayed = bar_feats(0.02);
         let f = it
-            .sample(RENDER_DT, Some(decayed))
+            .sample(RENDER_DT, Some(&decayed))
             .expect("serves the fallback");
         assert!(
             (f.bar_phase - 0.02).abs() < 1e-6,
@@ -857,7 +857,7 @@ mod tests {
                 // tracker now pins bar_phase alongside it while still publishing the rate.
                 let mut f = bar_feats(0.0);
                 f.beat_phase = 0.0;
-                it.push(next_hop, f, true, BAR_2S);
+                it.push(next_hop, &f, true, BAR_2S);
                 next_hop += HOP;
             }
             if let Some(s) = it.sample(RENDER_DT, None) {
@@ -886,8 +886,8 @@ mod tests {
         let mut it = FeatureInterpolator::new(SR);
         // A 4/4 → 3/4 flip at 120 BPM: the downbeat at `b` resets the phase and re-sizes the
         // bar in the same frame.
-        it.push(0.0, bar_feats(0.97), false, BAR_2S);
-        it.push(HOP, bar_feats(0.0), false, 1.5);
+        it.push(0.0, &bar_feats(0.97), false, BAR_2S);
+        it.push(HOP, &bar_feats(0.0), false, 1.5);
 
         let (f, _, bar_duration) = it.sample_at(HOP / 2.0).expect("two frames bracket it");
         assert_eq!(f.bar_phase, 0.97, "the wrapping sawtooth holds from `a`");
@@ -915,7 +915,7 @@ mod tests {
                     ((next_hop - t0) / 1.5) % 1.0
                 };
                 let dur = if next_hop < t0 { BAR_2S } else { 1.5 };
-                it.push(next_hop, bar_feats(phase as f32), false, dur);
+                it.push(next_hop, &bar_feats(phase as f32), false, dur);
                 next_hop += HOP;
             }
             if let Some(s) = it.sample(RENDER_DT, None) {

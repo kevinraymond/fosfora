@@ -50,11 +50,12 @@ const LIB_FILENAMES: &[&str] = &[
 
 /// Standard uniform block prepended to all effect shaders.
 ///
-/// Shader ABI v2 (352-byte `PhosphorUniforms`), set by the batched bump #1505:
-/// the reserved audio tail (loudness / key / downbeat / stereo / structure) and
-/// the A17 audio textures (bindings 3-6). Reserved scalars read 0.0 and the audio
-/// textures are 1x1 placeholders until their detectors land. Keep this byte-for-byte
-/// in sync with `ShaderUniforms` (gpu/uniforms.rs) and `assets/shaders/default.wgsl`.
+/// Shader ABI v3 (400-byte `PhosphorUniforms`): the v2 batched bump #1505 reserved
+/// the loudness / key / downbeat / stereo / structure tail and the A17 audio textures
+/// (bindings 3-6); the v3 batched bump #1629 reserves the hpss / pitch / spectral-contrast
+/// tail (13 scalars, absorbing v2's trailing pad). Reserved scalars read 0.0 and the audio
+/// textures are 1x1 placeholders until their detectors land. Keep this byte-for-byte in
+/// sync with `ShaderUniforms` (gpu/uniforms.rs) and `assets/shaders/default.wgsl`.
 const UNIFORM_BLOCK: &str = r#"
 struct PhosphorUniforms {
     time: f32,
@@ -108,7 +109,21 @@ struct PhosphorUniforms {
     section_novelty: f32,  // A18 self-similarity novelty (#1469)
     buildup: f32,          // A18 riser/tension estimate
     drop: f32,             // A18 drop/impact detection
-    _pad_features: f32,
+
+    // Reserved audio features (batched ABI bump #1629, "v3") — 0.0 until each detector lands.
+    percussive_energy: f32, // A14 transient energy, dB-mapped 0-1 (#1465)
+    harmonic_energy: f32,   // A14 sustained energy, dB-mapped 0-1
+    harmonic_ratio: f32,    // A14 harmonic vs percussive balance, 0-1
+    pitch: f32,             // A15 log-frequency f0, 0-1 (#1466)
+    pitch_confidence: f32,  // A15 YIN dip confidence, 0-1
+    contrast_0: f32,        // A16 spectral contrast band ~200 Hz (#1467)
+    contrast_1: f32,        // A16 ~400 Hz
+    contrast_2: f32,        // A16 ~800 Hz
+    contrast_3: f32,        // A16 ~1600 Hz
+    contrast_4: f32,        // A16 ~3200 Hz
+    contrast_5: f32,        // A16 ~6400 Hz+
+    contrast_mean: f32,     // A16 mean contrast across bands
+    timbre_flux: f32,       // A16 L2 norm of the delta-MFCC vector
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;
