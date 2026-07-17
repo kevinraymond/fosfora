@@ -55,6 +55,26 @@ const DYNAMICS_COLORS: [Color32; 7] = [
     Color32::from_rgb(0xFF, 0xCC, 0x88), // Rolloff - warm
 ];
 
+// ── Structure (A10 loudness + A18 build/drop/section) ──────────────────
+
+const STRUCTURE_LABELS: [&str; 5] = ["Loud", "Trend", "Build", "Sect", "Drop"];
+
+const STRUCTURE_TOOLTIPS: [&str; 5] = [
+    "Short-term Loudness (A10)\nEBU R128, \u{2212}60..0 LUFS mapped to 0\u{2013}1",
+    "Loudness Trend (A10)\nMomentary rising over short-term \u{2014} a build hint",
+    "Build-up (A18)\nRiser / tension: loudness + brightening + onset rise + sub-bass withdrawal",
+    "Section Novelty (A18)\nFoote self-similarity \u{2014} spikes at section boundaries (~3 s causal)",
+    "Drop (A18)\nCounter-latched drop pulse (sustained build \u{2192} loudness jump + sub-bass return)",
+];
+
+const STRUCTURE_COLORS: [Color32; 5] = [
+    Color32::from_rgb(0x66, 0xBB, 0xFF), // Loud - light blue
+    Color32::from_rgb(0xFF, 0xAA, 0x44), // Trend - orange
+    Color32::from_rgb(0xFF, 0xCC, 0x44), // Build - amber
+    Color32::from_rgb(0xBB, 0x66, 0xFF), // Sect - purple
+    Color32::from_rgb(0xFF, 0x44, 0x66), // Drop - red
+];
+
 // ── MFCC ───────────────────────────────────────────────────────────────
 
 const MFCC_LABELS: [&str; 13] = [
@@ -491,6 +511,115 @@ fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
     }
 }
 
+// ── Structure rows (A10 loudness + A18 build/drop/section) ─────────────
+
+fn draw_structure_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
+    let tc = theme_colors(ui.ctx());
+    let values: [f32; 5] = [
+        uniforms.loudness_s,
+        uniforms.loudness_trend,
+        uniforms.buildup,
+        uniforms.section_novelty,
+        uniforms.drop,
+    ];
+
+    // `drop` is a 1-frame pulse; hold a decaying flash so the eye can catch it, and keep the
+    // panel repainting while it fades.
+    let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
+    let drop_flash = ui.ctx().data_mut(|d| {
+        let id = egui::Id::new("audio_drop_flash");
+        let mut f: f32 = d.get_temp(id).unwrap_or(0.0);
+        f = (f - dt / 0.6).max(0.0);
+        if uniforms.drop > 0.5 {
+            f = 1.0;
+        }
+        d.insert_temp(id, f);
+        f
+    });
+    if drop_flash > 0.0 {
+        ui.ctx().request_repaint();
+    }
+
+    let available_width = ui.available_width();
+    let label_width = 36.0;
+    let value_width = 34.0;
+    let bar_left = label_width + 8.0;
+    let bar_right = available_width - value_width - 8.0;
+    let bar_track_width = (bar_right - bar_left).max(20.0);
+
+    for (i, (&label, &value)) in STRUCTURE_LABELS.iter().zip(values.iter()).enumerate() {
+        let (row_rect, row_resp) = ui.allocate_exact_size(
+            Vec2::new(available_width, DYNAMICS_ROW_HEIGHT),
+            egui::Sense::hover(),
+        );
+        let painter = ui.painter();
+        let cy = row_rect.center().y;
+        let row_left = row_rect.left();
+
+        painter.text(
+            pos2(row_left + label_width, cy),
+            egui::Align2::RIGHT_CENTER,
+            label,
+            egui::FontId::proportional(SMALL_SIZE),
+            tc.text_secondary,
+        );
+
+        let color = STRUCTURE_COLORS[i];
+        let v = value.clamp(0.0, 1.0);
+        let track_left = row_left + bar_left;
+
+        if i == 4 {
+            // Drop: a flashing pill (decays after each pulse).
+            let dim = Color32::from_rgb(0x33, 0x33, 0x33);
+            let lit = Color32::from_rgb(0xFF, 0x44, 0x66);
+            let dot_color = lerp_color(dim, lit, drop_flash);
+            painter.circle_filled(pos2(track_left + 4.0, cy), 3.5, dot_color);
+            if drop_flash > 0.05 {
+                painter.text(
+                    pos2(track_left + 14.0, cy),
+                    egui::Align2::LEFT_CENTER,
+                    "DROP",
+                    egui::FontId::proportional(SMALL_SIZE),
+                    lerp_color(tc.text_secondary, lit, drop_flash),
+                );
+            }
+        } else {
+            let track_rect = Rect::from_min_size(
+                pos2(track_left, cy - DYNAMICS_BAR_HEIGHT * 0.5),
+                Vec2::new(bar_track_width, DYNAMICS_BAR_HEIGHT),
+            );
+            painter.rect_filled(track_rect, 2.0, tc.meter_bg);
+            if v > 0.001 {
+                let fill_rect = Rect::from_min_size(
+                    track_rect.min,
+                    Vec2::new(bar_track_width * v, DYNAMICS_BAR_HEIGHT),
+                );
+                painter.rect_filled(fill_rect, 2.0, color);
+            }
+        }
+
+        if i != 4 {
+            let pct = (value * 100.0).clamp(0.0, 999.0);
+            painter.text(
+                pos2(row_rect.right(), cy),
+                egui::Align2::RIGHT_CENTER,
+                format!("{pct:.0}%"),
+                egui::FontId::monospace(SMALL_SIZE),
+                tc.text_secondary,
+            );
+        }
+
+        row_resp.on_hover_text(STRUCTURE_TOOLTIPS[i]);
+    }
+}
+
+/// Linear blend between two colors (t clamped 0..1).
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
 // ── Chroma wheel ───────────────────────────────────────────────────────
 
 fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
@@ -717,6 +846,10 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
     // Dynamics
     draw_section_header(ui, "DYNAMICS", "7 features");
     draw_dynamics_rows(ui, uniforms);
+
+    // Structure (A10 loudness + A18 build/drop/section)
+    draw_section_header(ui, "STRUCTURE", "loudness · build · drop");
+    draw_structure_rows(ui, uniforms);
 
     // Chroma
     draw_section_header(ui, "CHROMA", "12 pitch classes");

@@ -59,6 +59,19 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         ..Default::default()
     }
     .show(ui, |ui| {
+        // TX broadcast enable (separate from "Enable OSC", which is RX only)
+        let mut tx = osc.config.tx_enabled;
+        if ui
+            .checkbox(&mut tx, RichText::new("Broadcast TX").size(SMALL_SIZE))
+            .on_hover_text(
+                "Send audio features + state over OSC to TX Host:Port \
+                 (watch with `oscdump <port>`, or drive bridges). Separate from RX.",
+            )
+            .changed()
+        {
+            osc.set_tx_enabled(tx);
+        }
+
         // TX Host
         ui.horizontal(|ui| {
             ui.label(

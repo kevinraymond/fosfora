@@ -177,7 +177,6 @@ impl OscSystem {
     }
 
     /// Enable or disable TX.
-    #[allow(dead_code)]
     pub fn set_tx_enabled(&mut self, enabled: bool) {
         self.config.tx_enabled = enabled;
         if enabled {
