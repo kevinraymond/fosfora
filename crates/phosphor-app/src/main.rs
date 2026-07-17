@@ -1010,6 +1010,19 @@ impl ApplicationHandler for PhosphorApp {
                     app.audio.set_band_scale(scale);
                 }
 
+                // Persist A18 structure tuning after a slider release (#1510). The live value
+                // already reached the audio thread via the shared Arc; here we just snapshot the
+                // newest config into settings and save (no rebuild).
+                let tuning_dirty: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("structure_tuning_dirty")));
+                if tuning_dirty == Some(true) {
+                    app.settings.structure_tuning =
+                        *app.audio.tuning().lock().unwrap_or_else(|e| e.into_inner());
+                    app.settings.save();
+                }
+
                 // Handle FFmpeg webcam toggle from settings panel
                 #[cfg(feature = "webcam")]
                 {

@@ -2,7 +2,7 @@ use std::f32::consts::{PI, TAU};
 
 use egui::{Color32, Mesh, Pos2, Rect, RichText, Shape, Stroke, Ui, Vec2, pos2};
 
-use crate::audio::AudioSystem;
+use crate::audio::{AudioSystem, StructureConfig};
 use crate::gpu::ShaderUniforms;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
@@ -851,6 +851,9 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
     draw_section_header(ui, "STRUCTURE", "loudness · build · drop");
     draw_structure_rows(ui, uniforms);
 
+    // Structure tuning (A18 knobs, #1510) — collapsible, writes the shared config live.
+    draw_tuning_rows(ui, audio);
+
     // Chroma
     draw_section_header(ui, "CHROMA", "12 pitch classes");
     ui.vertical_centered(|ui| {
@@ -864,4 +867,120 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
 
     // Footer
     draw_footer(ui);
+}
+
+/// Interactive A18 structure-detector tuning (#1510): build-up sensitivity and drop firing.
+/// Sliders write the shared `StructureConfig` directly (the audio thread reads it next hop —
+/// no pipeline rebuild); on release the change is flagged for persistence to settings.json
+/// (applied in `main.rs`). Collapsed by default to keep the monitor panel uncluttered.
+fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
+    let mut committed = false;
+    ui.collapsing(
+        RichText::new("TUNING \u{00b7} A18 build/drop")
+            .size(SMALL_SIZE)
+            .strong(),
+        |ui| {
+            let mut cfg = audio.tuning().lock().unwrap_or_else(|e| e.into_inner());
+
+            // Returns true when the edit is "committed" (drag released or keyboard entry
+            // confirmed) so we persist once per adjustment, not every drag frame.
+            let row = |ui: &mut Ui,
+                       v: &mut f32,
+                       range: std::ops::RangeInclusive<f32>,
+                       label: &str,
+                       tip: &str|
+             -> bool {
+                let resp = ui
+                    .add(egui::Slider::new(v, range).text(label))
+                    .on_hover_text(tip);
+                resp.drag_stopped() || resp.lost_focus()
+            };
+
+            ui.label(RichText::new("Build-up").size(8.0));
+            committed |= row(
+                ui,
+                &mut cfg.buildup_bias,
+                -5.0..=0.0,
+                "Bias",
+                "Base tension. More negative = harder to build up.",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.buildup_w_loud,
+                0.0..=5.0,
+                "Loud",
+                "Weight on loudness rise (A10 loudness_trend).",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.buildup_w_centroid,
+                0.0..=5.0,
+                "Bright",
+                "Weight on spectral brightening (centroid rise).",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.buildup_w_onset,
+                0.0..=5.0,
+                "Onsets",
+                "Weight on onset-density rise.",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.buildup_w_subbass,
+                0.0..=5.0,
+                "Sub-out",
+                "Weight on sub-bass withdrawal (the EDM high-pass sweep).",
+            );
+
+            ui.add_space(2.0);
+            ui.label(RichText::new("Drop").size(8.0));
+            committed |= row(
+                ui,
+                &mut cfg.drop_arm_buildup,
+                0.3..=0.9,
+                "Arm level",
+                "Build-up level that must be sustained to arm the drop.",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.drop_arm_sustain,
+                1.0..=12.0,
+                "Arm secs",
+                "Seconds build-up must stay above the arm level.",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.drop_loud_jump,
+                0.02..=0.2,
+                "Jump",
+                "Broadband loudness leap that fires a drop (0.08 \u{2248} 5 LU).",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.drop_subbass_return,
+                0.2..=0.9,
+                "Sub-back",
+                "Fraction of the sub-bass reference peak that must return.",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.drop_refractory,
+                4.0..=40.0,
+                "Refractory",
+                "Seconds of drop suppression after one fires.",
+            );
+
+            ui.add_space(2.0);
+            if ui.button("Reset to defaults").clicked() {
+                *cfg = StructureConfig::default();
+                committed = true;
+            }
+        },
+    );
+
+    if committed {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("structure_tuning_dirty"), true));
+    }
 }

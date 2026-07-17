@@ -19,10 +19,14 @@
 //!
 //! Reads the **pre-normalization** features (the adaptive normalizer would flatten exactly
 //! the loudness/sub-bass dynamics this stage keys on) plus the beat result. Fills three
-//! reserved shader fields with **zero ABI churn** (#1505). Thresholds are module consts
-//! (a user-facing tuning UI is a separate follow-up). Heuristics tuned for electronic music.
+//! reserved shader fields with **zero ABI churn** (#1505). The hot-loop weights and drop
+//! thresholds are exposed as a runtime-tunable [`StructureConfig`] (audio-panel sliders,
+//! #1510); the sizing windows (ring/kernel/tick/baseline) stay compile-time consts because
+//! they allocate. Heuristics tuned for electronic music.
 
 use std::collections::VecDeque;
+
+use serde::{Deserialize, Serialize};
 
 use super::beat::BeatResult;
 use super::features::AudioFeatures;
@@ -74,6 +78,55 @@ const DROP_REFRACTORY: f32 = 16.0;
 /// Running-max forgetting window (seconds) for self-normalizing `section_novelty`.
 const NOVELTY_MAX_SECONDS: f32 = 30.0;
 
+/// Runtime-tunable A18 thresholds (task #1510). Only the hot-loop build-up weights and
+/// drop-machine thresholds are exposed — a VJ tunes build-up sensitivity and drop firing
+/// live from the audio panel. The sizing consts (`TICK_HZ`, `RING_SECONDS`, `KERNEL_SECONDS`,
+/// `DROP_BASELINE_SECONDS`) are *not* here: they allocate rings/kernels at construction, so
+/// changing them needs a rebuild, not a per-tick read. Shared with the audio thread via
+/// `Arc<Mutex<_>>` and snapshotted once per hop (no pipeline rebuild). Defaults mirror the
+/// module consts.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StructureConfig {
+    /// Build-up logistic bias (base tension; more negative = harder to trigger build-up).
+    pub buildup_bias: f32,
+    /// Build-up weight on loudness rise (A10 `loudness_trend`).
+    pub buildup_w_loud: f32,
+    /// Build-up weight on spectral brightening (centroid rise).
+    pub buildup_w_centroid: f32,
+    /// Build-up weight on onset-density rise.
+    pub buildup_w_onset: f32,
+    /// Build-up weight on sub-bass withdrawal (the EDM high-pass sweep).
+    pub buildup_w_subbass: f32,
+    /// Drop arm: build-up level that must be sustained to arm the drop.
+    pub drop_arm_buildup: f32,
+    /// Drop arm: seconds build-up must stay above the arm level.
+    pub drop_arm_sustain: f32,
+    /// Drop fire: broadband loudness jump (0..1 = −60..0 LUFS; 0.08 ≈ 5 LU).
+    pub drop_loud_jump: f32,
+    /// Drop fire: fraction of the sub-bass reference peak that must return.
+    pub drop_subbass_return: f32,
+    /// Drop: seconds of suppression after one fires (refractory).
+    pub drop_refractory: f32,
+}
+
+impl Default for StructureConfig {
+    fn default() -> Self {
+        Self {
+            buildup_bias: BUILD_BIAS,
+            buildup_w_loud: BUILD_W_LOUD,
+            buildup_w_centroid: BUILD_W_CENTROID,
+            buildup_w_onset: BUILD_W_ONSET,
+            buildup_w_subbass: BUILD_W_SUBBASS,
+            drop_arm_buildup: DROP_ARM_BUILDUP,
+            drop_arm_sustain: DROP_ARM_SUSTAIN,
+            drop_loud_jump: DROP_LOUD_JUMP,
+            drop_subbass_return: DROP_SUBBASS_RETURN,
+            drop_refractory: DROP_REFRACTORY,
+        }
+    }
+}
+
 /// Per-frame structure outputs, copied onto `AudioFeatures`.
 pub struct StructureResult {
     /// Section-boundary novelty, self-normalized 0..1.
@@ -113,6 +166,8 @@ pub struct StructureTracker {
     last_frame_time: f64,
     last_tick_time: f64,
     started: bool,
+    /// Live-tunable thresholds, refreshed from the shared config each `process` call (#1510).
+    cfg: StructureConfig,
 }
 
 impl StructureTracker {
@@ -154,6 +209,7 @@ impl StructureTracker {
             last_frame_time: -1.0,
             last_tick_time: -1.0,
             started: false,
+            cfg: StructureConfig::default(),
         }
     }
 
@@ -162,10 +218,12 @@ impl StructureTracker {
     /// drop machine run only on the decimated ~`TICK_HZ` tick (their outputs are held between).
     pub fn process(
         &mut self,
+        cfg: StructureConfig,
         pre_norm: &AudioFeatures,
         beat: &BeatResult,
         timestamp: f64,
     ) -> StructureResult {
+        self.cfg = cfg;
         let frame_dt = if self.started {
             (timestamp - self.last_frame_time).clamp(0.0, 0.1) as f32
         } else {
@@ -260,11 +318,11 @@ impl StructureTracker {
         } else {
             0.0
         };
-        let x = BUILD_BIAS
-            + BUILD_W_LOUD * f_loud
-            + BUILD_W_CENTROID * f_centroid
-            + BUILD_W_ONSET * f_onset
-            + BUILD_W_SUBBASS * f_subbass_gone;
+        let x = self.cfg.buildup_bias
+            + self.cfg.buildup_w_loud * f_loud
+            + self.cfg.buildup_w_centroid * f_centroid
+            + self.cfg.buildup_w_onset * f_onset
+            + self.cfg.buildup_w_subbass * f_subbass_gone;
         sigmoid(x)
     }
 
@@ -272,7 +330,7 @@ impl StructureTracker {
     fn update_drop(&mut self, pre_norm: &AudioFeatures, timestamp: f64) -> f32 {
         let tick_dt = self.tick_interval as f32;
         // Sustained-high build-up arms the drop; brief dips decay the timer rather than reset it.
-        if self.cur_buildup > DROP_ARM_BUILDUP {
+        if self.cur_buildup > self.cfg.drop_arm_buildup {
             self.high_duration += tick_dt;
         } else {
             self.high_duration = (self.high_duration - 2.0 * tick_dt).max(0.0);
@@ -285,12 +343,12 @@ impl StructureTracker {
         self.loud_ring.push_back(pre_norm.loudness_m);
         let baseline = self.loud_ring.iter().copied().fold(f32::INFINITY, f32::min);
         let jump = pre_norm.loudness_m - baseline;
-        let subbass_returning = pre_norm.sub_bass > DROP_SUBBASS_RETURN * self.subbass_ref;
+        let subbass_returning = pre_norm.sub_bass > self.cfg.drop_subbass_return * self.subbass_ref;
 
-        let armed = self.high_duration >= DROP_ARM_SUSTAIN;
+        let armed = self.high_duration >= self.cfg.drop_arm_sustain;
         let in_refractory = timestamp < self.refractory_until;
-        if armed && !in_refractory && jump >= DROP_LOUD_JUMP && subbass_returning {
-            self.refractory_until = timestamp + DROP_REFRACTORY as f64;
+        if armed && !in_refractory && jump >= self.cfg.drop_loud_jump && subbass_returning {
+            self.refractory_until = timestamp + self.cfg.drop_refractory as f64;
             self.high_duration = 0.0;
             return 1.0;
         }
@@ -375,7 +433,7 @@ mod tests {
         let (mut drops, mut max_nov, mut last_build) = (0, 0.0f32, 0.0);
         for i in 0..n {
             let (f, onset) = feat(i as f32 / HOP);
-            let r = t.process(&f, &beat(onset), *clock);
+            let r = t.process(StructureConfig::default(), &f, &beat(onset), *clock);
             if r.drop > 0.5 {
                 drops += 1;
             }
@@ -477,6 +535,84 @@ mod tests {
         assert!(
             nov_peak > 0.3 && nov_peak > nov_steady + 0.1,
             "novelty should spike at the section change (peak {nov_peak}, steady {nov_steady})"
+        );
+    }
+
+    #[test]
+    fn config_raised_jump_threshold_suppresses_drop() {
+        // Same build→drop scenario as `build_then_drop_fires_once`, driven twice: with the
+        // default config the drop fires once; with `drop_loud_jump` raised past the scenario's
+        // ~0.25 loudness leap it must NOT fire. Proves the shared StructureConfig actually
+        // drives the detector at runtime (#1510), not just the compile-time consts.
+        fn run<F: FnMut(f32) -> (AudioFeatures, f32)>(
+            t: &mut StructureTracker,
+            clock: &mut f64,
+            cfg: StructureConfig,
+            secs: f32,
+            mut feat: F,
+            drops: &mut usize,
+        ) {
+            let dt = 1.0 / HOP as f64;
+            let n = (secs * HOP) as usize;
+            for i in 0..n {
+                let (f, onset) = feat(i as f32 / HOP);
+                if t.process(cfg, &f, &beat(onset), *clock).drop > 0.5 {
+                    *drops += 1;
+                }
+                *clock += dt;
+            }
+        }
+
+        fn count_drops(cfg: StructureConfig) -> usize {
+            let mut t = StructureTracker::new(HOP);
+            let mut clock = 0.0f64;
+            let mut drops = 0usize;
+            run(
+                &mut t,
+                &mut clock,
+                cfg,
+                3.0,
+                |_| (feat_with(0.5, 0.6, 0.35, 0.0), 0.2),
+                &mut drops,
+            );
+            run(
+                &mut t,
+                &mut clock,
+                cfg,
+                7.0,
+                |s| {
+                    let p = (s / 7.0).min(1.0);
+                    (
+                        feat_with(0.5, 0.6 - 0.4 * p, 0.35 + 0.35 * p, 0.7),
+                        0.2 + 0.6 * p,
+                    )
+                },
+                &mut drops,
+            );
+            run(
+                &mut t,
+                &mut clock,
+                cfg,
+                3.0,
+                |_| (feat_with(0.75, 0.9, 0.6, 0.2), 0.9),
+                &mut drops,
+            );
+            drops
+        }
+
+        assert_eq!(
+            count_drops(StructureConfig::default()),
+            1,
+            "default config must fire exactly one drop"
+        );
+        let hard = StructureConfig {
+            drop_loud_jump: 0.5,
+            ..StructureConfig::default()
+        };
+        assert_eq!(
+            count_drops(hard),
+            0,
+            "a raised drop_loud_jump must suppress the same drop"
         );
     }
 

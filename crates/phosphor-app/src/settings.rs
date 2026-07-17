@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::audio::StructureConfig;
 use crate::ui::theme::ThemeMode;
 
 /// How the 7 frequency bands are scaled (A1 #1452).
@@ -79,6 +80,10 @@ pub struct SettingsConfig {
     pub webcam_device: Option<u32>,
     #[serde(default)]
     pub use_ffmpeg_webcam: bool,
+    /// A18 structure-detector tuning (#1510). `#[serde(default)]` so older settings files
+    /// without this key load with the built-in defaults.
+    #[serde(default)]
+    pub structure_tuning: StructureConfig,
 }
 
 impl Default for SettingsConfig {
@@ -91,6 +96,7 @@ impl Default for SettingsConfig {
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
             use_ffmpeg_webcam: false,
+            structure_tuning: StructureConfig::default(),
         }
     }
 }
@@ -181,6 +187,7 @@ mod tests {
                 particle_quality: ParticleQuality::default(),
                 webcam_device: None,
                 use_ffmpeg_webcam: false,
+                structure_tuning: StructureConfig::default(),
             };
             let json = serde_json::to_string(&c).unwrap();
             let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
@@ -198,10 +205,29 @@ mod tests {
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
             use_ffmpeg_webcam: false,
+            structure_tuning: StructureConfig::default(),
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(c2.theme, ThemeMode::HighContrast);
+    }
+
+    #[test]
+    fn structure_tuning_defaults_when_missing() {
+        // Older settings.json (pre-#1510) has no structure_tuning key → built-in defaults.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.structure_tuning, StructureConfig::default());
+    }
+
+    #[test]
+    fn structure_tuning_roundtrips() {
+        let mut c = SettingsConfig::default();
+        c.structure_tuning.drop_loud_jump = 0.15;
+        c.structure_tuning.buildup_bias = -3.0;
+        let json = serde_json::to_string(&c).unwrap();
+        let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(c2.structure_tuning, c.structure_tuning);
     }
 
     #[test]

@@ -48,6 +48,7 @@ use self::key::KeyDetector;
 use self::loudness::LoudnessMeter;
 use self::normalizer::FeatureNormalizer;
 use self::smoother::FeatureSmoother;
+pub use self::structure::StructureConfig;
 use self::structure::StructureTracker;
 use crate::settings::BandScale;
 
@@ -166,6 +167,10 @@ pub struct AudioSystem {
     /// How the analyzer scales the 7 bands (A1 #1452). Held so a device switch preserves it
     /// and `set_band_scale` can rebuild the pipeline with a new value.
     band_scale: BandScale,
+    /// Live-tunable A18 structure-detection thresholds (#1510). Shared with the audio thread,
+    /// which snapshots it once per hop; the audio panel writes it directly (no pipeline
+    /// rebuild). Threaded through `switch_device` so user tuning survives a device change.
+    tuning: Arc<Mutex<StructureConfig>>,
     /// Total beats detected, incremented by the audio thread. The consumer compares
     /// this against `beats_seen` so a 1-frame beat pulse survives channel overflow
     /// and the drain-to-newest loop in `latest_features()`.
@@ -199,10 +204,18 @@ pub struct AudioSystem {
 impl AudioSystem {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::new_with_device(None, BandScale::default())
+        Self::new_with_device(
+            None,
+            BandScale::default(),
+            Arc::new(Mutex::new(StructureConfig::default())),
+        )
     }
 
-    pub fn new_with_device(device_name: Option<&str>, band_scale: BandScale) -> Self {
+    pub fn new_with_device(
+        device_name: Option<&str>,
+        band_scale: BandScale,
+        tuning: Arc<Mutex<StructureConfig>>,
+    ) -> Self {
         let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::bounded(4);
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -220,6 +233,7 @@ impl AudioSystem {
                 let beats = beat_counter.clone();
                 let downbeats = downbeat_counter.clone();
                 let drops = drop_counter.clone();
+                let tuning_thread = tuning.clone();
 
                 let thread_handle = thread::Builder::new()
                     .name("phosphor-audio".into())
@@ -234,6 +248,7 @@ impl AudioSystem {
                             downbeats,
                             drops,
                             band_scale,
+                            tuning_thread,
                         );
                     })
                     .expect("Failed to spawn audio thread");
@@ -261,6 +276,7 @@ impl AudioSystem {
                     recording_ring,
                     sample_rate: sample_rate as u32,
                     band_scale,
+                    tuning,
                     beat_counter,
                     beats_seen: 0,
                     downbeat_counter,
@@ -299,6 +315,7 @@ impl AudioSystem {
                     recording_ring,
                     sample_rate: 44100,
                     band_scale,
+                    tuning,
                     beat_counter,
                     beats_seen: 0,
                     downbeat_counter,
@@ -329,8 +346,10 @@ impl AudioSystem {
         self._capture = None;
 
         // Create new system and swap all fields (mem::replace avoids move-out-of-Drop).
-        // Preserve the current band scale (A1 #1452) across the switch.
-        let mut new = Self::new_with_device(device_name, self.band_scale);
+        // Preserve the current band scale (A1 #1452) and the A18 tuning Arc (#1510) across the
+        // switch — passing the same `tuning` Arc keeps user tuning live (the fresh audio thread
+        // receives a clone of it), so `self.tuning` is deliberately left unswapped below.
+        let mut new = Self::new_with_device(device_name, self.band_scale, self.tuning.clone());
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
         self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
@@ -364,6 +383,13 @@ impl AudioSystem {
         self.stall_reported = false;
         // Keep existing cached_devices/scan_in_flight/last_scan — no need to re-scan on switch
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
+    }
+
+    /// Shared, live-tunable A18 structure-detection thresholds (#1510). The audio panel locks
+    /// and writes this directly; the audio thread snapshots it once per hop. No pipeline
+    /// rebuild, and it survives a device switch (the same Arc is threaded through).
+    pub fn tuning(&self) -> &Arc<Mutex<StructureConfig>> {
+        &self.tuning
     }
 
     /// Change the band scaling (A1 #1452) at runtime. Rebuilds the capture pipeline (a brief
@@ -587,6 +613,7 @@ fn audio_thread(
     downbeat_counter: Arc<AtomicU32>,
     drop_counter: Arc<AtomicU32>,
     band_scale: BandScale,
+    tuning: Arc<Mutex<StructureConfig>>,
 ) {
     let mut analyzer = FftAnalyzer::new(sample_rate, band_scale);
     let mut normalizer = FeatureNormalizer::new();
@@ -719,7 +746,11 @@ fn audio_thread(
 
             // A18 (#1469): section novelty / build-up / drop. Reads the pre-normalization
             // snapshot + the beat result; heavy work is decimated to ~10 Hz internally.
-            let structure = structure_tracker.process(&pre_norm, &beat_result, timestamp);
+            // Snapshot the shared A18 tuning once per hop (#1510) so this frame's structure
+            // detection sees a consistent set of thresholds; the UI may be writing it live.
+            let struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
+            let structure =
+                structure_tracker.process(struct_cfg, &pre_norm, &beat_result, timestamp);
             raw.section_novelty = structure.section_novelty;
             raw.buildup = structure.buildup;
             raw.drop = structure.drop;
