@@ -9,6 +9,7 @@ pub mod loudness;
 pub mod normalizer;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
+pub mod ranging;
 pub mod schema;
 pub mod smoother;
 pub mod structure;
@@ -45,7 +46,7 @@ use self::capture::{AudioCapture, RingBuffer};
 use self::downbeat::DownbeatTracker;
 use self::key::KeyDetector;
 use self::loudness::LoudnessMeter;
-use self::normalizer::AdaptiveNormalizer;
+use self::normalizer::FeatureNormalizer;
 use self::smoother::FeatureSmoother;
 use self::structure::StructureTracker;
 use crate::settings::BandScale;
@@ -569,7 +570,7 @@ fn audio_thread(
     band_scale: BandScale,
 ) {
     let mut analyzer = FftAnalyzer::new(sample_rate, band_scale);
-    let mut normalizer = AdaptiveNormalizer::new();
+    let mut normalizer = FeatureNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);
     let mut key_detector = KeyDetector::new(sample_rate);
     let mut loudness_meter = LoudnessMeter::new(sample_rate);
@@ -649,8 +650,9 @@ fn audio_thread(
             // already filled at this point; onset/bpm come from `beat_result` below.)
             let pre_norm = raw;
 
-            // Adaptive normalization (replaces fixed gains)
-            raw = normalizer.normalize(&raw);
+            // A2 (#1453): per-feature normalization (gated percentile / fixed-range /
+            // z-score / passthrough), silence-gated on the A10 perceptual flag.
+            raw = normalizer.normalize(&raw, loud_silent);
 
             // Beat detection (on raw magnitude spectra)
             let beat_result = beat_detector.process(
