@@ -60,11 +60,11 @@ const DYNAMICS_COLORS: [Color32; 7] = [
 const STRUCTURE_LABELS: [&str; 5] = ["Loud", "Trend", "Build", "Sect", "Drop"];
 
 const STRUCTURE_TOOLTIPS: [&str; 5] = [
-    "Short-term Loudness (A10)\nEBU R128, \u{2212}60..0 LUFS mapped to 0\u{2013}1",
-    "Loudness Trend (A10)\nMomentary rising over short-term \u{2014} a build hint",
-    "Build-up (A18)\nRiser / tension: loudness + brightening + onset rise + sub-bass withdrawal",
-    "Section Novelty (A18)\nFoote self-similarity \u{2014} spikes at section boundaries (~3 s causal)",
-    "Drop (A18)\nCounter-latched drop pulse (sustained build \u{2192} loudness jump + sub-bass return)",
+    "Short-term Loudness\nEBU R128, \u{2212}60..0 LUFS mapped to 0\u{2013}1",
+    "Loudness Trend\nMomentary rising over short-term \u{2014} a build hint",
+    "Build-up\nRiser / tension: loudness + brightening + onset rise + sub-bass withdrawal",
+    "Section Novelty\nFoote self-similarity \u{2014} spikes at section boundaries (~3 s causal)",
+    "Drop\nCounter-latched drop pulse (sustained build \u{2192} loudness jump + sub-bass return)",
 ];
 
 const STRUCTURE_COLORS: [Color32; 5] = [
@@ -876,7 +876,7 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
 fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
     let mut committed = false;
     ui.collapsing(
-        RichText::new("TUNING \u{00b7} A18 build/drop")
+        RichText::new("TUNING \u{00b7} build/drop")
             .size(SMALL_SIZE)
             .strong(),
         |ui| {
@@ -909,7 +909,7 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
                 &mut cfg.buildup_w_loud,
                 0.0..=5.0,
                 "Loud",
-                "Weight on loudness rise (A10 loudness_trend).",
+                "Weight on loudness rise (the loudness trend).",
             );
             committed |= row(
                 ui,
