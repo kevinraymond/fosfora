@@ -5,6 +5,7 @@ pub mod chroma;
 pub mod downbeat;
 pub mod features;
 pub mod key;
+pub mod loudness;
 pub mod normalizer;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
@@ -42,6 +43,7 @@ use self::beat::BeatDetector;
 use self::capture::{AudioCapture, RingBuffer};
 use self::downbeat::DownbeatTracker;
 use self::key::KeyDetector;
+use self::loudness::LoudnessMeter;
 use self::normalizer::AdaptiveNormalizer;
 use self::smoother::FeatureSmoother;
 
@@ -511,6 +513,7 @@ fn audio_thread(
     let mut normalizer = AdaptiveNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);
     let mut key_detector = KeyDetector::new(sample_rate);
+    let mut loudness_meter = LoudnessMeter::new(sample_rate);
     let mut downbeat_tracker = DownbeatTracker::new();
     let mut smoother = FeatureSmoother::new();
     let mut read_buf = vec![0.0f32; 8192]; // larger for 4096-pt FFT
@@ -547,6 +550,14 @@ fn audio_thread(
 
         // Multi-resolution FFT + feature extraction
         let mut raw = analyzer.analyze(&read_buf[..read]);
+
+        // A10 (#1461): perceptual loudness on the fresh capture block (each sample once,
+        // not the analyzer's overlapping window). Fields are Passthrough, so — like the
+        // beat block — they survive normalize/smooth unrescaled.
+        let loud = loudness_meter.process(&read_buf[..read]);
+        raw.loudness_m = loud.m;
+        raw.loudness_s = loud.s;
+        raw.loudness_trend = loud.trend;
 
         // A11 (#1462): key detection on the fresh CQT chroma, before normalization
         // rescales it. Key fields are Passthrough, so they survive normalize/smooth.

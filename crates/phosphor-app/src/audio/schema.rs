@@ -155,12 +155,25 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     // Policies are conservative placeholders (Adaptive/Scale like the timbral block);
     // each detector's follow-up task sets the final trigger/phase/hold policy when it
     // wires real data (CPU-side only — no ABI churn).
-    // A10 loudness (#1461)
-    def("loudness_m", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("loudness_s", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    // A10 loudness (#1461) — detector-owned: the meter emits absolute LUFS mapped to
+    // 0..1, so pass through the normalizer (adaptive percentile rescaling would destroy
+    // the perceptual/device-independent scale A18 depends on for its loudness-jump test).
+    // Gently smoothed; Scale toward 0 on silence.
+    def(
+        "loudness_m",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "loudness_s",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
     def(
         "loudness_trend",
-        Adaptive,
+        Passthrough,
         SmoothParams::ar(0.03, 0.15),
         Scale,
     ),
@@ -272,14 +285,15 @@ mod tests {
     }
 
     /// The detector-owned fields are exactly the set the normalizer passes through:
-    /// the beat block (onset..beat_strength, 15..=19), the categorical key fields
-    /// (key_class/key_is_minor/key_confidence, 49..=51), and the A12 bar clock
+    /// the beat block (onset..beat_strength, 15..=19), the A10 loudness block
+    /// (loudness_m/s/trend, 46..=48 — absolute LUFS mapped to 0..1), the categorical key
+    /// fields (key_class/key_is_minor/key_confidence, 49..=51), and the A12 bar clock
     /// (downbeat/bar_phase/beat_in_bar, 52..=54 — a trigger, a sawtooth, and a normalized
-    /// index, all already 0..1).
+    /// index, all already 0..1). Loudness through the bar clock is contiguous (46..=54).
     #[test]
     fn passthrough_is_detector_owned() {
         for (i, def) in FEATURES.iter().enumerate() {
-            let expected = if (15..=19).contains(&i) || (49..=54).contains(&i) {
+            let expected = if (15..=19).contains(&i) || (46..=54).contains(&i) {
                 Passthrough
             } else {
                 Adaptive
