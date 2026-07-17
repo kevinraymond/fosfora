@@ -89,6 +89,14 @@ impl OscSender {
         self.send_float("/phosphor/audio/percussive_energy", f.percussive_energy);
         self.send_float("/phosphor/audio/harmonic_energy", f.harmonic_energy);
         self.send_float("/phosphor/audio/harmonic_ratio", f.harmonic_ratio);
+        // A15 pitch (#1466): normalized log-frequency f0 (0..1), the same in real Hz (de-normalized
+        // like bpm/key), and the YIN periodicity confidence (0..1).
+        self.send_float("/phosphor/audio/pitch", f.pitch);
+        self.send_float(
+            "/phosphor/audio/pitch_hz",
+            crate::audio::pitch::norm_to_hz(f.pitch),
+        );
+        self.send_float("/phosphor/audio/pitch_confidence", f.pitch_confidence);
     }
 
     /// Send current state (active layer, effect name).

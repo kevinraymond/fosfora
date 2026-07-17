@@ -310,8 +310,11 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.03, 0.15),
         Scale,
     ),
-    // A15 pitch (#1466).
-    def("pitch", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    // A15 pitch (#1466) — detector-owned. `pitch` is a producer-normalized 0..1 log-frequency
+    // (Passthrough; percentile ranging would distort it) that the YIN analyzer holds through
+    // unvoiced gaps, so on a stalled device it **Holds** its last f0 (like `bpm`/`key_class`) rather
+    // than sweeping toward the lowest note. `pitch_confidence` Scales toward 0. Both lightly smoothed.
+    def("pitch", Passthrough, SmoothParams::ar(0.03, 0.15), Hold),
     def(
         "pitch_confidence",
         Passthrough,
@@ -494,14 +497,14 @@ mod tests {
         }
     }
 
-    /// Decay exemptions: `bpm` and the categorical key fields hold their last value on
-    /// silence, the `beat` and `downbeat` triggers are forced to zero, everything else
-    /// scales toward silence.
+    /// Decay exemptions: `bpm`, the categorical key fields, and the A15 `pitch` estimate hold
+    /// their last value on a stalled device (no sweep toward the lowest note), the `beat` and
+    /// `downbeat` triggers are forced to zero, everything else scales toward silence.
     #[test]
     fn decay_exemptions() {
         for (i, def) in FEATURES.iter().enumerate() {
             let expected = match def.name {
-                "bpm" | "key_class" | "key_is_minor" => Hold,
+                "bpm" | "key_class" | "key_is_minor" | "pitch" => Hold,
                 "beat" | "downbeat" | "drop" => ForceZero,
                 _ => Scale,
             };

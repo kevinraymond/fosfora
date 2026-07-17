@@ -395,6 +395,12 @@ impl FftAnalyzer {
         &self.small.magnitude
     }
 
+    /// Expose the raw (un-windowed) 4096-sample time-domain window for A15 pitch (#1466). YIN wants
+    /// the un-windowed samples — the Hann window is applied only inside each `FftResolution::compute`.
+    pub fn time_domain(&self) -> &[f32] {
+        &self.time_domain
+    }
+
     /// Per-band half-wave-rectified spectral flux for the A12 downbeat tracker (#1463):
     /// low (20-150 Hz), mid (150-2000 Hz), high (2000-20000 Hz), each from the resolution
     /// that best covers it. Reuses the same `spectral_flux_range` the kick detector uses;

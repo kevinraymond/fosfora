@@ -9,6 +9,7 @@ pub mod interp;
 pub mod key;
 pub mod loudness;
 pub mod normalizer;
+pub mod pitch;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
 pub mod ranging;
@@ -73,6 +74,7 @@ use self::interp::FeatureInterpolator;
 use self::key::KeyDetector;
 use self::loudness::LoudnessMeter;
 use self::normalizer::FeatureNormalizer;
+use self::pitch::PitchAnalyzer;
 use self::smoother::FeatureSmoother;
 use self::stereo::StereoAnalyzer;
 pub use self::structure::StructureConfig;
@@ -1155,6 +1157,7 @@ fn audio_thread(
     let mut smoother = FeatureSmoother::new();
     let mut stereo_analyzer = StereoAnalyzer::new();
     let mut hpss_analyzer = HpssAnalyzer::new();
+    let mut pitch_analyzer = PitchAnalyzer::new(sample_rate);
     // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
@@ -1244,6 +1247,15 @@ fn audio_thread(
             raw.percussive_energy = hpss.percussive_energy;
             raw.harmonic_energy = hpss.harmonic_energy;
             raw.harmonic_ratio = hpss.harmonic_ratio;
+
+            // A15 (#1466): monophonic f0 via YIN on the analyzer's raw time-domain window. Producer-
+            // normalized to a 0..1 log-frequency (Passthrough); confidence = YIN periodicity
+            // (1 − aperiodicity). Held through unvoiced gaps with confidence 0, so a pitch-keyed
+            // visual doesn't snap to the lowest note on rests. Set before normalize() like the block
+            // above (a Passthrough field survives normalize/smooth unrescaled).
+            let pitch = pitch_analyzer.process(analyzer.time_domain(), loud_silent);
+            raw.pitch = pitch.pitch;
+            raw.pitch_confidence = pitch.pitch_confidence;
 
             // A3 (#1454): fill `kick` now that the silence flag is known — a single
             // detector-owned P95 normalizer, gated so noise-floor log-flux can't fire. Set
@@ -1396,9 +1408,9 @@ mod tests {
                 16 | 52 | 60 => {
                     assert!(approx_eq(v, 0.0, 1e-6), "trigger {i} must be forced to 0");
                 }
-                // bpm (18) and the categorical key fields key_class (49) / key_is_minor
-                // (50) hold their last value rather than sweeping toward silence.
-                18 | 49 | 50 => assert!(approx_eq(v, 1.0, 1e-6), "index {i} must hold"),
+                // bpm (18), the categorical key fields key_class (49) / key_is_minor (50), and the
+                // A15 pitch estimate (64) hold their last value rather than sweeping toward silence.
+                18 | 49 | 50 | 64 => assert!(approx_eq(v, 1.0, 1e-6), "index {i} must hold"),
                 _ => assert!(approx_eq(v, 0.5, 1e-6), "index {i} should decay to 0.5"),
             }
         }
