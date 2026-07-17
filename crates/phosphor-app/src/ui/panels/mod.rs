@@ -35,7 +35,7 @@ use crate::midi::MidiSystem;
 use crate::osc::OscSystem;
 use crate::params::ParamStore;
 use crate::preset::PresetStore;
-use crate::settings::ParticleQuality;
+use crate::settings::{BandScale, ParticleQuality};
 use crate::ui::theme::ThemeMode;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::widgets;
@@ -67,6 +67,7 @@ pub fn draw_panels(
     status_error: &Option<(String, std::time::Instant)>,
     current_theme: ThemeMode,
     particle_quality: ParticleQuality,
+    band_scale: BandScale,
     use_ffmpeg_webcam: bool,
 ) {
     if !visible {
@@ -420,6 +421,7 @@ pub fn draw_panels(
                                 ui,
                                 current_theme,
                                 particle_quality,
+                                band_scale,
                                 use_ffmpeg_webcam,
                             );
                         });

@@ -48,6 +48,7 @@ use self::loudness::LoudnessMeter;
 use self::normalizer::AdaptiveNormalizer;
 use self::smoother::FeatureSmoother;
 use self::structure::StructureTracker;
+use crate::settings::BandScale;
 
 /// Holds the capture backend, keeping it alive while the audio processing thread runs.
 /// On Linux, this may be either PulseAudio (preferred) or cpal/ALSA (fallback).
@@ -157,6 +158,9 @@ pub struct AudioSystem {
     pub recording_ring: Arc<RingBuffer>,
     /// Audio sample rate in Hz.
     pub sample_rate: u32,
+    /// How the analyzer scales the 7 bands (A1 #1452). Held so a device switch preserves it
+    /// and `set_band_scale` can rebuild the pipeline with a new value.
+    band_scale: BandScale,
     /// Total beats detected, incremented by the audio thread. The consumer compares
     /// this against `beats_seen` so a 1-frame beat pulse survives channel overflow
     /// and the drain-to-newest loop in `latest_features()`.
@@ -190,10 +194,10 @@ pub struct AudioSystem {
 impl AudioSystem {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::new_with_device(None)
+        Self::new_with_device(None, BandScale::default())
     }
 
-    pub fn new_with_device(device_name: Option<&str>) -> Self {
+    pub fn new_with_device(device_name: Option<&str>, band_scale: BandScale) -> Self {
         let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::bounded(4);
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -224,6 +228,7 @@ impl AudioSystem {
                             beats,
                             downbeats,
                             drops,
+                            band_scale,
                         );
                     })
                     .expect("Failed to spawn audio thread");
@@ -249,6 +254,7 @@ impl AudioSystem {
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     sample_rate: sample_rate as u32,
+                    band_scale,
                     beat_counter,
                     beats_seen: 0,
                     downbeat_counter,
@@ -285,6 +291,7 @@ impl AudioSystem {
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     sample_rate: 44100,
+                    band_scale,
                     beat_counter,
                     beats_seen: 0,
                     downbeat_counter,
@@ -314,8 +321,9 @@ impl AudioSystem {
         // Drop old capture backend before creating new one
         self._capture = None;
 
-        // Create new system and swap all fields (mem::replace avoids move-out-of-Drop)
-        let mut new = Self::new_with_device(device_name);
+        // Create new system and swap all fields (mem::replace avoids move-out-of-Drop).
+        // Preserve the current band scale (A1 #1452) across the switch.
+        let mut new = Self::new_with_device(device_name, self.band_scale);
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
         self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
@@ -348,6 +356,23 @@ impl AudioSystem {
         self.stall_reported = false;
         // Keep existing cached_devices/scan_in_flight/last_scan — no need to re-scan on switch
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
+    }
+
+    /// Change the band scaling (A1 #1452) at runtime. Rebuilds the capture pipeline (a brief
+    /// re-open, like a device switch) so the audio-thread analyzer picks up the new scale.
+    pub fn set_band_scale(&mut self, band_scale: BandScale) {
+        if self.band_scale == band_scale {
+            return;
+        }
+        self.band_scale = band_scale;
+        // Reopen the same source: `None` for the native loopback backend, else the cpal
+        // device name. `switch_device` carries `self.band_scale` into the new pipeline.
+        let device = if self.using_native_backend {
+            None
+        } else {
+            Some(self.device_name.clone())
+        };
+        self.switch_device(device.as_deref());
     }
 
     /// Return cached input device list. Triggers a background rescan every 5 seconds
@@ -541,8 +566,9 @@ fn audio_thread(
     beat_counter: Arc<AtomicU32>,
     downbeat_counter: Arc<AtomicU32>,
     drop_counter: Arc<AtomicU32>,
+    band_scale: BandScale,
 ) {
-    let mut analyzer = FftAnalyzer::new(sample_rate);
+    let mut analyzer = FftAnalyzer::new(sample_rate, band_scale);
     let mut normalizer = AdaptiveNormalizer::new();
     let mut beat_detector = BeatDetector::new(sample_rate);
     let mut key_detector = KeyDetector::new(sample_rate);

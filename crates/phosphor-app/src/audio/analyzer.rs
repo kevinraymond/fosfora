@@ -3,6 +3,7 @@ use rustfft::num_complex::Complex;
 
 use super::chroma::CqtChroma;
 use super::features::AudioFeatures;
+use crate::settings::BandScale;
 
 /// FFT sizes for multi-resolution analysis.
 const FFT_LARGE: usize = 4096; // 10.8 Hz/bin — sub_bass, bass, kick
@@ -113,6 +114,18 @@ impl FftResolution {
         ((db + 80.0) / 80.0).clamp(0.0, 1.0)
     }
 
+    /// dB band energy over a tighter `floor_db..0` window with an equal-loudness `tilt_db`
+    /// added before mapping (A1 #1452). Used by the unified `BandScale::Db` path so all seven
+    /// bands share one comparable scale.
+    fn band_energy_db_window(&self, lo_hz: f32, hi_hz: f32, floor_db: f32, tilt_db: f32) -> f32 {
+        let linear = self.band_energy_linear(lo_hz, hi_hz);
+        if linear < 1e-10 {
+            return 0.0;
+        }
+        let db = 20.0 * linear.log10() + tilt_db;
+        ((db - floor_db) / -floor_db).clamp(0.0, 1.0)
+    }
+
     /// Half-wave rectified spectral flux in a frequency range.
     fn spectral_flux_range(&self, lo_hz: f32, hi_hz: f32) -> f32 {
         let (lo, hi) = self.bin_range(lo_hz, hi_hz);
@@ -159,6 +172,9 @@ pub struct FftAnalyzer {
     time_domain: Vec<f32>, // Shared sample accumulator (FFT_LARGE length)
     sample_rate: f32,
 
+    // A1 (#1452): how the 7 bands are scaled (unified dB vs legacy linear/dB split).
+    band_scale: BandScale,
+
     // Kick detection state
     prev_kick_flux: f32,
     kick_max: f32,
@@ -175,7 +191,7 @@ pub struct FftAnalyzer {
 }
 
 impl FftAnalyzer {
-    pub fn new(sample_rate: f32) -> Self {
+    pub fn new(sample_rate: f32, band_scale: BandScale) -> Self {
         let mut planner = FftPlanner::new();
 
         let large = FftResolution::new(&mut planner, FFT_LARGE, sample_rate);
@@ -228,6 +244,7 @@ impl FftAnalyzer {
             small,
             time_domain: vec![0.0; FFT_LARGE],
             sample_rate,
+            band_scale,
             prev_kick_flux: 0.0,
             kick_max: 0.001,
             mel_filters,
@@ -395,6 +412,50 @@ impl FftAnalyzer {
         out
     }
 
+    /// The 7 band energies `[sub_bass, bass, low_mid, mid, upper_mid, presence, brilliance]`,
+    /// scaled per `band_scale` (A1 #1452). Each band keeps the FFT resolution best suited to
+    /// its range (large for the two lowest, medium for the three mids, small for the two
+    /// highs). `Legacy` reproduces the pre-A1 split (low four linear RMS, high three
+    /// dB(−80..0)); `Db` puts all seven in one dB(−60..0) domain with a +3 dB/oct
+    /// equal-loudness tilt above 2 kHz, so the adaptive normalizer sees one comparable family.
+    fn bands(&self) -> [f32; 7] {
+        match self.band_scale {
+            BandScale::Legacy => [
+                self.large.band_energy_linear(20.0, 60.0),
+                self.large.band_energy_linear(60.0, 250.0),
+                self.medium.band_energy_linear(250.0, 500.0),
+                self.medium.band_energy_linear(500.0, 2000.0),
+                self.medium.band_energy_db(2000.0, 4000.0),
+                self.small.band_energy_db(4000.0, 6000.0),
+                self.small.band_energy_db(6000.0, 20000.0),
+            ],
+            BandScale::Db => {
+                const FLOOR: f32 = -60.0;
+                // +3 dB/oct above 2 kHz, keyed on the band's geometric-centre frequency.
+                let tilt = |lo: f32, hi: f32| {
+                    let centre = (lo * hi).sqrt();
+                    if centre > 2000.0 {
+                        3.0 * (centre / 2000.0).log2()
+                    } else {
+                        0.0
+                    }
+                };
+                let db = |res: &FftResolution, lo: f32, hi: f32| {
+                    res.band_energy_db_window(lo, hi, FLOOR, tilt(lo, hi))
+                };
+                [
+                    db(&self.large, 20.0, 60.0),
+                    db(&self.large, 60.0, 250.0),
+                    db(&self.medium, 250.0, 500.0),
+                    db(&self.medium, 500.0, 2000.0),
+                    db(&self.medium, 2000.0, 4000.0),
+                    db(&self.small, 4000.0, 6000.0),
+                    db(&self.small, 6000.0, 20000.0),
+                ]
+            }
+        }
+    }
+
     fn extract_features(&mut self) -> AudioFeatures {
         // RMS from time domain (use last 2048 samples for reasonable window)
         let td_start = FFT_LARGE - 2048;
@@ -411,18 +472,25 @@ impl FftAnalyzer {
         // Spectral features (from large FFT for best frequency resolution)
         let centroid_hz = self.spectral_centroid();
 
+        let [
+            sub_bass,
+            bass,
+            low_mid,
+            mid,
+            upper_mid,
+            presence,
+            brilliance,
+        ] = self.bands();
+
         let mut out = AudioFeatures {
-            // 7-band energy extraction:
-            // Bass bands (linear RMS) — from large FFT
-            sub_bass: self.large.band_energy_linear(20.0, 60.0),
-            bass: self.large.band_energy_linear(60.0, 250.0),
-            // Mid bands (linear) — from medium FFT
-            low_mid: self.medium.band_energy_linear(250.0, 500.0),
-            mid: self.medium.band_energy_linear(500.0, 2000.0),
-            upper_mid: self.medium.band_energy_db(2000.0, 4000.0),
-            // High bands (dB-scaled) — from small FFT
-            presence: self.small.band_energy_db(4000.0, 6000.0),
-            brilliance: self.small.band_energy_db(6000.0, 20000.0),
+            // 7-band energy extraction (A1 #1452: scaling per `band_scale`).
+            sub_bass,
+            bass,
+            low_mid,
+            mid,
+            upper_mid,
+            presence,
+            brilliance,
             rms,
             kick,
             centroid: centroid_hz / (self.sample_rate * 0.5),
@@ -604,9 +672,57 @@ mod tests {
         }
     }
 
+    /// Feed a sine and return the resulting features (final of a few windows).
+    fn features_for_sine(band_scale: BandScale, freq: f32) -> AudioFeatures {
+        let mut a = FftAnalyzer::new(SR, band_scale);
+        let mut phase = 0.0f32;
+        let step = 2.0 * std::f32::consts::PI * freq / SR;
+        let mut feats = AudioFeatures::default();
+        for _ in 0..5 {
+            let block: Vec<f32> = (0..FFT_LARGE)
+                .map(|_| {
+                    let s = 0.5 * phase.sin();
+                    phase += step;
+                    s
+                })
+                .collect();
+            feats = a.analyze(&block);
+        }
+        feats
+    }
+
+    #[test]
+    fn band_scale_db_vs_legacy_differ_and_bounded() {
+        // A 40 Hz tone lands in sub_bass. Both scalings must stay in 0..1, and unified dB
+        // (A1 #1452) must differ from the legacy linear-RMS scaling for that low band.
+        let db = features_for_sine(BandScale::Db, 40.0);
+        let legacy = features_for_sine(BandScale::Legacy, 40.0);
+        for v in [
+            db.sub_bass,
+            db.bass,
+            db.low_mid,
+            db.mid,
+            db.upper_mid,
+            db.presence,
+            db.brilliance,
+        ] {
+            assert!((0.0..=1.0).contains(&v), "dB band out of range: {v}");
+        }
+        assert!(
+            db.sub_bass > 0.0,
+            "40 Hz tone should light sub_bass in dB mode"
+        );
+        assert!(
+            (db.sub_bass - legacy.sub_bass).abs() > 1e-3,
+            "dB ({}) and legacy ({}) sub_bass should differ",
+            db.sub_bass,
+            legacy.sub_bass
+        );
+    }
+
     #[test]
     fn log_spectrum_512_shape_and_bounds() {
-        let mut a = FftAnalyzer::new(SR);
+        let mut a = FftAnalyzer::new(SR, BandScale::Db);
         analyze_sine(&mut a, 1000.0);
         let spec = a.log_spectrum_512();
         assert_eq!(spec.len(), SPECTRUM_BINS);
@@ -623,7 +739,7 @@ mod tests {
 
     #[test]
     fn spectrogram_column_shape_and_bounds() {
-        let mut a = FftAnalyzer::new(SR);
+        let mut a = FftAnalyzer::new(SR, BandScale::Db);
         analyze_sine(&mut a, 440.0);
         let col = a.spectrogram_column();
         assert_eq!(col.len(), SPECTROGRAM_MELS);
@@ -639,7 +755,7 @@ mod tests {
 
     #[test]
     fn silence_produces_zero_textures() {
-        let a = FftAnalyzer::new(SR);
+        let a = FftAnalyzer::new(SR, BandScale::Db);
         // No samples fed: magnitude is all zero → both textures read 0.0.
         assert!(a.log_spectrum_512().iter().all(|&v| v == 0.0));
         assert!(a.spectrogram_column().iter().all(|&v| v == 0.0));
@@ -648,7 +764,7 @@ mod tests {
     #[test]
     fn mfcc_filterbank_unchanged_size() {
         // MFCC path still uses the 26-band bank; the spectrogram bank is separate.
-        let a = FftAnalyzer::new(SR);
+        let a = FftAnalyzer::new(SR, BandScale::Db);
         assert_eq!(a.mel_filters.len(), N_MELS);
         assert_eq!(a.spectrogram_mel.len(), SPECTROGRAM_MELS);
     }
@@ -660,7 +776,7 @@ mod tests {
     fn c_major_triad_chroma_and_key() {
         use super::super::key::KeyDetector;
 
-        let mut a = FftAnalyzer::new(SR);
+        let mut a = FftAnalyzer::new(SR, BandScale::Db);
         let freqs = [261.63f32, 329.63, 392.00]; // C4, E4, G4
         let mut phase = [0.0f32; 3];
         let mut feats = AudioFeatures::default();

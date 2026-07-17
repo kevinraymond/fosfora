@@ -355,7 +355,8 @@ impl App {
         let webcam_device_from_settings = settings.webcam_device.unwrap_or(0);
         #[cfg(feature = "webcam")]
         let use_ffmpeg_webcam = settings.use_ffmpeg_webcam;
-        let audio = AudioSystem::new_with_device(settings.audio_device.as_deref());
+        let audio =
+            AudioSystem::new_with_device(settings.audio_device.as_deref(), settings.band_scale);
         let midi = MidiSystem::new();
         let osc = OscSystem::new();
         let web = WebSystem::new();

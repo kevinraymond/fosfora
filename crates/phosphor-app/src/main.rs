@@ -641,6 +641,7 @@ impl ApplicationHandler for PhosphorApp {
                                 &app.status_error,
                                 app.settings.theme,
                                 app.settings.particle_quality,
+                                app.settings.band_scale,
                                 app.settings.use_ffmpeg_webcam,
                             );
                         }
@@ -995,6 +996,18 @@ impl ApplicationHandler for PhosphorApp {
                             app.load_effect_on_layer(active, effect_idx);
                         }
                     }
+                }
+
+                // Handle band-scale change from settings panel (A1 #1452)
+                let set_band_scale: Option<crate::settings::BandScale> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_band_scale")));
+                if let Some(scale) = set_band_scale {
+                    app.settings.band_scale = scale;
+                    app.settings.save();
+                    // Rebuild the audio pipeline so the analyzer picks up the new scaling.
+                    app.audio.set_band_scale(scale);
                 }
 
                 // Handle FFmpeg webcam toggle from settings panel

@@ -2,6 +2,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui::theme::ThemeMode;
 
+/// How the 7 frequency bands are scaled (A1 #1452).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BandScale {
+    /// All seven bands share one dB domain (−60..0) with an equal-loudness tilt, so the
+    /// adaptive normalizer and detectors see a single comparable family. (Default.)
+    #[default]
+    Db,
+    /// Pre-A1 behavior: the low four bands are linear RMS and the high three are dB(−80..0)
+    /// — two families with very different dynamics. Kept for presets tuned to the old feel.
+    Legacy,
+}
+
+impl BandScale {
+    pub const ALL: &[BandScale] = &[BandScale::Db, BandScale::Legacy];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Db => "Unified dB",
+            Self::Legacy => "Legacy",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ParticleQuality {
     Low,
@@ -49,6 +72,8 @@ pub struct SettingsConfig {
     #[serde(default)]
     pub audio_device: Option<String>,
     #[serde(default)]
+    pub band_scale: BandScale,
+    #[serde(default)]
     pub particle_quality: ParticleQuality,
     #[serde(default)]
     pub webcam_device: Option<u32>,
@@ -62,6 +87,7 @@ impl Default for SettingsConfig {
             version: 1,
             theme: ThemeMode::Dark,
             audio_device: None,
+            band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
             use_ffmpeg_webcam: false,
@@ -151,6 +177,7 @@ mod tests {
                 version: 1,
                 theme: *mode,
                 audio_device: None,
+                band_scale: BandScale::default(),
                 particle_quality: ParticleQuality::default(),
                 webcam_device: None,
                 use_ffmpeg_webcam: false,
@@ -167,6 +194,7 @@ mod tests {
             version: 1,
             theme: ThemeMode::HighContrast,
             audio_device: None,
+            band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
             use_ffmpeg_webcam: false,
