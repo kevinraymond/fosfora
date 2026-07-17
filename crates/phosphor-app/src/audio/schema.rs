@@ -17,14 +17,24 @@
 
 use super::features::NUM_FEATURES;
 
-/// How the adaptive normalizer treats a feature.
+/// How the feature normalizer (A2 #1453) treats a feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormPolicy {
-    /// Auto-level via running min/max (energy-like features).
+    /// Auto-level via gated percentile ranging — `(v − P5) / (P95 − P5)` over a
+    /// windowed history, gated to 0 on perceptual silence. For energy-like features
+    /// (bands, rms, flux) whose absolute scale is unknown and drifts.
     Adaptive,
-    /// Already normalized (or binary) by its producer — pass through untouched.
-    /// Used for the beat-detector-owned fields, which adaptive min/max scaling
-    /// would only distort.
+    /// Already in a known physical 0..1 range (the analyzer maps it there): clamp,
+    /// don't adapt, and hold the last value on silence rather than dance to room
+    /// noise. For the spectral-shape features (centroid/flatness/rolloff/bandwidth/zcr).
+    FixedRange,
+    /// Signed, zero-centred features (MFCCs): standardize by a running mean/variance
+    /// and map through a tanh to 0..1, so a coefficient's excursions read symmetrically
+    /// instead of being min/max-stretched like an energy band.
+    ZScore,
+    /// Already normalized (or binary) by its producer — pass through untouched. Used
+    /// for the detector-owned fields (beat/loudness/key/bar clock/structure) and the
+    /// CQT chroma, which any rescaling would only distort.
     Passthrough,
 }
 
@@ -81,7 +91,7 @@ pub struct FeatureDef {
 }
 
 use DecayPolicy::{ForceZero, Hold, Scale};
-use NormPolicy::{Adaptive, Passthrough};
+use NormPolicy::{Adaptive, FixedRange, Passthrough, ZScore};
 
 /// The ordered feature table — the single source of truth for positional
 /// per-feature policy. Row `i` describes `AudioFeatures::as_slice()[i]`.
@@ -97,13 +107,16 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     // Aggregates (2)
     def("rms", Adaptive, SmoothParams::ar(0.01, 0.12), Scale),
     def("kick", Adaptive, SmoothParams::ar(0.002, 0.06), Scale), // fast attack
-    // Spectral shape (6)
-    def("centroid", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
+    // Spectral shape (6) — A4 (#1455) puts each in a known physical 0..1 range, so
+    // FixedRange clamps + holds on silence rather than adaptively rescaling. `flux` is
+    // the exception: a level-invariant change rate with no fixed ceiling, so it stays
+    // Adaptive (percentile-ranged like an energy band).
+    def("centroid", FixedRange, SmoothParams::ar(0.03, 0.15), Scale),
     def("flux", Adaptive, SmoothParams::ar(0.005, 0.06), Scale),
-    def("flatness", Adaptive, SmoothParams::ar(0.05, 0.20), Scale),
-    def("rolloff", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("bandwidth", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("zcr", Adaptive, SmoothParams::ar(0.02, 0.10), Scale),
+    def("flatness", FixedRange, SmoothParams::ar(0.05, 0.20), Scale),
+    def("rolloff", FixedRange, SmoothParams::ar(0.03, 0.15), Scale),
+    def("bandwidth", FixedRange, SmoothParams::ar(0.03, 0.15), Scale),
+    def("zcr", FixedRange, SmoothParams::ar(0.02, 0.10), Scale),
     // Beat detection (5) — detector-owned: already normalized, so pass through
     // the normalizer. `beat` is a 1-frame trigger; `bpm` is a tempo estimate.
     def("onset", Passthrough, SmoothParams::ar(0.001, 0.05), Scale), // very fast
@@ -116,37 +129,49 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.001, 0.08),
         Scale,
     ),
-    // MFCC (13) — timbral content, moderate smoothing
-    def("mfcc.0", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.1", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.2", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.3", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.4", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.5", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.6", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.7", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.8", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.9", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.10", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.11", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("mfcc.12", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    // Chroma (12) — pitch class energies, moderate smoothing
-    def("chroma.0", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.1", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.2", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.3", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.4", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.5", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.6", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.7", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.8", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.9", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.10", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    def("chroma.11", Adaptive, SmoothParams::ar(0.03, 0.15), Scale),
-    // Derived
+    // MFCC (13) — signed timbral coefficients: ZScore standardizes each so its
+    // excursions read symmetrically instead of being min/max-stretched.
+    def("mfcc.0", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.1", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.2", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.3", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.4", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.5", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.6", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.7", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.8", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.9", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.10", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.11", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    def("mfcc.12", ZScore, SmoothParams::ar(0.03, 0.15), Scale),
+    // Chroma (12) — pitch class energies, already max-normed by the CQT (A11), so
+    // Passthrough; adaptive rescaling would flatten the inter-class contrast.
+    def("chroma.0", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.1", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.2", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.3", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.4", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.5", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.6", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.7", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.8", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def("chroma.9", Passthrough, SmoothParams::ar(0.03, 0.15), Scale),
+    def(
+        "chroma.10",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    def(
+        "chroma.11",
+        Passthrough,
+        SmoothParams::ar(0.03, 0.15),
+        Scale,
+    ),
+    // Derived: a pitch-class index / 11, not an energy level — Passthrough.
     def(
         "dominant_chroma",
-        Adaptive,
+        Passthrough,
         SmoothParams::ar(0.05, 0.2),
         Scale,
     ),
@@ -287,24 +312,26 @@ mod tests {
         assert_eq!(FEATURES[60].name, "drop");
     }
 
-    /// The detector-owned fields are exactly the set the normalizer passes through:
-    /// the beat block (onset..beat_strength, 15..=19), the A10 loudness block
-    /// (loudness_m/s/trend, 46..=48 — absolute LUFS mapped to 0..1), the categorical key
-    /// fields (key_class/key_is_minor/key_confidence, 49..=51), the A12 bar clock
-    /// (downbeat/bar_phase/beat_in_bar, 52..=54 — a trigger, a sawtooth, and a normalized
-    /// index, all already 0..1), and the A18 structure block (section_novelty/buildup/drop,
-    /// 58..=60 — self-normalized curves and a trigger). Loudness through the bar clock is
-    /// contiguous (46..=54); the A13 stereo slots 55..=57 stay Adaptive until that detector
-    /// lands.
+    /// Pins the A2 (#1453) per-feature normalization policy for every slot:
+    /// - **FixedRange** (clamp + hold on silence): the spectral-shape features A4 (#1455)
+    ///   puts in a known physical 0..1 range — centroid (9), flatness (11), rolloff (12),
+    ///   bandwidth (13), zcr (14).
+    /// - **ZScore** (standardized): the 13 signed MFCC coefficients (20..=32).
+    /// - **Passthrough** (producer-owned): the beat block (15..=19); chroma +
+    ///   dominant_chroma + loudness + key + bar clock, which happen to be contiguous
+    ///   (33..=54); and the A18 structure block (58..=60).
+    /// - **Adaptive** (gated percentile ranging): everything else — the 7 bands, rms (7),
+    ///   kick (8, until A3 #1454 moves it to Passthrough), flux (10), and the A13 stereo
+    ///   slots (55..=57) which stay Adaptive until that detector lands.
     #[test]
-    fn passthrough_is_detector_owned() {
+    fn norm_policy_assignment() {
         for (i, def) in FEATURES.iter().enumerate() {
-            let expected =
-                if (15..=19).contains(&i) || (46..=54).contains(&i) || (58..=60).contains(&i) {
-                    Passthrough
-                } else {
-                    Adaptive
-                };
+            let expected = match i {
+                9 | 11 | 12 | 13 | 14 => FixedRange,
+                20..=32 => ZScore,
+                15..=19 | 33..=54 | 58..=60 => Passthrough,
+                _ => Adaptive,
+            };
             assert_eq!(
                 def.norm, expected,
                 "norm policy for slot {i} ({})",
