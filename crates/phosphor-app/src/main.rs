@@ -625,6 +625,8 @@ impl ApplicationHandler for PhosphorApp {
                                 &app.uniforms,
                                 &app.effect_loader,
                                 &mut layer.postprocess,
+                                &mut app.volumetric_enabled,
+                                &mut app.volumetric_params,
                                 particle_count,
                                 &mut app.midi,
                                 &mut app.osc,

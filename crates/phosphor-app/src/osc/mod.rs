@@ -25,6 +25,8 @@ pub struct OscFrameResult {
     pub layer_blend: Vec<(usize, u32)>,
     pub layer_enabled: Vec<(usize, bool)>,
     pub postprocess_enabled: Option<bool>,
+    pub volumetric_enabled: Option<bool>,
+    pub volumetric_params: Vec<(String, f32)>,
     // Scene control
     pub scene_goto_cue: Option<usize>,
     pub scene_load_index: Option<usize>,
@@ -42,6 +44,8 @@ impl OscFrameResult {
             layer_blend: Vec::new(),
             layer_enabled: Vec::new(),
             postprocess_enabled: None,
+            volumetric_enabled: None,
+            volumetric_params: Vec::new(),
             scene_goto_cue: None,
             scene_load_index: None,
             scene_load_name: None,
@@ -267,6 +271,12 @@ impl OscSystem {
                 OscInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
                 }
+                OscInMessage::VolumetricEnabled(enabled) => {
+                    result.volumetric_enabled = Some(enabled);
+                }
+                OscInMessage::VolumetricParam { name, value } => {
+                    result.volumetric_params.push((name, value));
+                }
                 OscInMessage::SceneGotoCue(index) => {
                     result.scene_goto_cue = Some(index);
                 }
@@ -367,6 +377,9 @@ impl OscSystem {
                 OscInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
                 }
+                OscInMessage::VolumetricEnabled(enabled) => {
+                    result.volumetric_enabled = Some(enabled);
+                }
                 OscInMessage::SceneGotoCue(index) => {
                     result.scene_goto_cue = Some(index);
                 }
@@ -439,10 +452,12 @@ fn msg_value(msg: &OscInMessage) -> Option<f32> {
         OscInMessage::Param { value, .. }
         | OscInMessage::LayerParam { value, .. }
         | OscInMessage::LayerOpacity { value, .. }
+        | OscInMessage::VolumetricParam { value, .. }
         | OscInMessage::Raw { value, .. } => Some(*value),
         OscInMessage::LayerBlend { value, .. } => Some(*value as f32),
         OscInMessage::LayerEnabled { value, .. }
         | OscInMessage::PostProcessEnabled(value)
+        | OscInMessage::VolumetricEnabled(value)
         | OscInMessage::SceneLoopMode(value) => Some(if *value { 1.0 } else { 0.0 }),
         OscInMessage::SceneGotoCue(v) | OscInMessage::SceneLoadIndex(v) => Some(*v as f32),
         OscInMessage::SceneAdvanceMode(v) => Some(*v as f32),
@@ -461,6 +476,8 @@ fn msg_address(msg: &OscInMessage) -> String {
         OscInMessage::LayerBlend { layer, .. } => format!("/phosphor/layer/{layer}/blend"),
         OscInMessage::LayerEnabled { layer, .. } => format!("/phosphor/layer/{layer}/enabled"),
         OscInMessage::PostProcessEnabled(_) => "/phosphor/postprocess/enabled".to_string(),
+        OscInMessage::VolumetricEnabled(_) => "/phosphor/volumetric/enabled".to_string(),
+        OscInMessage::VolumetricParam { name, .. } => format!("/phosphor/volumetric/{name}"),
         OscInMessage::SceneGotoCue(_) => "/phosphor/scene/goto_cue".to_string(),
         OscInMessage::SceneLoadIndex(_) => "/phosphor/scene/load".to_string(),
         OscInMessage::SceneLoadName(_) => "/phosphor/scene/load".to_string(),

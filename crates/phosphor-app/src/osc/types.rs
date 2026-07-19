@@ -26,6 +26,10 @@ pub enum OscInMessage {
     LayerEnabled { layer: usize, value: bool },
     /// Toggle post-processing: /phosphor/postprocess/enabled
     PostProcessEnabled(bool),
+    /// Toggle volumetric mode: /phosphor/volumetric/enabled
+    VolumetricEnabled(bool),
+    /// Set a volumetric param: /phosphor/volumetric/{name}
+    VolumetricParam { name: String, value: f32 },
     /// Jump to a specific cue: /phosphor/scene/goto_cue
     SceneGotoCue(usize),
     /// Load scene by index: /phosphor/scene/load (int arg)

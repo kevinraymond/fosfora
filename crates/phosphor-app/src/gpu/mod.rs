@@ -16,6 +16,7 @@ pub mod render_target;
 pub mod shader_compiler;
 pub mod types;
 pub mod uniforms;
+pub mod volumetric;
 
 pub use context::GpuContext;
 pub use pipeline::ShaderPipeline;

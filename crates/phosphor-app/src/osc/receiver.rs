@@ -188,6 +188,19 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
             Some(OscInMessage::PostProcessEnabled(value > 0.5))
         }
 
+        // /phosphor/volumetric/enabled  or  /phosphor/volumetric/{param}
+        "volumetric" if parts.len() >= 4 => {
+            let value = first_float(&msg.args)?;
+            if parts[3] == "enabled" {
+                Some(OscInMessage::VolumetricEnabled(value > 0.5))
+            } else {
+                Some(OscInMessage::VolumetricParam {
+                    name: parts[3..].join("/"),
+                    value,
+                })
+            }
+        }
+
         // /phosphor/scene/...
         "scene" if parts.len() >= 4 => {
             match parts[3] {

@@ -15,6 +15,7 @@ use super::types::{
     ImageSampleDef, ParticleAux, ParticleDef, ParticleImageSource, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
+use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
 
 const WORKGROUP_SIZE: u32 = 256;
 
@@ -177,6 +178,12 @@ pub struct ParticleSystem {
 
     // Compute rasterizer (atomic framebuffer for sub-pixel particles)
     compute_raster: Option<ComputeRasterizer>,
+
+    // Volumetric mode (R3): particle density 3D ray marching. Lazily built on
+    // first enable (see `init_volumetric`); replaces the particle render when on.
+    volumetric: Option<VolumetricRenderer>,
+    pub volumetric_enabled: bool,
+    pub volumetric_params: VolumetricParams,
 
     // WBOIT (Weighted Blended Order-Independent Transparency)
     wboit_accum_texture: Option<wgpu::Texture>,
@@ -1027,6 +1034,9 @@ impl ParticleSystem {
             counter_map_pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             counter_map_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compute_raster,
+            volumetric: None,
+            volumetric_enabled: false,
+            volumetric_params: VolumetricParams::default(),
             wboit_accum_texture,
             wboit_accum_view,
             wboit_reveal_texture,
@@ -1518,9 +1528,16 @@ impl ParticleSystem {
             pass.dispatch_workgroups(1, 1, 1);
         }
 
-        // 4. Compute raster (if active): tiled path for high particle counts, direct otherwise
-        if let Some(ref cr) = self.compute_raster {
-            let output_idx = 1 - self.current;
+        // 4. Volumetric mode (if enabled) scatters particles into a 3D density
+        //    grid, replacing the normal particle render; otherwise compute raster
+        //    (if active): tiled path for high particle counts, direct otherwise.
+        let output_idx = 1 - self.current;
+        if self.volumetric_enabled {
+            if let Some(ref vr) = self.volumetric {
+                let vu = self.build_volumetric_uniforms();
+                vr.dispatch(encoder, queue, output_idx, self.max_particles, &vu);
+            }
+        } else if let Some(ref cr) = self.compute_raster {
             if cr.should_use_tiled(self.alive_count) {
                 cr.dispatch_tiled(encoder, queue, output_idx, self.max_particles);
             } else {
@@ -1581,6 +1598,15 @@ impl ParticleSystem {
 
     /// Render particles into the given target using indirect draw.
     pub fn render(&self, encoder: &mut CommandEncoder, queue: &Queue, target: &TextureView) {
+        // Volumetric path: ray march the density texture (built in dispatch),
+        // compositing over the scene. Replaces the normal particle render.
+        if self.volumetric_enabled {
+            if let Some(ref vr) = self.volumetric {
+                vr.render_raymarch(encoder, target);
+                return;
+            }
+        }
+
         // Compute raster path: resolve atomic framebuffer to render target
         if let Some(ref cr) = self.compute_raster {
             cr.render_resolve(encoder, queue, target, &self.blend_mode);
@@ -2486,6 +2512,41 @@ impl ParticleSystem {
     /// Whether this particle system uses compute rasterization.
     pub fn is_compute_raster(&self) -> bool {
         self.compute_raster.is_some()
+    }
+
+    /// Lazily build the volumetric renderer on first enable. Cheap to keep
+    /// unbuilt (no cost when volumetric mode is never used).
+    pub fn init_volumetric(&mut self, device: &Device, hdr_format: TextureFormat) {
+        if self.volumetric.is_some() {
+            return;
+        }
+        let vr = VolumetricRenderer::new(
+            device,
+            hdr_format,
+            &self.pos_life_buffers,
+            &self.alive_index_buffers,
+            &self.counter_buffer,
+        );
+        self.volumetric = Some(vr);
+        log::info!(
+            "Volumetric renderer initialized (r32float {}^3 density volume)",
+            crate::gpu::volumetric::GRID_RES
+        );
+    }
+
+    /// Build the volumetric uniform block from the tunable params + this frame's
+    /// audio/time (already stored in `self.uniforms` via `update_audio`).
+    fn build_volumetric_uniforms(&self) -> VolumetricUniforms {
+        let u = &self.uniforms;
+        self.volumetric_params.build_uniforms(
+            u.resolution,
+            u.time,
+            u.beat,
+            u.kick,
+            u.rms,
+            u.beat_phase,
+            u.dominant_chroma,
+        )
     }
 
     /// Resize the compute rasterizer framebuffer (call from PassExecutor::resize).

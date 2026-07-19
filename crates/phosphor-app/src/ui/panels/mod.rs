@@ -31,6 +31,7 @@ use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
 use crate::gpu::ShaderUniforms;
 use crate::gpu::layer::LayerInfo;
+use crate::gpu::volumetric::VolumetricParams;
 use crate::midi::MidiSystem;
 use crate::osc::OscSystem;
 use crate::params::ParamStore;
@@ -51,6 +52,8 @@ pub fn draw_panels(
     uniforms: &ShaderUniforms,
     effect_loader: &EffectLoader,
     postprocess: &mut PostProcessDef,
+    volumetric_enabled: &mut bool,
+    volumetric_params: &mut VolumetricParams,
     particle_count: Option<u32>,
     midi: &mut MidiSystem,
     osc: &mut OscSystem,
@@ -511,6 +514,67 @@ pub fn draw_panels(
                         );
                     }
                 }
+
+                // Volumetric mode (R3) section — global toggle applied to the
+                // active particle layer; renders it as fog/nebula instead of dots.
+                widgets::section(ui, "sec_volumetric", "Volumetric (R3)", None, false, |ui| {
+                    ui.checkbox(volumetric_enabled, "Enable (active particle layer)");
+                    let vol_on = *volumetric_enabled;
+                    ui.add_space(4.0);
+                    ui.add_enabled_ui(vol_on, |ui| {
+                        ui.indent("vol_params", |ui| {
+                            let p = volumetric_params;
+                            ui.horizontal(|ui| {
+                                ui.label("Density");
+                                ui.add(egui::Slider::new(&mut p.density_gain, 0.02..=1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Absorption");
+                                ui.add(egui::Slider::new(&mut p.absorption, 0.05..=6.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Volume depth");
+                                ui.add(egui::Slider::new(&mut p.volume_depth, 0.0..=1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Emission");
+                                ui.add(egui::Slider::new(&mut p.emission_gain, 0.0..=4.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Detail amount");
+                                ui.add(egui::Slider::new(&mut p.detail_strength, 0.0..=1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Detail scale");
+                                ui.add(egui::Slider::new(&mut p.detail_scale, 0.5..=8.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Palette hue");
+                                ui.add(egui::Slider::new(&mut p.palette_hue, 0.0..=1.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Cam distance");
+                                ui.add(egui::Slider::new(&mut p.cam_distance, 1.5..=6.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Cam pitch");
+                                ui.add(egui::Slider::new(&mut p.cam_pitch, -1.2..=1.2));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Orbit speed");
+                                ui.add(egui::Slider::new(&mut p.cam_orbit_speed, 0.0..=1.5));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("March steps");
+                                ui.add(egui::Slider::new(&mut p.march_steps, 16..=160));
+                            });
+                            ui.add_space(6.0);
+                            if ui.button("Reset to defaults").clicked() {
+                                *p = VolumetricParams::default();
+                            }
+                        });
+                    });
+                });
 
                 // Post-Processing section
                 widgets::section(ui, "sec_postprocess", "Post-Processing", None, true, |ui| {

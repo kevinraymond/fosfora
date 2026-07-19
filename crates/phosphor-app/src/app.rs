@@ -73,6 +73,11 @@ pub struct App {
     // Compositor + post-processing (separate from layer_stack to avoid borrow conflicts)
     pub compositor: Compositor,
     pub post_process: PostProcessChain,
+    /// Volumetric Mode (R3): global toggle + params, applied to the active
+    /// particle layer each frame. The renderer itself lives inside the layer's
+    /// `ParticleSystem` (where the particle buffers are reachable).
+    pub volumetric_enabled: bool,
+    pub volumetric_params: crate::gpu::volumetric::VolumetricParams,
     pub placeholder: PlaceholderTexture,
     /// A17 audio textures (waveform / spectrum / spectrogram) filling the reserved
     /// bind-group slots; refreshed each frame in `update` (#1468).
@@ -430,6 +435,8 @@ impl App {
             layer_stack,
             compositor,
             post_process,
+            volumetric_enabled: false,
+            volumetric_params: crate::gpu::volumetric::VolumetricParams::default(),
             placeholder,
             audio_textures,
             #[cfg(feature = "ndi")]
@@ -692,6 +699,12 @@ impl App {
                 if let Some(layer) = self.layer_stack.active_mut() {
                     layer.postprocess.enabled = pp_enabled;
                 }
+            }
+            if let Some(vol_enabled) = osc_result.volumetric_enabled {
+                self.volumetric_enabled = vol_enabled;
+            }
+            for (name, value) in &osc_result.volumetric_params {
+                self.volumetric_params.set_param(name, *value);
             }
 
             // Process scene control (outside layer borrow)
@@ -1128,7 +1141,11 @@ impl App {
         }
 
         // Update each layer's uniforms from global template + per-layer params
-        for layer in &mut self.layer_stack.layers {
+        let active_layer_idx = self.layer_stack.active_layer;
+        let vol_enabled = self.volumetric_enabled;
+        let vol_params = self.volumetric_params;
+        let vol_hdr = GpuContext::hdr_format();
+        for (layer_idx, layer) in self.layer_stack.layers.iter_mut().enumerate() {
             if let LayerContent::Effect(ref mut e) = layer.content {
                 e.uniforms = self.uniforms;
                 e.uniforms.params = layer.param_store.pack_to_buffer();
@@ -1155,6 +1172,15 @@ impl App {
                     ps.uniforms.obstacle_elasticity = ps.obstacle_elasticity;
                     let audio = self.latest_audio.unwrap_or_default();
                     ps.update_audio(&audio);
+
+                    // Volumetric mode (R3): apply the global toggle to the active
+                    // particle layer only (V1); lazily build the renderer on enable.
+                    let vol_on = vol_enabled && layer_idx == active_layer_idx;
+                    ps.volumetric_enabled = vol_on;
+                    if vol_on {
+                        ps.init_volumetric(&self.gpu.device, vol_hdr);
+                        ps.volumetric_params = vol_params;
+                    }
 
                     // Symbiosis force matrix management
                     if let Some(ref mut sym) = ps.symbiosis_state {
