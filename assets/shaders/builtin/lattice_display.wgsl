@@ -79,7 +79,10 @@ fn cs_display(
         let age_now = mix(textureLoad(age_tex, c).r, age, a);
         textureStore(age_tex, c, vec4f(age_now, 0.0, 0.0, 0.0));
 
-        if (s == 1u) {
+        // Count every density-contributing cell (alive OR dying), not just alive —
+        // a multi-state rule can fill the domain with mostly dying cells, which
+        // still render, so an alive-only count under-reads the visible saturation.
+        if (s != 0u) {
             atomicAdd(&wg_alive, 1u);
         }
     }

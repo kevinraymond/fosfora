@@ -153,20 +153,24 @@ pub const LATTICE_MAX_STEPS_PER_FRAME: u32 = 8;
 
 /// Live-cell fraction below which the grid counts as died-out.
 pub const LATTICE_DEATH_FRACTION: f32 = 0.001;
-/// Seconds a grid must stay stagnant before auto-reseeding.
-pub const LATTICE_RESEED_DWELL_SECS: f32 = 2.5;
+/// Seconds a grid must stay stagnant before auto-reseeding. Kept short so a
+/// space-filling rule resets close to the saturation threshold instead of
+/// overshooting into a solid ball during the wait.
+pub const LATTICE_RESEED_DWELL_SECS: f32 = 0.5;
 
 /// Population fraction (of the whole grid) at which a preset counts as saturated,
 /// given its live domain. A spherical domain can only ever fill about `π r³ / 6`
 /// of the cube, so a fixed cube-relative threshold never trips for sphere presets
 /// — the saturated ball just sits there. Scaling with the domain fixes that.
+/// The 0.5 factor resets while the field is still structured, before it packs into
+/// a solid, so a space-filling rule breathes instead of freezing as a ball.
 pub fn lattice_saturate_fraction(domain_mode: u32, domain_radius: f32) -> f32 {
     let capacity = if domain_mode == 1 {
         std::f32::consts::PI * domain_radius.clamp(0.1, 1.0).powi(3) / 6.0
     } else {
         1.0
     };
-    (capacity * 0.7).clamp(0.05, 0.95)
+    (capacity * 0.5).clamp(0.05, 0.9)
 }
 
 /// Advance the auto-reseed stagnation timer for one frame, returning
@@ -1732,6 +1736,7 @@ mod tests {
         // loud beat (onset pulses + mid/high energy) to reproduce live saturation.
         let only = std::env::var("LATTICE_ANIM_ONLY").ok();
         let sim_audio = std::env::var("LATTICE_SIM_AUDIO").is_ok();
+        let no_reseed = std::env::var("LATTICE_NO_RESEED").is_ok();
         for (name, src) in presets {
             if only.as_deref().is_some_and(|o| o != name) {
                 continue;
@@ -1742,6 +1747,13 @@ mod tests {
             let mut params = LatticeParams::from(&def);
             params.grid_res = grid;
             params.render.cam_orbit_speed = 0.7; // clear rotation across the clip
+            if let Ok(rule) = std::env::var("LATTICE_RULE") {
+                let (b, s, st, nb) = parse_rule(&rule);
+                params.birth_mask = b;
+                params.survival_mask = s;
+                params.num_states = st;
+                params.neighborhood = nb;
+            }
 
             let sim = LatticeSim::new(&device, fmt, params.grid_res);
             let mut fc = crate::gpu::frame_capture::FrameCapture::new(&device, w, h, fmt, "anim");
@@ -1825,7 +1837,7 @@ mod tests {
                 // a filled/dead grid cycles back to a fresh seed.
                 sim.request_population_readback();
                 device.poll(wait()).unwrap();
-                if let Some(pop) = sim.poll_population_readback() {
+                if let Some(pop) = sim.poll_population_readback().filter(|_| !no_reseed) {
                     let frac = pop as f32 / cells;
                     let (reseed, next) = lattice_stagnation_tick(frac, sat, stagnant, dt);
                     stagnant = next;
