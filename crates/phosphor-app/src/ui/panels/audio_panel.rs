@@ -6,6 +6,7 @@ use crate::audio::{AudioSystem, StructureConfig, TempoCommand, TempoConfig, Temp
 use crate::gpu::ShaderUniforms;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::{self, rows};
 
 // ── Band spectrum ──────────────────────────────────────────────────────
 
@@ -873,29 +874,33 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
 /// no pipeline rebuild); on release the change is flagged for persistence to settings.json
 /// (applied in `main.rs`). Collapsed by default to keep the monitor panel uncluttered.
 fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
+    let tc = theme_colors(ui.ctx());
     let mut committed = false;
-    ui.collapsing(
-        RichText::new("TUNING \u{00b7} build/drop")
-            .size(SMALL_SIZE)
-            .strong(),
+    widgets::subsection(
+        ui,
+        "sub_audio_tuning",
+        "Tuning \u{00b7} build/drop",
+        None,
+        tc.text_secondary,
+        false,
         |ui| {
             let mut cfg = audio.tuning().lock().unwrap_or_else(|e| e.into_inner());
 
-            // Returns true when the edit is "committed" (drag released or keyboard entry
-            // confirmed) so we persist once per adjustment, not every drag frame.
+            // `committed` (drag released or keyboard entry confirmed) persists once
+            // per adjustment, not every drag frame.
             let row = |ui: &mut Ui,
                        v: &mut f32,
                        range: std::ops::RangeInclusive<f32>,
                        label: &str,
                        tip: &str|
              -> bool {
-                let resp = ui
-                    .add(egui::Slider::new(v, range).text(label))
-                    .on_hover_text(tip);
-                resp.drag_stopped() || resp.lost_focus()
+                rows::ParamRow::new(label)
+                    .tooltip(tip)
+                    .show_slider(ui, v, range)
+                    .committed
             };
 
-            ui.label(RichText::new("Build-up").size(8.0));
+            rows::group_label(ui, "Build-up");
             committed |= row(
                 ui,
                 &mut cfg.buildup_bias,
@@ -933,7 +938,7 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
             );
 
             ui.add_space(2.0);
-            ui.label(RichText::new("Drop").size(8.0));
+            rows::group_label(ui, "Drop");
             committed |= row(
                 ui,
                 &mut cfg.drop_arm_buildup,
@@ -989,12 +994,16 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
 /// rebuild); the half/double and tap controls go through the same struct's command mailbox.
 /// Collapsed by default to keep the monitor panel uncluttered.
 fn draw_tempo_rows(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUniforms) {
+    let tc = theme_colors(ui.ctx());
     let mut committed = false;
     let mut tapped = false;
-    ui.collapsing(
-        RichText::new("TEMPO \u{00b7} prior & octave")
-            .size(SMALL_SIZE)
-            .strong(),
+    widgets::subsection(
+        ui,
+        "sub_audio_tempo",
+        "Tempo \u{00b7} prior & octave",
+        None,
+        tc.text_secondary,
+        false,
         |ui| {
             let mut ctl = audio.tempo().lock().unwrap_or_else(|e| e.into_inner());
 
@@ -1003,57 +1012,50 @@ fn draw_tempo_rows(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUnifor
             // picker honestly reads "Custom".
             let current = TempoPreset::from_config(&ctl.config);
             let selected = current.map(|p| p.display_name()).unwrap_or("Custom");
-            egui::ComboBox::from_label(RichText::new("Preset").size(SMALL_SIZE))
-                .selected_text(RichText::new(selected).size(SMALL_SIZE))
-                .show_ui(ui, |ui| {
-                    for &p in TempoPreset::ALL {
-                        if ui
-                            .selectable_label(
-                                current == Some(p),
-                                RichText::new(p.display_name()).size(SMALL_SIZE),
-                            )
-                            .clicked()
-                        {
-                            let (center, sigma) = p.values();
-                            ctl.config.prior_center_bpm = center;
-                            ctl.config.prior_sigma = sigma;
-                            committed = true;
-                        }
+            rows::combo_row(ui, "tempo_preset", "Preset", None, selected, |ui| {
+                for &p in TempoPreset::ALL {
+                    if ui
+                        .selectable_label(
+                            current == Some(p),
+                            RichText::new(p.display_name()).size(SMALL_SIZE),
+                        )
+                        .clicked()
+                    {
+                        let (center, sigma) = p.values();
+                        ctl.config.prior_center_bpm = center;
+                        ctl.config.prior_sigma = sigma;
+                        committed = true;
                     }
-                });
+                }
+            });
 
             let auto = ctl.config.auto_prior;
             // In auto mode the detector owns the centre and publishes it back each hop, so the
             // slider becomes a live readout rather than an input.
-            let center_resp = ui
-                .add_enabled(
-                    !auto,
-                    egui::Slider::new(&mut ctl.config.prior_center_bpm, 60.0..=200.0)
-                        .text("Centre"),
-                )
-                .on_hover_text(
+            committed |= rows::ParamRow::new("Centre")
+                .enabled(!auto)
+                .tooltip(
                     "Where the detector expects the tempo to sit. Tracks far from this fold to \
                      half/double.",
-                );
-            committed |= center_resp.drag_stopped() || center_resp.lost_focus();
+                )
+                .show_slider(ui, &mut ctl.config.prior_center_bpm, 60.0..=200.0)
+                .committed;
 
-            let sigma_resp = ui
-                .add(egui::Slider::new(&mut ctl.config.prior_sigma, 0.2..=1.5).text("Width"))
-                .on_hover_text(
+            committed |= rows::ParamRow::new("Width")
+                .tooltip(
                     "Prior width in octaves. Narrow = a strong opinion about which octave is \
                      right.",
-                );
-            committed |= sigma_resp.drag_stopped() || sigma_resp.lost_focus();
+                )
+                .show_slider(ui, &mut ctl.config.prior_sigma, 0.2..=1.5)
+                .committed;
 
-            if ui
-                .checkbox(
-                    &mut ctl.config.auto_prior,
-                    RichText::new("Adapt automatically").size(SMALL_SIZE),
-                )
-                .on_hover_text(
-                    "Slowly move the centre toward the tempo actually being detected (~1 min).",
-                )
-                .changed()
+            if rows::checkbox_row(
+                ui,
+                &mut ctl.config.auto_prior,
+                "Adapt automatically",
+                Some("Slowly move the centre toward the tempo actually being detected (~1 min)."),
+            )
+            .changed()
             {
                 committed = true;
             }
