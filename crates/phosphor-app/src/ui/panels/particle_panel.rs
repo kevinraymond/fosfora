@@ -2,6 +2,7 @@ use egui::{RichText, Ui};
 
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::rows;
 
 /// Snapshot of particle system state, collected before UI borrow.
 #[derive(Clone)]
@@ -656,98 +657,57 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     let size_max = size.max(0.1);
     let drag_min = drag.min(0.8);
 
-    // Helper macro for compact param rows: [label left] [slider fills | value right]
-    macro_rules! param_row {
-        ($ui:expr, $label:expr, $val:expr, $range:expr, $log:expr, $fmt:expr, $id:expr) => {{
-            $ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(
-                    RichText::new($label)
-                        .size(SMALL_SIZE)
-                        .color(tc.text_secondary),
-                );
-                let fmt_fn: fn(f64, std::ops::RangeInclusive<usize>) -> String = $fmt;
-                let val_text = fmt_fn(*$val as f64, 0..=0);
-                // Right-to-left: value rightmost, slider fills remaining
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(
-                        RichText::new(val_text)
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    );
-                    ui.spacing_mut().slider_width = ui.available_width();
-                    let r = ui.add(
-                        egui::Slider::new($val, $range)
-                            .logarithmic($log)
-                            .show_value(false)
-                            .custom_formatter(fmt_fn),
-                    );
-                    if r.changed() {
-                        let v = *$val;
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new($id), v);
-                        });
-                    }
-                });
-            });
-        }};
+    // Shared aligned rows; each edit is posted via temp data for main.rs to apply.
+    if rows::ParamRow::new("Emit rate")
+        .logarithmic(true)
+        .formatter(|v| format!("{v:.0}/s"))
+        .show_slider(ui, &mut emit_rate, 10.0..=emit_max)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_emit_rate"), emit_rate));
     }
-
-    param_row!(
-        ui,
-        "Emit rate",
-        &mut emit_rate,
-        10.0..=emit_max,
-        true,
-        |v, _| format!("{:.0}/s", v),
-        "particle_emit_rate"
-    );
-    param_row!(
-        ui,
-        "Burst",
-        &mut burst,
-        0..=burst_max,
-        false,
-        |v, _| format!("{:.0}", v),
-        "particle_burst"
-    );
-    param_row!(
-        ui,
-        "Lifetime",
-        &mut lifetime,
-        0.5..=life_max,
-        false,
-        |v, _| format!("{:.1}s", v),
-        "particle_lifetime"
-    );
-    param_row!(
-        ui,
-        "Speed",
-        &mut speed,
-        speed_min..=speed_max,
-        speed_log,
-        |v, _| format!("{:.3}", v),
-        "particle_speed"
-    );
-    param_row!(
-        ui,
-        "Size",
-        &mut size,
-        size_min..=size_max,
-        true,
-        |v, _| format!("{:.4}", v),
-        "particle_size"
-    );
-    param_row!(
-        ui,
-        "Drag",
-        &mut drag,
-        drag_min..=1.0,
-        false,
-        |v, _| format!("{:.3}", v),
-        "particle_drag"
-    );
+    if rows::ParamRow::new("Burst")
+        .show_slider(ui, &mut burst, 0..=burst_max)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_burst"), burst));
+    }
+    if rows::ParamRow::new("Lifetime")
+        .formatter(|v| format!("{v:.1}s"))
+        .show_slider(ui, &mut lifetime, 0.5..=life_max)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_lifetime"), lifetime));
+    }
+    if rows::ParamRow::new("Speed")
+        .logarithmic(speed_log)
+        .formatter(|v| format!("{v:.3}"))
+        .show_slider(ui, &mut speed, speed_min..=speed_max)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_speed"), speed));
+    }
+    if rows::ParamRow::new("Size")
+        .logarithmic(true)
+        .formatter(|v| format!("{v:.4}"))
+        .show_slider(ui, &mut size, size_min..=size_max)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_size"), size));
+    }
+    if rows::ParamRow::new("Drag")
+        .formatter(|v| format!("{v:.3}"))
+        .show_slider(ui, &mut drag, drag_min..=1.0)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_drag"), drag));
+    }
 }
 
 fn feature_badge_with_tooltip(ui: &mut Ui, text: &str, color: egui::Color32, tooltip: &str) {

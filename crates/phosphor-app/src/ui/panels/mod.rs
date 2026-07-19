@@ -14,6 +14,7 @@ pub mod obstacle_panel;
 pub mod osc_panel;
 pub mod param_panel;
 pub mod particle_panel;
+pub mod postfx_panel;
 pub mod preset_panel;
 pub mod recording_panel;
 pub mod scene_panel;
@@ -21,6 +22,7 @@ pub mod settings_panel;
 pub mod shader_editor;
 pub mod status_bar;
 pub mod timeline_bar;
+pub mod volumetric_panel;
 pub mod web_panel;
 pub mod webcam_panel;
 
@@ -523,154 +525,16 @@ pub fn draw_panels(
                 // Volumetric mode (R3) section — global toggle applied to the
                 // active particle layer; renders it as fog/nebula instead of dots.
                 widgets::section(ui, "sec_volumetric", "Volumetric (R3)", None, false, |ui| {
-                    ui.checkbox(volumetric_enabled, "Enable (active particle layer)");
-                    let vol_on = *volumetric_enabled;
-                    ui.add_space(4.0);
-                    ui.add_enabled_ui(vol_on, |ui| {
-                        ui.indent("vol_params", |ui| {
-                            let p = volumetric_params;
-                            ui.horizontal(|ui| {
-                                ui.label("Density");
-                                ui.add(egui::Slider::new(&mut p.density_gain, 0.02..=1.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Absorption");
-                                ui.add(egui::Slider::new(&mut p.absorption, 0.05..=6.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Volume depth");
-                                ui.add(egui::Slider::new(&mut p.volume_depth, 0.0..=1.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Emission");
-                                ui.add(egui::Slider::new(&mut p.emission_gain, 0.0..=4.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Detail amount");
-                                ui.add(egui::Slider::new(&mut p.detail_strength, 0.0..=1.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Detail scale");
-                                ui.add(egui::Slider::new(&mut p.detail_scale, 0.5..=8.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Palette hue");
-                                ui.add(egui::Slider::new(&mut p.palette_hue, 0.0..=1.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Cam distance");
-                                ui.add(egui::Slider::new(&mut p.cam_distance, 1.5..=6.0));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Cam yaw");
-                                ui.add(egui::Slider::new(
-                                    &mut p.cam_yaw,
-                                    0.0..=std::f32::consts::TAU,
-                                ));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Cam pitch");
-                                ui.add(egui::Slider::new(&mut p.cam_pitch, -1.2..=1.2));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Orbit speed");
-                                ui.add(egui::Slider::new(&mut p.cam_orbit_speed, 0.0..=1.5));
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("March steps");
-                                ui.add(egui::Slider::new(&mut p.march_steps, 16..=160));
-                            });
-                            ui.add_space(6.0);
-                            if ui.button("Reset to defaults").clicked() {
-                                *p = VolumetricParams::default();
-                            }
-                        });
-                    });
+                    volumetric_panel::draw_volumetric_panel(
+                        ui,
+                        volumetric_enabled,
+                        volumetric_params,
+                    );
                 });
 
                 // Post-Processing section
                 widgets::section(ui, "sec_postprocess", "Post-Processing", None, true, |ui| {
-                    ui.checkbox(&mut postprocess.enabled, "Enable");
-                    let global_on = postprocess.enabled;
-
-                    ui.add_space(4.0);
-
-                    // Bloom
-                    ui.add_enabled_ui(global_on, |ui| {
-                        ui.checkbox(&mut postprocess.bloom_enabled, "Bloom");
-                    });
-                    ui.add_enabled_ui(global_on && postprocess.bloom_enabled, |ui| {
-                        ui.indent("bloom_params", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Threshold");
-                                ui.add(
-                                    egui::Slider::new(&mut postprocess.bloom_threshold, 0.0..=1.5)
-                                        .show_value(true),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Intensity");
-                                ui.add(
-                                    egui::Slider::new(&mut postprocess.bloom_intensity, 0.0..=1.0)
-                                        .show_value(true),
-                                );
-                            });
-                        });
-                    });
-
-                    ui.add_space(2.0);
-
-                    // Chromatic Aberration
-                    ui.add_enabled_ui(global_on, |ui| {
-                        ui.checkbox(&mut postprocess.ca_enabled, "Chromatic Aberration");
-                    });
-                    ui.add_enabled_ui(global_on && postprocess.ca_enabled, |ui| {
-                        ui.indent("ca_params", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Intensity");
-                                ui.add(
-                                    egui::Slider::new(&mut postprocess.ca_intensity, 0.0..=1.0)
-                                        .show_value(true),
-                                );
-                            });
-                        });
-                    });
-
-                    ui.add_space(2.0);
-
-                    // Vignette
-                    ui.add_enabled_ui(global_on, |ui| {
-                        ui.checkbox(&mut postprocess.vignette_enabled, "Vignette");
-                    });
-                    ui.add_enabled_ui(global_on && postprocess.vignette_enabled, |ui| {
-                        ui.indent("vignette_params", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Strength");
-                                ui.add(
-                                    egui::Slider::new(&mut postprocess.vignette, 0.0..=1.0)
-                                        .show_value(true),
-                                );
-                            });
-                        });
-                    });
-
-                    ui.add_space(2.0);
-
-                    // Film Grain
-                    ui.add_enabled_ui(global_on, |ui| {
-                        ui.checkbox(&mut postprocess.grain_enabled, "Film Grain");
-                    });
-                    ui.add_enabled_ui(global_on && postprocess.grain_enabled, |ui| {
-                        ui.indent("grain_params", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Intensity");
-                                ui.add(
-                                    egui::Slider::new(&mut postprocess.grain_intensity, 0.0..=1.0)
-                                        .show_value(true),
-                                );
-                            });
-                        });
-                    });
+                    postfx_panel::draw_postfx_panel(ui, postprocess);
                 });
             });
         });
