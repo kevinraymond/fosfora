@@ -655,11 +655,7 @@ impl ApplicationHandler for PhosphorApp {
                                 lattice_info,
                                 scene_info,
                                 &app.status_error,
-                                app.settings.theme,
-                                app.settings.particle_quality,
-                                app.settings.band_scale,
-                                app.settings.use_ffmpeg_webcam,
-                                app.settings.auto_reconnect,
+                                &app.settings,
                             );
                         }
                         // Sync global postprocess enabled from layer
@@ -958,6 +954,16 @@ impl ApplicationHandler for PhosphorApp {
                     match app.effect_loader.delete_effect(idx) {
                         Ok(name) => {
                             log::info!("Deleted effect: {name}");
+                            // A deleted effect can't stay pinned
+                            if let Some(pos) = app
+                                .settings
+                                .favorite_effects
+                                .iter()
+                                .position(|f| *f == name)
+                            {
+                                app.settings.favorite_effects.remove(pos);
+                                app.settings.save();
+                            }
                             // Close shader editor if it was editing the deleted effect
                             if app.shader_editor.open {
                                 app.shader_editor.open = false;
@@ -973,6 +979,25 @@ impl ApplicationHandler for PhosphorApp {
                                 Some((format!("Delete failed: {e}"), std::time::Instant::now()));
                         }
                     }
+                }
+
+                // Handle favorite star toggle from the effect browser
+                let toggle_fav: Option<String> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("toggle_favorite_effect")));
+                if let Some(name) = toggle_fav {
+                    if let Some(pos) = app
+                        .settings
+                        .favorite_effects
+                        .iter()
+                        .position(|f| *f == name)
+                    {
+                        app.settings.favorite_effects.remove(pos);
+                    } else {
+                        app.settings.favorite_effects.push(name);
+                    }
+                    app.settings.save();
                 }
 
                 let create_effect: Option<String> = app

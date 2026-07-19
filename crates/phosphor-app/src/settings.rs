@@ -95,6 +95,10 @@ pub struct SettingsConfig {
     /// file written before #1460 — a default the user never chose and no test would catch.
     #[serde(default = "default_true")]
     pub auto_reconnect: bool,
+    /// Effect names pinned to the FAVORITES row of the Effects browser.
+    /// Names, not indices — the library re-scans and reorders; names survive it.
+    #[serde(default)]
+    pub favorite_effects: Vec<String>,
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -115,6 +119,7 @@ impl Default for SettingsConfig {
             structure_tuning: StructureConfig::default(),
             tempo: TempoConfig::default(),
             auto_reconnect: true,
+            favorite_effects: Vec::new(),
         }
     }
 }
@@ -192,6 +197,25 @@ mod tests {
         let json = r#"{"version":1,"theme":"Dark"}"#;
         let c: SettingsConfig = serde_json::from_str(json).unwrap();
         assert_eq!(c.particle_quality, ParticleQuality::High);
+    }
+
+    #[test]
+    fn favorite_effects_default_from_missing_field() {
+        // Settings files written before favorites existed must load empty, not error.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(c.favorite_effects.is_empty());
+    }
+
+    #[test]
+    fn favorite_effects_roundtrip() {
+        let c = SettingsConfig {
+            favorite_effects: vec!["Beam".to_string(), "Lattice Clouds".to_string()],
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(c2.favorite_effects, c.favorite_effects);
     }
 
     #[test]

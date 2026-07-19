@@ -37,8 +37,7 @@ use crate::midi::MidiSystem;
 use crate::osc::OscSystem;
 use crate::params::ParamStore;
 use crate::preset::PresetStore;
-use crate::settings::{BandScale, ParticleQuality};
-use crate::ui::theme::ThemeMode;
+use crate::settings::SettingsConfig;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::widgets;
 use crate::web::WebSystem;
@@ -70,11 +69,7 @@ pub fn draw_panels(
     lattice_info: Option<lattice_panel::LatticeInfo>,
     scene_info: Option<scene_panel::SceneInfo>,
     status_error: &Option<(String, std::time::Instant)>,
-    current_theme: ThemeMode,
-    particle_quality: ParticleQuality,
-    band_scale: BandScale,
-    use_ffmpeg_webcam: bool,
-    auto_reconnect: bool,
+    settings: &SettingsConfig,
 ) {
     if !visible {
         return;
@@ -220,7 +215,7 @@ pub fn draw_panels(
                 // Effects section
                 let fx_badge = format!("{}", effect_loader.effects.len());
                 widgets::section(ui, "sec_effects", "Effects", Some(&fx_badge), true, |ui| {
-                    effect_panel::draw_effect_panel(ui, effect_loader);
+                    effect_panel::draw_effect_panel(ui, effect_loader, &settings.favorite_effects);
                 });
 
                 // Layers section
@@ -426,11 +421,11 @@ pub fn draw_panels(
                         widgets::subsection(ui, "sub_global", "Global", None, dim, true, |ui| {
                             settings_panel::draw_settings_panel(
                                 ui,
-                                current_theme,
-                                particle_quality,
-                                band_scale,
-                                use_ffmpeg_webcam,
-                                auto_reconnect,
+                                settings.theme,
+                                settings.particle_quality,
+                                settings.band_scale,
+                                settings.use_ffmpeg_webcam,
+                                settings.auto_reconnect,
                             );
                         });
                     },
