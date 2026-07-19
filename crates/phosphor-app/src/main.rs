@@ -373,6 +373,18 @@ impl ApplicationHandler for PhosphorApp {
                     }
                     let particle_count = particle_info.as_ref().map(|p| p.max_count);
 
+                    // Lattice panel info — Some only when the active effect is a
+                    // Lattice effect (its particle system carries a LatticeSim).
+                    let lattice_info = app
+                        .layer_stack
+                        .active()
+                        .and_then(|l| l.as_effect())
+                        .and_then(|e| e.pass_executor.particle_system.as_ref())
+                        .filter(|ps| ps.lattice_enabled)
+                        .map(|ps| crate::ui::panels::lattice_panel::LatticeInfo {
+                            params: ps.lattice_params,
+                        });
+
                     // Get obstacle info from active layer
                     let obstacle_info =
                         app.layer_stack
@@ -639,6 +651,7 @@ impl ApplicationHandler for PhosphorApp {
                                 webcam_info,
                                 particle_info,
                                 obstacle_info,
+                                lattice_info,
                                 scene_info,
                                 &app.status_error,
                                 app.settings.theme,
@@ -1601,6 +1614,32 @@ impl ApplicationHandler for PhosphorApp {
                 // Auto-save scene after any cue/timeline mutation
                 if scene_dirty {
                     app.autosave_scene();
+                }
+
+                // Handle lattice panel signals — apply edits to the active effect's
+                // LatticeSim (rebuild on grid change, reseed on request).
+                {
+                    use crate::ui::panels::lattice_panel::LatticeCommand;
+                    let lattice_cmd: Option<LatticeCommand> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("lattice_cmd")));
+                    if let Some(cmd) = lattice_cmd {
+                        app.preset_store.mark_dirty();
+                        let device = app.gpu.device.clone();
+                        let hdr = crate::gpu::GpuContext::hdr_format();
+                        if let Some(layer) = app.layer_stack.active_mut() {
+                            if let Some(e) = layer.as_effect_mut() {
+                                if let Some(ps) = &mut e.pass_executor.particle_system {
+                                    ps.lattice_params = cmd.params;
+                                    ps.init_lattice(&device, hdr);
+                                    if cmd.reseed {
+                                        ps.request_lattice_seed();
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Handle obstacle panel signals

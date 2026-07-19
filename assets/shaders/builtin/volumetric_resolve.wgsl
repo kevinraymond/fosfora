@@ -30,6 +30,10 @@ struct VolUniforms {
     beat_phase: f32,
     dominant_chroma: f32,
     density_gain: f32,
+    env_shape: u32,
+    jitter_amp: f32,
+    age_influence: f32,
+    _pad0: f32,
 }
 
 @group(0) @binding(0) var<storage, read> voxel: array<u32>;

@@ -30,10 +30,15 @@ struct VolUniforms {
     beat_phase: f32,
     dominant_chroma: f32,
     density_gain: f32,
+    env_shape: u32,
+    jitter_amp: f32,
+    age_influence: f32,
+    _pad0: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: VolUniforms;
 @group(0) @binding(1) var density_tex: texture_3d<f32>;
+@group(0) @binding(2) var aux_tex: texture_3d<f32>;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -110,6 +115,12 @@ fn tex_load(c: vec3i, gi: i32) -> f32 {
     return textureLoad(density_tex, cc, 0).r;
 }
 
+// Nearest-voxel read of the auxiliary (age) texture. Bound to the density texture
+// as a harmless placeholder when no age channel exists (R3, Lattice Tier A).
+fn aux_tex_load(c: vec3i) -> f32 {
+    return textureLoad(aux_tex, c, 0).r;
+}
+
 // Manual trilinear sample (r32float is non-filterable without FLOAT32_FILTERABLE,
 // so a hardware Linear sampler is not usable here).
 fn sample_density(p: vec3f) -> f32 {
@@ -137,11 +148,15 @@ fn sample_density(p: vec3f) -> f32 {
 }
 
 fn envelope(p: vec3f) -> f32 {
-    // Soft boundary: fade density toward the unit-cube faces (no hard box) with a
+    // Soft boundary: fade density toward the domain edge (no hard box) with a
     // gentle center bias so a uniformly-filled field reads as a cloud, not a lit box.
+    let center = mix(0.5, 1.0, smoothstep(1.2, 0.0, length(p)));
+    if (u.env_shape == 1u) {
+        // Spherical fade: a CA that fills its domain reads as a ball, not a cube.
+        return smoothstep(1.0, 0.75, length(p)) * center;
+    }
     let q = abs(p);
     let edge = smoothstep(1.0, 0.75, max(q.x, max(q.y, q.z)));
-    let center = mix(0.5, 1.0, smoothstep(1.2, 0.0, length(p)));
     return edge * center;
 }
 
@@ -176,7 +191,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
 
     let steps = max(u.march_steps, 1u);
     let dt = (t_exit - t_enter) / f32(steps);
-    var t = t_enter + dt * 0.5;
+    // Interleaved-gradient-noise ray-start offset breaks up slice banding through a
+    // sharp field. Blended by jitter_amp so R3 (jitter_amp = 0) keeps its centered
+    // half-step start; the temporal term decorrelates the pattern frame to frame.
+    let px = in.position.xy;
+    let ign = fract(52.9829189 * fract(dot(px, vec2f(0.06711056, 0.00583715))) + fract(u.time * 61.803));
+    var t = t_enter + dt * mix(0.5, ign, u.jitter_amp);
 
     let pulse = 0.8 + 0.2 * sin(u.beat_phase * 6.28318);
     let absorption = u.absorption * (1.0 + u.rms * 0.5);
@@ -212,7 +232,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
             let lit = 0.2 + 0.8 * light; // ambient floor so shadows keep some color
 
             let a = 1.0 - exp(-d * absorption * dt);
-            let hue = u.palette_hue + u.dominant_chroma / 12.0 + d * 0.15;
+            var hue = u.palette_hue + u.dominant_chroma / 12.0 + d * 0.15;
+            // Age tint (Lattice Tier B): young cells one hue, old cells another, so
+            // shells/cores separate. aux_tex carries normalised age; 0 for R3.
+            if (u.age_influence != 0.0) {
+                let ac = clamp(vec3i((p * 0.5 + 0.5) * f32(u.grid_res)), vec3i(0), vec3i(i32(u.grid_res) - 1));
+                hue += (aux_tex_load(ac) - 0.5) * u.age_influence;
+            }
             let col = palette(hue) * emission_gain * lit;
             accum += transmittance * a * col;
             transmittance *= (1.0 - a);

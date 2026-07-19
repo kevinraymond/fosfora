@@ -37,8 +37,9 @@ const SCATTER_WORKGROUP: u32 = 256;
 const RESOLVE_WORKGROUP: u32 = 4;
 
 /// GPU-side uniform block. Mirrored byte-for-byte by `VolUniforms` in all three
-/// `volumetric_*.wgsl` shaders. All scalars (4-byte aligned); size padded to a
-/// multiple of 16 for the uniform address space.
+/// `volumetric_*.wgsl` shaders plus `lattice_display.wgsl`'s marcher. All scalars
+/// (4-byte aligned); size padded to a multiple of 16 for the uniform address
+/// space.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct VolumetricUniforms {
@@ -66,6 +67,10 @@ pub struct VolumetricUniforms {
     pub beat_phase: f32,
     pub dominant_chroma: f32,
     pub density_gain: f32,
+    pub env_shape: u32,     // 0 = cube envelope (R3 default), 1 = spherical
+    pub jitter_amp: f32,    // 0 = centered half-step start (R3 default), 1 = full jitter
+    pub age_influence: f32, // Lattice age → hue tint; 0 = off (R3 default)
+    pub _pad0: f32,
 }
 
 /// Tunable volumetric parameters (host-side). Owned globally by the app and
@@ -91,6 +96,12 @@ pub struct VolumetricParams {
     pub fov: f32,
     pub palette_hue: f32,
     pub emission_gain: f32,
+    /// Envelope shape: 0 = cube edge-fade (R3 look), 1 = spherical (Lattice).
+    pub env_shape: u32,
+    /// Ray-start jitter amount (0 = centered half-step, R3; 1 = full dither).
+    pub jitter_amp: f32,
+    /// Age → hue tint strength (Lattice Tier B); 0 = off.
+    pub age_influence: f32,
 }
 
 impl Default for VolumetricParams {
@@ -111,6 +122,10 @@ impl Default for VolumetricParams {
             fov: 1.5,
             palette_hue: 0.6,
             emission_gain: 1.5,
+            // R3 defaults keep the original look: cube envelope, no jitter, no age tint.
+            env_shape: 0,
+            jitter_amp: 0.0,
+            age_influence: 0.0,
         }
     }
 }
@@ -134,6 +149,9 @@ impl VolumetricParams {
             "fov" => self.fov = value,
             "palette_hue" => self.palette_hue = value,
             "emission_gain" => self.emission_gain = value,
+            "env_shape" => self.env_shape = (value.max(0.0)) as u32,
+            "jitter" | "jitter_amp" => self.jitter_amp = value,
+            "age_influence" => self.age_influence = value,
             _ => log::warn!("unknown volumetric param: {name}"),
         }
     }
@@ -176,6 +194,10 @@ impl VolumetricParams {
             beat_phase,
             dominant_chroma,
             density_gain: self.density_gain.max(0.0),
+            env_shape: self.env_shape.min(1),
+            jitter_amp: self.jitter_amp.clamp(0.0, 1.0),
+            age_influence: self.age_influence,
+            _pad0: 0.0,
         }
     }
 }
@@ -332,79 +354,15 @@ impl VolumetricRenderer {
         });
 
         // --- Ray march pipeline (render, premultiplied over) ---
-        let raymarch_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("vol-raymarch-bgl"),
-            entries: &[
-                uniform_entry(0, ShaderStages::FRAGMENT),
-                sampled_texture_3d_entry(1),
-            ],
-        });
-        let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("vol-raymarch"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("../../../../assets/shaders/builtin/volumetric_raymarch.wgsl").into(),
-            ),
-        });
-        let raymarch_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("vol-raymarch-layout"),
-            bind_group_layouts: &[&raymarch_bgl],
-            push_constant_ranges: &[],
-        });
-        let raymarch_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("vol-raymarch-pipeline"),
-            layout: Some(&raymarch_layout),
-            vertex: VertexState {
-                module: &raymarch_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: PipelineCompilationOptions::default(),
-            },
-            fragment: Some(FragmentState {
-                module: &raymarch_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(ColorTargetState {
-                    format: hdr_format,
-                    // Premultiplied "over": the shader outputs (transmittance-
-                    // weighted color, 1 - transmittance).
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: PipelineCompilationOptions::default(),
-            }),
-            primitive: PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-        let raymarch_bind_group = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("vol-raymarch-bg"),
-            layout: &raymarch_bgl,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&density_view),
-                },
-            ],
-        });
+        // Built by the shared `create_raymarch` helper so the tuned marching /
+        // lighting / tonemap pipeline has a single source (reused by Lattice).
+        let (raymarch_pipeline, raymarch_bind_group) = create_raymarch(
+            device,
+            hdr_format,
+            &uniform_buffer,
+            &density_view,
+            &density_view, // no age channel in R3 — bind density as a harmless aux
+        );
 
         Self {
             grid_res,
@@ -498,7 +456,7 @@ impl VolumetricRenderer {
 
 // --- BGL entry helpers ---
 
-fn storage_ro_entry(binding: u32) -> BindGroupLayoutEntry {
+pub(crate) fn storage_ro_entry(binding: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::COMPUTE,
@@ -511,7 +469,7 @@ fn storage_ro_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
-fn storage_rw_entry(binding: u32) -> BindGroupLayoutEntry {
+pub(crate) fn storage_rw_entry(binding: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::COMPUTE,
@@ -524,7 +482,7 @@ fn storage_rw_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
-fn uniform_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
+pub(crate) fn uniform_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility,
@@ -537,7 +495,7 @@ fn uniform_entry(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry
     }
 }
 
-fn storage_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
+pub(crate) fn storage_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::COMPUTE,
@@ -550,7 +508,23 @@ fn storage_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
-fn sampled_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
+/// Read-write 3D storage texture (r32float). Used by the Lattice display pass to
+/// EMA-blend the CA density in place. `r32float` is one of the core formats that
+/// support read-write storage access (no adapter feature needed).
+pub(crate) fn storage_texture_3d_rw_entry(binding: u32) -> BindGroupLayoutEntry {
+    BindGroupLayoutEntry {
+        binding,
+        visibility: ShaderStages::COMPUTE,
+        ty: BindingType::StorageTexture {
+            access: StorageTextureAccess::ReadWrite,
+            format: TextureFormat::R32Float,
+            view_dimension: TextureViewDimension::D3,
+        },
+        count: None,
+    }
+}
+
+pub(crate) fn sampled_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
         binding,
         visibility: ShaderStages::FRAGMENT,
@@ -563,7 +537,7 @@ fn sampled_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
-fn create_compute_pipeline(
+pub(crate) fn create_compute_pipeline(
     device: &Device,
     label: &str,
     source: &str,
@@ -589,13 +563,106 @@ fn create_compute_pipeline(
     })
 }
 
+/// Build the density ray-march render pipeline + its bind group. Shared by both
+/// [`VolumetricRenderer`] (particle density) and the Lattice effect (CA density):
+/// same tuned `volumetric_raymarch.wgsl` (orbiting camera, Beer-Lambert march,
+/// self-shadow, Reinhard tonemap), one source of truth. The caller supplies the
+/// uniform buffer (a [`VolumetricUniforms`] block) and the density texture view.
+pub(crate) fn create_raymarch(
+    device: &Device,
+    hdr_format: TextureFormat,
+    uniform_buffer: &wgpu::Buffer,
+    density_view: &TextureView,
+    aux_view: &TextureView,
+) -> (RenderPipeline, BindGroup) {
+    let raymarch_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("vol-raymarch-bgl"),
+        entries: &[
+            uniform_entry(0, ShaderStages::FRAGMENT),
+            sampled_texture_3d_entry(1),
+            sampled_texture_3d_entry(2), // aux (age) texture; density view when unused
+        ],
+    });
+    let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("vol-raymarch"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!("../../../../assets/shaders/builtin/volumetric_raymarch.wgsl").into(),
+        ),
+    });
+    let raymarch_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("vol-raymarch-layout"),
+        bind_group_layouts: &[&raymarch_bgl],
+        push_constant_ranges: &[],
+    });
+    let raymarch_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("vol-raymarch-pipeline"),
+        layout: Some(&raymarch_layout),
+        vertex: VertexState {
+            module: &raymarch_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: PipelineCompilationOptions::default(),
+        },
+        fragment: Some(FragmentState {
+            module: &raymarch_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(ColorTargetState {
+                format: hdr_format,
+                // Premultiplied "over": the shader outputs (transmittance-
+                // weighted color, 1 - transmittance).
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: PipelineCompilationOptions::default(),
+        }),
+        primitive: PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+    let raymarch_bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: Some("vol-raymarch-bg"),
+        layout: &raymarch_bgl,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(density_view),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(aux_view),
+            },
+        ],
+    });
+    (raymarch_pipeline, raymarch_bind_group)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn volumetric_uniforms_size() {
-        // 24 x 4-byte scalars, 16-byte-aligned for the uniform address space.
-        assert_eq!(std::mem::size_of::<VolumetricUniforms>(), 96);
+        // 28 x 4-byte scalars, 16-byte-aligned for the uniform address space.
+        assert_eq!(std::mem::size_of::<VolumetricUniforms>(), 112);
     }
 }

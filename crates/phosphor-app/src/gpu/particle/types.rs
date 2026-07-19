@@ -706,6 +706,12 @@ pub struct ParticleDef {
     #[serde(default)]
     pub trail_field: Option<TrailFieldDef>,
 
+    /// 3D cellular-automata simulation (Lattice effect) (optional). When present,
+    /// the effect renders the CA density volume via the R3 ray marcher instead of
+    /// particles; `max_count` can be minimal (the particle path is unused).
+    #[serde(default)]
+    pub lattice: Option<crate::gpu::lattice::LatticeDef>,
+
     /// Render mode: "billboard" (default), "compute" (atomic framebuffer), or "auto"
     #[serde(default = "default_render_mode")]
     pub render_mode: String,

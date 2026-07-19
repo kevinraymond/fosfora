@@ -4,6 +4,7 @@ pub mod binding_helpers;
 pub mod binding_matrix;
 pub mod bindings_panel;
 pub mod effect_panel;
+pub mod lattice_panel;
 pub mod layer_panel;
 pub mod media_panel;
 pub mod midi_panel;
@@ -66,6 +67,7 @@ pub fn draw_panels(
     webcam_info: Option<webcam_panel::WebcamInfo>,
     particle_info: Option<particle_panel::ParticleInfo>,
     obstacle_info: Option<obstacle_panel::ObstacleInfo>,
+    lattice_info: Option<lattice_panel::LatticeInfo>,
     scene_info: Option<scene_panel::SceneInfo>,
     status_error: &Option<(String, std::time::Instant)>,
     current_theme: ThemeMode,
@@ -491,6 +493,14 @@ pub fn draw_panels(
                                 },
                             );
                         }
+                    }
+
+                    // Lattice (3D CA) section — shows only when the active effect
+                    // is a Lattice effect (its particle system carries a LatticeSim).
+                    if let Some(ref linfo) = lattice_info {
+                        widgets::section(ui, "sec_lattice", "Lattice (3D CA)", None, true, |ui| {
+                            lattice_panel::draw_lattice_panel(ui, linfo);
+                        });
                     }
 
                     // Audio Reactivity section (default collapsed)

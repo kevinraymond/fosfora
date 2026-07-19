@@ -3310,6 +3310,7 @@ impl App {
             if let Some(effect) = layer.as_effect_mut() {
                 if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
                     ps.poll_counter_readback();
+                    ps.poll_lattice_population();
                 }
             }
         }
@@ -3502,6 +3503,7 @@ impl App {
                 if let Some(effect) = layer.as_effect() {
                     if let Some(ps) = &effect.pass_executor.particle_system {
                         ps.request_counter_readback();
+                        ps.request_lattice_population_readback();
                     }
                 }
             }
