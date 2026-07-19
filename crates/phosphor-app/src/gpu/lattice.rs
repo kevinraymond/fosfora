@@ -1624,6 +1624,171 @@ mod tests {
         }
     }
 
+    /// Render each preset as an evolving frame sequence (CA generations advancing +
+    /// a camera orbit) so the motion — what actually distinguishes the rules — can
+    /// be assembled into GIFs. Files: `lattice_anim_<preset>_<fff>.png`. Ignored;
+    /// run with `LATTICE_PNG_DIR=/path cargo test -- --ignored lattice_render_animation`.
+    #[test]
+    #[ignore = "requires a GPU/software adapter; writes many PNGs"]
+    fn lattice_render_animation() {
+        let out_dir = std::env::var("LATTICE_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let frames: u32 = std::env::var("LATTICE_ANIM_FRAMES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(60);
+        let grid: u32 = std::env::var("LATTICE_PREVIEW_GRID")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(clamp_grid_res)
+            .unwrap_or(96);
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("lattice-anim"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("no wgpu device");
+
+        let presets: [(&str, &str); 8] = [
+            (
+                "crystal",
+                include_str!("../../../../assets/effects/lattice_crystal.pfx"),
+            ),
+            (
+                "pyroclastic",
+                include_str!("../../../../assets/effects/lattice_pyroclastic.pfx"),
+            ),
+            (
+                "clouds",
+                include_str!("../../../../assets/effects/lattice_clouds.pfx"),
+            ),
+            (
+                "architecture",
+                include_str!("../../../../assets/effects/lattice_architecture.pfx"),
+            ),
+            (
+                "coral",
+                include_str!("../../../../assets/effects/lattice_coral.pfx"),
+            ),
+            (
+                "amoeba",
+                include_str!("../../../../assets/effects/lattice_amoeba.pfx"),
+            ),
+            (
+                "445",
+                include_str!("../../../../assets/effects/lattice_445.pfx"),
+            ),
+            (
+                "pulse",
+                include_str!("../../../../assets/effects/lattice_pulse.pfx"),
+            ),
+        ];
+        let (w, h) = (384u32, 384u32);
+        let fmt = TextureFormat::Rgba8UnormSrgb;
+        let fps = 20.0f32;
+        let dt = 1.0 / fps;
+        let wait = || wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        };
+
+        for (name, src) in presets {
+            let v: serde_json::Value = serde_json::from_str(src).unwrap();
+            let def: LatticeDef =
+                serde_json::from_value(v["particles"]["lattice"].clone()).unwrap();
+            let mut params = LatticeParams::from(&def);
+            params.grid_res = grid;
+            params.render.cam_orbit_speed = 0.7; // clear rotation across the clip
+
+            let sim = LatticeSim::new(&device, fmt, params.grid_res);
+            let mut fc = crate::gpu::frame_capture::FrameCapture::new(&device, w, h, fmt, "anim");
+            let mut accum = 0.0f32;
+
+            // Seed.
+            sim.upload_ca_uniforms(
+                &queue,
+                &params.build_uniforms(0, 0.0, 0.0, 0.0, 0.0, 0.0, dt),
+            );
+            let mut enc = device.create_command_encoder(&Default::default());
+            sim.seed(&mut enc);
+            queue.submit([enc.finish()]);
+            device.poll(wait()).unwrap();
+
+            for f in 0..frames {
+                let t = f as f32 * dt;
+                // Advance the CA at full energy so the evolution reads in a short clip.
+                sim.upload_ca_uniforms(
+                    &queue,
+                    &params.build_uniforms(f, 0.0, 0.0, 0.0, 0.0, t, dt),
+                );
+                let (steps, residual) =
+                    lattice_step_budget(accum, params.gen_per_sec, params.bass_floor, 1.0, dt);
+                accum = residual;
+                let mut ru =
+                    params
+                        .render
+                        .build_uniforms([w as f32, h as f32], t, 0.0, 0.0, 0.0, 0.0, 0.0);
+                ru.grid_res = params.grid_res;
+                ru.env_shape = params.domain_mode.min(1);
+                sim.upload_render_uniforms(&queue, &ru);
+
+                let mut enc = device.create_command_encoder(&Default::default());
+                for _ in 0..steps {
+                    sim.step(&mut enc);
+                }
+                sim.display(&mut enc);
+                {
+                    let _clear = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("anim-clear"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &fc.view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                }
+                sim.render_raymarch(&mut enc, &fc.view);
+                fc.copy_to_staging(&mut enc);
+                queue.submit([enc.finish()]);
+                device.poll(wait()).unwrap();
+
+                fc.request_map();
+                let data = loop {
+                    device.poll(wait()).unwrap();
+                    if let Some(d) = fc.take_mapped_data(&device) {
+                        break d;
+                    }
+                };
+                let path = format!("{out_dir}/lattice_anim_{name}_{f:03}.png");
+                image::RgbaImage::from_raw(w, h, data)
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+            }
+            eprintln!("wrote {frames} frames for {name}");
+        }
+    }
+
     #[test]
     fn lattice_def_raw_rule_overrides_preset() {
         // An explicit `rule` wins over `preset` and sets manual-mask mode.
