@@ -129,6 +129,9 @@ pub fn draw_binding_matrix(
                 draw_header(ui, state, bus, info);
                 ui.add_space(8.0);
 
+                // One target-option build per frame, shared by both columns.
+                let targets = build_target_options(info);
+
                 // Three columns
                 let avail = ui.available_size();
                 let col_source_w = 240.0;
@@ -163,7 +166,7 @@ pub fn draw_binding_matrix(
                     let center_resp = ui.vertical(|ui| {
                         ui.set_width(col_center_w);
                         ui.set_height(avail.y - 60.0);
-                        draw_center_column(ui, state, bus, info);
+                        draw_center_column(ui, state, bus, info, &targets);
                     });
                     ui.painter().set(
                         center_bg_idx,
@@ -189,7 +192,7 @@ pub fn draw_binding_matrix(
                         ui.add_space(side_pad);
                         ui.indent(Id::new("tgt_pad"), |ui| {
                             ui.set_width(col_target_w);
-                            draw_target_column(ui, state, bus, info);
+                            draw_target_column(ui, state, bus, &targets);
                         });
                     });
                     ui.painter().set(
@@ -929,7 +932,7 @@ fn draw_target_column(
     ui: &mut egui::Ui,
     state: &mut BindingMatrixState,
     bus: &BindingBus,
-    info: &BindingPanelInfo,
+    targets: &[TargetOption],
 ) {
     let tc = theme_colors(ui.ctx());
 
@@ -986,7 +989,6 @@ fn draw_target_column(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            let targets = build_target_options(info);
             let mut current_group: &str = "";
 
             // Build reverse map: old-format target → new-format target id
@@ -1025,9 +1027,9 @@ fn draw_target_column(
 
             let mut last_header_rect: Option<Rect> = None;
 
-            for opt in &targets {
+            for opt in targets {
                 if opt.group != current_group {
-                    current_group = opt.group;
+                    current_group = opt.group.as_ref();
                     let collapsed = state.collapsed_target_groups.contains(current_group);
                     let caret = if collapsed { "\u{25b6}" } else { "\u{25bc}" };
 
@@ -1096,7 +1098,7 @@ fn draw_target_column(
                     last_header_rect = Some(hdr_rect);
                 }
 
-                if state.collapsed_target_groups.contains(opt.group) {
+                if state.collapsed_target_groups.contains(opt.group.as_ref()) {
                     // Record position at group header for collapsed targets
                     if let Some(hr) = last_header_rect {
                         let anchor = pos2(hr.left(), hr.center().y);
@@ -1202,6 +1204,7 @@ fn draw_center_column(
     state: &mut BindingMatrixState,
     bus: &mut BindingBus,
     info: &BindingPanelInfo,
+    targets: &[TargetOption],
 ) {
     let tc = theme_colors(ui.ctx());
 
@@ -1249,14 +1252,13 @@ fn draw_center_column(
             }
 
             let expanded_id = state.expanded_binding_id.clone();
-            let targets = build_target_options(info);
             let mut to_remove: Vec<String> = Vec::new();
 
             for id in &binding_ids {
                 let is_expanded = expanded_id.as_deref() == Some(id.as_str());
                 let is_armed = new_pending.as_ref().map_or(false, |(pid, _)| pid == id);
                 let result =
-                    draw_binding_card(ui, state, bus, id, is_expanded, is_armed, info, &targets);
+                    draw_binding_card(ui, state, bus, id, is_expanded, is_armed, info, targets);
                 match result {
                     CardAction::Expand => {
                         state.expanded_binding_id = Some(id.clone());
@@ -1500,6 +1502,33 @@ fn draw_binding_card(
                 }
             }
             dot_resp.on_hover_text(if enabled { "Disable" } else { "Enable" });
+
+            // Identity: the custom name, or the auto "Source \u{2192} Target".
+            // Without this an unnamed collapsed card reads as just its pills.
+            let display = if binding_name.is_empty() {
+                make_display_name(&binding_source, &binding_target)
+            } else {
+                binding_name.clone()
+            };
+            ui.label(
+                RichText::new(crate::ui::widgets::truncate_chars(&display, 24))
+                    .size(9.0)
+                    .strong()
+                    .color(tc.text_primary),
+            )
+            .on_hover_text(&display);
+
+            // Dead-source warning: an enabled binding whose source key isn't in
+            // the live snapshot (unplugged device, un-substituted template).
+            if enabled
+                && !binding_source.is_empty()
+                && !bus.last_snapshot.contains_key(&binding_source)
+            {
+                ui.label(RichText::new("\u{26a0}").size(8.0).color(tc.warning))
+                    .on_hover_text(
+                        "Source not currently available \u{2014} check the device or re-Learn",
+                    );
+            }
 
             // Transform chain summary pills
             if binding_transforms.is_empty() {
@@ -1750,7 +1779,7 @@ fn draw_expanded_content(
                 let mut current_group: &str = "";
                 for opt in targets {
                     if opt.group != current_group {
-                        current_group = opt.group;
+                        current_group = opt.group.as_ref();
                         ui.label(
                             RichText::new(current_group)
                                 .size(8.0)
@@ -2042,12 +2071,17 @@ fn draw_expanded_content(
         });
     });
 
-    // Apply changes back
-    if let Some(b) = bus.get_binding_mut(id) {
-        b.source = source;
-        b.target = target;
-        b.name = name;
-        b.enabled = enabled_val;
+    // Apply changes back — only on a real change: get_binding_mut marks the
+    // bus dirty, and an unconditional write meant a rewrite of the bindings
+    // file every debounce interval for as long as a card sat expanded.
+    if source != source_init || target != target_init || name != name_init || enabled_val != enabled
+    {
+        if let Some(b) = bus.get_binding_mut(id) {
+            b.source = source;
+            b.target = target;
+            b.name = name;
+            b.enabled = enabled_val;
+        }
     }
 }
 

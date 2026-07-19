@@ -267,23 +267,34 @@ impl BindingBus {
     pub fn load_preset_bindings(&mut self, preset_name: &str) {
         // Remove existing preset-scoped bindings
         self.bindings.retain(|b| b.scope != BindingScope::Preset);
+        self.merge_preset_bindings(persistence::load_preset(preset_name));
+    }
 
-        let preset_bindings = persistence::load_preset(preset_name);
-        for b in &preset_bindings {
+    /// Merge preset-scoped bindings into the bus, re-assigning any id that
+    /// collides with an existing (global) binding. The `b_{n}` counter is
+    /// per-file, so a preset authored in another session can reuse an id a
+    /// global binding holds — the runtimes map would silently collide and
+    /// `remove_binding` (retain by id) would drop both. The sidecar file
+    /// self-heals with the new ids on the next preset save.
+    fn merge_preset_bindings(&mut self, mut incoming: Vec<Binding>) {
+        let parse_id = |id: &str| id.strip_prefix("b_").and_then(|s| s.parse::<u64>().ok());
+        let max_id = incoming.iter().filter_map(|b| parse_id(&b.id)).max();
+        if let Some(max_id) = max_id {
+            if max_id >= self.next_id_counter {
+                self.next_id_counter = max_id + 1;
+            }
+        }
+
+        let existing: std::collections::HashSet<String> =
+            self.bindings.iter().map(|b| b.id.clone()).collect();
+        for b in &mut incoming {
+            if existing.contains(&b.id) {
+                b.id = format!("b_{:03}", self.next_id_counter);
+                self.next_id_counter += 1;
+            }
             self.runtimes.insert(b.id.clone(), BindingRuntime::new());
         }
-
-        // Update next_id_counter
-        let max_id = preset_bindings
-            .iter()
-            .filter_map(|b| b.id.strip_prefix("b_").and_then(|s| s.parse::<u64>().ok()))
-            .max()
-            .unwrap_or(0);
-        if max_id >= self.next_id_counter {
-            self.next_id_counter = max_id + 1;
-        }
-
-        self.bindings.extend(preset_bindings);
+        self.bindings.extend(incoming);
     }
 
     /// Save preset-scoped bindings (called on preset save).
@@ -333,6 +344,94 @@ impl BindingBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_bus() -> BindingBus {
+        BindingBus {
+            bindings: Vec::new(),
+            runtimes: HashMap::new(),
+            ws_bind_values: HashMap::new(),
+            ws_preview_images: HashMap::new(),
+            ws_field_last_seen: HashMap::new(),
+            next_id_counter: 1,
+            dirty: false,
+            dirty_since: None,
+            learn_target: None,
+            last_snapshot: HashMap::new(),
+            pending_triggers: Vec::new(),
+        }
+    }
+
+    fn preset_binding(id: &str, source: &str) -> Binding {
+        Binding {
+            id: id.into(),
+            name: String::new(),
+            enabled: true,
+            scope: BindingScope::Preset,
+            source: source.into(),
+            target: "layer.0.opacity".into(),
+            transforms: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn merge_reassigns_colliding_preset_ids() {
+        let mut bus = empty_bus();
+        let global_id = bus.add_binding(
+            "audio.kick".into(),
+            "param.Phosphor.warp".into(),
+            BindingScope::Global,
+        );
+        assert_eq!(global_id, "b_001");
+
+        // A preset file authored elsewhere reuses b_001.
+        bus.merge_preset_bindings(vec![
+            preset_binding("b_001", "audio.rms"),
+            preset_binding("b_007", "audio.flux"),
+        ]);
+
+        assert_eq!(bus.bindings.len(), 3);
+        // The colliding preset binding got a fresh id; the global one is intact.
+        let ids: Vec<&str> = bus.bindings.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids.iter().filter(|i| **i == "b_001").count(), 1);
+        let preset_ids: Vec<&str> = bus
+            .bindings
+            .iter()
+            .filter(|b| b.scope == BindingScope::Preset)
+            .map(|b| b.id.as_str())
+            .collect();
+        assert!(!preset_ids.contains(&"b_001"));
+        assert!(preset_ids.contains(&"b_007"));
+        // Every binding has a runtime under its FINAL id.
+        for b in &bus.bindings {
+            assert!(bus.runtimes.contains_key(&b.id), "no runtime for {}", b.id);
+        }
+        // Counter advanced past everything now in the bus.
+        let max = bus
+            .bindings
+            .iter()
+            .filter_map(|b| b.id.strip_prefix("b_").and_then(|s| s.parse::<u64>().ok()))
+            .max()
+            .unwrap();
+        assert!(bus.next_id_counter > max);
+    }
+
+    #[test]
+    fn remove_after_merge_removes_exactly_one() {
+        let mut bus = empty_bus();
+        bus.add_binding(
+            "audio.kick".into(),
+            "param.Phosphor.warp".into(),
+            BindingScope::Global,
+        );
+        bus.merge_preset_bindings(vec![preset_binding("b_001", "audio.rms")]);
+        assert_eq!(bus.bindings.len(), 2);
+
+        // Deleting the global b_001 must not take the (re-id'd) preset one along.
+        bus.remove_binding("b_001");
+        assert_eq!(bus.bindings.len(), 1);
+        assert_eq!(bus.bindings[0].scope, BindingScope::Preset);
+        assert_eq!(bus.bindings[0].source, "audio.rms");
+    }
 
     #[test]
     fn test_add_remove_binding() {

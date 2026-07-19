@@ -59,7 +59,7 @@ impl BindingPanelInfo {
 pub struct TargetOption {
     pub id: String,
     pub label: String,
-    pub group: &'static str,
+    pub group: std::borrow::Cow<'static, str>,
 }
 
 pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
@@ -70,19 +70,18 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         if lp.param_names.is_empty() || lp.effect_name.is_empty() {
             continue;
         }
-        let group_label: &str = if info.layer_count == 1 {
-            "Params"
+        // Cow, not Box::leak — this runs every frame while the matrix is open,
+        // and a leaked label per layer-group per frame is an unbounded leak.
+        let group_label: std::borrow::Cow<'static, str> = if info.layer_count == 1 {
+            "Params".into()
         } else {
-            // Leak a string to get a &'static str for the group label.
-            // These are small and bounded by layer count, so this is fine.
-            let s = format!("Layer {} \u{2022} {}", lp.index, lp.effect_name);
-            Box::leak(s.into_boxed_str())
+            format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into()
         };
         for name in &lp.param_names {
             targets.push(TargetOption {
                 id: format!("param.{}.{}.{}", lp.index, lp.effect_name, name),
                 label: name.clone(),
-                group: group_label,
+                group: group_label.clone(),
             });
         }
     }
@@ -97,7 +96,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
             targets.push(TargetOption {
                 id: format!("layer.{i}.{suffix}"),
                 label: format!("Layer {i} {label_suffix}"),
-                group: "Layers",
+                group: "Layers".into(),
             });
         }
     }
@@ -113,7 +112,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         targets.push(TargetOption {
             id: id.into(),
             label: label.into(),
-            group: "PostFX",
+            group: "PostFX".into(),
         });
     }
 
@@ -133,7 +132,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         targets.push(TargetOption {
             id: id.into(),
             label: label.into(),
-            group: "Particles",
+            group: "Particles".into(),
         });
     }
 
@@ -142,7 +141,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         targets.push(TargetOption {
             id: format!("uniform.{field}"),
             label: (*label).to_string(),
-            group: "Uniforms",
+            group: "Uniforms".into(),
         });
     }
 
@@ -155,7 +154,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         targets.push(TargetOption {
             id: id.into(),
             label: label.into(),
-            group: "Scene",
+            group: "Scene".into(),
         });
     }
 
@@ -163,7 +162,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     targets.push(TargetOption {
         id: "global.master_opacity".into(),
         label: "Master opacity".into(),
-        group: "Global",
+        group: "Global".into(),
     });
 
     targets

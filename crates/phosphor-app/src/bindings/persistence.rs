@@ -71,6 +71,13 @@ fn load_from_path(path: &PathBuf) -> Vec<Binding> {
     }
 }
 
+/// Unit tests must never touch the real config dir: `remove_binding` saves
+/// immediately, and a test bus starts empty — so a plain `cargo test` used
+/// to overwrite ~/.config/phosphor/global-bindings.json with an empty list.
+#[cfg(test)]
+fn save_to_path(_path: &PathBuf, _bindings: &[Binding]) {}
+
+#[cfg(not(test))]
 fn save_to_path(path: &PathBuf, bindings: &[Binding]) {
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
