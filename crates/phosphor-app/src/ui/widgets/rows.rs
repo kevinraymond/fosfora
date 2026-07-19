@@ -4,10 +4,6 @@
 //! so labels, sliders and values line up in one column system across all panels.
 //! Panels must not hand-roll `ui.horizontal(label + Slider)` rows — use these.
 
-// Module-wide until the panel migrations (audio/lattice/particle/triggers) land
-// in the follow-up commits of this series; each adds users of these items.
-#![allow(dead_code)]
-
 use std::ops::RangeInclusive;
 
 use egui::{Align2, FontId, Response, RichText, Sense, Ui};
@@ -26,6 +22,7 @@ pub const VALUE_WIDTH: f32 = 40.0;
 /// Response from a [`ParamRow`] slider/drag.
 pub struct RowResponse {
     /// The slider/drag widget itself (for hover, context menus, …).
+    #[allow(dead_code)] // part of the row vocabulary; no caller needs it yet
     pub response: Response,
     /// Value changed this frame.
     pub changed: bool,
@@ -66,6 +63,7 @@ impl<'a> ParamRow<'a> {
         self.logarithmic = on;
         self
     }
+    #[allow(dead_code)] // part of the row vocabulary; no caller needs it yet
     pub fn hide_value(mut self) -> Self {
         self.show_value = false;
         self
@@ -77,6 +75,7 @@ impl<'a> ParamRow<'a> {
     }
 
     /// Escape hatch for panels whose column budget differs; prefer the default.
+    #[allow(dead_code)] // part of the row vocabulary; no caller needs it yet
     pub fn label_width(mut self, w: f32) -> Self {
         self.label_width = w;
         self

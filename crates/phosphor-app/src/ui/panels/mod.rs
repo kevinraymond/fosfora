@@ -22,6 +22,7 @@ pub mod settings_panel;
 pub mod shader_editor;
 pub mod status_bar;
 pub mod timeline_bar;
+pub mod triggers_panel;
 pub mod volumetric_panel;
 pub mod web_panel;
 pub mod webcam_panel;
@@ -344,6 +345,22 @@ pub fn draw_panels(
                             true,
                             |ui| {
                                 osc_panel::draw_osc_panel(ui, osc);
+                            },
+                        );
+
+                        // Triggers subsection — one table for both protocols
+                        // (the per-protocol grids used to repeat the same list).
+                        let mapped = midi.config.triggers.len() + osc.config.triggers.len();
+                        let trig_badge = (mapped > 0).then(|| format!("{mapped}"));
+                        widgets::subsection(
+                            ui,
+                            "sub_triggers",
+                            "Triggers",
+                            trig_badge.as_deref(),
+                            dot_active_osc,
+                            false,
+                            |ui| {
+                                triggers_panel::draw_triggers_table(ui, midi, osc);
                             },
                         );
 

@@ -3,26 +3,12 @@ use egui::{Color32, RichText, Ui};
 use crate::midi::types::TriggerAction;
 use crate::osc::OscSystem;
 use crate::osc::types::OscLearnTarget;
-use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::rows;
 
 const OSC_GREEN: Color32 = Color32::from_rgb(0x50, 0xC0, 0x70);
 
-/// Trigger pairs for 2-column grid layout (same pairing as MIDI).
-const TRIGGER_PAIRS: &[(TriggerAction, TriggerAction)] = &[
-    (TriggerAction::NextEffect, TriggerAction::PrevEffect),
-    (TriggerAction::NextPreset, TriggerAction::PrevPreset),
-    (TriggerAction::NextLayer, TriggerAction::PrevLayer),
-    (
-        TriggerAction::TogglePostProcess,
-        TriggerAction::ToggleOverlay,
-    ),
-    (TriggerAction::SceneGoNext, TriggerAction::SceneGoPrev),
-];
-
 pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
-    let tc = theme_colors(ui.ctx());
-
     // Enable checkbox
     let mut enabled = osc.config.enabled;
     if ui
@@ -33,20 +19,16 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
     }
 
     // RX port
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("RX").size(SMALL_SIZE));
-        let mut port = osc.config.rx_port;
-        let resp = ui.add(
-            egui::DragValue::new(&mut port)
-                .range(1024..=65535)
-                .speed(1.0),
-        );
-        if resp.changed() {
-            osc.config.rx_port = port;
-            osc.config.save();
-            osc.restart_receiver();
-        }
-    });
+    let mut port = osc.config.rx_port;
+    if rows::ParamRow::new("RX port")
+        .tooltip("UDP port Phosphor listens on")
+        .show_drag(ui, &mut port, 1024..=65535, 1.0)
+        .changed
+    {
+        osc.config.rx_port = port;
+        osc.config.save();
+        osc.restart_receiver();
+    }
 
     ui.add_space(4.0);
 
@@ -73,12 +55,7 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         }
 
         // TX Host
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("TX Host")
-                    .size(SMALL_SIZE)
-                    .color(tc.text_secondary),
-            );
+        rows::custom_row(ui, "TX host", None, |ui| {
             let mut host = osc.config.tx_host.clone();
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut host)
@@ -95,13 +72,8 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
             }
         });
 
-        // Port + Rate on one line
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Port")
-                    .size(SMALL_SIZE)
-                    .color(tc.text_secondary),
-            );
+        // Port + Rate share one row — they configure the same TX socket.
+        rows::custom_row(ui, "TX port · rate", None, |ui| {
             let mut port = osc.config.tx_port;
             let resp = ui.add(
                 egui::DragValue::new(&mut port)
@@ -116,12 +88,7 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
                         .configure(&osc.config.tx_host, osc.config.tx_port);
                 }
             }
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("Rate")
-                    .size(SMALL_SIZE)
-                    .color(tc.text_secondary),
-            );
+            ui.add_space(4.0);
             let mut rate = osc.config.tx_rate_hz;
             let resp = ui.add(
                 egui::DragValue::new(&mut rate)
@@ -151,51 +118,11 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         ui.label(RichText::new(label).size(SMALL_SIZE).color(color));
         ui.ctx().request_repaint();
     }
-
-    // Triggers
-    ui.add_space(4.0);
-    ui.label(RichText::new("TRIGGERS").size(8.0).color(tc.text_secondary));
-    ui.add_space(2.0);
-
-    let half = ui.available_width() / 2.0;
-    let label_w = 52.0;
-    let badge_w = half - label_w - 8.0;
-    egui::Grid::new("osc_triggers")
-        .num_columns(4)
-        .min_col_width(0.0)
-        .spacing([4.0, 3.0])
-        .show(ui, |ui| {
-            for (left, right) in TRIGGER_PAIRS {
-                ui.add_sized(
-                    [label_w, MIN_INTERACT_HEIGHT],
-                    egui::Label::new(
-                        RichText::new(left.short_name())
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    ),
-                );
-                ui.add_sized([badge_w, MIN_INTERACT_HEIGHT], |ui: &mut Ui| {
-                    ui.horizontal(|ui| draw_osc_trigger_badge(ui, osc, *left))
-                        .response
-                });
-                ui.add_sized(
-                    [label_w, MIN_INTERACT_HEIGHT],
-                    egui::Label::new(
-                        RichText::new(right.short_name())
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    ),
-                );
-                ui.add_sized([badge_w, MIN_INTERACT_HEIGHT], |ui: &mut Ui| {
-                    ui.horizontal(|ui| draw_osc_trigger_badge(ui, osc, *right))
-                        .response
-                });
-                ui.end_row();
-            }
-        });
 }
 
-fn draw_osc_trigger_badge(ui: &mut Ui, osc: &mut OscSystem, action: TriggerAction) {
+/// One OSC mapping badge for `action` — unmapped "O" / learning ".." / mapped
+/// abbreviated address. Shared with the unified Triggers table.
+pub(crate) fn draw_osc_trigger_badge(ui: &mut Ui, osc: &mut OscSystem, action: TriggerAction) {
     let is_learning = osc.learn_target == Some(OscLearnTarget::Trigger(action));
     let is_mapped = osc.config.triggers.contains_key(&action);
 
