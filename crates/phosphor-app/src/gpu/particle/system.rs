@@ -15,6 +15,7 @@ use super::types::{
     ImageSampleDef, ParticleAux, ParticleDef, ParticleImageSource, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
+use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
 
 const WORKGROUP_SIZE: u32 = 256;
@@ -184,6 +185,21 @@ pub struct ParticleSystem {
     volumetric: Option<VolumetricRenderer>,
     pub volumetric_enabled: bool,
     pub volumetric_params: VolumetricParams,
+
+    // Lattice (3D cellular automata): self-contained density producer that reuses
+    // the R3 ray marcher. Lazily built on first enable (see `init_lattice`);
+    // mutually exclusive with volumetric + the normal particle render.
+    lattice: Option<LatticeSim>,
+    pub lattice_enabled: bool,
+    pub lattice_params: LatticeParams,
+    lattice_needs_seed: std::cell::Cell<bool>,
+    // Fractional generations-per-second accumulator (drained each frame into an
+    // integer step count) — keeps CA speed frame-rate stable. `&self` dispatch, so
+    // interior-mutable like `lattice_needs_seed`.
+    lattice_step_accum: std::cell::Cell<f32>,
+    // Seconds the lattice population has been stagnant (died-out or saturated); once
+    // it crosses the dwell threshold the grid auto-reseeds. See `poll_lattice_population`.
+    lattice_stagnant_secs: std::cell::Cell<f32>,
 
     // WBOIT (Weighted Blended Order-Independent Transparency)
     wboit_accum_texture: Option<wgpu::Texture>,
@@ -1037,6 +1053,21 @@ impl ParticleSystem {
             volumetric: None,
             volumetric_enabled: false,
             volumetric_params: VolumetricParams::default(),
+            // Lattice is effect-driven: a `particles.lattice` def block builds the
+            // sim + turns it on (like reaction_diffusion / trail_field). No global toggle.
+            lattice: def
+                .lattice
+                .as_ref()
+                .map(|ld| LatticeSim::new(device, hdr_format, ld.grid_res)),
+            lattice_enabled: def.lattice.is_some(),
+            lattice_params: def
+                .lattice
+                .as_ref()
+                .map(LatticeParams::from)
+                .unwrap_or_default(),
+            lattice_needs_seed: std::cell::Cell::new(true),
+            lattice_step_accum: std::cell::Cell::new(0.0),
+            lattice_stagnant_secs: std::cell::Cell::new(0.0),
             wboit_accum_texture,
             wboit_accum_view,
             wboit_reveal_texture,
@@ -1528,11 +1559,38 @@ impl ParticleSystem {
             pass.dispatch_workgroups(1, 1, 1);
         }
 
-        // 4. Volumetric mode (if enabled) scatters particles into a 3D density
-        //    grid, replacing the normal particle render; otherwise compute raster
+        // 4. Lattice (3D CA) or Volumetric mode (if enabled) produce the density
+        //    volume, replacing the normal particle render; otherwise compute raster
         //    (if active): tiled path for high particle counts, direct otherwise.
         let output_idx = 1 - self.current;
-        if self.volumetric_enabled {
+        if self.lattice_enabled {
+            if let Some(ref lat) = self.lattice {
+                lat.upload_ca_uniforms(queue, &self.build_lattice_uniforms());
+                lat.upload_render_uniforms(queue, &self.build_lattice_render_uniforms());
+                if self.lattice_needs_seed.get() {
+                    lat.seed(encoder);
+                    self.lattice_needs_seed.set(false);
+                    self.lattice_step_accum.set(0.0);
+                }
+                // Generation rate (gen/s) scaled by bass above a silence floor, drained
+                // through a fractional accumulator so speed is frame-rate stable.
+                let p = &self.lattice_params;
+                let (steps, residual) = lattice_step_budget(
+                    self.lattice_step_accum.get(),
+                    p.gen_per_sec,
+                    p.bass_floor,
+                    self.uniforms.bass,
+                    self.uniforms.delta_time,
+                );
+                self.lattice_step_accum.set(residual);
+                for _ in 0..steps {
+                    lat.step(encoder);
+                }
+                // EMA the freshest state into the density texture every frame (even at
+                // 0 steps), so the marcher fades toward the current generation.
+                lat.display(encoder);
+            }
+        } else if self.volumetric_enabled {
             if let Some(ref vr) = self.volumetric {
                 let vu = self.build_volumetric_uniforms();
                 vr.dispatch(encoder, queue, output_idx, self.max_particles, &vu);
@@ -1598,8 +1656,14 @@ impl ParticleSystem {
 
     /// Render particles into the given target using indirect draw.
     pub fn render(&self, encoder: &mut CommandEncoder, queue: &Queue, target: &TextureView) {
-        // Volumetric path: ray march the density texture (built in dispatch),
-        // compositing over the scene. Replaces the normal particle render.
+        // Lattice / Volumetric path: ray march the density volume (built in
+        // dispatch), compositing over the scene. Replaces the normal particle render.
+        if self.lattice_enabled {
+            if let Some(ref lat) = self.lattice {
+                lat.render_raymarch(encoder, target);
+                return;
+            }
+        }
         if self.volumetric_enabled {
             if let Some(ref vr) = self.volumetric {
                 vr.render_raymarch(encoder, target);
@@ -2539,6 +2603,105 @@ impl ParticleSystem {
     fn build_volumetric_uniforms(&self) -> VolumetricUniforms {
         let u = &self.uniforms;
         self.volumetric_params.build_uniforms(
+            u.resolution,
+            u.time,
+            u.beat,
+            u.kick,
+            u.rms,
+            u.beat_phase,
+            u.dominant_chroma,
+        )
+    }
+
+    /// Lazily build (or rebuild on resolution change) the Lattice simulation.
+    /// Independent of the volumetric renderer — Lattice owns its own density
+    /// volume + ray marcher, so enabling it does not build the particle scatter
+    /// pipelines.
+    pub fn init_lattice(&mut self, device: &Device, hdr_format: TextureFormat) {
+        let want = crate::gpu::lattice::clamp_grid_res(self.lattice_params.grid_res);
+        let needs_build = match self.lattice {
+            Some(ref lat) => lat.grid_res() != want,
+            None => true,
+        };
+        if needs_build {
+            self.lattice = Some(LatticeSim::new(device, hdr_format, want));
+            self.lattice_needs_seed.set(true);
+        }
+    }
+
+    /// Request a reseed of the Lattice grid on the next dispatch (init-mode change,
+    /// randomise, or a manual reseed control).
+    pub fn request_lattice_seed(&self) {
+        self.lattice_needs_seed.set(true);
+    }
+
+    /// Request the lattice live-cell population readback (async). Call once per
+    /// frame after `queue.submit()`, alongside the particle counter readback.
+    pub fn request_lattice_population_readback(&self) {
+        if self.lattice_enabled {
+            if let Some(ref lat) = self.lattice {
+                lat.request_population_readback();
+            }
+        }
+    }
+
+    /// Poll the lattice population and auto-reseed when the grid has stagnated —
+    /// died out or saturated — for longer than the dwell threshold. This keeps the
+    /// explosive rules (Pyroclastic etc.) alive during silence, when there are no
+    /// onset injections to restart them; the density EMA turns the reseed into a
+    /// crossfade rather than a pop. Call once per frame before dispatch.
+    pub fn poll_lattice_population(&mut self) {
+        if !self.lattice_enabled {
+            return;
+        }
+        let Some(ref lat) = self.lattice else {
+            return;
+        };
+        let Some(pop) = lat.poll_population_readback() else {
+            return;
+        };
+        let frac = pop as f32 / lat.cell_count().max(1) as f32;
+        let (reseed, secs) = crate::gpu::lattice::lattice_stagnation_tick(
+            frac,
+            self.lattice_stagnant_secs.get(),
+            self.uniforms.delta_time,
+        );
+        self.lattice_stagnant_secs.set(secs);
+        if reseed {
+            // Vary the seed so each reseed differs, then request it next frame.
+            self.lattice_params.seed_hash = self
+                .lattice_params
+                .seed_hash
+                .wrapping_mul(1_664_525)
+                .wrapping_add(1_013_904_223);
+            self.lattice_needs_seed.set(true);
+        }
+    }
+
+    /// Build the Lattice CA uniform block from params + this frame's audio: mids
+    /// bias birth, highs bias survival, onset injects a seed cluster, flux
+    /// perturbs. `dt` drives the display-pass density EMA. (The beat pulse lives in
+    /// the ray marcher, not the CA.)
+    fn build_lattice_uniforms(&self) -> LatticeUniforms {
+        let u = &self.uniforms;
+        let frame = (u.time * 60.0) as u32;
+        let highs = (u.presence + u.brilliance) * 0.5;
+        self.lattice_params.build_uniforms(
+            frame,
+            u.onset,
+            u.flux,
+            u.mid,
+            highs,
+            u.time,
+            u.delta_time,
+        )
+    }
+
+    /// Build the ray-march camera/palette uniforms for Lattice (reuses the
+    /// embedded render params + this frame's audio/time).
+    fn build_lattice_render_uniforms(&self) -> VolumetricUniforms {
+        let u = &self.uniforms;
+        self.lattice_params.render.build_uniforms(
             u.resolution,
             u.time,
             u.beat,
