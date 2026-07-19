@@ -2669,8 +2669,13 @@ impl ParticleSystem {
             return;
         };
         let frac = pop as f32 / lat.cell_count().max(1) as f32;
+        let saturate = crate::gpu::lattice::lattice_saturate_fraction(
+            self.lattice_params.domain_mode,
+            self.lattice_params.domain_radius,
+        );
         let (reseed, secs) = crate::gpu::lattice::lattice_stagnation_tick(
             frac,
+            saturate,
             self.lattice_stagnant_secs.get(),
             self.uniforms.delta_time,
         );

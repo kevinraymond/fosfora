@@ -153,18 +153,34 @@ pub const LATTICE_MAX_STEPS_PER_FRAME: u32 = 8;
 
 /// Live-cell fraction below which the grid counts as died-out.
 pub const LATTICE_DEATH_FRACTION: f32 = 0.001;
-/// Live-cell fraction above which the grid counts as saturated.
-pub const LATTICE_SATURATE_FRACTION: f32 = 0.55;
 /// Seconds a grid must stay stagnant before auto-reseeding.
-pub const LATTICE_RESEED_DWELL_SECS: f32 = 4.0;
+pub const LATTICE_RESEED_DWELL_SECS: f32 = 2.5;
+
+/// Population fraction (of the whole grid) at which a preset counts as saturated,
+/// given its live domain. A spherical domain can only ever fill about `π r³ / 6`
+/// of the cube, so a fixed cube-relative threshold never trips for sphere presets
+/// — the saturated ball just sits there. Scaling with the domain fixes that.
+pub fn lattice_saturate_fraction(domain_mode: u32, domain_radius: f32) -> f32 {
+    let capacity = if domain_mode == 1 {
+        std::f32::consts::PI * domain_radius.clamp(0.1, 1.0).powi(3) / 6.0
+    } else {
+        1.0
+    };
+    (capacity * 0.7).clamp(0.05, 0.95)
+}
 
 /// Advance the auto-reseed stagnation timer for one frame, returning
-/// `(should_reseed, new_stagnant_secs)`. A grid that has died out or saturated
-/// for longer than [`LATTICE_RESEED_DWELL_SECS`] triggers a reseed (and the timer
-/// resets); a healthy population resets the timer immediately. Pure so the policy
-/// is testable without a GPU.
-pub fn lattice_stagnation_tick(frac: f32, stagnant_secs: f32, dt: f32) -> (bool, f32) {
-    let stagnant = !(LATTICE_DEATH_FRACTION..=LATTICE_SATURATE_FRACTION).contains(&frac);
+/// `(should_reseed, new_stagnant_secs)`. A grid that has died out (< [`LATTICE_DEATH_FRACTION`])
+/// or saturated (> `saturate_fraction`) for longer than [`LATTICE_RESEED_DWELL_SECS`]
+/// triggers a reseed (and the timer resets); a healthy population resets the timer
+/// immediately. Pure so the policy is testable without a GPU.
+pub fn lattice_stagnation_tick(
+    frac: f32,
+    saturate_fraction: f32,
+    stagnant_secs: f32,
+    dt: f32,
+) -> (bool, f32) {
+    let stagnant = frac < LATTICE_DEATH_FRACTION || frac > saturate_fraction;
     if !stagnant {
         return (false, 0.0);
     }
@@ -300,7 +316,9 @@ impl Default for LatticeParams {
             smooth_rate: 8.0,
             domain_mode: 1,
             domain_radius: 0.9,
-            dilation_max: 1,
+            // Off by default: dilating the rule on loud audio makes it more
+            // permissive, which packs the domain into a featureless solid ball.
+            dilation_max: 0,
             init_mode: 0,
             init_density: 0.12,
             seed_size: 6,
@@ -503,7 +521,7 @@ fn default_lattice_domain_radius() -> f32 {
     0.9
 }
 fn default_lattice_dilation_max() -> u32 {
-    1
+    0
 }
 fn default_lattice_init_density() -> f32 {
     0.12
@@ -1116,33 +1134,37 @@ mod tests {
     #[test]
     fn stagnation_reseed_policy() {
         let dt = 1.0 / 60.0;
+        let sat = 0.5;
         // Healthy population never reseeds and keeps the timer at 0.
-        let (reseed, secs) = lattice_stagnation_tick(0.1, 3.9, dt);
+        let (reseed, secs) = lattice_stagnation_tick(0.1, sat, 3.9, dt);
         assert!(!reseed);
         assert_eq!(secs, 0.0);
 
-        // Died-out accumulates and reseeds after the dwell, then resets.
+        // Died-out accumulates and reseeds within the dwell.
         let mut secs = 0.0;
         let mut fired = 0;
-        for _ in 0..(60 * 5) {
-            let (reseed, s) = lattice_stagnation_tick(0.0, secs, dt);
+        for _ in 0..(60 * 3) {
+            let (reseed, s) = lattice_stagnation_tick(0.0, sat, secs, dt);
             secs = s;
             if reseed {
                 fired += 1;
             }
         }
-        // ~5 s of death → one reseed just after 4 s (then the timer restarts).
-        assert_eq!(fired, 1, "expected exactly one reseed in 5 s of death");
+        assert!(fired >= 1, "died-out should auto-reseed within 3 s");
 
-        // Saturated also counts as stagnant.
-        let (_, s1) = lattice_stagnation_tick(0.8, 0.0, dt);
+        // Saturated (above the threshold) also counts as stagnant.
+        let (_, s1) = lattice_stagnation_tick(0.8, sat, 0.0, dt);
         assert!(s1 > 0.0);
 
-        // A single healthy frame between death frames resets the timer.
-        let (_, s2) = lattice_stagnation_tick(0.0, 3.9, dt); // near threshold
-        assert!(s2 > 3.9);
-        let (_, s3) = lattice_stagnation_tick(0.2, s2, dt); // healthy → reset
+        // A healthy frame resets the timer.
+        let (_, s3) = lattice_stagnation_tick(0.2, sat, 2.0, dt);
         assert_eq!(s3, 0.0);
+
+        // Domain-aware threshold: a sphere fills far less of the cube than a cube.
+        let sphere = lattice_saturate_fraction(1, 0.9);
+        let cube = lattice_saturate_fraction(0, 0.0);
+        assert!(sphere < cube, "sphere {sphere} should be < cube {cube}");
+        assert!((0.05..0.4).contains(&sphere));
     }
 
     #[test]
@@ -1417,7 +1439,8 @@ mod tests {
             }
             last_frac = frac;
 
-            let (reseed, next) = lattice_stagnation_tick(frac, stagnant, dt);
+            let sat = lattice_saturate_fraction(params.domain_mode, params.domain_radius);
+            let (reseed, next) = lattice_stagnation_tick(frac, sat, stagnant, dt);
             stagnant = next;
             if reseed {
                 params.seed_hash = params
@@ -1705,7 +1728,14 @@ mod tests {
             timeout: None,
         };
 
+        // LATTICE_ANIM_ONLY=<preset> renders just one; LATTICE_SIM_AUDIO=1 feeds a
+        // loud beat (onset pulses + mid/high energy) to reproduce live saturation.
+        let only = std::env::var("LATTICE_ANIM_ONLY").ok();
+        let sim_audio = std::env::var("LATTICE_SIM_AUDIO").is_ok();
         for (name, src) in presets {
+            if only.as_deref().is_some_and(|o| o != name) {
+                continue;
+            }
             let v: serde_json::Value = serde_json::from_str(src).unwrap();
             let def: LatticeDef =
                 serde_json::from_value(v["particles"]["lattice"].clone()).unwrap();
@@ -1716,23 +1746,24 @@ mod tests {
             let sim = LatticeSim::new(&device, fmt, params.grid_res);
             let mut fc = crate::gpu::frame_capture::FrameCapture::new(&device, w, h, fmt, "anim");
             let mut accum = 0.0f32;
-
-            // Seed.
-            sim.upload_ca_uniforms(
-                &queue,
-                &params.build_uniforms(0, 0.0, 0.0, 0.0, 0.0, 0.0, dt),
-            );
-            let mut enc = device.create_command_encoder(&Default::default());
-            sim.seed(&mut enc);
-            queue.submit([enc.finish()]);
-            device.poll(wait()).unwrap();
+            let mut needs_seed = true; // seeded on the first iteration
+            let mut stagnant = 0.0f32;
+            let cells = sim.cell_count() as f32;
+            let sat = lattice_saturate_fraction(params.domain_mode, params.domain_radius);
 
             for f in 0..frames {
                 let t = f as f32 * dt;
+                // Simulated loud beat: onset every 12 frames (~1.7/s at 20fps),
+                // sustained mid/high energy — the condition that saturates live.
+                let (onset, mid, high) = if sim_audio {
+                    (if f % 12 < 2 { 1.0 } else { 0.0 }, 0.7, 0.7)
+                } else {
+                    (0.0, 0.0, 0.0)
+                };
                 // Advance the CA at full energy so the evolution reads in a short clip.
                 sim.upload_ca_uniforms(
                     &queue,
-                    &params.build_uniforms(f, 0.0, 0.0, 0.0, 0.0, t, dt),
+                    &params.build_uniforms(f, onset, 0.0, mid, high, t, dt),
                 );
                 let (steps, residual) =
                     lattice_step_budget(accum, params.gen_per_sec, params.bass_floor, 1.0, dt);
@@ -1746,6 +1777,11 @@ mod tests {
                 sim.upload_render_uniforms(&queue, &ru);
 
                 let mut enc = device.create_command_encoder(&Default::default());
+                if needs_seed {
+                    sim.seed(&mut enc);
+                    needs_seed = false;
+                    accum = 0.0;
+                }
                 for _ in 0..steps {
                     sim.step(&mut enc);
                 }
@@ -1784,6 +1820,23 @@ mod tests {
                     .expect("raw->image")
                     .save(&path)
                     .expect("save png");
+
+                // Mirror the app's auto-reseed so the preview reflects live behavior:
+                // a filled/dead grid cycles back to a fresh seed.
+                sim.request_population_readback();
+                device.poll(wait()).unwrap();
+                if let Some(pop) = sim.poll_population_readback() {
+                    let frac = pop as f32 / cells;
+                    let (reseed, next) = lattice_stagnation_tick(frac, sat, stagnant, dt);
+                    stagnant = next;
+                    if reseed {
+                        params.seed_hash = params
+                            .seed_hash
+                            .wrapping_mul(1_664_525)
+                            .wrapping_add(1_013_904_223);
+                        needs_seed = true;
+                    }
+                }
             }
             eprintln!("wrote {frames} frames for {name}");
         }

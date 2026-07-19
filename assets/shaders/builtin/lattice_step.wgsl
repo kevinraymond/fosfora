@@ -164,10 +164,13 @@ fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // Onset seed injection: force a hashed cluster fully alive on the beat.
+    // Onset seed injection: sprinkle a hashed cluster alive on the beat. Sparse
+    // (≈40% fill in a smaller radius) rather than a solid blob, so repeated beats
+    // perturb and re-seed structure instead of accumulating into a packed ball.
     if (u.inject_active == 1u) {
         let ctr = inject_center(f32(g));
-        if (distance(vec3f(gid) + vec3f(0.5), ctr) < f32(u.seed_size)) {
+        if (distance(vec3f(gid) + vec3f(0.5), ctr) < f32(u.seed_size) * 0.7
+            && hash01(cell_hash(gid, u.frame ^ 0x5bd1e995u)) < 0.4) {
             next = 1u;
         }
     }
