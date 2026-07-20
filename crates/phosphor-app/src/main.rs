@@ -836,6 +836,9 @@ impl ApplicationHandler for PhosphorApp {
                     .data_mut(|d| d.remove_temp(egui::Id::new("confirm_quit")));
                 if confirm_quit.is_some() {
                     app.gpu.save_pipeline_cache();
+                    // Flush any global binding edit still inside the 1s debounce
+                    // window so it isn't lost on quit.
+                    app.binding_bus.flush();
                     event_loop.exit();
                 }
 

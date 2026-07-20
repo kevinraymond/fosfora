@@ -257,6 +257,7 @@ mod tests {
             next_id_counter: 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),

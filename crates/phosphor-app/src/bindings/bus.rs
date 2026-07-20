@@ -24,6 +24,11 @@ pub struct BindingBus {
     pub(crate) dirty: bool,
     /// Debounce: when the dirty flag was first set (save after 1s of no changes).
     pub(crate) dirty_since: Option<Instant>,
+    /// Set when a Preset-scoped binding is added/removed/edited. Polled each
+    /// frame and forwarded to `PresetStore::mark_dirty` so the amber "unsaved
+    /// preset" bar lights (preset-scoped bindings persist only on explicit
+    /// preset save); cleared on explicit preset save/load.
+    pub(crate) preset_scope_dirty: bool,
     pub learn_target: Option<LearnState>,
     /// Last frame's source snapshot (for UI diagnostics / templates).
     pub last_snapshot: SourceSnapshot,
@@ -54,6 +59,7 @@ impl BindingBus {
             next_id_counter: max_id + 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),
@@ -70,6 +76,7 @@ impl BindingBus {
         let id = format!("b_{:03}", self.next_id_counter);
         self.next_id_counter += 1;
 
+        let is_preset = scope == BindingScope::Preset;
         // Name left empty — UI will show auto-derived name from source+target
         let binding = Binding {
             id: id.clone(),
@@ -84,6 +91,9 @@ impl BindingBus {
         self.runtimes.insert(id.clone(), BindingRuntime::new());
         self.bindings.push(binding);
         self.mark_dirty();
+        if is_preset {
+            self.preset_scope_dirty = true;
+        }
         id
     }
 
@@ -98,20 +108,31 @@ impl BindingBus {
             format!("{} copy", src.name)
         };
         self.runtimes.insert(new_id.clone(), BindingRuntime::new());
+        let is_preset = src.scope == BindingScope::Preset;
         self.bindings.push(Binding {
             id: new_id.clone(),
             name,
             ..src
         });
         self.mark_dirty();
+        if is_preset {
+            self.preset_scope_dirty = true;
+        }
         Some(new_id)
     }
 
     /// Remove a binding by ID. Saves immediately.
     pub fn remove_binding(&mut self, id: &str) {
+        let was_preset = self
+            .bindings
+            .iter()
+            .any(|b| b.id == id && b.scope == BindingScope::Preset);
         self.bindings.retain(|b| b.id != id);
         self.runtimes.remove(id);
         self.save_global();
+        if was_preset {
+            self.preset_scope_dirty = true;
+        }
     }
 
     /// Get a binding by ID.
@@ -122,6 +143,16 @@ impl BindingBus {
     /// Get a mutable binding by ID. Marks as dirty for debounced save.
     pub fn get_binding_mut(&mut self, id: &str) -> Option<&mut Binding> {
         self.mark_dirty();
+        // A Preset-scoped edit only reaches disk on explicit preset save, so
+        // flag it for the "unsaved preset" indicator (scope is immutable after
+        // creation, so an id lookup is authoritative).
+        if self
+            .bindings
+            .iter()
+            .any(|b| b.id == id && b.scope == BindingScope::Preset)
+        {
+            self.preset_scope_dirty = true;
+        }
         self.bindings.iter_mut().find(|b| b.id == id)
     }
 
@@ -352,6 +383,22 @@ impl BindingBus {
         }
     }
 
+    /// Poll-and-clear: true if a Preset-scoped binding changed since the last
+    /// poll. The caller forwards this to `PresetStore::mark_dirty`.
+    pub fn take_preset_scope_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.preset_scope_dirty)
+    }
+
+    /// Force an immediate save of pending global-scoped edits, ignoring the 1s
+    /// debounce. Used on quit so a just-made global edit isn't lost.
+    pub fn flush(&mut self) {
+        if self.dirty {
+            self.save_global();
+            self.dirty = false;
+            self.dirty_since = None;
+        }
+    }
+
     /// Check if any source type has active bindings (for UI indicators).
     #[allow(dead_code)]
     pub fn has_source_type(&self, prefix: &str) -> bool {
@@ -375,6 +422,7 @@ mod tests {
             next_id_counter: 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),
@@ -482,6 +530,7 @@ mod tests {
             next_id_counter: 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),
@@ -511,6 +560,7 @@ mod tests {
             next_id_counter: 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),
@@ -550,6 +600,7 @@ mod tests {
             next_id_counter: 1,
             dirty: false,
             dirty_since: None,
+            preset_scope_dirty: false,
             learn_target: None,
             last_snapshot: HashMap::new(),
             pending_triggers: Vec::new(),
@@ -568,5 +619,119 @@ mod tests {
             b.enabled = false;
         }
         assert_eq!(bus.active_count(), 1);
+    }
+
+    // ---- Preset-scoped dirty tracking + quit flush (#1722) ----
+
+    #[test]
+    fn preset_scope_dirty_set_on_preset_add_and_cleared_by_take() {
+        let mut bus = empty_bus();
+        bus.add_binding(
+            "audio.rms".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Preset,
+        );
+        assert!(bus.take_preset_scope_dirty(), "preset add should flag");
+        assert!(!bus.take_preset_scope_dirty(), "take clears the flag");
+    }
+
+    #[test]
+    fn preset_scope_dirty_not_set_on_global_add() {
+        let mut bus = empty_bus();
+        bus.add_binding(
+            "audio.kick".into(),
+            "param.P.w".into(),
+            BindingScope::Global,
+        );
+        // Global edits ride the debounced global save, not the preset indicator.
+        assert!(!bus.take_preset_scope_dirty());
+        assert!(bus.dirty, "global add still marks the global dirty flag");
+    }
+
+    #[test]
+    fn preset_scope_dirty_set_on_duplicate_of_preset() {
+        let mut bus = empty_bus();
+        let id = bus.add_binding(
+            "audio.rms".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Preset,
+        );
+        assert!(bus.take_preset_scope_dirty());
+        bus.duplicate_binding(&id).unwrap();
+        assert!(
+            bus.take_preset_scope_dirty(),
+            "duplicating a preset binding flags"
+        );
+    }
+
+    #[test]
+    fn preset_scope_dirty_on_get_binding_mut_by_scope() {
+        let mut bus = empty_bus();
+        let g = bus.add_binding(
+            "audio.kick".into(),
+            "param.P.w".into(),
+            BindingScope::Global,
+        );
+        let p = bus.add_binding(
+            "audio.rms".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Preset,
+        );
+        // Clear the add-time flag first.
+        assert!(bus.take_preset_scope_dirty());
+
+        let _ = bus.get_binding_mut(&g);
+        assert!(
+            !bus.take_preset_scope_dirty(),
+            "editing a global binding must not flag"
+        );
+
+        let _ = bus.get_binding_mut(&p);
+        assert!(
+            bus.take_preset_scope_dirty(),
+            "editing a preset binding flags"
+        );
+    }
+
+    #[test]
+    fn preset_scope_dirty_on_remove_by_scope() {
+        let mut bus = empty_bus();
+        let g = bus.add_binding(
+            "audio.kick".into(),
+            "param.P.w".into(),
+            BindingScope::Global,
+        );
+        let p = bus.add_binding(
+            "audio.rms".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Preset,
+        );
+        assert!(bus.take_preset_scope_dirty());
+
+        bus.remove_binding(&g);
+        assert!(
+            !bus.take_preset_scope_dirty(),
+            "removing a global binding must not flag"
+        );
+
+        bus.remove_binding(&p);
+        assert!(
+            bus.take_preset_scope_dirty(),
+            "removing a preset binding flags"
+        );
+    }
+
+    #[test]
+    fn flush_saves_and_resets_dirty() {
+        let mut bus = empty_bus();
+        bus.add_binding(
+            "audio.kick".into(),
+            "param.P.w".into(),
+            BindingScope::Global,
+        );
+        assert!(bus.dirty);
+        bus.flush();
+        assert!(!bus.dirty);
+        assert!(bus.dirty_since.is_none());
     }
 }

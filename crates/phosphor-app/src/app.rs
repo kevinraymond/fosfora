@@ -871,6 +871,11 @@ impl App {
             self.apply_binding_target(&target, value);
         }
         self.binding_bus.save_if_dirty();
+        // A preset-scoped binding edit persists only on explicit preset save, so
+        // surface it as an unsaved change (mark_dirty no-ops with no preset loaded).
+        if self.binding_bus.take_preset_scope_dirty() {
+            self.preset_store.mark_dirty();
+        }
 
         // Drain async preset decode results
         if let Some(result) = self.preset_loader.try_recv() {
@@ -2526,6 +2531,8 @@ impl App {
                 // Save preset-scoped bindings as sidecar
                 self.binding_bus.save_preset_bindings(name);
                 self.binding_bus.save_global();
+                // Sidecar is now on disk — no longer an unsaved change.
+                self.binding_bus.preset_scope_dirty = false;
             }
             Err(e) => log::error!("Failed to save preset: {e}"),
         }
@@ -2546,6 +2553,8 @@ impl App {
 
         // Load preset-scoped bindings and migrate old 3-part targets to 4-part format
         self.binding_bus.load_preset_bindings(&preset_name);
+        // Freshly loaded bindings match disk — clear any stale unsaved flag.
+        self.binding_bus.preset_scope_dirty = false;
         for binding in &mut self.binding_bus.bindings {
             if binding.scope != crate::bindings::types::BindingScope::Preset {
                 continue;
