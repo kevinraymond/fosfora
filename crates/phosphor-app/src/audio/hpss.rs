@@ -11,10 +11,17 @@
 //! `Mh = H²/(P²+H²)` (so `Mp + Mh = 1`). Summing the masked power over the spectrum gives the
 //! percussive / harmonic energies; their normalized balance gives `harmonic_ratio`.
 //!
-//! The two energies are raw levels — the caller sets them **before** `normalize()` so the A2
-//! adaptive normalizer percentile-ranges and silence-gates them like the frequency bands
-//! (schema policy `Adaptive`). `harmonic_ratio` is already a level-invariant 0..1 balance, so it
-//! is producer-owned (`Passthrough`) and neutral-gated here.
+//! The two energies are **dB-mapped** (RMS of the masked power → 20·log10 → −120..0 dB → 0..1)
+//! before the caller hands them to `normalize()`, where the A2 adaptive normalizer
+//! percentile-ranges and silence-gates them like the frequency bands (schema policy `Adaptive`).
+//! The dB map is load-bearing, not cosmetic: the raw masked powers at real listening levels sit
+//! around 1e-7, below the normalizer's absolute span-collapse epsilon (1e-6), which hard-zeroed
+//! `percussive_energy` on live music while full-scale synthetic test signals sailed through
+//! (live finding — the Cleave starburst never fired on real DnB). In dB space a ±10 dB musical
+//! swing is the same span at any volume, so the epsilon can never swallow it. The window is
+//! wider than the bands' −80 dB because the mean over all 513 bins dilutes single-source content
+//! by up to ~27 dB relative to a band-limited RMS. `harmonic_ratio` is computed from the raw
+//! powers (level-invariant 0..1 balance), producer-owned (`Passthrough`) and neutral-gated here.
 
 /// Time-median window in frames (~0.2 s at the 512-sample hop). Odd for a defined median.
 const TIME_FRAMES: usize = 17;
@@ -24,9 +31,9 @@ const FREQ_RADIUS: usize = 8;
 /// The three HPSS features.
 #[derive(Debug, Clone, Copy)]
 pub struct HpssFeatures {
-    /// Percussive (transient) energy — raw mean masked power, adaptively normalized downstream.
+    /// Percussive (transient) energy — dB-mapped 0..1, adaptively normalized downstream.
     pub percussive_energy: f32,
-    /// Harmonic (sustained) energy — raw mean masked power, adaptively normalized downstream.
+    /// Harmonic (sustained) energy — dB-mapped 0..1, adaptively normalized downstream.
     pub harmonic_energy: f32,
     /// Harmonic vs percussive balance `E_h/(E_h+E_p)`, 0..1 (0.5 = balanced), level-invariant.
     pub harmonic_ratio: f32,
@@ -123,11 +130,22 @@ impl HpssAnalyzer {
         let e_h = e_h / n; // mean harmonic power
         let ratio = (e_h / (e_h + e_p + 1e-12)) as f32;
         HpssFeatures {
-            percussive_energy: e_p as f32,
-            harmonic_energy: e_h as f32,
+            percussive_energy: db_map(e_p),
+            harmonic_energy: db_map(e_h),
             harmonic_ratio: ratio,
         }
     }
+}
+
+/// Mean masked power → RMS amplitude → dB, mapped −120..0 dB → 0..1 (see module doc for why
+/// the map exists and why the window is wider than the bands' −80 dB).
+fn db_map(power: f64) -> f32 {
+    let rms = power.sqrt();
+    if rms < 1e-10 {
+        return 0.0;
+    }
+    let db = 20.0 * rms.log10() as f32;
+    ((db + 120.0) / 120.0).clamp(0.0, 1.0)
 }
 
 impl Default for HpssAnalyzer {
@@ -221,6 +239,22 @@ mod tests {
             f.percussive_energy,
             f.harmonic_energy
         );
+    }
+
+    #[test]
+    fn quiet_signal_still_registers() {
+        // Regression (Cleave starburst, 2026-07-20): at real listening levels the raw masked
+        // powers are ~1e-7..1e-9 — below the normalizer's absolute span epsilon — so without the
+        // dB map the energies normalized to a hard 0 on live music. A quiet tone (amp 1e-3, i.e.
+        // −60 dBFS) must still produce a clearly nonzero energy for the ranger to work with.
+        let mut h = HpssAnalyzer::new();
+        let tone = spike(100, 1e-3);
+        let mut f = HpssFeatures::NEUTRAL;
+        for _ in 0..TIME_FRAMES {
+            f = h.process(&tone, false);
+        }
+        assert!(f.harmonic_energy > 0.1, "h {}", f.harmonic_energy);
+        assert!(f.harmonic_ratio > 0.9, "ratio {}", f.harmonic_ratio);
     }
 
     #[test]

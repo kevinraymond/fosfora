@@ -288,8 +288,9 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     // ---- Reserved tail (batched ABI bump #1629, "v3") — 0.0 until each detector lands ----
     // Conservative placeholders (Passthrough/Scale/gently-smoothed) like the v2 tail above;
     // each DSP fill sets the final policy when it wires real data (CPU-side only — no ABI churn).
-    // A14 HPSS (#1465): the two energies are raw masked-power levels — Adaptive, so the gated
-    // percentile normalizer ranges them like the frequency bands (quiet music still fills 0..1).
+    // A14 HPSS (#1465): the two energies arrive dB-mapped 0..1 from the producer (raw masked
+    // power sat below the Adaptive span epsilon at listening volume — see hpss.rs) — Adaptive,
+    // so the gated percentile normalizer ranges them like the frequency bands.
     // `harmonic_ratio` is already a level-invariant 0..1 balance the analyzer neutral-gates on
     // silence, so it passes through. All three Scale toward 0 on a stalled device.
     def(

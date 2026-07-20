@@ -43,7 +43,10 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Hit glint: a brief cold flash injected into the feedback so every drum
     // hit leaves an expanding ghost ring. Gated on HPSS, never the kick band.
-    let hit = smoothstep(0.5, 1.0, u.percussive_energy) * param(6u);
+    // Threshold above the sustained-groove floor: live percussive_energy
+    // idles ~0.63 on dense DnB and peaks ~0.85 on hits — gating at 0.5
+    // injected light EVERY frame and fogged the whole field white.
+    let hit = smoothstep(0.72, 0.92, u.percussive_energy) * param(6u);
     let glint = vec3f(0.85, 0.93, 1.0) * hit * 0.02 / (1.0 + dot(d, d) * 40.0);
 
     // HDR clamp — mandatory: TWO additive voices feed this loop.

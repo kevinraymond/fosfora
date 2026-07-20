@@ -1262,9 +1262,10 @@ fn audio_thread(
             raw.stereo_corr = stereo_field.stereo_corr;
 
             // A14 (#1465): harmonic/percussive split from the medium (1024-pt) magnitude. The two
-            // energies are raw levels set before normalize() so the adaptive normalizer ranges and
-            // silence-gates them like the bands (Adaptive); `harmonic_ratio` is a level-invariant
-            // 0..1 balance (Passthrough), neutral-gated inside the analyzer on `loud_silent`.
+            // energies arrive dB-mapped 0..1 (volume-invariant spans — see hpss.rs) and are set
+            // before normalize() so the adaptive normalizer ranges and silence-gates them like
+            // the bands (Adaptive); `harmonic_ratio` is a level-invariant 0..1 balance
+            // (Passthrough), neutral-gated inside the analyzer on `loud_silent`.
             let hpss = hpss_analyzer.process(analyzer.mid_magnitude(), loud_silent);
             raw.percussive_energy = hpss.percussive_energy;
             raw.harmonic_energy = hpss.harmonic_energy;

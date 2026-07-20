@@ -62,10 +62,23 @@ fn is_shard_slot(idx: u32) -> bool {
 }
 
 // Dominance with manual bias: 0 = percussion-dominant, 1 = harmonic-dominant.
-// The 2.0 swing makes the extremes a hard override: harmonic_ratio dips to
-// ~0 at the instant of a drum hit, so anything less leaves the strike gate
-// partially open when balance is slammed to full-harmonic (live finding).
+// On FULL MIXES the raw HPSS ratio never visits the synthetic extremes this
+// crossfade was first tuned on: drums are a minority of total power even on
+// DnB, so live music reads ~0.65..0.96 (measured p25 0.68 / p50 0.79 / p95
+// 0.96 on a DnB track; kick-only and pad-only test signals hit 0.1 / 0.97+).
+// Remap that musical band to a full 0..1 dominance so the crossfade actually
+// travels with the arrangement, then bias. The 2.0 swing keeps the extremes
+// a hard override in either direction when balance is slammed.
 fn eff_ratio() -> f32 {
+    let d = smoothstep(0.62, 0.97, u.harmonic_ratio);
+    return clamp(d + (param(3u) - 0.5) * 2.0, 0.0, 1.0);
+}
+
+// Biased RAW ratio for the strike pad-guard. The guard cannot ride the
+// remapped eff_ratio: the remap compresses everything above ~0.95 toward
+// 1.0, fusing "bass-heavy music WITH drums" (ratio ~0.95) and "pure pad
+// drone" (~0.98) — exactly the two cases the guard exists to separate.
+fn guard_ratio() -> f32 {
     return clamp(u.harmonic_ratio + (param(3u) - 0.5) * 2.0, 0.0, 1.0);
 }
 
@@ -77,15 +90,24 @@ fn eff_ratio() -> f32 {
 // value is ~0 there, the shipped uniform is not). harmonic_ratio is
 // Passthrough (level-invariant), so IT is the discriminator that survives
 // normalization: fade strikes out entirely as the mix goes harmonic-pure.
+// Guard band from live measurement, on the RAW ratio (see guard_ratio):
+// drum-hit frames on real DnB read p50 0.80 / p95 0.95, a pure pad ~0.97+.
+// The first tuning (0.60..0.85) sat in the middle of the musical range and
+// cut strikes to a mean 0.35 AT drum hits; (0.90..0.98) keeps ~0.9 of
+// strike strength on hits and still closes on harmonic-pure material.
 fn strike() -> f32 {
-    let pad_guard = 1.0 - smoothstep(0.60, 0.85, eff_ratio());
+    let pad_guard = 1.0 - smoothstep(0.90, 0.98, guard_ratio());
     return u.percussive_energy * pad_guard * (0.4 + 0.6 * clamp(u.onset + u.flux, 0.0, 1.0));
 }
 
 // Shard share of this frame's emit budget; ribbons compare against the rest.
 // Always < u.emit_count, so the ribbon share never underflows.
+// Ceiling 0.45 (was 0.70): with the recentered dominance actually REACHING
+// the percussive end on real drops, 0.70 × 90K emit spawned ~36K live
+// needles whose additive trails fused into a solid white wall (live look,
+// fixed-HPSS bring-up). ~15K/s during grooves reads as a radiant burst.
 fn shard_budget() -> u32 {
-    let share = mix(0.70, 0.15, smoothstep(0.15, 0.85, eff_ratio()));
+    let share = mix(0.45, 0.10, smoothstep(0.15, 0.85, eff_ratio()));
     return u32(f32(u.emit_count) * share);
 }
 
@@ -133,7 +155,10 @@ fn emit_shard(idx: u32, sw: f32) -> Particle {
     let pos = u.emitter_pos + to_clip(dir_s * spread);
     let speed = (0.7 + 1.5 * param(0u)) * (0.5 + sw) * (0.85 + 0.3 * uhash_f(sb ^ 0x02e5be93u));
     let init_size = u.initial_size * 0.6 * (0.5 + 0.6 * sw);
-    let life = u.lifetime * (0.05 + 0.06 * uhash_f(sb ^ 0x967a889bu)); // 0.3-0.66 s
+    // 0.18-0.36 s: shorter than the inter-hit gap on fast material (174 BPM
+    // snares arrive every ~340 ms), so consecutive bursts DIE between hits
+    // instead of overlapping into a standing needle field (live look).
+    let life = u.lifetime * (0.03 + 0.03 * uhash_f(sb ^ 0x967a889bu));
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(to_clip(dir_s * speed), init_size, init_size);
     p.color = vec4f(shard_color(sw), 0.0);
@@ -173,7 +198,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             // The probability makes burst TIMING; counters[3] caps burst SIZE.
             let s = strike();
             let dominance_damp = 0.25 + 0.75 * (1.0 - smoothstep(0.3, 0.9, eff_ratio()));
-            let p_burst = smoothstep(0.12, 0.70, s) * dominance_damp * (0.4 + 0.6 * param(0u));
+            // Burst threshold sits ABOVE the sustained-groove strike floor: on
+            // dense DnB the smoothed percussive envelope never falls below
+            // ~0.43 between hits (150 ms release vs 16th-note spacing), so
+            // s idles at ~0.17-0.25 and peaks ~0.78 on hits (live capture).
+            // A lower edge under that floor leaves a standing budget-saturated
+            // spray with no rhythm; 0.30 closes the gate between hits and the
+            // onset/flux sharpening in strike() carries the articulation.
+            let p_burst = smoothstep(0.30, 0.70, s) * dominance_damp * (0.4 + 0.6 * param(0u));
             // Ambient glint floor: ~50 needles/s across the ~75K-slot pool at
             // the 30 Hz re-roll (pool × p × 30) — sparse sparks, not a
             // standing starburst (first live look: 0.0008 was 1800/s). The
@@ -260,8 +292,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
         size = init_size * (1.0 - 0.4 * life_frac);
         // Bright head, fast taper — closed form, no curve LUTs. Brief fade-in
-        // so a burst's opening frame doesn't slam the additive stack.
-        alpha = (0.08 + 0.25 * sw) * pow(1.0 - life_frac, 1.5) * smoothstep(0.0, 0.08, life_frac);
+        // so a burst's opening frame doesn't slam the additive stack. The sw
+        // coefficient is tuned for REAL strikes (sw ~0.8 on drum hits with
+        // live HPSS): 0.25 was set when the dead gate parked sw at its 0.08
+        // floor, and at true strike strength it white-walled the burst.
+        alpha = (0.06 + 0.14 * sw) * pow(1.0 - life_frac, 1.5) * smoothstep(0.0, 0.08, life_frac);
         col = shard_color(sw);
     } else {
         // --- RIBBON: relax toward the shared curl field ---
