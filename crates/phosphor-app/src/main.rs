@@ -2671,6 +2671,36 @@ impl ApplicationHandler for PhosphorApp {
                         }
                     }
 
+                    // Drain background splat scene loader results (#1800).
+                    // Targets the layer the load was requested for (not the
+                    // active layer); a stale result — layer swapped to a
+                    // non-splat effect meanwhile — is dropped harmlessly.
+                    if let Some(result) = app.splat_loader.try_recv() {
+                        match result {
+                            crate::gpu::particle::SplatLoadResult::Loaded { layer_idx, cloud } => {
+                                let ps = app
+                                    .layer_stack
+                                    .layers
+                                    .get_mut(layer_idx)
+                                    .and_then(|l| l.as_effect_mut())
+                                    .and_then(|e| e.pass_executor.particle_system.as_mut())
+                                    .filter(|ps| ps.def.splat.is_some());
+                                if let Some(ps) = ps {
+                                    ps.upload_splat_cloud(&app.gpu.device, &app.gpu.queue, &cloud);
+                                } else {
+                                    log::info!(
+                                        "Splat scene for layer {layer_idx} arrived after the layer changed — dropped"
+                                    );
+                                }
+                            }
+                            crate::gpu::particle::SplatLoadResult::Error { layer_idx, message } => {
+                                log::error!(
+                                    "Splat scene load failed (layer {layer_idx}): {message}"
+                                );
+                            }
+                        }
+                    }
+
                     // Drain background particle source loader results
                     if let Some(result) = app.particle_source_loader.try_recv() {
                         // Check if this image/video was requested for a morph slot

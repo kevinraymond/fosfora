@@ -133,6 +133,17 @@ struct ParticleUniforms {
     drop: f32,          // drop trigger — 1.0 for exactly one frame
     _pad_vessel0: f32,
     _pad_vessel1: f32,
+
+    // Splat orbit camera + audio envelopes (#1800 ABI bump).
+    // Zero for non-splat effects — sims must treat cam_focal == 0 as "no camera".
+    cam_yaw: f32,           // orbit azimuth, radians (CPU-accumulated)
+    cam_pitch: f32,         // orbit elevation, radians
+    cam_distance: f32,      // orbit radius in scene units (scene normalized to r≈1)
+    cam_focal: f32,         // focal-length multiplier = cot(fov/2), volumetric convention
+    splat_focal_depth: f32, // DoF focal plane in view-depth units
+    splat_explode: f32,     // drop envelope: max(env·exp(−dt/0.45), drop)
+    _pad_splat0: f32,
+    _pad_splat1: f32,
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).

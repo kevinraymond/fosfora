@@ -692,9 +692,9 @@ mod tests {
     // Compile probe for the Vessel sim + bg shaders. Unlike Tide's probe this
     // includes the sdf lib in the sim concatenation — Vessel's fallback
     // amphora uses phosphor_sd_segment2 (production lib_source is
-    // noise + palette + sdf + tonemap, see LIBRARY_FILES). Also the only
+    // noise + palette + sdf + tonemap, see LIBRARY_FILES). Also a
     // pre-launch check that the WGSL ParticleUniforms mirror matches the
-    // 864-byte Rust layout after the #1797 ABI bump.
+    // Rust layout (896 bytes since the #1800 ABI bump).
     // Run: cargo test -p phosphor-app -- --ignored vessel_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
@@ -1169,6 +1169,478 @@ mod tests {
             diff > 0.01,
             "crystal and sand states are indistinguishable (means {:?})",
             means
+        );
+    }
+
+    // Same guard as tide_pfx_parses_as_builtin, plus the frozen Splat param
+    // ABI: the sim reads slots 0–7 by index and the CPU driver reads 8–11
+    // (app.rs forwards them into splat_ui_params), so count and order are
+    // load-bearing. Also the #1855 injection-trap assert for the bg shader.
+    #[test]
+    fn splat_pfx_parses_as_builtin() {
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../assets/effects/splat.pfx"))
+                .expect("splat.pfx must deserialize");
+        assert!(EffectLoader::is_builtin(&effect));
+        assert_eq!(effect.inputs.len(), 12); // 8 sim slots + 4 CPU camera slots
+        let particles = effect.particles.expect("splat is a particle effect");
+        assert_eq!(particles.render_mode, "compute"); // splats need the raster
+        assert_eq!(particles.blend, "oit"); // weighted-average OIT resolve
+        assert!(particles.trail_length < 2); // trails share group 2 — forbidden
+        let splat = particles.splat.expect("splat def block required");
+        assert!(splat.source.starts_with("demo:"));
+        assert!(particles.max_scaled_count <= 3_000_000); // go/no-go budget
+        assert!((particles.emit_rate - 0.0).abs() < f32::EPSILON); // persistent slots, no emission
+        let bg = include_str!("../../../../assets/shaders/splat_bg.wgsl");
+        assert!(
+            !bg.contains("PhosphorUniforms"),
+            "splat_bg.wgsl must not mention the uniform struct name — it suppresses injection"
+        );
+    }
+
+    // Compile probe for the Splat sim + bg through the production
+    // concatenation. The sim declares its own @group(2) @binding(1) splat
+    // static buffer next to the lib's unconditional @group(2) @binding(0)
+    // trail declaration — this probe is the pre-launch check that naga
+    // accepts that coexistence (auto layout only materializes statically
+    // used bindings) and that the 896-byte uniform mirror still matches.
+    // Run: cargo test -p phosphor-app -- --ignored splat_shaders_compile
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn splat_shaders_compile() {
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
+        let bg = include_str!("../../../../assets/shaders/splat_bg.wgsl");
+        let resolve =
+            include_str!("../../../../assets/shaders/builtin/compute_raster_resolve.wgsl");
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("probe adapter: {:?}", adapter.get_info());
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("splat-compile-probe"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))
+            .expect("no wgpu device");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("splat-sim-probe"),
+            source: wgpu::ShaderSource::Wgsl(sim_src.into()),
+        });
+        let _ = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("splat-sim-probe"),
+            layout: None,
+            module: &module,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "splat_sim.wgsl failed validation: {err:?}");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let bg_src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("splat-bg-probe"),
+            source: wgpu::ShaderSource::Wgsl(bg_src.into()),
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "splat_bg.wgsl failed validation: {err:?}");
+
+        // The patched resolve (OIT mode 2 branch) must still validate.
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("splat-resolve-probe"),
+            source: wgpu::ShaderSource::Wgsl(resolve.into()),
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(
+            err.is_none(),
+            "compute_raster_resolve.wgsl failed validation: {err:?}"
+        );
+    }
+
+    // Offscreen render probe (frost_render_previews pattern) driving the
+    // PRODUCTION ParticleSystem: a procedural torus-knot scene (no asset
+    // download — CI never needs a real capture) uploaded via
+    // upload_splat_cloud, simulated + rasterized through the "oit" resolve
+    // for four synthetic audio states, PNGs captured and sanity-asserted.
+    // A wrapped i32 accumulator (overflow) shows up as garbage colors and
+    // fails the mean bound; a broken projection/OIT renders black.
+    // Run: cargo test -p phosphor-app -- --ignored splat_render_previews
+    // PNGs land in $SPLAT_PNG_DIR (default /tmp).
+    #[test]
+    #[ignore = "requires a GPU/software adapter; writes PNGs"]
+    fn splat_render_previews() {
+        use crate::gpu::frame_capture::FrameCapture;
+        use crate::gpu::particle::ParticleSystem;
+        use crate::gpu::particle::splat::generate_test_scene;
+
+        let out_dir = std::env::var("SPLAT_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("probe adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("splat-preview"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("no wgpu device");
+
+        // Production sim concatenation + the shipped .pfx def, probe-sized.
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
+        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../assets/effects/splat.pfx")).unwrap();
+        let mut def = effect.particles.unwrap();
+        // 60k: above TILED_THRESHOLD once alive, so early frames exercise the
+        // direct path and steady state exercises the tiled path.
+        def.max_count = 60_000;
+        def.max_scaled_count = 0;
+
+        let (w, h) = (960u32, 540u32);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut ps = ParticleSystem::new(&device, &queue, fmt, &def, &sim_src, false);
+        ps.resize_compute_raster(&device, w, h);
+        let cloud = generate_test_scene(50_000);
+        ps.upload_splat_cloud(&device, &queue, &cloud);
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("splat-preview-target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&Default::default());
+        // Stand-in for the bg pass: the plate's base vignette color.
+        let bg_clear = wgpu::Color {
+            r: 0.02,
+            g: 0.022,
+            b: 0.032,
+            a: 1.0,
+        };
+
+        struct ProbeState {
+            name: &'static str,
+            rms: f32,
+            centroid: f32,
+            focus: f32,
+            onset_every: u32, // 0 = never
+            drop_at: u32,     // frame index, u32::MAX = never
+        }
+        let states = [
+            ProbeState {
+                name: "idle",
+                rms: 0.1,
+                centroid: 0.4,
+                focus: 0.5,
+                onset_every: 0,
+                drop_at: u32::MAX,
+            },
+            ProbeState {
+                name: "groove",
+                rms: 0.5,
+                centroid: 0.5,
+                focus: 0.5,
+                onset_every: 15,
+                drop_at: u32::MAX,
+            },
+            ProbeState {
+                name: "drop_explode",
+                rms: 0.6,
+                centroid: 0.5,
+                focus: 0.5,
+                onset_every: 15,
+                drop_at: 60,
+            },
+            ProbeState {
+                name: "defocus",
+                rms: 0.3,
+                centroid: 1.0,
+                focus: 1.0,
+                onset_every: 0,
+                drop_at: u32::MAX,
+            },
+        ];
+
+        let frames = 90u32;
+        let dt = 1.0 / 60.0;
+        let mut captures: std::collections::HashMap<&str, Vec<u8>> =
+            std::collections::HashMap::new();
+
+        for s in &states {
+            for f in 0..frames {
+                ps.poll_counter_readback();
+                ps.update_uniforms(dt, f as f32 * dt, [w as f32, h as f32], 0.0);
+                ps.uniforms.rms = s.rms;
+                ps.uniforms.centroid = s.centroid;
+                ps.uniforms.onset = if s.onset_every > 0 && f % s.onset_every == 0 {
+                    0.7
+                } else {
+                    0.0
+                };
+                ps.uniforms.drop = if f == s.drop_at { 1.0 } else { 0.0 };
+                ps.uniforms.buildup = if s.drop_at != u32::MAX && f < s.drop_at {
+                    f as f32 / s.drop_at as f32
+                } else {
+                    0.0
+                };
+                // Frozen param slots 0–7 (sim) — see splat.pfx.
+                ps.uniforms.effect_params = [0.8, 0.75, 0.5, s.focus, 1.0, 1.0, 0.3, 0.33];
+                // Slots 8–11 (CPU driver): orbit, distance, pitch, focal bias.
+                ps.splat_ui_params = [0.3, 1.6, 0.15, 0.0];
+                ps.update_splat_driver();
+
+                // On the final frame render into the capture target instead
+                // (its texture is RENDER_ATTACHMENT | COPY_SRC, not COPY_DST).
+                let is_last = f == frames - 1;
+                let mut fc =
+                    is_last.then(|| FrameCapture::new(&device, w, h, fmt, "splat-capture"));
+                let frame_view = fc.as_ref().map_or(&target_view, |fc| &fc.view);
+
+                let mut enc = device.create_command_encoder(&Default::default());
+                ps.dispatch(&mut enc, &queue);
+                {
+                    // Clear to the bg color; ps.render composites (LoadOp::Load).
+                    let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("splat-preview-bg"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: frame_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(bg_clear),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                }
+                ps.render(&mut enc, &queue, frame_view);
+                if let Some(fc) = fc.as_ref() {
+                    fc.copy_to_staging(&mut enc);
+                }
+                queue.submit([enc.finish()]);
+                ps.request_counter_readback();
+                ps.flip();
+
+                if let Some(fc) = fc.as_mut() {
+                    device
+                        .poll(wgpu::PollType::Wait {
+                            submission_index: None,
+                            timeout: None,
+                        })
+                        .unwrap();
+                    fc.request_map();
+                    let data = loop {
+                        device
+                            .poll(wgpu::PollType::Wait {
+                                submission_index: None,
+                                timeout: None,
+                            })
+                            .unwrap();
+                        if let Some(d) = fc.take_mapped_data(&device) {
+                            break d;
+                        }
+                    };
+                    let mean =
+                        data.iter().map(|&b| b as f64).sum::<f64>() / (data.len() as f64 * 255.0);
+                    let path = format!("{out_dir}/splat_{}.png", s.name);
+                    image::RgbaImage::from_raw(w, h, data.clone())
+                        .expect("raw->image")
+                        .save(&path)
+                        .expect("save png");
+                    eprintln!("wrote {path} (mean {mean:.4})");
+
+                    // Not black (scene visible), not blown out (an i32
+                    // accumulator wrap reads as garbage brightness).
+                    assert!(
+                        mean > 0.004,
+                        "{} rendered near-black (mean {mean:.4})",
+                        s.name
+                    );
+                    assert!(mean < 0.90, "{} blew out (mean {mean:.4})", s.name);
+                    // Background must show through empty space: the scene is
+                    // centered, so the top-left corner is bg-only (the 0.02
+                    // linear clear ≈ 40/255 in sRGB — allow slack).
+                    assert!(
+                        data[0] < 70 && data[1] < 70 && data[2] < 70,
+                        "{}: corner not background ({:?})",
+                        s.name,
+                        &data[0..4]
+                    );
+                    captures.insert(s.name, data);
+                }
+            }
+        }
+
+        // The drop must visibly shatter the scene vs. the same state without
+        // it (mean absolute per-pixel difference).
+        let a = &captures["groove"];
+        let b = &captures["drop_explode"];
+        let diff = a
+            .iter()
+            .zip(b.iter())
+            .map(|(&x, &y)| (x as f64 - y as f64).abs())
+            .sum::<f64>()
+            / (a.len() as f64 * 255.0);
+        assert!(
+            diff > 0.003,
+            "drop_explode is indistinguishable from groove (mean |Δ| {diff:.5})"
+        );
+    }
+
+    // Headless wall-clock perf run for the #1800 go/no-go gate (≥60 FPS at
+    // 1–3M splats): 600 frames of the production dispatch+raster+resolve at
+    // 1080p, GPU-bound via a blocking poll per frame. Reports mean / p99
+    // frame time. Splat count via SPLAT_PERF_COUNT (default 1_000_000).
+    // Run: SPLAT_PERF_COUNT=3000000 cargo test -p phosphor-app --release -- --ignored --nocapture splat_perf_600_frames
+    #[test]
+    #[ignore = "requires a GPU; perf measurement, run --release"]
+    fn splat_perf_600_frames() {
+        use crate::gpu::particle::ParticleSystem;
+        use crate::gpu::particle::splat::generate_test_scene;
+
+        let count: u32 = std::env::var("SPLAT_PERF_COUNT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1_000_000);
+
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
+        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../assets/effects/splat.pfx")).unwrap();
+        let mut def = effect.particles.unwrap();
+        def.max_count = count;
+        def.max_scaled_count = 0;
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("perf adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("splat-perf"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("no wgpu device");
+
+        let (w, h) = (1920u32, 1080u32);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut ps = ParticleSystem::new(&device, &queue, fmt, &def, &sim_src, false);
+        ps.resize_compute_raster(&device, w, h);
+        eprintln!("generating {count} procedural splats…");
+        let cloud = generate_test_scene(count as usize);
+        ps.upload_splat_cloud(&device, &queue, &cloud);
+
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("splat-perf-target"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+
+        let frames = 600u32;
+        let dt = 1.0 / 60.0;
+        let mut times_ms: Vec<f64> = Vec::with_capacity(frames as usize);
+        for f in 0..frames {
+            ps.poll_counter_readback();
+            ps.update_uniforms(dt, f as f32 * dt, [w as f32, h as f32], 0.0);
+            ps.uniforms.rms = 0.5;
+            ps.uniforms.onset = if f % 20 == 0 { 0.7 } else { 0.0 };
+            ps.uniforms.drop = if f % 240 == 100 { 1.0 } else { 0.0 }; // periodic worst-case explode
+            ps.uniforms.effect_params = [0.8, 0.75, 0.5, 0.5, 1.0, 1.0, 0.3, 0.33];
+            ps.splat_ui_params = [0.3, 1.6, 0.15, 0.0];
+            ps.update_splat_driver();
+
+            let t0 = std::time::Instant::now();
+            let mut enc = device.create_command_encoder(&Default::default());
+            ps.dispatch(&mut enc, &queue);
+            ps.render(&mut enc, &queue, &view);
+            queue.submit([enc.finish()]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
+            let ms = t0.elapsed().as_secs_f64() * 1e3;
+            ps.request_counter_readback();
+            ps.flip();
+            if f >= 30 {
+                times_ms.push(ms); // skip warm-up (pipeline compiles, first tiled frames)
+            }
+        }
+        times_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mean = times_ms.iter().sum::<f64>() / times_ms.len() as f64;
+        let p99 = times_ms[(times_ms.len() as f64 * 0.99) as usize - 1];
+        let max = times_ms.last().unwrap();
+        eprintln!(
+            "splat perf @ {count} splats, 1080p: mean {mean:.2} ms ({:.0} FPS), p99 {p99:.2} ms, max {max:.2} ms",
+            1000.0 / mean
         );
     }
 }

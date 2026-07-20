@@ -25,7 +25,7 @@ struct DrawUniforms {
 struct ResolveUniforms {
     width: u32,
     height: u32,
-    mode: u32, // 0 = additive, 1 = alpha
+    mode: u32, // 0 = additive, 1 = alpha, 2 = weighted-average OIT (Splat #1800)
     _pad: u32,
 }
 
@@ -598,7 +598,11 @@ impl ComputeRasterizer {
         target: &TextureView,
         blend_mode: &str,
     ) {
-        let mode = u32::from(blend_mode == "alpha");
+        let mode = match blend_mode {
+            "alpha" => 1u32,
+            "oit" => 2, // weighted-average OIT: rgb/Σw + coverage (Splat #1800)
+            _ => 0,
+        };
         let uniforms = ResolveUniforms {
             width: self.width,
             height: self.height,
@@ -611,7 +615,10 @@ impl ComputeRasterizer {
             bytemuck::bytes_of(&uniforms),
         );
 
-        let pipeline = if blend_mode == "alpha" {
+        // OIT composites through the alpha pipeline: (SrcAlpha, 1−SrcAlpha)
+        // color / (One, 1−SrcAlpha) alpha is exactly weighted-average
+        // compositing over the background pass.
+        let pipeline = if blend_mode == "alpha" || blend_mode == "oit" {
             &self.resolve_pipeline_alpha
         } else {
             &self.resolve_pipeline_additive

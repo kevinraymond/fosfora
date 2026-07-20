@@ -10,6 +10,8 @@ use super::compute_raster::ComputeRasterizer;
 use super::flow_field::FlowFieldTexture;
 use super::obstacle::ObstacleTexture;
 use super::spatial_hash::SpatialHashGrid;
+use super::splat::{SplatDriver, SplatStatic};
+use super::splat_source::SplatCloud;
 use super::sprite::SpriteAtlas;
 use super::types::{
     ImageSampleDef, ParticleAux, ParticleDef, ParticleImageSource, ParticleRenderUniforms,
@@ -225,6 +227,22 @@ pub struct ParticleSystem {
     wboit_composite_bind_group: Option<BindGroup>,
     wboit_composite_bgl: Option<BindGroupLayout>,
 
+    // Splat scene playback (#1800): static attribute buffer at group 2
+    // binding 1 (binding 0 is the lib's unconditional trail_buffer decl) —
+    // mutually exclusive with trails. Driver owns the orbit camera state.
+    splat_static_buffer: Option<wgpu::Buffer>,
+    splat_bgl: Option<BindGroupLayout>,
+    splat_bind_group: Option<BindGroup>,
+    splat_driver: Option<SplatDriver>,
+    /// .pfx param slots 8–11 `[orbit_speed, cam_distance, cam_pitch,
+    /// focal_bias]`, forwarded from the param store like `effect_params`
+    /// (only slots 0–7 reach the sim; these are consumed CPU-side).
+    pub splat_ui_params: [f32; 4],
+    /// Absolute path of the loaded scene (preset save/load + status UI).
+    pub splat_scene_path: Option<String>,
+    /// Splat count in the source file before subsampling (status UI).
+    pub splat_total_count: u32,
+
     // Symbiosis (particle-life) force matrix state
     pub symbiosis_state: Option<super::symbiosis::SymbiosisState>,
 
@@ -260,6 +278,35 @@ impl ParticleSystem {
         compute_source: &str,
         interaction: bool,
     ) -> Self {
+        // #1800 validations: splat playback requires the compute rasterizer
+        // (blend "oit" only exists there) and owns group 2, which trails use.
+        let mut def_owned;
+        let def = if def.splat.is_some() || def.blend == "oit" {
+            def_owned = def.clone();
+            if def_owned.splat.is_some() && def_owned.render_mode != "compute" {
+                log::warn!(
+                    "Splat effects require render_mode \"compute\" (got \"{}\") — forcing",
+                    def_owned.render_mode
+                );
+                def_owned.render_mode = "compute".to_string();
+            }
+            if def_owned.splat.is_some() && def_owned.trail_length >= 2 {
+                log::warn!(
+                    "Splat and trails share bind group 2 — disabling trails for this effect"
+                );
+                def_owned.trail_length = 0;
+            }
+            if def_owned.blend == "oit" && def_owned.render_mode != "compute" {
+                log::warn!(
+                    "Blend \"oit\" is a compute-rasterizer resolve mode — forcing render_mode \"compute\""
+                );
+                def_owned.render_mode = "compute".to_string();
+            }
+            &def_owned
+        } else {
+            def
+        };
+
         // Clamp max_count to device storage buffer binding limit
         // With SoA, each buffer is one vec4f per particle (16 bytes), so the limit is higher
         let max_storage = device.limits().max_storage_buffer_binding_size as u64;
@@ -556,6 +603,37 @@ impl ParticleSystem {
             None
         };
 
+        // Splat static attribute buffer (#1800) — group 2, binding 1 (binding
+        // 0 is particle_lib's unconditional trail_buffer declaration; the sim
+        // never references it, so the layout may omit it). Created before the
+        // pipeline layout so the sim's @group(2) bindings validate. The buffer
+        // starts zeroed (wgpu guarantee): every slot unpacks opacity 0 = dead
+        // until a scene uploads, so the effect renders empty, never garbage.
+        let (splat_bgl, splat_static_buffer, splat_bind_group) = if def.splat.is_some() {
+            let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("particle-splat-bgl"),
+                entries: &[compute_storage_ro(1)],
+            });
+            let size = (std::mem::size_of::<SplatStatic>() as u64 * max_particles as u64).max(32);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("splat-static"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bg = device.create_bind_group(&BindGroupDescriptor {
+                label: Some("particle-splat-bg"),
+                layout: &bgl,
+                entries: &[BindGroupEntry {
+                    binding: 1,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            (Some(bgl), Some(buffer), Some(bg))
+        } else {
+            (None, None, None)
+        };
+
         // Create spatial hash before pipeline if interaction is enabled,
         // so the query BGL is included in the initial compute pipeline layout.
         let spatial_hash = if interaction {
@@ -607,18 +685,27 @@ impl ParticleSystem {
         };
 
         // Build compute pipeline layout matching compute_bind_group_layouts() logic:
-        // groups 0=core, 1=flow field, 2=trails, 3=spatial hash, 4=R-D (if present)
+        // groups 0=core, 1=flow field, 2=trails OR splat static (mutually
+        // exclusive — the #1800 sanitizer disables trails under splat),
+        // 3=spatial hash, 4=R-D (if present)
         let mut bgl_refs: Vec<&BindGroupLayout> = vec![&compute_bgl, &flow_field_bgl];
+        if let Some(ref sbgl) = splat_bgl {
+            bgl_refs.push(sbgl);
+        }
         if let Some(ref sh) = spatial_hash {
             // Spatial hash at group 3 requires group 2 to exist (contiguous)
-            if let Some(ref trail_bgl) = trail_compute_bgl {
-                bgl_refs.push(trail_bgl);
-            } else {
-                bgl_refs.push(&empty_bgl);
+            if bgl_refs.len() < 3 {
+                if let Some(ref trail_bgl) = trail_compute_bgl {
+                    bgl_refs.push(trail_bgl);
+                } else {
+                    bgl_refs.push(&empty_bgl);
+                }
             }
             bgl_refs.push(&sh.query_bgl);
         } else if let Some(ref trail_bgl) = trail_compute_bgl {
-            bgl_refs.push(trail_bgl);
+            if bgl_refs.len() < 3 {
+                bgl_refs.push(trail_bgl);
+            }
         }
         if let Some(ref rd_pbgl) = rd_particle_bgl {
             // Group 4 requires groups 2 and 3 to exist (contiguous)
@@ -1099,6 +1186,13 @@ impl ParticleSystem {
             wboit_composite_pipeline,
             wboit_composite_bind_group,
             wboit_composite_bgl,
+            splat_static_buffer,
+            splat_bgl,
+            splat_bind_group,
+            splat_driver: def.splat.as_ref().map(|_| SplatDriver::new()),
+            splat_ui_params: [0.0; 4],
+            splat_scene_path: None,
+            splat_total_count: 0,
             symbiosis_state: if def.symbiosis {
                 Some(super::symbiosis::SymbiosisState::new(4))
             } else {
@@ -1497,7 +1591,9 @@ impl ParticleSystem {
             pass.set_pipeline(&self.compute_pipeline);
             pass.set_bind_group(0, &self.compute_bind_groups[self.current], &[]);
             pass.set_bind_group(1, &self.flow_field_bind_group, &[]);
-            if let Some(trail_bg) = &self.trail_compute_bind_group {
+            if let Some(splat_bg) = &self.splat_bind_group {
+                pass.set_bind_group(2, splat_bg, &[]);
+            } else if let Some(trail_bg) = &self.trail_compute_bind_group {
                 pass.set_bind_group(2, trail_bg, &[]);
             } else if self.spatial_hash.is_some()
                 || self.rd_particle_bgs.is_some()
@@ -1898,6 +1994,66 @@ impl ParticleSystem {
                 data.len(),
                 self.aux_buffer.size() as usize / std::mem::size_of::<ParticleAux>()
             );
+        }
+    }
+
+    /// Upload a decoded splat scene into the static attribute buffer (#1800).
+    /// Packs to the 32-byte GPU records and recreates the buffer (a fresh
+    /// wgpu buffer is zero-initialized, so the tail past the scene stays dead
+    /// and any previous scene is fully replaced) + only the splat bind group.
+    /// Idempotent, never touches pipelines — a failed load upstream simply
+    /// never calls this and the layer keeps rendering its current scene.
+    pub fn upload_splat_cloud(&mut self, device: &Device, queue: &Queue, cloud: &SplatCloud) {
+        let Some(bgl) = &self.splat_bgl else {
+            log::warn!("upload_splat_cloud called on a non-splat effect — ignored");
+            return;
+        };
+        let mut packed = super::splat::pack_cloud(cloud);
+        if packed.len() > self.max_particles as usize {
+            // The loader subsamples to max_particles; belt-and-braces for
+            // callers that didn't.
+            log::warn!(
+                "Splat scene has {} splats > max_particles {} — truncating",
+                packed.len(),
+                self.max_particles
+            );
+            packed.truncate(self.max_particles as usize);
+        }
+        let size = (std::mem::size_of::<SplatStatic>() as u64 * self.max_particles as u64).max(32);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat-static"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&packed));
+        let bg = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("particle-splat-bg"),
+            layout: bgl,
+            entries: &[BindGroupEntry {
+                binding: 1,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        self.splat_static_buffer = Some(buffer);
+        self.splat_bind_group = Some(bg);
+        self.splat_scene_path = Some(cloud.source_path.clone());
+        self.splat_total_count = cloud.total_in_file;
+        log::info!(
+            "Splat scene loaded: {} splats ({} in file) from {}",
+            packed.len(),
+            cloud.total_in_file,
+            cloud.source_path
+        );
+    }
+
+    /// Advance the splat orbit camera + audio envelopes (#1800). No-op for
+    /// non-splat effects. Call after `update_uniforms`, `update_audio`, and
+    /// the param forward each frame so the driver sees this frame's
+    /// delta_time, audio, and `splat_ui_params`.
+    pub fn update_splat_driver(&mut self) {
+        if let Some(driver) = self.splat_driver.as_mut() {
+            driver.update(&mut self.uniforms, self.splat_ui_params);
         }
     }
 

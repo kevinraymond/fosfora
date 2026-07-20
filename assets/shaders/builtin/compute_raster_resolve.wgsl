@@ -4,9 +4,15 @@
 struct ResolveUniforms {
     width: u32,
     height: u32,
-    mode: u32,       // 0 = additive (tonemap), 1 = alpha blend
+    mode: u32,       // 0 = additive (tonemap), 1 = alpha blend, 2 = weighted-average OIT (#1800)
     _pad: u32,
 }
+
+// Mode 2 coverage: opacity from the accumulated weight sum. The sim folds an
+// OIT_ALPHA_SCALE of 0.125 into every per-splat weight (i32 overflow headroom
+// at 3M splats); this gain compensates it (8×) plus a density factor (~1.5)
+// so a handful of overlapping splats already reads solid.
+const COVERAGE_GAIN: f32 = 12.0;
 
 @group(0) @binding(0) var<storage, read> fb_r: array<i32>;
 @group(0) @binding(1) var<storage, read> fb_g: array<i32>;
@@ -55,6 +61,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         let color = vec3f(r, g, b);
         let mapped = color / (1.0 + color);
         return vec4f(mapped, clamp(a, 0.0, 1.0));
+    } else if u.mode == 2u {
+        // Weighted-average OIT (Splat #1800): the accumulator already holds
+        // fb_rgb = Σ color·weight and fb_a = Σ weight (weight = α · depth
+        // factor · OIT_ALPHA_SCALE, folded into color.a by the sim), so the
+        // order-independent average is one division — no sorting, no WBOIT
+        // composition. Empty pixels output a = 0 and the (SrcAlpha,
+        // 1−SrcAlpha) blend preserves the background pass untouched.
+        if a <= 1e-6 {
+            return vec4f(0.0, 0.0, 0.0, 0.0);
+        }
+        let avg = vec3f(r, g, b) / a; // scale-invariant: OIT_ALPHA_SCALE cancels
+        let coverage = 1.0 - exp(-a * COVERAGE_GAIN);
+        return vec4f(clamp(avg, vec3f(0.0), vec3f(1.0)), coverage);
     } else {
         // Alpha blend mode: clamp and pass through
         return vec4f(

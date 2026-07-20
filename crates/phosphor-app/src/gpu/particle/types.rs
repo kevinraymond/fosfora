@@ -21,7 +21,7 @@ pub struct Particle {
     pub flags: [f32; 4],
 }
 
-/// Particle simulation uniforms: 864 bytes.
+/// Particle simulation uniforms: 896 bytes.
 /// Separate from the main 288-byte ShaderUniforms.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -180,7 +180,20 @@ pub struct ParticleUniforms {
     pub drop: f32,         // A18 drop trigger — 1.0 for exactly one frame (counter-latched)
     pub _pad_vessel0: f32, // spare slots for the next batched feature
     pub _pad_vessel1: f32,
-    // Total = 864 bytes
+
+    // Splat orbit camera + audio envelopes (batched ABI bump for Splat #1800).
+    // Appended as two fresh 16-byte blocks so every existing offset stays stable
+    // (#1505 precedent). Written by SplatDriver each dispatch; 0.0 for non-splat
+    // effects (cam_focal too — sims that project must treat 0 as "no camera").
+    pub cam_yaw: f32,           // orbit azimuth, radians (CPU-accumulated, pausable)
+    pub cam_pitch: f32,         // orbit elevation, radians, clamped ±1.35
+    pub cam_distance: f32,      // orbit radius in scene units (scene normalized to r≈1)
+    pub cam_focal: f32,         // focal-length multiplier = cot(fov/2), volumetric convention
+    pub splat_focal_depth: f32, // DoF focal plane in view-depth units (centroid EMA + focal_bias)
+    pub splat_explode: f32,     // drop envelope: max(env·exp(−dt/0.45), drop)
+    pub _pad_splat0: f32,       // spare slots for the next batched feature
+    pub _pad_splat1: f32,
+    // Total = 896 bytes
 }
 
 /// Obstacle collision mode.
@@ -617,6 +630,26 @@ pub struct MorphTargetDef {
     pub color: Option<String>,
 }
 
+/// Gaussian-splat scene playback (Splat #1800). When present, every particle
+/// slot maps 1:1 to a splat point from the referenced scene (persistent, no
+/// emission) and the sim projects world-space gaussians through the orbit
+/// camera in `ParticleUniforms`. Requires `render_mode: "compute"` and is
+/// mutually exclusive with trails (the splat attribute buffer shares group 2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SplatDef {
+    /// Scene source: "demo:<name>", an absolute path, or a path relative to
+    /// assets/splats/. Formats: 3DGS .ply (binary little-endian) or .splat.
+    #[serde(default)]
+    pub source: String,
+    /// Uniform scale applied after normalization (1.0 = p95 radius fills unit sphere)
+    #[serde(default = "default_scale")]
+    pub scene_scale: f32,
+    /// Euler XYZ rotation offsets in degrees applied to the normalized scene
+    /// (captured scenes are often tilted; this levels them without re-export)
+    #[serde(default)]
+    pub rotation_degrees: [f32; 3],
+}
+
 /// .pfx particle definition (JSON).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParticleDef {
@@ -657,7 +690,9 @@ pub struct ParticleDef {
     /// Image sampling for image-to-particle decomposition (optional)
     #[serde(default)]
     pub image_sample: Option<ImageSampleDef>,
-    /// Blend mode: "additive" (default), "alpha", or "wboit"
+    /// Blend mode: "additive" (default), "alpha", "wboit", or "oit"
+    /// ("oit" = weighted-average OIT resolve on the compute rasterizer — the
+    /// splat blend; unlike "wboit" it composes WITH render_mode "compute")
     #[serde(default = "default_blend")]
     pub blend: String,
     /// Enable 3D curl noise flow field (opt-in)
@@ -788,6 +823,10 @@ pub struct ParticleDef {
     /// Morph target definitions (up to 4)
     #[serde(default)]
     pub morph_targets: Option<Vec<MorphTargetDef>>,
+
+    /// Gaussian-splat scene playback (optional, Splat #1800)
+    #[serde(default)]
+    pub splat: Option<SplatDef>,
 }
 
 fn default_blend() -> String {
@@ -876,8 +915,8 @@ mod tests {
     }
 
     #[test]
-    fn particle_uniforms_size_864() {
-        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 864);
+    fn particle_uniforms_size_896() {
+        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 896);
     }
 
     #[test]
@@ -1125,5 +1164,34 @@ mod tests {
         // Boundary between step 0 and 1 sits at 0.5/3 ≈ 0.1667.
         assert_eq!(ObstacleMode::from_normalized(0.16), ObstacleMode::Bounce);
         assert_eq!(ObstacleMode::from_normalized(0.17), ObstacleMode::Stick);
+    }
+
+    #[test]
+    fn particle_def_without_splat_parses() {
+        // Every pre-Splat .pfx must keep parsing: `splat` is optional.
+        let def: ParticleDef = serde_json::from_str(r#"{"max_count": 1000}"#).unwrap();
+        assert!(def.splat.is_none());
+    }
+
+    #[test]
+    fn splat_def_serde_roundtrip() {
+        let def = SplatDef {
+            source: "demo:default".to_string(),
+            scene_scale: 1.5,
+            rotation_degrees: [0.0, 90.0, -12.5],
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let back: SplatDef = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, def);
+    }
+
+    #[test]
+    fn splat_def_partial_fills_defaults() {
+        let def: ParticleDef =
+            serde_json::from_str(r#"{"splat": {"source": "scene.ply"}}"#).unwrap();
+        let splat = def.splat.unwrap();
+        assert_eq!(splat.source, "scene.ply");
+        assert_eq!(splat.scene_scale, 1.0);
+        assert_eq!(splat.rotation_degrees, [0.0, 0.0, 0.0]);
     }
 }

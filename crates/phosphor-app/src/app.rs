@@ -129,6 +129,9 @@ pub struct App {
     pub use_ffmpeg_webcam: bool,
     // Particle source loader (background image/video decode)
     pub particle_source_loader: crate::gpu::particle::ParticleSourceLoader,
+    /// Background Gaussian-splat scene loader (#1800): decodes .ply/.splat off
+    /// the main thread; results drained in main.rs → `upload_splat_cloud`.
+    pub splat_loader: crate::gpu::particle::SplatSceneLoader,
     // Depth estimation (feature-gated)
     #[cfg(feature = "depth")]
     pub depth_thread: Option<crate::depth::thread::DepthThread>,
@@ -459,6 +462,7 @@ impl App {
             #[cfg(feature = "webcam")]
             use_ffmpeg_webcam,
             particle_source_loader: crate::gpu::particle::ParticleSourceLoader::new(),
+            splat_loader: crate::gpu::particle::SplatSceneLoader::new(),
             #[cfg(feature = "depth")]
             depth_thread: None,
             #[cfg(feature = "depth")]
@@ -1205,6 +1209,11 @@ impl App {
                     ps.uniforms.obstacle_fit = ps.obstacle_fit as u32;
                     let audio = self.latest_audio.unwrap_or_default();
                     ps.update_audio(&audio);
+                    // Splat (#1800): camera params ride slots 8–11 (only 0–7
+                    // reach the sim); advance the CPU orbit/envelope driver
+                    // with this frame's dt + audio (no-op for non-splat).
+                    ps.splat_ui_params = [p[8], p[9], p[10], p[11]];
+                    ps.update_splat_driver();
 
                     // Volumetric mode (R3): apply the global toggle to the active
                     // particle layer only (V1); lazily build the renderer on enable.
@@ -1797,6 +1806,26 @@ impl App {
             .particles
             .as_ref()
             .and_then(|pd| self.build_particle_system(pd));
+
+        // Splat scene load (#1800): kick off the background decode now that
+        // the final (quality-scaled) particle budget is known. The effect
+        // renders empty until the cloud lands (drained in main.rs), so a
+        // slow or failed load can never half-swap the layer (#1855).
+        if let (Some(ps), Some(splat)) = (
+            particle_system.as_ref(),
+            effect.particles.as_ref().and_then(|pd| pd.splat.as_ref()),
+        ) {
+            match crate::gpu::particle::splat_source::resolve_source(&splat.source) {
+                Ok(path) => self.splat_loader.load(
+                    path,
+                    ps.max_particles,
+                    splat.scene_scale,
+                    splat.rotation_degrees,
+                    layer_idx,
+                ),
+                Err(e) => log::info!("Splat scene not loaded yet: {e}"),
+            }
+        }
 
         // If layer is currently Media, convert to Effect first
         let is_media = self.layer_stack.layers[layer_idx].is_media();
