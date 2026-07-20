@@ -72,6 +72,14 @@ impl BlendMode {
         }
     }
 
+    /// Map a normalized 0..1 control value (e.g. a binding-bus output) onto
+    /// the full blend-mode list: 0.0 → Normal, 1.0 → Subtract, evenly spaced
+    /// in between (#1792). Out-of-range input clamps; NaN falls back to Normal.
+    pub fn from_normalized(v: f32) -> Self {
+        let max_index = (Self::ALL.len() - 1) as f32;
+        Self::from_u32((v.clamp(0.0, 1.0) * max_index).round() as u32)
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
             BlendMode::Normal => "Normal",
@@ -573,5 +581,36 @@ mod tests {
     fn adjusted_active_after_move_boundary_to_zero() {
         // active=0, move from=2 to=0 -> active in [to..from) = [0..2) -> 0+1=1
         assert_eq!(adjusted_active_after_move(0, 2, 0), 1);
+    }
+
+    // --- BlendMode::from_normalized (#1792) ---
+
+    #[test]
+    fn blend_mode_from_normalized_endpoints() {
+        assert_eq!(BlendMode::from_normalized(0.0), BlendMode::Normal);
+        assert_eq!(BlendMode::from_normalized(1.0), BlendMode::Subtract);
+    }
+
+    #[test]
+    fn blend_mode_from_normalized_reaches_all_modes() {
+        for (i, mode) in BlendMode::ALL.iter().enumerate() {
+            let v = i as f32 / (BlendMode::ALL.len() - 1) as f32;
+            assert_eq!(BlendMode::from_normalized(v), *mode, "step {i} (v={v})");
+        }
+    }
+
+    #[test]
+    fn blend_mode_from_normalized_clamps_out_of_range() {
+        assert_eq!(BlendMode::from_normalized(-0.5), BlendMode::Normal);
+        assert_eq!(BlendMode::from_normalized(2.0), BlendMode::Subtract);
+    }
+
+    #[test]
+    fn blend_mode_from_normalized_interior_rounding() {
+        // 0.5 * 9 = 4.5 rounds half-away-from-zero to 5 = Overlay.
+        assert_eq!(BlendMode::from_normalized(0.5), BlendMode::Overlay);
+        // Boundary between step 0 and 1 sits at 0.5/9 ≈ 0.0556.
+        assert_eq!(BlendMode::from_normalized(0.049), BlendMode::Normal);
+        assert_eq!(BlendMode::from_normalized(0.056), BlendMode::Add);
     }
 }

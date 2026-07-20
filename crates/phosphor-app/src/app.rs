@@ -2246,7 +2246,10 @@ impl App {
                                 }
                                 "blend" => {
                                     use crate::gpu::layer::BlendMode;
-                                    layer.blend_mode = BlendMode::from_u32(value.round() as u32);
+                                    // Bus outputs are normalized 0..1 (#1792): spread across
+                                    // all 10 modes instead of rounding to 0|1 (Normal|Add).
+                                    // The raw-integer OSC/WS paths use from_u32 directly.
+                                    layer.blend_mode = BlendMode::from_normalized(value);
                                 }
                                 "enabled" => {
                                     layer.enabled = value > 0.5;
