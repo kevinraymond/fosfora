@@ -26,7 +26,7 @@ struct LatticeUniforms {
     dt: f32,
     domain_mode: u32,
     domain_radius: f32,
-    _pad0: u32,
+    max_age: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: LatticeUniforms;
@@ -108,6 +108,14 @@ fn cs_seed(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Cells outside the spherical domain never come alive.
     if (outside_domain(gid, gf)) {
         s = 0u;
+    }
+
+    // Randomise each live seed cell's starting age across [0, max_age) so a
+    // lifetime cap doesn't age the whole seed out on the same generation — a
+    // synchronised die-off reads as a global flash. Packed into the high bits.
+    if (s == 1u && u.max_age > 1u) {
+        let a0 = cell_hash(gid, u.seed_hash ^ 0x5f356495u) % u.max_age;
+        s = s | (a0 << 8u);
     }
 
     state_out[idx] = s;

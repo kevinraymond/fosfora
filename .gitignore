@@ -5,3 +5,6 @@
 .DS_Store
 Thumbs.db
 .claude/
+
+# Scratch render output from lattice rule-tuning (not committed)
+/scratch_lattice/

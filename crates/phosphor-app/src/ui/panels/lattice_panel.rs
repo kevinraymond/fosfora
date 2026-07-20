@@ -126,6 +126,14 @@ pub fn draw_lattice_panel(ui: &mut Ui, info: &LatticeInfo) {
                 .tooltip("Cell lifetime states; >2 adds a dying-cell halo around live structure")
                 .show_slider(ui, &mut p.num_states, 2..=20)
                 .changed;
+            changed |= rows::ParamRow::new("Lifetime")
+                .tooltip(
+                    "Generations a cell lives before it dies of old age. The main \
+                     breathing knob: lower = faster turnover / thinner hollow shells, \
+                     higher = denser structure. 0 = off (cells never age out).",
+                )
+                .show_slider(ui, &mut p.max_age, 0..=120)
+                .changed;
             let nb = ["Moore (26)", "Von Neumann (6)"];
             let cur = (p.neighborhood.min(1)) as usize;
             rows::combo_row(ui, "lattice_nbhd", "Neighbourhood", None, nb[cur], |ui| {

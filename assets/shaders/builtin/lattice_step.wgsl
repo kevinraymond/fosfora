@@ -34,7 +34,7 @@ struct LatticeUniforms {
     dt: f32,
     domain_mode: u32,
     domain_radius: f32,
-    _pad0: u32,
+    max_age: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: LatticeUniforms;
@@ -149,8 +149,12 @@ fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
             next = 1u;
         }
     } else if (cur_cell == 1u) {
-        // Alive cell — survival rule.
-        if ((u.survival_mask & (1u << count)) != 0u) {
+        // Alive cell — survives only if the survival rule holds AND it hasn't
+        // outlived its lifetime cap. The lifetime is what makes growth rules
+        // hollow out (oldest cells are the core, so they die first) instead of
+        // packing into a solid ball. `max_age == 0` disables the cap (infinite).
+        let too_old = u.max_age != 0u && cur_age >= u.max_age;
+        if (!too_old && (u.survival_mask & (1u << count)) != 0u) {
             next = 1u;
         } else {
             // Die, or begin dying (refractory) if this is a generations rule.

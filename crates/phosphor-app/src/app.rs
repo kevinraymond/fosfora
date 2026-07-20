@@ -3613,14 +3613,25 @@ impl App {
         #[cfg(feature = "profiling")]
         self.gpu_profiler.end_frame(&self.gpu.queue);
 
-        // Request particle counter readback (async, read next frame)
+        // Request particle counter + lattice population readback (async, read next
+        // frame). The lattice request was previously issued ONLY on the dissolve-
+        // transition path above, so on every normal frame the population map was
+        // never requested — the auto-reseed then read a perpetually-None population
+        // and never fired, so growth rules just filled the domain and parked on a
+        // sphere. Requesting it here (alongside the counter) is what makes the
+        // reseed work at all.
         for layer in &self.layer_stack.layers {
             if let Some(effect) = layer.as_effect() {
                 if let Some(ps) = &effect.pass_executor.particle_system {
                     ps.request_counter_readback();
+                    ps.request_lattice_population_readback();
                 }
             }
         }
+        // Run completed async map callbacks so the readbacks land (wgpu only fires
+        // them during a poll). Non-blocking: it processes work the GPU already
+        // finished and never stalls the frame.
+        let _ = self.gpu.device.poll(wgpu::PollType::Poll);
 
         // NDI: request async map on staging buffer (must be after queue.submit)
         #[cfg(feature = "ndi")]

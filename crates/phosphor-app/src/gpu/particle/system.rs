@@ -203,6 +203,15 @@ pub struct ParticleSystem {
     // Seconds the lattice population has been stagnant (died-out or saturated); once
     // it crosses the dwell threshold the grid auto-reseeds. See `poll_lattice_population`.
     lattice_stagnant_secs: std::cell::Cell<f32>,
+    // Seconds remaining in the post-seed grace window during which auto-reseed is
+    // suppressed (lets a fresh seed grow before death-detection can fire). Set when
+    // the seed pass runs; counted down in `poll_lattice_population`.
+    lattice_grace_secs: std::cell::Cell<f32>,
+    // Most recent live-cell fraction from the population readback. The async map
+    // only completes on some frames in a non-blocking render loop (~1 in 6 on the
+    // RTX), so the stagnation/grace timers advance in wall-clock time every frame
+    // and reuse this cached value on the frames the readback doesn't deliver one.
+    lattice_last_frac: std::cell::Cell<f32>,
 
     // WBOIT (Weighted Blended Order-Independent Transparency)
     wboit_accum_texture: Option<wgpu::Texture>,
@@ -1076,6 +1085,8 @@ impl ParticleSystem {
             lattice_needs_seed: std::cell::Cell::new(true),
             lattice_step_accum: std::cell::Cell::new(0.0),
             lattice_stagnant_secs: std::cell::Cell::new(0.0),
+            lattice_grace_secs: std::cell::Cell::new(0.0),
+            lattice_last_frac: std::cell::Cell::new(0.0),
             wboit_accum_texture,
             wboit_accum_view,
             wboit_reveal_texture,
@@ -1579,6 +1590,10 @@ impl ParticleSystem {
                     lat.seed(encoder);
                     self.lattice_needs_seed.set(false);
                     self.lattice_step_accum.set(0.0);
+                    // Give the fresh seed room to grow before auto-reseed can fire.
+                    self.lattice_grace_secs
+                        .set(crate::gpu::lattice::LATTICE_RESEED_GRACE_SECS);
+                    self.lattice_stagnant_secs.set(0.0);
                 }
                 // Generation rate (gen/s) scaled by bass above a silence floor, drained
                 // through a fractional accumulator so speed is frame-rate stable.
@@ -2653,10 +2668,11 @@ impl ParticleSystem {
         }
     }
 
-    /// Poll the lattice population and auto-reseed when the grid has stagnated —
-    /// died out or saturated — for longer than the dwell threshold. This keeps the
-    /// explosive rules (Pyroclastic etc.) alive during silence, when there are no
-    /// onset injections to restart them; the density EMA turns the reseed into a
+    /// Poll the lattice population and auto-reseed only when the grid has fully
+    /// died out for longer than the dwell threshold — a pure safety net. Growth
+    /// rules no longer reseed on saturation: the per-cell lifetime (`max_age`)
+    /// keeps them churning. This revives a rule that genuinely dies in silence
+    /// (no onsets to restart it); the density EMA turns the reseed into a
     /// crossfade rather than a pop. Call once per frame before dispatch.
     pub fn poll_lattice_population(&mut self) {
         if !self.lattice_enabled {
@@ -2665,19 +2681,29 @@ impl ParticleSystem {
         let Some(ref lat) = self.lattice else {
             return;
         };
-        let Some(pop) = lat.poll_population_readback() else {
+        // The async readback map only completes on a minority of frames in a
+        // non-blocking loop, so refresh the cached fraction when it does and keep
+        // driving the timers off it on the frames it doesn't — otherwise the timers
+        // advance at a fifth of wall-clock speed and the grace window stretches to
+        // ~14 s, parking every growth rule on a filled sphere.
+        if let Some(pop) = lat.poll_population_readback() {
+            self.lattice_last_frac
+                .set(pop as f32 / lat.cell_count().max(1) as f32);
+        }
+        let dt = self.uniforms.delta_time;
+        // Post-seed grace: let a fresh seed grow before death-detection can fire,
+        // otherwise a slow rule reseed-thrashes on its own sub-threshold seed.
+        let grace = self.lattice_grace_secs.get();
+        if grace > 0.0 {
+            self.lattice_grace_secs.set((grace - dt).max(0.0));
+            self.lattice_stagnant_secs.set(0.0);
             return;
-        };
-        let frac = pop as f32 / lat.cell_count().max(1) as f32;
-        let saturate = crate::gpu::lattice::lattice_saturate_fraction(
-            self.lattice_params.domain_mode,
-            self.lattice_params.domain_radius,
-        );
+        }
+        let frac = self.lattice_last_frac.get();
         let (reseed, secs) = crate::gpu::lattice::lattice_stagnation_tick(
             frac,
-            saturate,
             self.lattice_stagnant_secs.get(),
-            self.uniforms.delta_time,
+            dt,
         );
         self.lattice_stagnant_secs.set(secs);
         if reseed {

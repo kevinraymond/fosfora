@@ -391,7 +391,7 @@ fn draw_effect_grid(
 ) {
     let now = ui.input(|i| i.time);
     let tc = ctx.tc;
-    // Long names get a 2-column grid (~140px buttons — "Lattice Architecture"
+    // Long names get a 2-column grid (~140px buttons — "Lattice Pyroclastic"
     // fits whole); short-named sets keep the denser 3 columns.
     let cols = if effects.iter().any(|(_, e)| e.name.chars().count() > 12) {
         2

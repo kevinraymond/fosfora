@@ -46,11 +46,11 @@ pub const GRID_RES_CHOICES: [u32; 4] = [32, 64, 128, 256];
 /// notation (Softology / Rampe catalogue). Parsed to bitmasks by [`parse_rule`].
 pub const PRESET_RULES: [(&str, &str); 8] = [
     ("Clouds", "S13-26/B13-14,17-19/2/M"),
-    ("Crystal", "S1-3/B1,3/2/M"),
+    ("Shells", "S4-8/B6-8/14/M"),
     ("Pyroclastic", "S4-7/B6-8/10/M"),
-    ("Architecture", "S3-5/B4/2/M"),
-    ("Coral", "S5-8/B5-6/3/M"),
-    ("Amoeba", "S9-26/B5-7,12-13/5/M"),
+    ("Chunky", "S6-9/B6-8/14/M"),
+    ("Brain", "S6-10/B5-7/12/M"),
+    ("Builder", "S2,6,9/B4,6,8-9/10/M"),
     ("445", "S4/B4/5/M"),
     ("Pulse", "S2-3/B3/2/VN"),
 ];
@@ -151,41 +151,32 @@ fn dilate_steps(energy: f32) -> u32 {
 /// burst-simulating a huge jump).
 pub const LATTICE_MAX_STEPS_PER_FRAME: u32 = 8;
 
-/// Live-cell fraction below which the grid counts as died-out.
-pub const LATTICE_DEATH_FRACTION: f32 = 0.001;
-/// Seconds a grid must stay stagnant before auto-reseeding. Kept short so a
-/// space-filling rule resets close to the saturation threshold instead of
-/// overshooting into a solid ball during the wait.
+/// Live-cell fraction below which the grid counts as died-out. Set below a fresh
+/// central seed's fill (a small noise sphere is only a few hundred cells) so a
+/// just-seeded grid is never mistaken for a dead one — combined with the post-seed
+/// grace period, this stops slow rules (Shells/Brain/Chunky) from
+/// reseed-thrashing before their first generation can even run.
+pub const LATTICE_DEATH_FRACTION: f32 = 0.0002;
+/// Seconds a grid must stay dead before auto-reseeding. Short so a rule that
+/// genuinely dies out in silence revives quickly, but non-zero so a momentary
+/// dip through the death fraction doesn't trigger a spurious reseed.
 pub const LATTICE_RESEED_DWELL_SECS: f32 = 0.5;
+/// Seconds after a (re)seed during which auto-reseed is suppressed, giving the
+/// fresh seed time to grow into structure. Without it, a slow rule whose seed is
+/// still below the death fraction reseeds every dwell forever, never advancing a
+/// generation (stuck as a flickering dot in silence).
+pub const LATTICE_RESEED_GRACE_SECS: f32 = 2.5;
 
-/// Population fraction (of the whole grid) at which a preset counts as saturated,
-/// given its live domain. A spherical domain can only ever fill about `π r³ / 6`
-/// of the cube, so a fixed cube-relative threshold never trips for sphere presets
-/// — the saturated ball just sits there. Scaling with the domain fixes that.
-/// The 0.5 factor resets while the field is still structured, before it packs into
-/// a solid, so a space-filling rule breathes instead of freezing as a ball.
-pub fn lattice_saturate_fraction(domain_mode: u32, domain_radius: f32) -> f32 {
-    let capacity = if domain_mode == 1 {
-        std::f32::consts::PI * domain_radius.clamp(0.1, 1.0).powi(3) / 6.0
-    } else {
-        1.0
-    };
-    (capacity * 0.5).clamp(0.05, 0.9)
-}
-
-/// Advance the auto-reseed stagnation timer for one frame, returning
-/// `(should_reseed, new_stagnant_secs)`. A grid that has died out (< [`LATTICE_DEATH_FRACTION`])
-/// or saturated (> `saturate_fraction`) for longer than [`LATTICE_RESEED_DWELL_SECS`]
-/// triggers a reseed (and the timer resets); a healthy population resets the timer
-/// immediately. Pure so the policy is testable without a GPU.
-pub fn lattice_stagnation_tick(
-    frac: f32,
-    saturate_fraction: f32,
-    stagnant_secs: f32,
-    dt: f32,
-) -> (bool, f32) {
-    let stagnant = frac < LATTICE_DEATH_FRACTION || frac > saturate_fraction;
-    if !stagnant {
+/// Advance the auto-reseed timer for one frame, returning
+/// `(should_reseed, new_stagnant_secs)`. Reseed is a pure *death* safety net: a
+/// grid that has died out (< [`LATTICE_DEATH_FRACTION`]) for longer than
+/// [`LATTICE_RESEED_DWELL_SECS`] is revived (and the timer resets); any live
+/// population resets the timer immediately. Saturation is no longer a trigger —
+/// the per-cell lifetime cap (`max_age`) keeps growth rules churning so they never
+/// pack into a solid ball, which is what a saturation reseed used to (jarringly)
+/// correct. Pure so the policy is testable without a GPU.
+pub fn lattice_stagnation_tick(frac: f32, stagnant_secs: f32, dt: f32) -> (bool, f32) {
+    if frac >= LATTICE_DEATH_FRACTION {
         return (false, 0.0);
     }
     let secs = stagnant_secs + dt.max(0.0);
@@ -244,7 +235,7 @@ pub struct LatticeUniforms {
     pub dt: f32,            // frame delta-time (s) for the display-pass EMA
     pub domain_mode: u32,   // 0 = full cube, 1 = spherical domain
     pub domain_radius: f32, // sphere radius as a fraction of the half-extent
-    pub _pad0: u32,
+    pub max_age: u32,       // lifetime cap in generations (0 = off / infinite)
 }
 
 // --- Host-side params ---------------------------------------------------------
@@ -267,6 +258,11 @@ pub struct LatticeParams {
     pub birth_mask: u32,
     pub survival_mask: u32,
     pub num_states: u32,
+    /// Lifetime cap in CA generations: a live cell dies once its age reaches this,
+    /// forcing continuous turnover so growth rules hollow out (the oldest cells,
+    /// the core, die first) instead of packing into a solid ball. This is the
+    /// primary "breathing" control; `0` disables the cap (infinite lifetime).
+    pub max_age: u32,
     pub neighborhood: u32,
     pub boundary: u32,
     /// CA generations per second at full bass (scaled toward `bass_floor` in
@@ -313,6 +309,8 @@ impl Default for LatticeParams {
             birth_mask: birth,
             survival_mask: survival,
             num_states: states,
+            // Off by default; each preset sets its own lifetime via the .pfx.
+            max_age: 0,
             neighborhood: nbhd,
             boundary: 0,
             gen_per_sec: 8.0,
@@ -414,7 +412,8 @@ impl LatticeParams {
             dt: dt.clamp(0.0, 0.1),
             domain_mode: self.domain_mode,
             domain_radius: self.domain_radius.clamp(0.1, 1.0),
-            _pad0: 0,
+            // Cap below the age field's 255 saturation so a set lifetime can fire.
+            max_age: self.max_age.min(254),
         }
     }
 }
@@ -443,6 +442,11 @@ pub struct LatticeDef {
     /// Density EMA rate (1/s) applied in the display pass.
     #[serde(default = "default_lattice_smooth_rate")]
     pub smooth_rate: f32,
+    /// Lifetime cap in CA generations: a live cell dies once it reaches this age,
+    /// forcing continuous turnover so growth rules hollow out instead of packing
+    /// into a solid ball. The primary "breathing" control. 0 disables the cap.
+    #[serde(default)]
+    pub max_age: u32,
     /// Boundary policy: 0 = toroidal wrap, 1 = dead border (clamp).
     #[serde(default)]
     pub boundary: u32,
@@ -581,12 +585,13 @@ impl From<&LatticeDef> for LatticeParams {
             gen_per_sec: def.gen_per_sec.clamp(0.0, 30.0),
             bass_floor: def.bass_floor.clamp(0.0, 1.0),
             smooth_rate: def.smooth_rate.clamp(0.5, 40.0),
+            max_age: def.max_age.min(254),
             domain_mode: def.domain_mode.min(1),
             domain_radius: def.domain_radius.clamp(0.1, 1.0),
             dilation_max: def.dilation_max.min(2),
             init_mode: def.init_mode.min(4),
-            // High-survival rules (Clouds S13-26, Amoeba S9-26) need a dense random
-            // field to sustain, so the ceiling is well above the old 0.3.
+            // High-survival rules (Clouds S13-26) need a dense random field to
+            // sustain, so the ceiling is well above the old 0.3.
             init_density: def.init_density.clamp(0.01, 0.6),
             seed_size: def.seed_size.clamp(1, 32),
             perturb_scale: def.perturb_scale.clamp(0.0, 0.2),
@@ -1044,11 +1049,11 @@ mod tests {
         assert_eq!(states, 10);
         assert_eq!(nbhd, 0);
 
-        // Crystal S1-3/B1,3/2/M — comma list
-        let (birth, survival, states, nbhd) = parse_rule("S1-3/B1,3/2/M");
-        assert_eq!(survival, (1 << 1) | (1 << 2) | (1 << 3));
-        assert_eq!(birth, (1 << 1) | (1 << 3));
-        assert_eq!(states, 2);
+        // Builder S2,6,9/B4,6,8-9/10/M — comma list
+        let (birth, survival, states, nbhd) = parse_rule("S2,6,9/B4,6,8-9/10/M");
+        assert_eq!(survival, (1 << 2) | (1 << 6) | (1 << 9));
+        assert_eq!(birth, (1 << 4) | (1 << 6) | (1 << 8) | (1 << 9));
+        assert_eq!(states, 10);
         assert_eq!(nbhd, 0);
 
         // Pulse — Von Neumann
@@ -1073,11 +1078,11 @@ mod tests {
     fn shipped_presets_deserialize() {
         const PRESETS: [&str; 8] = [
             include_str!("../../../../assets/effects/lattice_clouds.pfx"),
-            include_str!("../../../../assets/effects/lattice_crystal.pfx"),
+            include_str!("../../../../assets/effects/lattice_shells.pfx"),
             include_str!("../../../../assets/effects/lattice_pyroclastic.pfx"),
-            include_str!("../../../../assets/effects/lattice_architecture.pfx"),
-            include_str!("../../../../assets/effects/lattice_coral.pfx"),
-            include_str!("../../../../assets/effects/lattice_amoeba.pfx"),
+            include_str!("../../../../assets/effects/lattice_chunky.pfx"),
+            include_str!("../../../../assets/effects/lattice_brain.pfx"),
+            include_str!("../../../../assets/effects/lattice_builder.pfx"),
             include_str!("../../../../assets/effects/lattice_445.pfx"),
             include_str!("../../../../assets/effects/lattice_pulse.pfx"),
         ];
@@ -1138,9 +1143,8 @@ mod tests {
     #[test]
     fn stagnation_reseed_policy() {
         let dt = 1.0 / 60.0;
-        let sat = 0.5;
         // Healthy population never reseeds and keeps the timer at 0.
-        let (reseed, secs) = lattice_stagnation_tick(0.1, sat, 3.9, dt);
+        let (reseed, secs) = lattice_stagnation_tick(0.1, 3.9, dt);
         assert!(!reseed);
         assert_eq!(secs, 0.0);
 
@@ -1148,7 +1152,7 @@ mod tests {
         let mut secs = 0.0;
         let mut fired = 0;
         for _ in 0..(60 * 3) {
-            let (reseed, s) = lattice_stagnation_tick(0.0, sat, secs, dt);
+            let (reseed, s) = lattice_stagnation_tick(0.0, secs, dt);
             secs = s;
             if reseed {
                 fired += 1;
@@ -1156,19 +1160,15 @@ mod tests {
         }
         assert!(fired >= 1, "died-out should auto-reseed within 3 s");
 
-        // Saturated (above the threshold) also counts as stagnant.
-        let (_, s1) = lattice_stagnation_tick(0.8, sat, 0.0, dt);
-        assert!(s1 > 0.0);
+        // Saturation is NOT a trigger anymore — a packed grid stays put (the
+        // per-cell lifetime handles turnover, not a global reseed).
+        let (reseed, s1) = lattice_stagnation_tick(0.8, 0.0, dt);
+        assert!(!reseed);
+        assert_eq!(s1, 0.0);
 
-        // A healthy frame resets the timer.
-        let (_, s3) = lattice_stagnation_tick(0.2, sat, 2.0, dt);
+        // A live frame resets the timer.
+        let (_, s3) = lattice_stagnation_tick(0.2, 2.0, dt);
         assert_eq!(s3, 0.0);
-
-        // Domain-aware threshold: a sphere fills far less of the cube than a cube.
-        let sphere = lattice_saturate_fraction(1, 0.9);
-        let cube = lattice_saturate_fraction(0, 0.0);
-        assert!(sphere < cube, "sphere {sphere} should be < cube {cube}");
-        assert!((0.05..0.4).contains(&sphere));
     }
 
     #[test]
@@ -1187,6 +1187,7 @@ mod tests {
             gen_per_sec: 40.0,  // clamps to 30
             bass_floor: 2.0,    // clamps to 1
             smooth_rate: 100.0, // clamps to 40
+            max_age: 999,       // clamps to 254
             boundary: 5,        // clamps to 1
             domain_mode: 9,     // clamps to 1
             domain_radius: 2.0, // clamps to 1
@@ -1214,6 +1215,7 @@ mod tests {
         assert!((p.init_density - 0.6).abs() < 1e-6);
         assert_eq!(p.seed_size, 32);
         assert!((p.perturb_scale - 0.2).abs() < 1e-6);
+        assert_eq!(p.max_age, 254);
     }
 
     /// Headless GPU smoke: build a `LatticeSim` (all four pipelines, incl. the
@@ -1443,8 +1445,7 @@ mod tests {
             }
             last_frac = frac;
 
-            let sat = lattice_saturate_fraction(params.domain_mode, params.domain_radius);
-            let (reseed, next) = lattice_stagnation_tick(frac, sat, stagnant, dt);
+            let (reseed, next) = lattice_stagnation_tick(frac, stagnant, dt);
             stagnant = next;
             if reseed {
                 params.seed_hash = params
@@ -1493,8 +1494,8 @@ mod tests {
 
         let all: [(&str, &str, u32); 8] = [
             (
-                "crystal",
-                include_str!("../../../../assets/effects/lattice_crystal.pfx"),
+                "shells",
+                include_str!("../../../../assets/effects/lattice_shells.pfx"),
                 26,
             ),
             (
@@ -1508,18 +1509,18 @@ mod tests {
                 22,
             ),
             (
-                "architecture",
-                include_str!("../../../../assets/effects/lattice_architecture.pfx"),
+                "chunky",
+                include_str!("../../../../assets/effects/lattice_chunky.pfx"),
                 22,
             ),
             (
-                "coral",
-                include_str!("../../../../assets/effects/lattice_coral.pfx"),
+                "brain",
+                include_str!("../../../../assets/effects/lattice_brain.pfx"),
                 26,
             ),
             (
-                "amoeba",
-                include_str!("../../../../assets/effects/lattice_amoeba.pfx"),
+                "builder",
+                include_str!("../../../../assets/effects/lattice_builder.pfx"),
                 20,
             ),
             (
@@ -1543,9 +1544,14 @@ mod tests {
                 .find(|p| p.0 == name)
                 .expect("unknown sweep preset")
                 .1;
-            [3u32, 6, 9, 12, 16, 22, 30, 40]
-                .iter()
-                .map(|&g| (format!("{name}_g{g:02}"), src, g))
+            // LATTICE_SWEEP_GENS="40,60,80" overrides the default generation ladder.
+            let gens: Vec<u32> = std::env::var("LATTICE_SWEEP_GENS")
+                .ok()
+                .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+                .filter(|v: &Vec<u32>| !v.is_empty())
+                .unwrap_or_else(|| vec![3, 6, 9, 12, 16, 22, 30, 40]);
+            gens.iter()
+                .map(|&g| (format!("{name}_g{g:03}"), src, g))
                 .collect()
         } else {
             all.iter().map(|p| (p.0.to_string(), p.1, p.2)).collect()
@@ -1564,6 +1570,37 @@ mod tests {
             }
             if let Ok(d) = std::env::var("LATTICE_DOMAIN") {
                 params.domain_mode = d.parse().unwrap_or(params.domain_mode).min(1);
+            }
+            if let Ok(m) = std::env::var("LATTICE_INIT_MODE") {
+                params.init_mode = m.parse().unwrap_or(params.init_mode).min(4);
+            }
+            if let Ok(d) = std::env::var("LATTICE_INIT_DENSITY") {
+                params.init_density = d.parse().unwrap_or(params.init_density).clamp(0.01, 0.6);
+            }
+            if let Ok(s) = std::env::var("LATTICE_SEED_SIZE") {
+                params.seed_size = s.parse().unwrap_or(params.seed_size).clamp(1, 64);
+            }
+            if let Ok(rule) = std::env::var("LATTICE_RULE") {
+                let (b, s, st, nb) = parse_rule(&rule);
+                params.birth_mask = b;
+                params.survival_mask = s;
+                params.num_states = st;
+                params.neighborhood = nb;
+            }
+            if let Ok(a) = std::env::var("LATTICE_MAX_AGE") {
+                params.max_age = a.parse().unwrap_or(params.max_age).min(254);
+            }
+            if let Ok(s) = std::env::var("LATTICE_SMOOTH") {
+                params.smooth_rate = s.parse().unwrap_or(params.smooth_rate).clamp(0.5, 40.0);
+            }
+            if let Ok(a) = std::env::var("LATTICE_ABSORPTION") {
+                params.render.absorption = a.parse().unwrap_or(params.render.absorption);
+            }
+            if let Ok(e) = std::env::var("LATTICE_EMISSION") {
+                params.render.emission_gain = e.parse().unwrap_or(params.render.emission_gain);
+            }
+            if let Ok(h) = std::env::var("LATTICE_HUE") {
+                params.render.palette_hue = h.parse().unwrap_or(params.render.palette_hue);
             }
 
             let sim = LatticeSim::new(&device, fmt, params.grid_res);
@@ -1691,8 +1728,8 @@ mod tests {
 
         let presets: [(&str, &str); 8] = [
             (
-                "crystal",
-                include_str!("../../../../assets/effects/lattice_crystal.pfx"),
+                "shells",
+                include_str!("../../../../assets/effects/lattice_shells.pfx"),
             ),
             (
                 "pyroclastic",
@@ -1703,16 +1740,16 @@ mod tests {
                 include_str!("../../../../assets/effects/lattice_clouds.pfx"),
             ),
             (
-                "architecture",
-                include_str!("../../../../assets/effects/lattice_architecture.pfx"),
+                "chunky",
+                include_str!("../../../../assets/effects/lattice_chunky.pfx"),
             ),
             (
-                "coral",
-                include_str!("../../../../assets/effects/lattice_coral.pfx"),
+                "brain",
+                include_str!("../../../../assets/effects/lattice_brain.pfx"),
             ),
             (
-                "amoeba",
-                include_str!("../../../../assets/effects/lattice_amoeba.pfx"),
+                "builder",
+                include_str!("../../../../assets/effects/lattice_builder.pfx"),
             ),
             (
                 "445",
@@ -1747,6 +1784,12 @@ mod tests {
             let mut params = LatticeParams::from(&def);
             params.grid_res = grid;
             params.render.cam_orbit_speed = 0.7; // clear rotation across the clip
+            if let Ok(m) = std::env::var("LATTICE_INIT_MODE") {
+                params.init_mode = m.parse().unwrap_or(params.init_mode).min(4);
+            }
+            if let Ok(d) = std::env::var("LATTICE_INIT_DENSITY") {
+                params.init_density = d.parse().unwrap_or(params.init_density).clamp(0.01, 0.6);
+            }
             if let Ok(rule) = std::env::var("LATTICE_RULE") {
                 let (b, s, st, nb) = parse_rule(&rule);
                 params.birth_mask = b;
@@ -1761,7 +1804,6 @@ mod tests {
             let mut needs_seed = true; // seeded on the first iteration
             let mut stagnant = 0.0f32;
             let cells = sim.cell_count() as f32;
-            let sat = lattice_saturate_fraction(params.domain_mode, params.domain_radius);
 
             for f in 0..frames {
                 let t = f as f32 * dt;
@@ -1839,7 +1881,7 @@ mod tests {
                 device.poll(wait()).unwrap();
                 if let Some(pop) = sim.poll_population_readback().filter(|_| !no_reseed) {
                     let frac = pop as f32 / cells;
-                    let (reseed, next) = lattice_stagnation_tick(frac, sat, stagnant, dt);
+                    let (reseed, next) = lattice_stagnation_tick(frac, stagnant, dt);
                     stagnant = next;
                     if reseed {
                         params.seed_hash = params
@@ -1864,6 +1906,7 @@ mod tests {
             gen_per_sec: 6.0,
             bass_floor: 0.3,
             smooth_rate: 8.0,
+            max_age: 0,
             boundary: 0,
             domain_mode: 1,
             domain_radius: 0.9,
@@ -1880,5 +1923,155 @@ mod tests {
         assert_eq!(p.survival_mask, 1 << 5);
         assert_eq!(p.num_states, 3);
         assert_eq!(p.neighborhood, 1); // Von Neumann
+    }
+
+    /// TEMPORARY diagnostic: trace a preset's population fraction under SILENCE,
+    /// replicating the app's per-frame loop (step budget at bass=0, display,
+    /// population readback, stagnation-tick auto-reseed). Prints frac + generation
+    /// count each second and every reseed, so the steady-state fill can be compared
+    /// against the saturate threshold. Ignored; run with:
+    ///   LATTICE_TRACE_RULE=builder LATTICE_PREVIEW_GRID=128 LATTICE_TRACE_FRAMES=2400 \
+    ///     cargo test -p phosphor-app --release -- --ignored --nocapture lattice_silence_trace
+    #[test]
+    #[ignore = "requires a GPU/software adapter; diagnostic trace"]
+    fn lattice_silence_trace() {
+        let rule = std::env::var("LATTICE_TRACE_RULE").unwrap_or_else(|_| "builder".to_string());
+        let frames: u32 = std::env::var("LATTICE_TRACE_FRAMES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2400);
+        let grid: u32 = std::env::var("LATTICE_PREVIEW_GRID")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(clamp_grid_res)
+            .unwrap_or(DEFAULT_GRID_RES);
+        let no_reseed = std::env::var("LATTICE_NO_RESEED").is_ok();
+        let bass: f32 = std::env::var("LATTICE_TRACE_BASS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+
+        let src: &str = match rule.as_str() {
+            "builder" => include_str!("../../../../assets/effects/lattice_builder.pfx"),
+            "clouds" => include_str!("../../../../assets/effects/lattice_clouds.pfx"),
+            "brain" => include_str!("../../../../assets/effects/lattice_brain.pfx"),
+            "pyroclastic" => include_str!("../../../../assets/effects/lattice_pyroclastic.pfx"),
+            "shells" => include_str!("../../../../assets/effects/lattice_shells.pfx"),
+            "chunky" => include_str!("../../../../assets/effects/lattice_chunky.pfx"),
+            "445" => include_str!("../../../../assets/effects/lattice_445.pfx"),
+            "pulse" => include_str!("../../../../assets/effects/lattice_pulse.pfx"),
+            _ => include_str!("../../../../assets/effects/lattice_builder.pfx"),
+        };
+        let v: serde_json::Value = serde_json::from_str(src).unwrap();
+        let def: LatticeDef = serde_json::from_value(v["particles"]["lattice"].clone()).unwrap();
+        let mut params = LatticeParams::from(&def);
+        params.grid_res = grid;
+        if let Ok(m) = std::env::var("LATTICE_INIT_MODE") {
+            params.init_mode = m.parse().unwrap_or(params.init_mode).min(4);
+        }
+        if let Ok(d) = std::env::var("LATTICE_INIT_DENSITY") {
+            params.init_density = d.parse().unwrap_or(params.init_density).clamp(0.01, 0.6);
+        }
+        if let Ok(a) = std::env::var("LATTICE_MAX_AGE") {
+            params.max_age = a.parse().unwrap_or(params.max_age).min(254);
+        }
+        if let Ok(rule) = std::env::var("LATTICE_RULE") {
+            let (b, s, st, nb) = parse_rule(&rule);
+            params.birth_mask = b;
+            params.survival_mask = s;
+            params.num_states = st;
+            params.neighborhood = nb;
+        }
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("trace adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("lattice-trace"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("no wgpu device");
+
+        let sim = LatticeSim::new(&device, TextureFormat::Rgba16Float, params.grid_res);
+        let cells = sim.cell_count() as f32;
+        let dt = 1.0 / 60.0;
+        eprintln!(
+            "rule={rule} grid={} domain_mode={} radius={} max_age={} bass={bass} reseed={}",
+            params.grid_res, params.domain_mode, params.domain_radius, params.max_age, !no_reseed
+        );
+
+        let wait = || wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        };
+        let mut accum = 0.0f32;
+        let mut needs_seed = true;
+        let mut stagnant = 0.0f32;
+        let mut grace = 0.0f32;
+        let mut gens = 0u64;
+        let mut reseeds = 0u32;
+        let mut max_frac = 0.0f32;
+
+        for f in 0..frames {
+            sim.upload_ca_uniforms(
+                &queue,
+                &params.build_uniforms(f, 0.0, 0.0, 0.0, 0.0, f as f32 * dt, dt),
+            );
+            let mut enc = device.create_command_encoder(&Default::default());
+            if needs_seed {
+                sim.seed(&mut enc);
+                needs_seed = false;
+                accum = 0.0;
+                grace = LATTICE_RESEED_GRACE_SECS; // mirror the app's post-seed grace
+                stagnant = 0.0;
+            }
+            let (steps, residual) =
+                lattice_step_budget(accum, params.gen_per_sec, params.bass_floor, bass, dt);
+            accum = residual;
+            gens += steps as u64;
+            for _ in 0..steps {
+                sim.step(&mut enc);
+            }
+            sim.display(&mut enc);
+            queue.submit([enc.finish()]);
+            device.poll(wait()).unwrap();
+            sim.request_population_readback();
+            device.poll(wait()).unwrap();
+            let pop = sim.poll_population_readback().expect("population readback");
+            let frac = pop as f32 / cells;
+            max_frac = max_frac.max(frac);
+
+            let (reseed, next) = if no_reseed || grace > 0.0 {
+                grace = (grace - dt).max(0.0);
+                (false, 0.0)
+            } else {
+                lattice_stagnation_tick(frac, stagnant, dt)
+            };
+            stagnant = next;
+            if reseed {
+                params.seed_hash = params
+                    .seed_hash
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                needs_seed = true;
+                reseeds += 1;
+                eprintln!("  f={f:4} gen={gens:4} frac={frac:.4} -> RESEED #{reseeds}");
+            } else if f % 60 == 0 {
+                eprintln!("  f={f:4} gen={gens:4} frac={frac:.4} stagnant={stagnant:.2}");
+            }
+        }
+        eprintln!("DONE rule={rule}: gens={gens} reseeds={reseeds} max_frac={max_frac:.4}");
     }
 }

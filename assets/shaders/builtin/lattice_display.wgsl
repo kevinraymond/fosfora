@@ -28,7 +28,7 @@ struct LatticeUniforms {
     dt: f32,
     domain_mode: u32,
     domain_radius: f32,
-    _pad0: u32,
+    max_age: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: LatticeUniforms;

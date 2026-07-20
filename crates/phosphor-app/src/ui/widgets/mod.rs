@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn truncate_chars_truncates_with_ellipsis() {
-        assert_eq!(truncate_chars("Lattice Architecture", 10), "Lattice A…");
+        assert_eq!(truncate_chars("Lattice Pyroclastic", 10), "Lattice P…");
     }
 
     #[test]
