@@ -139,8 +139,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     var agitation = 0.0;
     if u.obstacle_enabled > 0.5 {
         let dir = normalize(vel + vec2f(0.0, -1e-4));
-        let a1 = obstacle_alpha(pos + dir * 0.05);
-        let a2 = obstacle_alpha(pos + dir * 0.12);
+        // Occupancy relative to the collision threshold, NOT raw alpha: a
+        // MiDaS depth field is continuous (a background wall reads ~0.3-0.6),
+        // so raw-alpha proximity foamed the entire frame white on live depth.
+        // The smoothstep band just below threshold means "approaching a
+        // surface the collision test would actually count" — identical
+        // behavior on binary images, threshold-aware on depth fields.
+        let thr = u.obstacle_threshold;
+        let a1 = smoothstep(thr - 0.2, thr, obstacle_alpha(pos + dir * 0.05));
+        let a2 = smoothstep(thr - 0.2, thr, obstacle_alpha(pos + dir * 0.12));
         let prox = max(a1, a2 * 0.6);
         if prox > 0.02 {
             let n = obstacle_normal(pos + dir * 0.05);
@@ -217,10 +224,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let alpha = 0.09 * fade_in * fade_out * eval_opacity_curve(life_frac);
     let col = tide_color(pos, vel, foam + agitation * 0.6);
 
+    // Stall drain: water pooled on a large silhouette otherwise sits out its
+    // full lifetime and starves the top-edge emitter (live check saturated the
+    // cap at 98%). Agitated-but-slow particles age extra fast and recycle.
+    let stall = agitation * (1.0 - clamp(length(vel) * 4.0, 0.0, 1.0));
+    let drained_age = new_age + stall * dt * 3.0;
+
     p.pos_life = vec4f(pos, 0.0, 1.0);
     p.vel_size = vec4f(vel, init_size, size);
     p.color = vec4f(col, alpha);
-    p.flags = vec4f(new_age, max_life, lane_x, foam);
+    p.flags = vec4f(drained_age, max_life, lane_x, foam);
     write_particle(idx, p);
     mark_alive(idx);
     trail_write(idx, vec4f(pos, size, alpha));
