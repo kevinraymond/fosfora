@@ -834,4 +834,341 @@ mod tests {
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "cleave_bg.wgsl failed validation: {err:?}");
     }
+
+    // Same guard as tide_pfx_parses_as_builtin, plus the uniform-injection
+    // trap: prepend_library suppresses UNIFORM_BLOCK if the shader source
+    // contains the struct name anywhere (even a comment), and the compile
+    // probe below concatenates the block unconditionally so it can't catch
+    // that — assert the string is absent here instead.
+    #[test]
+    fn frost_pfx_parses_as_builtin() {
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../assets/effects/frost.pfx"))
+                .expect("frost.pfx must deserialize");
+        assert!(EffectLoader::is_builtin(&effect));
+        assert_eq!(effect.inputs.len(), 9); // 8 floats + drift Point2D = 10 slots
+        assert!(effect.particles.is_none()); // pure fragment + feedback effect
+        let shader = include_str!("../../../../assets/shaders/frost.wgsl");
+        assert!(
+            !shader.contains("PhosphorUniforms"),
+            "frost.wgsl must not mention the uniform struct name — it suppresses injection"
+        );
+    }
+
+    // Compile probe for the Frost fragment shader through the production
+    // concatenation (UNIFORM_BLOCK + noise + palette). Fragment-only effect,
+    // so no compute-pipeline step.
+    // Run: cargo test -p phosphor-app -- --ignored frost_shaders_compile
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn frost_shaders_compile() {
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let frost = include_str!("../../../../assets/shaders/frost.wgsl");
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("probe adapter: {:?}", adapter.get_info());
+        let (device, _queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("frost-compile-probe"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            }))
+            .expect("no wgpu device");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{frost}");
+        let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("frost-probe"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "frost.wgsl failed validation: {err:?}");
+    }
+
+    // Offscreen render probe for Frost's two material states: run the real
+    // fragment pipeline with synthetic audio uniforms (tonal vs noisy) through
+    // 90 feedback frames and capture PNGs. Guards against a black screen or a
+    // feedback blowout and asserts the crystal and sand states actually differ.
+    // Run: FROST_PNG_DIR=/path cargo test -p phosphor-app -- --ignored frost_render_previews
+    #[test]
+    #[ignore = "requires a GPU/software adapter; writes PNGs"]
+    fn frost_render_previews() {
+        use crate::gpu::frame_capture::FrameCapture;
+        use crate::gpu::pipeline::ShaderPipeline;
+        use crate::gpu::uniforms::{ShaderUniforms, UniformBuffer};
+
+        let out_dir = std::env::var("FROST_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::VULKAN,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .expect("no wgpu adapter");
+        eprintln!("probe adapter: {:?}", adapter.get_info());
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("frost-preview"),
+            required_features: wgpu::Features::empty(),
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
+        .expect("no wgpu device");
+
+        // Production concatenation: uniform block + libs + effect fragment.
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let frost = include_str!("../../../../assets/shaders/frost.wgsl");
+        let fragment_source = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{frost}");
+
+        let (w, h) = (960u32, 540u32);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let pipeline =
+            ShaderPipeline::new(&device, fmt, &fragment_source, None).expect("frost pipeline");
+
+        // Ping-pong pair for the feedback loop.
+        let mk_target = |label: &str| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: fmt,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            (tex, view)
+        };
+        let targets = [mk_target("frost-ping"), mk_target("frost-pong")];
+
+        // 1x1 placeholder audio textures matching the production bindings.
+        let mk_audio = |label: &str, format: wgpu::TextureFormat| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            tex.create_view(&Default::default())
+        };
+        let waveform = mk_audio("frost-waveform", wgpu::TextureFormat::Rg16Float);
+        let spectrum = mk_audio("frost-spectrum", wgpu::TextureFormat::R16Float);
+        let spectrogram = mk_audio("frost-spectrogram", wgpu::TextureFormat::R8Unorm);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let ubuf = UniformBuffer::new(&device);
+        let bind_groups: Vec<_> = targets
+            .iter()
+            .map(|(_, view)| {
+                ubuf.create_bind_group(
+                    &device,
+                    &pipeline.bind_group_layout,
+                    view,
+                    &sampler,
+                    &waveform,
+                    &spectrum,
+                    &spectrogram,
+                    &sampler,
+                )
+            })
+            .collect();
+
+        struct ProbeState {
+            name: &'static str,
+            flatness: f32,
+            zcr: f32,
+            bandwidth: f32,
+            bass: f32,
+            centroid: f32,
+            rms: f32,
+            /// Onset / kick applied on the final (captured) frame only.
+            onset: f32,
+            kick: f32,
+        }
+        let state = |name, flatness, zcr, bandwidth, bass, centroid, rms, onset, kick| ProbeState {
+            name,
+            flatness,
+            zcr,
+            bandwidth,
+            bass,
+            centroid,
+            rms,
+            onset,
+            kick,
+        };
+        let states = [
+            state("crystal", 0.05, 0.02, 0.20, 0.30, 0.60, 0.40, 0.0, 0.0),
+            state("mid", 0.50, 0.20, 0.45, 0.35, 0.50, 0.45, 0.0, 0.0),
+            state("sand", 0.92, 0.45, 0.70, 0.40, 0.40, 0.50, 0.0, 0.0),
+            state(
+                "crystal_shatter",
+                0.05,
+                0.02,
+                0.20,
+                0.30,
+                0.60,
+                0.40,
+                1.0,
+                0.8,
+            ),
+        ];
+        let frames = 90u32;
+        let dt = 1.0 / 60.0;
+        let mut means = std::collections::HashMap::new();
+
+        for s in states {
+            let name = s.name;
+            let mut u = ShaderUniforms::zeroed();
+            u.resolution = [w as f32, h as f32];
+            u.delta_time = dt;
+            u.feedback_decay = 0.88;
+            u.params = [
+                0.5, 0.0, 0.5, 0.5, 0.6, 0.6, 0.5, 1.0, 0.0, -0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ];
+            u.flatness = s.flatness;
+            u.zcr = s.zcr;
+            u.bandwidth = s.bandwidth;
+            u.sub_bass = s.bass * 0.7;
+            u.bass = s.bass;
+            u.centroid = s.centroid;
+            u.rms = s.rms;
+
+            let mut src = 0usize;
+            for f in 0..frames {
+                u.time = f as f32 * dt;
+                u.frame_index = f as f32;
+                u.beat_phase = (u.time * 2.0).fract();
+                if f == frames - 1 {
+                    u.onset = s.onset;
+                    u.kick = s.kick;
+                }
+                ubuf.update(&queue, &u);
+                let dst = 1 - src;
+                let mut enc = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("frost-preview-pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &targets[dst].1,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&pipeline.pipeline);
+                    pass.set_bind_group(0, &bind_groups[src], &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                queue.submit([enc.finish()]);
+                src = dst;
+            }
+
+            // Re-render the final frame into the capture target and read it back.
+            let mut fc = FrameCapture::new(&device, w, h, fmt, "frost-capture");
+            let mut enc = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("frost-capture-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &fc.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&pipeline.pipeline);
+                pass.set_bind_group(0, &bind_groups[1 - src], &[]);
+                pass.draw(0..3, 0..1);
+            }
+            fc.copy_to_staging(&mut enc);
+            queue.submit([enc.finish()]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
+            fc.request_map();
+            let data = loop {
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: None,
+                    })
+                    .unwrap();
+                if let Some(d) = fc.take_mapped_data(&device) {
+                    break d;
+                }
+            };
+
+            let mean = data.iter().map(|&b| b as f64).sum::<f64>() / (data.len() as f64 * 255.0);
+            means.insert(name, mean);
+            let path = format!("{out_dir}/frost_{name}.png");
+            image::RgbaImage::from_raw(w, h, data)
+                .expect("raw->image")
+                .save(&path)
+                .expect("save png");
+            eprintln!("wrote {path} (mean {mean:.4})");
+
+            // Not black, not blown out.
+            assert!(mean > 0.005, "{name} rendered near-black (mean {mean:.4})");
+            assert!(mean < 0.90, "{name} blew out (mean {mean:.4})");
+        }
+
+        // The two material states must actually look different.
+        let diff = (means["crystal"] - means["sand"]).abs();
+        assert!(
+            diff > 0.01,
+            "crystal and sand states are indistinguishable (means {:?})",
+            means
+        );
+    }
 }
