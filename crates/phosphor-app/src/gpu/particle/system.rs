@@ -1353,6 +1353,9 @@ impl ParticleSystem {
         // A12 bar clock (batched ABI bump #1505) — 0.0 until the downbeat detector
         // lands; forwarded now so that follow-up only fills the AudioFeatures field.
         self.uniforms.bar_phase = features.bar_phase;
+        self.uniforms.percussive_energy = features.percussive_energy;
+        self.uniforms.harmonic_energy = features.harmonic_energy;
+        self.uniforms.harmonic_ratio = features.harmonic_ratio;
     }
 
     /// Run the compute dispatch (particle simulation + prepare indirect args).

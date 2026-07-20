@@ -121,6 +121,12 @@ struct ParticleUniforms {
     beat_strength: f32, // Strength of the detected beat
     bar_phase: f32,     // A12 0-1 sawtooth over the current bar (#1505; 0.0 until DSP)
     obstacle_fit: u32,  // 0=stretch (legacy), 1=contain ("Fit"), 2=cover ("Fill") (#1790)
+
+    // A14 HPSS split (#1796 ABI bump)
+    percussive_energy: f32, // transient (percussive-masked) energy, dB-mapped 0-1
+    harmonic_energy: f32,   // sustained (harmonic-masked) energy, dB-mapped 0-1
+    harmonic_ratio: f32,    // harmonic vs percussive balance, 0-1
+    _pad_hpss: f32,
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).

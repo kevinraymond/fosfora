@@ -21,7 +21,7 @@ pub struct Particle {
     pub flags: [f32; 4],
 }
 
-/// Particle simulation uniforms: 832 bytes.
+/// Particle simulation uniforms: 848 bytes.
 /// Separate from the main 288-byte ShaderUniforms.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -157,10 +157,17 @@ pub struct ParticleUniforms {
     // A12 bar clock (batched ABI bump #1505) — 0.0 until the downbeat detector lands.
     // Consumes one of the two spare pad slots left after V0, so the struct stays 832B.
     pub bar_phase: f32, // 0-1 sawtooth over the current bar
-    // Obstacle fit mode (#1790) — consumes the last spare pad slot (832B preserved).
+    // Obstacle fit mode (#1790) — consumes the last spare pad slot of the 832B layout.
     // Lives here rather than in the obstacle block at [384..399] to keep offsets stable.
     pub obstacle_fit: u32, // 0=stretch (legacy), 1=contain ("Fit"), 2=cover ("Fill") — see ObstacleFit
-                           // Total = 832 bytes
+
+    // A14 HPSS (batched ABI bump for Tide #1796; also unblocks Cleave #1798).
+    // Appended as a fresh 16-byte block so every existing offset stays stable (#1505 precedent).
+    pub percussive_energy: f32, // transient (percussive-masked) energy, dB-mapped 0-1
+    pub harmonic_energy: f32,   // sustained (harmonic-masked) energy, dB-mapped 0-1
+    pub harmonic_ratio: f32,    // harmonic vs percussive balance, 0-1
+    pub _pad_hpss: f32,         // spare slot for the next batched feature
+                                // Total = 848 bytes
 }
 
 /// Obstacle collision mode.
@@ -856,8 +863,8 @@ mod tests {
     }
 
     #[test]
-    fn particle_uniforms_size_832() {
-        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 832);
+    fn particle_uniforms_size_848() {
+        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 848);
     }
 
     #[test]
