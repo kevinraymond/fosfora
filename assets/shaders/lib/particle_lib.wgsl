@@ -127,6 +127,12 @@ struct ParticleUniforms {
     harmonic_energy: f32,   // sustained (harmonic-masked) energy, dB-mapped 0-1
     harmonic_ratio: f32,    // harmonic vs percussive balance, 0-1
     frame_index: u32,       // trail ring head counter (see trail_write)
+
+    // A18 structure (#1797 ABI bump)
+    buildup: f32,       // riser/tension logistic, EMA-smoothed 0-1
+    drop: f32,          // drop trigger — 1.0 for exactly one frame
+    _pad_vessel0: f32,
+    _pad_vessel1: f32,
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).

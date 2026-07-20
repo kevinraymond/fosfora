@@ -21,7 +21,7 @@ pub struct Particle {
     pub flags: [f32; 4],
 }
 
-/// Particle simulation uniforms: 848 bytes.
+/// Particle simulation uniforms: 864 bytes.
 /// Separate from the main 288-byte ShaderUniforms.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -173,7 +173,14 @@ pub struct ParticleUniforms {
     /// change) jumps time several slots in one frame and every ribbon draws
     /// to a stale point: a full-screen white flash (#1796 live finding).
     pub frame_index: u32,
-    // Total = 848 bytes
+
+    // A18 structure (batched ABI bump for Vessel #1797).
+    // Appended as a fresh 16-byte block so every existing offset stays stable (#1505 precedent).
+    pub buildup: f32,      // A18 riser/tension logistic, EMA-smoothed 0-1
+    pub drop: f32,         // A18 drop trigger — 1.0 for exactly one frame (counter-latched)
+    pub _pad_vessel0: f32, // spare slots for the next batched feature
+    pub _pad_vessel1: f32,
+    // Total = 864 bytes
 }
 
 /// Obstacle collision mode.
@@ -869,8 +876,8 @@ mod tests {
     }
 
     #[test]
-    fn particle_uniforms_size_848() {
-        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 848);
+    fn particle_uniforms_size_864() {
+        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 864);
     }
 
     #[test]

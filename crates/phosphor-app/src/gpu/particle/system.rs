@@ -1359,6 +1359,8 @@ impl ParticleSystem {
         self.uniforms.percussive_energy = features.percussive_energy;
         self.uniforms.harmonic_energy = features.harmonic_energy;
         self.uniforms.harmonic_ratio = features.harmonic_ratio;
+        self.uniforms.buildup = features.buildup;
+        self.uniforms.drop = features.drop;
     }
 
     /// Run the compute dispatch (particle simulation + prepare indirect args).
