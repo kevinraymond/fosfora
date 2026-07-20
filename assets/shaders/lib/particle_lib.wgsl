@@ -184,7 +184,8 @@ struct ParticleAux {
 @group(0) @binding(6) var<storage, read_write> vel_size_out: array<vec4f>;
 @group(0) @binding(7) var<storage, read_write> color_out: array<vec4f>;
 @group(0) @binding(8) var<storage, read_write> flags_out: array<vec4f>;
-// counters: [0]=alive_count, [1]=dead_count, [2]=emit_used, [3]=reserved
+// counters: [0]=alive_count, [1]=dead_count, [2]=emit_used,
+// [3]=aux emit — a second emit budget for multi-voice sims (Cleave #1798)
 @group(0) @binding(9) var<storage, read_write> counters: array<atomic<u32>, 4>;
 @group(0) @binding(10) var<storage, read> aux: array<ParticleAux>;
 @group(0) @binding(11) var<storage, read> dead_indices: array<u32>;

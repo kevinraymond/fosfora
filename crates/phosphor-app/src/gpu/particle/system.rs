@@ -35,7 +35,8 @@ pub struct ParticleSystem {
     flags_buffers: [wgpu::Buffer; 2],
     current: usize,
 
-    // Counter buffer: 4 x atomic<u32> = [alive_count, dead_count, emit_used, reserved]
+    // Counter buffer: 4 x atomic<u32> = [alive_count, dead_count, emit_used,
+    // aux emit (Cleave shard budget, #1798 — zeroed with the rest each dispatch)]
     counter_buffer: wgpu::Buffer,
 
     // Alive index buffers (ping-pong): tightly packed indices of living particles
@@ -329,7 +330,8 @@ impl ParticleSystem {
         queue.submit(std::iter::once(init_encoder.finish()));
 
         // Counter buffer: 4 x u32 = 16 bytes
-        // [0]=alive_count, [1]=dead_count, [2]=emit_used, [3]=reserved
+        // [0]=alive_count, [1]=dead_count, [2]=emit_used,
+        // [3]=aux emit (Cleave's shard emission sub-budget, #1798)
         let counter_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle-counters"),
             size: 16,
@@ -1365,7 +1367,8 @@ impl ParticleSystem {
 
     /// Run the compute dispatch (particle simulation + prepare indirect args).
     pub fn dispatch(&self, encoder: &mut CommandEncoder, queue: &Queue) {
-        // Reset counters to 0 (alive_count, dead_count, emit_used, reserved)
+        // Reset counters to 0 (alive_count, dead_count, emit_used, aux emit —
+        // the full 16 B: Cleave's shard budget on [3] relies on this)
         queue.write_buffer(&self.counter_buffer, 0, &[0u8; 16]);
 
         // Upload uniforms
