@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.13.0 — 2026-07-22
 
 ### Changed
 - **Documentation moved into `docs/`, README rewritten for players** — the four reference documents now live in `docs/`, joined by a new `docs/GALLERY.md` and `docs/CREDITS.md`. The README leads with a hero clip and a download link instead of an architecture table, and hands off depth to `docs/`.
