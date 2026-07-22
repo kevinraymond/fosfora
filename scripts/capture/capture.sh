@@ -15,6 +15,9 @@
 #     effect is filmed over exactly one loop pass. Every clip therefore covers the identical
 #     musical passage (groove -> buildup -> gap -> drop), which is what makes the gallery a
 #     fair comparison instead of a lottery over whichever bar happened to be playing.
+#     That phase lock is load-bearing and easy to lose: see the scheduling note further down —
+#     a fixed per-effect sleep CANNOT hold it, and when it slipped, clips silently landed on
+#     different parts of the music and late ones missed the drop altogether.
 #
 # Effect order is deterministic: `EffectLoader::scan_effects_directory` sorts by .pfx filename
 # and cycling skips `hidden` effects. The app boots on Phosphor (hidden), so the first
@@ -198,6 +201,7 @@ log "starting audio playback (seamless, no drift)"
 ffmpeg -hide_banner -loglevel error -re -stream_loop -1 -i "$LOOPWAV" \
        -f pulse -device "$SINK" fosfora-capture &
 PLAY_PID=$!
+PLAY_T0=$(date +%s.%N)   # everything downstream is scheduled against this
 
 # Deliberately NOT fullscreen: this display is 4K, and x11grab feeding x264 at 3840x2160p60
 # drops frames, which would show up as stutter in the very clips meant to advertise smoothness.
@@ -261,7 +265,37 @@ ffmpeg -hide_banner -loglevel error -y -f x11grab -video_size "${W}x${H}" \
 log "wrote region check: $OUT/_region_check.png"
 
 REC_SECS=$(python3 -c "print(f'{$LOOP_SECS*(1-$SETTLE_FRAC):.3f}')")
-SETTLE=$(python3 -c "print(f'{$LOOP_SECS*$SETTLE_FRAC-1.2:.3f}')")
+
+# Schedule every step against an ABSOLUTE clock rather than sleeping a fixed amount per effect.
+#
+# The first version slept `LOOP_SECS*SETTLE_FRAC - 1.2` and then recorded `LOOP_SECS/2`, the 1.2
+# being a fudge for effect-switch and ffmpeg startup. That makes the cadence 37.5s against a
+# 38.7s loop — a 1.2s slip per effect, 45.6s across 38 effects, which is more than a whole loop.
+# The phase lock the whole design rests on quietly did not exist: each clip landed on a
+# different part of the music, and clips late in the run missed the drop entirely (Vessel's
+# burst is ~1s long and simply fell outside its window).
+#
+# Anchoring each boundary to T0 + k*LOOP_SECS absorbs whatever the per-iteration overhead is.
+# T0 is PLAYBACK start, not "now" — that is what ties the schedule to the music. The loop puts
+# its drop at 0.75 of a pass, so a record window of [0.5, 1.0] brackets it with margin, and
+# every effect gets the buildup, the pre-drop gap and the drop.
+now() { date +%s.%N; }
+wait_until() {   # wait_until <seconds since PLAY_T0>
+  local d
+  d=$(python3 -c "print(max(0.0, $PLAY_T0 + $1 - $(now)))")
+  python3 -c "
+import sys
+if $d <= 0.0: sys.stderr.write('  [warn] behind schedule, phase lock lost\n')"
+  sleep "$d"
+}
+
+# Skip whole passes until the next slot is safely in the future — setup (canvas detection,
+# the demo download) has already consumed some of the timeline.
+PASS0=$(python3 -c "
+import math
+elapsed = $(now) - $PLAY_T0
+print(max(1, math.ceil((elapsed + 3.0) / $LOOP_SECS)))")
+log "phase-locked to playback; first record window opens in pass $PASS0"
 
 # Canvas detection left us on Aurora = visible[2], so capture starts there and wraps all the
 # way round, covering every effect exactly once.
@@ -270,13 +304,16 @@ for ((k=0;k<TAKE;k++)); do
   IFS=$'\t' read -r slug name <<<"${NAMES[idx]}"
   printf '\033[36m[capture]\033[0m %2d/%d  %-22s' $((k+1)) "$TAKE" "$name" >&2
 
-  sleep "$SETTLE"
+  # Record window opens at a fixed offset into each loop pass, so every effect is filmed over
+  # the same bars — which is the claim docs/GALLERY.md makes about these clips.
+  wait_until "$(python3 -c "print(($PASS0+$k)*$LOOP_SECS + $LOOP_SECS*$SETTLE_FRAC)")"
   ffmpeg -hide_banner -loglevel error -y \
          -f x11grab -framerate $FPS -video_size "${W}x${H}" -i "$DISPLAY+$X,$Y" \
          -t "$REC_SECS" -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p \
          "$OUT/$slug.mp4" </dev/null
   printf ' -> %s\n' "$(du -h "$OUT/$slug.mp4" | cut -f1)" >&2
 
+  # Switch during the next pass's settle half, then wait out the rest of the slot.
   step
 done
 

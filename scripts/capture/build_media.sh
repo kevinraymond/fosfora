@@ -24,7 +24,7 @@ HERO_LIST=murmur,tide,splat,polycephalum,chaos,frost
 TILE_W=480
 HERO_W=960
 BUDGET_KB=400
-HERO_BUDGET_KB=3500
+HERO_BUDGET_KB=5200
 ONLY=all
 
 while [[ $# -gt 0 ]]; do
@@ -162,7 +162,10 @@ done
 concat=""; for ((j=0;j<n;j++)); do concat+="[v$j]"; done
 # Budget the hero too — it is the first thing that loads on the page, and 960px/24fps/q66 came
 # out at 6.6 MB. Same principle as the tiles: give up width before giving up colour.
-for rung in "880 24 62" "800 22 56" "720 20 50" "640 18 44"; do
+# Quality-first ladder. The hero is one image on the page, so a megabyte matters far less
+# than looking good: at q=50 Murmur's fine particle grain mushed into visible blocks against
+# its smooth twilight gradient, which is exactly the content lossy WebP handles worst.
+for rung in "800 20 80" "720 20 74" "720 18 68" "640 18 62" "576 16 56"; do
   read -r hw hfps hq <<<"$rung"
   filt=(); for ((j=0;j<n;j++)); do
     filt+=("[$j:v]fps=$hfps,scale=${hw}:-2:flags=lanczos,setpts=PTS-STARTPTS[v$j];")
