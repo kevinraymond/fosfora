@@ -1,16 +1,16 @@
 {
   "layers": [
     {
-      "effect_name": "Murmur",
+      "effect_name": "Chaos",
       "params": {
-        "noise_eta": { "Float": 0.12 },
-        "cohesion": { "Float": 0.62 },
-        "color_mode": { "Float": 0.5 },
-        "predator": { "Float": 0.45 },
-        "separation": { "Float": 0.5 },
-        "speed": { "Float": 0.58 },
-        "smoothing": { "Float": 0.5 },
-        "audio_drive": { "Float": 0.85 }
+        "trail_decay": { "Float": 0.9 },
+        "attractor": { "Float": 0.0 },
+        "bifurcation": { "Float": 0.5 },
+        "dt_scale": { "Float": 0.4 },
+        "spread": { "Float": 0.35 },
+        "color_mode": { "Float": 0.25 },
+        "projection": { "Float": 0.5 },
+        "audio_drive": { "Float": 0.6 }
       },
       "blend_mode": "Normal",
       "opacity": 1.0,
@@ -20,8 +20,8 @@
   "active_layer": 0,
   "postprocess": {
     "enabled": true,
-    "bloom_threshold": 0.55,
-    "bloom_intensity": 0.4,
+    "bloom_threshold": 0.5,
+    "bloom_intensity": 0.45,
     "vignette": 0.4,
     "ca_intensity": 0.15,
     "grain_intensity": 0.25,
@@ -34,19 +34,19 @@
   "volumetric": {
     "enabled": true,
     "params": {
-      "march_steps": 80,
-      "absorption": 1.1,
+      "march_steps": 96,
+      "absorption": 1.4,
       "detail_scale": 3.2,
-      "detail_strength": 0.55,
-      "density_gain": 0.22,
+      "detail_strength": 0.35,
+      "density_gain": 0.09,
       "cam_yaw": 0.0,
       "cam_pitch": 0.3,
       "cam_distance": 3.0,
       "cam_orbit_speed": 0.32,
       "fov": 1.5,
       "palette_hue": 0.58,
-      "emission_gain": 1.8,
-      "env_shape": 1,
+      "emission_gain": 2.2,
+      "env_shape": 0,
       "jitter_amp": 0.35
     }
   }

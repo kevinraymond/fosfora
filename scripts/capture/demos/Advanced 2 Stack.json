@@ -3,52 +3,54 @@
     {
       "effect_name": "Prism",
       "params": {
-        "fold_count": { "Float": 0.58 },
-        "rotation_speed": { "Float": 0.28 },
-        "zoom": { "Float": 0.45 },
-        "complexity": { "Float": 0.55 },
+        "fold_count": { "Float": 0.62 },
+        "rotation_speed": { "Float": 0.26 },
+        "zoom": { "Float": 0.42 },
+        "complexity": { "Float": 0.5 },
         "sparkle": { "Bool": true },
         "bass_pulse": { "Bool": true },
         "beat_flash": { "Bool": true }
       },
-      "blend_mode": "Overlay",
-      "opacity": 0.38,
+      "blend_mode": "Screen",
+      "opacity": 0.25,
       "enabled": true
     },
     {
       "effect_name": "Aurora",
       "params": {
         "curtain_speed": { "Float": 0.45 },
-        "band_spread": { "Float": 0.6 },
-        "glow_width": { "Float": 0.35 }
+        "band_spread": { "Float": 0.65 },
+        "glow_width": { "Float": 0.28 }
       },
       "blend_mode": "ColorDodge",
-      "opacity": 0.5,
+      "opacity": 0.3,
       "enabled": true
     },
     {
-      "effect_name": "Cascade",
+      "effect_name": "Murmur",
       "params": {
-        "trail_decay": { "Float": 0.88 },
-        "inward_speed": { "Float": 0.45 },
-        "spread": { "Float": 0.3 },
-        "curl_strength": { "Float": 0.55 },
+        "noise_eta": { "Float": 0.18 },
+        "cohesion": { "Float": 0.4 },
         "color_mode": { "Float": 0.35 },
-        "edge_glow": { "Float": 0.5 },
-        "convergence": { "Float": 0.6 },
-        "beat_sync": { "Float": 0.7 }
+        "predator": { "Float": 0.55 },
+        "separation": { "Float": 0.6 },
+        "speed": { "Float": 0.6 },
+        "smoothing": { "Float": 0.45 },
+        "audio_drive": { "Float": 0.75 }
       },
       "blend_mode": "Screen",
-      "opacity": 0.7,
+      "opacity": 0.8,
       "enabled": true
     },
     {
-      "effect_name": "Drift",
+      "effect_name": "Tunnel",
       "params": {
-        "warp_intensity": { "Float": 0.45 },
-        "flow_speed": { "Float": 0.4 },
-        "color_mode": { "Float": 0.0 },
-        "density": { "Float": 0.55 }
+        "twist_amount": { "Float": 0.55 },
+        "speed": { "Float": 0.3 },
+        "tunnel_radius": { "Float": 0.4 },
+        "rib_density": { "Float": 0.6 },
+        "pinch_h": { "Float": 0.0 },
+        "pinch_v": { "Float": 0.0 }
       },
       "blend_mode": "Normal",
       "opacity": 1.0,
@@ -58,10 +60,10 @@
   "active_layer": 0,
   "postprocess": {
     "enabled": true,
-    "bloom_threshold": 0.55,
-    "bloom_intensity": 0.45,
-    "vignette": 0.35,
-    "ca_intensity": 0.3,
+    "bloom_threshold": 0.65,
+    "bloom_intensity": 0.3,
+    "vignette": 0.4,
+    "ca_intensity": 0.25,
     "grain_intensity": 0.3,
     "bloom_enabled": true,
     "ca_enabled": true,

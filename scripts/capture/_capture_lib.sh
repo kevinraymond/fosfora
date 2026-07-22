@@ -145,7 +145,11 @@ cap_detect_canvas() {
   (( ch > HEIGHT )) && ch=$HEIGHT
   cw=$((cw - cw % 2)); ch=$((ch - ch % 2))
   [[ $cw -ge 640 && $ch -ge 360 ]] || die "detected canvas ${cw}x${ch} is implausibly small"
-  printf '%s %s %s %s' "$cx" "$cy" "$cw" "$ch"
+  # The newline is load-bearing: the caller reads this with `read`, which returns
+  # non-zero when it hits EOF without a delimiter even though it did set the variables.
+  # Under `set -e` that killed the whole run immediately after canvas detection, with
+  # the geometry successfully found and nothing to show for it.
+  printf '%s %s %s %s\n' "$cx" "$cy" "$cw" "$ch"
 }
 
 # cap_region_check <out.png> <x> <y> <w> <h>
@@ -154,7 +158,7 @@ cap_detect_canvas() {
 # discovered minutes later in every clip.
 cap_region_check() {
   local out=$1 x=$2 y=$3 w=$4 h=$5
-  ffmpeg -hide_banner -loglevel error -y -f x11grab -video_size "${w}x${h}" \
+  ffmpeg -hide_banner -loglevel error -y -f x11grab -draw_mouse 0 -video_size "${w}x${h}" \
          -i "$DISPLAY+$x,$y" -frames:v 1 "$out" </dev/null
   log "wrote region check: $out"
 }

@@ -3,38 +3,38 @@
   "bindings": [
     {
       "id": "b_001",
-      "name": "Sub-bass opens the tunnel",
+      "name": "Sub-bass brings in the plate",
       "enabled": true,
       "scope": "Preset",
       "source": "audio.band.0",
       "target": "layer.0.opacity",
       "transforms": [
         { "type": "smooth", "factor": 0.55 },
-        { "type": "remap", "in_lo": 0.0, "in_hi": 0.8, "out_lo": 0.12, "out_hi": 1.0 }
+        { "type": "remap", "in_lo": 0.0, "in_hi": 0.8, "out_lo": 0.15, "out_hi": 0.85 }
       ]
     },
     {
       "id": "b_002",
-      "name": "Percussive energy curls the cascade",
+      "name": "Drums tighten the standing wave",
       "enabled": true,
       "scope": "Preset",
       "source": "audio.percussive_energy",
-      "target": "param.1.Cascade.curl_strength",
+      "target": "param.0.Cymatics.attract_strength",
       "transforms": [
         { "type": "curve", "curve_type": "ease_out" },
-        { "type": "remap", "in_lo": 0.0, "in_hi": 1.0, "out_lo": 0.1, "out_hi": 0.95 }
+        { "type": "remap", "in_lo": 0.0, "in_hi": 1.0, "out_lo": 0.15, "out_hi": 0.9 }
       ]
     },
     {
       "id": "b_003",
-      "name": "Harmonic ratio twists the tunnel",
+      "name": "Harmony drives the flow field",
       "enabled": true,
       "scope": "Preset",
       "source": "audio.harmonic_ratio",
-      "target": "param.0.Tunnel.twist_amount",
+      "target": "param.1.Flux.flow_intensity",
       "transforms": [
         { "type": "smooth", "factor": 0.88 },
-        { "type": "remap", "in_lo": 0.2, "in_hi": 0.9, "out_lo": 0.05, "out_hi": 0.95 }
+        { "type": "remap", "in_lo": 0.2, "in_hi": 0.9, "out_lo": 0.1, "out_hi": 0.85 }
       ]
     },
     {
@@ -45,21 +45,21 @@
       "source": "audio.drop",
       "target": "postfx.bloom_intensity",
       "transforms": [
-        { "type": "smooth", "factor": 0.985 },
+        { "type": "smooth", "factor": 0.98 },
         { "type": "scale", "factor": 9.0 },
-        { "type": "clamp", "lo": 0.15, "hi": 1.0 }
+        { "type": "clamp", "lo": 0.12, "hi": 0.7 }
       ]
     },
     {
       "id": "b_005",
-      "name": "Brilliance drives the ribs",
+      "name": "Brilliance sets the mode number",
       "enabled": true,
       "scope": "Preset",
       "source": "audio.band.6",
-      "target": "param.0.Tunnel.rib_density",
+      "target": "param.0.Cymatics.pattern_scale",
       "transforms": [
         { "type": "smooth", "factor": 0.7 },
-        { "type": "remap", "in_lo": 0.0, "in_hi": 0.7, "out_lo": 0.2, "out_hi": 1.0 }
+        { "type": "remap", "in_lo": 0.0, "in_hi": 0.7, "out_lo": 0.25, "out_hi": 0.8 }
       ]
     }
   ]

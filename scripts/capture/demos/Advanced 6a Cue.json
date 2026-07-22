@@ -3,12 +3,12 @@
     {
       "effect_name": "Strata",
       "params": {
-        "height_scale": { "Float": 0.62 },
-        "draw_distance": { "Float": 0.45 },
-        "camera_pitch": { "Float": 0.4 },
-        "rock_detail": { "Float": 0.2 },
-        "snow_line": { "Float": 0.62 },
-        "zoom": { "Float": 0.1 }
+        "height_scale": { "Float": 0.78 },
+        "draw_distance": { "Float": 0.7 },
+        "camera_pitch": { "Float": 0.55 },
+        "rock_detail": { "Float": 0.35 },
+        "snow_line": { "Float": 0.45 },
+        "zoom": { "Float": 0.25 }
       },
       "blend_mode": "Normal",
       "opacity": 1.0,

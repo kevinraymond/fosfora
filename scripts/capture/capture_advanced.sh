@@ -190,6 +190,13 @@ for row in "${ROWS[@]}"; do
 
   # --- slot opens: switch demo -------------------------------------------------
   cap_wait_until "$PLAY_T0" "$S"
+  # x11grab films a screen REGION, not a window, so anything raised over the app lands
+  # in the clip: one rehearsal run caught a terminal across the bottom third of the media
+  # demo. Re-raise every slot so a transient focus steal costs at most part of one clip.
+  # It cannot defend against someone actively using the desktop — that needs the screen
+  # left alone for the length of the run.
+  xdotool windowactivate --sync "$WIN" 2>/dev/null || true
+  xdotool windowraise "$WIN" 2>/dev/null || true
   MARK=$(stat -c%s "$WORK/app.log")
   if (( k == 0 )); then
     osc /phosphor/scene/load s "$SCENE_NAME"
@@ -228,7 +235,7 @@ for row in "${ROWS[@]}"; do
 
   # --- confirmation still ------------------------------------------------------
   cap_wait_until "$PLAY_T0" "$(python3 -c "print($S + 4.0)")"
-  ffmpeg -hide_banner -loglevel error -y -f x11grab -video_size "${W}x${H}" \
+  ffmpeg -hide_banner -loglevel error -y -f x11grab -draw_mouse 0 -video_size "${W}x${H}" \
          -i "$DISPLAY+$X,$Y" -frames:v 1 "$OUT/_check_$slug.png" </dev/null
 
   if (( STILLS )); then
@@ -237,7 +244,7 @@ for row in "${ROWS[@]}"; do
     # literally what the first frame of the tile will be.
     cap_wait_until "$PLAY_T0" "$(python3 -c "print($S + $LOOP_SECS*$SETTLE_FRAC + $TILE_AT + 0.2)")"
     mkdir -p "$OUT/_rehearsal"
-    ffmpeg -hide_banner -loglevel error -y -f x11grab -video_size "${W}x${H}" \
+    ffmpeg -hide_banner -loglevel error -y -f x11grab -draw_mouse 0 -video_size "${W}x${H}" \
            -i "$DISPLAY+$X,$Y" -frames:v 1 "$OUT/_rehearsal/$slug.png" </dev/null
     printf ' -> rehearsal still\n' >&2
     k=$((k+1)); continue
@@ -246,7 +253,7 @@ for row in "${ROWS[@]}"; do
   # --- record ------------------------------------------------------------------
   cap_wait_until "$PLAY_T0" "$(python3 -c "print($S + $LOOP_SECS*$SETTLE_FRAC)")"
   ffmpeg -hide_banner -loglevel error -y \
-         -f x11grab -framerate $FPS -video_size "${W}x${H}" -i "$DISPLAY+$X,$Y" \
+         -f x11grab -draw_mouse 0 -framerate $FPS -video_size "${W}x${H}" -i "$DISPLAY+$X,$Y" \
          -t "$REC_SECS" -c:v libx264 -preset veryfast -crf 16 -pix_fmt yuv420p \
          "$OUT/$slug.mp4" </dev/null &
   REC_PID=$!

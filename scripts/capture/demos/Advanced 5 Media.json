@@ -1,16 +1,16 @@
 {
   "layers": [
     {
-      "effect_name": "Cascade",
+      "effect_name": "Array",
       "params": {
-        "trail_decay": { "Float": 0.85 },
-        "inward_speed": { "Float": 0.4 },
-        "spread": { "Float": 0.35 },
-        "curl_strength": { "Float": 0.45 },
-        "color_mode": { "Float": 0.15 },
-        "edge_glow": { "Float": 0.55 },
-        "convergence": { "Float": 0.5 },
-        "beat_sync": { "Float": 0.65 }
+        "trail_decay": { "Float": 0.78 },
+        "ring_radius": { "Float": 0.55 },
+        "spread": { "Float": 0.25 },
+        "layout": { "Float": 0.0 },
+        "color_mode": { "Float": 0.4 },
+        "speed_mult": { "Float": 0.55 },
+        "beat_pulse": { "Float": 0.65 },
+        "emitter_glow": { "Float": 0.45 }
       },
       "blend_mode": "Screen",
       "opacity": 0.85,
@@ -30,8 +30,8 @@
   "active_layer": 0,
   "postprocess": {
     "enabled": true,
-    "bloom_threshold": 0.6,
-    "bloom_intensity": 0.35,
+    "bloom_threshold": 0.65,
+    "bloom_intensity": 0.3,
     "vignette": 0.4,
     "ca_intensity": 0.2,
     "grain_intensity": 0.3,

@@ -15,12 +15,15 @@ A comprehensive guide to using Fosfora — a real-time particle and shader engin
 5. [Layers](#layers)
 6. [Presets](#presets)
 7. [Scenes](#scenes)
-8. [Post-Processing](#post-processing)
-9. [MIDI](#midi)
-10. [OSC](#osc)
-11. [Web Control Surface](#web-control-surface)
-12. [Outputs](#outputs)
-13. [Global](#global)
+8. [Obstacles](#obstacles)
+9. [Volumetric](#volumetric)
+10. [Binding Matrix](#binding-matrix)
+11. [Post-Processing](#post-processing)
+12. [MIDI](#midi)
+13. [OSC](#osc)
+14. [Web Control Surface](#web-control-surface)
+15. [Outputs](#outputs)
+16. [Global](#global)
 
 ---
 
@@ -620,6 +623,150 @@ When the timeline is active, a visual timeline bar appears showing all cues as e
 ### Storage
 
 Scenes are stored as JSON files in `~/.config/phosphor/scenes/`. You can share scenes by copying these files. Scene names follow the same sanitization rules as presets (no `/\\.`, max 64 chars).
+
+---
+
+## Obstacles
+
+Particles can collide with a shape you supply — a photo, a video, or a live webcam silhouette. This is what makes water part around a body, or a crowd of particles pile up on someone's shoulders.
+
+### Quick Start
+
+1. Select a **particle** layer (obstacles do nothing on a pure shader effect — see the list below)
+2. Open the **Obstacle** section of the Parameters panel
+3. Click **Image…** and pick a picture with a clear bright subject on a dark background
+4. Turn **Enabled** on
+
+The shape is read from the image's alpha channel. If the image has no alpha — most photos don't — brightness is used instead, so a light subject on a dark background works out of the box.
+
+### Sources
+
+| Source | Needs | Notes |
+|--------|-------|-------|
+| **Image** | — | PNG, JPEG, WebP. The shipped `assets/images/` pictures all work |
+| **Video** | `video` feature, ffmpeg | The shape animates with the footage |
+| **Webcam** | `webcam` feature | Live silhouette, thresholded by brightness |
+| **Depth** | `depth` feature | Monocular depth estimate from the webcam — near surfaces block, far ones don't |
+
+### Controls
+
+- **Threshold** (0–1) — how bright a pixel must be to count as solid. Raise it if background texture is catching particles; lower it if the shape has holes.
+- **Elasticity** (0–1) — how much speed survives a bounce. 0 is a dead stop, 1 is a perfect rebound.
+- **Fit** — how the image is mapped onto a 16:9 canvas. **Fill** (default) crops to cover; **Fit** letterboxes the whole image; **Stretch** distorts it.
+- **Mode** — what happens on contact:
+
+| Mode | Behaviour |
+|------|-----------|
+| **Bounce** | Reflects off the surface |
+| **Stick** | Stops dead where it lands, building up a crust |
+| **Flow** | Slides along the surface instead of stopping — best for water |
+| **Contain** | Traps particles *inside* the shape instead of outside |
+
+### Which effects support it
+
+Accretion, Array, Cascade, Chaos, Cleave, Cymatics, Flux, Genesis, Morph, Murmur, Mycelium, Raster, Splat, Symbiosis, Tesla, Tide, Turing and Vessel. **Tide** and **Vessel** were built around it — Tide parts and pools, Vessel fills the shape and bursts on the drop. Splat is the odd one out: it carves the obstacle out of the splat cloud rather than bouncing anything off it.
+
+### Automation
+
+Per-layer OSC:
+
+| Address | Type | Description |
+|---------|------|-------------|
+| `/phosphor/layer/{n}/obstacle/enabled` | float | > 0.5 turns it on |
+| `/phosphor/layer/{n}/obstacle/mode` | float | 0 = Bounce, 1 = Stick, 2 = Flow, 3 = Contain |
+| `/phosphor/layer/{n}/obstacle/threshold` | float (0–1) | |
+| `/phosphor/layer/{n}/obstacle/elasticity` | float (0–1) | |
+
+In the [binding matrix](#binding-matrix) the targets are `particle.obstacle_enabled`, `_mode`, `_threshold` and `_elasticity` — note these apply to **all** layers at once, and take a normalized 0–1 value. Breathing the threshold on `audio.rms` makes the silhouette seem to inhale.
+
+The image path is saved in the preset, so a whole obstacle setup recalls with everything else.
+
+---
+
+## Volumetric
+
+Any particle layer can be rendered as ray-marched fog instead of discrete points: the same simulation, made of smoke. Turn it on in the **Volumetric** section of the Parameters panel — it applies to the **selected layer**.
+
+### What it does
+
+Particles are deposited into a 3D voxel grid, which is then ray-marched with a camera you control. Depth is synthesized per particle, so a flat 2D simulation gains a stable thickness rather than staying a sheet.
+
+**This shapes what looks good.** An effect whose particles fill the frame evenly becomes a featureless glowing ball, because a uniformly full volume has no internal structure to see. Effects with a *sparse, structured* footprint — Chaos's strange attractors, Mycelium's tendrils, Polycephalum's networks — keep their shape as fog. If you get a blob, lower **Density gain** until it turns translucent, and try a cube envelope instead of a sphere.
+
+### Controls
+
+- **March steps** (16–160) — samples per ray. More is smoother and slower.
+- **Absorption** — how fast the fog swallows light. Higher is denser and more contrasty.
+- **Density gain** (0.02–1) — saturation. This is the first knob to reach for when everything reads as a solid mass.
+- **Volume depth** — how far the synthesized depth spreads. Low values give a glowing sheet, high values a thick cloud.
+- **Detail scale / strength** — noise breaking up the fog.
+- **Camera** — yaw, pitch, distance, orbit speed and field of view.
+- **Envelope** — cube (edge fade) or sphere. The sphere fades to a ball at the edges, which is flattering on structured content and merciless on full ones.
+- **Palette hue**, **Emission gain** — colour and glow.
+
+### Automation
+
+Every control has an OSC address, so a camera move is one message:
+
+```bash
+oscsend localhost 9000 /phosphor/volumetric/enabled f 1.0
+oscsend localhost 9000 /phosphor/volumetric/cam_yaw f 2.4
+oscsend localhost 9000 /phosphor/volumetric/cam_orbit_speed f 0.3
+oscsend localhost 9000 /phosphor/volumetric/density_gain f 0.09
+```
+
+Unlike `/phosphor/param/*`, these take **raw** values in the control's own range, not 0–1. The full set: `march_steps`, `absorption`, `detail_scale`, `detail_strength`, `density_threshold`, `volume_depth`, `density_scale`, `density_gain`, `cam_yaw`, `cam_pitch`, `cam_distance`, `cam_orbit_speed`, `fov`, `palette_hue`, `emission_gain`, `env_shape`, `jitter`, `age_influence`.
+
+Volumetric state is saved with the preset.
+
+---
+
+## Binding Matrix
+
+Press **B** for a full-screen patch bay: drag a line from any source to any target and it moves with the music, with your hands, or with a knob.
+
+### Quick Start
+
+1. Press **B**
+2. Pick a source on the left — start with **Audio · Bands → Bass**
+3. Pick a target on the right — any parameter of any layer
+4. Play something. The cable animates when signal is flowing.
+
+The **Templates** dropdown wires up a whole set at once against the layer you have selected. **Audio Reactive** maps kick, level, brightness and beat phase onto whichever of the current effect's parameters best match; **Spectral Bands** puts the seven frequency bands on the first seven parameters.
+
+### Sources
+
+- **Audio** — all 74 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
+- **MIDI** — any CC on any channel. The **Learn** button captures the next knob you touch.
+- **OSC** — any address the app receives, whether or not it is one of Fosfora's own.
+- **Bridges** — hand, face and body tracking over WebSocket. See [bridges/README.md](../bridges/README.md).
+
+### Targets
+
+Effect parameters (per layer), layer opacity / blend / enabled, master opacity, the post-processing controls, particle settings including the obstacle controls, shader uniforms, and scene transport (next / previous / stop cue).
+
+### Transforms
+
+Each binding runs an ordered chain, so a raw feature can be shaped into something musical:
+
+| Transform | Use |
+|-----------|-----|
+| **Remap** | Rescale an input range onto an output range |
+| **Smooth** | Exponential smoothing — the difference between a twitch and a swell |
+| **Curve** | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `log`, `exp` |
+| **Gate** | Everything above a threshold becomes 1, below becomes 0 |
+| **Deadzone** | Ignore the middle, rescale the edges |
+| **Quantize** | Snap to N steps |
+| **Invert**, **Scale**, **Offset**, **Clamp** | The arithmetic |
+
+Order matters. A one-frame trigger like `audio.drop` is invisible bound raw — smooth it heavily, scale it up, then clamp, and it becomes a flare with a tail.
+
+### Scope and storage
+
+- **Effect** scope saves beside the preset, in `~/.config/phosphor/presets/{name}.bindings.json`, and loads and unloads with it.
+- **Global** scope lives in `~/.config/phosphor/global-bindings.json` and is always active.
+
+Both are plain JSON you can edit or share.
 
 ---
 
