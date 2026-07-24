@@ -1,6 +1,6 @@
 [package]
 name = "phosphor-app"
-version = "1.16.0"
+version = "1.17.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"

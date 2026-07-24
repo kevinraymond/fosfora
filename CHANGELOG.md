@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.17.0 — 2026-07-24
 
 ### Added
 - **New effect: Chromatica — the screen tunes to the song's key.** Twelve rings on the circle of fifths bloom with the chord being played, and the whole mandala takes the hue of the detected key, with minor keys drooping and cooling. A Consonance toggle strings tension lines between simultaneously sounding notes — warm for a fifth, tense violet for a tritone. A new `audio.key_hue` binding source lets any layer lock its colour to the current key.
