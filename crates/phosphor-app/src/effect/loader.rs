@@ -46,6 +46,7 @@ const LIB_FILENAMES: &[&str] = &[
     "shaders/lib/palette.wgsl",
     "shaders/lib/sdf.wgsl",
     "shaders/lib/tonemap.wgsl",
+    "shaders/lib/chronoflow.wgsl",
 ];
 
 /// Standard uniform block prepended to all effect shaders.

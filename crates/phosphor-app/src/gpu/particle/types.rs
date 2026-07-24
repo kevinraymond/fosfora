@@ -865,6 +865,12 @@ pub struct ParticleDef {
     #[serde(default = "default_render_mode")]
     pub render_mode: String,
 
+    /// Accumulate a per-pixel particle-velocity field in the compute rasterizer
+    /// (#1482 Chronoflow), exposed to fragment passes as `@particles.velocity`.
+    /// Requires `render_mode: "compute"`; ignored otherwise.
+    #[serde(default)]
+    pub velocity_field: bool,
+
     /// Enable symbiosis (particle-life) force matrix management
     #[serde(default)]
     pub symbiosis: bool,

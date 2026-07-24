@@ -329,7 +329,13 @@ impl App {
                 if pd.interaction {
                     log::info!("Spatial hash enabled for particle interaction");
                 }
-                pass_executor.particle_system = Some(ps);
+                pass_executor.set_particle_system(
+                    Some(ps),
+                    &gpu.device,
+                    &uniform_buffer,
+                    &placeholder,
+                    &audio_textures,
+                );
             }
         }
 
@@ -1925,12 +1931,17 @@ impl App {
 
         match executor_result {
             Ok(mut executor) => {
-                executor.particle_system = particle_system;
-
                 let layer = &mut self.layer_stack.layers[layer_idx];
                 let LayerContent::Effect(ref mut e) = layer.content else {
                     return;
                 };
+                executor.set_particle_system(
+                    particle_system,
+                    &self.gpu.device,
+                    &e.uniform_buffer,
+                    &self.placeholder,
+                    &self.audio_textures,
+                );
                 e.pass_executor = executor;
                 layer.param_store.load_from_defs(&effect.inputs);
                 e.shader_error = None;

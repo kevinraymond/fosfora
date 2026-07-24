@@ -1063,6 +1063,8 @@ impl ParticleSystem {
                 max_particles,
                 // Anisotropic conic footprints from flags.zw (#1800)
                 def.splat.is_some() && def.blend == "oit",
+                // Per-pixel velocity field for Chronoflow trails (#1482)
+                def.velocity_field,
             ))
         } else {
             None
@@ -1904,6 +1906,10 @@ impl ParticleSystem {
                 cr.dispatch_clear(encoder);
                 cr.dispatch_draw(encoder, queue, output_idx, self.max_particles);
             }
+            // Velocity field for Chronoflow (#1482): resolved here — before the
+            // fragment passes — so they read same-frame velocity. No-op unless
+            // the effect set `velocity_field`.
+            cr.resolve_velocity(encoder);
         }
 
         // 5. Copy counter buffer to staging for CPU readback (1-frame latency)
@@ -3140,6 +3146,15 @@ impl ParticleSystem {
         // everything reading as a sphere from the hard-wired spherical envelope.
         vu.env_shape = self.lattice_params.domain_mode.min(1);
         vu
+    }
+
+    /// The resolved per-pixel particle-velocity texture (#1482), when the
+    /// effect opted in via `velocity_field`. Bound by the pass graph for
+    /// `@particles.velocity` inputs.
+    pub fn particle_velocity(&self) -> Option<(&TextureView, &wgpu::Sampler)> {
+        self.compute_raster
+            .as_ref()
+            .and_then(|cr| cr.velocity_view_sampler())
     }
 
     /// Resize the compute rasterizer framebuffer (call from PassExecutor::resize).

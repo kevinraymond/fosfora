@@ -9,8 +9,8 @@ struct TileUniforms {
     num_tiles_x: u32,
     num_tiles_y: u32,
     max_particles: u32,
-    splat_mode: u32, // 1 = anisotropic conic footprints from flags.zw (#1800)
-    _pad1: u32,
+    splat_mode: u32,    // 1 = anisotropic conic footprints from flags.zw (#1800)
+    velocity_mode: u32, // 1 = accumulate NDC velocity into fb_vx/fb_vy (#1482)
     _pad2: u32,
 }
 
@@ -27,24 +27,37 @@ struct TileUniforms {
 @group(0) @binding(10) var<storage, read_write> fb_a: array<i32>;
 // Particle flags (splat_mode: screen conic packed f16 A,C in .z / B in .w)
 @group(0) @binding(11) var<storage, read> flags: array<vec4f>;
+// Velocity channels (#1482). 16-byte dummies when velocity_mode is off — the
+// flag guards below keep them untouched.
+@group(0) @binding(12) var<storage, read_write> fb_vx: array<i32>;
+@group(0) @binding(13) var<storage, read_write> fb_vy: array<i32>;
 
 const TILE_SIZE: u32 = 16u;
 const TILE_PIXELS: u32 = 256u; // 16 * 16
 const PRECISION: f32 = 4096.0;
+// Finer fixed point for velocity — see compute_raster_draw.wgsl.
+const V_PRECISION: f32 = 65536.0;
 
-// Shared memory: 4 channels × 256 pixels = 4 KB
+// Shared memory: 6 channels × 256 pixels = 6 KB
 var<workgroup> sm_r: array<atomic<i32>, 256>;
 var<workgroup> sm_g: array<atomic<i32>, 256>;
 var<workgroup> sm_b: array<atomic<i32>, 256>;
 var<workgroup> sm_a: array<atomic<i32>, 256>;
+var<workgroup> sm_vx: array<atomic<i32>, 256>;
+var<workgroup> sm_vy: array<atomic<i32>, 256>;
 
-fn write_pixel_shared(lx: u32, ly: u32, col: vec3f, weight: f32) {
+fn write_pixel_shared(lx: u32, ly: u32, col: vec3f, weight: f32, vel: vec2f) {
     let local_idx = ly * TILE_SIZE + lx;
     let s = PRECISION * weight;
     atomicAdd(&sm_r[local_idx], i32(col.r * s));
     atomicAdd(&sm_g[local_idx], i32(col.g * s));
     atomicAdd(&sm_b[local_idx], i32(col.b * s));
     atomicAdd(&sm_a[local_idx], i32(s));
+    if u.velocity_mode == 1u {
+        let sv = V_PRECISION * weight;
+        atomicAdd(&sm_vx[local_idx], i32(vel.x * sv));
+        atomicAdd(&sm_vy[local_idx], i32(vel.y * sv));
+    }
 }
 
 @compute @workgroup_size(256)
@@ -66,6 +79,8 @@ fn cs_main(
     atomicStore(&sm_g[lid], 0);
     atomicStore(&sm_b[lid], 0);
     atomicStore(&sm_a[lid], 0);
+    atomicStore(&sm_vx[lid], 0);
+    atomicStore(&sm_vy[lid], 0);
     workgroupBarrier();
 
     // Tile pixel origin in global coords
@@ -102,7 +117,7 @@ fn cs_main(
             let lx = ix - i32(tile_px_x);
             let ly = iy - i32(tile_px_y);
             if lx >= 0 && lx < i32(TILE_SIZE) && ly >= 0 && ly < i32(TILE_SIZE) {
-                write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a);
+                write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a, vs.xy);
             }
         } else if radius_px <= 1.5 {
             // Bilinear 2×2 splat
@@ -123,16 +138,16 @@ fn cs_main(
             let ly1 = ly0 + 1;
 
             if lx0 >= 0 && lx0 < i32(TILE_SIZE) && ly0 >= 0 && ly0 < i32(TILE_SIZE) {
-                write_pixel_shared(u32(lx0), u32(ly0), col.rgb, col.a * w00);
+                write_pixel_shared(u32(lx0), u32(ly0), col.rgb, col.a * w00, vs.xy);
             }
             if lx1 >= 0 && lx1 < i32(TILE_SIZE) && ly0 >= 0 && ly0 < i32(TILE_SIZE) {
-                write_pixel_shared(u32(lx1), u32(ly0), col.rgb, col.a * w10);
+                write_pixel_shared(u32(lx1), u32(ly0), col.rgb, col.a * w10, vs.xy);
             }
             if lx0 >= 0 && lx0 < i32(TILE_SIZE) && ly1 >= 0 && ly1 < i32(TILE_SIZE) {
-                write_pixel_shared(u32(lx0), u32(ly1), col.rgb, col.a * w01);
+                write_pixel_shared(u32(lx0), u32(ly1), col.rgb, col.a * w01, vs.xy);
             }
             if lx1 >= 0 && lx1 < i32(TILE_SIZE) && ly1 >= 0 && ly1 < i32(TILE_SIZE) {
-                write_pixel_shared(u32(lx1), u32(ly1), col.rgb, col.a * w11);
+                write_pixel_shared(u32(lx1), u32(ly1), col.rgb, col.a * w11, vs.xy);
             }
         } else if u.splat_mode == 1u {
             // Anisotropic gaussian (Splat #1800): per-splat screen conic from
@@ -178,7 +193,7 @@ fn cs_main(
                         continue;
                     }
                     let lx = gx - i32(tile_px_x);
-                    write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a * exp(-0.5 * q));
+                    write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a * exp(-0.5 * q), vs.xy);
                 }
             }
         } else {
@@ -206,7 +221,7 @@ fn cs_main(
                         continue;
                     }
                     let glow = exp(-dist_sq * 2.0);
-                    write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a * glow * glow);
+                    write_pixel_shared(u32(lx), u32(ly), col.rgb, col.a * glow * glow, vs.xy);
                 }
             }
         }
@@ -226,5 +241,9 @@ fn cs_main(
         fb_g[global_idx] = atomicLoad(&sm_g[local_idx]);
         fb_b[global_idx] = atomicLoad(&sm_b[local_idx]);
         fb_a[global_idx] = atomicLoad(&sm_a[local_idx]);
+        if u.velocity_mode == 1u {
+            fb_vx[global_idx] = atomicLoad(&sm_vx[local_idx]);
+            fb_vy[global_idx] = atomicLoad(&sm_vy[local_idx]);
+        }
     }
 }

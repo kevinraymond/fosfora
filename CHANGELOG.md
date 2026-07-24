@@ -5,6 +5,10 @@
 
 ## Unreleased
 
+### Added
+- **Chronoflow: particle trails are now long-exposure light streaks.** Phosphor, Flux, and Murmur trails flow *along* each particle's motion like a long-exposure photograph instead of ghosting in place, and on every beat a shutter snap collapses the streaks so the image goes momentarily crisp. Loudness stretches the exposure; new `beat_snap` and `flow_stretch` params (plus `trail_exposure` on Murmur) tune it live, and existing `trail_decay` values keep their meaning.
+- **Custom effects can read the particle velocity field.** A `.pfx` pass may declare `"inputs": ["@particles.velocity"]` (with `"velocity_field": true` under `particles`) to sample the compute rasterizer's per-pixel particle velocity as `input0(uv)` — the primitive behind Chronoflow, available to any custom multi-pass effect.
+
 ## v1.18.0 — 2026-07-24
 
 ### Added

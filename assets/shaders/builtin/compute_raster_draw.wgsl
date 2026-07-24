@@ -5,8 +5,8 @@
 struct DrawUniforms {
     width: u32,
     height: u32,
-    splat_mode: u32, // 1 = anisotropic conic footprints from flags.zw (#1800)
-    _pad1: u32,
+    splat_mode: u32,    // 1 = anisotropic conic footprints from flags.zw (#1800)
+    velocity_mode: u32, // 1 = accumulate NDC velocity into fb_vx/fb_vy (#1482)
 }
 
 // Particle SoA (read-only)
@@ -25,10 +25,18 @@ struct DrawUniforms {
 @group(0) @binding(9) var<storage, read_write> fb_a: array<atomic<i32>>;
 // Particle flags (splat_mode: screen conic packed f16 A,C in .z / B in .w)
 @group(0) @binding(10) var<storage, read> flags: array<vec4f>;
+// Velocity channels (#1482). 16-byte dummies when velocity_mode is off — the
+// flag guard below keeps them untouched.
+@group(0) @binding(11) var<storage, read_write> fb_vx: array<atomic<i32>>;
+@group(0) @binding(12) var<storage, read_write> fb_vy: array<atomic<i32>>;
 
 const PRECISION: f32 = 4096.0;
+// Finer fixed point for velocity: NDC/s magnitudes are small (~0.01–2) and the
+// resolve divides by the PRECISION-scaled alpha sum, so quantization at 4096
+// would dominate slow particles.
+const V_PRECISION: f32 = 65536.0;
 
-fn write_pixel(ix: i32, iy: i32, col: vec3f, weight: f32) {
+fn write_pixel(ix: i32, iy: i32, col: vec3f, weight: f32, vel: vec2f) {
     if ix < 0 || ix >= i32(u.width) || iy < 0 || iy >= i32(u.height) {
         return;
     }
@@ -38,6 +46,11 @@ fn write_pixel(ix: i32, iy: i32, col: vec3f, weight: f32) {
     atomicAdd(&fb_g[idx], i32(col.g * s));
     atomicAdd(&fb_b[idx], i32(col.b * s));
     atomicAdd(&fb_a[idx], i32(s));
+    if u.velocity_mode == 1u {
+        let sv = V_PRECISION * weight;
+        atomicAdd(&fb_vx[idx], i32(vel.x * sv));
+        atomicAdd(&fb_vy[idx], i32(vel.y * sv));
+    }
 }
 
 @compute @workgroup_size(256)
@@ -72,7 +85,7 @@ fn cs_draw(@builtin(global_invocation_id) gid: vec3u) {
         // Single-pixel fast path (4 atomicAdds)
         let ix = i32(floor(px));
         let iy = i32(floor(py));
-        write_pixel(ix, iy, col.rgb, col.a);
+        write_pixel(ix, iy, col.rgb, col.a, vs.xy);
     } else if radius_px <= 1.5 {
         // Bilinear 2×2 splat: distribute energy to 4 nearest pixels
         // based on sub-pixel position (16 atomicAdds)
@@ -86,10 +99,10 @@ fn cs_draw(@builtin(global_invocation_id) gid: vec3u) {
         let w01 = (1.0 - fx) * fy;
         let w11 = fx * fy;
 
-        write_pixel(ix,     iy,     col.rgb, col.a * w00);
-        write_pixel(ix + 1, iy,     col.rgb, col.a * w10);
-        write_pixel(ix,     iy + 1, col.rgb, col.a * w01);
-        write_pixel(ix + 1, iy + 1, col.rgb, col.a * w11);
+        write_pixel(ix,     iy,     col.rgb, col.a * w00, vs.xy);
+        write_pixel(ix + 1, iy,     col.rgb, col.a * w10, vs.xy);
+        write_pixel(ix,     iy + 1, col.rgb, col.a * w01, vs.xy);
+        write_pixel(ix + 1, iy + 1, col.rgb, col.a * w11, vs.xy);
     } else if u.splat_mode == 1u {
         // Anisotropic gaussian (Splat #1800): evaluate the per-splat screen
         // conic (inverse 2D covariance, packed f16 by the sim) at pixel
@@ -122,7 +135,7 @@ fn cs_draw(@builtin(global_invocation_id) gid: vec3u) {
                 if q > 12.0 {
                     continue;
                 }
-                write_pixel(cx + dx, cy + dy, col.rgb, col.a * exp(-0.5 * q));
+                write_pixel(cx + dx, cy + dy, col.rgb, col.a * exp(-0.5 * q), vs.xy);
             }
         }
     } else {
@@ -140,7 +153,7 @@ fn cs_draw(@builtin(global_invocation_id) gid: vec3u) {
                     continue;
                 }
                 let glow = exp(-dist_sq * 2.0);
-                write_pixel(cx + dx, cy + dy, col.rgb, col.a * glow * glow);
+                write_pixel(cx + dx, cy + dy, col.rgb, col.a * glow * glow, vs.xy);
             }
         }
     }

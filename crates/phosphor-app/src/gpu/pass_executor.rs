@@ -10,14 +10,24 @@ use super::placeholder::PlaceholderTexture;
 use super::render_target::{PingPongTarget, RenderTarget};
 use super::uniforms::UniformBuffer;
 
-/// One resolved pass-graph input: which pass supplies it, and whether we sample
-/// that pass's *previous* frame (`prev`, from `PassDef.prev_inputs`) or its
-/// *current* frame (`PassDef.inputs`). Current inputs come first in the WGSL
-/// `input0..` numbering, then prev inputs (matching declaration order).
+/// Special input name (#1482): the particle system's resolved per-pixel
+/// velocity texture. Requires the effect's `particles.velocity_field: true`;
+/// without it (or without a particle system) the 1×1 placeholder is bound,
+/// which reads as zero velocity.
+const PARTICLE_VELOCITY_INPUT: &str = "@particles.velocity";
+
+/// One resolved pass-graph input, in WGSL `input0..` numbering: current-frame
+/// inputs first (`PassDef.inputs`), then previous-frame inputs
+/// (`PassDef.prev_inputs`), each in declaration order.
 #[derive(Clone, Copy)]
-struct InputSrc {
-    pass: usize,
-    prev: bool,
+enum InputSrc {
+    /// Another pass's target: its current frame (`prev: false`) or its
+    /// previous frame (`prev: true`).
+    Pass { pass: usize, prev: bool },
+    /// The particle rasterizer's velocity texture (`@particles.velocity`,
+    /// #1482) — (vx, vy, coverage, 0) in NDC units/sec, resolved during
+    /// `ParticleSystem::dispatch`, i.e. same-frame for the fragment passes.
+    ParticleVelocity,
 }
 
 /// A compiled pass: pipeline + render target + bind groups.
@@ -94,9 +104,21 @@ impl PassExecutor {
             // then previous-frame inputs.
             let mut input_srcs = Vec::with_capacity(def.inputs.len() + def.prev_inputs.len());
 
-            // `inputs`: current-frame output of an EARLIER pass. Forward/unknown
-            // references are a hard error — that half of the graph is a DAG.
+            // `inputs`: current-frame output of an EARLIER pass, or a special
+            // `@` input. Forward/unknown references are a hard error — that
+            // half of the graph is a DAG.
             for name in &def.inputs {
+                if name.starts_with('@') {
+                    if name == PARTICLE_VELOCITY_INPUT {
+                        input_srcs.push(InputSrc::ParticleVelocity);
+                        continue;
+                    }
+                    return Err(format!(
+                        "Pass '{}' input '{name}' is not a known special input \
+                         (expected '{PARTICLE_VELOCITY_INPUT}')",
+                        def.name
+                    ));
+                }
                 let src = pass_defs[..idx]
                     .iter()
                     .position(|p| &p.name == name)
@@ -106,7 +128,7 @@ impl PassExecutor {
                             def.name
                         )
                     })?;
-                input_srcs.push(InputSrc {
+                input_srcs.push(InputSrc::Pass {
                     pass: src,
                     prev: false,
                 });
@@ -118,6 +140,13 @@ impl PassExecutor {
             // cycle). A non-feedback pass has no distinct previous frame, so require
             // `feedback: true`.
             for name in &def.prev_inputs {
+                if name.starts_with('@') {
+                    return Err(format!(
+                        "Pass '{}' prev_input '{name}': special inputs have no \
+                         previous frame — use `inputs` instead",
+                        def.name
+                    ));
+                }
                 let src = pass_defs
                     .iter()
                     .position(|p| &p.name == name)
@@ -130,7 +159,7 @@ impl PassExecutor {
                         def.name
                     ));
                 }
-                input_srcs.push(InputSrc {
+                input_srcs.push(InputSrc::Pass {
                     pass: src,
                     prev: true,
                 });
@@ -179,8 +208,10 @@ impl PassExecutor {
                 input_srcs: &p.input_srcs,
             })
             .collect();
+        // The particle system attaches after construction (`set_particle_system`),
+        // so any `@particles.velocity` slot starts on the placeholder.
         let bind_groups: Vec<[wgpu::BindGroup; 2]> = (0..views.len())
-            .map(|i| build_bind_groups(&views, i, device, uniform_buffer, placeholder, audio))
+            .map(|i| build_bind_groups(&views, i, device, uniform_buffer, placeholder, audio, None))
             .collect();
         drop(views);
 
@@ -221,7 +252,7 @@ impl PassExecutor {
                 has_feedback: true, // always enable feedback for single-pass mode
                 input_srcs: &[],
             }];
-            build_bind_groups(&views, 0, device, uniform_buffer, placeholder, audio)
+            build_bind_groups(&views, 0, device, uniform_buffer, placeholder, audio, None)
         };
 
         Self {
@@ -354,15 +385,17 @@ impl PassExecutor {
                 pass.target.resize(device, width, height);
             }
         }
-        // Phase 2: rebuild all bind groups against the new targets (a pass may
-        // sample another pass's just-recreated target).
-        self.rebuild_all_bind_groups(device, uniform_buffer, placeholder, audio);
-
-        // Resize compute rasterizer framebuffer if active
+        // Resize the compute rasterizer before the bind-group rebuild: its
+        // velocity texture is recreated here, and any `@particles.velocity`
+        // slot must rebind the new texture, not the dropped one (#1482).
         if let Some(ref mut ps) = self.particle_system {
             ps.resize_compute_raster(device, width, height);
             ps.resize_wboit(device, width, height);
         }
+
+        // Phase 2: rebuild all bind groups against the new targets (a pass may
+        // sample another pass's just-recreated target).
+        self.rebuild_all_bind_groups(device, uniform_buffer, placeholder, audio);
     }
 
     /// Rebuild every pass's bind groups from the current targets/layouts. Reads
@@ -376,6 +409,10 @@ impl PassExecutor {
         audio: &AudioTextures,
     ) {
         let new_groups: Vec<[wgpu::BindGroup; 2]> = {
+            let particle_velocity = self
+                .particle_system
+                .as_ref()
+                .and_then(|ps| ps.particle_velocity());
             let views: Vec<PassView> = self
                 .passes
                 .iter()
@@ -387,11 +424,45 @@ impl PassExecutor {
                 })
                 .collect();
             (0..views.len())
-                .map(|i| build_bind_groups(&views, i, device, uniform_buffer, placeholder, audio))
+                .map(|i| {
+                    build_bind_groups(
+                        &views,
+                        i,
+                        device,
+                        uniform_buffer,
+                        placeholder,
+                        audio,
+                        particle_velocity,
+                    )
+                })
                 .collect()
         };
         for (pass, bg) in self.passes.iter_mut().zip(new_groups) {
             pass.bind_groups = bg;
+        }
+    }
+
+    /// Install (or clear) the particle system. If any pass samples
+    /// `@particles.velocity`, the bind groups are rebuilt so that slot points
+    /// at the new system's velocity texture instead of the placeholder (#1482)
+    /// — construction can't do it because the particle system only exists
+    /// after `PassExecutor::new`.
+    pub fn set_particle_system(
+        &mut self,
+        ps: Option<ParticleSystem>,
+        device: &Device,
+        uniform_buffer: &UniformBuffer,
+        placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
+    ) {
+        self.particle_system = ps;
+        let uses_velocity = self.passes.iter().any(|p| {
+            p.input_srcs
+                .iter()
+                .any(|s| matches!(s, InputSrc::ParticleVelocity))
+        });
+        if uses_velocity {
+            self.rebuild_all_bind_groups(device, uniform_buffer, placeholder, audio);
         }
     }
 
@@ -453,6 +524,10 @@ impl PassExecutor {
 /// the *other* target `targets[1-g]`; non-feedback → the 1x1 placeholder), the
 /// three A17 audio textures + sampler, then each declared input pass `P` at
 /// `P.targets[P.has_feedback ? g : 0]` — i.e. the target `P` writes this frame.
+/// `particle_velocity` fills `@particles.velocity` slots; when `None` (no
+/// particle system yet, or no velocity field) the placeholder is bound and
+/// reads as zero velocity.
+#[allow(clippy::too_many_arguments)]
 fn build_bind_groups(
     views: &[PassView],
     i: usize,
@@ -460,6 +535,7 @@ fn build_bind_groups(
     uniform_buffer: &UniformBuffer,
     placeholder: &PlaceholderTexture,
     audio: &AudioTextures,
+    particle_velocity: Option<(&TextureView, &Sampler)>,
 ) -> [wgpu::BindGroup; 2] {
     let view = &views[i];
     let layout = view.layout;
@@ -484,17 +560,22 @@ fn build_bind_groups(
         let input_refs: Vec<(&TextureView, &Sampler)> = view
             .input_srcs
             .iter()
-            .map(|&src| {
-                let sp = &views[src.pass];
-                let ti = if src.prev {
-                    1 - g
-                } else if sp.has_feedback {
-                    g
-                } else {
-                    0
-                };
-                let rt = &sp.target.targets[ti];
-                (&rt.view, &rt.sampler)
+            .map(|&src| match src {
+                InputSrc::Pass { pass, prev } => {
+                    let sp = &views[pass];
+                    let ti = if prev {
+                        1 - g
+                    } else if sp.has_feedback {
+                        g
+                    } else {
+                        0
+                    };
+                    let rt = &sp.target.targets[ti];
+                    (&rt.view, &rt.sampler)
+                }
+                InputSrc::ParticleVelocity => {
+                    particle_velocity.unwrap_or((&placeholder.view, &placeholder.sampler))
+                }
             })
             .collect();
 
@@ -656,7 +737,7 @@ mod tests {
                 })
                 .collect();
             (0..views.len())
-                .map(|i| build_bind_groups(&views, i, device, ubuf, placeholder, audio))
+                .map(|i| build_bind_groups(&views, i, device, ubuf, placeholder, audio, None))
                 .collect()
         };
         let passes = prepared
@@ -720,6 +801,133 @@ mod tests {
         );
     }
 
+    // Special-input names (#1482): an unknown `@` name must be rejected with an
+    // error that names it, before any shader is loaded.
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn passgraph_rejects_unknown_special_input() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test("");
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, FMT);
+        let audio = AudioTextures::new(&device, &queue);
+
+        let passes = vec![PassDef {
+            name: "p".into(),
+            shader: "unused.wgsl".into(),
+            scale: 1.0,
+            inputs: vec!["@particles.bogus".into()],
+            prev_inputs: vec![],
+            iterations: 1,
+            feedback: false,
+        }];
+        let err = PassExecutor::new(
+            &device,
+            FMT,
+            4,
+            4,
+            &passes,
+            &loader,
+            &ubuf,
+            &placeholder,
+            &audio,
+            &queue,
+            None,
+        )
+        .err()
+        .expect("unknown special input must be rejected");
+        assert!(
+            err.contains("@particles.bogus") && err.contains("special"),
+            "error should name the bad special input: {err}"
+        );
+    }
+
+    // A special input has no previous frame — naming one in `prev_inputs` is an error.
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn passgraph_rejects_special_prev_input() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test("");
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, FMT);
+        let audio = AudioTextures::new(&device, &queue);
+
+        let passes = vec![PassDef {
+            name: "p".into(),
+            shader: "unused.wgsl".into(),
+            scale: 1.0,
+            inputs: vec![],
+            prev_inputs: vec![PARTICLE_VELOCITY_INPUT.into()],
+            iterations: 1,
+            feedback: true,
+        }];
+        let err = PassExecutor::new(
+            &device,
+            FMT,
+            4,
+            4,
+            &passes,
+            &loader,
+            &ubuf,
+            &placeholder,
+            &audio,
+            &queue,
+            None,
+        )
+        .err()
+        .expect("special prev_input must be rejected");
+        assert!(
+            err.contains("previous frame"),
+            "error should explain special inputs have no previous frame: {err}"
+        );
+    }
+
+    // `@particles.velocity` must RESOLVE (not error as an unknown input): with a
+    // nonexistent shader path the constructor must get past input resolution and
+    // fail at shader loading instead.
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn passgraph_particle_velocity_resolves() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test("");
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, FMT);
+        let audio = AudioTextures::new(&device, &queue);
+
+        let passes = vec![PassDef {
+            name: "p".into(),
+            shader: "definitely_missing_shader.wgsl".into(),
+            scale: 1.0,
+            inputs: vec![PARTICLE_VELOCITY_INPUT.into()],
+            prev_inputs: vec![],
+            iterations: 1,
+            feedback: true,
+        }];
+        let err = PassExecutor::new(
+            &device,
+            FMT,
+            4,
+            4,
+            &passes,
+            &loader,
+            &ubuf,
+            &placeholder,
+            &audio,
+            &queue,
+            None,
+        )
+        .err()
+        .expect("missing shader must fail");
+        assert!(
+            err.contains("Failed to load shader"),
+            "@particles.velocity should resolve and the failure move on to shader \
+             loading; instead got: {err}"
+        );
+    }
+
     // Two-pass probe of the multi-input pass graph (#1481):
     //   pass A  — self-feedback accumulator (prev + 0.25)
     //   pass B  — NON-feedback, reads A as input0, returns 1 - A
@@ -772,7 +980,7 @@ mod tests {
                     "B",
                     pipe_b,
                     false,
-                    vec![InputSrc {
+                    vec![InputSrc::Pass {
                         pass: 0,
                         prev: false,
                     }],
@@ -1001,7 +1209,7 @@ mod tests {
                     "reader",
                     pipe_reader,
                     false,
-                    vec![InputSrc {
+                    vec![InputSrc::Pass {
                         pass: 1,
                         prev: true,
                     }],
@@ -1160,7 +1368,7 @@ mod tests {
         let pipe_dye = mk(include_str!("../../../../assets/shaders/sumi_dye.wgsl"), 1);
 
         // Same wiring as sumi.pfx: passes 0..3 = divergence, pressure, velocity, dye.
-        let src = |pass: usize, prev: bool| InputSrc { pass, prev };
+        let src = |pass: usize, prev: bool| InputSrc::Pass { pass, prev };
         let mut executor = assemble(
             &device,
             &queue,
@@ -1344,6 +1552,341 @@ mod tests {
         assert!(
             sad > 0.01,
             "early and late frames are nearly identical (SAD {sad:.4}) — the fluid isn't moving"
+        );
+    }
+
+    // Every shipped effect's fragment-pass shaders must compile through the
+    // production preamble (uniform block + libs + pass-graph input bindings at
+    // the exact input count the .pfx declares). Catches a pass shader that
+    // references inputN without declaring N inputs, bad WGSL against the shared
+    // libs, and param-index typos that reference beyond the uniform block —
+    // without launching the app. (Compute sims are not covered: they bind
+    // particle buffers this harness doesn't build.)
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn all_effect_pass_shaders_compile() {
+        let _guard = gpu_guard();
+        let (device, _queue) = test_gpu();
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
+        let loader = EffectLoader::for_test(&format!(
+            "{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}"
+        ));
+
+        let mut checked = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        let mut entries: Vec<_> = std::fs::read_dir(root.join("effects"))
+            .expect("effects dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+            .collect();
+        entries.sort();
+
+        for path in entries {
+            let json = std::fs::read_to_string(&path).expect("read .pfx");
+            let effect: crate::effect::format::PfxEffect = match serde_json::from_str(&json) {
+                Ok(e) => e,
+                Err(e) => {
+                    failures.push(format!("{}: bad JSON: {e}", path.display()));
+                    continue;
+                }
+            };
+            for pass in effect.normalized_passes() {
+                let input_count = pass.inputs.len() + pass.prev_inputs.len();
+                let src_path = root.join("shaders").join(&pass.shader);
+                let src = match std::fs::read_to_string(&src_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        failures.push(format!(
+                            "{} pass '{}': missing shader {}: {e}",
+                            effect.name,
+                            pass.name,
+                            src_path.display()
+                        ));
+                        continue;
+                    }
+                };
+                let full = loader.prepend_library_with_inputs(&src, input_count);
+                if let Err(e) = ShaderPipeline::new(
+                    &device,
+                    TextureFormat::Rgba16Float,
+                    &full,
+                    None,
+                    input_count,
+                ) {
+                    failures.push(format!(
+                        "{} pass '{}' ({}): {e}",
+                        effect.name, pass.name, pass.shader
+                    ));
+                }
+                checked += 1;
+            }
+        }
+
+        eprintln!("compiled {checked} pass shaders");
+        assert!(
+            checked > 40,
+            "suspiciously few pass shaders found ({checked})"
+        );
+        assert!(
+            failures.is_empty(),
+            "pass shaders failed to compile:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    // End-to-end Chronoflow probe (#1482) through the REAL production pieces: a
+    // ParticleSystem with `velocity_field` (compute raster + velocity resolve),
+    // the shared chronoflow_velocity.wgsl self-advecting field reading
+    // `@particles.velocity`, and phosphor_history.wgsl advecting the trail image
+    // — particles composite into the history target each frame exactly as in the
+    // app. Particles emit at center under strong +x gravity, so:
+    //   1. long-exposure trails accumulate (lit coverage ≫ the snapped frame's),
+    //   2. a beat frame collapses history (shutter snap → coverage drops),
+    //   3. the lit mass skews rightward (velocity field points the right way),
+    //   4. nothing blows out (HDR clamp holds in the feedback loop).
+    // Run: CHRONO_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored chronoflow_render_previews
+    #[test]
+    #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
+    fn chronoflow_render_previews() {
+        let out_dir = std::env::var("CHRONO_PNG_DIR").ok();
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
+        let loader = EffectLoader::for_test(&format!(
+            "{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}"
+        ));
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (480u32, 270u32);
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+
+        // Particle system: compute raster + velocity field, center emitter,
+        // strong rightward gravity for a deterministic drift direction.
+        let def: crate::gpu::particle::types::ParticleDef = serde_json::from_str(
+            r#"{
+                "render_mode": "compute",
+                "velocity_field": true,
+                "max_count": 4000,
+                "emitter": { "shape": "point", "radius": 0.05, "position": [0.0, 0.0] },
+                "lifetime": 3.0,
+                "initial_speed": 0.12,
+                "initial_size": 0.012,
+                "size_end": 0.008,
+                "gravity": [0.7, 0.0],
+                "drag": 0.999,
+                "turbulence": 0.0,
+                "emit_rate": 1500.0,
+                "size_curve": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                "opacity_curve": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            }"#,
+        )
+        .expect("probe ParticleDef");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let sim = include_str!("../../../../assets/shaders/builtin/particle_sim.wgsl");
+        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let mut ps = crate::gpu::particle::ParticleSystem::new(
+            &device,
+            &queue,
+            fmt,
+            &def,
+            &sim_src,
+            def.interaction,
+        );
+        // The rasterizer defaults to 1920×1080; resize to the probe target BEFORE
+        // the executor binds the velocity texture.
+        ps.resize_compute_raster(&device, w, h);
+
+        let mk = |shader: &str, count: usize| {
+            ShaderPipeline::new(
+                &device,
+                fmt,
+                &loader.prepend_library_with_inputs(shader, count),
+                None,
+                count,
+            )
+            .expect("chronoflow pass pipeline")
+        };
+        let pipe_vel = mk(
+            include_str!("../../../../assets/shaders/chronoflow_velocity.wgsl"),
+            1,
+        );
+        let pipe_hist = mk(
+            include_str!("../../../../assets/shaders/phosphor_history.wgsl"),
+            1,
+        );
+
+        // Same wiring as phosphor.pfx: velocity (½ res, reads @particles.velocity),
+        // history (full res, reads velocity; particles composite on top).
+        let mut executor = assemble(
+            &device,
+            &queue,
+            w,
+            h,
+            fmt,
+            &ubuf,
+            &placeholder,
+            &audio,
+            vec![
+                (
+                    "velocity",
+                    pipe_vel,
+                    true,
+                    vec![InputSrc::ParticleVelocity],
+                    1,
+                    0.5,
+                ),
+                (
+                    "history",
+                    pipe_hist,
+                    true,
+                    vec![InputSrc::Pass {
+                        pass: 0,
+                        prev: false,
+                    }],
+                    1,
+                    1.0,
+                ),
+            ],
+        );
+        executor.set_particle_system(Some(ps), &device, &ubuf, &placeholder, &audio);
+        let hist_idx = 1;
+
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        let mut u = crate::gpu::ShaderUniforms::zeroed();
+        u.resolution = [w as f32, h as f32];
+        u.delta_time = 1.0 / 60.0;
+        u.rms = 0.4;
+        // phosphor_history params: 0 trail_decay (exposure), 1 beat_snap, 2 flow_stretch.
+        u.params[0] = 0.9;
+        u.params[1] = 0.7;
+        u.params[2] = 0.5;
+
+        let stats = |data: &[u8]| -> (f64, f64, f64) {
+            // (mean luminance 0..1, lit coverage, right/left mass ratio)
+            let (mut sum, mut lit, mut left, mut right) = (0.0f64, 0u32, 0.0f64, 0.0f64);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    let l = 0.299 * data[i] as f64
+                        + 0.587 * data[i + 1] as f64
+                        + 0.114 * data[i + 2] as f64;
+                    sum += l;
+                    if l > 8.0 {
+                        lit += 1;
+                    }
+                    if x < w / 2 {
+                        left += l;
+                    } else {
+                        right += l;
+                    }
+                }
+            }
+            (
+                sum / (w * h) as f64 / 255.0,
+                lit as f64 / (w * h) as f64,
+                (right + 1.0) / (left + 1.0),
+            )
+        };
+
+        const TRAIL_A: u32 = 30;
+        const TRAIL_B: u32 = 44;
+        const SNAP: u32 = 45;
+        let mut cap: Vec<(String, Vec<u8>)> = Vec::new();
+
+        for f in 0..=SNAP {
+            let beat = if f == SNAP { 1.0 } else { 0.0 };
+            u.time = f as f32 / 60.0;
+            u.frame_index = f as f32;
+            u.beat = beat;
+            u.beat_strength = beat;
+            executor
+                .particle_system
+                .as_mut()
+                .expect("probe particle system")
+                .update_uniforms(1.0 / 60.0, u.time, [w as f32, h as f32], beat);
+
+            if f == TRAIL_A || f == TRAIL_B || f == SNAP {
+                let data = capture_pass_rgba(
+                    &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, hist_idx, w, h,
+                );
+                cap.push((format!("f{f}"), data));
+            } else {
+                let mut enc = device.create_command_encoder(&Default::default());
+                let _ = executor.execute(&mut enc, &ubuf, &queue, &u);
+                queue.submit([enc.finish()]);
+            }
+            executor.flip();
+        }
+
+        if let Some(dir) = &out_dir {
+            for (name, data) in &cap {
+                let path = format!("{dir}/chronoflow_{name}.png");
+                image::RgbaImage::from_raw(w, h, data.clone())
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+                eprintln!("wrote {path}");
+            }
+        }
+
+        let (mean_a, cov_a, _skew_a) = stats(&cap[0].1);
+        let (mean_b, cov_b, skew_b) = stats(&cap[1].1);
+        let (mean_s, cov_s, _skew_s) = stats(&cap[2].1);
+        eprintln!(
+            "trailA mean {mean_a:.4} cov {cov_a:.4}; trailB mean {mean_b:.4} cov {cov_b:.4} \
+             skew {skew_b:.2}; snap mean {mean_s:.4} cov {cov_s:.4}"
+        );
+
+        // Something rendered at all.
+        assert!(
+            cov_b > 0.002,
+            "trail frame is essentially black (coverage {cov_b:.4})"
+        );
+        // 1. Long-exposure trails: the steady frame carries far more lit area
+        //    and light than the shutter-snapped frame (history collapsed).
+        assert!(
+            cov_b > cov_s * 1.3,
+            "trails should add lit area over a snapped frame: trail cov {cov_b:.4} \
+             vs snap cov {cov_s:.4}"
+        );
+        assert!(
+            mean_b > mean_s * 1.2,
+            "shutter snap should drop brightness: trail mean {mean_b:.4} vs snap \
+             mean {mean_s:.4}"
+        );
+        // 2. Directionality: +x gravity must skew the lit mass rightward — a
+        //    broken velocity field (zero, or wrong sign) leaves it symmetric or
+        //    left-heavy.
+        assert!(
+            skew_b > 1.15,
+            "trail mass should skew right under +x gravity, right/left = {skew_b:.2}"
+        );
+        // 3. Feedback-loop safety: no blowout.
+        let hot = cap[1]
+            .1
+            .chunks_exact(4)
+            .filter(|p| p[0] > 220 && p[1] > 220 && p[2] > 220)
+            .count() as f64
+            / (w * h) as f64;
+        assert!(
+            hot < 0.2,
+            "trail frame is blowing out ({:.0}% near-white)",
+            hot * 100.0
         );
     }
 }

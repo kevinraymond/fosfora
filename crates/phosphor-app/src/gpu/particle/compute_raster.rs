@@ -19,7 +19,8 @@ struct DrawUniforms {
     /// 1 = anisotropic gaussian footprints from the per-splat screen conic
     /// packed in flags.zw (Splat #1800); 0 = classic isotropic glow discs.
     splat_mode: u32,
-    _pad1: u32,
+    /// 1 = accumulate NDC velocity into the fb_vx/fb_vy channels (#1482).
+    velocity_mode: u32,
 }
 
 #[repr(C)]
@@ -41,8 +42,29 @@ struct TileUniforms {
     max_particles: u32,
     /// See `DrawUniforms::splat_mode`.
     splat_mode: u32,
-    _pad1: u32,
+    /// See `DrawUniforms::velocity_mode`.
+    velocity_mode: u32,
     _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+struct VelResolveUniforms {
+    width: u32,
+    height: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+/// Resources for resolving the velocity channels into the texture the pass
+/// graph exposes as `@particles.velocity` (#1482). Present only when the
+/// effect opted in via `velocity_field`.
+struct VelocityResolve {
+    texture: wgpu::Texture,
+    view: TextureView,
+    sampler: wgpu::Sampler,
+    pipeline: RenderPipeline,
+    bind_group: BindGroup,
 }
 
 /// Compute rasterizer: atomic framebuffer for sub-pixel particles.
@@ -60,9 +82,17 @@ pub struct ComputeRasterizer {
     /// `def.splat.is_some() && blend == "oit"`; every classic effect runs
     /// with 0 and is bit-identical to the pre-splat rasterizer.
     splat_mode: bool,
+    /// Per-pixel velocity accumulation (#1482 Chronoflow). Set once at creation
+    /// from `def.velocity_field`; when off, the vel buffers are 16-byte dummies
+    /// and the shaders' uniform-flag guards never touch them.
+    velocity_mode: bool,
 
     // 4 atomic storage buffers (one per channel)
     fb_buffers: [wgpu::Buffer; 4], // R, G, B, A
+    // Velocity channels (full-size when velocity_mode, else 16-byte dummies)
+    vel_buffers: [wgpu::Buffer; 2], // VX, VY
+    velocity: Option<VelocityResolve>,
+    vel_resolve_uniform_buffer: wgpu::Buffer,
 
     // Uniform buffers
     draw_uniform_buffer: wgpu::Buffer,
@@ -127,6 +157,7 @@ impl ComputeRasterizer {
         counter_buffer: &wgpu::Buffer,
         max_particles: u32,
         splat_mode: bool,
+        velocity_mode: bool,
     ) -> Self {
         let pixel_count = (width * height) as u64;
         let fb_size = pixel_count * 4; // 4 bytes per i32
@@ -140,6 +171,8 @@ impl ComputeRasterizer {
                 mapped_at_creation: false,
             })
         });
+        let vel_buffers = create_vel_buffers(device, fb_size, velocity_mode);
+        let vel_resolve_uniform_buffer = create_vel_resolve_uniforms(device, width, height);
 
         let draw_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cr-draw-uniforms"),
@@ -175,6 +208,8 @@ impl ComputeRasterizer {
                 storage_rw_entry(8),  // fb_b
                 storage_rw_entry(9),  // fb_a
                 storage_ro_entry(10), // flags (splat_mode conic in .zw, #1800)
+                storage_rw_entry(11), // fb_vx (velocity_mode, #1482)
+                storage_rw_entry(12), // fb_vy
             ],
         });
 
@@ -212,6 +247,7 @@ impl ComputeRasterizer {
             counter_buffer,
             &draw_uniform_buffer,
             &fb_buffers,
+            &vel_buffers,
         );
 
         // --- Tiled path setup ---
@@ -335,6 +371,8 @@ impl ComputeRasterizer {
                 storage_rw_entry(9),  // fb_b
                 storage_rw_entry(10), // fb_a
                 storage_ro_entry(11), // flags (splat_mode conic in .zw, #1800)
+                storage_rw_entry(12), // fb_vx (velocity_mode, #1482)
+                storage_rw_entry(13), // fb_vy
             ],
         });
 
@@ -357,7 +395,20 @@ impl ComputeRasterizer {
             &tile_uniform_buffer,
             &sorted_particles_buffer,
             &fb_buffers,
+            &vel_buffers,
         );
+
+        // --- Velocity resolve (#1482) ---
+        let velocity = velocity_mode.then(|| {
+            create_velocity_resolve(
+                device,
+                width,
+                height,
+                &vel_buffers,
+                &fb_buffers,
+                &vel_resolve_uniform_buffer,
+            )
+        });
 
         // --- Resolve pipeline (render) ---
         let resolve_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -442,7 +493,11 @@ impl ComputeRasterizer {
             height,
             max_particles,
             splat_mode,
+            velocity_mode,
             fb_buffers,
+            vel_buffers,
+            velocity,
+            vel_resolve_uniform_buffer,
             draw_uniform_buffer,
             resolve_uniform_buffer,
             tile_uniform_buffer,
@@ -485,6 +540,11 @@ impl ComputeRasterizer {
         for fb in &self.fb_buffers {
             encoder.clear_buffer(fb, 0, None);
         }
+        if self.velocity_mode {
+            for fb in &self.vel_buffers {
+                encoder.clear_buffer(fb, 0, None);
+            }
+        }
     }
 
     /// Dispatch the direct draw compute pass (particles write to atomic framebuffer).
@@ -501,7 +561,7 @@ impl ComputeRasterizer {
             width: self.width,
             height: self.height,
             splat_mode: u32::from(self.splat_mode),
-            _pad1: 0,
+            velocity_mode: u32::from(self.velocity_mode),
         };
         queue.write_buffer(&self.draw_uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -533,7 +593,7 @@ impl ComputeRasterizer {
             num_tiles_y: self.num_tiles_y,
             max_particles: self.max_particles,
             splat_mode: u32::from(self.splat_mode),
-            _pad1: 0,
+            velocity_mode: u32::from(self.velocity_mode),
             _pad2: 0,
         };
         queue.write_buffer(
@@ -545,6 +605,11 @@ impl ComputeRasterizer {
         // Clear framebuffer + tile counts
         for fb in &self.fb_buffers {
             encoder.clear_buffer(fb, 0, None);
+        }
+        if self.velocity_mode {
+            for fb in &self.vel_buffers {
+                encoder.clear_buffer(fb, 0, None);
+            }
         }
         encoder.clear_buffer(&self.tile_counts_buffer, 0, None);
 
@@ -659,6 +724,46 @@ impl ComputeRasterizer {
         pass.draw(0..3, 0..1);
     }
 
+    /// Resolve the velocity channels into the `@particles.velocity` texture
+    /// (#1482). No-op unless the effect opted in via `velocity_field`. Called
+    /// at the end of `ParticleSystem::dispatch`, i.e. before the fragment
+    /// passes, so they read same-frame velocity.
+    pub fn resolve_velocity(&self, encoder: &mut CommandEncoder) {
+        let Some(ref vel) = self.velocity else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("cr-resolve-velocity"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &vel.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&vel.pipeline);
+        pass.set_bind_group(0, &vel.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The resolved per-pixel particle-velocity texture, when `velocity_field`
+    /// is on — what the pass graph binds for `@particles.velocity`.
+    pub fn velocity_view_sampler(&self) -> Option<(&TextureView, &wgpu::Sampler)> {
+        self.velocity.as_ref().map(|v| (&v.view, &v.sampler))
+    }
+
+    /// Raw velocity texture, for test readback.
+    #[allow(dead_code)]
+    pub(crate) fn velocity_texture(&self) -> Option<&wgpu::Texture> {
+        self.velocity.as_ref().map(|v| &v.texture)
+    }
+
     /// Resize framebuffer if dimensions changed. Returns true if resized.
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_size(
@@ -692,6 +797,18 @@ impl ComputeRasterizer {
                 mapped_at_creation: false,
             })
         });
+        self.vel_buffers = create_vel_buffers(device, fb_size, self.velocity_mode);
+        self.vel_resolve_uniform_buffer = create_vel_resolve_uniforms(device, width, height);
+        if self.velocity_mode {
+            self.velocity = Some(create_velocity_resolve(
+                device,
+                width,
+                height,
+                &self.vel_buffers,
+                &self.fb_buffers,
+                &self.vel_resolve_uniform_buffer,
+            ));
+        }
 
         // Recompute tile geometry
         self.num_tiles_x = width.div_ceil(TILE_SIZE);
@@ -726,6 +843,7 @@ impl ComputeRasterizer {
             counter_buffer,
             &self.draw_uniform_buffer,
             &self.fb_buffers,
+            &self.vel_buffers,
         );
 
         self.bin_bind_groups = create_bin_bind_groups(
@@ -770,6 +888,7 @@ impl ComputeRasterizer {
             &self.tile_uniform_buffer,
             &self.sorted_particles_buffer,
             &self.fb_buffers,
+            &self.vel_buffers,
         );
 
         self.resolve_bind_group = create_resolve_bind_group(
@@ -834,6 +953,156 @@ fn fragment_storage_ro_entry(binding: u32) -> BindGroupLayoutEntry {
             min_binding_size: None,
         },
         count: None,
+    }
+}
+
+/// Velocity channel buffers (#1482): full framebuffer size when the effect
+/// opted in, 16-byte stand-ins otherwise (bound but never touched — the
+/// shaders' `velocity_mode` uniform guard gates every access).
+fn create_vel_buffers(device: &Device, fb_size: u64, enabled: bool) -> [wgpu::Buffer; 2] {
+    let size = if enabled { fb_size } else { 16 };
+    std::array::from_fn(|i| {
+        let label = ["fb-vx", "fb-vy"][i];
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    })
+}
+
+/// Uniforms for the velocity resolve, written at creation (no queue in
+/// `new()`/`ensure_size`, so the contents go in via `mapped_at_creation`).
+fn create_vel_resolve_uniforms(device: &Device, width: u32, height: u32) -> wgpu::Buffer {
+    let uniforms = VelResolveUniforms {
+        width,
+        height,
+        _pad0: 0,
+        _pad1: 0,
+    };
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cr-vel-resolve-uniforms"),
+        size: std::mem::size_of::<VelResolveUniforms>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    buffer
+        .slice(..)
+        .get_mapped_range_mut()
+        .copy_from_slice(bytemuck::bytes_of(&uniforms));
+    buffer.unmap();
+    buffer
+}
+
+/// Build the velocity resolve target + pipeline + bind group (#1482).
+fn create_velocity_resolve(
+    device: &Device,
+    width: u32,
+    height: u32,
+    vel_buffers: &[wgpu::Buffer; 2],
+    fb_buffers: &[wgpu::Buffer; 4],
+    uniform_buffer: &wgpu::Buffer,
+) -> VelocityResolve {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("cr-velocity-tex"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("cr-velocity-sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        ..Default::default()
+    });
+
+    let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("cr-vel-resolve-bgl"),
+        entries: &[
+            fragment_storage_ro_entry(0), // fb_vx
+            fragment_storage_ro_entry(1), // fb_vy
+            fragment_storage_ro_entry(2), // fb_a
+            BindGroupLayoutEntry {
+                binding: 3,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("cr-vel-resolve"),
+        source: wgpu::ShaderSource::Wgsl(
+            include_str!(
+                "../../../../../assets/shaders/builtin/compute_raster_resolve_velocity.wgsl"
+            )
+            .into(),
+        ),
+    });
+
+    let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("cr-vel-resolve-layout"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+
+    let pipeline = create_resolve_render_pipeline(
+        device,
+        &layout,
+        &shader,
+        TextureFormat::Rgba16Float,
+        wgpu::BlendState::REPLACE,
+        "cr-vel-resolve",
+    );
+
+    let bind_group = device.create_bind_group(&BindGroupDescriptor {
+        label: Some("cr-vel-resolve-bg"),
+        layout: &bgl,
+        entries: &[
+            BindGroupEntry {
+                binding: 0,
+                resource: vel_buffers[0].as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 1,
+                resource: vel_buffers[1].as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 2,
+                resource: fb_buffers[3].as_entire_binding(),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+        ],
+    });
+
+    VelocityResolve {
+        texture,
+        view,
+        sampler,
+        pipeline,
+        bind_group,
     }
 }
 
@@ -905,6 +1174,7 @@ fn create_draw_bind_groups(
     counter_buffer: &wgpu::Buffer,
     draw_uniform_buffer: &wgpu::Buffer,
     fb_buffers: &[wgpu::Buffer; 4],
+    vel_buffers: &[wgpu::Buffer; 2],
 ) -> [BindGroup; 2] {
     let make_bg = |idx: usize, label: &str| {
         device.create_bind_group(&BindGroupDescriptor {
@@ -954,6 +1224,14 @@ fn create_draw_bind_groups(
                 BindGroupEntry {
                     binding: 10,
                     resource: flags_buffers[idx].as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 11,
+                    resource: vel_buffers[0].as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: vel_buffers[1].as_entire_binding(),
                 },
             ],
         })
@@ -1094,6 +1372,7 @@ fn create_tiled_bind_groups(
     tile_uniform_buffer: &wgpu::Buffer,
     sorted_particles_buffer: &wgpu::Buffer,
     fb_buffers: &[wgpu::Buffer; 4],
+    vel_buffers: &[wgpu::Buffer; 2],
 ) -> [BindGroup; 2] {
     let make_bg = |idx: usize, label: &str| {
         device.create_bind_group(&BindGroupDescriptor {
@@ -1147,6 +1426,14 @@ fn create_tiled_bind_groups(
                 BindGroupEntry {
                     binding: 11,
                     resource: flags_buffers[idx].as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 12,
+                    resource: vel_buffers[0].as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 13,
+                    resource: vel_buffers[1].as_entire_binding(),
                 },
             ],
         })
@@ -1262,5 +1549,162 @@ mod tests {
         assert_eq!(ntx, 240);
         assert_eq!(nty, 135);
         assert!(ntx * nty <= MAX_PREFIX_SUM_CELLS);
+    }
+
+    #[test]
+    fn vel_resolve_uniforms_size() {
+        assert_eq!(std::mem::size_of::<VelResolveUniforms>(), 16);
+    }
+
+    /// IEEE 754 half → f32 (no `half` dependency; enough for finite values).
+    fn f16_to_f32(bits: u16) -> f32 {
+        let sign = ((bits >> 15) & 1) as u32;
+        let exp = ((bits >> 10) & 0x1f) as u32;
+        let frac = (bits & 0x3ff) as u32;
+        let f = match exp {
+            0 => {
+                // Subnormal (or zero): value = frac / 2^10 * 2^-14
+                return if sign == 1 { -1.0 } else { 1.0 } * (frac as f32) * 2.0f32.powi(-24);
+            }
+            0x1f => (sign << 31) | 0x7f80_0000 | (frac << 13), // inf/NaN
+            _ => (sign << 31) | ((exp + 112) << 23) | (frac << 13),
+        };
+        f32::from_bits(f)
+    }
+
+    // Signed velocity resolve (#1482): one alive particle at NDC center moving
+    // (+0.5, −0.25) NDC/s must land in the velocity texture as exactly that
+    // signed value with nonzero coverage — through BOTH raster paths. Catches
+    // fixed-point sign errors, channel swaps, and the tiled shared-memory
+    // flush being missed.
+    #[test]
+    #[ignore = "requires a wgpu adapter; renders offscreen"]
+    fn velocity_resolve_signed_direct_and_tiled() {
+        use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (w, h) = (64u32, 64u32);
+
+        let storage_buf = |label: &str, bytes: &[u8]| {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: true,
+            });
+            buf.slice(..).get_mapped_range_mut().copy_from_slice(bytes);
+            buf.unmap();
+            buf
+        };
+        let pair = |label: &str, bytes: &[u8]| {
+            [
+                storage_buf(&format!("{label}-0"), bytes),
+                storage_buf(&format!("{label}-1"), bytes),
+            ]
+        };
+
+        // Size 0.004 → radius_px 0.128 → single-pixel path at (32, 32).
+        let pos_life = pair("t-pos", bytemuck::cast_slice(&[0.0f32, 0.0, 0.0, 1.0]));
+        let vel_size = pair("t-vel", bytemuck::cast_slice(&[0.5f32, -0.25, 0.0, 0.004]));
+        let color = pair("t-col", bytemuck::cast_slice(&[1.0f32, 1.0, 1.0, 1.0]));
+        let flags = pair("t-flg", bytemuck::cast_slice(&[0.0f32; 4]));
+        let alive = pair("t-alv", bytemuck::cast_slice(&[0u32]));
+        let counters = storage_buf("t-cnt", bytemuck::cast_slice(&[1u32, 0, 0, 0]));
+
+        let cr = ComputeRasterizer::new(
+            &device,
+            TextureFormat::Rgba16Float,
+            w,
+            h,
+            &pos_life,
+            &vel_size,
+            &color,
+            &flags,
+            &alive,
+            &counters,
+            1,
+            false,
+            true, // velocity_mode
+        );
+
+        let bpr = (w * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT); // 8 B/px
+        let read_texel = |tiled: bool, tx: u32, ty: u32| -> [f32; 4] {
+            let mut enc = device.create_command_encoder(&Default::default());
+            if tiled {
+                cr.dispatch_tiled(&mut enc, &queue, 0, 1);
+            } else {
+                cr.dispatch_clear(&mut enc);
+                cr.dispatch_draw(&mut enc, &queue, 0, 1);
+            }
+            cr.resolve_velocity(&mut enc);
+
+            let staging = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("t-vel-staging"),
+                size: (bpr * h) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: cr.velocity_texture().expect("velocity texture exists"),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &staging,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bpr),
+                        rows_per_image: Some(h),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([enc.finish()]);
+
+            staging.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
+            let data = staging.slice(..).get_mapped_range().to_vec();
+            let off = (ty * bpr + tx * 8) as usize;
+            std::array::from_fn(|c| {
+                f16_to_f32(u16::from_le_bytes([
+                    data[off + c * 2],
+                    data[off + c * 2 + 1],
+                ]))
+            })
+        };
+
+        for tiled in [false, true] {
+            let path = if tiled { "tiled" } else { "direct" };
+            let v = read_texel(tiled, 32, 32);
+            assert!(
+                (v[0] - 0.5).abs() < 0.02,
+                "{path}: vx should be +0.5 NDC/s, got {}",
+                v[0]
+            );
+            assert!(
+                (v[1] + 0.25).abs() < 0.02,
+                "{path}: vy should be −0.25 NDC/s, got {}",
+                v[1]
+            );
+            assert!(v[2] > 0.5, "{path}: coverage should be ~1, got {}", v[2]);
+
+            // Far corner: no particle → zero velocity, zero coverage.
+            let z = read_texel(tiled, 5, 5);
+            assert!(
+                z[0].abs() < 1e-3 && z[1].abs() < 1e-3 && z[2].abs() < 1e-3,
+                "{path}: empty texel should be zero, got {z:?}"
+            );
+        }
     }
 }
