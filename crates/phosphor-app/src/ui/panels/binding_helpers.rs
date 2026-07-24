@@ -366,6 +366,13 @@ pub fn audio_source_info(key: &str) -> AudioSourceInfo {
             uniform: "u.beat_strength".into(),
             sub_group: "Beat",
         },
+        // Key — circle-of-fifths hue derived CPU-side (Chromatica #1477). Like
+        // mel/dmfcc it has no GPU uniform; it drives parameter bindings only.
+        "audio.key_hue" => AudioSourceInfo {
+            friendly: "Key Hue".into(),
+            uniform: "(binding only)".into(),
+            sub_group: "Key",
+        },
         // Chroma
         "audio.dominant_chroma" => AudioSourceInfo {
             friendly: "Dominant Chroma".into(),
@@ -513,6 +520,7 @@ pub const AUDIO_SOURCE_ORDER: &[&str] = &[
     "audio.key_class",
     "audio.key_is_minor",
     "audio.key_confidence",
+    "audio.key_hue",
     // Chroma — abuts the dynamically-enumerated chroma bins.
     "audio.dominant_chroma",
 ];
