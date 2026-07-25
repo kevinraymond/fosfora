@@ -194,7 +194,7 @@ impl App {
                                 .iter()
                                 .filter_map(|p| {
                                     effect_loader
-                                        .load_effect_source_with_inputs(&p.shader, p.inputs.len())
+                                        .load_effect_source_with_inputs(&p.shader, p.input_count())
                                         .ok()
                                 })
                                 .collect();
@@ -1377,7 +1377,7 @@ impl App {
                     }
                     match self
                         .effect_loader
-                        .load_effect_source_with_inputs(&pass_def.shader, pass_def.inputs.len())
+                        .load_effect_source_with_inputs(&pass_def.shader, pass_def.input_count())
                     {
                         Ok(source) => {
                             let changed =
@@ -1394,7 +1394,7 @@ impl App {
                                     source,
                                     &self.gpu.device,
                                     hdr_format,
-                                    pass_def.inputs.len(),
+                                    pass_def.input_count(),
                                 );
                             }
                         }
@@ -1959,7 +1959,7 @@ impl App {
                     .iter()
                     .filter_map(|p| {
                         self.effect_loader
-                            .load_effect_source_with_inputs(&p.shader, p.inputs.len())
+                            .load_effect_source_with_inputs(&p.shader, p.input_count())
                             .ok()
                     })
                     .collect();

@@ -1667,7 +1667,10 @@ mod tests {
                 .sum()
         };
 
-        const LOUD: u32 = 240;
+        // Run the loud phase long enough to reach STEADY STATE, not just first bloom: the
+        // original probe stopped at ~4s and passed on the early coral look, but the live
+        // failure is the plane-filling uniform speckle that only sets in after ~10s.
+        const LOUD: u32 = 780;
         const SILENT: u32 = 240;
         let (mut mid, mut grown, mut starved): (Vec<u8>, Vec<u8>, Vec<u8>) =
             (Vec::new(), Vec::new(), Vec::new());
@@ -1684,7 +1687,7 @@ mod tests {
             u.chroma = if loud { [0.5; 12] } else { [0.0; 12] };
 
             let mut cap: Option<(&mut Vec<u8>, usize, u32, u32)> = None;
-            if f == LOUD - 60 {
+            if f == LOUD - 180 {
                 cap = Some((&mut mid, disp_idx, w, h));
             } else if f == LOUD - 4 {
                 cap = Some((&mut grown, disp_idx, w, h));
@@ -1750,12 +1753,55 @@ mod tests {
             "grown frame is a saturated wash ({:.0}% near-white)",
             hot * 100.0
         );
-        // Present, and structured rather than a uniform wash. A full colony is a valid
-        // look, so the coverage ceiling is generous — the real wash guards are the mean,
-        // the near-white fraction (hot), and the movement (SAD) checks above and below.
         assert!(
-            gc > 0.02 && gc < 0.98,
+            gc > 0.02,
             "grown coverage {gc:.3} — creatures should be present (near 0 = dead ecosystem)"
+        );
+
+        // Distinct creatures separated by empty water, NOT a plane-filling uniform speckle.
+        // Split the steady-state frame into a 16x9 grid and take each block's mean luma:
+        // distinct bodies with water between them leave many DARK blocks and a wide spread
+        // of block means; the degenerate fill (live image #2) lights every block near the
+        // same value — few/no dark blocks, low spread. This is the metric the original
+        // probe lacked, so it green-lit an effect that filled the plane at steady state.
+        let block_stats = |data: &[u8]| -> (f64, f64) {
+            let (bx, by) = (16u32, 9u32);
+            let mut means: Vec<f64> = Vec::with_capacity((bx * by) as usize);
+            for byi in 0..by {
+                for bxi in 0..bx {
+                    let (x0, x1) = (bxi * w / bx, (bxi + 1) * w / bx);
+                    let (y0, y1) = (byi * h / by, (byi + 1) * h / by);
+                    let mut s = 0.0f64;
+                    let mut n = 0u32;
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let i = ((y * w + x) * 4) as usize;
+                            s += 0.299 * data[i] as f64
+                                + 0.587 * data[i + 1] as f64
+                                + 0.114 * data[i + 2] as f64;
+                            n += 1;
+                        }
+                    }
+                    means.push(s / n as f64 / 255.0);
+                }
+            }
+            let mean = means.iter().sum::<f64>() / means.len() as f64;
+            let var = means.iter().map(|m| (m - mean).powi(2)).sum::<f64>() / means.len() as f64;
+            let dark = means.iter().filter(|&&m| m < 0.03).count() as f64 / means.len() as f64;
+            (var.sqrt(), dark)
+        };
+        let (block_std, void_frac) = block_stats(&grown);
+        eprintln!("steady-state block_std {block_std:.4} void_frac {void_frac:.3}");
+        assert!(
+            void_frac > 0.10,
+            "steady state filled the plane — only {:.0}% of blocks are empty water \
+             (the degenerate uniform fill); distinct creatures need voids between them",
+            void_frac * 100.0
+        );
+        assert!(
+            block_std > 0.03,
+            "steady state is a uniform field (block_std {block_std:.4}) — no large-scale \
+             structure, just even speckle everywhere"
         );
 
         // Alive: the field keeps moving at steady state (mid vs grown, 56 frames apart).
@@ -1828,7 +1874,11 @@ mod tests {
                 }
             };
             for pass in effect.normalized_passes() {
-                let input_count = pass.inputs.len() + pass.prev_inputs.len();
+                // Same count the app injects at every compile site (initial + hot-reload):
+                // current-frame inputs PLUS previous-frame prev_inputs. A pass whose inputs
+                // are all prev_inputs (divergence, protea's potential) declares input0.. and
+                // would fail to compile if this dropped prev_inputs — the hot-reload bug.
+                let input_count = pass.input_count();
                 let src_path = root.join("shaders").join(&pass.shader);
                 let src = match std::fs::read_to_string(&src_path) {
                     Ok(s) => s,

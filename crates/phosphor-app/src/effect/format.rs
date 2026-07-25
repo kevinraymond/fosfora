@@ -46,6 +46,17 @@ pub struct PassDef {
     pub feedback: bool,
 }
 
+impl PassDef {
+    /// Number of `input0..` bindings this pass declares: current-frame `inputs` plus
+    /// previous-frame `prev_inputs`. This MUST match what `PassExecutor::new` resolves and
+    /// inject, so every shader-compile site (initial build, hot-reload) uses it — counting
+    /// only `inputs` drops the bindings for a pass whose inputs are all previous-frame
+    /// (e.g. a divergence/potential pass), making `input0_tex` undefined on recompile.
+    pub fn input_count(&self) -> usize {
+        self.inputs.len() + self.prev_inputs.len()
+    }
+}
+
 fn default_scale() -> f32 {
     1.0
 }
@@ -325,6 +336,31 @@ mod tests {
         assert_eq!(passes.len(), 1);
         assert_eq!(passes[0].shader, "a.wgsl");
         assert!(!passes[0].feedback);
+    }
+
+    #[test]
+    fn input_count_includes_prev_inputs() {
+        // Regression: a pass whose inputs are all previous-frame (a divergence/potential
+        // pass — inputs empty, prev_inputs set) still declares input0.. bindings. Counting
+        // only `inputs` dropped them and left `input0_tex` undefined when the app recompiled
+        // the shader on hot-reload. input_count() must include prev_inputs.
+        let pass = PassDef {
+            name: "potential".into(),
+            shader: "protea_potential.wgsl".into(),
+            scale: 0.5,
+            inputs: vec![],
+            prev_inputs: vec!["mass".into()],
+            iterations: 1,
+            feedback: false,
+        };
+        assert_eq!(pass.input_count(), 1);
+
+        let two = PassDef {
+            inputs: vec!["velocity".into()],
+            prev_inputs: vec!["dye".into()],
+            ..pass.clone()
+        };
+        assert_eq!(two.input_count(), 2);
     }
 
     #[test]
