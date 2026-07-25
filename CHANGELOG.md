@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Added
+- **New effect: Protea — a living Flow Lenia ecosystem fed by the music.** Three species of amoebae with membranes and organelles hunt, merge, and divide across a mass-conserving field; loudness is their food, so a quiet passage starves them until they visibly shrink and a loud one brings them surging back. Bass swells their bodies, onsets rain nutrient droplets, and key changes mutate the species region by region.
+
 ## v1.19.0 — 2026-07-25
 
 ### Added

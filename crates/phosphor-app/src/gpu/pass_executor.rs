@@ -1555,6 +1555,236 @@ mod tests {
         );
     }
 
+    // End-to-end probe of the Protea Flow Lenia graph through the real PassExecutor:
+    // potential(prev mass) → mass(reintegration transport + audio food) → display.
+    // Phase 1 plays loud music (rms + onsets + beats) so the ecosystem bootstraps from
+    // a cleared field; phase 2 goes silent so starvation must shrink it. Asserts the
+    // creatures exist, are localized bodies (not a wash, not a uniform field), keep
+    // moving, and that silence starves the mass the music grew.
+    // Run: PROTEA_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored protea_render_previews
+    #[test]
+    #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
+    fn protea_render_previews() {
+        let out_dir = std::env::var("PROTEA_PNG_DIR").ok();
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let loader = EffectLoader::for_test(&format!("{noise}\n{palette}\n{sdf}\n{tonemap}"));
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (480u32, 270u32);
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+
+        let mk = |shader: &str, count: usize| {
+            ShaderPipeline::new(
+                &device,
+                fmt,
+                &loader.prepend_library_with_inputs(shader, count),
+                None,
+                count,
+            )
+            .expect("protea pass pipeline")
+        };
+        let pipe_pot = mk(
+            include_str!("../../../../assets/shaders/protea_potential.wgsl"),
+            1,
+        );
+        let pipe_mass = mk(
+            include_str!("../../../../assets/shaders/protea_mass.wgsl"),
+            1,
+        );
+        let pipe_disp = mk(
+            include_str!("../../../../assets/shaders/protea_display.wgsl"),
+            2,
+        );
+
+        // Same wiring as protea.pfx: passes 0..2 = potential, mass, display.
+        let src = |pass: usize, prev: bool| InputSrc::Pass { pass, prev };
+        let mut executor = assemble(
+            &device,
+            &queue,
+            w,
+            h,
+            fmt,
+            &ubuf,
+            &placeholder,
+            &audio,
+            vec![
+                ("potential", pipe_pot, false, vec![src(1, true)], 1, 0.5),
+                ("mass", pipe_mass, true, vec![src(0, false)], 1, 0.5),
+                (
+                    "display",
+                    pipe_disp,
+                    true,
+                    vec![src(1, false), src(0, false)],
+                    1,
+                    1.0,
+                ),
+            ],
+        );
+        let (mass_idx, disp_idx) = (1usize, 2usize);
+        // Pass targets at scale 0.5.
+        let (mw, mh) = (w / 2, h / 2);
+
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        let mut u = crate::gpu::ShaderUniforms::zeroed();
+        u.resolution = [w as f32, h as f32];
+        u.delta_time = 1.0 / 60.0;
+        // Protea param defaults (see protea.pfx), indices 0..9.
+        for (i, v) in [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.55, 0.55]
+            .into_iter()
+            .enumerate()
+        {
+            u.params[i] = v;
+        }
+
+        // Mean luminance (0..1) and lit coverage of an RGBA8 frame.
+        let stats = |data: &[u8], fw: u32, fh: u32| -> (f64, f64) {
+            let (mut sum, mut lit) = (0.0f64, 0u32);
+            for p in data.chunks_exact(4) {
+                let l = 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64;
+                sum += l;
+                if l > 8.0 {
+                    lit += 1;
+                }
+            }
+            (
+                sum / (fw * fh) as f64 / 255.0,
+                lit as f64 / (fw * fh) as f64,
+            )
+        };
+        // Total channel sum of an RGBA8 mass capture — the starvation measure.
+        let mass_sum = |data: &[u8]| -> f64 {
+            data.chunks_exact(4)
+                .map(|p| p[0] as f64 + p[1] as f64 + p[2] as f64)
+                .sum()
+        };
+
+        const LOUD: u32 = 240;
+        const SILENT: u32 = 240;
+        let (mut mid, mut grown, mut starved): (Vec<u8>, Vec<u8>, Vec<u8>) =
+            (Vec::new(), Vec::new(), Vec::new());
+        let (mut mass_grown, mut mass_starved): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+
+        for f in 0..(LOUD + SILENT) {
+            u.time = f as f32 / 60.0;
+            u.frame_index = f as f32;
+            let loud = f < LOUD;
+            u.rms = if loud { 0.30 } else { 0.0 };
+            u.bass = if loud { 0.6 } else { 0.0 };
+            u.onset = if loud && f % 8 == 0 { 1.0 } else { 0.0 };
+            u.beat_strength = if loud { 0.7 } else { 0.0 };
+            u.chroma = if loud { [0.5; 12] } else { [0.0; 12] };
+
+            let mut cap: Option<(&mut Vec<u8>, usize, u32, u32)> = None;
+            if f == LOUD - 60 {
+                cap = Some((&mut mid, disp_idx, w, h));
+            } else if f == LOUD - 4 {
+                cap = Some((&mut grown, disp_idx, w, h));
+            } else if f == LOUD - 3 {
+                cap = Some((&mut mass_grown, mass_idx, mw, mh));
+            } else if f == LOUD + SILENT - 2 {
+                cap = Some((&mut starved, disp_idx, w, h));
+            } else if f == LOUD + SILENT - 1 {
+                cap = Some((&mut mass_starved, mass_idx, mw, mh));
+            }
+            if let Some((slot, idx, cw, ch)) = cap {
+                *slot = capture_pass_rgba(
+                    &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, idx, cw, ch,
+                );
+            } else {
+                let mut enc = device.create_command_encoder(&Default::default());
+                let _ = executor.execute(&mut enc, &ubuf, &queue, &u);
+                queue.submit([enc.finish()]);
+            }
+            executor.flip();
+        }
+
+        if let Some(dir) = out_dir {
+            for (name, data, fw, fh) in [
+                ("mid", &mid, w, h),
+                ("grown", &grown, w, h),
+                ("starved", &starved, w, h),
+                ("mass", &mass_grown, mw, mh),
+            ] {
+                let path = format!("{dir}/protea_{name}.png");
+                image::RgbaImage::from_raw(fw, fh, data.clone())
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+                eprintln!("wrote {path}");
+            }
+        }
+
+        let (gm, gc) = stats(&grown, w, h);
+        let (sm, _sc) = stats(&starved, w, h);
+        let mg = mass_sum(&mass_grown);
+        let ms = mass_sum(&mass_starved);
+        let hot = grown
+            .chunks_exact(4)
+            .filter(|p| p[0] > 220 && p[1] > 220 && p[2] > 220)
+            .count() as f64
+            / (w * h) as f64;
+        eprintln!(
+            "grown mean {gm:.4} cover {gc:.3} hot {hot:.3}; starved mean {sm:.4}; \
+             mass grown {mg:.0} → starved {ms:.0} ({:.2}x)",
+            ms / mg.max(1.0)
+        );
+
+        // The music grew an ecosystem: visible, localized bodies — not black, not a
+        // wash, not a uniform field.
+        assert!(
+            gm > 0.01,
+            "grown frame near-black (mean {gm:.4}) — nothing bootstrapped"
+        );
+        assert!(gm < 0.5, "grown frame blew out (mean {gm:.4})");
+        assert!(
+            hot < 0.15,
+            "grown frame is a saturated wash ({:.0}% near-white)",
+            hot * 100.0
+        );
+        // Present, and structured rather than a uniform wash. A full colony is a valid
+        // look, so the coverage ceiling is generous — the real wash guards are the mean,
+        // the near-white fraction (hot), and the movement (SAD) checks above and below.
+        assert!(
+            gc > 0.02 && gc < 0.98,
+            "grown coverage {gc:.3} — creatures should be present (near 0 = dead ecosystem)"
+        );
+
+        // Alive: the field keeps moving at steady state (mid vs grown, 56 frames apart).
+        let mut sad = 0.0f64;
+        for i in (0..mid.len()).step_by(4) {
+            let a = 0.299 * mid[i] as f64 + 0.587 * mid[i + 1] as f64 + 0.114 * mid[i + 2] as f64;
+            let b =
+                0.299 * grown[i] as f64 + 0.587 * grown[i + 1] as f64 + 0.114 * grown[i + 2] as f64;
+            sad += (a - b).abs();
+        }
+        let sad = sad / (w * h) as f64 / 255.0;
+        assert!(
+            sad > 0.005,
+            "mid and grown frames nearly identical (SAD {sad:.4}) — the ecosystem froze"
+        );
+
+        // Starvation: 4 seconds of silence must shed a large share of the mass the
+        // music grew (the creatures visibly shrink).
+        assert!(
+            mg > 1000.0,
+            "loud-phase mass sum {mg:.0} is tiny — feeding never took hold"
+        );
+        assert!(
+            ms < 0.6 * mg,
+            "silence kept {:.0}% of the mass — starvation isn't biting",
+            100.0 * ms / mg.max(1.0)
+        );
+    }
+
     // Every shipped effect's fragment-pass shaders must compile through the
     // production preamble (uniform block + libs + pass-graph input bindings at
     // the exact input count the .pfx declares). Catches a pass shader that
