@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.19.0 — 2026-07-25
 
 ### Added
 - **Chronoflow: particle trails are now long-exposure light streaks.** Phosphor, Flux, and Murmur trails flow *along* each particle's motion like a long-exposure photograph instead of ghosting in place, and on every beat a shutter snap collapses the streaks so the image goes momentarily crisp. Loudness stretches the exposure; new `beat_snap` and `flow_stretch` params (plus `trail_exposure` on Murmur) tune it live, and existing `trail_decay` values keep their meaning.
