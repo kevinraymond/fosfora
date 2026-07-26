@@ -113,7 +113,11 @@ fn emit_particle(idx: u32) -> Particle {
     let init_size = u.initial_size * (0.7 + 0.6 * hash(seed_base + 4.0));
     let life = u.lifetime * (0.8 + 0.4 * hash(seed_base + 5.0));
 
-    p.pos_life = vec4f(pos, 0.0, 1.0); // z = billboard spin: none
+    // z: Drape (mode 4) repurposes it as particle DEPTH in the obstacle's
+    // near-bright space — start in front (1.0) so water falls onto the surface.
+    // Other modes keep 0 (billboard spin: none).
+    let dz = select(0.0, 1.0, u.obstacle_enabled > 0.5 && u.obstacle_mode == 4u);
+    p.pos_life = vec4f(pos, dz, 1.0);
     p.vel_size = vec4f(vel, init_size, init_size); // z = persistent init size
     p.color = vec4f(tide_color(pos, vel, 0.0), 0.10);
     p.flags = vec4f(0.0, life, lane_x, 0.0); // (age, lifetime, lane_x, foam)
@@ -165,12 +169,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let lane_x = p.flags.z;
     var foam = p.flags.w;
 
+    // --- Drape (mode 4): surface-flow water (#1851). Particles carry a depth
+    // in pos_life.z; contact is stateless — z vs the effective height h decides
+    // free-fall vs sliding on the surface. A landed particle is EXCLUDED from
+    // the shared velocity field (the field's downward pull is what buried the
+    // earlier attempt) and instead slides downhill over the relief.
+    var z = p.pos_life.z;
+    let is_drape = u.obstacle_enabled > 0.5 && u.obstacle_mode == 4u;
+    var drape_landed = false;
+    if is_drape {
+        let h = obstacle_alpha(pos); // effective height (terrain + water)
+        drape_landed = h > 0.06 && (z - h) <= 0.05;
+    }
+
     // --- Anticipatory obstacle response: pooling / parting / eddy ---
     // Runs BEFORE the collision call so water decelerates and steers on
     // approach instead of slamming into the surface. Costs 2 alpha taps in
     // free fall, +4 (normal) only near silhouettes; zero when disabled.
     var agitation = 0.0;
-    if u.obstacle_enabled > 0.5 {
+    if u.obstacle_enabled > 0.5 && !is_drape {
         let dir = normalize(vel + vec2f(0.0, -1e-4));
         // Occupancy relative to the collision threshold, NOT raw alpha: a
         // MiDaS depth field is continuous (a background wall reads ~0.3-0.6),
@@ -218,12 +235,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // collision engaged (it only fires on inward motion). harmonic_energy
     // stiffens the sheet (pads = glass); foam flies ballistic with gravity
     // so spray arcs like real droplets.
-    let v_field = tide_field(pos, lane_x, agitation);
-    let k = mix(3.0, 9.0, clamp(0.3 + 0.7 * u.harmonic_energy, 0.0, 1.0)) * (0.4 + 0.6 * param(1u));
-    let blend = (1.0 - exp(-k * dt)) * (1.0 - foam * 0.85);
-    vel = mix(vel, v_field, blend);
-    vel.y -= 1.8 * foam * dt;
-    vel *= pow(u.drag, dt * 60.0);
+    // Landed Drape particles are excluded from the field (they slide below).
+    if !drape_landed {
+        let v_field = tide_field(pos, lane_x, agitation);
+        let k = mix(3.0, 9.0, clamp(0.3 + 0.7 * u.harmonic_energy, 0.0, 1.0))
+            * (0.4 + 0.6 * param(1u));
+        let blend = (1.0 - exp(-k * dt)) * (1.0 - foam * 0.85);
+        vel = mix(vel, v_field, blend);
+        vel.y -= 1.8 * foam * dt;
+        vel *= pow(u.drag, dt * 60.0);
+    }
 
     // --- Percussive splash: a hashed subset sprays upward as foam on hits.
     // Gated on HPSS percussive energy ONLY — the kick band false-fires on
@@ -240,7 +261,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // moments, sparks not sheets).
     let hit = smoothstep(0.72, 0.92, u.percussive_energy);
     let attack = 0.25 + 0.75 * clamp(u.onset, 0.0, 1.0);
-    if uhash_f(idx + uhash(u32(u.time * 20.0))) < hit * attack * (0.03 + 0.08 * param(2u)) {
+    if !is_drape && uhash_f(idx + uhash(u32(u.time * 20.0))) < hit * attack * (0.03 + 0.08 * param(2u)) {
         let a = (uhash_f(idx ^ uhash(u32(u.time * 977.0))) - 0.5) * 2.6;
         vel += vec2f(sin(a) * 0.6, abs(cos(a))) * 0.35
             * (0.6 + 0.4 * hit) * (0.5 + agitation);
@@ -248,12 +269,48 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
     foam *= exp(-dt * 2.2);
 
-    // --- Integrate + canonical collision as the hard guarantee ---
+    // --- Integrate + collision ---
     let prev_pos = pos;
-    pos += vel * dt;
-    let coll = apply_obstacle_collision(pos, vel, prev_pos);
-    pos = coll.xy;
-    vel = coll.zw;
+    if is_drape {
+        if drape_landed {
+            // On the surface: gravity runs water DOWN the face (carrying it
+            // over ridges like the brow), and the relief gradient STEERS it —
+            // a deflection, not an override. Both steering terms are dt-scaled
+            // so they stay a fraction of gravity (the earlier lateral term had
+            // no dt, so it ran ~60x too strong and shoved the whole sheet
+            // sideways off the temples instead of letting it flow down).
+            //   x  — bends streams around raised features toward the grooves.
+            //   y  — only the DOWNWARD part, so water dives down the front of a
+            //        ridge into the socket below but is never pushed back UP
+            //        over a crest (that would strand it on the dome).
+            let grad = obstacle_gradient(pos);
+            let asp = obstacle_aspect();
+            let steer = (0.4 + u.obstacle_elasticity * 1.2) * 6.0;
+            var v_s = vel * asp;
+            v_s.y -= 1.5 * dt;                              // gravity down the face
+            v_s.x -= grad.x * steer * dt;                   // deflect around features
+            v_s.y += min(-grad.y, 0.0) * steer * dt;        // dive into down-slopes
+            v_s *= pow(0.78, dt * 60.0);                    // wet friction (keeps flowing)
+            vel = v_s / asp;
+            pos += vel * dt;
+            // Ride the surface over brows and into sockets; detach only where it
+            // flows OFF the model (the silhouette), never at an internal ridge.
+            let h2 = obstacle_alpha(pos);
+            if h2 > 0.06 {
+                z = h2 + 0.02;
+            }
+            // else: flowed off the model — keep z, next frame it free-falls (drip)
+        } else {
+            // Free: keep falling (relaxed above) and sink in z onto the surface.
+            pos += vel * dt;
+            z -= (0.35 + 0.4 * param(0u)) * dt;
+        }
+    } else {
+        pos += vel * dt;
+        let coll = apply_obstacle_collision(pos, vel, prev_pos);
+        pos = coll.xy;
+        vel = coll.zw;
+    }
 
     if pos.y < -1.3 || abs(pos.x) > 1.3 {
         p.pos_life.w = 0.0;
@@ -287,7 +344,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let stall = agitation * (1.0 - clamp(length(vel) * 4.0, 0.0, 1.0));
     let drained_age = new_age + stall * dt * 3.0;
 
-    p.pos_life = vec4f(pos, 0.0, 1.0);
+    p.pos_life = vec4f(pos, select(0.0, z, is_drape), 1.0);
     p.vel_size = vec4f(vel, init_size, size);
     p.color = vec4f(col, alpha);
     p.flags = vec4f(drained_age, max_life, lane_x, foam);

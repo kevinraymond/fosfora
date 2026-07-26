@@ -303,13 +303,10 @@ fn obstacle_alpha(pos: vec2f) -> f32 {
     return obstacle_height_uv(uv);
 }
 
-// Outward surface normal from the alpha gradient (central differences).
-// Returned in SCREEN space (x right, y up): equal pixel-length eps steps per
-// axis make the difference vector proportional to the true on-screen gradient
-// regardless of texture aspect or fit mode (#1790 — the old version stepped
-// equal UV distances, yielding anisotropic normals, and returned texture-space
-// y-down vectors that the y-up collision math consumed unflipped).
-fn obstacle_normal(pos: vec2f) -> vec2f {
+// Raw SCREEN-space gradient of the effective height (points UPHILL, toward
+// higher terrain+water). Central differences over ≥2-texel steps so it is
+// proportional to the true on-screen slope regardless of aspect/fit (#1790).
+fn obstacle_gradient(pos: vec2f) -> vec2f {
     let res = max(u.resolution, vec2f(1.0));
     let dims = max(vec2f(textureDimensions(obstacle_tex)), vec2f(1.0));
     let size = obstacle_fit_size();
@@ -323,8 +320,13 @@ fn obstacle_normal(pos: vec2f) -> vec2f {
     let ay = obstacle_height_uv(uv + vec2f(0.0, eps.y));
     let by = obstacle_height_uv(uv - vec2f(0.0, eps.y));
 
-    // Screen-space gradient, y-up: +eps.y in V is DOWN-screen, hence (by - ay).
-    let grad = vec2f(ax - bx, by - ay);
+    // Screen-space, y-up: +eps.y in V is DOWN-screen, hence (by - ay).
+    return vec2f(ax - bx, by - ay);
+}
+
+// Outward surface normal (unit, away from higher height) in SCREEN space.
+fn obstacle_normal(pos: vec2f) -> vec2f {
+    let grad = obstacle_gradient(pos);
     let len = length(grad);
     if len < 0.001 {
         // Degenerate gradient: push toward screen center (sensible for the
@@ -339,6 +341,8 @@ fn obstacle_normal(pos: vec2f) -> vec2f {
 
 // Apply obstacle collision. Returns vec4f(new_pos.xy, new_vel.xy).
 // Call after position integration: prev_pos is before integration, pos is after.
+// Drape (mode 4) is NOT handled here — it is a surface-flow sim implemented in
+// the host effect (tide_sim.wgsl), using obstacle_gradient/obstacle_height_uv.
 fn apply_obstacle_collision(pos: vec2f, vel: vec2f, prev_pos: vec2f) -> vec4f {
     if u.obstacle_enabled < 0.5 { return vec4f(pos, vel); }
 

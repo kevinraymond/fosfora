@@ -225,9 +225,16 @@ pub enum ObstacleMode {
     Stick = 1,
     Flow = 2,
     Contain = 3,
+    /// Particles land on the obstacle and flow downhill over its surface (along
+    /// the terrain+water height gradient), pooling in basins and overflowing
+    /// rims (#1851). The mode that makes the water accumulation visible.
+    Drape = 4,
 }
 
 impl ObstacleMode {
+    /// The collision-hardness modes on the 0..1 binding sweep. Drape is
+    /// deliberately excluded — it's a distinct surface-flow mode, not a point on
+    /// the bounce→contain spectrum, and is selected explicitly from the panel.
     pub const ALL: &[ObstacleMode] = &[Self::Bounce, Self::Stick, Self::Flow, Self::Contain];
 
     pub fn from_u32(v: u32) -> Self {
@@ -235,6 +242,7 @@ impl ObstacleMode {
             1 => Self::Stick,
             2 => Self::Flow,
             3 => Self::Contain,
+            4 => Self::Drape,
             _ => Self::Bounce,
         }
     }
@@ -253,6 +261,7 @@ impl ObstacleMode {
             Self::Stick => "Stick",
             Self::Flow => "Flow Around",
             Self::Contain => "Contain",
+            Self::Drape => "Drape (surface flow)",
         }
     }
 }

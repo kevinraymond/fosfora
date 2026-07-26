@@ -32,6 +32,10 @@ pub struct ObstacleInfo {
     pub water_source: f32,
     pub water_drain: f32,
     pub water_flux: f32,
+    /// Model rotation speed (1 = default; 0 = frozen front view).
+    pub model_spin: f32,
+    /// Faint model-underlay opacity (0 = hidden).
+    pub model_display: f32,
 }
 
 /// UI commands emitted by the obstacle panel.
@@ -56,6 +60,8 @@ pub enum ObstacleCommand {
     SetWaterSource(f32),
     SetWaterDrain(f32),
     SetWaterFlux(f32),
+    SetModelSpin(f32),
+    SetModelDisplay(f32),
 }
 
 pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
@@ -293,6 +299,72 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
 
     ui.add_space(4.0);
 
+    // Model spin (only for the 3D-model source): 0 = frozen front view.
+    if info.source == "model" {
+        let mut spin = info.model_spin;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                RichText::new("Spin")
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            )
+            .on_hover_text("Model rotation speed — 0 freezes it to a front view");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(format!("{:.2}", spin))
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                ui.spacing_mut().slider_width = ui.available_width();
+                if ui
+                    .add(egui::Slider::new(&mut spin, 0.0..=2.0).show_value(false))
+                    .changed()
+                {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("obstacle_cmd"),
+                            ObstacleCommand::SetModelSpin(spin),
+                        );
+                    });
+                }
+            });
+        });
+
+        // Show-model underlay opacity: see the form the water flows over.
+        let mut disp = info.model_display;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                RichText::new("Show model")
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            )
+            .on_hover_text("Faint underlay of the model so you can see what the water flows over");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(format!("{:.2}", disp))
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                ui.spacing_mut().slider_width = ui.available_width();
+                if ui
+                    .add(egui::Slider::new(&mut disp, 0.0..=1.0).show_value(false))
+                    .changed()
+                {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("obstacle_cmd"),
+                            ObstacleCommand::SetModelDisplay(disp),
+                        );
+                    });
+                }
+            });
+        });
+    }
+
     // Mode dropdown
     let mut mode = info.mode;
     ui.horizontal(|ui| {
@@ -310,6 +382,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                     ObstacleMode::Stick,
                     ObstacleMode::Flow,
                     ObstacleMode::Contain,
+                    ObstacleMode::Drape,
                 ] {
                     if ui.selectable_value(&mut mode, m, m.label()).changed() {
                         ui.ctx().data_mut(|d| {

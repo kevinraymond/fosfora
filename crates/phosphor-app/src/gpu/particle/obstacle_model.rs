@@ -74,6 +74,9 @@ pub struct ObstacleModel {
     _depth_tex: wgpu::Texture,
     depth_view: wgpu::TextureView,
     pose: PoseState,
+    /// Rotation speed multiplier (1 = default spin). 0 eases the model to a
+    /// frozen front view — useful for tuning and for a static hero shot.
+    pub spin: f32,
 }
 
 impl ObstacleModel {
@@ -243,6 +246,7 @@ impl ObstacleModel {
             _depth_tex: depth_tex,
             depth_view,
             pose: PoseState { yaw: 0.0 },
+            spin: 1.0,
         }
     }
 
@@ -262,8 +266,22 @@ impl ObstacleModel {
         audio: &AudioFeatures,
         dt: f32,
     ) {
-        self.pose.yaw += dt * (BASE_SPIN + AUDIO_SPIN * audio.rms);
-        let tilt = TILT_AMT * audio.bass;
+        if self.spin < 0.01 {
+            // Ease to a frozen front view (yaw → 0) for a static hero shot.
+            // yaw is kept wrapped to [-PI, PI] while spinning (below), so this
+            // always eases along the SHORT arc to the front instead of unwinding
+            // however many full turns it spun through.
+            self.pose.yaw *= 1.0 - (dt * 4.0).min(1.0);
+        } else {
+            self.pose.yaw += dt * (BASE_SPIN + AUDIO_SPIN * audio.rms) * self.spin;
+            // Wrap to [-PI, PI]. Rotation is mod TAU so this is visually
+            // identical, but it stops yaw accumulating unbounded — otherwise
+            // dropping spin to 0 makes the model "unspin" backward through every
+            // turn it accumulated before it settles front.
+            use std::f32::consts::{PI, TAU};
+            self.pose.yaw = (self.pose.yaw + PI).rem_euclid(TAU) - PI;
+        }
+        let tilt = TILT_AMT * audio.bass * self.spin;
         let model = Mat4::from_rotation_y(self.pose.yaw) * Mat4::from_rotation_x(tilt);
         let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y);
         // Ortho box fit tight to the normalized model (unit bounding radius, so
@@ -328,6 +346,188 @@ impl ObstacleModel {
             }
         }
         queue.submit([encoder.finish()]);
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DisplayUniforms {
+    resolution: [f32; 2],
+    tex_dims: [f32; 2],
+    fit: u32,
+    opacity: f32,
+    _pad: [f32; 2],
+}
+
+/// A faint fullscreen underlay of the obstacle depth field (#1851) so the form
+/// the water flows over is visible — a tuning aid and a legitimate look.
+/// Alpha-over into the HDR target beneath the particle render.
+pub struct ObstacleDisplay {
+    pipeline: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
+    uniform: wgpu::Buffer,
+    sampler: wgpu::Sampler,
+    bind_group: Option<wgpu::BindGroup>,
+}
+
+impl ObstacleDisplay {
+    pub fn new(device: &Device, hdr_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("obstacle-display-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../../../../assets/shaders/obstacle_display.wgsl").into(),
+            ),
+        });
+        let entry = |binding: u32, ty: wgpu::BindingType| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty,
+            count: None,
+        };
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("obstacle-display-bgl"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    2,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+            ],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("obstacle-display-layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("obstacle-display-pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: hdr_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("obstacle-display-uniform"),
+            size: std::mem::size_of::<DisplayUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("obstacle-display-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        Self {
+            pipeline,
+            bgl,
+            uniform,
+            sampler,
+            bind_group: None,
+        }
+    }
+
+    /// (Re)bind against the current obstacle view (call when it changes).
+    pub fn rebuild(&mut self, device: &Device, obstacle_view: &wgpu::TextureView) {
+        self.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("obstacle-display-bg"),
+            layout: &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(obstacle_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        }));
+    }
+
+    /// Draw the underlay into `target` (alpha-over, LoadOp::Load).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        queue: &Queue,
+        target: &wgpu::TextureView,
+        opacity: f32,
+        fit: u32,
+        resolution: [f32; 2],
+        tex_dims: [f32; 2],
+    ) {
+        let Some(bg) = &self.bind_group else {
+            return;
+        };
+        queue.write_buffer(
+            &self.uniform,
+            0,
+            bytemuck::bytes_of(&DisplayUniforms {
+                resolution,
+                tex_dims,
+                fit,
+                opacity,
+                _pad: [0.0; 2],
+            }),
+        );
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("obstacle-display-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 }
 
@@ -624,15 +824,14 @@ mod tests {
 
         let c = TARGET_RES / 2;
         let center = at(&alpha, c, c);
-        // Front face is near-bright but NOT saturated (graded depth, not a flat
-        // silhouette): world z=+1 → normalized depth 0.222 → alpha ≈ 0.778.
+        // Under the front-surface relief remap (obstacle_model.wgsl), a cube's
+        // flat front face sits at the near plane (world z=+1, d≈0.778) — above
+        // RELIEF_HI — so it saturates to full height. The remap exaggerates the
+        // FRONT relief; a flat face has none, so it reads uniform. (Graded relief
+        // is exercised live on real curved models, not this degenerate cube.)
         assert!(
-            center > 150,
-            "cube front-face alpha should be near-bright, got {center}"
-        );
-        assert!(
-            center < 250,
-            "cube front-face alpha should be graded (<1.0), got {center}"
+            center > 240,
+            "cube front-face should saturate near-bright under relief remap, got {center}"
         );
         // Corners are background — cleared to 0.
         assert_eq!(at(&alpha, 8, 8), 0, "top-left corner should be empty");
@@ -653,12 +852,14 @@ mod tests {
         let (device, queue) = test_gpu();
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        // Three overlapping splats near the origin (center, radius) — a small
-        // disc cluster in the middle of the field.
+        // Three overlapping splats near the FRONT of the model box (z≈0.7, in
+        // the RELIEF_LO..HI band the encoding maps to visible height) — a small
+        // disc cluster in the middle of the field. A real cloud's camera-facing
+        // surface sits near z=+1; a mid-depth cluster (z≈0) would remap to ~0.
         let inst: Vec<f32> = vec![
-            0.0, 0.0, 0.0, 0.4, //
-            0.2, 0.0, 0.1, 0.3, //
-            -0.15, 0.1, 0.0, 0.3,
+            0.0, 0.0, 0.70, 0.4, //
+            0.2, 0.0, 0.75, 0.3, //
+            -0.15, 0.1, 0.70, 0.3,
         ];
         let bytes: Vec<u8> = inst.iter().flat_map(|v| v.to_le_bytes()).collect();
         let geom = ModelGeometry::Splat {

@@ -264,8 +264,8 @@ impl ApplicationHandler for PhosphorApp {
                                 attraction_strength: ps.def.attraction_strength,
                                 blend_mode: ps.blend_mode.clone(),
                                 has_flow_field: ps.def.flow_field,
-                                has_trails: ps.def.trail_length >= 2,
-                                trail_length: ps.def.trail_length,
+                                has_trails: ps.trail_length() >= 2,
+                                trail_length: ps.trail_length(),
                                 has_interaction: ps.def.interaction,
                                 has_sprite: ps.sprite.is_some(),
                                 is_compute_raster: ps.is_compute_raster(),
@@ -517,6 +517,8 @@ impl ApplicationHandler for PhosphorApp {
                                         water_source: ps.obstacle_water_params.source_rate,
                                         water_drain: ps.obstacle_water_params.drain,
                                         water_flux: ps.obstacle_water_params.flux_gain,
+                                        model_spin: ps.obstacle_model_spin,
+                                        model_display: ps.obstacle_model_display,
                                     }
                                 } else {
                                     crate::ui::panels::obstacle_panel::ObstacleInfo {
@@ -547,6 +549,8 @@ impl ApplicationHandler for PhosphorApp {
                                         water_source: 0.01,
                                         water_drain: 0.06,
                                         water_flux: 0.18,
+                                        model_spin: 1.0,
+                                        model_display: 0.0,
                                     }
                                 }
                             });
@@ -1897,6 +1901,12 @@ impl ApplicationHandler for PhosphorApp {
                                         ObstacleCommand::SetWaterFlux(v) => {
                                             ps.obstacle_water_params.flux_gain = v;
                                         }
+                                        ObstacleCommand::SetModelSpin(v) => {
+                                            ps.obstacle_model_spin = v;
+                                        }
+                                        ObstacleCommand::SetModelDisplay(v) => {
+                                            ps.obstacle_model_display = v;
+                                        }
                                         ObstacleCommand::None => {}
                                     }
                                 }
@@ -2327,6 +2337,8 @@ impl ApplicationHandler for PhosphorApp {
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_size")));
                     let drag: Option<f32> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_drag")));
+                    let trail_length: Option<u32> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_trail_length")));
 
                     let mut particle_save_info: Option<(usize, gpu::particle::types::ParticleDef)> =
                         None;
@@ -2336,10 +2348,15 @@ impl ApplicationHandler for PhosphorApp {
                         || speed.is_some()
                         || size.is_some()
                         || drag.is_some()
+                        || trail_length.is_some()
                     {
                         // Panel edit → preset is now unsaved (particle-sim edits
                         // round-trip via LayerPreset.particle_sim).
                         app.preset_store.mark_dirty();
+                        // Needed only by the trail-length branch below, which
+                        // reallocates the trail buffer.
+                        let device = app.gpu.device.clone();
+                        let hdr = crate::gpu::GpuContext::hdr_format();
                         if let Some(layer) = app.layer_stack.active_mut() {
                             if let Some(effect) = layer.as_effect_mut() {
                                 let eidx = effect.effect_index;
@@ -2363,6 +2380,14 @@ impl ApplicationHandler for PhosphorApp {
                                     }
                                     if let Some(v) = drag {
                                         ps.def.drag = v;
+                                    }
+                                    if let Some(v) = trail_length {
+                                        // Keep def in sync (drives disk-save +
+                                        // preset capture) and reallocate the trail
+                                        // buffer; the per-frame uniform sync then
+                                        // shows the new length live.
+                                        ps.def.trail_length = v;
+                                        ps.set_trail_length(&device, hdr, v);
                                     }
                                     if let Some(idx) = eidx {
                                         particle_save_info = Some((idx, ps.def.clone()));

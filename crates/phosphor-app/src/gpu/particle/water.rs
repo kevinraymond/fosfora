@@ -379,6 +379,36 @@ mod tests {
     use super::*;
     use crate::gpu::test_gpu::{gpu_guard, test_gpu};
 
+    // Validates tide_sim.wgsl (Drape surface-flow, #1851) compiles with the
+    // shipped lib prepend — the runtime assembly (loader.rs LIB_FILENAMES +
+    // particle_lib + effect source). naga runs at shader-module creation.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn tide_sim_shader_compiles() {
+        let _g = gpu_guard();
+        let (device, _q) = test_gpu();
+        let libs = [
+            include_str!("../../../../../assets/shaders/lib/noise.wgsl"),
+            include_str!("../../../../../assets/shaders/lib/palette.wgsl"),
+            include_str!("../../../../../assets/shaders/lib/sdf.wgsl"),
+            include_str!("../../../../../assets/shaders/lib/tonemap.wgsl"),
+            include_str!("../../../../../assets/shaders/lib/chronoflow.wgsl"),
+        ]
+        .join("\n");
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl")
+            .replace("const SH_GRID_W: u32 = 40u;", "const SH_GRID_W: u32 = 64u;")
+            .replace("const SH_GRID_H: u32 = 40u;", "const SH_GRID_H: u32 = 64u;");
+        let tide = include_str!("../../../../../assets/shaders/tide_sim.wgsl");
+        let src = format!("{libs}\n{plib}\n{tide}");
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let _m = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("tide-validate"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "tide_sim.wgsl validation error: {err:?}");
+    }
+
     /// Build a terrain texture (Rgba8Unorm, alpha = height) from a height fn.
     fn terrain(
         device: &Device,

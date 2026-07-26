@@ -66,9 +66,28 @@ fn vs_splat(
 
 // ---- Shared fragment: near-bright depth ----------------------------------
 
+// Front-surface relief exaggeration. The raw near→far ramp `1 - clip.z` packs a
+// model's whole VISIBLE relief (a skull's brow→socket is only ~15-20% of its
+// front-to-back depth) into a narrow high-d band; after 8-bit quantization that
+// collapses to ~15 flat levels, so central-difference ∇h is ~0 across the face
+// and spikes only at the silhouette — water hugged the outline and streamed
+// straight through the interior. Remapping the front band [LO,HI]→[0,1] spreads
+// the relief across the full range (~10x stronger gradients; sockets/temples,
+// cheekbones and brow all carry real slope). These two constants are the tuning
+// knobs — nudge LO up if the face washes to flat white, down if it stays grey.
+// (A per-frame depth min/max reduction would make this exact for any rotation;
+// baked constants suffice for the unit-normalized models we raster.)
+const RELIEF_LO: f32 = 0.55;
+const RELIEF_HI: f32 = 0.75;
+
+fn relief(clip_z: f32) -> f32 {
+    let d = 1.0 - clip_z;
+    return clamp((d - RELIEF_LO) / (RELIEF_HI - RELIEF_LO), 0.0, 1.0);
+}
+
 @fragment
 fn fs_mesh(in: MeshOut) -> @location(0) vec4<f32> {
-    let d = 1.0 - in.clip.z;
+    let d = relief(in.clip.z);
     return vec4<f32>(d, d, d, d);
 }
 
@@ -79,6 +98,6 @@ fn fs_splat(in: SplatOut) -> @location(0) vec4<f32> {
     if (dot(in.uv, in.uv) > 1.0) {
         discard;
     }
-    let d = 1.0 - in.clip.z;
+    let d = relief(in.clip.z);
     return vec4<f32>(d, d, d, d);
 }

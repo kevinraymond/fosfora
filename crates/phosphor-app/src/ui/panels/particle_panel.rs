@@ -776,6 +776,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     let mut speed = info.initial_speed;
     let mut size = info.initial_size;
     let mut drag = info.drag;
+    let mut trail_len = info.trail_length;
 
     // Dynamic ranges: extend to include current value so out-of-range
     // values (e.g. Raster's emit_rate=100K, lifetime=999) aren't silently
@@ -840,6 +841,22 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     {
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("particle_drag"), drag));
+    }
+    // Trail length: 0/1 = off (drop to short/no trails to judge trajectories).
+    // Always shown so the user can turn trails on for an effect that ships without.
+    if rows::ParamRow::new("Trail length")
+        .formatter(|v| {
+            if v < 2.0 {
+                "off".to_string()
+            } else {
+                format!("{v:.0}pt")
+            }
+        })
+        .show_slider(ui, &mut trail_len, 0..=32)
+        .changed
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new("particle_trail_length"), trail_len));
     }
 }
 

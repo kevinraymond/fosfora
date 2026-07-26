@@ -2645,6 +2645,9 @@ impl App {
                     initial_speed: ps.def.initial_speed,
                     initial_size: ps.def.initial_size,
                     drag: ps.def.drag,
+                    // Live allocated length (0 when off), so the preset restores
+                    // exactly what's on screen.
+                    trail_length: Some(ps.trail_length()),
                 });
                 LayerPreset {
                     effect_name,
@@ -3305,6 +3308,13 @@ impl App {
                         ps.def.initial_speed = sim.initial_speed;
                         ps.def.initial_size = sim.initial_size;
                         ps.def.drag = sim.drag;
+                        // `None` (pre-existing presets) leaves the `.pfx` trail
+                        // length; a saved override reallocates the trail buffer so
+                        // the length matches on reload, not just `def`.
+                        if let Some(len) = sim.trail_length {
+                            ps.def.trail_length = len;
+                            ps.set_trail_length(&device, hdr, len);
+                        }
                     }
                     // Only `lattice_params` — never `lattice_defaults`, which the
                     // panel "Reset" restores from. `init_lattice` rebuilds the

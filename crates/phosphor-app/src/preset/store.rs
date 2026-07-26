@@ -111,6 +111,11 @@ pub struct ParticleSimPreset {
     pub initial_speed: f32,
     pub initial_size: f32,
     pub drag: f32,
+    /// Runtime "Trail length" slider override. `None` (the default, and the value
+    /// for any preset saved before this field existed) means "leave the effect's
+    /// `.pfx` trail length alone" so trails aren't silently disabled on load.
+    #[serde(default)]
+    pub trail_length: Option<u32>,
 }
 
 impl Default for ParticleSimPreset {
@@ -124,6 +129,7 @@ impl Default for ParticleSimPreset {
             initial_speed: default_initial_speed(),
             initial_size: default_initial_size(),
             drag: default_drag(),
+            trail_length: None,
         }
     }
 }
@@ -816,20 +822,24 @@ mod tests {
             initial_speed: 0.7,
             initial_size: 0.03,
             drag: 0.9,
+            trail_length: Some(12),
         };
         let json = serde_json::to_string(&sim).unwrap();
         let sim2: ParticleSimPreset = serde_json::from_str(&json).unwrap();
         assert!((sim2.emit_rate - 250.0).abs() < 1e-6);
         assert_eq!(sim2.burst_on_beat, 3);
         assert!((sim2.drag - 0.9).abs() < 1e-6);
+        assert_eq!(sim2.trail_length, Some(12));
 
         // Partial block fills the rest from ParticleDef's serde defaults (proves
-        // container #[serde(default)] — no dead emitter from a partial JSON).
+        // container #[serde(default)] — no dead emitter from a partial JSON). A
+        // block predating the trail_length field parses to None = "keep .pfx".
         let partial: ParticleSimPreset = serde_json::from_str(r#"{ "lifetime": 5.0 }"#).unwrap();
         assert!((partial.lifetime - 5.0).abs() < 1e-6);
         assert!((partial.emit_rate - default_emit_rate()).abs() < 1e-6);
         assert!((partial.initial_speed - default_initial_speed()).abs() < 1e-6);
         assert!((partial.drag - default_drag()).abs() < 1e-6);
+        assert_eq!(partial.trail_length, None);
     }
 
     #[test]

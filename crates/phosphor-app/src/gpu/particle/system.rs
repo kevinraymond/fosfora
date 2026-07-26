@@ -105,6 +105,12 @@ pub struct ParticleSystem {
     // over the obstacle terrain; particles rest on the pooled water.
     pub obstacle_water_enabled: bool,
     pub obstacle_water_params: super::water::WaterParams,
+    /// Model rotation speed (1 = default spin; 0 = frozen front view).
+    pub obstacle_model_spin: f32,
+    /// Opacity of the faint obstacle-model underlay (0 = hidden). Lets viewers
+    /// see the form the water flows over.
+    pub obstacle_model_display: f32,
+    obstacle_display: super::obstacle_model::ObstacleDisplay,
     water_sim: Option<super::water::WaterSim>,
     /// 1×1 zero water texture bound when no sim is active (keeps the group-1
     /// layout satisfied; `water_tex` reads 0 ⇒ collision unchanged).
@@ -624,6 +630,8 @@ impl ParticleSystem {
         });
 
         let obstacle = ObstacleTexture::placeholder(device, queue);
+        let mut obstacle_display = super::obstacle_model::ObstacleDisplay::new(device, hdr_format);
+        obstacle_display.rebuild(device, &obstacle.view);
         let (water_placeholder, water_placeholder_view) = super::water::placeholder(device, queue);
         let flow_field_bind_group = create_flow_field_bind_group(
             device,
@@ -1275,6 +1283,9 @@ impl ParticleSystem {
             obstacle_model: None,
             obstacle_water_enabled: false,
             obstacle_water_params: super::water::WaterParams::default(),
+            obstacle_model_spin: 1.0,
+            obstacle_model_display: 0.0,
+            obstacle_display,
             water_sim: None,
             water_placeholder,
             water_placeholder_view,
@@ -2007,6 +2018,19 @@ impl ParticleSystem {
 
     /// Render particles into the given target using indirect draw.
     pub fn render(&self, encoder: &mut CommandEncoder, queue: &Queue, target: &TextureView) {
+        // Faint obstacle-model underlay (#1851), beneath the particles, so the
+        // form the water flows over is visible.
+        if self.obstacle_enabled && self.obstacle_model_display > 0.0 {
+            self.obstacle_display.render(
+                encoder,
+                queue,
+                target,
+                self.obstacle_model_display,
+                self.obstacle_fit as u32,
+                self.uniforms.resolution,
+                [self.obstacle.width as f32, self.obstacle.height as f32],
+            );
+        }
         // Lattice / Volumetric path: ray march the density volume (built in
         // dispatch), compositing over the scene. Replaces the normal particle render.
         if self.lattice_enabled {
@@ -2763,7 +2787,9 @@ impl ParticleSystem {
         audio: &crate::audio::features::AudioFeatures,
         dt: f32,
     ) {
+        let spin = self.obstacle_model_spin;
         if let Some(model) = self.obstacle_model.as_mut() {
+            model.spin = spin;
             model.render(device, queue, &self.obstacle.view, audio, dt);
         }
     }
@@ -2826,6 +2852,7 @@ impl ParticleSystem {
             &self.obstacle,
             water_view,
         );
+        self.obstacle_display.rebuild(device, &self.obstacle.view);
     }
 
     /// Set up spatial hash grid for particle-particle interaction.
@@ -2875,6 +2902,22 @@ impl ParticleSystem {
                 resource: self.dummy_trail_buffer.as_entire_binding(),
             }],
         });
+    }
+
+    /// Currently allocated trail length (ring-buffer points per particle), 0 when
+    /// trails are off. This is the live value the frame uniforms are synced from
+    /// each frame — not `def.trail_length`, which is the `.pfx` request before the
+    /// disable/cap edge cases in `setup_trails`.
+    pub fn trail_length(&self) -> u32 {
+        self.trail_length
+    }
+
+    /// Runtime setter for the "Trail length" panel slider. Delegates to
+    /// `setup_trails` (which handles the disable/cap/splat-force-off edge cases
+    /// and updates `self.trail_length`); the per-frame uniform sync then picks up
+    /// the new length so trails change live. `len < 2` disables trails.
+    pub fn set_trail_length(&mut self, device: &Device, hdr_format: TextureFormat, len: u32) {
+        self.setup_trails(device, hdr_format, len, self.trail_width);
     }
 
     pub fn setup_trails(
