@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.20.0 — 2026-07-26
+
 ### Added
 - **New effect: Lumen — real-time global illumination.** A swarm of coloured fireflies lights a soft breathing silhouette, and every light casts long, soft-edged shadows with plausible penumbras. Each firefly is tuned to a pitch class so loud notes light their own lights, kicks pulse the whole room, bass swells the silhouette, and tonal passages thicken the air into volumetric god-rays.
 - **New effect: Protea — a living Flow Lenia ecosystem fed by the music.** Three species of amoebae with membranes and organelles hunt, merge, and divide across a mass-conserving field; loudness is their food, so a quiet passage starves them until they visibly shrink and a loud one brings them surging back. Bass swells their bodies, onsets rain nutrient droplets, and key changes mutate the species region by region.
