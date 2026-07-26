@@ -1831,6 +1831,315 @@ mod tests {
         );
     }
 
+    // Lumen (#1485) end-to-end through the real PassExecutor: scene → 6 radiance
+    // cascades (one shared lumen_cascade.wgsl, level from its own size) → display.
+    // Synthetic audio grows a lit scene; asserts it isn't black/blown, carries
+    // light-and-shadow STRUCTURE (an occluder casts darkness — not a flat wash),
+    // brightens on a kick, is coloured by chroma, and keeps moving. Silent low-res
+    // proxy — real penumbra/god-ray feel needs a live review.
+    // Run: LUMEN_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored lumen_render_previews
+    #[test]
+    #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
+    fn lumen_render_previews() {
+        let out_dir = std::env::var("LUMEN_PNG_DIR").ok();
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let loader = EffectLoader::for_test(&format!("{noise}\n{palette}\n{sdf}\n{tonemap}"));
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (480u32, 270u32);
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+
+        let mk = |shader: &str, count: usize| {
+            ShaderPipeline::new(
+                &device,
+                fmt,
+                &loader.prepend_library_with_inputs(shader, count),
+                None,
+                count,
+            )
+            .expect("lumen pass pipeline")
+        };
+        let scene_src = include_str!("../../../../assets/shaders/lumen_scene.wgsl");
+        let casc_src = include_str!("../../../../assets/shaders/lumen_cascade.wgsl");
+        let disp_src = include_str!("../../../../assets/shaders/lumen_display.wgsl");
+
+        // Same wiring as lumen.pfx (indices: scene=0, cascade5..0 = 1..6, display=7).
+        let src = |pass: usize, prev: bool| InputSrc::Pass { pass, prev };
+        let mut executor = assemble(
+            &device,
+            &queue,
+            w,
+            h,
+            fmt,
+            &ubuf,
+            &placeholder,
+            &audio,
+            vec![
+                ("scene", mk(scene_src, 0), true, vec![], 1, 0.5),
+                // Top cascade: inputs ["scene","scene"] — input1 is a placeholder the
+                // shader ignores (level == MAX_LEVEL skips the merge).
+                (
+                    "cascade5",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(0, false)],
+                    1,
+                    0.015625,
+                ),
+                (
+                    "cascade4",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(1, false)],
+                    1,
+                    0.03125,
+                ),
+                (
+                    "cascade3",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(2, false)],
+                    1,
+                    0.0625,
+                ),
+                (
+                    "cascade2",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(3, false)],
+                    1,
+                    0.125,
+                ),
+                (
+                    "cascade1",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(4, false)],
+                    1,
+                    0.25,
+                ),
+                (
+                    "cascade0",
+                    mk(casc_src, 2),
+                    true,
+                    vec![src(0, false), src(5, false)],
+                    1,
+                    0.5,
+                ),
+                (
+                    "display",
+                    mk(disp_src, 2),
+                    true,
+                    vec![src(6, false), src(0, false)],
+                    1,
+                    1.0,
+                ),
+            ],
+        );
+        let (disp_idx, casc0_idx, scene_idx) = (7usize, 6usize, 0usize);
+
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        let mut u = crate::gpu::ShaderUniforms::zeroed();
+        u.resolution = [w as f32, h as f32];
+        u.delta_time = 1.0 / 60.0;
+        // Lumen param defaults (see lumen.pfx), indices 0..9.
+        for (i, v) in [0.5, 0.5, 0.5, 0.5, 0.5, 0.2, 0.5, 0.5, 0.6, 0.55]
+            .into_iter()
+            .enumerate()
+        {
+            u.params[i] = v;
+        }
+
+        // Mean luminance (0..1), lit coverage, and near-white fraction of an RGBA8 frame.
+        let stats = |data: &[u8], fw: u32, fh: u32| -> (f64, f64, f64) {
+            let (mut sum, mut lit, mut hot) = (0.0f64, 0u32, 0u32);
+            for p in data.chunks_exact(4) {
+                let l = 0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64;
+                sum += l;
+                if l > 8.0 {
+                    lit += 1;
+                }
+                if p[0] > 235 && p[1] > 235 && p[2] > 235 {
+                    hot += 1;
+                }
+            }
+            let n = (fw * fh) as f64;
+            (sum / n / 255.0, lit as f64 / n, hot as f64 / n)
+        };
+        // Colourfulness: mean saturation (max-min)/max over pixels bright enough to read.
+        let colorfulness = |data: &[u8]| -> f64 {
+            let (mut s, mut n) = (0.0f64, 0u32);
+            for p in data.chunks_exact(4) {
+                let (r, g, b) = (p[0] as f64, p[1] as f64, p[2] as f64);
+                let mx = r.max(g).max(b);
+                let mn = r.min(g).min(b);
+                if mx > 24.0 {
+                    s += (mx - mn) / mx;
+                    n += 1;
+                }
+            }
+            if n == 0 { 0.0 } else { s / n as f64 }
+        };
+        // 16x9 block means → std (large-scale structure) and dark-block fraction (shadow/void).
+        let block_stats = |data: &[u8]| -> (f64, f64) {
+            let (bx, by) = (16u32, 9u32);
+            let mut means: Vec<f64> = Vec::with_capacity((bx * by) as usize);
+            for byi in 0..by {
+                for bxi in 0..bx {
+                    let (x0, x1) = (bxi * w / bx, (bxi + 1) * w / bx);
+                    let (y0, y1) = (byi * h / by, (byi + 1) * h / by);
+                    let (mut sm, mut n) = (0.0f64, 0u32);
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let i = ((y * w + x) * 4) as usize;
+                            sm += 0.299 * data[i] as f64
+                                + 0.587 * data[i + 1] as f64
+                                + 0.114 * data[i + 2] as f64;
+                            n += 1;
+                        }
+                    }
+                    means.push(sm / n as f64 / 255.0);
+                }
+            }
+            let mean = means.iter().sum::<f64>() / means.len() as f64;
+            let var = means.iter().map(|m| (m - mean).powi(2)).sum::<f64>() / means.len() as f64;
+            let dark = means.iter().filter(|&&m| m < 0.02).count() as f64 / means.len() as f64;
+            (var.sqrt(), dark)
+        };
+
+        // Onsets/kicks every 16 frames; a spread of chroma so many pitch classes light up.
+        const N: u32 = 160;
+        let mut prev_f: Vec<u8> = Vec::new();
+        let mut lit: Vec<u8> = Vec::new();
+        let mut flash: Vec<u8> = Vec::new();
+        let mut casc: Vec<u8> = Vec::new();
+        let mut scn: Vec<u8> = Vec::new();
+
+        for f in 0..N {
+            u.time = f as f32 / 60.0;
+            u.frame_index = f as f32;
+            let onset = f % 16 == 0;
+            u.onset = if onset { 1.0 } else { 0.0 };
+            u.kick = if onset { 1.0 } else { 0.0 };
+            u.beat_strength = 0.6;
+            u.rms = 0.30;
+            u.bass = 0.5;
+            u.presence = 0.4;
+            u.brilliance = 0.35;
+            u.flatness = 0.2;
+            for c in 0..12usize {
+                u.chroma[c] = 0.25 + 0.5 * (((c * 5) % 12) as f32 / 12.0);
+            }
+
+            // prev/lit are both between onsets (motion); flash is on an onset (kick response).
+            let mut cap: Option<(&mut Vec<u8>, usize, u32, u32)> = None;
+            if f == 130 {
+                cap = Some((&mut prev_f, disp_idx, w, h));
+            } else if f == 136 {
+                cap = Some((&mut lit, disp_idx, w, h));
+            } else if f == 144 {
+                cap = Some((&mut flash, disp_idx, w, h));
+            } else if f == 145 {
+                cap = Some((&mut casc, casc0_idx, w / 2, h / 2));
+            } else if f == 146 {
+                cap = Some((&mut scn, scene_idx, w / 2, h / 2));
+            }
+            if let Some((slot, idx, cw, ch)) = cap {
+                *slot = capture_pass_rgba(
+                    &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, idx, cw, ch,
+                );
+            } else {
+                let mut enc = device.create_command_encoder(&Default::default());
+                let _ = executor.execute(&mut enc, &ubuf, &queue, &u);
+                queue.submit([enc.finish()]);
+            }
+            executor.flip();
+        }
+
+        if let Some(dir) = out_dir {
+            for (name, data, fw, fh) in [
+                ("lit", &lit, w, h),
+                ("flash", &flash, w, h),
+                ("cascade0", &casc, w / 2, h / 2),
+                ("scene", &scn, w / 2, h / 2),
+            ] {
+                let path = format!("{dir}/lumen_{name}.png");
+                image::RgbaImage::from_raw(fw, fh, data.clone())
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+                eprintln!("wrote {path}");
+            }
+        }
+
+        let (lm, lc, hot) = stats(&lit, w, h);
+        let (fm, _, _) = stats(&flash, w, h);
+        let (block_std, void_frac) = block_stats(&lit);
+        let cf = colorfulness(&lit);
+        let mut sad = 0.0f64;
+        for i in (0..lit.len()).step_by(4) {
+            let a = 0.299 * prev_f[i] as f64
+                + 0.587 * prev_f[i + 1] as f64
+                + 0.114 * prev_f[i + 2] as f64;
+            let b = 0.299 * lit[i] as f64 + 0.587 * lit[i + 1] as f64 + 0.114 * lit[i + 2] as f64;
+            sad += (a - b).abs();
+        }
+        let sad = sad / (w * h) as f64 / 255.0;
+        eprintln!(
+            "lit mean {lm:.4} cover {lc:.3} hot {hot:.3}; flash mean {fm:.4}; \
+             block_std {block_std:.4} void {void_frac:.3}; colorful {cf:.3}; sad {sad:.4}"
+        );
+
+        // Lit, but not a black frame and not a blown-out wash.
+        assert!(lm > 0.01, "display near-black (mean {lm:.4}) — nothing lit");
+        assert!(lm < 0.6, "display blew out (mean {lm:.4})");
+        assert!(
+            hot < 0.2,
+            "display is a saturated wash ({:.0}% near-white)",
+            hot * 100.0
+        );
+        assert!(lc > 0.02, "almost nothing lit (coverage {lc:.3})");
+
+        // Light AND shadow: large-scale structure with genuinely dark regions — the occluder
+        // casts darkness, not a uniform glow filling the frame.
+        assert!(
+            block_std > 0.02,
+            "flat wash (block_std {block_std:.4}) — no light/shadow structure"
+        );
+        assert!(
+            void_frac > 0.02,
+            "no dark regions ({:.0}% blocks dark) — the occluder casts no shadow / light leaks everywhere",
+            void_frac * 100.0
+        );
+
+        // A kick brightens the room (fireflies flash).
+        assert!(
+            fm > lm * 1.08,
+            "onset frame not brighter (flash {fm:.4} vs lit {lm:.4}) — the kick does nothing"
+        );
+
+        // Coloured by the music, not grey.
+        assert!(
+            cf > 0.06,
+            "display is grey (colorfulness {cf:.3}) — chroma tints not showing"
+        );
+
+        // The swarm keeps moving.
+        assert!(
+            sad > 0.003,
+            "frozen (SAD {sad:.4}) — the scene isn't animating"
+        );
+    }
+
     // Every shipped effect's fragment-pass shaders must compile through the
     // production preamble (uniform block + libs + pass-graph input bindings at
     // the exact input count the .pfx declares). Catches a pass shader that

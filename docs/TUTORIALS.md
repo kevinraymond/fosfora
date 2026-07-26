@@ -54,7 +54,7 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **43 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
+Fosfora ships with **44 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
 intro visual you see at startup, and a rasterizer stress test).
 
 **Shaders** (11) — pure fragment shaders, no particles:
