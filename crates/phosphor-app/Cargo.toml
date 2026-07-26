@@ -60,6 +60,8 @@ gif = "0.13"
 rfd = "0.15"
 # Linear algebra (camera, projection)
 glam = "0.29"
+# glTF/GLB import (3D-model obstacle source #1851) — pure Rust, no system deps
+gltf = "1"
 # Code editor widget (shader editor)
 egui_code_editor = "0.2"
 # Dynamic library loading (NDI runtime, PulseAudio runtime on Linux)

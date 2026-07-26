@@ -69,6 +69,53 @@ impl ObstacleTexture {
         }
     }
 
+    /// Create an empty render-target obstacle (`RENDER_ATTACHMENT | TEXTURE_BINDING`).
+    ///
+    /// Used by the 3D-model obstacle source (#1851): a render pass draws the
+    /// posed model's depth into this texture every frame, and the particle sim
+    /// samples it as an ordinary obstacle field. No `COPY_DST` — it is written
+    /// only by rendering, never by `write_texture`.
+    pub fn render_target(device: &Device, w: u32, h: u32) -> Self {
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("obstacle-model-target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            // COPY_SRC so the field can be read back (offscreen probe / debug snapshot).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("obstacle-model-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Self {
+            texture,
+            view,
+            sampler,
+            width: w,
+            height: h,
+        }
+    }
+
     /// Create from RGBA byte data.
     ///
     /// If the image has no meaningful alpha variation (e.g. JPEG, opaque PNG

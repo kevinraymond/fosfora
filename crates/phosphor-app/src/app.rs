@@ -1234,6 +1234,12 @@ impl App {
                     ps.uniforms.obstacle_fit = ps.obstacle_fit as u32;
                     let audio = self.latest_audio.unwrap_or_default();
                     ps.update_audio(&audio);
+                    // Re-raster the 3D-model obstacle depth for this frame
+                    // (#1851). Submitted here in update(), before the particle
+                    // compute pass samples the obstacle in render().
+                    if ps.obstacle_source == "model" {
+                        ps.render_obstacle_model(&self.gpu.device, &self.gpu.queue, &audio, dt);
+                    }
                     // Splat (#1800): camera params ride slots 8–11 and roundness
                     // slot 12 (only 0–7 reach the sim); advance the CPU
                     // orbit/envelope driver with this frame's dt + audio (no-op
@@ -2621,6 +2627,9 @@ impl App {
                 let obstacle_depth = ps_ref
                     .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
                     .map(|_| true);
+                let obstacle_model = ps_ref
+                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
+                    .map(|_| true);
                 // Capture live Lattice / particle-sim panel edits so they
                 // round-trip through the preset instead of snapping back to
                 // the effect's `.pfx` defaults on reload.
@@ -2660,6 +2669,7 @@ impl App {
                     obstacle_threshold,
                     obstacle_elasticity,
                     obstacle_depth,
+                    obstacle_model,
                     lattice,
                     particle_sim,
                 }
@@ -3111,8 +3121,52 @@ impl App {
                 }
             }
 
+            // Restore 3D-model obstacle source (#1851): re-load + depth-raster
+            // from the stored file. Must precede the image branch — the model
+            // path lives in `obstacle_image_path` but is not an image.
+            if lp.obstacle_model == Some(true) {
+                if let Some(ref model_path) = lp.obstacle_image_path {
+                    let path = std::path::PathBuf::from(model_path);
+                    if path.exists() {
+                        if let Some(layer) = self.layer_stack.layers.get_mut(i) {
+                            if let Some(effect) = layer.as_effect_mut() {
+                                if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
+                                    match ps.set_obstacle_model(&self.gpu.device, &path) {
+                                        Ok(()) => {
+                                            if let Some(mode) = lp.obstacle_mode {
+                                                ps.obstacle_mode =
+                                                    crate::gpu::particle::ObstacleMode::from_u32(
+                                                        mode,
+                                                    );
+                                            }
+                                            if let Some(fit) = lp.obstacle_fit {
+                                                ps.obstacle_fit =
+                                                    crate::gpu::particle::ObstacleFit::from_u32(
+                                                        fit,
+                                                    );
+                                            }
+                                            if let Some(threshold) = lp.obstacle_threshold {
+                                                ps.obstacle_threshold = threshold;
+                                            }
+                                            if let Some(elasticity) = lp.obstacle_elasticity {
+                                                ps.obstacle_elasticity = elasticity;
+                                            }
+                                            log::info!("Restored obstacle model for layer {i}");
+                                        }
+                                        Err(e) => log::warn!(
+                                            "Failed to load obstacle model for layer {i}: {e}"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        log::warn!("Obstacle model '{model_path}' not found for layer {i}");
+                    }
+                }
+            }
             // Restore obstacle collision state
-            if let Some(ref obstacle_path) = lp.obstacle_image_path {
+            else if let Some(ref obstacle_path) = lp.obstacle_image_path {
                 let path = std::path::PathBuf::from(obstacle_path);
                 if path.exists() {
                     match image::open(&path) {

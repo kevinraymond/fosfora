@@ -4,6 +4,7 @@ pub mod flow_field;
 pub mod image_source;
 pub mod morph;
 pub mod obstacle;
+pub mod obstacle_model;
 pub mod source_loader;
 pub mod spatial_hash;
 pub mod splat;

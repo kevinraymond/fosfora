@@ -1800,6 +1800,27 @@ impl ApplicationHandler for PhosphorApp {
                                                     .ok();
                                             }
                                         }
+                                        ObstacleCommand::LoadModel => {
+                                            // File dialog for a 3D-model obstacle
+                                            // (.glb/.gltf mesh or .ply/.splat cloud, #1851).
+                                            if self.obstacle_dialog_rx.is_none() {
+                                                let (tx, rx) = crossbeam_channel::bounded(1);
+                                                self.obstacle_dialog_rx = Some(rx);
+                                                std::thread::Builder::new()
+                                                    .name("obstacle-model-dialog".into())
+                                                    .spawn(move || {
+                                                        let dialog = rfd::FileDialog::new()
+                                                            .add_filter(
+                                                                "3D model",
+                                                                &["glb", "gltf", "ply", "splat"],
+                                                            );
+                                                        if let Some(path) = dialog.pick_file() {
+                                                            let _ = tx.send(path);
+                                                        }
+                                                    })
+                                                    .ok();
+                                            }
+                                        }
                                         ObstacleCommand::UseWebcam => {
                                             // Start webcam capture if not already running
                                             #[cfg(feature = "webcam")]
@@ -1943,6 +1964,7 @@ impl ApplicationHandler for PhosphorApp {
                             .extension()
                             .map(|e| e.to_string_lossy().to_lowercase())
                             .unwrap_or_default();
+                        let is_model = matches!(ext.as_str(), "glb" | "gltf" | "ply" | "splat");
                         let is_video = {
                             #[cfg(feature = "video")]
                             {
@@ -1954,7 +1976,26 @@ impl ApplicationHandler for PhosphorApp {
                                 false
                             }
                         };
-                        if is_video {
+                        if is_model {
+                            let path_str = path.to_string_lossy().to_string();
+                            if let Some(layer) = app.layer_stack.active_mut() {
+                                if let Some(e) = layer.as_effect_mut() {
+                                    if let Some(ps) = &mut e.pass_executor.particle_system {
+                                        if let Err(err) =
+                                            ps.set_obstacle_model(&app.gpu.device, &path)
+                                        {
+                                            log::error!("Failed to load obstacle model: {err}");
+                                            app.status_error = Some((
+                                                format!("Model load failed: {err}"),
+                                                std::time::Instant::now(),
+                                            ));
+                                        } else {
+                                            log::info!("Loaded obstacle model: {path_str}");
+                                        }
+                                    }
+                                }
+                            }
+                        } else if is_video {
                             #[cfg(feature = "video")]
                             {
                                 match crate::media::video::probe_video(&path) {

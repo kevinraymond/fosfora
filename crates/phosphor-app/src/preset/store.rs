@@ -85,6 +85,10 @@ pub struct LayerPreset {
     /// True if obstacle source is depth estimation.
     #[serde(default)]
     pub obstacle_depth: Option<bool>,
+    /// True if obstacle source is a 3D model (#1851); the model file lives in
+    /// `obstacle_image_path` and is re-loaded + depth-rasterized on restore.
+    #[serde(default)]
+    pub obstacle_model: Option<bool>,
     /// Live Lattice (3D CA) tunables captured from the contextual panel; `None`
     /// for non-lattice effects and old presets. Includes the embedded `render`
     /// camera/palette look, so a Lattice effect round-trips fully.
@@ -607,6 +611,7 @@ mod tests {
                 obstacle_threshold: None,
                 obstacle_elasticity: None,
                 obstacle_depth: None,
+                obstacle_model: None,
                 lattice: None,
                 particle_sim: None,
             }],
@@ -674,6 +679,34 @@ mod tests {
         let serialized = serde_json::to_string(&lp).unwrap();
         let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
         assert_eq!(lp2.obstacle_depth, Some(true));
+    }
+
+    #[test]
+    fn layer_preset_obstacle_model_serde() {
+        // A 3D-model obstacle stores its file in obstacle_image_path plus the
+        // obstacle_model discriminator, so restore re-loads it via the model
+        // path instead of image::open (#1851).
+        let json = r#"{
+            "effect_name": "Tide",
+            "obstacle_model": true,
+            "obstacle_image_path": "/home/user/models/skull.glb",
+            "obstacle_mode": 3,
+            "obstacle_threshold": 0.4
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(lp.obstacle_model, Some(true));
+        assert_eq!(
+            lp.obstacle_image_path.as_deref(),
+            Some("/home/user/models/skull.glb")
+        );
+        // Roundtrip
+        let serialized = serde_json::to_string(&lp).unwrap();
+        let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(lp2.obstacle_model, Some(true));
+        assert_eq!(lp2.obstacle_image_path, lp.obstacle_image_path);
+        // Old presets without the field default to None.
+        let old: LayerPreset = serde_json::from_str(r#"{"effect_name":"Tide"}"#).unwrap();
+        assert!(old.obstacle_model.is_none());
     }
 
     #[test]
@@ -759,6 +792,7 @@ mod tests {
             obstacle_threshold: None,
             obstacle_elasticity: None,
             obstacle_depth: None,
+            obstacle_model: None,
             lattice: Some(lat),
             particle_sim: None,
         };

@@ -93,10 +93,13 @@ pub struct ParticleSystem {
     pub obstacle_fit: super::types::ObstacleFit,
     pub obstacle_threshold: f32,
     pub obstacle_elasticity: f32,
-    /// "image", "video", "webcam", or "" (none)
+    /// "image", "video", "webcam", "depth", "model", or "" (none)
     pub obstacle_source: String,
-    /// Path to obstacle image/video file (for preset save/load)
+    /// Path to obstacle image/video/model file (for preset save/load)
     pub obstacle_image_path: Option<String>,
+    /// Loaded 3D-model obstacle (#1851); re-rasters its depth into `obstacle`
+    /// every frame while `obstacle_source == "model"`.
+    obstacle_model: Option<super::obstacle_model::ObstacleModel>,
 
     // Obstacle video playback
     obstacle_video_frames: Vec<crate::media::types::DecodedFrame>,
@@ -1241,6 +1244,7 @@ impl ParticleSystem {
             obstacle_elasticity: 0.7,
             obstacle_source: String::new(),
             obstacle_image_path: None,
+            obstacle_model: None,
             obstacle_video_frames: Vec::new(),
             obstacle_video_delays_ms: Vec::new(),
             obstacle_video_frame: 0,
@@ -2690,12 +2694,48 @@ impl ParticleSystem {
         true
     }
 
+    /// Load a 3D model (`.glb`/`.gltf` mesh or `.ply`/`.splat` cloud) as the
+    /// obstacle source (#1851). Its depth is re-rasterized into a render-target
+    /// obstacle texture every frame by [`Self::render_obstacle_model`].
+    pub fn set_obstacle_model(
+        &mut self,
+        device: &Device,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        let model = super::obstacle_model::ObstacleModel::load(device, path)?;
+        self.obstacle = super::obstacle_model::ObstacleModel::make_target(device);
+        self.obstacle_model = Some(model);
+        self.obstacle_enabled = true;
+        self.obstacle_source = "model".to_string();
+        self.obstacle_image_path = Some(path.to_string_lossy().to_string());
+        self.obstacle_video_frames.clear();
+        self.obstacle_video_delays_ms.clear();
+        self.rebuild_flow_field_bind_group(device);
+        Ok(())
+    }
+
+    /// Re-raster the loaded model's depth into the obstacle field for this
+    /// frame. No-op unless a model is loaded. Call from the update loop before
+    /// the particle compute pass samples the obstacle.
+    pub fn render_obstacle_model(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        audio: &crate::audio::features::AudioFeatures,
+        dt: f32,
+    ) {
+        if let Some(model) = self.obstacle_model.as_mut() {
+            model.render(device, queue, &self.obstacle.view, audio, dt);
+        }
+    }
+
     /// Clear obstacle texture, disabling collision.
     pub fn clear_obstacle(&mut self, device: &Device, queue: &Queue) {
         self.obstacle = ObstacleTexture::placeholder(device, queue);
         self.obstacle_enabled = false;
         self.obstacle_source.clear();
         self.obstacle_image_path = None;
+        self.obstacle_model = None;
         self.obstacle_video_frames.clear();
         self.obstacle_video_delays_ms.clear();
         self.obstacle_video_frame = 0;

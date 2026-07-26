@@ -82,7 +82,7 @@ Device selector, mirror toggle, disconnect.
 Alive/max count, quality level, image source selector, morph target controls.
 
 ### Obstacle (effect layers)
-Enable toggle, source tabs (image/depth/webcam), threshold, elasticity, collision mode. Depth model downloads on first use.
+Enable toggle, source tabs (image/model/depth/webcam), threshold, elasticity, collision mode. Model loads a rotating 3D `.glb`/`.gltf` mesh or `.ply`/`.splat` cloud. Depth model downloads on first use.
 
 ### Audio Reactivity (effect layers)
 Map audio bands or dynamics to any parameter. Shows mapping count badge.

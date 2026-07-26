@@ -5,6 +5,9 @@
 
 ## Unreleased
 
+### Added
+- **Obstacles can now be 3D models.** Any collision effect (Tide, Vessel, Cleave, …) can flow particles over a rotating 3D model — pick **Model** in the Obstacle panel and load a `.glb`/`.gltf` mesh or a `.ply`/`.splat` cloud. The model reads as a near-surface depth field so water pools over its form in 2.5-D, and the spin speeds up with the music and tilts with the bass.
+
 ## v1.20.0 — 2026-07-26
 
 ### Added

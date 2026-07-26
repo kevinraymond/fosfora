@@ -628,7 +628,7 @@ Scenes are stored as JSON files in `~/.config/phosphor/scenes/`. You can share s
 
 ## Obstacles
 
-Particles can collide with a shape you supply — a photo, a video, or a live webcam silhouette. This is what makes water part around a body, or a crowd of particles pile up on someone's shoulders.
+Particles can collide with a shape you supply — a photo, a video, a live webcam silhouette, or a rotating 3D model. This is what makes water part around a body, pour over a skull, or a crowd of particles pile up on someone's shoulders.
 
 ### Quick Start
 
@@ -644,6 +644,7 @@ The shape is read from the image's alpha channel. If the image has no alpha — 
 | Source | Needs | Notes |
 |--------|-------|-------|
 | **Image** | — | PNG, JPEG, WebP. The shipped `assets/images/` pictures all work |
+| **Model** | — | A 3D model (`.glb`/`.gltf` mesh or `.ply`/`.splat` cloud). Rendered as a rotating near-surface depth field, so particles pool over its form in 2.5-D. The spin speeds up with the music and tilts with the bass |
 | **Video** | `video` feature, ffmpeg | The shape animates with the footage |
 | **Webcam** | `webcam` feature | Live silhouette, thresholded by brightness |
 | **Depth** | `depth` feature | Monocular depth estimate from the webcam — near surfaces block, far ones don't |

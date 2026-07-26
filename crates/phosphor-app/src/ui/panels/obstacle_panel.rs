@@ -40,6 +40,7 @@ pub enum ObstacleCommand {
     SetElasticity(f32),
     LoadImage,
     LoadVideo,
+    LoadModel,
     UseWebcam,
     UseDepth,
     DownloadDepthModel,
@@ -106,6 +107,17 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
             }
             "webcam" => "Webcam".to_string(),
             "depth" => "Depth (MiDaS)".to_string(),
+            "model" => {
+                if let Some(ref path) = info.image_path {
+                    let name = std::path::Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "model".to_string());
+                    format!("Model: {}", name)
+                } else {
+                    "Model".to_string()
+                }
+            }
             _ => "None".to_string(),
         };
         ui.label(
@@ -190,6 +202,14 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
         {
             ui.ctx().data_mut(|d| {
                 d.insert_temp(egui::Id::new("obstacle_cmd"), ObstacleCommand::LoadImage);
+            });
+        }
+        if tab_btn(ui, "Model", info.source == "model")
+            .on_hover_text("Load a 3D model (.glb/.gltf mesh or .ply/.splat cloud) — particles flow over its rotating surface")
+            .clicked()
+        {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("obstacle_cmd"), ObstacleCommand::LoadModel);
             });
         }
         if info.video_available {
