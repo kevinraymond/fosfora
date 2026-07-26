@@ -1240,6 +1240,8 @@ impl App {
                     if ps.obstacle_source == "model" {
                         ps.render_obstacle_model(&self.gpu.device, &self.gpu.queue, &audio, dt);
                     }
+                    // Reconcile the obstacle water sim (#1851) before dispatch.
+                    ps.sync_water(&self.gpu.device, &self.gpu.queue);
                     // Splat (#1800): camera params ride slots 8–11 and roundness
                     // slot 12 (only 0–7 reach the sim); advance the CPU
                     // orbit/envelope driver with this frame's dt + audio (no-op

@@ -101,6 +101,17 @@ pub struct ParticleSystem {
     /// every frame while `obstacle_source == "model"`.
     obstacle_model: Option<super::obstacle_model::ObstacleModel>,
 
+    // Obstacle water accumulation (#1851): a virtual-pipes shallow-water sim
+    // over the obstacle terrain; particles rest on the pooled water.
+    pub obstacle_water_enabled: bool,
+    pub obstacle_water_params: super::water::WaterParams,
+    water_sim: Option<super::water::WaterSim>,
+    /// 1×1 zero water texture bound when no sim is active (keeps the group-1
+    /// layout satisfied; `water_tex` reads 0 ⇒ collision unchanged).
+    #[allow(dead_code)]
+    water_placeholder: wgpu::Texture,
+    water_placeholder_view: wgpu::TextureView,
+
     // Obstacle video playback
     obstacle_video_frames: Vec<crate::media::types::DecodedFrame>,
     obstacle_video_delays_ms: Vec<u32>,
@@ -598,12 +609,29 @@ impl ParticleSystem {
                     ty: BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // binding 4: accumulated water height (#1851; 1×1 zero when off)
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
         let obstacle = ObstacleTexture::placeholder(device, queue);
-        let flow_field_bind_group =
-            create_flow_field_bind_group(device, &flow_field_bgl, &flow_field, &obstacle);
+        let (water_placeholder, water_placeholder_view) = super::water::placeholder(device, queue);
+        let flow_field_bind_group = create_flow_field_bind_group(
+            device,
+            &flow_field_bgl,
+            &flow_field,
+            &obstacle,
+            &water_placeholder_view,
+        );
 
         // Empty BGL + bind group for padding contiguous bind group indices
         let empty_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -1245,6 +1273,11 @@ impl ParticleSystem {
             obstacle_source: String::new(),
             obstacle_image_path: None,
             obstacle_model: None,
+            obstacle_water_enabled: false,
+            obstacle_water_params: super::water::WaterParams::default(),
+            water_sim: None,
+            water_placeholder,
+            water_placeholder_view,
             obstacle_video_frames: Vec::new(),
             obstacle_video_delays_ms: Vec::new(),
             obstacle_video_frame: 0,
@@ -1745,6 +1778,12 @@ impl ParticleSystem {
             // Flip ping-pong so the sim reads the freshly written field.
             self.trail_field_current
                 .set(1 - self.trail_field_current.get());
+        }
+
+        // 0a3. Obstacle water sim (#1851) — step the shallow-water field over
+        // the obstacle terrain so the particle sim below samples fresh water.
+        if let Some(water) = &self.water_sim {
+            water.step(encoder, queue, &self.obstacle_water_params);
         }
 
         // 0b. Spatial hash (if interaction enabled) — build before sim
@@ -2729,6 +2768,37 @@ impl ParticleSystem {
         }
     }
 
+    /// Reconcile the water sim with the current toggle + obstacle each frame
+    /// (#1851): create/drop it, keep its terrain binding fresh, and publish the
+    /// level scale into the collision uniforms. Cheap when nothing changed.
+    /// Call before `dispatch`.
+    pub fn sync_water(&mut self, device: &Device, queue: &Queue) {
+        let want = self.obstacle_water_enabled && self.obstacle_enabled;
+        if !want {
+            if self.water_sim.is_some() {
+                self.water_sim = None;
+                self.uniforms.obstacle_water_scale = 0.0;
+                self.rebuild_flow_field_bind_group(device);
+            }
+            return;
+        }
+        let grid = self.obstacle.width.max(1);
+        let need_new = self.water_sim.as_ref().map(|w| w.grid()) != Some(grid);
+        if need_new {
+            self.water_sim = Some(super::water::WaterSim::new(device, queue, grid));
+        }
+        // The obstacle view can change (model reload, source switch); rebind the
+        // terrain each frame so the sim always reads the live terrain. Bind-group
+        // creation is cheap and water is opt-in.
+        if let Some(w) = self.water_sim.as_mut() {
+            w.rebuild(device, &self.obstacle.view);
+        }
+        self.uniforms.obstacle_water_scale = self.obstacle_water_params.level_scale;
+        if need_new {
+            self.rebuild_flow_field_bind_group(device);
+        }
+    }
+
     /// Clear obstacle texture, disabling collision.
     pub fn clear_obstacle(&mut self, device: &Device, queue: &Queue) {
         self.obstacle = ObstacleTexture::placeholder(device, queue);
@@ -2744,11 +2814,17 @@ impl ParticleSystem {
 
     /// Rebuild group 1 bind group (flow field + obstacle).
     fn rebuild_flow_field_bind_group(&mut self, device: &Device) {
+        let water_view = self
+            .water_sim
+            .as_ref()
+            .map(|w| w.water_view())
+            .unwrap_or(&self.water_placeholder_view);
         self.flow_field_bind_group = create_flow_field_bind_group(
             device,
             &self.flow_field_bgl,
             &self.flow_field,
             &self.obstacle,
+            water_view,
         );
     }
 
@@ -3653,6 +3729,7 @@ fn create_flow_field_bind_group(
     layout: &BindGroupLayout,
     flow_field: &FlowFieldTexture,
     obstacle: &ObstacleTexture,
+    water_view: &wgpu::TextureView,
 ) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label: Some("particle-flow-field-bg"),
@@ -3673,6 +3750,10 @@ fn create_flow_field_bind_group(
             BindGroupEntry {
                 binding: 3,
                 resource: BindingResource::Sampler(&obstacle.sampler),
+            },
+            BindGroupEntry {
+                binding: 4,
+                resource: BindingResource::TextureView(water_view),
             },
         ],
     })

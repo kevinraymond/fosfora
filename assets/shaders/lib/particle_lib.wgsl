@@ -132,7 +132,7 @@ struct ParticleUniforms {
     buildup: f32,       // riser/tension logistic, EMA-smoothed 0-1
     drop: f32,          // drop trigger — 1.0 for exactly one frame
     splat_roundness: f32,   // Splat shard→sphere morph, 0–1 (.pfx slot 12)
-    _pad_vessel1: f32,
+    obstacle_water_scale: f32,  // water raises the collision surface (#1851)
 
     // Splat orbit camera + audio envelopes (#1800 ABI bump).
     // Zero for non-splat effects — sims must treat cam_focal == 0 as "no camera".
@@ -251,10 +251,13 @@ fn sample_flow_field(pos: vec2f) -> vec2f {
     return sample.xy * u.flow_strength;
 }
 
-// --- Obstacle texture bindings (group 1, bindings 2+3) ---
+// --- Obstacle texture bindings (group 1, bindings 2+3, water 4) ---
 
 @group(1) @binding(2) var obstacle_tex: texture_2d<f32>;
 @group(1) @binding(3) var obstacle_sampler: sampler;
+// Accumulated water height from the virtual-pipes sim (#1851), `.r` = depth.
+// A 1×1 zero texture when water is disabled, so it contributes nothing.
+@group(1) @binding(4) var water_tex: texture_2d<f32>;
 
 // Per-axis clip→screen direction scale (larger axis normalized to 1).
 // Only the x:y ratio matters for the collision reflection math (#1790).
@@ -281,12 +284,23 @@ fn obstacle_uv(pos: vec2f) -> vec2f {
     return (s - 0.5) / obstacle_fit_size() + 0.5;
 }
 
-// Sample obstacle alpha at clip-space position. Returns 0 if disabled.
+// Effective collision height at a UV: terrain (obstacle alpha) plus accumulated
+// water raised by `obstacle_water_scale`. When water is disabled the water
+// texture is a 1×1 zero and the scale is 0, so this is exactly the terrain.
+fn obstacle_height_uv(uv: vec2f) -> f32 {
+    let terr = textureSampleLevel(obstacle_tex, obstacle_sampler, uv, 0.0).a;
+    let water = textureSampleLevel(water_tex, obstacle_sampler, uv, 0.0).r;
+    return terr + u.obstacle_water_scale * water;
+}
+
+// Sample the effective obstacle height at clip-space position. Returns 0 if
+// disabled or outside the fitted rect. (Named `obstacle_alpha` for continuity —
+// it is the value the threshold test compares against.)
 fn obstacle_alpha(pos: vec2f) -> f32 {
     if u.obstacle_enabled < 0.5 { return 0.0; }
     let uv = obstacle_uv(pos);
     if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 { return 0.0; }
-    return textureSampleLevel(obstacle_tex, obstacle_sampler, uv, 0.0).a;
+    return obstacle_height_uv(uv);
 }
 
 // Outward surface normal from the alpha gradient (central differences).
@@ -304,10 +318,10 @@ fn obstacle_normal(pos: vec2f) -> vec2f {
     let eps = vec2f(h_px / (res.x * size.x), h_px / (res.y * size.y));
     let uv = obstacle_uv(pos);
 
-    let ax = textureSampleLevel(obstacle_tex, obstacle_sampler, uv + vec2f(eps.x, 0.0), 0.0).a;
-    let bx = textureSampleLevel(obstacle_tex, obstacle_sampler, uv - vec2f(eps.x, 0.0), 0.0).a;
-    let ay = textureSampleLevel(obstacle_tex, obstacle_sampler, uv + vec2f(0.0, eps.y), 0.0).a;
-    let by = textureSampleLevel(obstacle_tex, obstacle_sampler, uv - vec2f(0.0, eps.y), 0.0).a;
+    let ax = obstacle_height_uv(uv + vec2f(eps.x, 0.0));
+    let bx = obstacle_height_uv(uv - vec2f(eps.x, 0.0));
+    let ay = obstacle_height_uv(uv + vec2f(0.0, eps.y));
+    let by = obstacle_height_uv(uv - vec2f(0.0, eps.y));
 
     // Screen-space gradient, y-up: +eps.y in V is DOWN-screen, hence (by - ay).
     let grad = vec2f(ax - bx, by - ay);

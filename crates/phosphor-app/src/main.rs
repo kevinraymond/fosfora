@@ -512,6 +512,11 @@ impl ApplicationHandler for PhosphorApp {
                                         webcam_device_index: app.webcam_device_index,
                                         #[cfg(not(feature = "webcam"))]
                                         webcam_device_index: 0,
+                                        water_enabled: ps.obstacle_water_enabled,
+                                        water_level: ps.obstacle_water_params.level_scale,
+                                        water_source: ps.obstacle_water_params.source_rate,
+                                        water_drain: ps.obstacle_water_params.drain,
+                                        water_flux: ps.obstacle_water_params.flux_gain,
                                     }
                                 } else {
                                     crate::ui::panels::obstacle_panel::ObstacleInfo {
@@ -537,6 +542,11 @@ impl ApplicationHandler for PhosphorApp {
                                         webcam_device_index: app.webcam_device_index,
                                         #[cfg(not(feature = "webcam"))]
                                         webcam_device_index: 0,
+                                        water_enabled: false,
+                                        water_level: 1.5,
+                                        water_source: 0.01,
+                                        water_drain: 0.06,
+                                        water_flux: 0.18,
                                     }
                                 }
                             });
@@ -1871,6 +1881,21 @@ impl ApplicationHandler for PhosphorApp {
                                             }
                                             #[cfg(feature = "webcam")]
                                             app.cleanup_webcam_if_unused();
+                                        }
+                                        ObstacleCommand::SetWaterEnabled(en) => {
+                                            ps.obstacle_water_enabled = en;
+                                        }
+                                        ObstacleCommand::SetWaterLevel(v) => {
+                                            ps.obstacle_water_params.level_scale = v;
+                                        }
+                                        ObstacleCommand::SetWaterSource(v) => {
+                                            ps.obstacle_water_params.source_rate = v;
+                                        }
+                                        ObstacleCommand::SetWaterDrain(v) => {
+                                            ps.obstacle_water_params.drain = v;
+                                        }
+                                        ObstacleCommand::SetWaterFlux(v) => {
+                                            ps.obstacle_water_params.flux_gain = v;
                                         }
                                         ObstacleCommand::None => {}
                                     }

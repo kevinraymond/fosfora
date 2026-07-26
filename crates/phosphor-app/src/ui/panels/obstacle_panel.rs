@@ -26,6 +26,12 @@ pub struct ObstacleInfo {
     pub depth_download_error: Option<String>,
     pub webcam_devices: Vec<(u32, String)>,
     pub webcam_device_index: u32,
+    // Obstacle water accumulation (#1851)
+    pub water_enabled: bool,
+    pub water_level: f32,
+    pub water_source: f32,
+    pub water_drain: f32,
+    pub water_flux: f32,
 }
 
 /// UI commands emitted by the obstacle panel.
@@ -45,6 +51,11 @@ pub enum ObstacleCommand {
     UseDepth,
     DownloadDepthModel,
     Clear,
+    SetWaterEnabled(bool),
+    SetWaterLevel(f32),
+    SetWaterSource(f32),
+    SetWaterDrain(f32),
+    SetWaterFlux(f32),
 }
 
 pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
@@ -408,6 +419,97 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
             }
         });
     });
+
+    // --- Water accumulation (#1851): shallow-water sim over the obstacle ---
+    ui.add_space(6.0);
+    ui.separator();
+    let mut water_on = info.water_enabled;
+    if ui
+        .checkbox(&mut water_on, "Water accumulation")
+        .on_hover_text(
+            "Shallow-water sim over the obstacle: particles pool in the recesses and overflow",
+        )
+        .changed()
+    {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("obstacle_cmd"),
+                ObstacleCommand::SetWaterEnabled(water_on),
+            );
+        });
+    }
+    if info.water_enabled {
+        let tc = &tc;
+        let slider = |ui: &mut Ui, label: &str, hover: &str, val: f32, max: f32| -> Option<f32> {
+            let mut v = val;
+            let mut out = None;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(label)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                )
+                .on_hover_text(hover);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(
+                        RichText::new(format!("{:.3}", v))
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
+                    ui.spacing_mut().slider_width = ui.available_width();
+                    if ui
+                        .add(egui::Slider::new(&mut v, 0.0..=max).show_value(false))
+                        .changed()
+                    {
+                        out = Some(v);
+                    }
+                });
+            });
+            out
+        };
+        let emit = |ui: &Ui, cmd: ObstacleCommand| {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("obstacle_cmd"), cmd));
+        };
+        if let Some(v) = slider(
+            ui,
+            "Level",
+            "How high pooled water lifts the surface",
+            info.water_level,
+            4.0,
+        ) {
+            emit(ui, ObstacleCommand::SetWaterLevel(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Source",
+            "Inflow rate — how fast water arrives",
+            info.water_source,
+            0.05,
+        ) {
+            emit(ui, ObstacleCommand::SetWaterSource(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Drain",
+            "Evaporation — how fast water leaves",
+            info.water_drain,
+            0.2,
+        ) {
+            emit(ui, ObstacleCommand::SetWaterDrain(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Flow",
+            "Flux gain — how fast water levels and flows",
+            info.water_flux,
+            0.25,
+        ) {
+            emit(ui, ObstacleCommand::SetWaterFlux(v));
+        }
+    }
 }
 
 /// Draw the depth download confirmation modal (must be called at top level, not inside a panel).

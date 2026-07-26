@@ -442,6 +442,9 @@ mod tests {
                 },
             ],
         });
+        // Water is off in this probe: bind a 1×1 zero at binding 4 so the
+        // collision's h_eff == terrain alpha (regression guard for #1851).
+        let (_water_tex, water_view) = crate::gpu::particle::water::placeholder(&device, &queue);
         let bg1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &pipeline.get_bind_group_layout(1),
@@ -453,6 +456,10 @@ mod tests {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&obstacle.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&water_view),
                 },
             ],
         });

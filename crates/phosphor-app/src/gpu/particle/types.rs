@@ -184,7 +184,9 @@ pub struct ParticleUniforms {
     /// block rather than the Splat one below only because that block is full;
     /// keeping it here preserves the 896-byte ABI.
     pub splat_roundness: f32,
-    pub _pad_vessel1: f32, // spare slot for the next batched feature
+    /// How much accumulated obstacle water raises the effective collision
+    /// surface (#1851). 0 when water is disabled ⇒ collision is unchanged.
+    pub obstacle_water_scale: f32,
 
     // Splat orbit camera + audio envelopes (batched ABI bump for Splat #1800).
     // Appended as two fresh 16-byte blocks so every existing offset stays stable

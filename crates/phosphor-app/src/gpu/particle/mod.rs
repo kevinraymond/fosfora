@@ -15,6 +15,7 @@ pub mod symbiosis;
 pub mod system;
 pub mod text_source;
 pub mod types;
+pub mod water;
 
 pub use source_loader::{
     ParticleSourceLoader, ParticleSourceResult, builtin_raster_images, builtin_raster_path,
