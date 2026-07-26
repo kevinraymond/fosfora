@@ -3,10 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.21.0 — 2026-07-26
 
 ### Added
-- **Obstacles can now be 3D models.** Any collision effect (Tide, Vessel, Cleave, …) can flow particles over a rotating 3D model — pick **Model** in the Obstacle panel and load a `.glb`/`.gltf` mesh or a `.ply`/`.splat` cloud. The model reads as a near-surface depth field so water pools over its form in 2.5-D, and the spin speeds up with the music and tilts with the bass.
+- **Obstacles can now be 3D models.** Any collision effect (Tide, Vessel, Cleave, …) can flow particles over a spinning 3D model — pick **Model** in the Obstacle panel and load a `.glb`/`.gltf` mesh or a `.ply`/`.splat` cloud. The new **Drape** collision mode reads the model's surface relief and sheets water down the form and into its hollows (eye sockets, recesses) instead of parting around a flat silhouette, with a **Show model** underlay to see the shape the water flows over.
+- **Trail length is now a live control.** A **Trail length** slider in the Particles panel sets any effect's trails from 0 (off) up to 32 points at runtime — shorten it to read individual particle paths, or add trails to an effect that ships without them. Presets remember the setting.
 
 ## v1.20.0 — 2026-07-26
 
