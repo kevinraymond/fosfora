@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **The seven per-band pan sources never moved.** `Band Pan Sub Bass` through `Band Pan Brilliance` appeared in the binding matrix but always read zero, so anything bound to one did nothing.
+
 ## v1.23.0 — 2026-07-27
 
 ### Added

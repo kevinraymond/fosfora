@@ -890,22 +890,56 @@ pub fn draw_source_row(
 mod tests {
     use super::*;
 
+    /// Every audio source the bus publishes, from all three collectors.
+    fn all_collected_audio_sources() -> std::collections::HashSet<String> {
+        use crate::bindings::sources;
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        keys.extend(sources::collect_audio(&Default::default()).into_keys());
+        keys.extend(sources::collect_mel_bands(&[0.0; 64]).into_keys());
+        keys.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+        keys
+    }
+
+    /// Sources enumerated per-bin from the live snapshot rather than from the static table.
+    fn is_dynamically_enumerated(key: &str) -> bool {
+        ["audio.mfcc.", "audio.chroma.", "audio.mel.", "audio.dmfcc."]
+            .iter()
+            .any(|p| key.starts_with(p))
+    }
+
     #[test]
     fn every_collected_audio_source_is_reachable_from_the_picker() {
         // 28 of the 74 audio features were collected every frame and listed in neither
         // picker, so the only way to bind one was to hand-edit global-bindings.json —
         // while the README promised any of the 74 could drive any parameter.
-        let snap = crate::bindings::sources::collect_audio(&Default::default());
         let listed: std::collections::HashSet<&str> = AUDIO_SOURCE_ORDER.iter().copied().collect();
-        let missing: Vec<&String> = snap
-            .keys()
-            // mfcc/chroma bins are enumerated from the live snapshot, not this table
-            .filter(|k| !k.starts_with("audio.mfcc.") && !k.starts_with("audio.chroma."))
+        let missing: Vec<String> = all_collected_audio_sources()
+            .into_iter()
+            .filter(|k| !is_dynamically_enumerated(k))
             .filter(|k| !listed.contains(k.as_str()))
             .collect();
         assert!(
             missing.is_empty(),
             "collected but unreachable in the picker: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn every_picker_audio_source_is_actually_collected() {
+        // The reverse direction, which the forward guard alone cannot catch: a key listed in
+        // the table that no collector publishes renders a source in the picker that is
+        // permanently stuck at zero. One mistyped id is all it takes, and binding to it fails
+        // silently — the VJ just sees a control that never moves. This is how the seven A13b
+        // band-pan sources (#1801) were found, several releases after they shipped dead.
+        let collected = all_collected_audio_sources();
+        let dead: Vec<&str> = AUDIO_SOURCE_ORDER
+            .iter()
+            .copied()
+            .filter(|k| !collected.contains(*k))
+            .collect();
+        assert!(
+            dead.is_empty(),
+            "listed in the picker but never collected: {dead:?}"
         );
     }
 

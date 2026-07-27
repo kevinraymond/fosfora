@@ -128,6 +128,16 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.contrast_5", features.contrast_5),
         ("audio.contrast_mean", features.contrast_mean),
         ("audio.timbre_flux", features.timbre_flux),
+        // A13b per-band pan (#1801). These shipped with uniform fields and picker entries but
+        // no collector, so all seven read a permanent 0.0 in the binding matrix — bind one and
+        // it never moves. Caught by `every_picker_audio_source_is_actually_collected`.
+        ("audio.band_pan_sub_bass", features.band_pan_sub_bass),
+        ("audio.band_pan_bass", features.band_pan_bass),
+        ("audio.band_pan_low_mid", features.band_pan_low_mid),
+        ("audio.band_pan_mid", features.band_pan_mid),
+        ("audio.band_pan_upper_mid", features.band_pan_upper_mid),
+        ("audio.band_pan_presence", features.band_pan_presence),
+        ("audio.band_pan_brilliance", features.band_pan_brilliance),
     ];
     for (key, val) in reserved {
         map.insert(key.to_string(), (val, raw(val)));
@@ -258,8 +268,11 @@ mod tests {
     fn test_collect_audio() {
         let features = AudioFeatures::default();
         let snap = collect_audio(&features);
-        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 1 key_hue + 28 reserved = 75
-        assert_eq!(snap.len(), 75);
+        // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 1 key_hue + 35 reserved
+        // (28 from the v2/v3 tails + the 7 A13b band pans that were listed but uncollected)
+        assert_eq!(snap.len(), 82);
+        assert!(snap.contains_key("audio.band_pan_sub_bass"));
+        assert!(snap.contains_key("audio.band_pan_brilliance"));
         assert!(snap.contains_key("audio.kick"));
         assert!(snap.contains_key("audio.band.0"));
         assert!(snap.contains_key("audio.mfcc.12"));
