@@ -81,6 +81,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let audio_flow_mult = (1.0 + mfcc1_curl) * (1.0 + u.bass * 0.8 + u.mid * 0.3);
     vel += flow_vel * audio_flow_mult * dt;
 
+    // Obstacle fluid field (#1939, opt-in): when the Eulerian sim is on, relax
+    // the smoke toward the real incompressible flow around the silhouette, so it
+    // genuinely parts and wakes past the form. Blended (not a replacement) so
+    // the curl-noise turbulence still gives Flux its organic wispiness; zero
+    // effect when fluid is off (fluid_velocity returns 0).
+    if u.fluid_enabled > 0.5 {
+        let fvel = fluid_velocity(p.pos_life.xy);
+        vel = mix(vel, fvel, clamp(u.fluid_coupling, 0.0, 1.0) * (1.0 - exp(-4.0 * dt)));
+    }
+
     // Beat: brief speed boost in flow direction
     if u.beat > 0.5 {
         vel += flow_vel * 0.5;

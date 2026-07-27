@@ -36,6 +36,14 @@ pub struct ObstacleInfo {
     pub model_spin: f32,
     /// Faint model-underlay opacity (0 = hidden).
     pub model_display: f32,
+    // Obstacle fluid flow (#1939): Eulerian velocity-grid sim; particles are
+    // advected by a real incompressible flow around the obstacle.
+    pub fluid_enabled: bool,
+    pub fluid_speed: f32,
+    pub fluid_coupling: f32,
+    pub fluid_vorticity: f32,
+    pub fluid_viscosity: f32,
+    pub fluid_grid: u32,
 }
 
 /// UI commands emitted by the obstacle panel.
@@ -62,6 +70,12 @@ pub enum ObstacleCommand {
     SetWaterFlux(f32),
     SetModelSpin(f32),
     SetModelDisplay(f32),
+    SetFluidEnabled(bool),
+    SetFluidSpeed(f32),
+    SetFluidCoupling(f32),
+    SetFluidVorticity(f32),
+    SetFluidViscosity(f32),
+    SetFluidGrid(u32),
 }
 
 pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
@@ -582,6 +596,128 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
         ) {
             emit(ui, ObstacleCommand::SetWaterFlux(v));
         }
+    }
+
+    // --- Fluid flow (#1939): Eulerian velocity-grid sim solving an
+    // incompressible flow AROUND the obstacle; particles are advected by it, so
+    // water genuinely parts, wakes, and eddies past the silhouette. ---
+    ui.add_space(6.0);
+    ui.separator();
+    let mut fluid_on = info.fluid_enabled;
+    if ui
+        .checkbox(&mut fluid_on, "Fluid flow")
+        .on_hover_text(
+            "Real incompressible flow field around the obstacle: bow wave in front, wake and eddies behind. Particle effects (Tide) ride it.",
+        )
+        .changed()
+    {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("obstacle_cmd"),
+                ObstacleCommand::SetFluidEnabled(fluid_on),
+            );
+        });
+    }
+    if info.fluid_enabled {
+        let tc = &tc;
+        let slider = |ui: &mut Ui, label: &str, hover: &str, val: f32, max: f32| -> Option<f32> {
+            let mut v = val;
+            let mut out = None;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(label)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                )
+                .on_hover_text(hover);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(
+                        RichText::new(format!("{:.3}", v))
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
+                    ui.spacing_mut().slider_width = ui.available_width();
+                    if ui
+                        .add(egui::Slider::new(&mut v, 0.0..=max).show_value(false))
+                        .changed()
+                    {
+                        out = Some(v);
+                    }
+                });
+            });
+            out
+        };
+        let emit = |ui: &Ui, cmd: ObstacleCommand| {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("obstacle_cmd"), cmd));
+        };
+        if let Some(v) = slider(
+            ui,
+            "Speed",
+            "How fast the sheet pours — the flow's driver (top-edge inflow)",
+            info.fluid_speed,
+            2.0,
+        ) {
+            emit(ui, ObstacleCommand::SetFluidSpeed(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Follow",
+            "How tightly particles lock to the flow field vs their own momentum",
+            info.fluid_coupling,
+            1.0,
+        ) {
+            emit(ui, ObstacleCommand::SetFluidCoupling(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Eddies",
+            "Vorticity confinement — crisper swirls and wake turbulence",
+            info.fluid_vorticity,
+            0.5,
+        ) {
+            emit(ui, ObstacleCommand::SetFluidVorticity(v));
+        }
+        if let Some(v) = slider(
+            ui,
+            "Smooth",
+            "Viscosity — higher damps turbulence into a glassier sheet",
+            info.fluid_viscosity,
+            0.2,
+        ) {
+            emit(ui, ObstacleCommand::SetFluidViscosity(v));
+        }
+        // Solver grid resolution — quality vs cost.
+        let mut grid = info.fluid_grid;
+        combo_row(
+            ui,
+            "obstacle_fluid_grid",
+            "Detail",
+            Some("Solver grid resolution: higher = finer flow detail, more GPU cost"),
+            match grid {
+                0..=160 => "Low (128)",
+                161..=384 => "Medium (256)",
+                _ => "High (512)",
+            },
+            |ui| {
+                for (g, label) in [
+                    (128u32, "Low (128)"),
+                    (256, "Medium (256)"),
+                    (512, "High (512)"),
+                ] {
+                    if ui.selectable_value(&mut grid, g, label).changed() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                                egui::Id::new("obstacle_cmd"),
+                                ObstacleCommand::SetFluidGrid(g),
+                            );
+                        });
+                    }
+                }
+            },
+        );
     }
 }
 

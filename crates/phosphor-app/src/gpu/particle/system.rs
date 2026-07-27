@@ -118,6 +118,23 @@ pub struct ParticleSystem {
     water_placeholder: wgpu::Texture,
     water_placeholder_view: wgpu::TextureView,
 
+    // Obstacle fluid flow (#1939): an Eulerian velocity-grid sim that solves an
+    // incompressible flow around the obstacle; particles are advected by it via
+    // fluid_velocity(). Independent of the water accumulation sim above.
+    pub obstacle_fluid_enabled: bool,
+    pub obstacle_fluid_params: super::fluid::FluidParams,
+    /// How strongly particles relax toward the fluid field (published into
+    /// `fluid_coupling`; a global/panel knob, per-effect blending on top).
+    pub obstacle_fluid_coupling: f32,
+    /// Solver grid resolution (square; 128/256/512 quality knob). Decoupled from
+    /// the obstacle texture resolution — the solid mask is sampled by UV.
+    pub obstacle_fluid_grid: u32,
+    fluid_sim: Option<super::fluid::FluidSim>,
+    /// 1×1 zero velocity texture bound when no fluid sim is active.
+    #[allow(dead_code)]
+    fluid_placeholder: wgpu::Texture,
+    fluid_placeholder_view: wgpu::TextureView,
+
     // Obstacle video playback
     obstacle_video_frames: Vec<crate::media::types::DecodedFrame>,
     obstacle_video_delays_ms: Vec<u32>,
@@ -626,6 +643,17 @@ impl ParticleSystem {
                     },
                     count: None,
                 },
+                // binding 5: Eulerian fluid velocity field (#1939; 1×1 zero when off)
+                BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -633,12 +661,14 @@ impl ParticleSystem {
         let mut obstacle_display = super::obstacle_model::ObstacleDisplay::new(device, hdr_format);
         obstacle_display.rebuild(device, &obstacle.view);
         let (water_placeholder, water_placeholder_view) = super::water::placeholder(device, queue);
+        let (fluid_placeholder, fluid_placeholder_view) = super::fluid::placeholder(device, queue);
         let flow_field_bind_group = create_flow_field_bind_group(
             device,
             &flow_field_bgl,
             &flow_field,
             &obstacle,
             &water_placeholder_view,
+            &fluid_placeholder_view,
         );
 
         // Empty BGL + bind group for padding contiguous bind group indices
@@ -1289,6 +1319,13 @@ impl ParticleSystem {
             water_sim: None,
             water_placeholder,
             water_placeholder_view,
+            obstacle_fluid_enabled: false,
+            obstacle_fluid_params: super::fluid::FluidParams::default(),
+            obstacle_fluid_coupling: 0.8,
+            obstacle_fluid_grid: 256,
+            fluid_sim: None,
+            fluid_placeholder,
+            fluid_placeholder_view,
             obstacle_video_frames: Vec::new(),
             obstacle_video_delays_ms: Vec::new(),
             obstacle_video_frame: 0,
@@ -1795,6 +1832,20 @@ impl ParticleSystem {
         // the obstacle terrain so the particle sim below samples fresh water.
         if let Some(water) = &self.water_sim {
             water.step(encoder, queue, &self.obstacle_water_params);
+        }
+
+        // 0a4. Obstacle fluid sim (#1939) — solve the incompressible flow around
+        // the obstacle (after water, so pooled water joins the solid mask) so the
+        // particle sim below advects on a fresh velocity field.
+        if let Some(fluid) = &self.fluid_sim {
+            fluid.step(
+                encoder,
+                queue,
+                &self.obstacle_fluid_params,
+                self.obstacle_fit as u32,
+                self.uniforms.resolution,
+                (self.obstacle.width, self.obstacle.height),
+            );
         }
 
         // 0b. Spatial hash (if interaction enabled) — build before sim
@@ -2825,6 +2876,50 @@ impl ParticleSystem {
         }
     }
 
+    /// Reconcile the Eulerian fluid sim with the current toggle + obstacle each
+    /// frame (#1939): create/drop it, keep its terrain + water binding fresh, and
+    /// publish the gate + coupling into the particle uniforms. Cheap when nothing
+    /// changed. Call before `dispatch` (and after `sync_water`, so the fluid sim
+    /// can fold pooled water into its solid mask).
+    pub fn sync_fluid(&mut self, device: &Device, queue: &Queue) {
+        let want = self.obstacle_fluid_enabled && self.obstacle_enabled;
+        if !want {
+            if self.fluid_sim.is_some() {
+                self.fluid_sim = None;
+                self.uniforms.fluid_enabled = 0.0;
+                self.rebuild_flow_field_bind_group(device);
+            }
+            return;
+        }
+        let grid = self.obstacle_fluid_grid.clamp(32, 512);
+        let need_new = self.fluid_sim.as_ref().map(|f| f.grid()) != Some(grid);
+        if need_new {
+            self.fluid_sim = Some(super::fluid::FluidSim::new(device, queue, grid));
+        }
+        // The obstacle view + water view can change (model reload, source switch,
+        // water toggled); rebind both each frame so the solid mask stays live.
+        let water_view = self
+            .water_sim
+            .as_ref()
+            .map(|w| w.water_view())
+            .unwrap_or(&self.water_placeholder_view);
+        if let Some(f) = self.fluid_sim.as_mut() {
+            f.rebuild(device, &self.obstacle.view, water_view);
+        }
+        // Couple pooled water into the solid mask when the water sim is on.
+        self.obstacle_fluid_params.water_scale = if self.water_sim.is_some() {
+            self.obstacle_water_params.level_scale
+        } else {
+            0.0
+        };
+        self.obstacle_fluid_params.threshold = self.obstacle_threshold;
+        self.uniforms.fluid_enabled = 1.0;
+        self.uniforms.fluid_coupling = self.obstacle_fluid_coupling;
+        if need_new {
+            self.rebuild_flow_field_bind_group(device);
+        }
+    }
+
     /// Clear obstacle texture, disabling collision.
     pub fn clear_obstacle(&mut self, device: &Device, queue: &Queue) {
         self.obstacle = ObstacleTexture::placeholder(device, queue);
@@ -2838,19 +2933,25 @@ impl ParticleSystem {
         self.rebuild_flow_field_bind_group(device);
     }
 
-    /// Rebuild group 1 bind group (flow field + obstacle).
+    /// Rebuild group 1 bind group (flow field + obstacle + water + fluid).
     fn rebuild_flow_field_bind_group(&mut self, device: &Device) {
         let water_view = self
             .water_sim
             .as_ref()
             .map(|w| w.water_view())
             .unwrap_or(&self.water_placeholder_view);
+        let fluid_view = self
+            .fluid_sim
+            .as_ref()
+            .map(|f| f.velocity_view())
+            .unwrap_or(&self.fluid_placeholder_view);
         self.flow_field_bind_group = create_flow_field_bind_group(
             device,
             &self.flow_field_bgl,
             &self.flow_field,
             &self.obstacle,
             water_view,
+            fluid_view,
         );
         self.obstacle_display.rebuild(device, &self.obstacle.view);
     }
@@ -3773,6 +3874,7 @@ fn create_flow_field_bind_group(
     flow_field: &FlowFieldTexture,
     obstacle: &ObstacleTexture,
     water_view: &wgpu::TextureView,
+    fluid_view: &wgpu::TextureView,
 ) -> BindGroup {
     device.create_bind_group(&BindGroupDescriptor {
         label: Some("particle-flow-field-bg"),
@@ -3797,6 +3899,10 @@ fn create_flow_field_bind_group(
             BindGroupEntry {
                 binding: 4,
                 resource: BindingResource::TextureView(water_view),
+            },
+            BindGroupEntry {
+                binding: 5,
+                resource: BindingResource::TextureView(fluid_view),
             },
         ],
     })
@@ -5162,5 +5268,93 @@ mod trail_binding_tests {
             err.is_none(),
             "runtime-disabled trails must validate: {err:?}"
         );
+    }
+
+    // #1939: with the obstacle fluid sim enabled, the whole path must validate —
+    // group-1 binding 5 (fluid_vel_tex) present in both the pipeline layout and
+    // the bound group, the FluidSim's own passes, and the particle dispatch that
+    // samples the field via fluid_velocity(). Covers the wiring the offscreen
+    // Tide probe exercises visually.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn fluid_enabled_dispatch_validates() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let sim_src = tide_sim_src();
+        let def = tide_def();
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &def,
+            &sim_src,
+            false,
+        );
+        // A 4×4 obstacle with a bright (=solid) centre block.
+        let (w, h) = (4u32, 4u32);
+        let mut data = vec![0u8; (w * h * 4) as usize];
+        for y in 1..3 {
+            for x in 1..3 {
+                let i = ((y * w + x) * 4) as usize;
+                data[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        ps.set_obstacle_image(&device, &queue, &data, w, h, None);
+        ps.obstacle_fluid_enabled = true;
+        ps.obstacle_fluid_grid = 64; // small grid keeps the probe fast
+        ps.uniforms.resolution = [1920.0, 1080.0];
+        ps.sync_fluid(&device, &queue);
+        // Two frames so the field has non-zero velocity feeding the particles.
+        dispatch_once(&ps, &device, &queue);
+        dispatch_once(&ps, &device, &queue);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(
+            err.is_none(),
+            "fluid-enabled dispatch must validate: {err:?}"
+        );
+        assert!(ps.uniforms.fluid_enabled > 0.5, "fluid gate should be live");
+    }
+
+    // #1939: Flux is the second consumer of fluid_velocity() (opt-in smoke
+    // advection). Validate its sim shader compiles and dispatches with the fluid
+    // field on — the WGSL accessor call only surfaces at pipeline creation.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_fluid_dispatch_validates() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../../assets/effects/flux.pfx")).unwrap();
+        let def = effect.particles.expect("flux is a particle effect");
+        let noise = include_str!("../../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
+        let sim = include_str!("../../../../../assets/shaders/flux_sim.wgsl");
+        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &def,
+            &sim_src,
+            false,
+        );
+        let (w, h) = (4u32, 4u32);
+        let mut data = vec![0u8; (w * h * 4) as usize];
+        for i in 0..(w * h) as usize {
+            data[i * 4..i * 4 + 4].copy_from_slice(&[200, 200, 200, 200]);
+        }
+        ps.set_obstacle_image(&device, &queue, &data, w, h, None);
+        ps.obstacle_fluid_enabled = true;
+        ps.obstacle_fluid_grid = 64;
+        ps.uniforms.resolution = [1920.0, 1080.0];
+        ps.sync_fluid(&device, &queue);
+        dispatch_once(&ps, &device, &queue);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "flux fluid dispatch must validate: {err:?}");
     }
 }

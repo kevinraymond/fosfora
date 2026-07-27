@@ -21,7 +21,7 @@ pub struct Particle {
     pub flags: [f32; 4],
 }
 
-/// Particle simulation uniforms: 944 bytes.
+/// Particle simulation uniforms: 960 bytes.
 /// Separate from the main 432-byte ShaderUniforms — the two carry overlapping but not
 /// identical feature sets, and each has its own WGSL mirror that must be kept in step
 /// (see `particle_uniforms_wgsl_layout_matches_rust`).
@@ -216,6 +216,16 @@ pub struct ParticleUniforms {
     /// arrays need a 16-byte element stride, as `mfcc`/`chroma` already do. Index via `band_pan()`.
     pub band_pan: [f32; 8],
     // Total = 944 bytes
+
+    // Eulerian fluid flow field (#1939). Appended as a fresh 16-byte block so
+    // every existing offset stays stable (#1505 precedent). The FluidSim's own
+    // solver params live in a separate uniform buffer (see fluid.rs); the
+    // particle sim only needs to know the field is live and how hard to follow it.
+    pub fluid_enabled: f32,  // 0 or 1 — gates fluid_velocity()
+    pub fluid_coupling: f32, // how strongly particles relax toward the field (0..1)
+    pub _pad_fluid0: f32,
+    pub _pad_fluid1: f32,
+    // Total = 960 bytes
 }
 
 /// Obstacle collision mode.
@@ -984,9 +994,10 @@ mod tests {
     }
 
     #[test]
-    fn particle_uniforms_size_944() {
-        // 896 through the Splat block, + 16 (A13 stereo) + 32 (A13b band_pan) for #1801.
-        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 944);
+    fn particle_uniforms_size_960() {
+        // 896 through the Splat block, + 16 (A13 stereo) + 32 (A13b band_pan) for
+        // #1801, + 16 (fluid flow field) for #1939.
+        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 960);
     }
 
     #[test]

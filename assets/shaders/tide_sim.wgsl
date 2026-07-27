@@ -42,9 +42,25 @@ fn uhash_f(x: u32) -> f32 {
     return f32(uhash(x)) / 4294967296.0;
 }
 
+// Whitewater: finer curl scrolling down with the flow; gain from
+// percussive_energy (drums make the sheet break) + local agitation.
+// The percussive term is thresholded above the live sustained floor
+// (#1857: the feature idles ~0.63 on dense grooves, peaks ~0.85 —
+// it never reads 0 on busy material as the original tune assumed, and
+// the raw term held the sheet at ~5x its designed baseline breakup).
+// Split out so the fluid-grid path (#1939) can keep this fine surface
+// texture while the grid supplies the bulk flow (fall + flow-around).
+fn tide_whitewater(pos: vec2f, agitation: f32) -> vec2f {
+    let ww = curl_noise_2d(pos * vec2f(6.0, 2.5) + vec2f(0.0, -u.time * 1.2));
+    let ww_amp = (0.02 + 0.10 * param(2u))
+        * (0.25 + 1.5 * smoothstep(0.62, 0.95, u.percussive_energy) + agitation);
+    return ww * ww_amp;
+}
+
 // Shared laminar velocity field: base fall + divergence-free meander +
 // field-coherent whitewater breakup. Deterministic in position so the
-// sheet forms streamlines, never per-particle dither.
+// sheet forms streamlines, never per-particle dither. Used when the Eulerian
+// fluid grid is OFF; when it is on, the grid replaces the fall + meander.
 fn tide_field(pos: vec2f, lane_x: f32, agitation: f32) -> vec2f {
     let flow_speed = (0.35 + param(0u) * 0.9) * (0.8 + u.rms * 0.6);
     var v = vec2f(0.0, -flow_speed);
@@ -57,16 +73,7 @@ fn tide_field(pos: vec2f, lane_x: f32, agitation: f32) -> vec2f {
     let meander = curl_noise_2d(vec2f(mx * 1.5, pos.y * 0.6 - u.time * 0.05));
     v += meander * 0.12 * (1.0 - 0.7 * coher) * (0.6 + 0.4 * u.harmonic_ratio);
 
-    // Whitewater: finer curl scrolling down with the flow; gain from
-    // percussive_energy (drums make the sheet break) + local agitation.
-    // The percussive term is thresholded above the live sustained floor
-    // (#1857: the feature idles ~0.63 on dense grooves, peaks ~0.85 —
-    // it never reads 0 on busy material as the original tune assumed, and
-    // the raw term held the sheet at ~5x its designed baseline breakup).
-    let ww = curl_noise_2d(pos * vec2f(6.0, 2.5) + vec2f(0.0, -u.time * 1.2));
-    let ww_amp = (0.02 + 0.10 * param(2u))
-        * (0.25 + 1.5 * smoothstep(0.62, 0.95, u.percussive_energy) + agitation);
-    v += ww * ww_amp;
+    v += tide_whitewater(pos, agitation);
     return v;
 }
 
@@ -186,8 +193,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Runs BEFORE the collision call so water decelerates and steers on
     // approach instead of slamming into the surface. Costs 2 alpha taps in
     // free fall, +4 (normal) only near silhouettes; zero when disabled.
+    // When the Eulerian fluid grid is on (#1939) it does the flow-around as a
+    // real boundary — bow wave, wake, eddies — so the hand-authored per-particle
+    // steering below is skipped; the field alone carries the water around.
     var agitation = 0.0;
-    if u.obstacle_enabled > 0.5 && !is_drape {
+    if u.obstacle_enabled > 0.5 && !is_drape && u.fluid_enabled < 0.5 {
         let dir = normalize(vel + vec2f(0.0, -1e-4));
         // Occupancy relative to the collision threshold, NOT raw alpha: a
         // MiDaS depth field is continuous (a background wall reads ~0.3-0.6),
@@ -237,10 +247,21 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // so spray arcs like real droplets.
     // Landed Drape particles are excluded from the field (they slide below).
     if !drape_landed {
-        let v_field = tide_field(pos, lane_x, agitation);
+        // Fluid grid on (#1939): follow the incompressible field the solver
+        // routes around the obstacle (bulk flow + wakes + eddies), keeping only
+        // the fine whitewater curl as surface texture. Off: the analytic field.
+        var v_field: vec2f;
+        if u.fluid_enabled > 0.5 {
+            v_field = fluid_velocity(pos) + tide_whitewater(pos, agitation) * 0.5;
+        } else {
+            v_field = tide_field(pos, lane_x, agitation);
+        }
         let k = mix(3.0, 9.0, clamp(0.3 + 0.7 * u.harmonic_energy, 0.0, 1.0))
             * (0.4 + 0.6 * param(1u));
-        let blend = (1.0 - exp(-k * dt)) * (1.0 - foam * 0.85);
+        // fluid_coupling dials how hard particles lock to the grid vs their own
+        // momentum (1.0 = field-driven; lower = laggier, more inertial water).
+        let couple = select(1.0, u.fluid_coupling, u.fluid_enabled > 0.5);
+        let blend = (1.0 - exp(-k * dt)) * (1.0 - foam * 0.85) * couple;
         vel = mix(vel, v_field, blend);
         vel.y -= 1.8 * foam * dt;
         vel *= pow(u.drag, dt * 60.0);

@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## v1.22.0 — 2026-07-26
+
+### Added
+- **Water now flows around obstacles for real.** A new **Fluid flow** toggle in the Obstacle panel solves a true incompressible flow around your silhouette, so the sheet parts with a bow wave and sheds a wake and eddies behind the form — where before it was per-particle steering nudging water past a flat outline. Tide rides the field by default and Flux's smoke can opt in; **Speed**, **Follow**, **Eddies**, **Smooth**, and a **Detail** (128/256/512) quality control tune it live.
+
 ## v1.21.0 — 2026-07-26
 
 ### Added

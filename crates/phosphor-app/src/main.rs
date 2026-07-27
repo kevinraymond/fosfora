@@ -519,6 +519,12 @@ impl ApplicationHandler for PhosphorApp {
                                         water_flux: ps.obstacle_water_params.flux_gain,
                                         model_spin: ps.obstacle_model_spin,
                                         model_display: ps.obstacle_model_display,
+                                        fluid_enabled: ps.obstacle_fluid_enabled,
+                                        fluid_speed: ps.obstacle_fluid_params.flow_speed,
+                                        fluid_coupling: ps.obstacle_fluid_coupling,
+                                        fluid_vorticity: ps.obstacle_fluid_params.vorticity,
+                                        fluid_viscosity: ps.obstacle_fluid_params.viscosity,
+                                        fluid_grid: ps.obstacle_fluid_grid,
                                     }
                                 } else {
                                     crate::ui::panels::obstacle_panel::ObstacleInfo {
@@ -551,6 +557,12 @@ impl ApplicationHandler for PhosphorApp {
                                         water_flux: 0.18,
                                         model_spin: 1.0,
                                         model_display: 0.0,
+                                        fluid_enabled: false,
+                                        fluid_speed: 0.9,
+                                        fluid_coupling: 0.8,
+                                        fluid_vorticity: 0.18,
+                                        fluid_viscosity: 0.02,
+                                        fluid_grid: 256,
                                     }
                                 }
                             });
@@ -1906,6 +1918,24 @@ impl ApplicationHandler for PhosphorApp {
                                         }
                                         ObstacleCommand::SetModelDisplay(v) => {
                                             ps.obstacle_model_display = v;
+                                        }
+                                        ObstacleCommand::SetFluidEnabled(en) => {
+                                            ps.obstacle_fluid_enabled = en;
+                                        }
+                                        ObstacleCommand::SetFluidSpeed(v) => {
+                                            ps.obstacle_fluid_params.flow_speed = v;
+                                        }
+                                        ObstacleCommand::SetFluidCoupling(v) => {
+                                            ps.obstacle_fluid_coupling = v;
+                                        }
+                                        ObstacleCommand::SetFluidVorticity(v) => {
+                                            ps.obstacle_fluid_params.vorticity = v;
+                                        }
+                                        ObstacleCommand::SetFluidViscosity(v) => {
+                                            ps.obstacle_fluid_params.viscosity = v;
+                                        }
+                                        ObstacleCommand::SetFluidGrid(g) => {
+                                            ps.obstacle_fluid_grid = g;
                                         }
                                         ObstacleCommand::None => {}
                                     }

@@ -153,6 +153,13 @@ struct ParticleUniforms {
     // Per-band pan, same order and convention as `pan`, for the 7 bands sub_bass..brilliance.
     // A band carrying no energy holds 0.5. Read it with band_pan(i).
     band_pan: array<vec4f, 2>,
+
+    // Eulerian fluid flow field (#1939, 944 -> 960 B). Gate + coupling for
+    // fluid_velocity() below; the solver's own params live in fluid_sim.wgsl.
+    fluid_enabled: f32,   // 0 or 1
+    fluid_coupling: f32,  // how strongly particles relax toward the field (0..1)
+    _pad_fluid0: f32,
+    _pad_fluid1: f32,
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).
@@ -258,6 +265,20 @@ fn sample_flow_field(pos: vec2f) -> vec2f {
 // Accumulated water height from the virtual-pipes sim (#1851), `.r` = depth.
 // A 1×1 zero texture when water is disabled, so it contributes nothing.
 @group(1) @binding(4) var water_tex: texture_2d<f32>;
+// Eulerian fluid velocity field (#1939), `.rg` = clip-space velocity (y-up), so
+// it can be added straight to a particle's velocity. A 1×1 zero texture when the
+// fluid sim is disabled. Read it with fluid_velocity(pos).
+@group(1) @binding(5) var fluid_vel_tex: texture_2d<f32>;
+
+// Sample the incompressible flow field the FluidSim solves around the obstacle
+// (fluid_sim.wgsl). Returns clip-space velocity that already respects the solid
+// boundary (flows around, wakes, eddies). Zero when the field is disabled.
+fn fluid_velocity(pos: vec2f) -> vec2f {
+    if u.fluid_enabled < 0.5 { return vec2f(0.0); }
+    // The velocity texture is stored row 0 = top of screen; flip V to match.
+    let uv = pos * 0.5 + 0.5;
+    return textureSampleLevel(fluid_vel_tex, obstacle_sampler, vec2f(uv.x, 1.0 - uv.y), 0.0).rg;
+}
 
 // Per-axis clip→screen direction scale (larger axis normalized to 1).
 // Only the x:y ratio matters for the collision reflection math (#1790).
