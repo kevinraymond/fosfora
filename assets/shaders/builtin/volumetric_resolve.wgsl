@@ -1,40 +1,11 @@
 // Volumetric resolve: read the atomic u32 voxel grid, normalise to float, apply
 // a light 3x3x3 box blur (turns discrete particle deposits into continuous fog),
 // and write into the samplable r32float 3D density texture that the ray marcher
-// reads. Lattice (a later effect) will write this same texture directly.
+// reads. Lattice writes this same texture directly, as does Helix.
 //
 // Dispatch: ceil(grid_res / 4) in x/y/z, @workgroup_size(4,4,4).
-
-struct VolUniforms {
-    grid_res: u32,
-    march_steps: u32,
-    res_x: f32,
-    res_y: f32,
-    time: f32,
-    absorption: f32,
-    detail_scale: f32,
-    detail_strength: f32,
-    density_threshold: f32,
-    volume_depth: f32,
-    density_scale: f32,
-    cam_yaw: f32,
-    cam_pitch: f32,
-    cam_distance: f32,
-    cam_orbit_speed: f32,
-    fov: f32,
-    palette_hue: f32,
-    emission_gain: f32,
-    beat: f32,
-    kick: f32,
-    rms: f32,
-    beat_phase: f32,
-    dominant_chroma: f32,
-    density_gain: f32,
-    env_shape: u32,
-    jitter_amp: f32,
-    age_influence: f32,
-    _pad0: f32,
-}
+//
+// `VolUniforms` comes from the lib/volumetric_uniforms.wgsl preamble.
 
 @group(0) @binding(0) var<storage, read> voxel: array<u32>;
 @group(0) @binding(1) var<uniform> u: VolUniforms;

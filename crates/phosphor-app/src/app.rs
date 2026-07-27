@@ -2654,6 +2654,9 @@ impl App {
                 let lattice = ps_ref
                     .filter(|ps| ps.lattice_enabled)
                     .map(|ps| ps.lattice_params);
+                let helix = ps_ref
+                    .filter(|ps| ps.helix_enabled)
+                    .map(|ps| ps.helix_params);
                 let particle_sim = ps_ref.map(|ps| crate::preset::ParticleSimPreset {
                     emit_rate: ps.def.emit_rate,
                     burst_on_beat: ps.def.burst_on_beat,
@@ -2693,6 +2696,7 @@ impl App {
                     obstacle_depth,
                     obstacle_model,
                     lattice,
+                    helix,
                     particle_sim,
                 }
             })
@@ -3340,6 +3344,12 @@ impl App {
                     if let Some(lat) = lp.lattice {
                         ps.lattice_params = lat;
                         ps.init_lattice(&device, hdr);
+                    }
+                    // Same for Helix: `init_helix` rebuilds the volumes if the
+                    // grid or ring length changed, else is a no-op.
+                    if let Some(hx) = lp.helix {
+                        ps.helix_params = hx;
+                        ps.init_helix(&device, hdr);
                     }
                 }
             }

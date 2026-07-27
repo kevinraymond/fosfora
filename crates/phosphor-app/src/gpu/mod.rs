@@ -4,6 +4,7 @@ pub mod context;
 pub mod frame_capture;
 pub mod fullscreen_quad;
 pub mod half;
+pub mod helix;
 pub mod lattice;
 pub mod layer;
 pub mod particle;

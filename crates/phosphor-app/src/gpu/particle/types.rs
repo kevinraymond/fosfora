@@ -905,6 +905,12 @@ pub struct ParticleDef {
     #[serde(default)]
     pub lattice: Option<crate::gpu::lattice::LatticeDef>,
 
+    /// Swept audio-history ribbon (Helix effect) (optional). Like `lattice`, when
+    /// present the effect renders a density volume through the R3 ray marcher
+    /// instead of particles, so `max_count` can be minimal.
+    #[serde(default)]
+    pub helix: Option<crate::gpu::helix::HelixDef>,
+
     /// Render mode: "billboard" (default), "compute" (atomic framebuffer), or "auto"
     #[serde(default = "default_render_mode")]
     pub render_mode: String,

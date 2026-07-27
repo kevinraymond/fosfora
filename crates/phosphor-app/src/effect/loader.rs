@@ -1468,6 +1468,60 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "cleave_bg.wgsl failed validation: {err:?}");
     }
 
+    // Helix is a volume effect like Lattice: no compute shader, so
+    // `particle_effect_previews` skips it and `gpu::helix::helix_render_previews`
+    // is its probe. What still has to hold here is that the .pfx loads as a
+    // builtin and its background pass exists — every particle effect needs at
+    // least one pass, and Helix's whole render is the ray marcher compositing
+    // over it. Plus the #1855 injection-trap assert.
+    #[test]
+    fn helix_pfx_parses_as_builtin() {
+        let effect: PfxEffect =
+            serde_json::from_str(include_str!("../../../../assets/effects/helix.pfx"))
+                .expect("helix.pfx must deserialize");
+        assert!(EffectLoader::is_builtin(&effect));
+        assert_eq!(effect.passes.len(), 1, "Helix needs its background pass");
+        let particles = effect.particles.expect("helix is a particle effect");
+        assert!(
+            particles.helix.is_some(),
+            "the helix def block is what turns the effect on"
+        );
+        assert!(
+            particles.compute_shader.is_empty(),
+            "Helix renders a volume, not particles — a sim shader would be dead weight"
+        );
+        let bg = include_str!("../../../../assets/shaders/helix_bg.wgsl");
+        assert!(
+            !bg.contains("PhosphorUniforms"),
+            "helix_bg.wgsl must not mention the uniform struct name — it suppresses injection"
+        );
+    }
+
+    // Compile probe for the Helix background pass through the production
+    // concatenation. `helix_bg.wgsl` reads `u.resolution`, so it only compiles if
+    // the uniform block is actually injected — this is what would catch the #1855
+    // trap turning the backdrop into a load error at runtime.
+    // Run: cargo test -p phosphor-app -- --ignored helix_shaders_compile
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn helix_shaders_compile() {
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let bg = include_str!("../../../../assets/shaders/helix_bg.wgsl");
+
+        let _guard = gpu_guard();
+        let (device, _queue) = test_gpu();
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("helix-bg-probe"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "helix_bg.wgsl failed validation: {err:?}");
+    }
+
     // Same guard as tide_pfx_parses_as_builtin, plus the uniform-injection
     // trap: prepend_library suppresses UNIFORM_BLOCK if the shader source
     // contains the struct name anywhere (even a comment), and the compile

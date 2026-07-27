@@ -17,6 +17,7 @@ use super::types::{
     ImageSampleDef, ParticleAux, ParticleDef, ParticleImageSource, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
+use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
 use crate::gpu::wrap_angle;
@@ -269,6 +270,17 @@ pub struct ParticleSystem {
     /// The effect's `.pfx`-derived params, kept pristine so the panel's "Reset to
     /// defaults" restores the preset's look — not the hard-coded base defaults.
     pub lattice_defaults: LatticeParams,
+    // Helix (swept audio-history ribbon): the third density producer for the R3
+    // marcher. Same shape as Lattice — effect-driven, lazily rebuilt on a
+    // resolution change, mutually exclusive with volumetric + particle render.
+    helix: Option<HelixSim>,
+    pub helix_enabled: bool,
+    pub helix_params: HelixParams,
+    /// The effect's `.pfx`-derived params, kept pristine for the panel's "Reset".
+    pub helix_defaults: HelixParams,
+    /// CPU-side ring of retained audio slices, advanced in `update_audio`.
+    helix_history: HelixHistory,
+
     lattice_needs_seed: std::cell::Cell<bool>,
     // Fractional generations-per-second accumulator (drained each frame into an
     // integer step count) — keeps CA speed frame-rate stable. `&self` dispatch, so
@@ -1426,6 +1438,30 @@ impl ParticleSystem {
                 .as_ref()
                 .map(LatticeParams::from)
                 .unwrap_or_default(),
+            // Helix is effect-driven the same way: a `particles.helix` def block
+            // builds the sim + turns it on. No global toggle.
+            helix: def.helix.as_ref().map(|hd| {
+                let p = HelixParams::from(hd);
+                HelixSim::new(device, hdr_format, p.grid_res, p.slice_count)
+            }),
+            helix_enabled: def.helix.is_some(),
+            helix_params: def
+                .helix
+                .as_ref()
+                .map(HelixParams::from)
+                .unwrap_or_default(),
+            helix_defaults: def
+                .helix
+                .as_ref()
+                .map(HelixParams::from)
+                .unwrap_or_default(),
+            helix_history: HelixHistory::new(
+                def.helix
+                    .as_ref()
+                    .map(|hd| HelixParams::from(hd).slice_count)
+                    .unwrap_or(crate::gpu::helix::DEFAULT_SLICE_COUNT),
+            ),
+
             lattice_needs_seed: std::cell::Cell::new(true),
             lattice_step_accum: std::cell::Cell::new(0.0),
             lattice_stagnant_secs: std::cell::Cell::new(0.0),
@@ -1691,6 +1727,15 @@ impl ParticleSystem {
 
     /// Copy audio features into particle uniforms.
     pub fn update_audio(&mut self, features: &crate::audio::features::AudioFeatures) {
+        // Helix history ticks here rather than in dispatch: this is the only
+        // per-frame hook that has both `&mut self` and the current audio, and
+        // `update_uniforms` (which set `delta_time`) has already run.
+        if self.helix_enabled {
+            let dt = self.uniforms.delta_time;
+            let params = self.helix_params;
+            self.helix_history.advance(features, &params, dt);
+        }
+
         self.uniforms.sub_bass = features.sub_bass;
         self.uniforms.bass = features.bass;
         self.uniforms.mid = features.mid;
@@ -1985,7 +2030,21 @@ impl ParticleSystem {
         //    volume, replacing the normal particle render; otherwise compute raster
         //    (if active): tiled path for high particle counts, direct otherwise.
         let output_idx = 1 - self.current;
-        if self.lattice_enabled {
+        if self.helix_enabled {
+            if let Some(ref hx) = self.helix {
+                hx.upload_history(queue, &self.helix_history);
+                hx.upload_sweep_uniforms(
+                    queue,
+                    &self.helix_params.build_uniforms(
+                        self.helix_history.head(),
+                        hx.slice_count(),
+                        self.uniforms.time,
+                    ),
+                );
+                hx.upload_render_uniforms(queue, &self.build_helix_render_uniforms());
+                hx.sweep(encoder);
+            }
+        } else if self.lattice_enabled {
             if let Some(ref lat) = self.lattice {
                 lat.upload_ca_uniforms(queue, &self.build_lattice_uniforms());
                 lat.upload_render_uniforms(queue, &self.build_lattice_render_uniforms());
@@ -2109,6 +2168,12 @@ impl ParticleSystem {
         }
         // Lattice / Volumetric path: ray march the density volume (built in
         // dispatch), compositing over the scene. Replaces the normal particle render.
+        if self.helix_enabled {
+            if let Some(ref hx) = self.helix {
+                hx.render_raymarch(encoder, target);
+                return;
+            }
+        }
         if self.lattice_enabled {
             if let Some(ref lat) = self.lattice {
                 lat.render_raymarch(encoder, target);
@@ -3328,6 +3393,46 @@ impl ParticleSystem {
             self.lattice = Some(LatticeSim::new(device, hdr_format, want));
             self.lattice_needs_seed.set(true);
         }
+    }
+
+    /// Lazily build (or rebuild) the Helix simulation. Rebuilt when the grid
+    /// resolution or ring length changes, since both are baked into the GPU
+    /// allocations. The history ring is reset alongside so `head` cannot point
+    /// past the end of a shrunken buffer.
+    pub fn init_helix(&mut self, device: &Device, hdr_format: TextureFormat) {
+        let want_grid = crate::gpu::helix::clamp_grid_res(self.helix_params.grid_res);
+        let want_slices = crate::gpu::helix::clamp_slice_count(self.helix_params.slice_count);
+        let needs_build = match self.helix {
+            Some(ref hx) => hx.grid_res() != want_grid || hx.slice_count() != want_slices,
+            None => true,
+        };
+        if needs_build {
+            self.helix = Some(HelixSim::new(device, hdr_format, want_grid, want_slices));
+            self.helix_history = HelixHistory::new(want_slices);
+        }
+    }
+
+    /// Build the Helix ray-march uniforms: the shared marcher's block plus the
+    /// flythrough camera pose, which is read from the history at the camera's own
+    /// depth so the viewer stays inside the ribbon as it wanders.
+    fn build_helix_render_uniforms(&self) -> crate::gpu::volumetric::VolumetricUniforms {
+        let p = &self.helix_params;
+        let mut vu = p.render.build_uniforms(
+            self.uniforms.resolution,
+            self.uniforms.time,
+            self.uniforms.beat,
+            self.uniforms.kick,
+            self.uniforms.rms,
+            self.uniforms.beat_phase,
+            self.uniforms.dominant_chroma,
+            // No orbit phase in flythrough mode; the camera does not circle.
+            0.0,
+        );
+        let (cx, cy, roll) = self.helix_history.camera_pose(p, p.render.cam_distance);
+        vu.cam_x = cx;
+        vu.cam_y = cy;
+        vu.cam_roll = roll;
+        vu
     }
 
     /// Request a reseed of the Lattice grid on the next dispatch (init-mode change,

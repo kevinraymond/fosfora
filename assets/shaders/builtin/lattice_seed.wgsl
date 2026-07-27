@@ -2,32 +2,10 @@
 // Runs on enable, reseed, init-mode change, or grid resize. Modes: 0 random-fill
 // (init_density), 1 center sphere, 2 multi-seed clusters, 3 clear. Density is no
 // longer written here — the display pass derives it from state each frame with an
-// EMA so first-frame reseeds fade in instead of popping. Builtin shaders get no
-// lib preamble, so the hash helpers + uniform block are duplicated across the
-// lattice_*.wgsl passes (must byte-match the Rust struct).
-
-struct LatticeUniforms {
-    grid_res: u32,
-    birth_mask: u32,
-    survival_mask: u32,
-    num_states: u32,
-    neighborhood: u32,
-    boundary: u32,
-    frame: u32,
-    init_mode: u32,
-    init_density: f32,
-    seed_size: u32,
-    seed_hash: u32,
-    inject_active: u32,
-    perturb_prob: f32,
-    smooth_rate: f32,
-    color_mode: u32,
-    time: f32,
-    dt: f32,
-    domain_mode: u32,
-    domain_radius: f32,
-    max_age: u32,
-}
+// EMA so first-frame reseeds fade in instead of popping.
+//
+// `LatticeUniforms` comes from the lib/lattice_uniforms.wgsl preamble. The hash
+// helpers below are still duplicated with lattice_step.wgsl.
 
 @group(0) @binding(0) var<uniform> u: LatticeUniforms;
 @group(0) @binding(1) var<storage, read_write> state_out: array<u32>;

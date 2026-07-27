@@ -5,37 +5,8 @@
 //
 // Dispatch: ceil(max_particles / 256) workgroups, 1D. The resolve pass turns
 // this buffer into the samplable r32float 3D density texture.
-
-struct VolUniforms {
-    grid_res: u32,
-    march_steps: u32,
-    res_x: f32,
-    res_y: f32,
-    time: f32,
-    absorption: f32,
-    detail_scale: f32,
-    detail_strength: f32,
-    density_threshold: f32,
-    volume_depth: f32,
-    density_scale: f32,
-    cam_yaw: f32,
-    cam_pitch: f32,
-    cam_distance: f32,
-    cam_orbit_speed: f32,
-    fov: f32,
-    palette_hue: f32,
-    emission_gain: f32,
-    beat: f32,
-    kick: f32,
-    rms: f32,
-    beat_phase: f32,
-    dominant_chroma: f32,
-    density_gain: f32,
-    env_shape: u32,
-    jitter_amp: f32,
-    age_influence: f32,
-    _pad0: f32,
-}
+//
+// `VolUniforms` comes from the lib/volumetric_uniforms.wgsl preamble.
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
 @group(0) @binding(1) var<storage, read> alive_indices: array<u32>;

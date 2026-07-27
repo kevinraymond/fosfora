@@ -5,6 +5,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::effect::format::PostProcessDef;
+use crate::gpu::helix::HelixParams;
 use crate::gpu::lattice::LatticeParams;
 use crate::gpu::layer::BlendMode;
 use crate::gpu::particle::types::{
@@ -98,6 +99,11 @@ pub struct LayerPreset {
     /// camera/palette look, so a Lattice effect round-trips fully.
     #[serde(default)]
     pub lattice: Option<LatticeParams>,
+    /// Live Helix (swept audio-history ribbon) tunables captured from the
+    /// contextual panel; `None` for non-Helix effects and old presets. Includes
+    /// the embedded `render` look, so a Helix effect round-trips fully.
+    #[serde(default)]
+    pub helix: Option<HelixParams>,
     /// Live particle-sim knobs edited in the right panel (emit/lifetime/etc.).
     /// `None` for old presets; restored over the `.pfx` defaults on load.
     #[serde(default)]
@@ -636,6 +642,7 @@ mod tests {
                 obstacle_depth: None,
                 obstacle_model: None,
                 lattice: None,
+                helix: None,
                 particle_sim: None,
             }],
             active_layer: 0,
@@ -819,6 +826,7 @@ mod tests {
             obstacle_depth: None,
             obstacle_model: None,
             lattice: Some(lat),
+            helix: None,
             particle_sim: None,
         };
         let json = serde_json::to_string(&lp).unwrap();

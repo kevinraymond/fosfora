@@ -5,31 +5,7 @@
 // crossfade instead of popping. Reads the freshest state buffer; writes (read-
 // modify-write) the r32float density texture the ray marcher samples.
 //
-// The uniform block byte-matches lattice_seed.wgsl / lattice_step.wgsl (and the
-// Rust `LatticeUniforms`). Builtin shaders get no lib preamble.
-
-struct LatticeUniforms {
-    grid_res: u32,
-    birth_mask: u32,
-    survival_mask: u32,
-    num_states: u32,
-    neighborhood: u32,
-    boundary: u32,
-    frame: u32,
-    init_mode: u32,
-    init_density: f32,
-    seed_size: u32,
-    seed_hash: u32,
-    inject_active: u32,
-    perturb_prob: f32,
-    smooth_rate: f32,
-    color_mode: u32,
-    time: f32,
-    dt: f32,
-    domain_mode: u32,
-    domain_radius: f32,
-    max_age: u32,
-}
+// `LatticeUniforms` comes from the lib/lattice_uniforms.wgsl preamble.
 
 @group(0) @binding(0) var<uniform> u: LatticeUniforms;
 @group(0) @binding(1) var<storage, read> state_in: array<u32>;

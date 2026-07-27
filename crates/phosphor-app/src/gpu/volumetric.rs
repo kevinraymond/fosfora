@@ -12,9 +12,11 @@
 //! 3. **ray march** — a fullscreen fragment pass builds an orbiting camera ray
 //!    inline and marches the density texture with Beer-Lambert absorption.
 //!
-//! The density texture + ray marcher are the reusable core: the later `Lattice`
-//! effect will write [`VolumetricRenderer::density_storage_view`] directly and
-//! reuse the same marcher, so particle scatter is just one density producer.
+//! The density texture + ray marcher are the reusable core, and particle scatter
+//! is just one density producer: `Lattice` and `Helix` each allocate their own
+//! `r32float` volume, fill it with the `pub(crate)` helpers below, and hand it to
+//! the shared [`create_raymarch`]. ([`VolumetricRenderer::density_storage_view`]
+//! was an earlier escape hatch for the same idea and has no callers.)
 //!
 //! `r32float` is required: `r16float` has no storage caps and `r32float` is not
 //! hardware-filterable without `FLOAT32_FILTERABLE` (unrequested), so the marcher
@@ -37,10 +39,11 @@ pub const GRID_RES: u32 = 64;
 const SCATTER_WORKGROUP: u32 = 256;
 const RESOLVE_WORKGROUP: u32 = 4;
 
-/// GPU-side uniform block. Mirrored byte-for-byte by `VolUniforms` in all three
-/// `volumetric_*.wgsl` shaders plus `lattice_display.wgsl`'s marcher. All scalars
-/// (4-byte aligned); size padded to a multiple of 16 for the uniform address
-/// space.
+/// GPU-side uniform block. The WGSL side lives once in
+/// `assets/shaders/lib/volumetric_uniforms.wgsl` and is prepended to every
+/// consumer by [`vol_shader`], so adding a field here is a two-file change. All
+/// scalars (4-byte aligned); size padded to a multiple of 16 for the uniform
+/// address space and asserted by `volumetric_uniforms_size`.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct VolumetricUniforms {
@@ -68,9 +71,16 @@ pub struct VolumetricUniforms {
     pub beat_phase: f32,
     pub dominant_chroma: f32,
     pub density_gain: f32,
-    pub env_shape: u32,     // 0 = cube envelope (R3 default), 1 = spherical
-    pub jitter_amp: f32,    // 0 = centered half-step start (R3 default), 1 = full jitter
+    pub env_shape: u32,  // 0 = cube envelope (R3 default), 1 = spherical, 2 = tube
+    pub jitter_amp: f32, // 0 = centered half-step start (R3 default), 1 = full jitter
     pub age_influence: f32, // Lattice age → hue tint; 0 = off (R3 default)
+    /// 0 = orbit at the origin (R3 / Lattice), 1 = flythrough inside the volume
+    /// (Helix). Mode 1 reinterprets `cam_yaw`/`cam_pitch` as a look direction
+    /// relative to −Z and `cam_distance` as the camera's Z coordinate.
+    pub cam_mode: u32,
+    pub cam_roll: f32, // bank around the view axis (flythrough only)
+    pub cam_x: f32,    // camera lateral position (flythrough only)
+    pub cam_y: f32,
     pub _pad0: f32,
 }
 
@@ -101,12 +111,23 @@ pub struct VolumetricParams {
     pub fov: f32,
     pub palette_hue: f32,
     pub emission_gain: f32,
-    /// Envelope shape: 0 = cube edge-fade (R3 look), 1 = spherical (Lattice).
+    /// Envelope shape: 0 = cube edge-fade (R3 look), 1 = spherical (Lattice),
+    /// 2 = tube (Helix — fades only along ±Z, so a camera inside the volume is
+    /// not surrounded by a lateral fade eating the walls it flies between).
     pub env_shape: u32,
     /// Ray-start jitter amount (0 = centered half-step, R3; 1 = full dither).
     pub jitter_amp: f32,
     /// Age → hue tint strength (Lattice Tier B); 0 = off.
     pub age_influence: f32,
+    /// Camera model: 0 = orbit (R3 / Lattice), 1 = flythrough (Helix). Defaults
+    /// to 0, so every existing preset deserialises to the camera it always had.
+    pub cam_mode: u32,
+    /// Bank around the view axis, radians. Flythrough only.
+    pub cam_roll: f32,
+    /// Camera lateral position inside the volume. Flythrough only; the orbit
+    /// branch always looks at the origin.
+    pub cam_x: f32,
+    pub cam_y: f32,
 }
 
 impl Default for VolumetricParams {
@@ -127,10 +148,15 @@ impl Default for VolumetricParams {
             fov: 1.5,
             palette_hue: 0.6,
             emission_gain: 1.5,
-            // R3 defaults keep the original look: cube envelope, no jitter, no age tint.
+            // R3 defaults keep the original look: cube envelope, no jitter, no age
+            // tint, orbit camera.
             env_shape: 0,
             jitter_amp: 0.0,
             age_influence: 0.0,
+            cam_mode: 0,
+            cam_roll: 0.0,
+            cam_x: 0.0,
+            cam_y: 0.0,
         }
     }
 }
@@ -203,9 +229,13 @@ impl VolumetricParams {
             beat_phase,
             dominant_chroma,
             density_gain: self.density_gain.max(0.0),
-            env_shape: self.env_shape.min(1),
+            env_shape: self.env_shape.min(2),
             jitter_amp: self.jitter_amp.clamp(0.0, 1.0),
             age_influence: self.age_influence,
+            cam_mode: self.cam_mode.min(1),
+            cam_roll: self.cam_roll,
+            cam_x: self.cam_x,
+            cam_y: self.cam_y,
             _pad0: 0.0,
         }
     }
@@ -294,7 +324,7 @@ impl VolumetricRenderer {
         let scatter_pipeline = create_compute_pipeline(
             device,
             "vol-scatter",
-            include_str!("../../../../assets/shaders/builtin/volumetric_scatter.wgsl"),
+            vol_shader!("volumetric_scatter.wgsl"),
             "cs_scatter",
             &scatter_bgl,
         );
@@ -339,7 +369,7 @@ impl VolumetricRenderer {
         let resolve_pipeline = create_compute_pipeline(
             device,
             "vol-resolve",
-            include_str!("../../../../assets/shaders/builtin/volumetric_resolve.wgsl"),
+            vol_shader!("volumetric_resolve.wgsl"),
             "cs_resolve",
             &resolve_bgl,
         );
@@ -546,6 +576,24 @@ pub(crate) fn sampled_texture_3d_entry(binding: u32) -> BindGroupLayoutEntry {
     }
 }
 
+/// Compile-time concatenation of the shared `VolUniforms` preamble
+/// (`assets/shaders/lib/volumetric_uniforms.wgsl`) with a builtin volumetric
+/// shader named relative to `assets/shaders/builtin/`.
+///
+/// Every consumer of [`VolumetricUniforms`] is built through this, so the WGSL
+/// struct physically cannot drift from the Rust one — it used to be pasted
+/// byte-for-byte into each shader. Callers live in `src/gpu/`, which is the
+/// depth the relative paths assume.
+macro_rules! vol_shader {
+    ($name:literal) => {
+        concat!(
+            include_str!("../../../../assets/shaders/lib/volumetric_uniforms.wgsl"),
+            include_str!(concat!("../../../../assets/shaders/builtin/", $name))
+        )
+    };
+}
+pub(crate) use vol_shader;
+
 pub(crate) fn create_compute_pipeline(
     device: &Device,
     label: &str,
@@ -594,9 +642,7 @@ pub(crate) fn create_raymarch(
     });
     let raymarch_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("vol-raymarch"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../assets/shaders/builtin/volumetric_raymarch.wgsl").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(vol_shader!("volumetric_raymarch.wgsl").into()),
     });
     let raymarch_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
         label: Some("vol-raymarch-layout"),
@@ -671,7 +717,30 @@ mod tests {
 
     #[test]
     fn volumetric_uniforms_size() {
-        // 28 x 4-byte scalars, 16-byte-aligned for the uniform address space.
-        assert_eq!(std::mem::size_of::<VolumetricUniforms>(), 112);
+        // 32 x 4-byte scalars, 16-byte-aligned for the uniform address space.
+        // This is the guard on `lib/volumetric_uniforms.wgsl` drifting from the
+        // Rust block; every volumetric shader is compiled with that preamble.
+        assert_eq!(std::mem::size_of::<VolumetricUniforms>(), 128);
+    }
+
+    /// Every existing preset predates `cam_mode`, so the serde default must be the
+    /// orbit camera — otherwise loading an old Lattice or R3 preset would silently
+    /// move the camera inside the volume.
+    #[test]
+    fn camera_defaults_to_orbit() {
+        let p = VolumetricParams::default();
+        assert_eq!(p.cam_mode, 0);
+        assert_eq!(
+            p.build_uniforms([1.0, 1.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                .cam_mode,
+            0
+        );
+
+        // A preset serialised before these fields existed must still load.
+        let legacy = r#"{"march_steps":64,"absorption":1.2,"cam_yaw":0.5}"#;
+        let loaded: VolumetricParams = serde_json::from_str(legacy).unwrap();
+        assert_eq!(loaded.cam_mode, 0);
+        assert_eq!(loaded.cam_roll, 0.0);
+        assert!((loaded.cam_yaw - 0.5).abs() < 1e-6);
     }
 }

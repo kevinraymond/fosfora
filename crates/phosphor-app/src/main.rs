@@ -430,6 +430,19 @@ impl ApplicationHandler for PhosphorApp {
                             defaults: ps.lattice_defaults,
                         });
 
+                    // Helix panel info — Some only when the active effect is a
+                    // Helix effect (its particle system carries a HelixSim).
+                    let helix_info = app
+                        .layer_stack
+                        .active()
+                        .and_then(|l| l.as_effect())
+                        .and_then(|e| e.pass_executor.particle_system.as_ref())
+                        .filter(|ps| ps.helix_enabled)
+                        .map(|ps| crate::ui::panels::helix_panel::HelixInfo {
+                            params: ps.helix_params,
+                            defaults: ps.helix_defaults,
+                        });
+
                     // Get obstacle info from active layer
                     let obstacle_info =
                         app.layer_stack
@@ -730,6 +743,7 @@ impl ApplicationHandler for PhosphorApp {
                                 particle_info,
                                 obstacle_info,
                                 lattice_info,
+                                helix_info,
                                 scene_info,
                                 &app.status_error,
                                 &app.settings,
@@ -1745,6 +1759,29 @@ impl ApplicationHandler for PhosphorApp {
                                     if cmd.reseed {
                                         ps.request_lattice_seed();
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle helix panel signals — apply edits to the active
+                // effect's HelixSim (rebuild on grid / ring-length change).
+                {
+                    use crate::ui::panels::helix_panel::HelixCommand;
+                    let helix_cmd: Option<HelixCommand> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("helix_cmd")));
+                    if let Some(cmd) = helix_cmd {
+                        app.preset_store.mark_dirty();
+                        let device = app.gpu.device.clone();
+                        let hdr = crate::gpu::GpuContext::hdr_format();
+                        if let Some(layer) = app.layer_stack.active_mut() {
+                            if let Some(e) = layer.as_effect_mut() {
+                                if let Some(ps) = &mut e.pass_executor.particle_system {
+                                    ps.helix_params = cmd.params;
+                                    ps.init_helix(&device, hdr);
                                 }
                             }
                         }

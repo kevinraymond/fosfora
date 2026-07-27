@@ -4,37 +4,8 @@
 // unit cube [-1,1]^3 via a slab ray/box test, then Beer-Lambert transmittance is
 // accumulated with FBM detail breakup and an emission palette. Output is
 // premultiplied (composited over the scene with One / OneMinusSrcAlpha blend).
-
-struct VolUniforms {
-    grid_res: u32,
-    march_steps: u32,
-    res_x: f32,
-    res_y: f32,
-    time: f32,
-    absorption: f32,
-    detail_scale: f32,
-    detail_strength: f32,
-    density_threshold: f32,
-    volume_depth: f32,
-    density_scale: f32,
-    cam_yaw: f32,
-    cam_pitch: f32,
-    cam_distance: f32,
-    cam_orbit_speed: f32,
-    fov: f32,
-    palette_hue: f32,
-    emission_gain: f32,
-    beat: f32,
-    kick: f32,
-    rms: f32,
-    beat_phase: f32,
-    dominant_chroma: f32,
-    density_gain: f32,
-    env_shape: u32,
-    jitter_amp: f32,
-    age_influence: f32,
-    _pad0: f32,
-}
+//
+// `VolUniforms` comes from the lib/volumetric_uniforms.wgsl preamble.
 
 @group(0) @binding(0) var<uniform> u: VolUniforms;
 @group(0) @binding(1) var density_tex: texture_3d<f32>;
@@ -150,6 +121,19 @@ fn sample_density(p: vec3f) -> f32 {
 fn envelope(p: vec3f) -> f32 {
     // Soft boundary: fade density toward the domain edge (no hard box) with a
     // gentle center bias so a uniformly-filled field reads as a cloud, not a lit box.
+    if (u.env_shape == 2u) {
+        // Tube (Helix): fade along the sweep axis ONLY, and only at the FAR (-Z)
+        // end. The cube and sphere envelopes below both fade laterally and bias
+        // toward the centre, which is right when looking at the volume from
+        // outside and wrong when the camera is inside it — they dim the very walls
+        // the flythrough passes between and brighten the empty core.
+        //
+        // Fading +Z as well would dim the NEWEST material, which sits right at the
+        // camera; the viewer never sees behind themselves, so there is nothing
+        // there to hide. The far end fading to black is what gives the tunnel its
+        // depth.
+        return smoothstep(-1.0, -0.72, p.z);
+    }
     let center = mix(0.5, 1.0, smoothstep(1.2, 0.0, length(p)));
     if (u.env_shape == 1u) {
         // Spherical fade: a CA that fills its domain reads as a ball, not a cube.
@@ -169,17 +153,43 @@ fn sample_density_nearest(p: vec3f) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    // Orbiting camera basis (inline, no matrix).
+    // Camera basis (inline, no matrix).
     // cam_yaw already carries the CPU-accumulated, wrapped orbit phase. Do NOT
     // reintroduce `u.time * u.cam_orbit_speed` here: u.time never wraps, so any
     // change to the rate jumps the camera by elapsed × Δrate (minutes into a
     // set, that is hundreds of radians).
     let yaw = u.cam_yaw;
     let pitch = u.cam_pitch;
-    let ro = vec3f(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch)) * u.cam_distance;
-    let fwd = normalize(-ro);
-    let right = normalize(cross(vec3f(0.0, 1.0, 0.0), fwd));
-    let up = cross(fwd, right);
+
+    var ro: vec3f;
+    var fwd: vec3f;
+    if (u.cam_mode == 1u) {
+        // Flythrough (Helix): the camera sits INSIDE the volume and looks down -Z,
+        // with yaw/pitch as a look offset from that axis rather than an orbit
+        // position, and cam_distance as its Z coordinate. The march loop needs no
+        // change — `t_enter = max(bounds.x, 0.0)` below already starts the ray at
+        // the camera when it is within the box.
+        ro = vec3f(u.cam_x, u.cam_y, u.cam_distance);
+        fwd = normalize(vec3f(sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch)));
+    } else {
+        // Orbit (R3 / Lattice): position on a sphere, looking at the origin.
+        ro = vec3f(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch)) * u.cam_distance;
+        fwd = normalize(-ro);
+    }
+
+    // Same handedness in both modes — `cross(worldUp, fwd)` is the convention the
+    // orbit path already ships with, and diverging here would mirror one of them.
+    var right = normalize(cross(vec3f(0.0, 1.0, 0.0), fwd));
+    var up = cross(fwd, right);
+    if (u.cam_roll != 0.0) {
+        // Bank around the view axis so the camera can roll with the ribbon's twist.
+        let cr = cos(u.cam_roll);
+        let sr = sin(u.cam_roll);
+        let r2 = right * cr + up * sr;
+        let u2 = up * cr - right * sr;
+        right = r2;
+        up = u2;
+    }
 
     let aspect = u.res_x / max(u.res_y, 1.0);
     // Screen coords: x in [-aspect, aspect], y in [-1, 1] with +y up.

@@ -4,6 +4,7 @@ pub mod binding_helpers;
 pub mod binding_matrix;
 pub mod bindings_panel;
 pub mod effect_panel;
+pub mod helix_panel;
 pub mod lattice_panel;
 pub mod layer_panel;
 pub mod media_panel;
@@ -70,6 +71,7 @@ pub fn draw_panels(
     particle_info: Option<particle_panel::ParticleInfo>,
     obstacle_info: Option<obstacle_panel::ObstacleInfo>,
     lattice_info: Option<lattice_panel::LatticeInfo>,
+    helix_info: Option<helix_panel::HelixInfo>,
     scene_info: Option<scene_panel::SceneInfo>,
     status_error: &Option<(String, std::time::Instant)>,
     settings: &SettingsConfig,
@@ -515,6 +517,21 @@ pub fn draw_panels(
                         widgets::section(ui, "sec_lattice", "Lattice (3D CA)", None, true, |ui| {
                             lattice_panel::draw_lattice_panel(ui, linfo);
                         });
+                    }
+
+                    // Helix section — shows only when the active effect is a Helix
+                    // effect (its particle system carries a HelixSim).
+                    if let Some(ref hinfo) = helix_info {
+                        widgets::section(
+                            ui,
+                            "sec_helix",
+                            "Helix (audio ribbon)",
+                            None,
+                            true,
+                            |ui| {
+                                helix_panel::draw_helix_panel(ui, hinfo);
+                            },
+                        );
                     }
 
                     // Audio Reactivity section (default collapsed)

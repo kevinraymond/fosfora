@@ -33,6 +33,19 @@ use crate::gpu::volumetric::{
     storage_ro_entry, storage_rw_entry, storage_texture_3d_rw_entry, uniform_entry,
 };
 
+/// Compile-time concatenation of the shared `LatticeUniforms` preamble
+/// (`assets/shaders/lib/lattice_uniforms.wgsl`) with a builtin lattice shader.
+/// All three CA passes are built through this so the WGSL struct cannot drift
+/// from [`LatticeUniforms`]; it used to be pasted into each pass by hand.
+macro_rules! lattice_shader {
+    ($name:literal) => {
+        concat!(
+            include_str!("../../../../assets/shaders/lib/lattice_uniforms.wgsl"),
+            include_str!(concat!("../../../../assets/shaders/builtin/", $name))
+        )
+    };
+}
+
 /// `@workgroup_size(4,4,4)` — a 4^3 block of voxels per workgroup.
 const LATTICE_WORKGROUP: u32 = 4;
 
@@ -209,10 +222,10 @@ pub fn lattice_step_budget(
 
 // --- GPU uniform block --------------------------------------------------------
 
-/// GPU-side uniform block for `cs_seed`, `cs_step`, and `cs_display`. Mirrored
-/// byte-for-byte by `LatticeUniforms` in `lattice_seed.wgsl` / `lattice_step.wgsl`
-/// / `lattice_display.wgsl`. 20 scalars = 80 bytes (multiple of 16 for the uniform
-/// address space).
+/// GPU-side uniform block for `cs_seed`, `cs_step`, and `cs_display`. The WGSL
+/// side lives once in `assets/shaders/lib/lattice_uniforms.wgsl` and is prepended
+/// to all three passes by [`lattice_shader`]. 20 scalars = 80 bytes (multiple of
+/// 16 for the uniform address space); `lattice_uniforms_is_80_bytes` asserts it.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct LatticeUniforms {
@@ -747,7 +760,7 @@ impl LatticeSim {
         let seed_pipeline = create_compute_pipeline(
             device,
             "lattice-seed",
-            include_str!("../../../../assets/shaders/builtin/lattice_seed.wgsl"),
+            lattice_shader!("lattice_seed.wgsl"),
             "cs_seed",
             &seed_bgl,
         );
@@ -780,7 +793,7 @@ impl LatticeSim {
         let step_pipeline = create_compute_pipeline(
             device,
             "lattice-step",
-            include_str!("../../../../assets/shaders/builtin/lattice_step.wgsl"),
+            lattice_shader!("lattice_step.wgsl"),
             "cs_step",
             &step_bgl,
         );
@@ -820,7 +833,7 @@ impl LatticeSim {
         let display_pipeline = create_compute_pipeline(
             device,
             "lattice-display",
-            include_str!("../../../../assets/shaders/builtin/lattice_display.wgsl"),
+            lattice_shader!("lattice_display.wgsl"),
             "cs_display",
             &display_bgl,
         );
