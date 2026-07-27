@@ -31,8 +31,10 @@ fn emit_particle(idx: u32) -> Particle {
     var p: Particle;
     let seed_base = u.seed + f32(idx) * 17.31;
 
-    // 9 clusters in a 3×3 grid across the screen
-    let cluster = u32(hash(seed_base) * 9.0) % 9u;
+    // 9 clusters in a 3×3 grid across the screen. Integer hash: fract-sin banded
+    // ~1/8 of indices onto near-zero, so cluster 0 got roughly twice its share
+    // and the starting colony layout was lopsided.
+    let cluster = uhash(idx + uhash(u32(u.seed * 4096.0))) % 9u;
     let cx = f32(cluster % 3u) - 1.0;  // -1, 0, 1
     let cy = f32(cluster / 3u) - 1.0;  // -1, 0, 1
     let cluster_center = vec2f(cx, cy) * 0.55;
@@ -282,7 +284,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // BEAT SEED DROP — alternate species per beat
     // ===================================================================
 
-    let seed_hash = hash(f32(idx) * 7.13 + floor(u.time * 2.0));
+    // Integer hash: fract-sin's near-zero band meant the SAME index band won the
+    // 3% seed draw on every beat, so the drop always came from the same slots.
+    // 2 Hz re-roll tick preserved.
+    let seed_hash = uhash_f(idx + uhash(u32(u.time * 2.0)));
     if u.beat > 0.5 && seed_hash < 0.03 {
         let seed_t = floor(u.time * 2.0);
         let sx = (hash(seed_t * 3.17 + 1.0) - 0.5) * 1.6;

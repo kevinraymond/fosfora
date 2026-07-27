@@ -3,6 +3,15 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## v1.22.1 — 2026-07-27
+
+### Fixed
+- **Some effects spawned particles that ignored the music entirely.** A degenerate random-number generator left about one index in eight stuck near zero, so those particle slots passed every spawn test on every frame while their counterparts never spawned at all: Vessel fountained through silence, Mycelium had a fixed handful of strands branching forever, and Accretion kept re-seeding the same permanent attractors. Tesla's charge balance, Genesis' colony layout, Symbiosis' species split and Phosphor's sparkle scatter were skewed the same way and are now even.
+- **Colour-by-pitch swept the wrong way round the wheel.** Effects tinted by the detected pitch class ramped backwards through every hue when the note wrapped from B to C, instead of stepping straight to the new colour. Polycephalum walked through eleven wrong species on the same transition and Cymatics crossfaded through every intermediate mode pair.
+- **The Volumetric and Lattice camera jumped when you moved the orbit slider.** The orbit angle was derived from elapsed time, so changing its speed — by hand or from a binding — teleported the camera by an amount that grew the longer the app had been running. Binding the orbit to a beat made it strobe rather than turn. It now changes speed smoothly whenever you adjust it.
+- **Particles in most effects were being rotated by a number that wasn't an angle.** The renderer spun each particle's quad by a value that only means "spin" in the default simulation; every other effect stores a size, an age or a depth in that slot, so Flux, Cascade, Murmur, Cymatics, Array, Accretion, Mycelium, Tide and Chaos were rotating sprites by it. Visible on any non-circular sprite.
+- **Cymatics' nodal figure was drawn as dashed fragments.** Uneven particle scatter left whole stretches of the Chladni pattern unseeded, breaking the curves into dots and dashes; the lines are now continuous.
+
 ## v1.22.0 — 2026-07-26
 
 ### Added

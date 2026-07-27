@@ -29,23 +29,9 @@
 // param(6) = baseline      (resting height of the range)
 // param(7) = trail_decay   (bg shader: feedback decay)
 
-// Integer hash (lowbias32) — the lib's fract-sin hash() degenerates on GPU for
-// idx-scaled arguments (finding #1856), banding a range of indices onto
-// near-identical values. In a field this wide that reads as vertical seams of
-// clumped particles, so all per-index randomness here uses exact u32 mixing.
-fn uhash(x: u32) -> u32 {
-    var h = x;
-    h = h ^ (h >> 16u);
-    h = h * 0x7feb352du;
-    h = h ^ (h >> 15u);
-    h = h * 0x846ca68bu;
-    h = h ^ (h >> 16u);
-    return h;
-}
-
-fn uhash_f(x: u32) -> f32 {
-    return f32(uhash(x)) / 4294967296.0;
-}
+// All per-index randomness here uses the lib's uhash/uhash_f (integer mixing).
+// fract-sin hash() bands idx-scaled arguments onto near-identical values, which
+// in a field this wide reads as vertical seams of clumped particles.
 
 // The seven band energies in spectral order, sub_bass..brilliance. Already
 // normalized 0..1 by the analyzer. There is no lib accessor for these (unlike

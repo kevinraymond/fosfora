@@ -1282,6 +1282,7 @@ mod tests {
                 0.0,
                 0.0,
                 0.0,
+                0.0,
             ),
         );
         let mut enc =
@@ -1582,10 +1583,16 @@ mod tests {
                 .unwrap();
 
             // Render: clear to black, then ray march the density into the capture.
-            let mut ru =
-                params
-                    .render
-                    .build_uniforms([w as f32, h as f32], 2.2, 0.0, 0.0, 0.0, 0.0, 0.0);
+            let mut ru = params.render.build_uniforms(
+                [w as f32, h as f32],
+                2.2,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            );
             ru.grid_res = params.grid_res;
             ru.env_shape = params.domain_mode.min(1); // mirror the app's domain→envelope tie
             sim.upload_render_uniforms(&queue, &ru);
@@ -1755,10 +1762,21 @@ mod tests {
                 let (steps, residual) =
                     lattice_step_budget(accum, params.gen_per_sec, params.bass_floor, 1.0, dt);
                 accum = residual;
-                let mut ru =
-                    params
-                        .render
-                        .build_uniforms([w as f32, h as f32], t, 0.0, 0.0, 0.0, 0.0, 0.0);
+                let mut ru = params
+                    .render
+                    // The orbit is now a caller-accumulated phase; this clip
+                    // drives time linearly, so t * rate reproduces exactly the
+                    // rotation the marcher used to compute internally.
+                    .build_uniforms(
+                        [w as f32, h as f32],
+                        t,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        t * params.render.cam_orbit_speed,
+                    );
                 ru.grid_res = params.grid_res;
                 ru.env_shape = params.domain_mode.min(1);
                 sim.upload_render_uniforms(&queue, &ru);

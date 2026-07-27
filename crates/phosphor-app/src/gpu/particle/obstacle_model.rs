@@ -274,12 +274,11 @@ impl ObstacleModel {
             self.pose.yaw *= 1.0 - (dt * 4.0).min(1.0);
         } else {
             self.pose.yaw += dt * (BASE_SPIN + AUDIO_SPIN * audio.rms) * self.spin;
-            // Wrap to [-PI, PI]. Rotation is mod TAU so this is visually
-            // identical, but it stops yaw accumulating unbounded — otherwise
-            // dropping spin to 0 makes the model "unspin" backward through every
-            // turn it accumulated before it settles front.
-            use std::f32::consts::{PI, TAU};
-            self.pose.yaw = (self.pose.yaw + PI).rem_euclid(TAU) - PI;
+            // Rotation is mod TAU so this is visually identical, but it stops yaw
+            // accumulating unbounded — otherwise dropping spin to 0 makes the
+            // model "unspin" backward through every turn it accumulated before it
+            // settles front. See `gpu::wrap_angle` for the general rule.
+            self.pose.yaw = crate::gpu::wrap_angle(self.pose.yaw);
         }
         let tilt = TILT_AMT * audio.bass * self.spin;
         let model = Mat4::from_rotation_y(self.pose.yaw) * Mat4::from_rotation_x(tilt);

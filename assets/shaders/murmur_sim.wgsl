@@ -88,7 +88,9 @@ fn emit_particle(idx: u32) -> Particle {
     var donor_heading = hash(seed_base + 2.0) * 6.2831853; // random fallback heading
 
     if probe_range.y > 0u {
-        let pick = u32(hash(seed_base + 12.0) * f32(probe_range.y)) % probe_range.y;
+        // Integer hash: which bird a new one is seeded from decides where the
+        // flock grows, and fract-sin banded ~1/8 of indices onto the same donor.
+        let pick = uhash(idx + uhash(u32(u.seed * 4096.0))) % probe_range.y;
         let donor = sh_sorted_indices[probe_range.x + pick];
         let donor_pl = pos_life_in[donor];
         if donor_pl.w > 0.0 {
@@ -203,8 +205,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let total_in_cell = range.y;
         let count = min(total_in_cell, MAX_PER_CELL);
 
-        // Randomize start offset within cell — breaks systematic bias that causes banding
-        let scan_offset = u32(hash(f32(idx) * 0.31 + f32(ci) * 7.7) * f32(total_in_cell));
+        // Randomize start offset within cell — breaks systematic bias that causes
+        // banding. This existed precisely to break banding and was itself banded
+        // by fract-sin, so it never did its job; integer hash now.
+        let scan_offset = uhash(idx + uhash(ci * 0x9e3779b9u)) % max(total_in_cell, 1u);
 
         for (var i = 0u; i < count; i++) {
 
@@ -328,7 +332,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
     // --- Heading smoothing: angular low-pass filter ---
     let angle_delta = atan2(sin(raw_heading - heading), cos(raw_heading - heading));
-    let new_heading = heading + angle_delta * heading_smooth;
+    // Wrap the stored heading: the steer above already takes the shortest arc,
+    // but flags.z persists across frames, so a bird that keeps circling one way
+    // drifts past TAU and degrades the precision of that very sin/cos.
+    let new_heading = fract((heading + angle_delta * heading_smooth) / 6.2831853) * 6.2831853;
 
     // --- Speed: base * centroid_mod * flux agitation * per-bird * beat pulse ---
     // Min/max speed clamping prevents stalling (blob collapse) and runaway

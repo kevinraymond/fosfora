@@ -163,23 +163,9 @@ fn sym3_mul(d: vec3f, o: vec3f, v: vec3f) -> vec3f {
     );
 }
 
-// Integer hash (lowbias32) — the lib's fract-sin hash() degrades on GPU for
-// idx-scaled arguments (#1856): a band of indices rolls near-constant values
-// that pass any threshold every frame. All per-index randomness here uses
-// exact u32 mixing (copied from cleave_sim).
-fn uhash(x: u32) -> u32 {
-    var h = x;
-    h = h ^ (h >> 16u);
-    h = h * 0x7feb352du;
-    h = h ^ (h >> 15u);
-    h = h * 0x846ca68bu;
-    h = h ^ (h >> 16u);
-    return h;
-}
-
-fn uhash_f(x: u32) -> f32 {
-    return f32(uhash(x)) / 4294967296.0;
-}
+// All per-index randomness here uses the lib's uhash/uhash_f (integer mixing).
+// fract-sin hash() bands idx-scaled arguments onto near-constant values that
+// pass any threshold every frame.
 
 // Uniform direction on the unit sphere from one seed.
 fn rand_dir3(seed: u32) -> vec3f {

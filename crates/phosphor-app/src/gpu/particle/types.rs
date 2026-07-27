@@ -543,7 +543,30 @@ pub struct ParticleRenderUniforms {
     /// Trail params
     pub trail_length: u32,
     pub trail_width: f32,
-    pub _pad: [f32; 2],
+    /// Non-zero when `pos_life.z` actually holds an accumulated spin angle, i.e.
+    /// the effect runs the builtin sim AND declares a non-zero `spin_speed`.
+    ///
+    /// The renderer used to rotate on `pos_life.z != 0.0`, but only
+    /// `builtin/particle_sim.wgsl` stores an angle there — every other sim packs
+    /// something else into that slot (init_size in flux/cascade/murmur/cymatics/
+    /// array/accretion, generation in mycelium, drape height in tide, view depth
+    /// in splat, projected z in chaos), so those effects were being rotated by a
+    /// size or a depth in radians.
+    pub spin_enabled: u32,
+    pub _pad: f32,
+}
+
+impl ParticleDef {
+    /// True when `pos_life.z` really holds an accumulated spin angle.
+    ///
+    /// Only `builtin/particle_sim.wgsl` accumulates one there, and only when
+    /// `spin_speed` is non-zero. Every custom sim packs something else into that
+    /// slot (init_size, generation, drape height, view depth, projected z), so
+    /// the renderer must not rotate quads by it — see
+    /// `ParticleRenderUniforms::spin_enabled`.
+    pub fn spin_angle_in_pos_life_z(&self) -> bool {
+        self.compute_shader.is_empty() && self.spin_speed != 0.0
+    }
 }
 
 /// Sprite atlas definition for textured particles.
@@ -1052,6 +1075,61 @@ mod tests {
         assert_eq!(def.spin_speed, 0.0);
         assert!(!def.depth_sort);
         assert_eq!(def.render_mode, "billboard");
+    }
+
+    /// The renderer rotates quads by `pos_life.z`, but that slot is only a spin
+    /// angle under the builtin sim. It used to rotate whenever the value was
+    /// non-zero, so every custom sim's init_size / generation / height / depth
+    /// was being read as radians.
+    #[test]
+    fn spin_angle_only_claimed_for_the_builtin_sim() {
+        let mut def: ParticleDef = serde_json::from_str(r#"{"emitter":{}}"#).unwrap();
+
+        // Builtin sim, no spin declared → nothing to rotate by.
+        assert!(def.compute_shader.is_empty());
+        assert!(!def.spin_angle_in_pos_life_z());
+
+        // Builtin sim + spin → the one case where pos_life.z is an angle.
+        def.spin_speed = 3.0;
+        assert!(def.spin_angle_in_pos_life_z());
+
+        // A custom sim owns that slot, so spin must NOT be claimed even when the
+        // .pfx happens to carry a spin_speed.
+        def.compute_shader = "flux_sim.wgsl".to_string();
+        assert!(!def.spin_angle_in_pos_life_z());
+    }
+
+    /// Sweep the shipped catalogue: no effect may pair a custom sim with a
+    /// non-zero spin_speed, which would silently mean two different things.
+    #[test]
+    fn no_shipped_effect_pairs_a_custom_sim_with_spin() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("effects dir").flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|x| x != "pfx") {
+                continue;
+            }
+            let json = std::fs::read_to_string(&path).expect("read .pfx");
+            let v: serde_json::Value = serde_json::from_str(&json).expect("parse .pfx");
+            let Some(p) = v.get("particles").filter(|p| !p.is_null()) else {
+                continue;
+            };
+            let def: ParticleDef = serde_json::from_value(p.clone()).expect("particles block");
+            assert!(
+                def.compute_shader.is_empty() || def.spin_speed == 0.0,
+                "{}: custom sim {} with spin_speed {} — pos_life.z cannot be both \
+                 an angle and whatever that sim stores there",
+                path.display(),
+                def.compute_shader,
+                def.spin_speed
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 15,
+            "suspiciously few particle effects ({checked})"
+        );
     }
 
     #[test]

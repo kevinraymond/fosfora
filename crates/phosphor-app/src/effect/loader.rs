@@ -689,6 +689,618 @@ mod tests {
         assert!(particles.max_scaled_count <= 300_000); // quality scaler cap
     }
 
+    // Generic offscreen preview for ANY particle effect, through the production
+    // ParticleSystem — the repo previously had only splat- and frost-specific
+    // probes, so a change to a shared sim helper had no cheap before/after.
+    //
+    // Renders the particle layer alone (no bg pass, no obstacle, no image
+    // source), which is exactly the layer where spawn-distribution changes show.
+    // Prints a per-render SIGNATURE (mean + quadrant means + alive count) so an
+    // A/B can be diffed numerically instead of by eye.
+    //
+    // PARTICLE_PFX=vessel,tesla  selects effects (default: every particle .pfx)
+    // PARTICLE_PNG_DIR=/path     where PNGs land (default /tmp)
+    // Run: cargo test -p phosphor-app -- --ignored particle_effect_previews --nocapture
+    #[test]
+    #[ignore = "requires a GPU/software adapter; writes PNGs"]
+    fn particle_effect_previews() {
+        use crate::gpu::frame_capture::FrameCapture;
+        use crate::gpu::particle::ParticleSystem;
+
+        let out_dir = std::env::var("PARTICLE_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let libs = format!("{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}\n{plib}");
+
+        let wanted: Option<Vec<String>> = std::env::var("PARTICLE_PFX")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+
+        let mut names: Vec<String> = std::fs::read_dir(root.join("effects"))
+            .expect("effects dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .collect();
+        names.sort();
+        if let Some(w) = &wanted {
+            names.retain(|n| w.contains(n));
+            assert!(!names.is_empty(), "PARTICLE_PFX matched no .pfx: {w:?}");
+        }
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (w, h) = (640u32, 360u32);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        // Silence matters here: Vessel's degenerate emit gate showed up as a
+        // fountain that ran with no audio at all, so "idle" is a real probe.
+        struct State {
+            name: &'static str,
+            rms: f32,
+            onset_every: u32,
+        }
+        let states = [
+            State {
+                name: "idle",
+                rms: 0.02,
+                onset_every: 0,
+            },
+            State {
+                name: "groove",
+                rms: 0.55,
+                onset_every: 15,
+            },
+        ];
+
+        let frames = 120u32;
+        let dt = 1.0 / 60.0;
+        let mut rendered = 0usize;
+
+        for name in &names {
+            let json = std::fs::read_to_string(root.join("effects").join(format!("{name}.pfx")))
+                .expect("read .pfx");
+            let effect: PfxEffect = serde_json::from_str(&json).expect("parse .pfx");
+            let Some(mut def) = effect.particles.clone() else {
+                continue;
+            };
+            if def.compute_shader.is_empty() {
+                continue;
+            }
+            // Splat needs an uploaded cloud to show anything — it has its own probe.
+            if def.splat.is_some() {
+                continue;
+            }
+            let sim = match std::fs::read_to_string(root.join("shaders").join(&def.compute_shader))
+            {
+                Ok(s) => s,
+                Err(e) => panic!("{name}: missing sim {}: {e}", def.compute_shader),
+            };
+            // Probe-sized: the 2M-particle effects would dominate runtime and the
+            // distribution artefacts are visible far below full count.
+            def.max_count = def.max_count.min(200_000);
+            def.max_scaled_count = 0;
+
+            // Interaction effects read the spatial hash (group 3), whose grid
+            // constants the production loader patches into particle_lib for the
+            // actual particle count — mirror that or the pipeline layout mismatches.
+            let sim_src = if def.interaction {
+                let (gw, gh) =
+                    crate::gpu::particle::spatial_hash::grid_dims(def.max_count, def.grid_max);
+                let patched = libs
+                    .replace(
+                        "const SH_GRID_W: u32 = 40u;",
+                        &format!("const SH_GRID_W: u32 = {gw}u;"),
+                    )
+                    .replace(
+                        "const SH_GRID_H: u32 = 40u;",
+                        &format!("const SH_GRID_H: u32 = {gh}u;"),
+                    );
+                format!("{patched}\n{sim}")
+            } else {
+                format!("{libs}\n{sim}")
+            };
+
+            // Param slots 0–7 from the .pfx defaults, so the probe renders each
+            // effect as shipped rather than at an arbitrary setting.
+            let mut params = [0.0f32; 8];
+            for (i, p) in effect.inputs.iter().take(8).enumerate() {
+                params[i] = match p {
+                    crate::params::ParamDef::Float { default, .. } => *default,
+                    crate::params::ParamDef::Bool { default: true, .. } => 1.0,
+                    _ => 0.0,
+                };
+            }
+
+            let mut ps = ParticleSystem::new(&device, &queue, fmt, &def, &sim_src, def.interaction);
+            if def.trail_length >= 2 {
+                ps.setup_trails(&device, fmt, def.trail_length, def.trail_width);
+            }
+
+            for s in &states {
+                for f in 0..frames {
+                    ps.poll_counter_readback();
+                    ps.update_uniforms(dt, f as f32 * dt, [w as f32, h as f32], 0.0);
+                    ps.uniforms.rms = s.rms;
+                    ps.uniforms.centroid = 0.5;
+                    ps.uniforms.onset = if s.onset_every > 0 && f % s.onset_every == 0 {
+                        0.7
+                    } else {
+                        0.0
+                    };
+                    ps.uniforms.beat = if s.onset_every > 0 && f % s.onset_every == 0 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    ps.uniforms.buildup = if s.onset_every > 0 { 0.5 } else { 0.0 };
+                    ps.uniforms.effect_params = params;
+
+                    let is_last = f == frames - 1;
+                    let mut fc =
+                        is_last.then(|| FrameCapture::new(&device, w, h, fmt, "particle-capture"));
+
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    ps.dispatch(&mut enc, &queue);
+                    let target = fc.as_ref().map(|fc| &fc.view);
+                    if let Some(view) = target {
+                        {
+                            let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("particle-preview-bg"),
+                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                    view,
+                                    depth_slice: None,
+                                    resolve_target: None,
+                                    ops: wgpu::Operations {
+                                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                                            r: 0.01,
+                                            g: 0.01,
+                                            b: 0.015,
+                                            a: 1.0,
+                                        }),
+                                        store: wgpu::StoreOp::Store,
+                                    },
+                                })],
+                                depth_stencil_attachment: None,
+                                timestamp_writes: None,
+                                occlusion_query_set: None,
+                            });
+                        }
+                        ps.render(&mut enc, &queue, view);
+                    }
+                    if let Some(fc) = fc.as_ref() {
+                        fc.copy_to_staging(&mut enc);
+                    }
+                    queue.submit([enc.finish()]);
+                    ps.request_counter_readback();
+                    ps.flip();
+
+                    if let Some(fc) = fc.as_mut() {
+                        device
+                            .poll(wgpu::PollType::Wait {
+                                submission_index: None,
+                                timeout: None,
+                            })
+                            .unwrap();
+                        fc.request_map();
+                        let data = loop {
+                            device
+                                .poll(wgpu::PollType::Wait {
+                                    submission_index: None,
+                                    timeout: None,
+                                })
+                                .unwrap();
+                            if let Some(d) = fc.take_mapped_data(&device) {
+                                break d;
+                            }
+                        };
+                        // Signature: overall mean plus quadrant means. A spawn
+                        // distribution that shifts (clustered → uniform) moves the
+                        // quadrant spread even when the overall mean barely budges.
+                        let lum = |i: usize| {
+                            (data[i] as f64 + data[i + 1] as f64 + data[i + 2] as f64) / 765.0
+                        };
+                        let mut q = [0f64; 4];
+                        let mut qn = [0f64; 4];
+                        for y in 0..h as usize {
+                            for x in 0..w as usize {
+                                let qi = (y >= h as usize / 2) as usize * 2
+                                    + (x >= w as usize / 2) as usize;
+                                q[qi] += lum((y * w as usize + x) * 4);
+                                qn[qi] += 1.0;
+                            }
+                        }
+                        for i in 0..4 {
+                            q[i] /= qn[i];
+                        }
+                        let mean = (q[0] + q[1] + q[2] + q[3]) / 4.0;
+                        let path = format!("{out_dir}/{name}_{}.png", s.name);
+                        image::RgbaImage::from_raw(w, h, data)
+                            .expect("raw->image")
+                            .save(&path)
+                            .expect("save png");
+                        println!(
+                            "SIG {name:<14} {:<7} mean={mean:.5} q=[{:.5} {:.5} {:.5} {:.5}]",
+                            s.name, q[0], q[1], q[2], q[3]
+                        );
+                        rendered += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(rendered > 0, "no particle effects rendered");
+        eprintln!("rendered {rendered} previews into {out_dir}");
+    }
+
+    // The f32-spacing half of the degenerate-hash finding, provable on the CPU:
+    // decorrelated draws must NEVER be taken as hash(x), hash(x + 1.0), because
+    // at realistic seeds the offset rounds away entirely and both calls return
+    // the same number.
+    #[test]
+    fn float_offset_seeds_collapse_at_particle_scale() {
+        // seed_base = u.seed + f32(idx) * 17.31, the phosphor/builtin convention,
+        // at the 2,000,000 particles those effects actually ship.
+        let seed_base = 30_000.0f32 + 2_000_000.0f32 * 17.31;
+        assert!(
+            seed_base > 33_554_432.0, // 2^25, where the f32 ULP reaches 4.0
+            "test premise moved: seed_base = {seed_base}"
+        );
+        assert_eq!(
+            seed_base + 1.0,
+            seed_base,
+            "the +1.0 offset must be shown to vanish — this is why rand_vec2 \
+             returns x == y and why 5-draw emitters collapse to one value"
+        );
+        assert_eq!(seed_base + 2.0, seed_base);
+
+        // The integer path keeps every draw distinct at the same scale.
+        let idx = 2_000_000u32;
+        let a = uhash_ref(idx);
+        let b = uhash_ref(idx ^ 0x9e37_79b9);
+        assert_ne!(a, b, "XOR-salted draws must stay independent");
+    }
+
+    // Mirror of the library's uhash, used by the statistical probes below. The
+    // test immediately after this one asserts it has not drifted from the WGSL.
+    fn uhash_ref(x: u32) -> u32 {
+        let mut h = x;
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x7feb_352d);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x846c_a68b);
+        h ^= h >> 16;
+        h
+    }
+
+    // Guards uhash_ref (and the inline copy in the GPU probe) against drifting
+    // away from the shipped WGSL, which is the thing actually under test.
+    #[test]
+    fn particle_lib_exports_the_integer_hash() {
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        for needle in [
+            "fn uhash(x: u32) -> u32 {",
+            "h = h ^ (h >> 16u);",
+            "h = h * 0x7feb352du;",
+            "h = h ^ (h >> 15u);",
+            "h = h * 0x846ca68bu;",
+            "fn uhash_f(x: u32) -> f32 {",
+            "return f32(uhash(x)) / 4294967296.0;",
+        ] {
+            assert!(
+                plib.contains(needle),
+                "particle_lib.wgsl no longer contains `{needle}` — the integer \
+                 hash moved or changed; update uhash_ref and the GPU probe"
+            );
+        }
+        // The duplicated per-effect copies were folded into the library; a new
+        // one creeping back in would be a redefinition error at load, but this
+        // catches it at test time with a clearer message.
+        let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+        for sim in [
+            "cleave_sim",
+            "tide_sim",
+            "ascend_sim",
+            "panorama_sim",
+            "splat_sim",
+        ] {
+            let src = std::fs::read_to_string(shaders.join(format!("{sim}.wgsl"))).unwrap();
+            assert!(
+                !src.contains("fn uhash(x: u32) -> u32 {"),
+                "{sim}.wgsl redefines uhash — it comes from particle_lib now"
+            );
+        }
+    }
+
+    // Statistical probe on the REAL GPU: the integer hash must be uniform and
+    // decorrelated over a contiguous index band at the magnitudes particle sims
+    // actually reach. This is the guard on the fix.
+    //
+    // Deliberately one-sided: it does NOT assert that fract-sin misbehaves.
+    // sin() accuracy is a driver/hardware property (lavapipe's is accurate,
+    // the RTX fast path is not), so demanding the bug reproduce would be flaky.
+    // The fract-sin numbers are printed for the record instead.
+    // Run: cargo test -p phosphor-app -- --ignored integer_hash_is_uniform_at_particle_scale
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn integer_hash_is_uniform_at_particle_scale() {
+        const N: u32 = 65536;
+        const BASE: u32 = 1_000_000; // a contiguous band deep in a 2M-particle sim
+        const SEED: f32 = 30_000.0; // u.seed is time*1000 % 65536
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        let shader = r#"
+struct Params { seed: f32, base: u32, pad0: u32, pad1: u32 };
+@group(0) @binding(0) var<uniform> pr: Params;
+@group(0) @binding(1) var<storage, read_write> out_sin: array<f32>;
+@group(0) @binding(2) var<storage, read_write> out_int: array<f32>;
+
+fn uhash(x: u32) -> u32 {
+    var h = x;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return h;
+}
+fn uhash_f(x: u32) -> f32 { return f32(uhash(x)) / 4294967296.0; }
+fn hash(n: f32) -> f32 { return fract(sin(n) * 43758.5453123); }
+
+@compute @workgroup_size(64)
+fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
+    let i = gid.x;
+    if i >= arrayLength(&out_sin) { return; }
+    let idx = pr.base + i;
+    // The exact expression vessel_sim used before the fix.
+    out_sin[i] = hash(pr.seed + f32(idx) * 3.7);
+    out_int[i] = uhash_f(idx + uhash(u32(pr.seed * 256.0)));
+}
+"#;
+
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hash-probe"),
+            source: wgpu::ShaderSource::Wgsl(shader.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("hash-probe"),
+            layout: None,
+            module: &module,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let bytes = (N as u64) * 4;
+        let mk = || {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
+        };
+        let (buf_sin, buf_int) = (mk(), mk());
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut pbytes = [0u8; 16];
+        pbytes[0..4].copy_from_slice(&SEED.to_ne_bytes());
+        pbytes[4..8].copy_from_slice(&BASE.to_ne_bytes());
+        queue.write_buffer(&params, 0, &pbytes);
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: buf_sin.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: buf_int.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(N / 64, 1, 1);
+        }
+        let stage_sin = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let stage_int = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        enc.copy_buffer_to_buffer(&buf_sin, 0, &stage_sin, 0, bytes);
+        enc.copy_buffer_to_buffer(&buf_int, 0, &stage_int, 0, bytes);
+        queue.submit([enc.finish()]);
+
+        let read = |b: &wgpu::Buffer| -> Vec<f32> {
+            b.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
+            let v = bytemuck::cast_slice::<u8, f32>(&b.slice(..).get_mapped_range()).to_vec();
+            b.unmap();
+            v
+        };
+        let sins = read(&stage_sin);
+        let ints = read(&stage_int);
+
+        let stats = |v: &[f32]| {
+            let n = v.len() as f64;
+            let mean = v.iter().map(|&x| x as f64).sum::<f64>() / n;
+            let below_05 = v.iter().filter(|&&x| x < 0.05).count() as f64 / n;
+            let tiny = v.iter().filter(|&&x| x < 1e-4).count() as f64 / n;
+            (mean, below_05, tiny)
+        };
+        let (sm, sb, st) = stats(&sins);
+        let (im, ib, it) = stats(&ints);
+        eprintln!(
+            "fract-sin: mean={sm:.4} p(<0.05)={sb:.4} p(<1e-4)={st:.6}\n\
+             integer  : mean={im:.4} p(<0.05)={ib:.4} p(<1e-4)={it:.6}\n\
+             (uniform expects 0.5 / 0.05 / 0.0001)"
+        );
+
+        // The integer hash must be uniform at this scale.
+        assert!(
+            (im - 0.5).abs() < 0.01,
+            "integer hash mean should be 0.5, got {im}"
+        );
+        assert!(
+            (ib - 0.05).abs() < 0.01,
+            "integer hash should put 5% below 0.05, got {ib}"
+        );
+        assert!(
+            it < 0.001,
+            "integer hash near-zero tail should stay ~1e-4, got {it} — this is \
+             the band that made gates fire unconditionally"
+        );
+
+        // ...and adjacent indices must be independent, since sims hash idx and
+        // idx+1 for values that must not correlate.
+        let pairs = ints.len() / 2;
+        let corr = {
+            let (mut sx, mut sy, mut sxy, mut sxx, mut syy) = (0f64, 0f64, 0f64, 0f64, 0f64);
+            for i in 0..pairs {
+                let (x, y) = (ints[i * 2] as f64, ints[i * 2 + 1] as f64);
+                sx += x;
+                sy += y;
+                sxy += x * y;
+                sxx += x * x;
+                syy += y * y;
+            }
+            let n = pairs as f64;
+            (sxy - sx * sy / n) / (((sxx - sx * sx / n) * (syy - sy * sy / n)).sqrt())
+        };
+        assert!(
+            corr.abs() < 0.02,
+            "adjacent indices should be uncorrelated, got r={corr}"
+        );
+    }
+
+    // Sweep: every particle sim a shipped .pfx names, compiled through the
+    // production compute concatenation. The per-effect probes below cover only
+    // 8 effects, so a library change (a new helper, a renamed function) could
+    // break the other dozen sims with nothing failing until launch —
+    // all_effect_pass_shaders_compile deliberately skips compute sims.
+    //
+    // Auto-layout (`layout: None`) is what makes this cheap: pipeline creation
+    // still forces full validation of bindings and the entry point without the
+    // harness having to build any particle buffers.
+    // Run: cargo test -p phosphor-app -- --ignored all_particle_sim_shaders_compile
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn all_particle_sim_shaders_compile() {
+        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
+        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
+        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
+        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let libs = format!("{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}\n{plib}");
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut entries: Vec<_> = std::fs::read_dir(root.join("effects"))
+            .expect("effects dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+            .collect();
+        entries.sort();
+
+        // Several effects share a sim (e.g. the lattice family); compile once each.
+        let mut seen = std::collections::BTreeSet::new();
+        for path in &entries {
+            let json = std::fs::read_to_string(path).expect("read .pfx");
+            let effect: PfxEffect = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()));
+            if let Some(p) = &effect.particles {
+                if !p.compute_shader.is_empty() {
+                    seen.insert(p.compute_shader.clone());
+                }
+            }
+        }
+        assert!(
+            seen.len() > 15,
+            "suspiciously few particle sims found ({}) — did .pfx discovery change?",
+            seen.len()
+        );
+
+        let _guard = gpu_guard();
+        let (device, _queue) = test_gpu();
+
+        let mut failures: Vec<String> = Vec::new();
+        for rel in &seen {
+            let src_path = root.join("shaders").join(rel);
+            let src = match std::fs::read_to_string(&src_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!("missing sim {}: {e}", src_path.display()));
+                    continue;
+                }
+            };
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(rel),
+                source: wgpu::ShaderSource::Wgsl(format!("{libs}\n{src}").into()),
+            });
+            let _ = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(rel),
+                layout: None,
+                module: &module,
+                entry_point: Some("cs_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+                failures.push(format!("{rel}: {err:?}"));
+            }
+        }
+
+        eprintln!("compiled {} particle sims", seen.len());
+        assert!(
+            failures.is_empty(),
+            "particle sims failed to compile:\n{}",
+            failures.join("\n")
+        );
+    }
+
     // Compile probe for the Tide sim + bg shaders through the production
     // concatenation (lib_source = noise + palette, then particle_lib for
     // compute). Catches WGSL errors without launching the app.

@@ -195,12 +195,20 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
     ),
     // Derived: a pitch-class index / 11, not an energy level — Passthrough. A8 (#1459)
     // Holds it: lerping an argmax index reads out a pitch class that was never detected
-    // (C → D# would sweep through D). Smoothed but not interpolated — the one row where
-    // `smooth.bypass` and `interp` genuinely disagree.
+    // (C → D# would sweep through D).
+    //
+    // The EMA is bypassed for the SAME reason, which the Hold alone did not cover:
+    // this value is CIRCULAR (B = 11/11 = 1.0 sits next to C = 0.0), and the
+    // smoother lerps linearly. On a B→C change the release ramp swept 1.0 → 0.9
+    // → … → 0.1, so every hue-bound effect rainbow-swept BACKWARDS through the
+    // whole colour wheel, polycephalum walked 11 wrong species, and cymatics
+    // crossfaded through every intermediate mode pair. Every other wrapping or
+    // categorical feature here already bypasses (beat_phase, bar_phase,
+    // beat_in_bar, key_class, key_is_minor); this row was the lone exception.
     def_hold(
         "dominant_chroma",
         Passthrough,
-        SmoothParams::ar(0.05, 0.2),
+        SmoothParams::bypass(),
         Scale,
     ),
     // ---- Reserved tail (batched ABI bump #1505) — 0.0 until each detector lands ----
@@ -480,6 +488,32 @@ const _: () = assert!(FEATURES.len() == NUM_FEATURES);
 mod tests {
     use super::super::features::AudioFeatures;
     use super::*;
+
+    /// Circular features must never be smoothed: the smoother lerps linearly, so
+    /// on a wrap (B = 1.0 → C = 0.0, or beat_phase 1 → 0) it ramps the long way
+    /// round through every intermediate value. For dominant_chroma that meant
+    /// hue-bound effects swept backwards through the whole colour wheel and
+    /// categorical consumers walked every wrong class on the way.
+    #[test]
+    fn circular_features_bypass_the_smoother() {
+        for name in [
+            "dominant_chroma",
+            "beat_phase",
+            "bar_phase",
+            "beat_in_bar",
+            "key_class",
+        ] {
+            let def = FEATURES
+                .iter()
+                .find(|d| d.name == name)
+                .unwrap_or_else(|| panic!("{name} missing from FEATURES"));
+            assert!(
+                def.smooth.bypass,
+                "{name} wraps around, so smoothing it interpolates the long way \
+                 round — it must bypass"
+            );
+        }
+    }
 
     /// Pins the schema's positional order to the struct's `#[repr(C)]` layout:
     /// writing each slot's index into the flat slice must read back through the

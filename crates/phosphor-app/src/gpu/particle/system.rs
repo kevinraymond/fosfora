@@ -19,6 +19,7 @@ use super::types::{
 };
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
+use crate::gpu::wrap_angle;
 
 const WORKGROUP_SIZE: u32 = 256;
 
@@ -249,6 +250,15 @@ pub struct ParticleSystem {
     volumetric: Option<VolumetricRenderer>,
     pub volumetric_enabled: bool,
     pub volumetric_params: VolumetricParams,
+    /// Orbit angle for the volumetric camera, accumulated per frame and wrapped
+    /// to [-PI, PI]. Deliberately NOT a `VolumetricParams` field: that struct is
+    /// `Copy` and preset-serialized, so a new member would change preset
+    /// round-trip. See `VolumetricParams::cam_yaw` for why this is accumulated
+    /// rather than computed as `time * rate` in the shader.
+    volumetric_orbit_phase: f32,
+    /// Same, for Lattice — it drives the same ray marcher through its own
+    /// `lattice_params.render`, so it needs its own phase.
+    lattice_orbit_phase: f32,
 
     // Lattice (3D cellular automata): self-contained density producer that reuses
     // the R3 ray marcher. Lazily built on first enable (see `init_lattice`);
@@ -1397,6 +1407,8 @@ impl ParticleSystem {
             volumetric: None,
             volumetric_enabled: false,
             volumetric_params: VolumetricParams::default(),
+            volumetric_orbit_phase: 0.0,
+            lattice_orbit_phase: 0.0,
             // Lattice is effect-driven: a `particles.lattice` def block builds the
             // sim + turns it on (like reaction_diffusion / trail_field). No global toggle.
             lattice: def
@@ -1548,6 +1560,14 @@ impl ParticleSystem {
 
     /// Update uniforms from app state. Call before dispatch().
     pub fn update_uniforms(&mut self, dt: f32, time: f32, resolution: [f32; 2], beat: f32) {
+        // Orbit cameras: integrate the rate and wrap, so changing the rate mid-set
+        // changes the SPEED rather than jumping the angle (#1933's failure class).
+        // Wrapping also keeps the angle in a range where sin/cos stay precise.
+        self.volumetric_orbit_phase =
+            wrap_angle(self.volumetric_orbit_phase + dt * self.volumetric_params.cam_orbit_speed);
+        self.lattice_orbit_phase =
+            wrap_angle(self.lattice_orbit_phase + dt * self.lattice_params.render.cam_orbit_speed);
+
         // Accumulate emissions
         self.emit_accumulator += self.emit_rate * dt;
 
@@ -1659,6 +1679,11 @@ impl ParticleSystem {
         self.render_uniforms.frame_index = self.frame_index;
         self.render_uniforms.trail_length = self.trail_length;
         self.render_uniforms.trail_width = self.trail_width;
+        // Quad spin is only meaningful when pos_life.z really is an angle: the
+        // builtin sim is the only one that accumulates one there, and it only
+        // does so when spin_speed is non-zero. Custom sims pack init_size /
+        // generation / height / depth into that slot.
+        self.render_uniforms.spin_enabled = u32::from(self.def.spin_angle_in_pos_life_z());
         // Same counter into the compute uniforms: trail_write's ring slot and
         // the trail renderer's head must agree for the same frame.
         self.uniforms.frame_index = self.frame_index;
@@ -3285,6 +3310,7 @@ impl ParticleSystem {
             u.rms,
             u.beat_phase,
             u.dominant_chroma,
+            self.volumetric_orbit_phase,
         )
     }
 
@@ -3400,6 +3426,7 @@ impl ParticleSystem {
             u.rms,
             u.beat_phase,
             u.dominant_chroma,
+            self.lattice_orbit_phase,
         );
         // Tie the marcher's boundary-fade shape to the CA domain, so the panel's
         // Domain (Cube/Sphere) choice actually changes the silhouette instead of

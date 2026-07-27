@@ -23,24 +23,11 @@
 const N_LANES: f32 = 64.0;
 
 // Integer hash (lowbias32) for per-index randomness — the lib's fract-sin
-// hash() degenerates on GPU for idx-scaled args (finding #1856): a band of
-// indices rolls near-constant tiny values that pass ANY threshold every
-// re-roll. Harmless here while the splash gate was fed a dead percussive
-// feature; once #1857 brought HPSS to life those slots became permanent
-// foam — standing white streaks in the falls (live finding).
-fn uhash(x: u32) -> u32 {
-    var h = x;
-    h = h ^ (h >> 16u);
-    h = h * 0x7feb352du;
-    h = h ^ (h >> 15u);
-    h = h * 0x846ca68bu;
-    h = h ^ (h >> 16u);
-    return h;
-}
-
-fn uhash_f(x: u32) -> f32 {
-    return f32(uhash(x)) / 4294967296.0;
-}
+// The splash gate uses the lib's uhash/uhash_f (integer mixing). fract-sin
+// hash() bands idx-scaled args so a range of slots passes ANY threshold every
+// re-roll — harmless while the gate was fed a dead percussive feature, but once
+// HPSS came alive those slots became permanent foam: standing white streaks in
+// the falls (live finding).
 
 // Whitewater: finer curl scrolling down with the flow; gain from
 // percussive_energy (drums make the sheet break) + local agitation.

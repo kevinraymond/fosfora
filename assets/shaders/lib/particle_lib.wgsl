@@ -490,6 +490,31 @@ fn sh_cell_range(gx: i32, gy: i32) -> vec2u {
 
 // --- Hash / random utilities ---
 
+// Integer hash (lowbias32). PREFER THIS for anything index-scaled. The fract-sin
+// hash() below degrades on GPU for arguments beyond ~1e4 — with idx-scaled args
+// (u.seed + f32(idx)*K reaches 1e5..1e7) a band of indices rolls near-constant
+// tiny values, passing ANY probability threshold every re-roll: an immortal
+// audio-independent emitter, plus a complementary band of slots that never fire.
+//
+// Two separate failure modes, both fixed by mixing u32 exactly:
+//   1. sin() range reduction collapses at large arguments (the band above).
+//   2. f32 spacing — at idx 2e6 the seed lands near 3.5e7 where the ULP is 4.0,
+//      so hash(s), hash(s+1.0), hash(s+2.0) are BIT-IDENTICAL. Never draw
+//      decorrelated values with float offsets; XOR-salt an integer seed instead.
+fn uhash(x: u32) -> u32 {
+    var h = x;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    h = h ^ (h >> 16u);
+    return h;
+}
+
+fn uhash_f(x: u32) -> f32 {
+    return f32(uhash(x)) / 4294967296.0;
+}
+
 fn hash(n: f32) -> f32 {
     return fract(sin(n) * 43758.5453123);
 }
@@ -498,8 +523,31 @@ fn hash2(p: vec2f) -> f32 {
     return fract(sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453);
 }
 
+// Two components in [-1, 1] from one seed.
+//
+// KNOWN DEFECT, deliberately not fixed here: at large seeds the `+ 1.0` offset
+// rounds away entirely (at 2M particles `u.seed + f32(idx) * 17.31` reaches
+// ~3.5e7 where the f32 ULP is 4.0), so this returns x == y and spawns collapse
+// onto the diagonal; and the fract-sin hash bands indices besides. The integer
+// version is `rand_vec2_u` below.
+//
+// It is NOT swapped wholesale because measured A/B says the artefact is
+// load-bearing: with the integer version Flux's punchy embers flatten into an
+// even wash and Turing's particles stop tracing the reaction-diffusion
+// filaments, because the banding was stacking particles into fewer, brighter
+// points. Cymatics is the opposite — see cymatics_sim.wgsl, which opts in.
+// Migrating a caller is a LOOK change; A/B it with particle_effect_previews.
 fn rand_vec2(seed: f32) -> vec2f {
     return vec2f(hash(seed), hash(seed + 1.0)) * 2.0 - 1.0;
+}
+
+// Correct integer-hashed version: distinct floats stay distinct (bitcast, not
+// convert) and the two components are XOR-salted rather than offset — an offset
+// is exactly what fails above. Opt in per call site, after an A/B.
+fn rand_vec2_u(seed: f32) -> vec2f {
+    // The extra salt keeps seed 0.0 off uhash's fixed point (uhash(0) == 0).
+    let s = uhash(bitcast<u32>(seed) ^ 0x9e3779b9u);
+    return vec2f(uhash_f(s), uhash_f(s ^ 0x85ebca6bu)) * 2.0 - 1.0;
 }
 
 // --- Aspect ratio helpers ---

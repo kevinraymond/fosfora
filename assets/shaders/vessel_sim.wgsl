@@ -120,7 +120,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         // ceiling, and declining a claimed slot wastes it — that IS the rate
         // modulation. The 0.15 floor keeps an ambient simmer in silence.
         let gate = (0.15 + 0.85 * u.buildup) * (0.3 + 0.7 * param(0u));
-        if slot < u.emit_count && hash(u.seed + f32(idx) * 3.7) < gate {
+        // Integer hash: fract-sin banded a range of slots onto near-zero, so they
+        // passed even the 0.15 silence floor every frame (a permanent, audio-deaf
+        // fountain) while the complementary band never spawned at all. Re-rolls
+        // per frame via u.seed, as before.
+        if slot < u.emit_count && uhash_f(idx + uhash(u32(u.seed * 256.0))) < gate {
             p = emit_particle(idx);
             if p.pos_life.w > 0.0 {
                 // Clear the trail ring so ribbons never connect the previous

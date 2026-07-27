@@ -44,7 +44,11 @@ fn emit_particle(idx: u32) -> Particle {
     var p: Particle;
     let seed_base = u.seed + f32(idx) * 13.37;
 
-    let pos = rand_vec2(seed_base) * 0.9;
+    // Integer-hashed scatter (opted in, unlike most callers — see rand_vec2).
+    // The banded/diagonal spawn left whole regions unseeded, so the Chladni
+    // nodal figure rendered as dashed, gappy fragments instead of the continuous
+    // curves it is supposed to be. Verified by A/B: the lines close up.
+    let pos = rand_vec2_u(seed_base) * 0.9;
     let angle = hash(seed_base + 2.0) * 6.2831853;
     let speed = u.initial_speed * (0.3 + 0.7 * hash(seed_base + 3.0));
     let vel = vec2f(cos(angle), sin(angle)) * speed;

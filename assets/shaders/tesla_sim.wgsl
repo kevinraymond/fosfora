@@ -188,12 +188,17 @@ fn analyze_poles(pos: vec2f, charge: f32, t: f32, mode: f32, rotation: f32) -> v
 fn emit_particle(idx: u32) -> Particle {
     var p: Particle;
     let seed_base = u.seed + f32(idx) * 17.31;
+    // Integer seed for the emit DECISIONS — charge sign, emission mode, which
+    // pole. Charge balance is what the whole field pattern rests on, and
+    // fract-sin banded ~1/8 of indices onto near-zero, biasing every one of
+    // them. Positional jitter below deliberately stays on the fract-sin draws.
+    let sb = uhash(idx + uhash(u32(u.seed * 4096.0)));
     let mode = param(3u);
     let rotation = param(4u);
 
     // Determine charge
     let charge_ratio = param(2u) + (u.centroid - 0.5) * 0.15;
-    let is_positive = hash(seed_base + 3.0) < clamp(charge_ratio, 0.1, 0.9);
+    let is_positive = uhash_f(sb ^ 0x9e3779b9u) < clamp(charge_ratio, 0.1, 0.9);
     let charge = select(-1.0, 1.0, is_positive);
 
     // Emission strategy: mix of pole-vicinity and mid-field emission
@@ -201,7 +206,7 @@ fn emit_particle(idx: u32) -> Particle {
     var dcount: u32;
     let dipoles = get_dipole_positions(u.time, mode, rotation, &dcount);
 
-    let emit_mode = hash(seed_base + 20.0);
+    let emit_mode = uhash_f(sb ^ 0x85ebca6bu);
     var pos: vec2f;
 
     if emit_mode < 0.6 {
@@ -223,7 +228,7 @@ fn emit_particle(idx: u32) -> Particle {
                 source_poles[i] = i;
             }
         }
-        let which = u32(hash(seed_base + 10.0) * f32(n_sources)) % n_sources;
+        let which = uhash(sb ^ 0xc2b2ae35u) % n_sources;
         let dipole_pos = dipoles[source_poles[which]];
 
         // Emit in a ring around the source pole
@@ -339,7 +344,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // === BEAT POLARITY FLIP (do before field calculation) ===
     let flip_sens = param(7u);
     if u.beat > 0.5 && flip_sens > 0.05 {
-        let flip_hash = hash(f32(idx) * 3.77 + floor(u.time * 4.0));
+        // Integer hash: fract-sin banded the draw, so the same particles flipped
+        // polarity on every beat and the rest never did — the charge balance the
+        // whole sim rests on drifted. 4 Hz re-roll tick preserved.
+        let flip_hash = uhash_f(idx + uhash(u32(u.time * 4.0)));
         if flip_hash < flip_sens * 0.5 {
             charge = -charge;
             p.flags.z = charge;

@@ -35,24 +35,11 @@
 const SHARD_POOL_FRAC: f32 = 0.3;
 const N_THREADS: f32 = 8.0;
 
-// Integer hash (lowbias32). The lib's fract-sin hash() degrades on GPU for
-// arguments beyond ~1e4 — with idx-scaled args (f32(idx)*7.7 + time ≈ 2.4M)
-// a band of indices rolls near-constant tiny values, passing ANY spawn
-// threshold every re-roll: an immortal audio-independent starburst (live
-// finding). All per-index randomness here uses exact u32 mixing instead.
-fn uhash(x: u32) -> u32 {
-    var h = x;
-    h = h ^ (h >> 16u);
-    h = h * 0x7feb352du;
-    h = h ^ (h >> 15u);
-    h = h * 0x846ca68bu;
-    h = h ^ (h >> 16u);
-    return h;
-}
-
-fn uhash_f(x: u32) -> f32 {
-    return f32(uhash(x)) / 4294967296.0;
-}
+// All per-index randomness here uses the lib's uhash/uhash_f (integer mixing).
+// fract-sin hash() bands idx-scaled args (f32(idx)*7.7 + time ≈ 2.4M): a range
+// of indices rolls near-constant tiny values, passing ANY spawn threshold every
+// re-roll — this effect shipped with an immortal, audio-independent starburst of
+// ~16K shards until it was caught live. This was the first site fixed.
 
 // Fixed structural cohort: hashed by index only (no seed), so a slot keeps
 // its voice across respawns and the burst reservoir is always recyclable

@@ -40,25 +40,11 @@ const N_BANDS: u32 = 7u;
 // spawn site: 1:1 would confine ordinary music to a narrow centre strip.
 const PAN_GAIN: f32 = 3.2;
 
-// Integer hash (lowbias32) for per-index randomness. The lib's fract-sin hash()
-// degenerates on GPU for idx-scaled arguments (finding #1856): a band of indices
-// rolls near-constant tiny values. That failure mode is especially dangerous
-// here — clustered spawn positions would read as a stereo image that the audio
-// does not actually contain, which is precisely the thing this effect claims to
-// show. All per-index randomness below uses exact u32 mixing.
-fn uhash(x: u32) -> u32 {
-    var h = x;
-    h = h ^ (h >> 16u);
-    h = h * 0x7feb352du;
-    h = h ^ (h >> 15u);
-    h = h * 0x846ca68bu;
-    h = h ^ (h >> 16u);
-    return h;
-}
-
-fn uhash_f(x: u32) -> f32 {
-    return f32(uhash(x)) / 4294967296.0;
-}
+// All per-index randomness below uses the lib's uhash/uhash_f (integer mixing).
+// fract-sin hash() bands idx-scaled arguments onto near-constant values, which
+// is especially dangerous here: clustered spawn positions would read as a stereo
+// image the audio does not actually contain — precisely the thing this effect
+// claims to show.
 
 // The 7 band energies, in the same order as band_pan(i).
 fn band_energy(i: u32) -> f32 {

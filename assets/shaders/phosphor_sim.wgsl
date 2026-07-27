@@ -35,9 +35,15 @@ fn eval_p_tangent(t: f32) -> vec2f {
 fn emit_particle(idx: u32) -> Particle {
     var p: Particle;
     let seed_base = u.seed + f32(idx) * 17.31;
+    // Integer seed for the DECISIONS below — which strand, sparkle or not, flow
+    // direction. fract-sin bands ~1/8 of indices onto near-zero at this scale,
+    // which skewed all three. The cosmetic draws in this function stay on
+    // hash(seed_base + k) on purpose: their banding is part of the shipped look,
+    // so re-rolling them would re-tune the effect rather than fix a defect.
+    let sb = uhash(idx + uhash(u32(u.seed * 4096.0)));
 
     // Which worm? ~50/50 split (teal=0, amber=1)
-    let curve_id = step(0.5, hash(seed_base + 99.0));
+    let curve_id = step(0.5, uhash_f(sb ^ 0x9e3779b9u));
     let strand_phase = curve_id * 3.14159; // 0 or pi
 
     // Random position along P path
@@ -76,7 +82,7 @@ fn emit_particle(idx: u32) -> Particle {
     let depth_mod = 0.5 + 0.5 * tube_depth; // 0 (back) to 1 (front)
 
     // Sparkle: ~6% chance, scattered further out
-    let is_sparkle = hash(seed_base + 5.0) > 0.94;
+    let is_sparkle = uhash_f(sb ^ 0x85ebca6bu) > 0.94;
     var screen_pos = strand_center + tube_screen;
     if is_sparkle {
         let halo_r = 0.015 + hash(seed_base + 10.0) * 0.035;
@@ -87,7 +93,7 @@ fn emit_particle(idx: u32) -> Particle {
     let pos = to_clip(screen_pos);
 
     // Velocity: tangential flow only — particles travel inside the tube
-    let flow_dir = select(1.0, -1.0, hash(seed_base + 7.0) > 0.5);
+    let flow_dir = select(1.0, -1.0, uhash_f(sb ^ 0xc2b2ae35u) > 0.5);
     let vel = to_clip(tangent * 0.025 * flow_dir * scale);
 
     // Size: depth-modulated (front particles larger)

@@ -13,7 +13,8 @@ struct RenderUniforms {
     frame_index: u32,
     trail_length: u32,
     trail_width: f32,
-    _pad: vec2f,
+    spin_enabled: u32,   // pos_life.z is a spin angle only for the builtin sim
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
@@ -60,9 +61,11 @@ fn vs_main(
     let size = vs.w;
     let aspect = ru.resolution.x / ru.resolution.y;
 
+    // See particle_render.wgsl: gated on spin_enabled because pos_life.z only
+    // holds an angle under the builtin sim.
     var rotated_corner = corner;
     let spin_angle = pl.z;
-    if spin_angle != 0.0 {
+    if ru.spin_enabled != 0u && spin_angle != 0.0 {
         let ca = cos(spin_angle);
         let sa = sin(spin_angle);
         rotated_corner = vec2f(

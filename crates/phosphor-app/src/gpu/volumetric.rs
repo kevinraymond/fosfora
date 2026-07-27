@@ -89,8 +89,11 @@ pub struct VolumetricParams {
     /// Saturation gain applied in `resolve` (`density = 1 - exp(-gain * occupancy)`),
     /// mapping mean particles-per-voxel to a bounded, count-robust `[0,1)` density.
     pub density_gain: f32,
-    /// Base camera yaw. The marcher orbits at `cam_yaw + time * cam_orbit_speed`, so
-    /// this sets the viewing angle when the orbit is stopped (`cam_orbit_speed == 0`).
+    /// Base camera yaw — the viewing angle the orbit is measured from. The orbit
+    /// itself is a CPU-accumulated phase passed to `build_uniforms`, NOT
+    /// `time * cam_orbit_speed`: `u.time` never wraps, so multiplying it by a
+    /// live-editable rate teleported the camera by `elapsed × Δrate` the moment
+    /// the slider (or a binding) moved. Same reason `splat.rs` accumulates.
     pub cam_yaw: f32,
     pub cam_pitch: f32,
     pub cam_distance: f32,
@@ -160,6 +163,8 @@ impl VolumetricParams {
 
     /// Pack params + per-frame audio into the GPU uniform block. `grid_res` is
     /// filled by the renderer at dispatch time.
+    /// `orbit_phase` is the caller's accumulated, wrapped orbit angle (radians);
+    /// it is folded into `cam_yaw` so the shader reads one absolute angle.
     #[allow(clippy::too_many_arguments)]
     pub fn build_uniforms(
         &self,
@@ -170,6 +175,7 @@ impl VolumetricParams {
         rms: f32,
         beat_phase: f32,
         dominant_chroma: f32,
+        orbit_phase: f32,
     ) -> VolumetricUniforms {
         VolumetricUniforms {
             grid_res: GRID_RES,
@@ -183,9 +189,10 @@ impl VolumetricParams {
             density_threshold: self.density_threshold,
             volume_depth: self.volume_depth,
             density_scale: self.density_scale.max(1.0),
-            cam_yaw: self.cam_yaw,
+            cam_yaw: self.cam_yaw + orbit_phase,
             cam_pitch: self.cam_pitch,
             cam_distance: self.cam_distance,
+            // Retained for layout stability; the marcher no longer reads it.
             cam_orbit_speed: self.cam_orbit_speed,
             fov: self.fov,
             palette_hue: self.palette_hue,

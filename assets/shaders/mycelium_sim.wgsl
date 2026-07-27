@@ -241,17 +241,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 return;
             }
 
-            // Reserve chains: try branch activation
-            let h0 = hash(f32(chain_id) * 13.7 + floor(u.time * 60.0));
+            // Reserve chains: try branch activation. Integer hash — the gate is
+            // INVERTED (pass = below the probability), so fract-sin's near-zero
+            // band meant a fixed subset of chains branched every single frame
+            // forever. 60 Hz re-roll tick preserved.
+            let h0 = uhash_f(chain_id + uhash(u32(u.time * 60.0)));
             let branch_prob = branch_rate() * 0.002 * (1.0 + u.onset * 15.0);
             if h0 > branch_prob {
                 write_particle(idx, p);
                 return;
             }
 
-            // Pick random source chain to branch from
-            let source_hash = hash(f32(chain_id) * 7.3 + u.time);
-            let source_id = u32(source_hash * f32(min(num_chains, INITIAL_LEADERS * 5u)));
+            // Pick random source chain to branch from. Integer hash — banding
+            // here meant the same few chains were always the parent, which is
+            // half of why growth concentrated instead of spreading.
+            let source_pool = min(num_chains, INITIAL_LEADERS * 5u);
+            let source_id = uhash(chain_id + uhash(u32(u.time * 60.0) ^ 0x85ebca6bu))
+                % max(source_pool, 1u);
             let source_start = source_id * MAX_CHAIN_DEPTH;
 
             // Check if source root is alive
@@ -280,7 +286,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 tip_speed > 0.001
             );
             let branch_angle = 0.5 + u.brilliance * 0.5;
-            let sign_h = hash(f32(chain_id) * 11.3 + u.time);
+            let sign_h = uhash_f(chain_id + uhash(u32(u.time * 60.0) ^ 0xc2b2ae35u));
             let angle_offset = select(-branch_angle, branch_angle, sign_h > 0.5);
             let new_angle = base_angle + angle_offset;
             let new_speed = BASE_SPEED * growth_speed() * 0.8;

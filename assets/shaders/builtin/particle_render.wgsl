@@ -13,7 +13,8 @@ struct RenderUniforms {
     frame_index: u32,
     trail_length: u32,
     trail_width: f32,
-    _pad: vec2f,
+    spin_enabled: u32,   // pos_life.z is a spin angle only for the builtin sim
+    _pad: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
@@ -64,10 +65,13 @@ fn vs_main(
     // Correct aspect ratio so particles are circular
     let aspect = ru.resolution.x / ru.resolution.y;
 
-    // Spin rotation: pos_life.z holds accumulated spin angle
+    // Spin rotation. Gated on spin_enabled, NOT on `pl.z != 0.0`: pos_life.z is
+    // only an angle under the builtin sim, and every other sim stores an
+    // init_size / generation / height / depth there. Rotating by those spun
+    // quads by a size in radians.
     var rotated_corner = corner;
     let spin_angle = pl.z;
-    if spin_angle != 0.0 {
+    if ru.spin_enabled != 0u && spin_angle != 0.0 {
         let ca = cos(spin_angle);
         let sa = sin(spin_angle);
         rotated_corner = vec2f(

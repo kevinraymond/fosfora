@@ -299,11 +299,15 @@ fn cs_main(
     // Seeds stay where they are in the disc (no repositioning!) and become
     // local attractors. Nearby particles form mini accretion structures.
     if is_seed < 0.5 && u.onset > 0.5 {
-        let seed_chance = hash(f32(idx) * 3.17 + u.time * 100.0);
+        // Integer hash: a 1e-4 threshold sits exactly in fract-sin's near-zero
+        // band, so the banded slots became permanent attractors instead of rare
+        // ones. The inner draw is XOR-salted rather than offset, so the two gates
+        // stay independent (a float offset would collapse them at high indices).
+        let seed_chance = uhash_f(idx + uhash(u32(u.time * 100.0)));
         if seed_chance < 0.0001 {
             // Bias seed spawning toward center — prevents drift from fringe seeds
             let spawn_bias = 1.0 - smoothstep(0.3, 0.8, length(pos));
-            let biased_chance = hash(f32(idx) * 7.13 + u.time * 77.0);
+            let biased_chance = uhash_f(idx + uhash(u32(u.time * 77.0) ^ 0x9e3779b9u));
             if biased_chance < spawn_bias {
                 // Become a seed — stay in place, keep orbital velocity
                 let sm = get_seed_mass() * (0.5 + u.mid);

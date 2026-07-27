@@ -88,9 +88,11 @@ fn emit_particle(idx: u32) -> Particle {
     let theta = hash(seed_base + 1.0) * TWO_PI;
     let pos = u.emitter_pos + vec2f(cos(theta), sin(theta)) * r;
 
-    // Assign species
+    // Assign species. Integer hash: fract-sin banded ~1/8 of indices onto
+    // near-zero, so species 0 was over-populated and the interaction matrix ran
+    // against a split it was never tuned for.
     let ns = num_species();
-    let species = u32(hash(seed_base + 2.0) * f32(ns)) % ns;
+    let species = uhash(idx + uhash(u32(u.seed * 4096.0))) % ns;
 
     // Species color (hue rotated by dominant_chroma for pitch-class mapping)
     let hue = fract(f32(species) / f32(ns) + u.dominant_chroma);

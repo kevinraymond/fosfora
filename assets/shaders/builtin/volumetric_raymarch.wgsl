@@ -170,7 +170,11 @@ fn sample_density_nearest(p: vec3f) -> f32 {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     // Orbiting camera basis (inline, no matrix).
-    let yaw = u.cam_yaw + u.time * u.cam_orbit_speed;
+    // cam_yaw already carries the CPU-accumulated, wrapped orbit phase. Do NOT
+    // reintroduce `u.time * u.cam_orbit_speed` here: u.time never wraps, so any
+    // change to the rate jumps the camera by elapsed × Δrate (minutes into a
+    // set, that is hundreds of radians).
+    let yaw = u.cam_yaw;
     let pitch = u.cam_pitch;
     let ro = vec3f(cos(yaw) * cos(pitch), sin(pitch), sin(yaw) * cos(pitch)) * u.cam_distance;
     let fwd = normalize(-ro);
