@@ -2,7 +2,19 @@ use std::net::UdpSocket;
 
 use rosc::{OscMessage, OscPacket, OscType};
 
+use crate::audio::PulseCounts;
 use crate::audio::features::AudioFeatures;
+
+/// Addresses for the pulse totals, in the order [`OscSender::send_pulse_counts`] emits them
+/// and matching the field order of [`PulseCounts`].
+///
+/// Flat `_count` suffixes rather than `/beat/count`: `/phosphor/audio/beat` is already a leaf,
+/// and a node that is both leaf and container trips OSC tools that build an address tree.
+const PULSE_COUNT_ADDRS: [&str; 3] = [
+    "/phosphor/audio/beat_count",
+    "/phosphor/audio/downbeat_count",
+    "/phosphor/audio/drop_count",
+];
 
 /// Fire-and-forget OSC sender over UDP.
 pub struct OscSender {
@@ -132,6 +144,30 @@ impl OscSender {
         self.send_float("/phosphor/audio/timbre_flux", f.timbre_flux);
     }
 
+    /// Send the running beat / downbeat / drop totals (#1976).
+    ///
+    /// A sibling of [`Self::send_audio`] rather than part of it: the counts live on the audio
+    /// engine, not in [`AudioFeatures`].
+    ///
+    /// `/phosphor/audio/{beat,downbeat,drop}` next to these are 1-frame pulses, and this sender
+    /// is rate-limited below the render rate — so most of them never reach the wire (measured:
+    /// 1 of 4 caught on one capture). **External tools should watch these totals, not the
+    /// pulses.** Two properties they rely on:
+    ///
+    /// - Watch for the value *changing*, not increasing. `AudioEngine::reconfigure` installs a
+    ///   fresh counter on a device switch, so it resets to 0.
+    /// - The delta between two ticks is how many events fell in that window, so nothing is
+    ///   lost — only the individual timing within the window, which 30 Hz could not carry
+    ///   anyway.
+    ///
+    /// Sent as floats to keep every `/phosphor/audio/*` address one type; exact to 2^24 pulses
+    /// (~97 days of continuous 2 Hz beats).
+    pub fn send_pulse_counts(&self, c: &PulseCounts) {
+        for (addr, count) in PULSE_COUNT_ADDRS.iter().zip([c.beat, c.downbeat, c.drop]) {
+            self.send_float(addr, count as f32);
+        }
+    }
+
     /// Send current state (active layer, effect name).
     pub fn send_state(&self, active_layer: usize, effect_name: &str) {
         self.send_int("/phosphor/state/layer", active_layer as i32);
@@ -174,5 +210,95 @@ impl OscSender {
                 log::debug!("OSC encode error: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Bind a receiver on an ephemeral loopback port and a sender aimed at it.
+    fn loopback() -> (UdpSocket, OscSender) {
+        let rx = UdpSocket::bind("127.0.0.1:0").expect("bind receiver");
+        rx.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set read timeout");
+        let port = rx.local_addr().expect("local addr").port();
+        let mut tx = OscSender::new();
+        tx.configure("127.0.0.1", port);
+        (rx, tx)
+    }
+
+    /// Receive `n` messages and return them as (address, args) pairs, in arrival order.
+    /// UDP on loopback does not reorder in practice, and each `send_float` is one datagram.
+    fn recv_messages(rx: &UdpSocket, n: usize) -> Vec<(String, Vec<OscType>)> {
+        let mut out = Vec::with_capacity(n);
+        let mut buf = [0u8; 1024];
+        for _ in 0..n {
+            let (len, _) = rx.recv_from(&mut buf).expect("recv");
+            let (_, packet) = rosc::decoder::decode_udp(&buf[..len]).expect("decode");
+            match packet {
+                OscPacket::Message(m) => out.push((m.addr, m.args)),
+                OscPacket::Bundle(_) => panic!("expected a message, got a bundle"),
+            }
+        }
+        out
+    }
+
+    /// The addresses and the float type are the wire contract external tools bind against
+    /// (#1976) — a typo or a retype here is silent at runtime, so pin both.
+    #[test]
+    fn pulse_counts_round_trip_addresses_and_values() {
+        let (rx, tx) = loopback();
+        tx.send_pulse_counts(&PulseCounts {
+            beat: 412,
+            downbeat: 103,
+            drop: 2,
+        });
+
+        let got = recv_messages(&rx, 3);
+        let expected = [
+            ("/phosphor/audio/beat_count", 412.0),
+            ("/phosphor/audio/downbeat_count", 103.0),
+            ("/phosphor/audio/drop_count", 2.0),
+        ];
+        for ((addr, args), (want_addr, want_value)) in got.iter().zip(expected) {
+            assert_eq!(addr, want_addr);
+            assert_eq!(args.as_slice(), &[OscType::Float(want_value)]);
+        }
+    }
+
+    /// The const table drives the emit loop, so it must stay aligned with the field order of
+    /// `PulseCounts` — swap two fields and every consumer silently reads the wrong counter.
+    #[test]
+    fn pulse_count_addrs_match_field_order() {
+        let (rx, tx) = loopback();
+        // Distinct values so a permuted table shows up as a mismatch rather than passing.
+        tx.send_pulse_counts(&PulseCounts {
+            beat: 1,
+            downbeat: 2,
+            drop: 3,
+        });
+
+        let got = recv_messages(&rx, 3);
+        let addrs: Vec<&str> = got.iter().map(|(a, _)| a.as_str()).collect();
+        assert_eq!(addrs, PULSE_COUNT_ADDRS);
+        let values: Vec<f32> = got
+            .iter()
+            .map(|(_, args)| match args.as_slice() {
+                [OscType::Float(v)] => *v,
+                other => panic!("expected one float, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(values, vec![1.0, 2.0, 3.0]);
+    }
+
+    /// An unconfigured sender must stay a no-op rather than panic — `send_state` calls this
+    /// unconditionally once TX is enabled, and `configure` leaves `socket: None` if the bind
+    /// failed.
+    #[test]
+    fn unconfigured_sender_is_a_noop() {
+        let tx = OscSender::new();
+        tx.send_pulse_counts(&PulseCounts::default());
     }
 }

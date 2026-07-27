@@ -62,6 +62,22 @@ pub struct AudioFrame {
     pub bar_duration: f64,
 }
 
+/// Running totals for the three counter-latched 1-frame pulses — `beat` (A7), `downbeat`
+/// (A12 #1463) and `drop` (A18 #1469). Snapshot of the atomics the audio thread increments,
+/// taken by [`AudioEngine::pulse_counts`].
+///
+/// Exists for *external* consumers (#1976). Internally the pulses are fine: bindings and the
+/// timeline poll `latest_features()` every render frame, so the counter-latch there delivers
+/// every event. Over OSC they are not — the sender is rate-limited well below the render rate,
+/// so a pulse reaches the wire only if its single frame happens to land on a send tick. A
+/// total survives that, because it is still there on the next tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PulseCounts {
+    pub beat: u32,
+    pub downbeat: u32,
+    pub drop: u32,
+}
+
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -858,6 +874,20 @@ impl AudioSystem {
     /// drain — the render thread's spectrogram-texture path is unaffected.
     pub fn latest_mel(&self) -> &[f32] {
         &self.latest_mel
+    }
+
+    /// Running totals of the beat / downbeat / drop pulses (#1976), for consumers that cannot
+    /// poll every frame — see [`PulseCounts`].
+    ///
+    /// Reads the atomics directly and does **not** touch the `*_seen` latch, so this is
+    /// independent of [`Self::latest_features`]: calling it neither consumes a pulse nor
+    /// depends on the order of the two calls.
+    pub fn pulse_counts(&self) -> PulseCounts {
+        PulseCounts {
+            beat: self.beat_counter.load(Ordering::Relaxed),
+            downbeat: self.downbeat_counter.load(Ordering::Relaxed),
+            drop: self.drop_counter.load(Ordering::Relaxed),
+        }
     }
 
     /// Newest delta-MFCC slopes (A16 `audio.dmfcc.N` binding sources, #1467), 13 coefficients.

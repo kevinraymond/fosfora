@@ -1050,6 +1050,7 @@ impl App {
                 };
             self.osc.send_state(
                 &features,
+                &self.audio.pulse_counts(),
                 active,
                 effect_name,
                 self.timeline.active,

@@ -5,6 +5,11 @@
 
 ## Unreleased
 
+## v1.24.0 — 2026-07-27
+
+### Added
+- **Beats sent over OSC no longer go missing.** `/phosphor/audio/beat`, `/downbeat` and `/drop` last a single render frame while OSC transmits at 30 Hz, so external lighting rigs caught only 31% of beats and 16% of downbeats in a 60-second test. New `/phosphor/audio/beat_count`, `/downbeat_count` and `/drop_count` addresses carry a running total instead — bind those and you catch every event. They restart at zero when you switch audio device, so trigger on the value changing rather than increasing.
+
 ### Fixed
 - **The seven per-band pan sources never moved.** `Band Pan Sub Bass` through `Band Pan Brilliance` appeared in the binding matrix but always read zero, so anything bound to one did nothing.
 

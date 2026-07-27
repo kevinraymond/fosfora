@@ -11,6 +11,7 @@ use crossbeam_channel::Receiver;
 
 use self::sender::OscSender;
 use self::types::{OscConfig, OscInMessage, OscLearnTarget, OscMapping};
+use crate::audio::PulseCounts;
 use crate::audio::features::AudioFeatures;
 use crate::midi::types::TriggerAction;
 use std::collections::HashMap;
@@ -456,6 +457,7 @@ impl OscSystem {
     pub fn send_state(
         &mut self,
         features: &AudioFeatures,
+        pulse_counts: &PulseCounts,
         active_layer: usize,
         effect_name: &str,
         timeline_active: bool,
@@ -472,6 +474,9 @@ impl OscSystem {
         }
         self.last_tx_time = Instant::now();
         self.sender.send_audio(features);
+        // Deliberately inside the rate limit: a running total is correct at whatever cadence
+        // it is sampled, which is the whole point of emitting it (#1976).
+        self.sender.send_pulse_counts(pulse_counts);
         self.sender.send_state(active_layer, effect_name);
         self.sender.send_timeline(
             timeline_active,

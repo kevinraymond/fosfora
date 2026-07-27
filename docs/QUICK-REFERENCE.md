@@ -194,6 +194,24 @@ Default ports: **RX 9000**, **TX 9001**
 
 `/phosphor/audio/bands/{sub_bass,bass,low_mid,mid,upper_mid,presence,brilliance}`
 
+Everything under `/phosphor/audio/` is a float.
+
+**Beats, downbeats and drops.** Each fires as a 1-frame pulse *and* as a running total:
+
+| Address                          | Description                                |
+|----------------------------------|--------------------------------------------|
+| `/phosphor/audio/beat`           | 1.0 on the frame a beat fires, else 0.0    |
+| `/phosphor/audio/beat_count`     | Beats since startup                        |
+| `/phosphor/audio/downbeat`       | 1.0 on the bar's "one"                     |
+| `/phosphor/audio/downbeat_count` | Downbeats since startup                    |
+| `/phosphor/audio/drop`           | 1.0 on a detected drop                     |
+| `/phosphor/audio/drop_count`     | Drops since startup                        |
+
+**Bind the `_count` addresses, not the pulses.** A pulse lasts one render frame (60+ fps)
+while transmission is rate-limited to 30 Hz, so most pulses never reach the wire — trigger
+on the count *changing* instead and you catch every event. Watch for a change rather than an
+increase: the count restarts at 0 when you switch audio device.
+
 ---
 
 ## Scene Transitions
