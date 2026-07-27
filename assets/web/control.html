@@ -388,7 +388,9 @@ body { display: flex; flex-direction: column; }
     layersContainer.innerHTML = '';
     if (!state || !state.layers) return;
 
-    const blendNames = ['Normal','Add','Screen','Color Dodge','Multiply','Overlay','Hard Light','Difference','Exclusion','Subtract'];
+    // Must stay in lockstep with BlendMode in gpu/layer.rs (index == as_u32).
+    // The last three are the displacement family (#1478).
+    const blendNames = ['Normal','Add','Screen','Color Dodge','Multiply','Overlay','Hard Light','Difference','Exclusion','Subtract','Displace','Refract','Lens'];
 
     state.layers.forEach(function(layer, i) {
       const card = document.createElement('div');

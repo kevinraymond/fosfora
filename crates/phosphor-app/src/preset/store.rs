@@ -33,6 +33,10 @@ pub struct LayerPreset {
     pub blend_mode: BlendMode,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    /// Warp strength for the displacement blend modes (#1478). Absent in
+    /// pre-Rift presets, which restore at the default.
+    #[serde(default = "default_displace_amount")]
+    pub displace_amount: f32,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -145,6 +149,10 @@ pub struct VolumetricPreset {
 
 fn default_opacity() -> f32 {
     1.0
+}
+
+fn default_displace_amount() -> f32 {
+    crate::gpu::layer::DEFAULT_DISPLACE_AMOUNT
 }
 
 fn default_true() -> bool {
@@ -524,6 +532,14 @@ mod tests {
         assert!(lp.params.is_empty());
         assert_eq!(lp.blend_mode, BlendMode::Normal);
         assert!((lp.opacity - 1.0).abs() < 1e-6);
+        // Pre-Rift presets carry no displace_amount (#1478) — they must land on
+        // the default rather than 0.0, or a saved Displace layer would restore
+        // with the warp switched off.
+        assert!(
+            (lp.displace_amount - crate::gpu::layer::DEFAULT_DISPLACE_AMOUNT).abs() < 1e-6,
+            "got {}",
+            lp.displace_amount
+        );
         assert!(lp.enabled);
         assert!(!lp.locked);
         assert!(!lp.pinned);
@@ -597,6 +613,7 @@ mod tests {
                 params: HashMap::new(),
                 blend_mode: BlendMode::Add,
                 opacity: 0.5,
+                displace_amount: 0.75,
                 enabled: true,
                 locked: false,
                 pinned: true,
@@ -631,6 +648,7 @@ mod tests {
         assert_eq!(p2.layers[0].effect_name, "Test");
         assert_eq!(p2.layers[0].blend_mode, BlendMode::Add);
         assert!((p2.layers[0].opacity - 0.5).abs() < 1e-6);
+        assert!((p2.layers[0].displace_amount - 0.75).abs() < 1e-6);
         assert!(p2.layers[0].pinned);
     }
 
@@ -778,6 +796,7 @@ mod tests {
             params: HashMap::new(),
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            displace_amount: crate::gpu::layer::DEFAULT_DISPLACE_AMOUNT,
             enabled: true,
             locked: false,
             pinned: false,

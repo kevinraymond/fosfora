@@ -136,6 +136,14 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                     let value = first_float(&msg.args)? as u32;
                     Some(OscInMessage::LayerBlend { layer, value })
                 }
+                // /phosphor/layer/{n}/displace
+                "displace" => {
+                    let value = first_float(&msg.args)?;
+                    Some(OscInMessage::LayerDisplace {
+                        layer,
+                        value: value.clamp(0.0, 1.0),
+                    })
+                }
                 // /phosphor/layer/{n}/enabled
                 "enabled" => {
                     let value = first_float(&msg.args)?;
@@ -421,6 +429,21 @@ mod tests {
                 assert_eq!(value, 3);
             }
             other => panic!("expected LayerBlend, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_layer_displace_clamped() {
+        let msg = OscMessage {
+            addr: "/phosphor/layer/2/displace".into(),
+            args: vec![OscType::Float(1.7)],
+        };
+        match parse_osc_message(&msg) {
+            Some(OscInMessage::LayerDisplace { layer, value }) => {
+                assert_eq!(layer, 2);
+                assert!((value - 1.0).abs() < 1e-6, "got {value}");
+            }
+            other => panic!("expected LayerDisplace, got {:?}", other),
         }
     }
 

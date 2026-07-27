@@ -10,7 +10,17 @@ use crate::gpu::uniforms::UniformBuffer;
 use crate::media::MediaLayer;
 use crate::params::ParamStore;
 
+/// Default warp strength for the displacement blend modes (#1478).
+/// Normalized 0..1, like opacity — the shader scales it to a bounded UV offset.
+pub const DEFAULT_DISPLACE_AMOUNT: f32 = 0.35;
+
 /// Blend mode for compositing layers.
+///
+/// Two families. The first ten are *color* blends: arithmetic on the foreground
+/// and background colors at the same pixel. The last three are *displacement*
+/// blends (#1478) — the foreground is read as a warp field rather than as an
+/// image, and its luminance offsets the UV used to sample everything beneath.
+/// A displacing layer draws none of its own color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BlendMode {
     #[default]
@@ -25,9 +35,32 @@ pub enum BlendMode {
     Difference,
     Exclusion,
     Subtract,
+    Displace,
+    Refract,
+    Lens,
 }
 
 impl BlendMode {
+    /// The color-blend family: arithmetic on fg and bg at the same pixel.
+    ///
+    /// Kept as its own list because `from_normalized` maps over it — see there.
+    pub const COLOR: &[BlendMode] = &[
+        BlendMode::Normal,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::ColorDodge,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::HardLight,
+        BlendMode::Difference,
+        BlendMode::Exclusion,
+        BlendMode::Subtract,
+    ];
+
+    /// The displacement family (#1478): fg luminance warps what is beneath.
+    pub const DISPLACEMENT: &[BlendMode] =
+        &[BlendMode::Displace, BlendMode::Refract, BlendMode::Lens];
+
     pub const ALL: &[BlendMode] = &[
         BlendMode::Normal,
         BlendMode::Add,
@@ -39,6 +72,9 @@ impl BlendMode {
         BlendMode::Difference,
         BlendMode::Exclusion,
         BlendMode::Subtract,
+        BlendMode::Displace,
+        BlendMode::Refract,
+        BlendMode::Lens,
     ];
 
     pub fn as_u32(&self) -> u32 {
@@ -53,6 +89,9 @@ impl BlendMode {
             BlendMode::Difference => 7,
             BlendMode::Exclusion => 8,
             BlendMode::Subtract => 9,
+            BlendMode::Displace => 10,
+            BlendMode::Refract => 11,
+            BlendMode::Lens => 12,
         }
     }
 
@@ -68,15 +107,33 @@ impl BlendMode {
             7 => BlendMode::Difference,
             8 => BlendMode::Exclusion,
             9 => BlendMode::Subtract,
+            10 => BlendMode::Displace,
+            11 => BlendMode::Refract,
+            12 => BlendMode::Lens,
             _ => BlendMode::Normal,
         }
     }
 
+    /// Does this mode read the foreground as a warp field instead of an image?
+    pub fn is_displacement(&self) -> bool {
+        matches!(
+            self,
+            BlendMode::Displace | BlendMode::Refract | BlendMode::Lens
+        )
+    }
+
     /// Map a normalized 0..1 control value (e.g. a binding-bus output) onto
-    /// the full blend-mode list: 0.0 → Normal, 1.0 → Subtract, evenly spaced
+    /// the color-blend list: 0.0 → Normal, 1.0 → Subtract, evenly spaced
     /// in between (#1792). Out-of-range input clamps; NaN falls back to Normal.
+    ///
+    /// Deliberately maps over `COLOR`, not `ALL` (#1478). Two reasons: adding
+    /// the displacement modes to the sweep would silently move every shipped
+    /// preset that drives blend from the bus onto a different mode, and the
+    /// displacement family is a structural break in the sweep anyway — those
+    /// modes ignore fg color entirely, so passing through them mid-set reads as
+    /// a glitch rather than a transition. Reach them from the UI, OSC or a preset.
     pub fn from_normalized(v: f32) -> Self {
-        let max_index = (Self::ALL.len() - 1) as f32;
+        let max_index = (Self::COLOR.len() - 1) as f32;
         Self::from_u32((v.clamp(0.0, 1.0) * max_index).round() as u32)
     }
 
@@ -92,6 +149,9 @@ impl BlendMode {
             BlendMode::Difference => "Difference",
             BlendMode::Exclusion => "Exclusion",
             BlendMode::Subtract => "Subtract",
+            BlendMode::Displace => "Displace",
+            BlendMode::Refract => "Refract",
+            BlendMode::Lens => "Lens",
         }
     }
 
@@ -107,6 +167,9 @@ impl BlendMode {
             BlendMode::Difference => "Inverts where bright — psychedelic color shifts",
             BlendMode::Exclusion => "Softer Difference — grays out similar colors",
             BlendMode::Subtract => "Darkens — removes foreground color from background",
+            BlendMode::Displace => "Edges shove what's beneath — shockwaves, heat haze",
+            BlendMode::Refract => "Bright areas bend like thick glass, splitting color",
+            BlendMode::Lens => "Bright areas magnify what's beneath — a breathing zoom",
         }
     }
 }
@@ -135,6 +198,9 @@ pub struct Layer {
     pub content: LayerContent,
     pub blend_mode: BlendMode,
     pub opacity: f32,
+    /// Warp strength for the displacement blend modes (#1478). Ignored by the
+    /// color blends, so it survives a round-trip through them unchanged.
+    pub displace_amount: f32,
     pub enabled: bool,
     pub locked: bool,
     pub pinned: bool,
@@ -151,6 +217,7 @@ impl Layer {
             content: LayerContent::Effect(Box::new(effect)),
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            displace_amount: DEFAULT_DISPLACE_AMOUNT,
             enabled: true,
             locked: false,
             pinned: false,
@@ -167,6 +234,7 @@ impl Layer {
             content: LayerContent::Media(Box::new(media)),
             blend_mode: BlendMode::Normal,
             opacity: 1.0,
+            displace_amount: DEFAULT_DISPLACE_AMOUNT,
             enabled: true,
             locked: false,
             pinned: false,
@@ -301,6 +369,7 @@ pub struct LayerInfo {
     pub effect_name: Option<String>,
     pub blend_mode: BlendMode,
     pub opacity: f32,
+    pub displace_amount: f32,
     pub enabled: bool,
     pub locked: bool,
     pub pinned: bool,
@@ -385,6 +454,7 @@ impl LayerStack {
                         .map(|e| e.name.clone()),
                     blend_mode: l.blend_mode,
                     opacity: l.opacity,
+                    displace_amount: l.displace_amount,
                     enabled: l.enabled,
                     locked: l.locked,
                     pinned: l.pinned,
@@ -439,7 +509,32 @@ mod tests {
 
     #[test]
     fn blend_mode_all_count() {
-        assert_eq!(BlendMode::ALL.len(), 10);
+        assert_eq!(BlendMode::ALL.len(), 13);
+    }
+
+    #[test]
+    fn blend_mode_families_partition_all() {
+        // ALL must stay COLOR ++ DISPLACEMENT, in that order: `as_u32` is the
+        // wire format for OSC, the web page and presets, so the color modes
+        // have to keep indices 0..9 and the warp modes have to follow them.
+        let joined: Vec<BlendMode> = BlendMode::COLOR
+            .iter()
+            .chain(BlendMode::DISPLACEMENT)
+            .copied()
+            .collect();
+        assert_eq!(joined, BlendMode::ALL);
+        assert_eq!(BlendMode::COLOR.len(), 10);
+        assert_eq!(BlendMode::DISPLACEMENT.len(), 3);
+    }
+
+    #[test]
+    fn blend_mode_is_displacement_matches_the_family_list() {
+        for mode in BlendMode::COLOR {
+            assert!(!mode.is_displacement(), "{mode:?} is a color blend");
+        }
+        for mode in BlendMode::DISPLACEMENT {
+            assert!(mode.is_displacement(), "{mode:?} is a warp");
+        }
     }
 
     #[test]
@@ -542,6 +637,9 @@ mod tests {
         assert_eq!(BlendMode::Difference.display_name(), "Difference");
         assert_eq!(BlendMode::Exclusion.display_name(), "Exclusion");
         assert_eq!(BlendMode::Subtract.display_name(), "Subtract");
+        assert_eq!(BlendMode::Displace.display_name(), "Displace");
+        assert_eq!(BlendMode::Refract.display_name(), "Refract");
+        assert_eq!(BlendMode::Lens.display_name(), "Lens");
     }
 
     #[test]
@@ -592,10 +690,26 @@ mod tests {
     }
 
     #[test]
-    fn blend_mode_from_normalized_reaches_all_modes() {
-        for (i, mode) in BlendMode::ALL.iter().enumerate() {
-            let v = i as f32 / (BlendMode::ALL.len() - 1) as f32;
+    fn blend_mode_from_normalized_reaches_all_color_modes() {
+        for (i, mode) in BlendMode::COLOR.iter().enumerate() {
+            let v = i as f32 / (BlendMode::COLOR.len() - 1) as f32;
             assert_eq!(BlendMode::from_normalized(v), *mode, "step {i} (v={v})");
+        }
+    }
+
+    /// The displacement family (#1478) is deliberately outside the bus sweep.
+    /// Two things break if this stops holding: every shipped preset with a
+    /// bus-bound blend silently lands on a different mode, and a sweep passes
+    /// through modes that draw no color at all, which reads as a dropout.
+    #[test]
+    fn blend_mode_from_normalized_never_returns_a_displacement_mode() {
+        for step in 0..=1000 {
+            let v = step as f32 / 1000.0;
+            let mode = BlendMode::from_normalized(v);
+            assert!(
+                !mode.is_displacement(),
+                "from_normalized({v}) returned {mode:?}"
+            );
         }
     }
 

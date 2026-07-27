@@ -11,7 +11,7 @@ use crate::effect::format::PostProcessDef;
 use crate::effect::loader::assets_dir;
 use crate::gpu::audio_textures::{AudioTextures, WAVEFORM_PEEK};
 use crate::gpu::compositor::Compositor;
-use crate::gpu::layer::{BlendMode, EffectLayer, Layer, LayerContent, LayerInfo, LayerStack};
+use crate::gpu::layer::{EffectLayer, Layer, LayerContent, LayerInfo, LayerStack};
 use crate::gpu::particle::ParticleSystem;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
@@ -719,6 +719,13 @@ impl App {
                     if !target_layer.locked {
                         use crate::gpu::layer::BlendMode;
                         target_layer.blend_mode = BlendMode::from_u32(value);
+                    }
+                }
+            }
+            for (layer_idx, value) in osc_result.layer_displace {
+                if let Some(target_layer) = self.layer_stack.layers.get_mut(layer_idx) {
+                    if !target_layer.locked {
+                        target_layer.displace_amount = value;
                     }
                 }
             }
@@ -2386,9 +2393,14 @@ impl App {
                                 "blend" => {
                                     use crate::gpu::layer::BlendMode;
                                     // Bus outputs are normalized 0..1 (#1792): spread across
-                                    // all 10 modes instead of rounding to 0|1 (Normal|Add).
+                                    // the 10 color modes instead of rounding to 0|1
+                                    // (Normal|Add). The displacement modes are deliberately
+                                    // outside the sweep — see BlendMode::from_normalized.
                                     // The raw-integer OSC/WS paths use from_u32 directly.
                                     layer.blend_mode = BlendMode::from_normalized(value);
+                                }
+                                "displace" => {
+                                    layer.displace_amount = value.clamp(0.0, 1.0);
                                 }
                                 "enabled" => {
                                     layer.enabled = value > 0.5;
@@ -2657,6 +2669,7 @@ impl App {
                     params: l.param_store.values.clone(),
                     blend_mode: l.blend_mode,
                     opacity: l.opacity,
+                    displace_amount: l.displace_amount,
                     enabled: l.enabled,
                     locked: l.locked,
                     pinned: l.pinned,
@@ -3291,6 +3304,7 @@ impl App {
                 }
                 layer.blend_mode = lp.blend_mode;
                 layer.opacity = lp.opacity;
+                layer.displace_amount = lp.displace_amount;
                 layer.enabled = lp.enabled && !effect_missing;
                 layer.locked = lp.locked;
                 layer.pinned = lp.pinned;
@@ -3679,13 +3693,17 @@ impl App {
             (target, self.current_postprocess())
         } else {
             // Multi-layer: render each layer, then composite
-            let mut layer_outputs: Vec<(&crate::gpu::render_target::RenderTarget, BlendMode, f32)> =
+            let mut layer_outputs: Vec<crate::gpu::compositor::LayerComposite<'_>> =
                 Vec::with_capacity(enabled_layers.len());
             for &idx in &enabled_layers {
                 let target = self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-                let blend = self.layer_stack.layers[idx].blend_mode;
-                let opacity = self.layer_stack.layers[idx].opacity;
-                layer_outputs.push((target, blend, opacity));
+                let layer = &self.layer_stack.layers[idx];
+                layer_outputs.push(crate::gpu::compositor::LayerComposite {
+                    target,
+                    blend_mode: layer.blend_mode,
+                    opacity: layer.opacity,
+                    displace_amount: layer.displace_amount,
+                });
             }
             // Reverse so top-of-UI-list renders visually on top
             layer_outputs.reverse();
@@ -3738,17 +3756,18 @@ impl App {
                 let target = self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
                 (target, self.current_postprocess())
             } else {
-                let mut layer_outputs2: Vec<(
-                    &crate::gpu::render_target::RenderTarget,
-                    BlendMode,
-                    f32,
-                )> = Vec::with_capacity(enabled_layers2.len());
+                let mut layer_outputs2: Vec<crate::gpu::compositor::LayerComposite<'_>> =
+                    Vec::with_capacity(enabled_layers2.len());
                 for &idx in &enabled_layers2 {
                     let target =
                         self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-                    let blend = self.layer_stack.layers[idx].blend_mode;
-                    let opacity = self.layer_stack.layers[idx].opacity;
-                    layer_outputs2.push((target, blend, opacity));
+                    let layer = &self.layer_stack.layers[idx];
+                    layer_outputs2.push(crate::gpu::compositor::LayerComposite {
+                        target,
+                        blend_mode: layer.blend_mode,
+                        opacity: layer.opacity,
+                        displace_amount: layer.displace_amount,
+                    });
                 }
                 layer_outputs2.reverse();
                 let composited = self.compositor.composite(

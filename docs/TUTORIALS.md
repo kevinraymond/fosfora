@@ -456,6 +456,34 @@ Below the layer list:
 | **Exclusion** | Softer Difference — grays out similar colors |
 | **Subtract** | Darkens — removes foreground color from background |
 
+### Displacement Modes
+
+The last three modes in the dropdown work differently. Instead of mixing colors,
+they read the layer as a **warp field** — its bright and dark areas bend the
+image underneath, and the layer itself becomes invisible.
+
+| Mode | Description |
+|------|-------------|
+| **Displace** | Edges shove what's beneath — shockwaves, heat haze |
+| **Refract** | Bright areas bend like thick glass, splitting color |
+| **Lens** | Bright areas magnify what's beneath — a breathing zoom |
+
+Displace and Refract are driven by different things, which is what makes them
+look different. Displace reacts to *edges*: wherever the layer's brightness
+changes sharply, it shoves. A ring effect gives you ripples spreading across the
+whole frame. Refract reacts to *brightness itself*, so a bright shape carries the
+image sideways throughout its whole body like a lump of glass — a compact,
+colour-fringed bulge rather than frame-wide ripples.
+
+Pick one and a **Displace** slider appears under Opacity to set how far the warp
+pushes. Try Pulse over Drift: the rings stop being rings and become shockwaves
+travelling through the smoke. Bind the slider to bass and the whole frame
+breathes with the track.
+
+Two things to know. They need something below them to warp, so they do nothing
+on the bottom layer. And if you want to see the layer *and* its warp, duplicate
+it — one copy on Displace, one on Add.
+
 ### Media Layers
 
 You can load images, GIFs, and videos as layers:
@@ -466,7 +494,7 @@ You can load images, GIFs, and videos as layers:
 
 Media layers support:
 - Letterbox scaling (maintains aspect ratio, transparent outside)
-- All 10 blend modes + opacity
+- All 13 blend modes + opacity
 - Animated GIF/WebP playback with transport controls:
   - Play/pause, loop toggle
   - Speed control (0.1x–4.0x)
@@ -893,7 +921,8 @@ Default: **port 9000** on all interfaces (0.0.0.0)
 | `/phosphor/param/{name}` | float | Set parameter on active layer |
 | `/phosphor/layer/{n}/param/{name}` | float | Set parameter on layer N |
 | `/phosphor/layer/{n}/opacity` | float | Layer opacity (0–1) |
-| `/phosphor/layer/{n}/blend` | int | Blend mode (0–9) |
+| `/phosphor/layer/{n}/blend` | int | Blend mode (0–12) |
+| `/phosphor/layer/{n}/displace` | float | Warp strength for modes 10–12 |
 | `/phosphor/layer/{n}/enabled` | int | Layer on/off (0 or 1) |
 | `/phosphor/postprocess/enabled` | int | Post-processing toggle |
 | `/phosphor/trigger/{action}` | float | Fire a trigger action |

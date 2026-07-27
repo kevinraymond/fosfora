@@ -3,6 +3,14 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## v1.23.0 — 2026-07-27
+
+### Added
+- **Three new blend modes that warp instead of tint.** Set a layer to **Displace**, **Refract** or **Lens** and it stops drawing itself — its shapes bend everything underneath instead, turning a ring effect into shockwaves through whatever it sits on. A **Displace** slider sets the strength and is bindable, so the warp can breathe with the track. They need a layer below them, so they do nothing on the bottom one.
+
+### Changed
+- Blend modes driven from the binding bus still sweep the ten colour modes only, so existing presets land on exactly the mode they did before. Pick a displacement mode from the dropdown, OSC or a preset.
+
 ## v1.22.1 — 2026-07-27
 
 ### Fixed

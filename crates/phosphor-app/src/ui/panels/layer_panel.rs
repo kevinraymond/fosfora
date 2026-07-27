@@ -216,6 +216,12 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
     // Collect card rects during rendering
     let mut card_rects: Vec<Rect> = Vec::with_capacity(num_layers);
 
+    // The bottom-most enabled layer is composited first, so it has nothing
+    // beneath it and its blend mode is never applied (see Compositor::composite).
+    // Only matters for the displacement modes, where the whole point is to warp
+    // what's below — the others are visually indistinguishable from Normal there.
+    let bottom_enabled = layers.iter().rposition(|l| l.enabled);
+
     let (_drop_inner, drop_payload) = ui.dnd_drop_zone::<usize, ()>(egui::Frame::new(), |ui| {
         for (i, layer) in layers.iter().enumerate() {
             let is_active = i == active_layer;
@@ -575,6 +581,11 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                             .width(combo_width)
                                             .show_ui(ui, |ui| {
                                                 for &mode in BlendMode::ALL {
+                                                    // The displacement family warps instead of
+                                                    // coloring — set it apart from the blends.
+                                                    if mode == BlendMode::DISPLACEMENT[0] {
+                                                        ui.separator();
+                                                    }
                                                     let r = ui.selectable_label(
                                                         mode == current_mode,
                                                         RichText::new(mode.display_name())
@@ -688,6 +699,50 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                             });
                                         }
                                     });
+
+                                    // Warp strength — only meaningful for the
+                                    // displacement family (#1478).
+                                    if layer.blend_mode.is_displacement() {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new("Displace")
+                                                    .size(SMALL_SIZE)
+                                                    .color(tc.text_secondary),
+                                            );
+                                            let saved_bg = ui.visuals().widgets.inactive.bg_fill;
+                                            ui.visuals_mut().widgets.inactive.bg_fill = tc.meter_bg;
+                                            let mut amount = layer.displace_amount;
+                                            let slider = ui.add(
+                                                egui::Slider::new(&mut amount, 0.0..=1.0)
+                                                    .show_value(true)
+                                                    .custom_formatter(|v, _| {
+                                                        format!("{:.0}%", v * 100.0)
+                                                    })
+                                                    .text(""),
+                                            );
+                                            ui.visuals_mut().widgets.inactive.bg_fill = saved_bg;
+                                            if slider.changed() {
+                                                ui.ctx().data_mut(|d| {
+                                                    d.insert_temp(
+                                                        egui::Id::new("layer_displace"),
+                                                        amount,
+                                                    );
+                                                });
+                                            }
+                                        });
+
+                                        if bottom_enabled == Some(i) {
+                                            ui.label(
+                                                RichText::new(
+                                                    "Nothing beneath this layer to warp — \
+                                                     move it above another layer.",
+                                                )
+                                                .size(SMALL_SIZE)
+                                                .color(tc.text_secondary)
+                                                .italics(),
+                                            );
+                                        }
+                                    }
                                 });
                             });
                     }

@@ -91,6 +91,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         for (suffix, label_suffix) in [
             ("opacity", "opacity"),
             ("blend", "blend"),
+            ("displace", "displace"),
             ("enabled", "enabled"),
         ] {
             targets.push(TargetOption {

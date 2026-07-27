@@ -114,6 +114,18 @@ Four toggleable effects (per-effect overridable):
 | 7 | Difference   | Inverts where bright — psychedelic       |
 | 8 | Exclusion    | Softer Difference — grays similar colors |
 | 9 | Subtract     | Darkens — removes foreground color       |
+| 10| Displace     | Edges shove what's beneath — shockwaves  |
+| 11| Refract      | Bright areas bend like glass, split color|
+| 12| Lens         | Bright areas magnify what's beneath      |
+
+Modes 10–12 are the **displacement family**: the layer is read as a warp field
+rather than an image, so it draws none of its own color. A **Displace** slider
+appears beside Opacity to set the strength (OSC `/phosphor/layer/{n}/displace`,
+bindable as `layer.{n}.displace`). They need something below them to warp — on
+the bottom layer they do nothing.
+
+Note that `layer.{n}.blend` driven from the binding bus sweeps modes 0–9 only;
+pick a displacement mode from the UI, OSC or a preset.
 
 ---
 
@@ -168,7 +180,8 @@ Default ports: **RX 9000**, **TX 9001**
 | `/phosphor/param/{name}`            | float | Set param on active layer    |
 | `/phosphor/layer/{n}/param/{name}`  | float | Set param on layer n         |
 | `/phosphor/layer/{n}/opacity`       | float | Layer opacity (0-1)          |
-| `/phosphor/layer/{n}/blend`         | int   | Blend mode (0-9)             |
+| `/phosphor/layer/{n}/blend`         | int   | Blend mode (0-12)            |
+| `/phosphor/layer/{n}/displace`      | float | Warp strength, modes 10-12   |
 | `/phosphor/layer/{n}/enabled`       | bool  | Layer enabled state          |
 | `/phosphor/trigger/{action}`        | float | Fire trigger action          |
 | `/phosphor/postprocess/enabled`     | bool  | Toggle post-processing       |

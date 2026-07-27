@@ -466,6 +466,7 @@ mod tests {
             effect_name: Some("Aurora".into()),
             blend_mode: BlendMode::Add,
             opacity: 0.8,
+            displace_amount: crate::gpu::layer::DEFAULT_DISPLACE_AMOUNT,
             enabled: true,
             locked: false,
             pinned: false,

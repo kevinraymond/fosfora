@@ -22,6 +22,9 @@ pub enum OscInMessage {
     LayerOpacity { layer: usize, value: f32 },
     /// Set layer blend mode: /phosphor/layer/{n}/blend
     LayerBlend { layer: usize, value: u32 },
+    /// Set layer warp strength for the displacement blend modes (#1478):
+    /// /phosphor/layer/{n}/displace
+    LayerDisplace { layer: usize, value: f32 },
     /// Set layer enabled: /phosphor/layer/{n}/enabled
     LayerEnabled { layer: usize, value: bool },
     /// Set obstacle enabled: /phosphor/layer/{n}/obstacle/enabled

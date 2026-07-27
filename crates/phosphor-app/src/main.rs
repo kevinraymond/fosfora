@@ -3287,6 +3287,19 @@ impl ApplicationHandler for PhosphorApp {
                     }
                 }
 
+                let layer_displace: Option<f32> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("layer_displace")));
+                if let Some(amount) = layer_displace {
+                    if let Some(layer) = app.layer_stack.active_mut() {
+                        if !layer.locked {
+                            layer.displace_amount = amount;
+                            app.preset_store.mark_dirty();
+                        }
+                    }
+                }
+
                 let layer_move: Option<(usize, usize)> = app
                     .egui_overlay
                     .context()

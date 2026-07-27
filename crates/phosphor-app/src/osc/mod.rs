@@ -23,6 +23,7 @@ pub struct OscFrameResult {
     pub layer_params: Vec<(usize, String, f32)>,
     pub layer_opacity: Vec<(usize, f32)>,
     pub layer_blend: Vec<(usize, u32)>,
+    pub layer_displace: Vec<(usize, f32)>,
     pub layer_enabled: Vec<(usize, bool)>,
     pub layer_obstacle_enabled: Vec<(usize, bool)>,
     pub layer_obstacle_mode: Vec<(usize, u32)>,
@@ -46,6 +47,7 @@ impl OscFrameResult {
             layer_params: Vec::new(),
             layer_opacity: Vec::new(),
             layer_blend: Vec::new(),
+            layer_displace: Vec::new(),
             layer_enabled: Vec::new(),
             layer_obstacle_enabled: Vec::new(),
             layer_obstacle_mode: Vec::new(),
@@ -273,6 +275,9 @@ impl OscSystem {
                 OscInMessage::LayerBlend { layer, value } => {
                     result.layer_blend.push((layer, value));
                 }
+                OscInMessage::LayerDisplace { layer, value } => {
+                    result.layer_displace.push((layer, value));
+                }
                 OscInMessage::LayerEnabled { layer, value } => {
                     result.layer_enabled.push((layer, value));
                 }
@@ -388,6 +393,9 @@ impl OscSystem {
                 OscInMessage::LayerBlend { layer, value } => {
                     result.layer_blend.push((layer, value));
                 }
+                OscInMessage::LayerDisplace { layer, value } => {
+                    result.layer_displace.push((layer, value));
+                }
                 OscInMessage::LayerEnabled { layer, value } => {
                     result.layer_enabled.push((layer, value));
                 }
@@ -487,6 +495,7 @@ fn msg_value(msg: &OscInMessage) -> Option<f32> {
         OscInMessage::Param { value, .. }
         | OscInMessage::LayerParam { value, .. }
         | OscInMessage::LayerOpacity { value, .. }
+        | OscInMessage::LayerDisplace { value, .. }
         | OscInMessage::LayerObstacleThreshold { value, .. }
         | OscInMessage::LayerObstacleElasticity { value, .. }
         | OscInMessage::VolumetricParam { value, .. }
@@ -514,6 +523,7 @@ fn msg_address(msg: &OscInMessage) -> String {
         OscInMessage::Trigger(action) => format!("/phosphor/trigger/{}", trigger_slug(action)),
         OscInMessage::LayerOpacity { layer, .. } => format!("/phosphor/layer/{layer}/opacity"),
         OscInMessage::LayerBlend { layer, .. } => format!("/phosphor/layer/{layer}/blend"),
+        OscInMessage::LayerDisplace { layer, .. } => format!("/phosphor/layer/{layer}/displace"),
         OscInMessage::LayerEnabled { layer, .. } => format!("/phosphor/layer/{layer}/enabled"),
         OscInMessage::LayerObstacleEnabled { layer, .. } => {
             format!("/phosphor/layer/{layer}/obstacle/enabled")

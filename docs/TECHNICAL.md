@@ -62,7 +62,7 @@ crates/phosphor-app/src/
 ├── gpu/
 │   ├── mod.rs           RenderTarget, PingPongTarget, UniformBuffer
 │   ├── layer.rs         Layer, LayerStack, LayerContent, BlendMode, Compositor
-│   ├── compositor.rs    GPU blend pipeline (7 modes, ping-pong accumulator)
+│   ├── compositor.rs    GPU blend pipeline (13 modes, ping-pong accumulator)
 │   └── particle/
 │       ├── system.rs    ParticleSystem (compute dispatch, render, ping-pong)
 │       ├── types.rs     ParticleDef, EmitterDef, ParticleUniforms
@@ -357,7 +357,8 @@ Per-feature policy (`NormPolicy`) lives in the `FEATURES` table in `audio/schema
 ## Layer System
 
 - **LayerContent enum:** `Effect(EffectLayer)` or `Media(MediaLayer)`. Each Layer owns its own `PassExecutor`, `UniformBuffer`, `ParamStore`, render targets.
-- **Compositor:** Ping-pong accumulator — blit first enabled layer, then `composite(accumulator, layer[i])` for each subsequent layer using the selected blend mode.
+- **Compositor:** Ping-pong accumulator — blit first enabled layer, then `composite(accumulator, layer[i])` for each subsequent layer using the selected blend mode. Because the accumulator is bound as a sampled texture (not fixed-function blend state), the composite shader can read it at an arbitrary UV — which is what the displacement modes exploit.
+- **Blend modes:** 13, in two families. 0–9 are color blends, arithmetic on fg and bg at the same pixel. 10–12 (Displace/Refract/Lens) read fg luminance as a warp field that offsets the UV used to sample the accumulator, and contribute no color; strength comes from `CompositeUniforms.displace_amount`, which took a spare pad slot so the struct stayed 16 bytes. The bottom layer's blend mode is never applied, so displacement there is inert.
 - **Single-layer fast path:** When only 1 layer is enabled, compositing is skipped entirely (zero overhead).
 - **Lock:** Prevents all setting changes (blend, opacity, enable, params, effect loading). Locked layers are skipped during preset load. MIDI CC is blocked.
 - **Pin:** Prevents drag reordering. Pinned layers hide the drag handle.

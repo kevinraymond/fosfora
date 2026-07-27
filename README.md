@@ -99,7 +99,7 @@ cargo run --release --features depth   # webcam + MiDaS depth — needs libssl-d
 
 |  |  |
 |---|---|
-| **Stack and blend** | Layers work like Photoshop or OBS — up to 8 of them, 10 blend modes, drag to reorder. Put a slow shader under a particle storm, dial the opacity, and it's a new look. Layers can also be images, GIFs, video files or a live webcam, not just effects. |
+| **Stack and blend** | Layers work like Photoshop or OBS — up to 8 of them, 13 blend modes, drag to reorder. Put a slow shader under a particle storm, dial the opacity, and it's a new look. Three of the modes warp instead of tint: set a layer to Displace and its shapes bend everything underneath, so a ring effect becomes a shockwave through whatever it's sitting on. Layers can also be images, GIFs, video files or a live webcam, not just effects. |
 | **Perform it live** | Map any MIDI knob to any parameter by clicking **M** and wiggling the knob. Same for OSC. Or open your phone's browser and use it as a touch surface — no app to install. |
 | **It genuinely listens** | Not just "loud = big". Fosfora tracks 74 things about your music 86 times a second — beat and tempo, key and chord, drums separated from melody, the moment a build turns into a drop — and any of them can drive any parameter. |
 | **Bring the room in** | Feed it a webcam and let particles flow around your silhouette, or a photo, or a depth map. Hand and body tracking stream in over the [bridges](bridges/README.md). |
