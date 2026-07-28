@@ -106,7 +106,7 @@ pub fn is_model_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-enum Geometry {
+pub(crate) enum Geometry {
     Mesh {
         vbuf: wgpu::Buffer,
         ibuf: wgpu::Buffer,
@@ -250,37 +250,32 @@ fn upload(device: &Device, label: &str, data: &[u8], usage: wgpu::BufferUsages) 
     })
 }
 
-/// Raster the posed geometry into a `TARGET_RES`² RGBA frame and read it back.
+/// Which vertex layout a raster's pipeline is built for.
 ///
-/// Returns `(rgba8 bytes, width, height)` — exactly the shape a decoded video
-/// frame arrives in, which is what lets the existing sampler take it unchanged.
-fn render_to_rgba(
-    device: &Device,
-    queue: &Queue,
-    geometry: &Geometry,
-    model_def: &ModelSampleDef,
-) -> Result<(Vec<u8>, u32, u32), String> {
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("model-sample-shader"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../../../assets/shaders/model_sample.wgsl").into(),
-        ),
-    });
+/// The pipeline is baked at construction so it can be reused frame after frame,
+/// and mesh and splat feed it completely different vertex buffers — so the kind
+/// has to be known before any geometry is handed over.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RasterKind {
+    Mesh,
+    Splat,
+}
 
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("model-sample-bgl"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    });
+impl Geometry {
+    fn kind(&self) -> RasterKind {
+        match self {
+            Geometry::Mesh { .. } => RasterKind::Mesh,
+            Geometry::Splat { .. } => RasterKind::Splat,
+        }
+    }
+}
 
+/// Camera, projection and light for one pose, in the form the shader wants.
+///
+/// Split out because it is the only part of a frame that changes when a slider
+/// moves — everything else in `ModelRaster` is built once and reused. Pure maths,
+/// no device access, so the live path can rebuild it every frame for free.
+fn build_uniforms(model_def: &ModelSampleDef) -> SampleUniforms {
     let model = Mat4::from_rotation_y(model_def.yaw_degrees.to_radians())
         * Mat4::from_rotation_x(model_def.pitch_degrees.to_radians());
     let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 3.0), Vec3::ZERO, Vec3::Y);
@@ -300,15 +295,14 @@ fn render_to_rgba(
     // The projection is orthographic, so w is 1 and clip space IS ndc; the v flip
     // is the usual ndc-y-up to texture-v-down.
     let light_clip = proj.project_point3(light_view);
-    let ray_strength = model_def.ray_strength.clamp(0.0, 1.0);
 
-    let uniforms = SampleUniforms {
+    SampleUniforms {
         mv: mv.to_cols_array_2d(),
         proj: proj.to_cols_array_2d(),
         radius_scale: SPLAT_RADIUS_SCALE,
         ambient: model_def.ambient.clamp(0.0, 1.0),
         light_mix: model_def.light_mix.clamp(0.0, 1.0),
-        ray_strength,
+        ray_strength: model_def.ray_strength.clamp(0.0, 1.0),
         base_color: [1.0, 1.0, 1.0, 1.0],
         light_x: light_view.x,
         light_y: light_view.y,
@@ -318,271 +312,333 @@ fn render_to_rgba(
         _pad0: 0.0,
         _pad1: 0.0,
         _pad2: 0.0,
-    };
-    let uniforms_buf = upload(
-        device,
-        "model-sample-uniforms",
-        bytemuck::bytes_of(&uniforms),
-        wgpu::BufferUsages::UNIFORM,
-    );
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("model-sample-bg"),
-        layout: &bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniforms_buf.as_entire_binding(),
-        }],
-    });
+    }
+}
 
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("model-sample-layout"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
-    });
-    let depth_state = wgpu::DepthStencilState {
-        format: wgpu::TextureFormat::Depth32Float,
-        depth_write_enabled: true,
-        depth_compare: wgpu::CompareFunction::Less,
-        stencil: wgpu::StencilState::default(),
-        bias: wgpu::DepthBiasState::default(),
-    };
-    // sRGB target: the shader writes linear and the hardware encodes, so the bytes
-    // that come back look like a PNG's — which is what the sampler's luminance and
-    // gradient maths already assume.
-    let color_target = wgpu::ColorTargetState {
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        blend: None,
-        write_mask: wgpu::ColorWrites::ALL,
-    };
+/// Persistent GPU resources for rasterizing a posed model.
+///
+/// Everything expensive — shader module, pipelines, render targets — is built
+/// once and reused, so re-rendering a new pose costs one uniform write and two
+/// render passes. Nothing here touches the CPU.
+///
+/// That is the whole point (#2010). Rendering a model was never the reason a
+/// model source is a STILL; the passes have always been GPU-only. The cost was
+/// the 16MB `copy_texture_to_buffer` + `map_async` that followed, which is why
+/// the readback lives in [`render_to_rgba`] rather than in here — the live path
+/// records the same passes and simply never asks for the pixels back.
+pub(crate) struct ModelRaster {
+    kind: RasterKind,
+    uniforms_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+    color_tex: wgpu::Texture,
+    color_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
+    // God-ray resources. Built eagerly alongside the rest: deciding per frame
+    // whether rays are on is a uniform check, not a reason to compile a pipeline
+    // mid-flight.
+    godray_pipeline: wgpu::RenderPipeline,
+    godray_bind_group: wgpu::BindGroup,
+    rays_tex: wgpu::Texture,
+    rays_view: wgpu::TextureView,
+    extent: wgpu::Extent3d,
+}
 
-    let (vs, fs, buffers): (_, _, Vec<wgpu::VertexBufferLayout>) = match geometry {
-        Geometry::Mesh { .. } => (
-            "vs_mesh",
-            "fs_mesh",
-            vec![wgpu::VertexBufferLayout {
-                array_stride: 24,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x3,
-                        offset: 12,
-                        shader_location: 1,
-                    },
-                ],
-            }],
-        ),
-        Geometry::Splat { .. } => (
-            "vs_splat",
-            "fs_splat",
-            vec![wgpu::VertexBufferLayout {
-                array_stride: 32,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &[
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 0,
-                        shader_location: 0,
-                    },
-                    wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x4,
-                        offset: 16,
-                        shader_location: 1,
-                    },
-                ],
-            }],
-        ),
-    };
-
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("model-sample-pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some(vs),
-            compilation_options: Default::default(),
-            buffers: &buffers,
-        },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: None, // model winding is unreliable; keep both faces
-            ..Default::default()
-        },
-        depth_stencil: Some(depth_state),
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some(fs),
-            compilation_options: Default::default(),
-            targets: &[Some(color_target)],
-        }),
-        multiview: None,
-        cache: None,
-    });
-
-    let extent = wgpu::Extent3d {
-        width: TARGET_RES,
-        height: TARGET_RES,
-        depth_or_array_layers: 1,
-    };
-    let color_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("model-sample-color"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
-    let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("model-sample-depth"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Depth32Float,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
-
-    // TARGET_RES * 4 = 8192, already a multiple of COPY_BYTES_PER_ROW_ALIGNMENT,
-    // so the readback needs no per-row padding dance.
-    let bytes_per_row = TARGET_RES * 4;
-    let staging = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("model-sample-staging"),
-        size: (bytes_per_row * TARGET_RES) as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("model-sample-encoder"),
-    });
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("model-sample-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &color_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // Transparent, and load-bearing: the sampler rejects alpha < 10,
-                    // so this is what makes the silhouette free and stops particles
-                    // being spent on background.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
+impl ModelRaster {
+    pub(crate) fn new(device: &Device, kind: RasterKind) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("model-sample-shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("../../../../../assets/shaders/model_sample.wgsl").into(),
+            ),
         });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind_group, &[]);
-        match geometry {
-            Geometry::Mesh {
-                vbuf,
-                ibuf,
-                index_count,
-            } => {
-                pass.set_vertex_buffer(0, vbuf.slice(..));
-                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..*index_count, 0, 0..1);
-            }
-            Geometry::Splat { instances, count } => {
-                pass.set_vertex_buffer(0, instances.slice(..));
-                pass.draw(0..6, 0..*count);
-            }
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("model-sample-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        // COPY_DST, unlike the old create-per-call buffer: a new pose is a
+        // `write_buffer`, not a fresh allocation.
+        let uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("model-sample-uniforms"),
+            size: std::mem::size_of::<SampleUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("model-sample-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms_buf.as_entire_binding(),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("model-sample-layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let depth_state = wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
+        // sRGB target: the shader writes linear and the hardware encodes, so the
+        // bytes that come back look like a PNG's — which is what the sampler's
+        // luminance and gradient maths already assume.
+        let color_target = wgpu::ColorTargetState {
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        };
+
+        let (vs, fs, buffers): (_, _, Vec<wgpu::VertexBufferLayout>) = match kind {
+            RasterKind::Mesh => (
+                "vs_mesh",
+                "fs_mesh",
+                vec![wgpu::VertexBufferLayout {
+                    array_stride: 24,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+            ),
+            RasterKind::Splat => (
+                "vs_splat",
+                "fs_splat",
+                vec![wgpu::VertexBufferLayout {
+                    array_stride: 32,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x4,
+                            offset: 16,
+                            shader_location: 1,
+                        },
+                    ],
+                }],
+            ),
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("model-sample-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some(vs),
+                compilation_options: Default::default(),
+                buffers: &buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None, // model winding is unreliable; keep both faces
+                ..Default::default()
+            },
+            depth_stencil: Some(depth_state),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some(fs),
+                compilation_options: Default::default(),
+                targets: &[Some(color_target)],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
+        let extent = wgpu::Extent3d {
+            width: TARGET_RES,
+            height: TARGET_RES,
+            depth_or_array_layers: 1,
+        };
+        let color_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("model-sample-color"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("model-sample-depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let (godray_pipeline, godray_bind_group, rays_tex, rays_view) =
+            build_godray(device, &shader, &bgl, &color_view, extent);
+
+        Self {
+            kind,
+            uniforms_buf,
+            bind_group,
+            pipeline,
+            color_tex,
+            color_view,
+            depth_view,
+            godray_pipeline,
+            godray_bind_group,
+            rays_tex,
+            rays_view,
+            extent,
         }
     }
 
-    // God-ray pass (#1996). Skipped outright when rays are off, so the default
-    // model source costs exactly what it did in v1.28.0 — no second 16MB target,
-    // no extra pipeline — and its readback is byte-identical.
-    let rays_tex = if ray_strength > 0.0 {
-        Some(render_godrays(
-            device,
-            &shader,
-            &bgl,
-            &bind_group,
-            &color_view,
-            extent,
-            &mut encoder,
-        ))
-    } else {
-        None
-    };
-    let readback_tex = rays_tex.as_ref().unwrap_or(&color_tex);
+    /// Record one frame's passes. Returns the texture holding the result.
+    ///
+    /// Panics if `geometry` is not the kind this raster's pipeline was built for
+    /// — a mesh drawn through the splat vertex layout is a wgpu validation error
+    /// with a far less obvious message.
+    pub(crate) fn record(
+        &self,
+        queue: &Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        geometry: &Geometry,
+        model_def: &ModelSampleDef,
+    ) -> &wgpu::Texture {
+        assert!(
+            geometry.kind() == self.kind,
+            "geometry kind changed under a ModelRaster built for the other one"
+        );
+        let uniforms = build_uniforms(model_def);
+        queue.write_buffer(&self.uniforms_buf, 0, bytemuck::bytes_of(&uniforms));
 
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: readback_tex,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &staging,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(TARGET_RES),
-            },
-        },
-        extent,
-    );
-    queue.submit([encoder.finish()]);
-
-    let slice = staging.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |r| {
-        if let Err(e) = r {
-            log::error!("model sample readback failed: {e}");
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("model-sample-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Transparent, and load-bearing: the sampler rejects
+                        // alpha < 10, so this is what makes the silhouette free
+                        // and stops particles being spent on background.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            match geometry {
+                Geometry::Mesh {
+                    vbuf,
+                    ibuf,
+                    index_count,
+                } => {
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*index_count, 0, 0..1);
+                }
+                Geometry::Splat { instances, count } => {
+                    pass.set_vertex_buffer(0, instances.slice(..));
+                    pass.draw(0..6, 0..*count);
+                }
+            }
         }
-    });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .map_err(|e| format!("model sample readback poll: {e}"))?;
-    let rgba = slice.get_mapped_range().to_vec();
-    staging.unmap();
 
-    Ok((rgba, TARGET_RES, TARGET_RES))
+        // God-ray pass (#1996). Skipped outright when rays are off, so a model
+        // source with no interior light costs exactly what it did in v1.28.0 and
+        // its output is byte-identical.
+        if uniforms.ray_strength <= 0.0 {
+            return &self.color_tex;
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("model-godray-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.rays_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Every texel is written by the fullscreen triangle, but
+                        // clear transparent anyway: the invariant that untouched
+                        // frame is alpha 0 is what the sampler leans on.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.godray_pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_bind_group(1, &self.godray_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        &self.rays_tex
+    }
 }
 
-/// Radially scatter the point light over the rendered frame, into a new texture.
+/// Build the radial-scattering pass that turns escaping light into shafts.
 ///
 /// A render pass cannot sample the target it writes, so this is a second target
 /// rather than an in-place blend. It composites the model back over the rays it
 /// produces, so the result is a drop-in replacement for the first pass's output —
 /// same format, same transparent background, same contract with the sampler.
-#[allow(clippy::too_many_arguments)]
-fn render_godrays(
+fn build_godray(
     device: &Device,
     shader: &wgpu::ShaderModule,
     uniform_bgl: &wgpu::BindGroupLayout,
-    uniform_bg: &wgpu::BindGroup,
     src_view: &wgpu::TextureView,
     extent: wgpu::Extent3d,
-    encoder: &mut wgpu::CommandEncoder,
-) -> wgpu::Texture {
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::BindGroup,
+    wgpu::Texture,
+    wgpu::TextureView,
+) {
     let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("model-godray-tex-bgl"),
         entries: &[
@@ -616,7 +672,7 @@ fn render_godrays(
         min_filter: wgpu::FilterMode::Linear,
         ..Default::default()
     });
-    let tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("model-godray-tex-bg"),
         layout: &tex_bgl,
         entries: &[
@@ -673,37 +729,80 @@ fn render_godrays(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let rays_view = rays_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (pipeline, bind_group, rays_tex, rays_view)
+}
 
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("model-godray-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &rays_view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    // Every texel is written by the fullscreen triangle, but clear
-                    // transparent anyway: the invariant that untouched frame is
-                    // alpha 0 is what the sampler leans on.
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, uniform_bg, &[]);
-        pass.set_bind_group(1, &tex_bg, &[]);
-        pass.draw(0..3, 0..1);
-    }
+/// Raster the posed geometry into a `TARGET_RES`² RGBA frame and read it back.
+///
+/// Returns `(rgba8 bytes, width, height)` — exactly the shape a decoded video
+/// frame arrives in, which is what lets the existing sampler take it unchanged.
+///
+/// The readback is the expensive half and the reason a model source is a STILL.
+/// It lives here rather than in [`ModelRaster`] so the live path (#2010) can
+/// record the identical passes and never pay it.
+fn render_to_rgba(
+    device: &Device,
+    queue: &Queue,
+    geometry: &Geometry,
+    model_def: &ModelSampleDef,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let raster = ModelRaster::new(device, geometry.kind());
 
-    rays_tex
+    // TARGET_RES * 4 = 8192, already a multiple of COPY_BYTES_PER_ROW_ALIGNMENT,
+    // so the readback needs no per-row padding dance.
+    let bytes_per_row = TARGET_RES * 4;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("model-sample-staging"),
+        size: (bytes_per_row * TARGET_RES) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("model-sample-encoder"),
+    });
+    let readback_tex = raster.record(queue, &mut encoder, geometry, model_def);
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: readback_tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(TARGET_RES),
+            },
+        },
+        raster.extent,
+    );
+    queue.submit([encoder.finish()]);
+
+    let slice = staging.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |r| {
+        if let Err(e) = r {
+            log::error!("model sample readback failed: {e}");
+        }
+    });
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .map_err(|e| format!("model sample readback poll: {e}"))?;
+    let rgba = slice.get_mapped_range().to_vec();
+    staging.unmap();
+
+    Ok((rgba, TARGET_RES, TARGET_RES))
 }
 
 #[cfg(test)]
@@ -952,6 +1051,96 @@ mod tests {
             ),
             index_count: indices.len() as u32,
         }
+    }
+
+    /// A single small quad in the model's upper-LEFT, and nothing else.
+    ///
+    /// Deliberately asymmetric in both axes. A mirrored or flipped raster is
+    /// invisible to every other fixture here — a cube, a centred box and a
+    /// silhouette coverage count all survive any global transform — which is the
+    /// same blind spot that let the splat renderer ship mirrored for two
+    /// releases (#1912). Only an off-centre landmark can catch it.
+    fn marker_mesh(device: &Device) -> Geometry {
+        // Model space: -x is left, +y is up.
+        let c = [
+            Vec3::new(-0.6, 0.3, 0.0),
+            Vec3::new(-0.2, 0.3, 0.0),
+            Vec3::new(-0.2, 0.7, 0.0),
+            Vec3::new(-0.6, 0.7, 0.0),
+        ];
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let mut vbytes: Vec<u8> = Vec::new();
+        for p in c {
+            for v in [p.x, p.y, p.z, n.x, n.y, n.z] {
+                vbytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let indices: Vec<u32> = vec![0, 1, 2, 0, 2, 3];
+        Geometry::Mesh {
+            vbuf: upload(
+                device,
+                "test-marker-vbuf",
+                &vbytes,
+                wgpu::BufferUsages::VERTEX,
+            ),
+            ibuf: upload(
+                device,
+                "test-marker-ibuf",
+                bytemuck::cast_slice(&indices),
+                wgpu::BufferUsages::INDEX,
+            ),
+            index_count: indices.len() as u32,
+        }
+    }
+
+    /// The raster must not flip or mirror the model it was handed.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn model_raster_preserves_orientation() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let geometry = marker_mesh(&device);
+        let (rgba, res, _) =
+            render_to_rgba(&device, &queue, &geometry, &ModelSampleDef::default()).unwrap();
+
+        // Centroid of everything the sampler would keep.
+        let (mut sx, mut sy, mut n) = (0f64, 0f64, 0u32);
+        for (i, p) in rgba.chunks_exact(4).enumerate() {
+            if p[3] >= 10 {
+                sx += (i as u32 % res) as f64;
+                sy += (i as u32 / res) as f64;
+                n += 1;
+            }
+        }
+        assert!(n > 1000, "marker did not render ({n} opaque texels)");
+        let (cx, cy) = (sx / n as f64, sy / n as f64);
+        let half = res as f64 / 2.0;
+        println!("marker centroid: col {cx:.0}, row {cy:.0} (frame {res}, half {half})");
+
+        // The quad sits left of centre and above it in MODEL space. Row 0 is the
+        // top of a rendered target and also the top of the image the sampler
+        // reads, so it must land in the upper-left of the buffer too.
+        assert!(
+            cx < half,
+            "marker is at model -x (left) but rasterized to column {cx:.0} of {res} \
+             — the raster is MIRRORED horizontally"
+        );
+        assert!(
+            cy < half,
+            "marker is at model +y (up) but rasterized to row {cy:.0} of {res} \
+             — the raster is FLIPPED vertically"
+        );
+
+        // ...and the same landmark must survive the sampler into particle space,
+        // where -x is left and +y is up.
+        let (sample_def, _) = defaults();
+        let aux = image_source::sample_rgba_buffer(&rgba, res, res, &sample_def, 100_000);
+        assert!(!aux.is_empty(), "marker sampled to no particles");
+        let mx = aux.iter().map(|a| a.home[0] as f64).sum::<f64>() / aux.len() as f64;
+        let my = aux.iter().map(|a| a.home[1] as f64).sum::<f64>() / aux.len() as f64;
+        println!("marker in particle space: x {mx:.3}, y {my:.3}");
+        assert!(mx < 0.0, "marker at model -x landed at particle x {mx:.3}");
+        assert!(my > 0.0, "marker at model +y landed at particle y {my:.3}");
     }
 
     /// Mean red of a small patch, to keep assertions off single-texel noise.

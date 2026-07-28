@@ -92,7 +92,9 @@ every one of these effects — your own mesh or scanned capture comes out as peg
 aluminium, or as two million springy pixels. Meshes are shaded from their own surface normals;
 splat captures keep the colour they were captured with. Four controls set how it is framed:
 
-- **Yaw** / **Pitch** — turn the model. It is re-sampled when you let go of the slider.
+- **Yaw** / **Pitch** — turn the model, a full turn on each axis. It is re-sampled when you let
+  go of the slider. Models often arrive lying on their back or facing away — glTF is Y-up but
+  Blender exports Z-up — so expect to reach for these first on your own files.
 - **Zoom** — crop in for detail, or pull back to fit more in.
 - **Ambient** — how far the shadowed side is lifted off black. Raise it if the dark side of
   your model is coming out as a flat void; lower it for more contrast between faces.
@@ -133,10 +135,9 @@ halo, which is the whole difference.
 
 Its own controls decide where the split falls and what the escaping half does:
 
-- **Shed** — how bright a surface has to be before it starts shedding light. At `1.00` only
-  genuinely translucent parts stream, so the form stays crisp; wind it down and more and more
-  of the subject dissolves into the flow. Around `0.70` the form is gone entirely, which is a
-  look of its own.
+- **Shed** — how much of the surface gives up light. At `0.00` only genuinely translucent
+  parts stream, so the form stays crisp; wind it up and more and more of the subject dissolves
+  into the flow. Past about `0.70` the form is gone entirely, which is a look of its own.
 - **Stream speed** / **Stream length** — how fast the light travels and how far it gets before
   it fades out and starts again. Speed rises with the music, and onsets kick it (**Surge**).
 - **Shaft gain** — how much brighter escaping light is than it arrived. Shafts come out of the

@@ -414,7 +414,13 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             // hollow form — the #1996 picture) to just outside the silhouette.
             let rows: [(&str, usize, std::ops::RangeInclusive<f32>, usize, &str); 9] = [
                 ("Yaw", 0, -180.0..=180.0, 0, "°"),
-                ("Pitch", 1, -90.0..=90.0, 0, "°"),
+                // Full turn, not ±90. glTF is Y-up but Blender exports Z-up, so a
+                // model that arrives lying on its back or fully inverted is
+                // ordinary — and ±90 cannot reach the 180° that rights it. The
+                // raster itself preserves orientation (there is a test), so the
+                // only thing standing between a user and a correct model was
+                // slider range.
+                ("Pitch", 1, -180.0..=180.0, 0, "°"),
                 ("Zoom", 2, 0.3..=3.0, 2, "x"),
                 ("Ambient", 3, 0.0..=1.0, 2, ""),
                 ("Light mix", 4, 0.0..=1.0, 2, ""),

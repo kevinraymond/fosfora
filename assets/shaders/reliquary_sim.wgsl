@@ -94,7 +94,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let stream_speed  = param(1u);  // how fast light travels outward (0–2)
     let stream_length = param(2u);  // how far it gets before recycling (0–0.6)
     let shaft_gain    = param(3u);  // brightness of escaping light (0–4)
-    let shed          = param(4u);  // luminance above which surface sheds (0–1)
+    let shed          = param(4u);  // how much of the surface sheds light (0–1)
     let body_spring   = param(5u);  // how firmly the form holds (2–30)
     let surge         = param(6u);  // onset kick to stream speed (0–2)
     let bass_swell    = param(7u);  // radial breathing of the form (0–0.6)
@@ -108,7 +108,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // surfaces are the ones that would be shedding, so they stream instead.
     // Without that second test the effect would collapse to a still image for
     // every source except a model with its interior light switched on.
-    let is_escaping = home_color.a < SHAFT_ALPHA || lum > shed;
+    //
+    // `shed` is an AMOUNT, not a threshold: turning it UP sheds MORE. It reads as
+    // a quantity, so wiring it straight through as the luminance cutoff inverted
+    // the control — raising it made the form MORE solid. Mapped to a cutoff here
+    // instead, over the range that actually does something: 1.0 leaves only the
+    // translucent rays escaping, 0.6 has dissolved the subject outright.
+    let shed_lum = 1.0 - shed * 0.4;
+    let is_escaping = home_color.a < SHAFT_ALPHA || lum > shed_lum;
 
     // Radially out from the frame centre. #1996 defaults its light to the model's
     // own centre, which projects to the middle of the frame, so the ray a shaft
