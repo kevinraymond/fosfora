@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.25.0 — 2026-07-27
+
 ### Added
 - **Helix, a 45th effect: fly down the last eight seconds of the music.** The audio history is swept into a twisting ribbon whose cross-section is the spectrum and whose colour is the timbre, so a beat stays punched into the tunnel wall as it recedes behind you. Radius, thickness, twist, spectrum, camera depth and colour are ordinary parameters, so you can put any of them on a MIDI fader or drive them from the music.
 
