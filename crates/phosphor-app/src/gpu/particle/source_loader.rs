@@ -6,6 +6,20 @@ use crossbeam_channel::{Receiver, TryRecvError, bounded};
 
 use crate::media::types::DecodedFrame;
 
+/// The display name a `raster_*.png` file is listed under, or `None` if the file is not a
+/// built-in raster image. Paired with [`builtin_raster_path`], which must rebuild exactly
+/// this file name from the result — the picker hands the display name back to be re-loaded,
+/// so the two have to agree. Kept as one function so the convention has a single definition
+/// (and so the round-trip is testable without an assets directory on the CWD).
+fn builtin_display_name(file_name: &str) -> Option<String> {
+    let stem = file_name.strip_prefix("raster_")?;
+    let ext = std::path::Path::new(stem).extension()?;
+    if !ext.eq_ignore_ascii_case("png") {
+        return None;
+    }
+    Some(stem[..stem.len() - ext.len() - 1].to_string())
+}
+
 /// Discover built-in raster_*.png images in the assets/images/ directory.
 /// Returns display names (e.g. "skull", "phoenix") sorted alphabetically.
 /// Cached after first call.
@@ -16,18 +30,7 @@ pub fn builtin_raster_images() -> &'static [String] {
         let mut names = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&images_dir) {
             for entry in entries.flatten() {
-                let file_name = entry.file_name().to_string_lossy().to_string();
-                if file_name.starts_with("raster_")
-                    && std::path::Path::new(&file_name)
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-                {
-                    let display = file_name
-                        .strip_prefix("raster_")
-                        .unwrap_or(&file_name)
-                        .strip_suffix(".png")
-                        .unwrap_or(&file_name)
-                        .to_string();
+                if let Some(display) = builtin_display_name(&entry.file_name().to_string_lossy()) {
                     names.push(display);
                 }
             }
@@ -410,5 +413,110 @@ fn load_video_sync(path: &std::path::Path) -> ParticleSourceResult {
             delays_ms,
         },
         Err(e) => ParticleSourceResult::Error(format!("Failed to decode video: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real `assets/images`. `builtin_raster_images()` finds it through `assets_dir()`,
+    /// which is CWD-relative first, and cargo runs tests from the crate directory rather
+    /// than the repo root — so calling it here would report an empty set and prove nothing.
+    fn images_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/images")
+    }
+
+    /// The built-in picker in the particles panel lists `builtin_raster_images()` and hands
+    /// the chosen *display* name back, which `builtin_raster_path()` has to turn into a real
+    /// file again. The two halves strip and re-apply the `raster_` prefix and `.png` suffix
+    /// independently, so a change to either silently produces menu entries that load nothing
+    /// — and the panel gives no feedback for a path that does not exist. egui buttons cannot
+    /// be driven from outside the app, so this round-trip is the only automated check the
+    /// picker gets (board #2002).
+    #[test]
+    fn builtin_image_names_round_trip_to_real_files() {
+        let dir = images_dir();
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("assets/images must exist") {
+            let file = entry
+                .expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .to_string();
+            let Some(display) = builtin_display_name(&file) else {
+                continue;
+            };
+            checked += 1;
+
+            // What the user picks must rebuild the exact filename it came from.
+            let rebuilt = builtin_raster_path(&display);
+            assert_eq!(
+                rebuilt.file_name().expect("file name").to_string_lossy(),
+                file,
+                "picker entry {display:?} rebuilds to {rebuilt:?}, not {file:?}"
+            );
+        }
+        assert!(
+            checked > 0,
+            "no raster_*.png in {} — the picker would be an empty menu",
+            dir.display()
+        );
+    }
+
+    /// The naming convention itself, independent of what happens to be on disk.
+    #[test]
+    fn builtin_display_name_strips_only_real_raster_pngs() {
+        assert_eq!(
+            builtin_display_name("raster_skull.png").as_deref(),
+            Some("skull")
+        );
+        assert_eq!(
+            builtin_display_name("raster_samurai_mask.PNG").as_deref(),
+            Some("samurai_mask"),
+            "extension match is case-insensitive"
+        );
+        assert_eq!(
+            builtin_display_name("raster_a.b.png").as_deref(),
+            Some("a.b"),
+            "only the final extension comes off"
+        );
+        assert_eq!(builtin_display_name("skull.png"), None, "needs the prefix");
+        assert_eq!(builtin_display_name("raster_notes.txt"), None);
+        assert_eq!(builtin_display_name("raster_noext"), None);
+    }
+
+    /// A name from the picker must actually decode into particle positions. Catches an image
+    /// that is present but unreadable (wrong format, truncated) landing in the menu.
+    #[test]
+    fn builtin_images_sample_into_particles() {
+        use crate::gpu::particle::types::ImageSampleDef;
+
+        let sample_def = ImageSampleDef {
+            mode: "grid".to_string(),
+            threshold: 0.1,
+            scale: 1.0,
+        };
+        let mut checked = 0;
+        for entry in std::fs::read_dir(images_dir()).expect("assets/images must exist") {
+            let path = entry.expect("dir entry").path();
+            if !path
+                .file_name()
+                .is_some_and(|f| f.to_string_lossy().starts_with("raster_"))
+            {
+                continue;
+            }
+            checked += 1;
+            let aux = super::super::image_source::sample_image(&path, &sample_def, 4096)
+                .unwrap_or_else(|e| {
+                    panic!("built-in image {} failed to sample: {e}", path.display())
+                });
+            assert!(
+                !aux.is_empty(),
+                "built-in image {} sampled to zero particles",
+                path.display()
+            );
+        }
+        assert!(checked > 0, "no built-in images sampled");
     }
 }

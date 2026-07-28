@@ -39,6 +39,11 @@
       "transition": "Dissolve",
       "transition_secs": 3.0,
       "label": "Cue B"
+    },
+    {
+      "preset_name": "Magic Tree Peg+Protea",
+      "transition": "Cut",
+      "label": "Pegboard over Protea"
     }
   ]
 }

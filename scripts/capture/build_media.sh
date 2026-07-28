@@ -23,7 +23,16 @@
 set -Eeuo pipefail
 
 IN=  OUT=  AT=  BARS=2  BPM=124
-HERO_LIST=murmur,tide,splat,polycephalum,chaos,frost
+# Two of the six cuts come from capture_advanced.sh (presets) rather than capture.sh (stock
+# defaults), hence the @DIR — that script's default output directory, relative to the repo root.
+#
+#   adv_pegboard opens: the one cut that shows the engine reacting to the viewer's OWN media
+#   rather than to a procedural field, which a montage of defaults cannot otherwise teach.
+#
+#   adv_obstacle stands in for plain `tide`: Tide's whole idea is water parting around a
+#   silhouette, and at stock defaults no obstacle is loaded, so the default clip is just falling
+#   water and the effect's actual subject never appears in the hero.
+HERO_LIST=adv_pegboard@capture-out-advanced,murmur,adv_obstacle@capture-out-advanced,splat,polycephalum,chaos
 TILE_W=480
 HERO_W=960
 BUDGET_KB=400

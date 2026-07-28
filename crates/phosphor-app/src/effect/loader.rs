@@ -1157,6 +1157,393 @@ mod tests {
         eprintln!("rendered {rendered} previews into {out_dir}");
     }
 
+    // Image-sourced effects (Raster, Morph, Pegboard, Etch) render NOTHING in
+    // `particle_effect_previews`: aux is uploaded by the app after a source loads, not by
+    // `ParticleSystem::new`, so the probe's aux buffer is all zeros and every particle
+    // takes the `home_color.a < 0.01` early-out. That probe reported the clear colour
+    // exactly (mean 0.10850, all four quadrants identical) for Raster and Morph for as
+    // long as they have shipped, which reads as "covered" and is not.
+    //
+    // This probe closes that hole: it samples a real built-in image into aux, uploads it,
+    // and renders the effect's background pass and its particles into the same target so
+    // the composed picture is what gets captured. The background matters here — Etch draws
+    // dark ink on light powder, and against the particle probe's near-black clear it would
+    // be invisible even once the particles worked.
+    //
+    // Run: cargo test -p phosphor-app -- --ignored media_effect_previews --nocapture
+    #[test]
+    #[ignore = "requires a GPU/software adapter; writes PNGs"]
+    fn media_effect_previews() {
+        use crate::gpu::frame_capture::FrameCapture;
+        use crate::gpu::particle::ParticleSystem;
+        use crate::gpu::pipeline::ShaderPipeline;
+        use crate::gpu::uniforms::{ShaderUniforms, UniformBuffer};
+
+        let out_dir = std::env::var("MEDIA_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let libs = format!("{}\n{plib}", probe_libs());
+
+        // Every .pfx whose emitter samples an image is in scope.
+        let wanted: Option<Vec<String>> = std::env::var("MEDIA_PFX")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+        let mut names: Vec<String> = std::fs::read_dir(root.join("effects"))
+            .expect("effects dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .collect();
+        names.sort();
+        if let Some(wnt) = &wanted {
+            names.retain(|n| wnt.contains(n));
+            assert!(!names.is_empty(), "MEDIA_PFX matched no .pfx: {wnt:?}");
+        }
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (w, h) = (640u32, 360u32);
+        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+        let mk_target = |label: &str| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: fmt,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            (tex, view)
+        };
+
+        let mk_audio = |label: &str, format: wgpu::TextureFormat| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            tex.create_view(&Default::default())
+        };
+        let waveform = mk_audio("media-waveform", wgpu::TextureFormat::Rg16Float);
+        let spectrum = mk_audio("media-spectrum", wgpu::TextureFormat::R16Float);
+        let spectrogram = mk_audio("media-spectrogram", wgpu::TextureFormat::R8Unorm);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        // Silence is a real state for these effects: the picture must be legible with no
+        // audio at all, because the source image is the subject and audio only animates it.
+        struct State {
+            name: &'static str,
+            rms: f32,
+            bass: f32,
+            onset_every: u32,
+            /// Frame on which `u.drop` pulses, or 0 for never. The A18 drop is one frame
+            /// wide, and Etch hangs its whole erase ritual off it — without a state that
+            /// fires it, a broken shake-clean would look exactly like a working one.
+            drop_at: u32,
+        }
+        let states = [
+            State {
+                name: "idle",
+                rms: 0.02,
+                bass: 0.02,
+                onset_every: 0,
+                drop_at: 0,
+            },
+            State {
+                name: "groove",
+                rms: 0.55,
+                bass: 0.6,
+                onset_every: 15,
+                drop_at: 0,
+            },
+            State {
+                name: "drop",
+                rms: 0.55,
+                bass: 0.6,
+                onset_every: 15,
+                drop_at: 200,
+            },
+        ];
+
+        let frames = 240u32;
+        let dt = 1.0 / 60.0;
+        let mut rendered = 0usize;
+
+        for name in &names {
+            let json = std::fs::read_to_string(root.join("effects").join(format!("{name}.pfx")))
+                .expect("read .pfx");
+            let effect: PfxEffect = serde_json::from_str(&json).expect("parse .pfx");
+            let Some(mut def) = effect.particles.clone() else {
+                continue;
+            };
+            if def.compute_shader.is_empty() || def.emitter.shape != "image" {
+                continue;
+            }
+            // Probe-sized, and not only for runtime: Raster's two million particles come
+            // alive on an emit budget that needs about ten seconds to fill, so at full
+            // count the capture is the top 40% of the image and nothing else — which reads
+            // as a broken effect rather than as a probe that stopped too early.
+            def.max_count = def.max_count.min(200_000);
+            def.max_scaled_count = 0;
+
+            let sim = std::fs::read_to_string(root.join("shaders").join(&def.compute_shader))
+                .unwrap_or_else(|e| panic!("{name}: missing sim {}: {e}", def.compute_shader));
+            let sim_src = format!("{libs}\n{sim}");
+
+            // Source aux exactly as the app would: the emitter's built-in image through the
+            // production sampler, at the effect's own count and sampling mode. MEDIA_IMAGE
+            // points the whole sweep at one file instead — the legibility of these effects
+            // depends entirely on the source, so being able to aim them at a photograph
+            // rather than at the bundled subject-on-black art is the check that matters.
+            let img_path = match std::env::var("MEDIA_IMAGE") {
+                Ok(p) => std::path::PathBuf::from(p),
+                Err(_) => root.join("images").join(&def.emitter.image),
+            };
+            let sample_def =
+                def.image_sample
+                    .clone()
+                    .unwrap_or(crate::gpu::particle::types::ImageSampleDef {
+                        mode: "grid".to_string(),
+                        threshold: 0.1,
+                        scale: 1.0,
+                    });
+            let aux = crate::gpu::particle::image_source::sample_image(
+                &img_path,
+                &sample_def,
+                def.max_count,
+            )
+            .unwrap_or_else(|e| panic!("{name}: sample {}: {e}", img_path.display()));
+            assert!(
+                !aux.is_empty(),
+                "{name}: sampling {} produced no aux — the probe would be blind",
+                img_path.display()
+            );
+
+            // Background pass (if the effect has one), built through the production preamble.
+            let bg = effect.passes.first().map(|p| {
+                let src = std::fs::read_to_string(root.join("shaders").join(&p.shader))
+                    .unwrap_or_else(|e| panic!("{name}: missing pass {}: {e}", p.shader));
+                ShaderPipeline::new(&device, fmt, &probe_preamble(&src), None, 0)
+                    .unwrap_or_else(|e| panic!("{name}: bg pipeline: {e}"))
+            });
+
+            let mut params = [0.0f32; 16];
+            for (i, p) in effect.inputs.iter().take(8).enumerate() {
+                params[i] = match p {
+                    crate::params::ParamDef::Float { default, .. } => *default,
+                    crate::params::ParamDef::Bool { default: true, .. } => 1.0,
+                    _ => 0.0,
+                };
+            }
+            // MEDIA_PARAMS=7:0,2:0.5 overrides slots by index, so a setting can be checked
+            // without editing the .pfx defaults out from under the shipped look.
+            if let Ok(spec) = std::env::var("MEDIA_PARAMS") {
+                for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
+                    let (k, v) = kv.split_once(':').expect("MEDIA_PARAMS wants slot:value");
+                    let slot: usize = k.trim().parse().expect("MEDIA_PARAMS slot");
+                    assert!(slot < 8, "MEDIA_PARAMS slot {slot} is out of range");
+                    params[slot] = v.trim().parse().expect("MEDIA_PARAMS value");
+                }
+            }
+
+            for s in &states {
+                let targets = [mk_target("media-ping"), mk_target("media-pong")];
+                let ubuf = UniformBuffer::new(&device);
+                let bind_groups: Vec<_> = targets
+                    .iter()
+                    .map(|(_, view)| {
+                        ubuf.create_bind_group(
+                            &device,
+                            &bg.as_ref().expect("bg pass").bind_group_layout,
+                            view,
+                            &sampler,
+                            &waveform,
+                            &spectrum,
+                            &spectrogram,
+                            &sampler,
+                            &[],
+                        )
+                    })
+                    .collect();
+
+                let mut ps =
+                    ParticleSystem::new(&device, &queue, fmt, &def, &sim_src, def.interaction);
+                ps.upload_aux_data(&device, &queue, &aux);
+
+                let mut fu = ShaderUniforms::zeroed();
+                fu.resolution = [w as f32, h as f32];
+                fu.params = params;
+
+                let mut src = 0usize;
+                for f in 0..frames {
+                    let is_last = f == frames - 1;
+                    let beat = s.onset_every > 0 && f % s.onset_every == 0;
+                    let drop = if s.drop_at > 0 && f == s.drop_at {
+                        1.0
+                    } else {
+                        0.0
+                    };
+
+                    ps.poll_counter_readback();
+                    ps.update_uniforms(dt, f as f32 * dt, [w as f32, h as f32], 0.0);
+                    ps.uniforms.rms = s.rms;
+                    ps.uniforms.bass = s.bass;
+                    ps.uniforms.brilliance = s.bass * 0.5;
+                    ps.uniforms.centroid = 0.5;
+                    ps.uniforms.onset = if beat { 0.7 } else { 0.0 };
+                    ps.uniforms.beat = if beat { 1.0 } else { 0.0 };
+                    ps.uniforms.kick = if beat { 0.6 } else { 0.0 };
+                    ps.uniforms.drop = drop;
+                    ps.uniforms.effect_params = [
+                        params[0], params[1], params[2], params[3], params[4], params[5],
+                        params[6], params[7],
+                    ];
+
+                    fu.time = f as f32 * dt;
+                    fu.delta_time = dt;
+                    fu.rms = s.rms;
+                    fu.bass = s.bass;
+                    fu.brilliance = s.bass * 0.5;
+                    fu.beat = if beat { 1.0 } else { 0.0 };
+                    fu.kick = if beat { 0.6 } else { 0.0 };
+                    fu.onset = if beat { 0.7 } else { 0.0 };
+                    fu.drop = drop;
+                    ubuf.update(&queue, &fu);
+
+                    let mut fc =
+                        is_last.then(|| FrameCapture::new(&device, w, h, fmt, "media-capture"));
+                    let dst = 1 - src;
+                    let target: &wgpu::TextureView =
+                        fc.as_ref().map_or(&targets[dst].1, |fc| &fc.view);
+
+                    let mut enc = device.create_command_encoder(&Default::default());
+                    ps.dispatch(&mut enc, &queue);
+                    {
+                        // Background first, reading the previous frame as feedback.
+                        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("media-preview-bg"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: target,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
+                        pass.set_pipeline(&bg.as_ref().expect("bg pass").pipeline);
+                        pass.set_bind_group(0, &bind_groups[src], &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    // Particles compose on top of the background, same as production.
+                    ps.render(&mut enc, &queue, target);
+                    if let Some(fc) = fc.as_ref() {
+                        fc.copy_to_staging(&mut enc);
+                    }
+                    queue.submit([enc.finish()]);
+                    ps.request_counter_readback();
+                    ps.flip();
+                    src = dst;
+
+                    if let Some(fc) = fc.as_mut() {
+                        device
+                            .poll(wgpu::PollType::Wait {
+                                submission_index: None,
+                                timeout: None,
+                            })
+                            .unwrap();
+                        fc.request_map();
+                        let data = loop {
+                            device
+                                .poll(wgpu::PollType::Wait {
+                                    submission_index: None,
+                                    timeout: None,
+                                })
+                                .unwrap();
+                            if let Some(d) = fc.take_mapped_data(&device) {
+                                break d;
+                            }
+                        };
+                        let lum = |i: usize| {
+                            (data[i] as f64 + data[i + 1] as f64 + data[i + 2] as f64) / 765.0
+                        };
+                        // Quadrant means plus a coverage count. Coverage is the metric that
+                        // actually fails when an effect draws nothing: a blank frame has a
+                        // plausible mean but near-zero spread against its own average.
+                        let mut q = [0f64; 4];
+                        let mut qn = [0f64; 4];
+                        let mut sum = 0f64;
+                        let mut sum_sq = 0f64;
+                        for y in 0..h as usize {
+                            for x in 0..w as usize {
+                                let l = lum((y * w as usize + x) * 4);
+                                let qi = (y >= h as usize / 2) as usize * 2
+                                    + (x >= w as usize / 2) as usize;
+                                q[qi] += l;
+                                qn[qi] += 1.0;
+                                sum += l;
+                                sum_sq += l * l;
+                            }
+                        }
+                        for i in 0..4 {
+                            q[i] /= qn[i];
+                        }
+                        let n = (w * h) as f64;
+                        let mean = sum / n;
+                        let sd = (sum_sq / n - mean * mean).max(0.0).sqrt();
+                        let path = format!("{out_dir}/{name}_{}.png", s.name);
+                        image::RgbaImage::from_raw(w, h, data)
+                            .expect("raw->image")
+                            .save(&path)
+                            .expect("save png");
+                        println!(
+                            "SIG {name:<10} {:<7} mean={mean:.5} sd={sd:.5} q=[{:.5} {:.5} {:.5} {:.5}]",
+                            s.name, q[0], q[1], q[2], q[3]
+                        );
+                        // A flat frame is the exact failure this probe exists to catch.
+                        assert!(
+                            sd > 0.01,
+                            "{name} [{}]: frame is flat (sd={sd:.5}) — nothing drew",
+                            s.name
+                        );
+                        rendered += 1;
+                    }
+                }
+            }
+        }
+
+        assert!(rendered > 0, "no image-sourced effects rendered");
+        eprintln!("rendered {rendered} media previews into {out_dir}");
+    }
+
     // The f32-spacing half of the degenerate-hash finding, provable on the CPU:
     // decorrelated draws must NEVER be taken as hash(x), hash(x + 1.0), because
     // at realistic seeds the offset rounds away entirely and both calls return
@@ -1748,6 +2135,41 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "{name} missing from probe_libs()"
             );
         }
+    }
+
+    /// Etch's pen lives in a compute shader and its powder lives in a fragment shader, and
+    /// the two share no buffer — so they agree on when the board is shaken clean only by
+    /// computing the same function of `u.time` independently. If one copy drifts, the pen
+    /// starts redrawing before (or long after) the powder re-coats, and nothing fails: the
+    /// effect just quietly stops erasing properly. Pin the two texts together.
+    ///
+    /// The helper is deliberately duplicated rather than hoisted into a shared lib: adding
+    /// a file to `LIB_FILENAMES` couples `assets/` to the binary, and `assets/` is live
+    /// shared state that every running build reads (#1983).
+    #[test]
+    fn etch_clear_cycle_matches() {
+        const SIM: &str = include_str!("../../../../assets/shaders/etch_sim.wgsl");
+        const BG: &str = include_str!("../../../../assets/shaders/etch_bg.wgsl");
+
+        // Extract from the shake-seconds constant through the end of etch_clearing().
+        let extract = |src: &str, which: &str| -> String {
+            let start = src
+                .find("const ETCH_SHAKE_SECS")
+                .unwrap_or_else(|| panic!("{which}: ETCH_SHAKE_SECS not found"));
+            let body = src
+                .find("fn etch_clearing")
+                .unwrap_or_else(|| panic!("{which}: etch_clearing not found"));
+            let end = src[body..]
+                .find("\n}")
+                .unwrap_or_else(|| panic!("{which}: etch_clearing has no close"));
+            src[start..body + end + 2].split_whitespace().collect()
+        };
+
+        assert_eq!(
+            extract(SIM, "etch_sim.wgsl"),
+            extract(BG, "etch_bg.wgsl"),
+            "etch_clearing must be byte-identical in etch_sim.wgsl and etch_bg.wgsl"
+        );
     }
 
     // Same guard as tide_pfx_parses_as_builtin.

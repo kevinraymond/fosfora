@@ -32,7 +32,6 @@ pub struct ParticleInfo {
     /// "static", "video", or "webcam"
     pub source_type: String,
     /// Source filename or device name
-    #[allow(dead_code)]
     pub source_name: String,
     pub video_playing: bool,
     pub video_looping: bool,
@@ -276,6 +275,77 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
 
     // Image source section (shown only for image emitter effects)
     if info.has_image_source {
+        // --- Source picker ---
+        // Every effect here re-makes whatever media it is pointed at, so being able to
+        // change that media is the whole point of them. Emits the three signals main.rs
+        // has always consumed (particle_select_builtin / particle_load_image /
+        // particle_load_video) — before this the handlers were unreachable and the only
+        // way to change a source was to edit the .pfx by hand (board #2002).
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            let mut selected_builtin = String::new();
+            // Distinct salt: the combo's own widget state must not share an Id with the
+            // temp slot the selection is handed off in.
+            egui::ComboBox::from_id_salt("particle_builtin_combo")
+                .selected_text(RichText::new("Built-in").size(SMALL_SIZE))
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for name in &info.builtin_images {
+                        if ui.selectable_label(false, name.as_str()).clicked() {
+                            selected_builtin = name.clone();
+                        }
+                    }
+                });
+            if !selected_builtin.is_empty() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("particle_select_builtin"), selected_builtin);
+                });
+            }
+
+            if ui
+                .add_enabled(
+                    !info.source_loading,
+                    egui::Button::new(RichText::new("Image…").size(SMALL_SIZE))
+                        .min_size(egui::vec2(0.0, 24.0)),
+                )
+                .on_hover_text("Load a still, GIF or animated WebP as the source")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("particle_load_image"), true));
+            }
+
+            #[cfg(feature = "video")]
+            if ui
+                .add_enabled(
+                    !info.source_loading,
+                    egui::Button::new(RichText::new("Video…").size(SMALL_SIZE))
+                        .min_size(egui::vec2(0.0, 24.0)),
+                )
+                .on_hover_text("Load a video file as the source (needs ffmpeg on PATH)")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("particle_load_video"), true));
+            }
+        });
+
+        // Which source is actually live. Without it there is no way to tell a failed load
+        // from one that silently landed on the same-looking frame.
+        if !info.source_name.is_empty() {
+            let kind = match info.source_type.as_str() {
+                "video" => "video",
+                "webcam" => "webcam",
+                _ => "image",
+            };
+            ui.label(
+                RichText::new(format!("{kind}: {}", info.source_name))
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
+        }
+
         // Source loading indicator
         if info.source_loading {
             ui.horizontal(|ui| {

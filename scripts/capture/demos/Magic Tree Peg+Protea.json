@@ -1,0 +1,172 @@
+{
+  "layers": [
+    {
+      "effect_name": "Pegboard",
+      "params": {
+        "polarity": {
+          "Float": 1.0
+        },
+        "dither_amount": {
+          "Float": 0.0
+        },
+        "peg_fill": {
+          "Float": 1.1
+        },
+        "peg_rows": {
+          "Float": 96.0
+        },
+        "backlight": {
+          "Float": 1.48
+        },
+        "pop_force": {
+          "Float": 0.45
+        },
+        "tray_strength": {
+          "Float": 0.0
+        },
+        "peg_threshold": {
+          "Float": 0.1
+        }
+      },
+      "blend_mode": "Multiply",
+      "opacity": 1.0,
+      "displace_amount": 0.35,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null,
+      "webcam_device": null,
+      "particle_video_path": null,
+      "particle_video_speed": null,
+      "particle_video_looping": null,
+      "particle_webcam": null,
+      "particle_image_path": "@REPO@/assets/images/raster_magic_tree.png",
+      "splat_scene_path": null,
+      "obstacle_image_path": null,
+      "obstacle_mode": null,
+      "obstacle_fit": null,
+      "obstacle_threshold": null,
+      "obstacle_elasticity": null,
+      "obstacle_depth": null,
+      "obstacle_model": null,
+      "lattice": null,
+      "helix": null,
+      "particle_sim": {
+        "emit_rate": 120000.0,
+        "burst_on_beat": 0,
+        "lifetime": 999.0,
+        "initial_speed": 0.0,
+        "initial_size": 0.008,
+        "drag": 1.0,
+        "trail_length": 0
+      }
+    },
+    {
+      "effect_name": "Protea",
+      "params": {
+        "mutation": {
+          "Float": 0.77
+        },
+        "viscosity": {
+          "Float": 0.32
+        },
+        "saturation": {
+          "Float": 0.69
+        },
+        "kernel_radius": {
+          "Float": 0.46
+        },
+        "growth_width": {
+          "Float": 0.63
+        },
+        "food": {
+          "Float": 0.86
+        },
+        "injection": {
+          "Float": 0.4
+        },
+        "growth_center": {
+          "Float": 0.59
+        },
+        "sim_speed": {
+          "Float": 0.6
+        },
+        "brightness": {
+          "Float": 0.48
+        }
+      },
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "displace_amount": 0.35,
+      "enabled": true,
+      "locked": false,
+      "pinned": false,
+      "custom_name": null,
+      "media_path": null,
+      "media_speed": null,
+      "media_looping": null,
+      "webcam_device": null,
+      "particle_video_path": null,
+      "particle_video_speed": null,
+      "particle_video_looping": null,
+      "particle_webcam": null,
+      "particle_image_path": null,
+      "splat_scene_path": null,
+      "obstacle_image_path": null,
+      "obstacle_mode": null,
+      "obstacle_fit": null,
+      "obstacle_threshold": null,
+      "obstacle_elasticity": null,
+      "obstacle_depth": null,
+      "obstacle_model": null,
+      "lattice": null,
+      "helix": null,
+      "particle_sim": null
+    }
+  ],
+  "active_layer": 1,
+  "postprocess": {
+    "enabled": true,
+    "bloom_threshold": 0.6,
+    "bloom_intensity": 0.35,
+    "vignette": 0.25,
+    "ca_intensity": 0.5,
+    "grain_intensity": 0.5,
+    "grain_rate": 24.0,
+    "bloom_enabled": true,
+    "ca_enabled": true,
+    "vignette_enabled": true,
+    "grain_enabled": false,
+    "tonemap": "aces"
+  },
+  "volumetric": {
+    "enabled": false,
+    "params": {
+      "march_steps": 64,
+      "absorption": 1.2,
+      "detail_scale": 3.0,
+      "detail_strength": 0.5,
+      "density_threshold": 0.001,
+      "volume_depth": 0.8,
+      "density_scale": 256.0,
+      "density_gain": 0.15,
+      "cam_yaw": 0.0,
+      "cam_pitch": 0.35,
+      "cam_distance": 3.2,
+      "cam_orbit_speed": 0.15,
+      "fov": 1.5,
+      "palette_hue": 0.6,
+      "emission_gain": 1.5,
+      "env_shape": 0,
+      "jitter_amp": 0.0,
+      "age_influence": 0.0,
+      "cam_mode": 0,
+      "cam_roll": 0.0,
+      "cam_x": 0.0,
+      "cam_y": 0.0
+    }
+  }
+}

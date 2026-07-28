@@ -5,6 +5,23 @@
 
 ## Unreleased
 
+## v1.27.0 — 2026-07-28
+
+### Added
+- **Pegboard** — your image, video, GIF or webcam re-made as a backlit peg toy. Samples
+  snap to a square lattice, an ordered dither decides which holes carry a peg, colour
+  quantizes to an eight-peg tray, and kicks shower pegs out of the board. Set **Polarity**
+  to 0 for a photograph on a light background, 1 for artwork on black.
+- **Etch** — the same sources scratched into aluminium powder one stroke at a time. The
+  stylus zigzags along a handful of scan lines and swings wider where the picture is dark,
+  advancing with the music, then the board is shaken clean and it starts over. **Clear
+  cycle** sets the seconds between shakes; pull it to zero to hold the board blank and
+  raise it to let the drawing build. **Polarity** works the same way as Pegboard's.
+- **You can now change the source media for Raster, Pegboard and Etch from the Particles
+  panel** — a built-in picker plus **Image…** and **Video…** buttons, with the live source
+  named underneath. Previously only Morph could load media, and every other image effect
+  was stuck on whatever its effect file named.
+
 ## v1.26.1 — 2026-07-28
 
 ### Fixed
