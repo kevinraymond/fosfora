@@ -5,6 +5,16 @@
 
 ## Unreleased
 
+### Fixed
+- **An effect that mentioned the name of the built-in uniform block in a comment
+  refused to load**, failing with "no definition in scope for identifier: u" while
+  compiling fine in every test. Only a real declaration suppresses the built-in
+  block now, so writing about it in a comment is safe.
+- **A failed effect load left the layer stuck**, spamming compile errors several
+  times a second and pinning the shader editor open, because the previous effect's
+  GPU state was still in place. Fixing the shader now retries the whole load and
+  recovers the layer.
+
 ## v1.26.0 — 2026-07-28
 
 ### Fixed

@@ -350,6 +350,7 @@ impl App {
                 effect_index,
                 shader_sources,
                 shader_error: None,
+                pending_rebuild: false,
             },
             param_store,
         );
@@ -1411,6 +1412,13 @@ impl App {
             }
             let hdr_format = GpuContext::hdr_format();
 
+            // Layers whose last load failed: the executor still belongs to the
+            // previous effect, so an incremental pipeline swap would compile the
+            // new shader against the wrong bind-group layouts and fail on every
+            // change. Collect them here and retry the whole load below, once the
+            // immutable borrow of the layer stack ends (#1855).
+            let mut rebuilds: Vec<(usize, usize)> = Vec::new();
+
             for (layer_idx, layer) in self.layer_stack.layers.iter().enumerate() {
                 let LayerContent::Effect(ref e) = layer.content else {
                     continue;
@@ -1423,6 +1431,13 @@ impl App {
                     continue;
                 };
                 let passes = effect.normalized_passes();
+
+                if e.pending_rebuild {
+                    if changes_touch_effect(effect, &changes, lib_changed) {
+                        rebuilds.push((layer_idx, effect_idx));
+                    }
+                    continue;
+                }
 
                 // Hot-reload fragment shaders (background compilation)
                 for (i, pass_def) in passes.iter().enumerate() {
@@ -1493,6 +1508,11 @@ impl App {
                         }
                     }
                 }
+            }
+
+            for (layer_idx, effect_idx) in rebuilds {
+                log::info!("Layer {layer_idx}: previous load failed — retrying full rebuild");
+                self.load_effect_on_layer(layer_idx, effect_idx);
             }
         }
 
@@ -1576,7 +1596,9 @@ impl App {
                     continue;
                 }
 
-                if diff.needs_rebuild() {
+                // A layer whose last load failed has no valid executor to update
+                // incrementally, so any .pfx change is a rebuild for it (#1855).
+                if diff.needs_rebuild() || eff.pending_rebuild {
                     // Full rebuild needed — capture param values, rebuild, restore
                     let saved_values = self.layer_stack.layers[layer_idx]
                         .param_store
@@ -1962,6 +1984,7 @@ impl App {
                         effect_index: None,
                         shader_sources: vec![],
                         shader_error: None,
+                        pending_rebuild: false,
                     }));
             }
         }
@@ -2001,6 +2024,7 @@ impl App {
                 e.pass_executor = executor;
                 layer.param_store.load_from_defs(&effect.inputs);
                 e.shader_error = None;
+                e.pending_rebuild = false;
                 e.effect_index = Some(effect_index);
                 // Apply per-effect postprocess overrides
                 let pp = effect.postprocess.clone().unwrap_or_default();
@@ -2030,21 +2054,33 @@ impl App {
             }
             Err(e) => {
                 log::error!("Failed to load effect '{}': {e}", effect.name);
-                if let LayerContent::Effect(ref mut eff) =
-                    self.layer_stack.layers[layer_idx].content
-                {
+                // The GPU state stays on the previous effect — a broken shader
+                // cannot render. Everything CPU-side moves to the new effect so
+                // the panel, the grid and "Edit Shader" agree with each other,
+                // and `pending_rebuild` records that the two disagree, so shader
+                // hot-reload retries the whole load instead of patching a
+                // pipeline into the previous effect's executor (#1855).
+                let layer = &mut self.layer_stack.layers[layer_idx];
+                if let LayerContent::Effect(ref mut eff) = layer.content {
                     eff.shader_error = Some(format!("Load error: {e}"));
-                    // Still track the effect index so "Edit Shader" can find the source file
                     eff.effect_index = Some(effect_index);
+                    eff.pending_rebuild = true;
+                    layer.param_store.load_from_defs(&effect.inputs);
                 }
                 // Update current_effect so the grid selection reflects the broken effect
                 if layer_idx == self.layer_stack.active_layer {
                     self.effect_loader.current_effect = Some(effect_index);
                 }
-                // Auto-open the editor so the user can fix the shader
+                // Auto-open the editor so the user can fix the shader. Retries land
+                // here too, so don't re-open a file the editor already shows — that
+                // would reset the user's cursor and scroll on every save.
                 if let Some(pass) = passes.first() {
                     let path = self.effect_loader.resolve_shader_path(&pass.shader);
-                    if let Ok(content) = std::fs::read_to_string(&path) {
+                    let already_open = self.shader_editor.open
+                        && self.shader_editor.file_path.as_ref() == Some(&path);
+                    if already_open {
+                        self.shader_editor.compile_error = Some(e.clone());
+                    } else if let Ok(content) = std::fs::read_to_string(&path) {
                         self.shader_editor.open_file(&effect.name, path, content);
                         self.shader_editor.compile_error = Some(e.clone());
                         // Load paired .pfx for tab switching
@@ -2113,6 +2149,7 @@ impl App {
                         effect_index: None,
                         shader_sources: vec![source],
                         shader_error: None,
+                        pending_rebuild: false,
                     },
                     ParamStore::new(),
                 ));
@@ -4253,4 +4290,93 @@ fn read_default_shader() -> String {
     let path = assets_dir().join("shaders/default.wgsl");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|_| include_str!("../../../assets/shaders/default.wgsl").to_string())
+}
+
+/// Does a batch of changed shader paths touch this effect?
+///
+/// Only used to decide whether a layer whose last load *failed* should retry the
+/// whole load (#1855). A failed load leaves `effect_index` on the new effect while
+/// the executor still belongs to the old one, so there is nothing to patch
+/// incrementally — the layer either rebuilds or stays broken.
+fn changes_touch_effect(
+    effect: &crate::effect::format::PfxEffect,
+    changes: &[std::path::PathBuf],
+    lib_changed: bool,
+) -> bool {
+    if lib_changed {
+        return true;
+    }
+    let touches = |name: &str| !name.is_empty() && changes.iter().any(|c| c.ends_with(name));
+    effect
+        .normalized_passes()
+        .iter()
+        .any(|p| touches(&p.shader))
+        || effect
+            .particles
+            .as_ref()
+            .is_some_and(|pd| touches(&pd.compute_shader))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::effect::format::PfxEffect;
+    use std::path::PathBuf;
+
+    fn effect(json: &str) -> PfxEffect {
+        serde_json::from_str(json).expect("test effect must deserialize")
+    }
+
+    #[test]
+    fn a_lib_change_retries_every_failed_layer() {
+        let e = effect(r#"{"name":"T","author":"Fosfora","shader":"t.wgsl"}"#);
+        assert!(changes_touch_effect(&e, &[], true));
+    }
+
+    #[test]
+    fn only_this_effects_shaders_retry_it() {
+        let e = effect(r#"{"name":"T","author":"Fosfora","shader":"tide.wgsl"}"#);
+        assert!(changes_touch_effect(
+            &e,
+            &[PathBuf::from("/assets/shaders/tide.wgsl")],
+            false
+        ));
+        assert!(!changes_touch_effect(
+            &e,
+            &[PathBuf::from("/assets/shaders/frost.wgsl")],
+            false
+        ));
+        assert!(!changes_touch_effect(&e, &[], false));
+    }
+
+    // A particle effect's compute shader is the one most likely to have caused the
+    // failed load in the first place, so editing it must retrigger the rebuild.
+    #[test]
+    fn a_compute_shader_change_retries_the_effect() {
+        let e = effect(
+            r#"{"name":"T","author":"Fosfora","shader":"t_bg.wgsl",
+                "particles":{"compute_shader":"t_sim.wgsl","max_count":1000}}"#,
+        );
+        assert!(changes_touch_effect(
+            &e,
+            &[PathBuf::from("/assets/shaders/t_sim.wgsl")],
+            false
+        ));
+    }
+
+    // An empty compute_shader is how a volume effect (Helix, Lattice) declares it
+    // has no sim — `ends_with("")` is true for every path, so an unguarded check
+    // would retry those layers on any shader edit in the tree.
+    #[test]
+    fn an_empty_compute_shader_name_matches_nothing() {
+        let e = effect(
+            r#"{"name":"T","author":"Fosfora","shader":"t_bg.wgsl",
+                "particles":{"compute_shader":"","max_count":1000}}"#,
+        );
+        assert!(!changes_touch_effect(
+            &e,
+            &[PathBuf::from("/assets/shaders/unrelated.wgsl")],
+            false
+        ));
+    }
 }

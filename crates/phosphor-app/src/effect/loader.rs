@@ -88,6 +88,17 @@ pub(crate) fn probe_libs() -> String {
         .join("\n")
 }
 
+/// Wrap a shader for a compile probe through the *production* path, so a probe
+/// makes the same uniform-injection decision the app makes.
+///
+/// Probes used to concatenate `UNIFORM_BLOCK` unconditionally, which made them
+/// structurally blind to the injection-suppression trap (#1855): the probe
+/// passed while the app failed to load the same shader.
+#[cfg(test)]
+pub(crate) fn probe_preamble(source: &str) -> String {
+    EffectLoader::for_test(&probe_libs()).prepend_library(source)
+}
+
 /// Standard uniform block prepended to all effect shaders.
 ///
 /// Shader ABI v3 (400-byte `PhosphorUniforms`): the v2 batched bump #1505 reserved
@@ -232,6 +243,75 @@ fn build_input_bindings(input_count: usize) -> String {
         );
     }
     s
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Strip WGSL comments so a declaration check cannot be fooled by prose.
+/// Block comments nest in WGSL, so depth is counted rather than closing on the
+/// first `*/`. Newlines inside comments are kept so line numbers still line up.
+///
+/// Byte-oriented on purpose: every delimiter is ASCII and UTF-8 continuation
+/// bytes are all >= 0x80, so a multi-byte character in a comment can never be
+/// split by a removal boundary.
+fn strip_wgsl_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let mut depth = 0usize;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"/*") {
+            depth += 1;
+            i += 2;
+        } else if depth > 0 && rest.starts_with(b"*/") {
+            depth -= 1;
+            i += 2;
+        } else if depth > 0 {
+            if bytes[i] == b'\n' {
+                out.push(b'\n');
+            }
+            i += 1;
+        } else if rest.starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// True if `source` itself declares `struct PhosphorUniforms`, in code rather
+/// than in a comment.
+///
+/// A bare `source.contains("PhosphorUniforms")` used to stand in for this, so
+/// any mention of the name — including inside a comment — silently suppressed
+/// uniform-block injection and the effect failed in production only, with
+/// "no definition in scope for identifier: u" (#1855).
+fn declares_uniform_struct(source: &str) -> bool {
+    let code = strip_wgsl_comments(source);
+    code.match_indices("struct").any(|(i, kw)| {
+        // `struct` must be a whole token, not the tail of an identifier...
+        let before_ok = code[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident_char(c));
+        let after = &code[i + kw.len()..];
+        // ...separated from the name it declares...
+        let sep_ok = after.chars().next().is_some_and(|c| !is_ident_char(c));
+        // ...and that name must be exactly `PhosphorUniforms`.
+        before_ok
+            && sep_ok
+            && after
+                .trim_start()
+                .strip_prefix("PhosphorUniforms")
+                .is_some_and(|tail| tail.chars().next().is_none_or(|c| !is_ident_char(c)))
+    })
 }
 
 pub struct EffectLoader {
@@ -410,9 +490,9 @@ impl EffectLoader {
 
     /// Prepend the uniform block and library functions to a shader source.
     pub fn prepend_library(&self, source: &str) -> String {
-        // Check if the source already has the uniform block
-        if source.contains("PhosphorUniforms") {
-            // Already has uniforms, just prepend library
+        // Only skip injection when the shader declares the struct itself — a bare
+        // mention (a comment, a doc reference) must not suppress it (#1855).
+        if declares_uniform_struct(source) {
             format!("{}\n{}", self.lib_source, source)
         } else {
             format!("{}\n{}\n{}", UNIFORM_BLOCK, self.lib_source, source)
@@ -709,6 +789,109 @@ mod tests {
         let count = result.matches("PhosphorUniforms").count();
         assert_eq!(count, 1); // only the one in source
         assert!(result.contains("// lib code"));
+    }
+
+    // The #1855 regression: a shader that merely *mentions* the struct name in a
+    // comment used to have its uniform block suppressed, and failed in production
+    // only ("no definition in scope for identifier: u") because the compile probes
+    // concatenated the block unconditionally.
+    #[test]
+    fn prepend_library_injects_despite_comment_mention() {
+        let loader = EffectLoader::for_test("// lib code\n");
+        for source in [
+            "// reads u.time from PhosphorUniforms\nfn main() {}",
+            "/* PhosphorUniforms is injected for us */\nfn main() {}",
+            "/* outer /* PhosphorUniforms */ still a comment */\nfn main() {}",
+            "fn main() {} // see struct PhosphorUniforms in loader.rs",
+        ] {
+            assert!(
+                !declares_uniform_struct(source),
+                "a comment mention must not read as a declaration: {source:?}"
+            );
+            assert!(
+                loader.prepend_library(source).contains("var<uniform> u:"),
+                "uniform block must still be injected for: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn declares_uniform_struct_matches_real_declarations_only() {
+        for src in [
+            "struct PhosphorUniforms { time: f32 }",
+            "struct   PhosphorUniforms\n{\n  time: f32,\n}",
+            "fn main() {}\nstruct PhosphorUniforms {}",
+        ] {
+            assert!(declares_uniform_struct(src), "should match: {src:?}");
+        }
+        for src in [
+            "struct PhosphorUniformsExtra { time: f32 }", // different type
+            "struct MyPhosphorUniforms { time: f32 }",    // different type
+            "mystruct PhosphorUniforms {}",               // `struct` not a token
+            "structPhosphorUniforms {}",                  // no separator
+            "let x = PhosphorUniforms;",                  // a use, not a declaration
+            "",
+        ] {
+            assert!(!declares_uniform_struct(src), "should not match: {src:?}");
+        }
+    }
+
+    #[test]
+    fn strip_wgsl_comments_preserves_code_and_multibyte() {
+        // The em dash is multi-byte: byte-oriented stripping must not split it.
+        let src = "fn a() {} // drop — this\n/* and\nthis */fn b() {}";
+        let stripped = strip_wgsl_comments(src);
+        assert!(stripped.contains("fn a() {}"));
+        assert!(stripped.contains("fn b() {}"));
+        assert!(!stripped.contains("drop"));
+        assert!(!stripped.contains("and"));
+        // Newlines inside comments survive, so line numbers still line up.
+        assert_eq!(src.matches('\n').count(), stripped.matches('\n').count());
+    }
+
+    // Production injects the uniform block, so no shipped shader may declare the
+    // struct itself — that would be a duplicate declaration at load. This one
+    // invariant replaces the per-effect `!contains("PhosphorUniforms")` asserts
+    // that used to work around the #1855 trap, and covers shaders nobody thought
+    // to add an assert for.
+    //
+    // `default.wgsl` is the deliberate exception: it is the reference copy of the
+    // ABI kept in sync with UNIFORM_BLOCK and gpu/uniforms.rs, and it is the one
+    // file the suppression branch of prepend_library exists to serve. Asserting
+    // it *does* declare keeps that branch covered by a real shader.
+    #[test]
+    fn only_default_wgsl_declares_the_uniform_struct() {
+        let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+        let mut checked = 0;
+        let mut saw_default = false;
+        for entry in std::fs::read_dir(&shaders).expect("assets/shaders must exist") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).expect("readable shader");
+            let declares = declares_uniform_struct(&src);
+            if path.file_name().and_then(|n| n.to_str()) == Some("default.wgsl") {
+                assert!(declares, "default.wgsl must keep its reference ABI copy");
+                assert!(
+                    !EffectLoader::for_test("")
+                        .prepend_library(&src)
+                        .contains(UNIFORM_BLOCK),
+                    "default.wgsl declares the struct — injection must be suppressed"
+                );
+                saw_default = true;
+            } else {
+                assert!(
+                    !declares,
+                    "{} declares PhosphorUniforms — production injects it, so this \
+                     would be a duplicate declaration at load",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(saw_default, "default.wgsl not found");
+        assert!(checked > 40, "only {checked} shaders scanned — path wrong?");
     }
 
     // Discovery silently drops a .pfx that fails to deserialize
@@ -1363,7 +1546,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "tide_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
+        let bg_src = probe_preamble(bg);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tide-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1423,7 +1606,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "vessel_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
+        let bg_src = probe_preamble(bg);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vessel-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1481,7 +1664,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "cleave_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
+        let bg_src = probe_preamble(bg);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cleave-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1495,7 +1678,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // is its probe. What still has to hold here is that the .pfx loads as a
     // builtin and its background pass exists — every particle effect needs at
     // least one pass, and Helix's whole render is the ray marcher compositing
-    // over it. Plus the #1855 injection-trap assert.
+    // over it.
     #[test]
     fn helix_pfx_parses_as_builtin() {
         let effect: PfxEffect =
@@ -1519,11 +1702,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             particles.compute_shader.is_empty(),
             "Helix renders a volume, not particles — a sim shader would be dead weight"
         );
-        let bg = include_str!("../../../../assets/shaders/helix_bg.wgsl");
-        assert!(
-            !bg.contains("PhosphorUniforms"),
-            "helix_bg.wgsl must not mention the uniform struct name — it suppresses injection"
-        );
     }
 
     // Compile probe for the Helix background pass through the production
@@ -1540,7 +1718,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
+        let src = probe_preamble(bg);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("helix-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -1572,11 +1750,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
-    // Same guard as tide_pfx_parses_as_builtin, plus the uniform-injection
-    // trap: prepend_library suppresses UNIFORM_BLOCK if the shader source
-    // contains the struct name anywhere (even a comment), and the compile
-    // probe below concatenates the block unconditionally so it can't catch
-    // that — assert the string is absent here instead.
+    // Same guard as tide_pfx_parses_as_builtin.
     #[test]
     fn frost_pfx_parses_as_builtin() {
         let effect: PfxEffect =
@@ -1585,11 +1759,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(EffectLoader::is_builtin(&effect));
         assert_eq!(effect.inputs.len(), 9); // 8 floats + drift Point2D = 10 slots
         assert!(effect.particles.is_none()); // pure fragment + feedback effect
-        let shader = include_str!("../../../../assets/shaders/frost.wgsl");
-        assert!(
-            !shader.contains("PhosphorUniforms"),
-            "frost.wgsl must not mention the uniform struct name — it suppresses injection"
-        );
     }
 
     // Compile probe for the Frost fragment shader through the production
@@ -1605,7 +1774,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{}\n{frost}", probe_libs());
+        let src = probe_preamble(frost);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("frost-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -1632,7 +1801,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
         // Production concatenation: uniform block + libs + effect fragment.
         let frost = include_str!("../../../../assets/shaders/frost.wgsl");
-        let fragment_source = format!("{UNIFORM_BLOCK}\n{}\n{frost}", probe_libs());
+        let fragment_source = probe_preamble(frost);
 
         let (w, h) = (960u32, 540u32);
         let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -1870,8 +2039,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Same guard as frost_pfx_parses_as_builtin: discovery silently drops a .pfx
-    // that fails to deserialize, and the #1855 injection trap suppresses the
-    // uniform block if the shader mentions the struct name anywhere.
+    // that fails to deserialize.
     #[test]
     fn chromatica_pfx_parses_as_builtin() {
         let effect: PfxEffect =
@@ -1880,11 +2048,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(EffectLoader::is_builtin(&effect));
         assert_eq!(effect.inputs.len(), 12); // 12 float params
         assert!(effect.particles.is_none()); // pure fragment + feedback effect
-        let shader = include_str!("../../../../assets/shaders/chromatica.wgsl");
-        assert!(
-            !shader.contains("PhosphorUniforms"),
-            "chromatica.wgsl must not mention the uniform struct name — it suppresses injection"
-        );
     }
 
     // Compile probe for the Chromatica fragment shader through the production
@@ -1900,7 +2063,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{}\n{chromatica}", probe_libs());
+        let src = probe_preamble(chromatica);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("chromatica-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -1951,18 +2114,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                     pass.name
                 );
             }
-        }
-        // None of the pass shaders may mention the uniform struct name (#1855 trap).
-        for shader in [
-            include_str!("../../../../assets/shaders/sumi_divergence.wgsl"),
-            include_str!("../../../../assets/shaders/sumi_pressure.wgsl"),
-            include_str!("../../../../assets/shaders/sumi_velocity.wgsl"),
-            include_str!("../../../../assets/shaders/sumi_dye.wgsl"),
-        ] {
-            assert!(
-                !shader.contains("PhosphorUniforms"),
-                "a Sumi shader mentions the uniform struct name — it suppresses injection"
-            );
         }
     }
 
@@ -2030,7 +2181,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
         // Production concatenation: uniform block + libs (incl. sdf) + effect fragment.
         let chromatica = include_str!("../../../../assets/shaders/chromatica.wgsl");
-        let fragment_source = format!("{UNIFORM_BLOCK}\n{}\n{chromatica}", probe_libs());
+        let fragment_source = probe_preamble(chromatica);
 
         let (w, h) = (960u32, 540u32);
         let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -2296,7 +2447,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Same guard as tide_pfx_parses_as_builtin, plus the frozen Splat param
     // ABI: the sim reads slots 0–7 by index and the CPU driver reads 8–11
     // (app.rs forwards them into splat_ui_params), so count and order are
-    // load-bearing. Also the #1855 injection-trap assert for the bg shader.
+    // load-bearing.
     #[test]
     fn splat_pfx_parses_as_builtin() {
         let effect: PfxEffect =
@@ -2312,11 +2463,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(splat.source.starts_with("demo:"));
         assert!(particles.max_scaled_count <= 3_000_000); // go/no-go budget
         assert!((particles.emit_rate - 0.0).abs() < f32::EPSILON); // persistent slots, no emission
-        let bg = include_str!("../../../../assets/shaders/splat_bg.wgsl");
-        assert!(
-            !bg.contains("PhosphorUniforms"),
-            "splat_bg.wgsl must not mention the uniform struct name — it suppresses injection"
-        );
     }
 
     // Compile probe for the Splat sim + bg through the production
@@ -2356,7 +2502,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "splat_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
+        let bg_src = probe_preamble(bg);
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("splat-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -2866,12 +3012,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         );
     }
 
-    // Panorama + Ascend (#1801): the two MIR-pack effects. Same guards the
-    // other particle effects carry — the .pfx must parse as a builtin, and
-    // neither shader may mention the uniform struct name, since
-    // prepend_library suppresses UNIFORM_BLOCK injection if it appears
-    // anywhere including a comment (#1855) and the compile probe below
-    // concatenates the block unconditionally, so it cannot catch that.
+    // Panorama + Ascend (#1801): the two MIR-pack effects. Same guard the
+    // other particle effects carry — the .pfx must parse as a builtin.
     #[test]
     fn panorama_pfx_parses_as_builtin() {
         let effect: PfxEffect =
@@ -2881,15 +3023,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert_eq!(effect.inputs.len(), 8);
         let particles = effect.particles.expect("panorama is a particle effect");
         assert_eq!(particles.compute_shader, "panorama_sim.wgsl");
-        for src in [
-            include_str!("../../../../assets/shaders/panorama_sim.wgsl"),
-            include_str!("../../../../assets/shaders/panorama_bg.wgsl"),
-        ] {
-            assert!(
-                !src.contains("PhosphorUniforms"),
-                "panorama shaders must not mention the uniform struct name — it suppresses injection"
-            );
-        }
     }
 
     #[test]
@@ -2901,15 +3034,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert_eq!(effect.inputs.len(), 8);
         let particles = effect.particles.expect("ascend is a particle effect");
         assert_eq!(particles.compute_shader, "ascend_sim.wgsl");
-        for src in [
-            include_str!("../../../../assets/shaders/ascend_sim.wgsl"),
-            include_str!("../../../../assets/shaders/ascend_bg.wgsl"),
-        ] {
-            assert!(
-                !src.contains("PhosphorUniforms"),
-                "ascend shaders must not mention the uniform struct name — it suppresses injection"
-            );
-        }
     }
 
     /// Compile probe for both #1801 effects through the production concatenation.
@@ -2965,9 +3089,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             device.push_error_scope(wgpu::ErrorFilter::Validation);
             let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(
-                    format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs()).into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(probe_preamble(bg).into()),
             });
             let err = pollster::block_on(device.pop_error_scope());
             assert!(err.is_none(), "{name} failed validation: {err:?}");

@@ -182,6 +182,12 @@ pub struct EffectLayer {
     pub effect_index: Option<usize>,
     pub shader_sources: Vec<String>,
     pub shader_error: Option<String>,
+    /// Set when a load failed and left `effect_index` pointing at an effect this
+    /// layer's GPU state is not actually running (#1855). While it is set, shader
+    /// hot-reload must do a full atomic rebuild rather than swapping a pipeline
+    /// into the previous effect's executor — the bind-group layouts do not match,
+    /// so every attempt fails and the failure repeats on every file change.
+    pub pending_rebuild: bool,
 }
 
 /// Content type for a layer.
