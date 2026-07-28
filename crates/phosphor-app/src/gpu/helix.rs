@@ -217,21 +217,22 @@ impl HelixParams {
 /// The `particles.helix` block of a `.pfx`. Present ⇒ the effect renders the swept
 /// ribbon volume through the R3 marcher instead of particles, exactly as
 /// `particles.lattice` does for the CA.
+///
+/// This block carries only what is NOT a performance knob. Everything a VJ would
+/// reach for mid-set lives in the `.pfx` `inputs` instead, so it appears in the
+/// Parameters panel and can be driven by MIDI / OSC / audio — see
+/// [`HELIX_PARAM_NAMES`]. Declaring a value in both places would be two sources of
+/// truth, and the param would silently win every frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HelixDef {
+    /// Reallocates the density + aux volumes, so it is deliberately not bindable.
     pub grid_res: u32,
+    /// Reallocates the history ring, likewise.
     pub slice_count: u32,
     pub slice_rate: f32,
-    pub radius: f32,
-    pub thickness: f32,
-    pub twist_gain: f32,
     pub twist_rate: f32,
-    pub spectrum_gain: f32,
-    pub wander: f32,
     pub wander_rate: f32,
-    pub ripple_gain: f32,
-    pub hue_spread: f32,
     pub look: HelixLookDef,
 }
 
@@ -242,39 +243,29 @@ impl Default for HelixDef {
             grid_res: p.grid_res,
             slice_count: p.slice_count,
             slice_rate: p.slice_rate,
-            radius: p.radius,
-            thickness: p.thickness,
-            twist_gain: p.twist_gain,
             twist_rate: p.twist_rate,
-            spectrum_gain: p.spectrum_gain,
-            wander: p.wander,
             wander_rate: p.wander_rate,
-            ripple_gain: p.ripple_gain,
-            hue_spread: p.hue_spread,
             look: HelixLookDef::default(),
         }
     }
 }
 
 /// The shared-marcher look block of a [`HelixDef`] — the subset of
-/// [`VolumetricParams`] a `.pfx` may tune. Defaults come from
-/// [`HelixParams::default`], NOT [`VolumetricParams::default`]: the flythrough
-/// needs its own camera, envelope and absorption, and inheriting the orbit
-/// defaults would put the camera outside the volume.
+/// [`VolumetricParams`] a `.pfx` may tune that is NOT already a bindable param.
+/// Defaults come from [`HelixParams::default`], NOT [`VolumetricParams::default`]:
+/// the flythrough needs its own camera, envelope and absorption, and inheriting
+/// the orbit defaults would put the camera outside the volume.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HelixLookDef {
-    pub palette_hue: f32,
-    pub absorption: f32,
-    pub emission_gain: f32,
     pub detail_strength: f32,
     pub detail_scale: f32,
     pub density_threshold: f32,
-    pub fov: f32,
-    /// Camera Z inside the volume (+1 = the newest slice).
-    pub cam_distance: f32,
+    /// Look direction offset from straight-ahead.
+    pub cam_yaw: f32,
+    pub cam_pitch: f32,
     pub march_steps: u32,
-    /// Centroid → hue strength via the aux volume.
+    /// Strength of the per-slice hue tint in the marcher.
     pub age_influence: f32,
 }
 
@@ -282,14 +273,11 @@ impl Default for HelixLookDef {
     fn default() -> Self {
         let v = HelixParams::default().render;
         Self {
-            palette_hue: v.palette_hue,
-            absorption: v.absorption,
-            emission_gain: v.emission_gain,
             detail_strength: v.detail_strength,
             detail_scale: v.detail_scale,
             density_threshold: v.density_threshold,
-            fov: v.fov,
-            cam_distance: v.cam_distance,
+            cam_yaw: v.cam_yaw,
+            cam_pitch: v.cam_pitch,
             march_steps: v.march_steps,
             age_influence: v.age_influence,
         }
@@ -301,14 +289,11 @@ impl From<&HelixDef> for HelixParams {
         let base = HelixParams::default();
         Self {
             render: VolumetricParams {
-                palette_hue: def.look.palette_hue,
-                absorption: def.look.absorption,
-                emission_gain: def.look.emission_gain,
                 detail_strength: def.look.detail_strength,
                 detail_scale: def.look.detail_scale,
                 density_threshold: def.look.density_threshold,
-                fov: def.look.fov,
-                cam_distance: def.look.cam_distance,
+                cam_yaw: def.look.cam_yaw,
+                cam_pitch: def.look.cam_pitch,
                 march_steps: def.look.march_steps,
                 age_influence: def.look.age_influence,
                 // Not tunable from the .pfx: these define what Helix IS. A preset
@@ -321,16 +306,63 @@ impl From<&HelixDef> for HelixParams {
             grid_res: clamp_grid_res(def.grid_res),
             slice_count: clamp_slice_count(def.slice_count),
             slice_rate: def.slice_rate.clamp(1.0, 240.0),
-            radius: def.radius,
-            thickness: def.thickness,
-            twist_gain: def.twist_gain,
             twist_rate: def.twist_rate,
-            spectrum_gain: def.spectrum_gain,
-            wander: def.wander,
             wander_rate: def.wander_rate,
-            ripple_gain: def.ripple_gain,
-            hue_spread: def.hue_spread,
+            // The remaining fields are param-driven (see `apply_ui_params`); these
+            // defaults only stand until the first frame forwards the slots, and in
+            // headless probes that never do.
+            ..base
         }
+    }
+}
+
+// --- Bindable parameters -------------------------------------------------------
+
+/// The `.pfx` `inputs` Helix declares, in slot order. Living in `inputs` rather
+/// than the `helix` def block is what puts them in the Parameters panel and on the
+/// binding bus — a contextual panel's state is not reachable from
+/// `apply_binding_target`, so anything parked there can never be driven by MIDI,
+/// OSC or audio.
+///
+/// Helix has no compute shader, so unlike a normal particle effect none of these
+/// reach a sim through `effect_params`; they are read CPU-side into
+/// [`HelixParams::apply_ui_params`], the same route Splat uses for its camera
+/// slots. `helix_pfx_inputs_match_defaults` pins the `.pfx` defaults to
+/// [`HelixParams::default`] so the two cannot drift.
+pub const HELIX_PARAM_NAMES: [&str; 12] = [
+    "radius",
+    "thickness",
+    "twist",
+    "spectrum",
+    "wander",
+    "ripple",
+    "depth",
+    "zoom",
+    "hue",
+    "timbre_hue",
+    "absorption",
+    "emission",
+];
+
+impl HelixParams {
+    /// Overwrite the performance knobs from this frame's param slots.
+    ///
+    /// Params are the source of truth for these fields, so this runs every frame
+    /// while Helix is active; the values held in `HelixParams` between calls are
+    /// only what the `.pfx`/preset seeded and what headless probes use.
+    pub fn apply_ui_params(&mut self, p: &[f32; HELIX_PARAM_NAMES.len()]) {
+        self.radius = p[0];
+        self.thickness = p[1];
+        self.twist_gain = p[2];
+        self.spectrum_gain = p[3];
+        self.wander = p[4];
+        self.ripple_gain = p[5];
+        self.render.cam_distance = p[6];
+        self.render.fov = p[7];
+        self.render.palette_hue = p[8];
+        self.hue_spread = p[9];
+        self.render.absorption = p[10];
+        self.render.emission_gain = p[11];
     }
 }
 
@@ -731,6 +763,69 @@ mod tests {
         assert_eq!(p.render.env_shape, 2);
         assert_eq!(p.grid_res, 128);
         assert!((p.slice_count as f32 / p.slice_rate - 8.0).abs() < 0.01);
+    }
+
+    /// The performance knobs are declared in the `.pfx` `inputs` and applied
+    /// CPU-side, so nothing in the type system ties their defaults to
+    /// [`HelixParams::default`] — which is what headless probes and the first
+    /// frame use. Pin them, or the shipped effect drifts away from what every
+    /// test renders.
+    #[test]
+    fn helix_pfx_inputs_match_defaults() {
+        let src = include_str!("../../../../assets/effects/helix.pfx");
+        let v: serde_json::Value = serde_json::from_str(src).unwrap();
+        let inputs = v["inputs"].as_array().expect("helix.pfx declares inputs");
+        assert_eq!(
+            inputs.len(),
+            HELIX_PARAM_NAMES.len(),
+            "every bindable knob needs a slot, in order"
+        );
+
+        let mut slots = [0.0f32; HELIX_PARAM_NAMES.len()];
+        for (i, (input, expected_name)) in inputs.iter().zip(HELIX_PARAM_NAMES).enumerate() {
+            assert_eq!(
+                input["name"].as_str().unwrap(),
+                expected_name,
+                "slot {i} is read positionally in app.rs — order is load-bearing"
+            );
+            slots[i] = input["default"].as_f64().unwrap() as f32;
+        }
+
+        // Applying the shipped defaults must be a no-op against the Rust defaults.
+        let mut from_params = HelixParams::default();
+        from_params.apply_ui_params(&slots);
+        let base = HelixParams::default();
+        let close = |a: f32, b: f32, what: &str| {
+            assert!((a - b).abs() < 1e-6, "{what}: pfx {a} != default {b}");
+        };
+        close(from_params.radius, base.radius, "radius");
+        close(from_params.thickness, base.thickness, "thickness");
+        close(from_params.twist_gain, base.twist_gain, "twist");
+        close(from_params.spectrum_gain, base.spectrum_gain, "spectrum");
+        close(from_params.wander, base.wander, "wander");
+        close(from_params.ripple_gain, base.ripple_gain, "ripple");
+        close(
+            from_params.render.cam_distance,
+            base.render.cam_distance,
+            "depth",
+        );
+        close(from_params.render.fov, base.render.fov, "zoom");
+        close(
+            from_params.render.palette_hue,
+            base.render.palette_hue,
+            "hue",
+        );
+        close(from_params.hue_spread, base.hue_spread, "timbre_hue");
+        close(
+            from_params.render.absorption,
+            base.render.absorption,
+            "absorption",
+        );
+        close(
+            from_params.render.emission_gain,
+            base.render.emission_gain,
+            "emission",
+        );
     }
 
     /// A `.pfx` with an empty helix block must still be a valid Helix, not a

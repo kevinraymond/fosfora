@@ -1481,6 +1481,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 .expect("helix.pfx must deserialize");
         assert!(EffectLoader::is_builtin(&effect));
         assert_eq!(effect.passes.len(), 1, "Helix needs its background pass");
+        // The performance knobs live in `inputs`, not the contextual panel — that
+        // is what puts them in the Parameters panel and on the binding bus. Moving
+        // one back into the `helix` def block would silently make it unbindable.
+        assert_eq!(
+            effect.inputs.len(),
+            crate::gpu::helix::HELIX_PARAM_NAMES.len()
+        );
         let particles = effect.particles.expect("helix is a particle effect");
         assert!(
             particles.helix.is_some(),

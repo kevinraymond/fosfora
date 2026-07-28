@@ -1260,6 +1260,19 @@ impl App {
                     ps.splat_ui_params = [p[8], p[9], p[10], p[11], p[12]];
                     ps.update_splat_driver();
 
+                    // Helix (#1802): the ribbon has no sim shader, so its twelve
+                    // performance knobs ride slots 0–11 and are applied CPU-side.
+                    // They live in `inputs` rather than the contextual panel
+                    // precisely so they reach the binding bus — a panel's state
+                    // never does.
+                    if ps.helix_enabled {
+                        let ui: [f32; crate::gpu::helix::HELIX_PARAM_NAMES.len()] = [
+                            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10],
+                            p[11],
+                        ];
+                        ps.helix_params.apply_ui_params(&ui);
+                    }
+
                     // Volumetric mode (R3): apply the global toggle to the active
                     // particle layer only (V1); lazily build the renderer on enable.
                     let vol_on = vol_enabled && layer_idx == active_layer_idx;
