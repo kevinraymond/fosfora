@@ -209,9 +209,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             // Parting: steer along the tangent matching current motion
             // (spills left on left slopes, right on right); hash tie-break
             // at the exact crest so streams split both ways.
+            // Integer hash: this is a SIGN decision, not jitter. fract-sin on an
+            // idx-scaled arg bands a contiguous range of slots onto near-zero, so
+            // every one of them took `- 0.5` < 0 and spilled the SAME way — the
+            // crest stopped splitting, which is the whole point of the tie-break.
             let tang = vec2f(-n.y, n.x);
             var tdot = dot(v_s, tang);
-            if abs(tdot) < 0.01 { tdot = hash(f32(idx) * 3.1) - 0.5; }
+            if abs(tdot) < 0.01 { tdot = uhash_f(idx ^ 0x9e3779b9u) - 0.5; }
             let tdir = select(-tang, tang, tdot >= 0.0);
             v_s += tdir * abs(min(vn, 0.0)) * pool * 0.8;
             // Eddy: small signed velocity rotation near edges.

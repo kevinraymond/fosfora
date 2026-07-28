@@ -14,6 +14,10 @@
   times a second and pinning the shader editor open, because the previous effect's
   GPU state was still in place. Fixing the shader now retries the whole load and
   recovers the layer.
+- **Vessel wasted spawn slots**, so the silhouette filled unevenly and more slowly
+  than the fill rate suggested — bands of particles kept probing the same spot.
+- **Tide's waterfall did not part at a silhouette's crest.** Water arriving exactly
+  on a peak all spilled the same way instead of splitting to both sides.
 
 ## v1.26.0 — 2026-07-28
 

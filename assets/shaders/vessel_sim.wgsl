@@ -93,7 +93,13 @@ fn emit_particle(idx: u32) -> Particle {
     let seed_base = u.seed + f32(idx) * 17.31;
     let thr = vessel_threshold() + 0.10;
     for (var k = 0u; k < 6u; k++) {
-        let c = vec2f(hash(seed_base + f32(k) * 2.0), hash(seed_base + f32(k) * 2.0 + 1.0)) * 2.0 - 1.0;
+        // Integer hash: these are the rejection sampler's CANDIDATES, so their
+        // coverage of the silhouette is the spawn distribution. fract-sin banded a
+        // contiguous range of slots onto near-identical candidates, so those slots
+        // probed the same spot six times over — clustering births where it landed
+        // inside the form, and permanently wasting the slot where it landed
+        // outside. Same failure cymatics had, where whole regions went unseeded.
+        let c = rand_vec2_u(seed_base + f32(k) * 2.0);
         if vessel_alpha(c) >= thr {
             let init_size = u.initial_size * (0.7 + 0.6 * hash(seed_base + 4.0));
             let life = u.lifetime * (0.7 + 0.6 * hash(seed_base + 5.0));
