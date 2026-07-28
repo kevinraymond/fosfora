@@ -15,6 +15,12 @@ struct PostParams {
     rms: f32,
     alpha_from_luma: f32,
     tonemap_mode: f32,     // 0 = ACES, 1 = linear passthrough (SuperSplat-faithful)
+    grain_rate: f32,       // grain updates per second; <= 0 = every frame
+    // Scalar pads, not a vec3f: a vec3f would align to 16 and push the struct
+    // to 64 bytes, while the Rust PostParams is 9 f32 + 3 pad = 48.
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 }
 @group(0) @binding(4) var<uniform> post: PostParams;
 
@@ -68,8 +74,20 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     let vignette = 1.0 - post.vignette_strength * vignette_dist * vignette_dist;
     color *= vignette;
 
-    // Film grain (flatness-driven: more grain when audio is flat/quiet)
-    let grain = (hash_grain(uv * 1000.0 + post.time * 100.0) - 0.5) * post.grain_intensity;
+    // Film grain (flatness-driven: more grain when audio is flat/quiet).
+    // The grain advances on its own cadence, not the display's. Continuous
+    // full-rate noise integrates perceptually to smooth grey, so any repeated
+    // frame freezes it into a sharp static field that reads as a flash — and
+    // the compositor repeats frames on every window click, outside our control
+    // (#1983). Holding each pattern for a few refreshes by design makes one
+    // extra held refresh unremarkable. grain_rate <= 0 = the old every-frame
+    // behaviour, bit for bit.
+    let grain_t = select(
+        post.time,
+        floor(post.time * post.grain_rate) / post.grain_rate,
+        post.grain_rate > 0.0,
+    );
+    let grain = (hash_grain(uv * 1000.0 + grain_t * 100.0) - 0.5) * post.grain_intensity;
     color += vec3f(grain);
 
     let final_color = clamp(color, vec3f(0.0), vec3f(1.0));

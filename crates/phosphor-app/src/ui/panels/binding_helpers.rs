@@ -109,6 +109,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         ("postfx.vignette", "Vignette"),
         ("postfx.ca_intensity", "Chromatic aberration"),
         ("postfx.grain_intensity", "Film grain"),
+        ("postfx.grain_rate", "Film grain rate"),
     ] {
         targets.push(TargetOption {
             id: id.into(),

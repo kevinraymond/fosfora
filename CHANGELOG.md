@@ -5,6 +5,15 @@
 
 ## Unreleased
 
+## v1.26.0 — 2026-07-28
+
+### Fixed
+- **Clicking any window — even another application's title bar — flashed the visuals.**
+  The desktop compositor makes the display repeat a frame, which froze the film grain
+  into a sharp static field instead of the smooth grey that moving grain reads as. Grain
+  now advances on its own cadence via a new bindable **Rate (Hz)** control under Film
+  Grain, default 24; set it to 0 for the old every-frame grain.
+
 ## v1.25.0 — 2026-07-27
 
 ### Added

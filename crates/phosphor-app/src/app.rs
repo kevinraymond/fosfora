@@ -2488,6 +2488,11 @@ impl App {
                             "grain_intensity" => {
                                 layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
                             }
+                            "grain_rate" => {
+                                // Hz, not 0..1 like its neighbours — the bus
+                                // delivers normalized, the field is a rate.
+                                layer.postprocess.grain_rate = value.clamp(0.0, 1.0) * 60.0;
+                            }
                             _ => {}
                         }
                     }

@@ -97,6 +97,7 @@ Four toggleable effects (per-effect overridable):
 | Chromatic aberration  | 0.5     | 0-1   |
 | Vignette strength    | 0.3     | 0-1   |
 | Film grain intensity | 0.5     | 0-1   |
+| Film grain rate (Hz) | 24      | 0-60  |
 
 ---
 

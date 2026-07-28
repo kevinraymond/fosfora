@@ -46,6 +46,8 @@ struct PostParams {
     rms: f32,
     alpha_from_luma: f32,
     tonemap_mode: f32, // 0 = ACES (house look), 1 = linear passthrough (SuperSplat-faithful)
+    grain_rate: f32,   // grain updates per second; <= 0 = every frame (see #1983)
+    _pad: [f32; 3],
 }
 
 pub struct PostProcessChain {
@@ -288,6 +290,12 @@ impl PostProcessChain {
             } else {
                 0.0
             },
+            grain_rate: if overrides.grain_enabled {
+                overrides.grain_rate
+            } else {
+                0.0
+            },
+            _pad: [0.0; 3],
         };
         queue.write_buffer(
             &self.post_params_buffer,
@@ -605,4 +613,264 @@ fn run_fullscreen_pass(
     pass.set_pipeline(pipeline);
     pass.set_bind_group(0, bind_group, &[]);
     pass.draw(0..3, 0..1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The WGSL mirror of `PostParams` is maintained by hand and uniform structs
+    /// need a 16-byte multiple. `grain_rate` took the struct from 32 to 48 with
+    /// three pad words; if that stops being true the shader's copy must follow.
+    #[test]
+    fn post_params_stay_forty_eight_bytes() {
+        assert_eq!(std::mem::size_of::<PostParams>(), 48);
+    }
+
+    const PROBE_DIM: u32 = 64;
+
+    /// Render one post-composite pass over a flat mid-grey scene and read it
+    /// back. Rgba8Unorm rather than the production surface format: one row is
+    /// exactly the 256-byte copy alignment and the readback needs no decode.
+    fn probe_composite(device: &Device, queue: &Queue, params: PostParams) -> Vec<u8> {
+        let dim = PROBE_DIM;
+        let format = TextureFormat::Rgba8Unorm;
+
+        let make_input = |label: &str, fill: u8| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: dim,
+                    height: dim,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let mut px = vec![fill; (dim * dim * 4) as usize];
+            for y in 0..dim {
+                for x in 0..dim {
+                    px[((y * dim + x) * 4 + 3) as usize] = 255;
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &px,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(dim * 4),
+                    rows_per_image: Some(dim),
+                },
+                wgpu::Extent3d {
+                    width: dim,
+                    height: dim,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            (tex, view)
+        };
+
+        // Mid-grey scene, black bloom: the only thing varying across pixels is
+        // the grain, so any difference between two renders is the grain moving.
+        let (_scene_tex, scene_view) = make_input("probe-scene", 128);
+        let (_bloom_tex, bloom_view) = make_input("probe-bloom", 0);
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("probe-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
+        let out = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("probe-out"),
+            size: wgpu::Extent3d {
+                width: dim,
+                height: dim,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("probe-post-bgl"),
+            entries: &[
+                tex_entry(0),
+                sampler_entry(1),
+                tex_entry(2),
+                sampler_entry(3),
+                uniform_entry(4, std::mem::size_of::<PostParams>()),
+            ],
+        });
+        let pipeline = create_fs_pipeline(device, "probe-post", &bgl, POST_COMPOSITE_FS, format);
+
+        let ubo =
+            create_uniform_buffer(device, "probe-post-ubo", std::mem::size_of::<PostParams>());
+        queue.write_buffer(&ubo, 0, bytemuck::bytes_of(&params));
+
+        let bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("probe-post-bg"),
+            layout: &bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&scene_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(&bloom_view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(&sampler),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: ubo.as_entire_binding(),
+                },
+            ],
+        });
+
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("probe-post-readback"),
+            size: (dim * dim * 4) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        run_fullscreen_pass(
+            &mut encoder,
+            "probe-post-pass",
+            &pipeline,
+            &bind_group,
+            &out_view,
+        );
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &out,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(dim * 4),
+                    rows_per_image: Some(dim),
+                },
+            },
+            wgpu::Extent3d {
+                width: dim,
+                height: dim,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    /// Grain only, no bloom/CA/vignette, linear tonemap so the noise is not
+    /// compressed away. `grain_intensity` here is the final shader multiplier —
+    /// the CPU side folds flatness and the 0.08 scale in before this point.
+    fn grain_only(time: f32, grain_rate: f32) -> PostParams {
+        PostParams {
+            bloom_intensity: 0.0,
+            ca_intensity: 0.0,
+            vignette_strength: 0.0,
+            grain_intensity: 0.5,
+            time,
+            rms: 0.0,
+            alpha_from_luma: 0.0,
+            tonemap_mode: 1.0,
+            grain_rate,
+            _pad: [0.0; 3],
+        }
+    }
+
+    /// #1983: the grain must hold its pattern for the whole of a tick and
+    /// change across a tick boundary. That is the entire mitigation — a
+    /// display that repeats a frame can then only repeat a pattern the grain
+    /// was already going to hold, instead of freezing a boiling field.
+    ///
+    /// Run: cargo test -p phosphor-app -- --ignored grain_holds_within_a_tick
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn grain_holds_within_a_tick() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+
+        // At 24 Hz a tick is 41.7 ms. 1.000 and 1.030 share tick 24; 1.050 is
+        // tick 25. All three are more than a 60 Hz frame apart, so without
+        // quantization every one of them would differ.
+        let a = probe_composite(&device, &queue, grain_only(1.000, 24.0));
+        let b = probe_composite(&device, &queue, grain_only(1.030, 24.0));
+        let c = probe_composite(&device, &queue, grain_only(1.050, 24.0));
+
+        assert_eq!(a, b, "grain changed inside a single 24 Hz tick");
+        assert_ne!(b, c, "grain did not change across a 24 Hz tick boundary");
+
+        // The probe is only meaningful if there is grain to see at all.
+        let flat = probe_composite(&device, &queue, {
+            let mut p = grain_only(1.000, 24.0);
+            p.grain_intensity = 0.0;
+            p
+        });
+        assert_ne!(
+            a, flat,
+            "no grain in the probe — the assertions prove nothing"
+        );
+    }
+
+    /// The opt-out has to be exact: `grain_rate = 0` restores the every-frame
+    /// grain this field was added to slow down, so a preset that sets it gets
+    /// the pre-#1983 look and not an approximation of it.
+    ///
+    /// Run: cargo test -p phosphor-app -- --ignored grain_rate_zero_updates_every_frame
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn grain_rate_zero_updates_every_frame() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+
+        // Same two times that share a tick at 24 Hz: with the rate off they
+        // must differ, which is what "every frame" means.
+        let a = probe_composite(&device, &queue, grain_only(1.000, 0.0));
+        let b = probe_composite(&device, &queue, grain_only(1.030, 0.0));
+        assert_ne!(a, b, "grain_rate = 0 should still update every frame");
+    }
 }

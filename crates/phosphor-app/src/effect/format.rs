@@ -80,6 +80,11 @@ pub struct PostProcessDef {
     pub ca_intensity: f32,
     #[serde(default = "default_half")]
     pub grain_intensity: f32,
+    /// Film-grain updates per second. The grain deliberately runs slower than
+    /// the display so a repeated frame does not freeze a boiling noise field
+    /// into a visible flash (#1983). 0 = update every frame (pre-1.26 look).
+    #[serde(default = "default_grain_rate")]
+    pub grain_rate: f32,
     #[serde(default = "default_true")]
     pub bloom_enabled: bool,
     #[serde(default = "default_true")]
@@ -118,6 +123,10 @@ fn default_half() -> f32 {
     0.5
 }
 
+fn default_grain_rate() -> f32 {
+    24.0
+}
+
 impl Default for PostProcessDef {
     fn default() -> Self {
         Self {
@@ -127,6 +136,7 @@ impl Default for PostProcessDef {
             vignette: 0.3,
             ca_intensity: 0.5,
             grain_intensity: 0.5,
+            grain_rate: 24.0,
             bloom_enabled: true,
             ca_enabled: true,
             vignette_enabled: true,
@@ -371,8 +381,23 @@ mod tests {
         assert!(approx_eq(pp.vignette, 0.3, 1e-6));
         assert!(approx_eq(pp.ca_intensity, 0.5, 1e-6));
         assert!(approx_eq(pp.grain_intensity, 0.5, 1e-6));
+        assert!(approx_eq(pp.grain_rate, 24.0, 1e-6));
         assert!(pp.enabled);
         assert!(pp.bloom_enabled);
+    }
+
+    /// A `.pfx` written before grain_rate existed must still land on the
+    /// shipped cadence, not on 0.0 (which would silently restore the
+    /// every-frame grain this field exists to avoid — see #1983).
+    #[test]
+    fn postprocess_def_grain_rate_defaults_when_absent() {
+        let pp: PostProcessDef = serde_json::from_str(r#"{"grain_intensity": 0.7}"#).unwrap();
+        assert!(approx_eq(pp.grain_intensity, 0.7, 1e-6));
+        assert!(approx_eq(pp.grain_rate, 24.0, 1e-6));
+
+        // ...and an explicit 0 survives round-trip as the opt-out.
+        let off: PostProcessDef = serde_json::from_str(r#"{"grain_rate": 0.0}"#).unwrap();
+        assert!(approx_eq(off.grain_rate, 0.0, 1e-6));
     }
 
     #[test]

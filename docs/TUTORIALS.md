@@ -823,6 +823,10 @@ Post-processing applies screen-space effects after all layers are composited.
 
 **Film Grain** — Adds animated noise texture for a filmic feel
 - *Intensity* (0.0–1.0): Noise strength
+- *Rate (Hz)* (0–60): How often the grain re-randomises. Real film grain changes
+  at the film's frame rate, not the projector's, and running it slower than your
+  display keeps a dropped frame from freezing the noise into a visible flash.
+  0 updates it every frame.
 
 ### Audio-Reactive Post-Processing
 

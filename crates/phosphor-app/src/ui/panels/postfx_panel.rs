@@ -73,6 +73,13 @@ pub fn draw_postfx_panel(ui: &mut Ui, postprocess: &mut PostProcessDef) {
                 &mut postprocess.grain_intensity,
                 0.0..=1.0,
             );
+            rows::ParamRow::new("Rate (Hz)")
+                .tooltip(
+                    "How many times a second the grain re-randomises. Lower is more \
+                     filmic and keeps a dropped frame from freezing the noise into a \
+                     visible flash. 0 = update every frame.",
+                )
+                .show_slider(ui, &mut postprocess.grain_rate, 0.0..=60.0);
         });
     });
 }
