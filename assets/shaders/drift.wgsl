@@ -47,7 +47,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev_advected = feedback(uv + advect_offset);
 
     // Blend: mix (not max) so dark areas can reclaim space
-    let decay = 0.78;
+    let decay = frame_decay(0.78);
     let result = mix(col, prev_advected.rgb * decay, 0.5);
 
     // Clamp to prevent blowout

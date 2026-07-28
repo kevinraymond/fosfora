@@ -2154,14 +2154,7 @@ mod tests {
         let (device, _queue) = test_gpu();
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
-        let loader = EffectLoader::for_test(&format!(
-            "{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}"
-        ));
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
 
         let mut checked = 0usize;
         let mut failures: Vec<String> = Vec::new();
@@ -2248,14 +2241,7 @@ mod tests {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
-        let loader = EffectLoader::for_test(&format!(
-            "{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}"
-        ));
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
         let fmt = TextureFormat::Rgba16Float;
         let (w, h) = (480u32, 270u32);
 
@@ -2286,7 +2272,7 @@ mod tests {
         .expect("probe ParticleDef");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/builtin/particle_sim.wgsl");
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", crate::effect::loader::probe_libs());
         let mut ps = crate::gpu::particle::ParticleSystem::new(
             &device,
             &queue,

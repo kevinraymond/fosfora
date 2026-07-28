@@ -8,7 +8,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let p = uv * 2.0 - 1.0;
 
     // Feedback (previous frame) with configurable decay
-    let decay = param(0u); // trail_decay
+    let decay = frame_decay(param(0u)); // trail_decay
     let prev = feedback(uv);
 
     // Subtle UV distortion on feedback — organic smearing of creature trails

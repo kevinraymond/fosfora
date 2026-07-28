@@ -126,7 +126,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let d_off = (drift_dir * (0.0006 + 0.0035 * m) + turb * 0.0015 * m)
         * (drift_speed * 2.0) * (1.0 + u.bass * 0.6);
     let prev = feedback(uv + d_off);
-    let decay = mix(0.60, 0.85, m);
+    let decay = frame_decay(mix(0.60, 0.85, m));
     let fb_w = feedback_amount * mix(0.15, 0.55, m);
     var result = mix(col, prev.rgb * decay, fb_w);
 
