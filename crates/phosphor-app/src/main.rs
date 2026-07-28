@@ -123,11 +123,37 @@ impl ApplicationHandler for PhosphorApp {
         // Let egui handle events first
         let egui_consumed = app.egui_overlay.handle_event(&app.window, &event);
 
+        // Diagnostic (PHOSPHOR_FRAME_LOG=1): what the window system actually
+        // delivers. The per-frame FRAMELOG shows the clocks and the audio, but if
+        // the picture reacts to a click, the cause may be an event we do not even
+        // handle — and guessing at that from the outside has already been wrong
+        // several times. High-frequency events are excluded so the sequence around
+        // a click stays readable.
+        if app.frame_log
+            && !matches!(
+                event,
+                WindowEvent::RedrawRequested
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::AxisMotion { .. }
+            )
+        {
+            log::info!("EVENTLOG {event:?}");
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 app.quit_requested = true;
             }
             WindowEvent::Resized(size) => {
+                log::info!(
+                    "RESIZELOG {}x{} (was {}x{}) same={}",
+                    size.width,
+                    size.height,
+                    app.gpu.surface_config.width,
+                    app.gpu.surface_config.height,
+                    size.width == app.gpu.surface_config.width
+                        && size.height == app.gpu.surface_config.height
+                );
                 app.resize(size.width, size.height);
             }
             WindowEvent::KeyboardInput {
@@ -3541,9 +3567,10 @@ impl ApplicationHandler for PhosphorApp {
 
                 match app.render() {
                     Ok(()) => {}
-                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                         let w = app.gpu.surface_config.width;
                         let h = app.gpu.surface_config.height;
+                        log::info!("SURFACELOG {e:?} -> full resize {w}x{h}");
                         app.resize(w, h);
                     }
                     Err(wgpu::SurfaceError::OutOfMemory) => {
