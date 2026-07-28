@@ -6,6 +6,11 @@
 ## Unreleased
 
 ### Added
+- **Reliquary**, the 48th effect — a form that holds light. It splits your image, video or
+  model in two and gives each half its own physics: solid surface springs home and holds
+  still, while the light escaping it streams outward, fades and recycles, several times
+  brighter than it arrived. **Shed** moves the line between them, from a crisp form to one
+  dissolving entirely into flow.
 - **A light you can put inside a model.** A model particle source can now be lit by a
   movable point light instead of the fixed key light: park it inside a skull and the outer
   bone stays dark while the eye sockets glow, and **Rays** streams shafts of light out of

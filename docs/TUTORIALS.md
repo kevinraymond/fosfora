@@ -54,15 +54,16 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **47 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
+Fosfora ships with **48 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
 intro visual you see at startup, and a rasterizer stress test).
 
 **Shaders** (11) — pure fragment shaders, no particles:
 Aurora · Beam · Drift · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
 
-**Particle simulations** (19) — GPU compute, from a few thousand particles to two million:
+**Particle simulations** (20) — GPU compute, from a few thousand particles to two million:
 Accretion · Array · Cascade · Chaos · Cleave · Cymatics · Flux · Genesis · Morph · Murmur ·
-Mycelium · Polycephalum · Raster · Splat · Symbiosis · Tesla · Tide · Turing · Vessel
+Mycelium · Polycephalum · Raster · Reliquary · Splat · Symbiosis · Tesla · Tide · Turing ·
+Vessel
 
 **Lattice** (8) — one 3D cellular-automata engine, eight rules, ray-marched as a volume:
 445 · Brain · Builder · Chunky · Clouds · Pulse · Pyroclastic · Shells
@@ -75,9 +76,9 @@ See the **[Effect Gallery](GALLERY.md)** for a clip of every one at default sett
 
 ### Bring Your Own Media
 
-**Raster**, **Morph**, **Pegboard** and **Etch** build their picture out of whatever media you
-point them at, so swapping the source is the whole point of them. Select one of those layers
-and the Parameters panel grows a source row:
+**Raster**, **Morph**, **Pegboard**, **Etch** and **Reliquary** build their picture out of
+whatever media you point them at, so swapping the source is the whole point of them. Select one
+of those layers and the Parameters panel grows a source row:
 
 | Source | Needs | Notes |
 |--------|-------|-------|
@@ -124,11 +125,29 @@ the particle budget on the beams; turn it down if the model itself is losing def
 Because a model is a still, the shafts are fixed once sampled — they do not pulse with the
 music. What the effect does with those particles still reacts as usual.
 
-**Use Raster to see this.** Lighting lives in the *tone* of each particle, and Raster is the
-one effect that keeps that tone intact. Pegboard and Etch deliberately throw it away — they
-re-make your source in a medium with a handful of levels, so the whole gradient from bright
-cavity to unlit bone collapses into two or three peg brightnesses or scan bands. They are
-worth trying for the graphic look, but they are the wrong place to judge a light.
+**Use Reliquary to see this.** It is the effect built for lit forms: it splits your source in
+two and gives each half its own behaviour. Solid surface holds still, so the form reads; the
+light escaping it — the shafts, which arrive translucent — streams outward, fades and returns,
+several times brighter than it came in. The shafts are *moving* particles rather than a static
+halo, which is the whole difference.
+
+Its own controls decide where the split falls and what the escaping half does:
+
+- **Shed** — how bright a surface has to be before it starts shedding light. At `1.00` only
+  genuinely translucent parts stream, so the form stays crisp; wind it down and more and more
+  of the subject dissolves into the flow. Around `0.70` the form is gone entirely, which is a
+  look of its own.
+- **Stream speed** / **Stream length** — how fast the light travels and how far it gets before
+  it fades out and starts again. Speed rises with the music, and onsets kick it (**Surge**).
+- **Shaft gain** — how much brighter escaping light is than it arrived. Shafts come out of the
+  raster dim by nature; this is what makes them read as light.
+
+Reliquary works on any source, not just models — on an ordinary picture the brightest areas
+are the ones that shed. Raster also works for a lit model and keeps the tone intact, it just
+leaves the shafts sitting where they are. Pegboard and Etch are the wrong place to judge a
+light: they re-make your source in a medium with a handful of levels, so the gradient from
+bright cavity to unlit bone collapses into two or three peg brightnesses or scan bands. Worth
+trying for the graphic look, not for this.
 
 **In Morph**, a model is always a morph *target* rather than the base source — Morph blends
 between four shapes, so there is nothing for a single source to replace. Use the **Model**
