@@ -46,7 +46,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
     let p = uv * 2.0 - 1.0;
 
-    let decay = param(0u);
+    let decay = frame_decay(param(0u));
     let prev = feedback(uv);
 
     let shimmer_str = 0.001 + u.onset * 0.003;

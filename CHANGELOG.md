@@ -11,6 +11,9 @@
 ### Changed
 - Layer presets now carry Helix settings, so a tuned ribbon survives a reload.
 
+### Fixed
+- **Clicking anything made the picture pulse.** Trails and feedback faded by a fixed amount per *frame* rather than per second, so any change in frame rate changed how long they lingered — and on Linux, clicking or focusing any window (even another app's) briefly speeds the renderer up, so every click dimmed the image and let it recover. Trail length is now measured in seconds and looks the same at 30, 60 or 240 fps. Twenty-four effects are affected, including Pulse, Drift, Beam, Frost, Tide, Vessel and Chromatica; at 60 fps they look exactly as before.
+
 ## v1.24.0 — 2026-07-27
 
 ### Added

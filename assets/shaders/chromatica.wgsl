@@ -148,7 +148,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // --- feedback: short additive glass trail that clears (geometric series, no smear wash) ---
     col = min(col, vec3f(1.1));
     let prev = feedback(uv);
-    var result = col + prev.rgb * (feedback_amount * 0.5);
+    var result = col + prev.rgb * frame_decay(feedback_amount * 0.5);
 
     // Onset shimmer, gated by chord energy so silence stays still; after blend so it never accumulates.
     result = result + chroma_wheel(key_hue) * u.onset * 0.25 * smoothstep(0.0, 0.3, total);

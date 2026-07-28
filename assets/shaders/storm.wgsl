@@ -112,7 +112,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // === FEEDBACK ===
     let advect = (wq - 0.5) * 0.002 * (1.0 + bass);
     let prev = feedback(uv + advect);
-    let decay = 0.72;
+    let decay = frame_decay(0.72);
     let result = mix(col, prev.rgb * decay, 0.45);
 
     return vec4f(min(result, vec3f(1.2)), 1.0);

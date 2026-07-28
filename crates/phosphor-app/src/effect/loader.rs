@@ -47,7 +47,51 @@ const LIB_FILENAMES: &[&str] = &[
     "shaders/lib/sdf.wgsl",
     "shaders/lib/tonemap.wgsl",
     "shaders/lib/chronoflow.wgsl",
+    "shaders/lib/feedback.wgsl",
 ];
+
+/// The same libraries, embedded, for the offscreen compile/render probes — those
+/// run without an assets directory and used to hand-list `noise + palette` at each
+/// site. Adding `feedback.wgsl` broke seven of them at once, because every probe
+/// carried its own copy of the list; `probe_libs_match_production` now pins this
+/// pair to [`LIB_FILENAMES`] so the next lib cannot drift the same way.
+#[cfg(test)]
+const LIB_SOURCES: &[(&str, &str)] = &[
+    (
+        "shaders/lib/noise.wgsl",
+        include_str!("../../../../assets/shaders/lib/noise.wgsl"),
+    ),
+    (
+        "shaders/lib/palette.wgsl",
+        include_str!("../../../../assets/shaders/lib/palette.wgsl"),
+    ),
+    (
+        "shaders/lib/sdf.wgsl",
+        include_str!("../../../../assets/shaders/lib/sdf.wgsl"),
+    ),
+    (
+        "shaders/lib/tonemap.wgsl",
+        include_str!("../../../../assets/shaders/lib/tonemap.wgsl"),
+    ),
+    (
+        "shaders/lib/chronoflow.wgsl",
+        include_str!("../../../../assets/shaders/lib/chronoflow.wgsl"),
+    ),
+    (
+        "shaders/lib/feedback.wgsl",
+        include_str!("../../../../assets/shaders/lib/feedback.wgsl"),
+    ),
+];
+
+/// Production library preamble for probes: every `LIB_FILENAMES` entry, in order.
+#[cfg(test)]
+pub(crate) fn probe_libs() -> String {
+    LIB_SOURCES
+        .iter()
+        .map(|(_, src)| *src)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Standard uniform block prepended to all effect shaders.
 ///
@@ -710,13 +754,8 @@ mod tests {
         let out_dir = std::env::var("PARTICLE_PNG_DIR").unwrap_or_else(|_| "/tmp".to_string());
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
-        let libs = format!("{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}\n{plib}");
+        let libs = format!("{}\n{plib}", probe_libs());
 
         let wanted: Option<Vec<String>> = std::env::var("PARTICLE_PFX")
             .ok()
@@ -1227,13 +1266,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn all_particle_sim_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let chronoflow = include_str!("../../../../assets/shaders/lib/chronoflow.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
-        let libs = format!("{noise}\n{palette}\n{sdf}\n{tonemap}\n{chronoflow}\n{plib}");
+        let libs = format!("{}\n{plib}", probe_libs());
 
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
         let mut entries: Vec<_> = std::fs::read_dir(root.join("effects"))
@@ -1308,8 +1342,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn tide_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/tide_sim.wgsl");
         let bg = include_str!("../../../../assets/shaders/tide_bg.wgsl");
@@ -1318,7 +1350,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tide-sim-probe"),
             source: wgpu::ShaderSource::Wgsl(sim_src.into()),
@@ -1336,7 +1368,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "tide_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tide-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1370,9 +1402,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn vessel_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/vessel_sim.wgsl");
         let bg = include_str!("../../../../assets/shaders/vessel_bg.wgsl");
@@ -1381,7 +1410,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let sim_src = format!("{noise}\n{palette}\n{sdf}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vessel-sim-probe"),
             source: wgpu::ShaderSource::Wgsl(sim_src.into()),
@@ -1399,7 +1428,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "vessel_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("vessel-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1431,8 +1460,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn cleave_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/cleave_sim.wgsl");
         let bg = include_str!("../../../../assets/shaders/cleave_bg.wgsl");
@@ -1441,7 +1468,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cleave-sim-probe"),
             source: wgpu::ShaderSource::Wgsl(sim_src.into()),
@@ -1459,7 +1486,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "cleave_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cleave-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -1512,21 +1539,92 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn helix_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let bg = include_str!("../../../../assets/shaders/helix_bg.wgsl");
 
         let _guard = gpu_guard();
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("helix-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
         });
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "helix_bg.wgsl failed validation: {err:?}");
+    }
+
+    /// Mirrors `frame_decay` in `assets/shaders/lib/feedback.wgsl`. Kept in Rust so
+    /// the invariant is pinned even though the real implementation is WGSL — if the
+    /// shader changes, this test is the statement of what it was supposed to do.
+    fn frame_decay(d60: f32, delta_time: f32) -> f32 {
+        let d = d60.clamp(0.0, 1.0);
+        if delta_time <= 0.0 {
+            return d;
+        }
+        d.powf(delta_time * 60.0)
+    }
+
+    /// Feedback trails must fade at a rate measured in SECONDS, not frames.
+    ///
+    /// Before this, `prev * decay` applied a fixed factor per frame, so the amount
+    /// retained after one second depended entirely on frame rate — at 0.82 it
+    /// spanned 2.6e-3 at 30 fps to 2.1e-21 at 240. On this X11 setup a click on any
+    /// window produces an FPS spike from the event burst, so every click visibly
+    /// pulsed the trails.
+    #[test]
+    fn feedback_decay_is_frame_rate_independent() {
+        let d60 = 0.82_f32;
+
+        // Same wall-clock second, wildly different frame rates.
+        let retained = |fps: u32| {
+            let per_frame = frame_decay(d60, 1.0 / fps as f32);
+            per_frame.powi(fps as i32)
+        };
+        let reference = retained(60);
+        for fps in [24, 30, 60, 90, 120, 144, 240] {
+            let r = retained(fps);
+            assert!(
+                (r - reference).abs() < 1e-6,
+                "{fps} fps retained {r:e}, 60 fps retained {reference:e}"
+            );
+        }
+
+        // At exactly 60 fps the factor is untouched, which is why every shipped
+        // look and every dt=1/60 probe is preserved.
+        assert!((frame_decay(d60, 1.0 / 60.0) - d60).abs() < 1e-6);
+
+        // A caller that never filled delta_time falls back to the historical
+        // per-frame factor rather than to 1.0, which would never decay and would
+        // saturate the feedback buffer to white.
+        assert!((frame_decay(d60, 0.0) - d60).abs() < f32::EPSILON);
+        assert!((frame_decay(d60, -1.0) - d60).abs() < f32::EPSILON);
+
+        // A factor above 1 would amplify feedback; it must be clamped, not raised.
+        assert!(frame_decay(1.5, 1.0 / 60.0) <= 1.0);
+    }
+
+    /// The probes compile shaders against an embedded copy of the library set,
+    /// because they run with no assets directory. That copy has to stay equal to
+    /// what the app actually prepends: when `feedback.wgsl` was added to
+    /// `LIB_FILENAMES`, seven probes failed at once with "unknown identifier"
+    /// because each carried its own hand-written `noise + palette` list. Pin the
+    /// two together so the next library is a one-line change, not a scavenger hunt.
+    #[test]
+    fn probe_libs_match_production() {
+        let embedded: Vec<&str> = LIB_SOURCES.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            embedded, LIB_FILENAMES,
+            "LIB_SOURCES must mirror LIB_FILENAMES exactly, in order"
+        );
+        let concat = probe_libs();
+        for (name, src) in LIB_SOURCES {
+            assert!(!src.is_empty(), "{name} embedded empty");
+            assert!(
+                concat.contains(src.trim()),
+                "{name} missing from probe_libs()"
+            );
+        }
     }
 
     // Same guard as tide_pfx_parses_as_builtin, plus the uniform-injection
@@ -1556,15 +1654,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn frost_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let frost = include_str!("../../../../assets/shaders/frost.wgsl");
 
         let _guard = gpu_guard();
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{frost}");
+        let src = format!("{UNIFORM_BLOCK}\n{}\n{frost}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("frost-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -1590,10 +1686,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, queue) = test_gpu();
 
         // Production concatenation: uniform block + libs + effect fragment.
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let frost = include_str!("../../../../assets/shaders/frost.wgsl");
-        let fragment_source = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{frost}");
+        let fragment_source = format!("{UNIFORM_BLOCK}\n{}\n{frost}", probe_libs());
 
         let (w, h) = (960u32, 540u32);
         let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -1855,16 +1949,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn chromatica_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
         let chromatica = include_str!("../../../../assets/shaders/chromatica.wgsl");
 
         let _guard = gpu_guard();
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{sdf}\n{chromatica}");
+        let src = format!("{UNIFORM_BLOCK}\n{}\n{chromatica}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("chromatica-probe"),
             source: wgpu::ShaderSource::Wgsl(src.into()),
@@ -1939,11 +2030,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     fn sumi_shaders_compile() {
         use crate::gpu::pipeline::ShaderPipeline;
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let libs = format!("{noise}\n{palette}\n{sdf}\n{tonemap}");
+        let libs = probe_libs();
         let loader = EffectLoader::for_test(&libs);
 
         let _guard = gpu_guard();
@@ -1997,11 +2084,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, queue) = test_gpu();
 
         // Production concatenation: uniform block + libs (incl. sdf) + effect fragment.
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
         let chromatica = include_str!("../../../../assets/shaders/chromatica.wgsl");
-        let fragment_source = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{sdf}\n{chromatica}");
+        let fragment_source = format!("{UNIFORM_BLOCK}\n{}\n{chromatica}", probe_libs());
 
         let (w, h) = (960u32, 540u32);
         let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -2300,8 +2384,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn splat_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
         let bg = include_str!("../../../../assets/shaders/splat_bg.wgsl");
@@ -2312,7 +2394,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, _queue) = test_gpu();
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("splat-sim-probe"),
             source: wgpu::ShaderSource::Wgsl(sim_src.into()),
@@ -2329,7 +2411,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "splat_sim.wgsl failed validation: {err:?}");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bg_src = format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}");
+        let bg_src = format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs());
         let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("splat-bg-probe"),
             source: wgpu::ShaderSource::Wgsl(bg_src.into()),
@@ -2371,11 +2453,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let (device, queue) = test_gpu();
 
         // Production sim concatenation + the shipped .pfx def, probe-sized.
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let effect: PfxEffect =
             serde_json::from_str(include_str!("../../../../assets/effects/splat.pfx")).unwrap();
         let mut def = effect.particles.unwrap();
@@ -2711,11 +2791,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1_000_000);
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/splat_sim.wgsl");
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let effect: PfxEffect =
             serde_json::from_str(include_str!("../../../../assets/effects/splat.pfx")).unwrap();
         let mut def = effect.particles.unwrap();
@@ -2894,8 +2972,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn mir_pack_shaders_compile() {
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
 
         let _guard = gpu_guard();
@@ -2915,9 +2991,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
-                source: wgpu::ShaderSource::Wgsl(
-                    format!("{noise}\n{palette}\n{plib}\n{sim}").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(format!("{}\n{plib}\n{sim}", probe_libs()).into()),
             });
             // Pipeline creation forces full validation (entry point, bindings).
             let _ = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -2947,7 +3021,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
                 source: wgpu::ShaderSource::Wgsl(
-                    format!("{UNIFORM_BLOCK}\n{noise}\n{palette}\n{bg}").into(),
+                    format!("{UNIFORM_BLOCK}\n{}\n{bg}", probe_libs()).into(),
                 ),
             });
             let err = pollster::block_on(device.pop_error_scope());
@@ -2972,11 +3046,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let sim = include_str!("../../../../assets/shaders/ascend_sim.wgsl");
-        let sim_src = format!("{noise}\n{palette}\n{plib}\n{sim}");
+        let sim_src = format!("{}\n{plib}\n{sim}", probe_libs());
         let effect: PfxEffect =
             serde_json::from_str(include_str!("../../../../assets/effects/ascend.pfx")).unwrap();
         let mut def = effect.particles.unwrap();
@@ -3152,8 +3224,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         use wgpu::util::DeviceExt;
 
         // Production concatenation order — particle_lib calls into noise.wgsl.
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
         let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
         let probe = r#"
 @group(0) @binding(1) var<storage, read_write> out: array<f32>;
@@ -3205,7 +3275,7 @@ fn cs_main() {
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("uniform-layout-probe"),
-            source: wgpu::ShaderSource::Wgsl(format!("{noise}\n{palette}\n{plib}\n{probe}").into()),
+            source: wgpu::ShaderSource::Wgsl(format!("{}\n{plib}\n{probe}", probe_libs()).into()),
         });
         // `layout: None` is fine here: the bind group below supplies the *real* Rust-sized buffer,
         // so wgpu checks it against the minimum binding size the WGSL struct implies.

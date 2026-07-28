@@ -45,6 +45,8 @@ pub struct App {
     pub start_time: Instant,
     pub last_frame: Instant,
     pub frame_count: u32,
+    /// PHOSPHOR_FRAME_LOG=1 — per-frame CSV of both clocks + brightness drivers.
+    pub frame_log: bool,
     pub shader_watcher: ShaderWatcher,
     pub shader_compiler: ShaderCompiler,
     pub audio: AudioSystem,
@@ -423,6 +425,7 @@ impl App {
             start_time: now,
             last_frame: now,
             frame_count: 0,
+            frame_log: std::env::var("PHOSPHOR_FRAME_LOG").is_ok(),
             shader_watcher,
             shader_compiler,
             audio,
@@ -609,6 +612,27 @@ impl App {
             self.uniforms.contrast_5 = features.contrast_5;
             self.uniforms.contrast_mean = features.contrast_mean;
             self.uniforms.timbre_flux = features.timbre_flux;
+        }
+
+        // Diagnostic (PHOSPHOR_FRAME_LOG=1): one CSV line per frame covering both
+        // clocks plus every uniform that can move overall brightness. Used to find
+        // which value actually jumps when the picture reacts to something that is
+        // not the music — reasoning from stills cannot see a temporal artefact.
+        if self.frame_log {
+            let wall = now.duration_since(self.start_time).as_secs_f32();
+            log::info!(
+                "FRAMELOG {},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                self.frame_count,
+                dt,
+                wall,
+                self.uniforms.time,
+                self.uniforms.rms,
+                self.uniforms.kick,
+                self.uniforms.onset,
+                self.uniforms.beat_phase,
+                self.uniforms.beat,
+                self.uniforms.buildup,
+            );
         }
 
         // A17 (#1468): refresh the audio textures every frame. The waveform peeks the

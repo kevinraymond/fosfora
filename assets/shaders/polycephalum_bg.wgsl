@@ -9,7 +9,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
 
     // trail_decay param, dipped briefly on the beat so the network "breathes".
-    let decay = clamp(param(4u) * (1.0 - u.beat * 0.12), 0.5, 0.995);
+    let decay = frame_decay(clamp(param(4u) * (1.0 - u.beat * 0.12), 0.5, 0.995));
 
     let prev = feedback(uv).rgb;
     let trail = prev * decay;

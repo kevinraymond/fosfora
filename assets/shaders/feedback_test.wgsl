@@ -9,7 +9,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     let t = u.time;
     // param(0) = trail_length slider (0.0 to 0.99)
-    let decay = param(0u);
+    let decay = frame_decay(param(0u));
 
     // Read previous frame and fade it
     var prev = feedback(uv);
