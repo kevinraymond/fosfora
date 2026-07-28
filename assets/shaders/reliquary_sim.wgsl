@@ -117,6 +117,21 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let r = length(home_pos);
     let dir = select(vec2f(0.0, 1.0), home_pos / max(r, 1e-4), r > 1e-4);
 
+    // Breathe by SCALING the form about its centre, not by pushing every particle
+    // out by the same distance.
+    //
+    // A constant radial offset evacuates a disc of exactly that radius at the
+    // middle: every particle inside it steps outward and none step in, so the
+    // centre empties with a hard circular edge — and at a million particles the
+    // surrounding body is clipped to saturated white, which turns the gap into a
+    // black hole rather than a dim patch. A scale is a similarity transform;
+    // r -> r * (1 + s) maps the centre to itself and has nothing to evacuate.
+    //
+    // It applies to BOTH populations. Swelling only the body pulled the surface
+    // out from under the light escaping it, so the two came apart at every bass
+    // hit instead of the form breathing as one thing.
+    let swell = 1.0 + u.bass * bass_swell * 0.3;
+
     var pos: vec2f;
     var vel = p.vel_size.xy;
     var color: vec4f;
@@ -131,7 +146,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         p.flags.z = fract(p.flags.z + speed * dt);
         let phase = p.flags.z;
 
-        pos = home_pos + dir * phase * stream_length;
+        pos = home_pos * swell + dir * phase * stream_length;
         vel = vec2f(0.0);
 
         // Zero at both ends of the run, so nothing pops into or out of existence
@@ -147,10 +162,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         color = vec4f(home_color.rgb * shaft_gain * fade, home_color.a);
         size = u.initial_size * (0.8 + fade * 0.6);
     } else {
-        // The form holds. A slow radial swell on bass so it breathes without
-        // smearing the picture the lighting drew.
+        // The form holds, breathing with the same swell the escaping light rides.
         // `rest`, not `target` — the latter is a reserved WGSL keyword.
-        let rest = home_pos + dir * u.bass * bass_swell * 0.25;
+        let rest = home_pos * swell;
         pos = p.pos_life.xy;
         vel += (rest - pos) * body_spring * dt;
         vel *= 0.90;
