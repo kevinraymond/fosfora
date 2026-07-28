@@ -1041,6 +1041,35 @@ mod tests {
                 ps.setup_trails(&device, fmt, def.trail_length, def.trail_width);
             }
 
+            // Image emitters need their source SAMPLED before they show anything.
+            // ParticleSystem::new does not do it — app.rs does, right after — so
+            // without this the probe rendered Raster, Morph, Pegboard, Etch and
+            // Lantern as a flat frame and still printed a clean-looking signature,
+            // identical for every one of them and identical across audio states.
+            // A blank probe that reports success is worse than no probe.
+            if def.emitter.shape == "image" && !def.emitter.image.is_empty() {
+                let sample_def = def.image_sample.clone().unwrap_or(
+                    crate::gpu::particle::types::ImageSampleDef {
+                        mode: "grid".to_string(),
+                        threshold: 0.1,
+                        scale: 1.0,
+                    },
+                );
+                let path = root.join("images").join(&def.emitter.image);
+                match crate::gpu::particle::image_source::sample_image(
+                    &path,
+                    &sample_def,
+                    def.max_count,
+                ) {
+                    Ok(aux) => {
+                        assert!(!aux.is_empty(), "{name}: image sampled to zero particles");
+                        ps.upload_aux_data(&device, &queue, &aux);
+                        ps.store_current_aux(aux);
+                    }
+                    Err(e) => panic!("{name}: sampling '{}': {e}", def.emitter.image),
+                }
+            }
+
             for s in &states {
                 for f in 0..frames {
                     ps.poll_counter_readback();
