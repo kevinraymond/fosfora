@@ -3315,6 +3315,8 @@ impl App {
                                                     crate::gpu::particle::ParticleImageSource::Static;
                                                 ps.video_path = None;
                                                 ps.static_image_path = Some(img_path.clone());
+                                                // A picture retires the model (see main.rs).
+                                                ps.static_model_path = None;
                                                 let filename = path
                                                     .file_name()
                                                     .map(|f| f.to_string_lossy().to_string())

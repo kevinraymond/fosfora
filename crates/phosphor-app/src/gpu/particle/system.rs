@@ -2696,6 +2696,8 @@ impl ParticleSystem {
         self.has_aux_data = true;
         self.video_path = Some(path);
         self.static_image_path = None;
+        // ...and the model, if one was loaded before this video (see main.rs).
+        self.static_model_path = None;
         self.image_source = ParticleImageSource::Video {
             frames,
             delays_ms,
@@ -2725,6 +2727,8 @@ impl ParticleSystem {
         self.has_aux_data = true;
         self.video_path = None;
         self.static_image_path = None;
+        // ...and the model, if one was loaded before this webcam (see main.rs).
+        self.static_model_path = None;
         let _ = queue; // used for API consistency
         self.image_source = ParticleImageSource::Webcam { width, height };
     }

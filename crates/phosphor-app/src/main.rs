@@ -3205,6 +3205,15 @@ impl ApplicationHandler for PhosphorApp {
                                                 ps.image_source = crate::gpu::particle::ParticleImageSource::Static;
                                                 ps.video_path = None;
                                                 ps.static_image_path = Some(path.clone());
+                                                // Retire the model too. apply_model_source clears
+                                                // static_image_path when a model wins, but nothing
+                                                // did the reverse, so a picture loaded over a model
+                                                // left static_model_path set: the panel kept
+                                                // reporting "model: skull.glb" (source_type checks
+                                                // it before the static fallback) and the next pose
+                                                // change re-sampled the model straight back over
+                                                // the picture.
+                                                ps.static_model_path = None;
                                                 // Update emitter image name so UI selector reflects the change
                                                 let filename = std::path::Path::new(&path)
                                                     .file_name()
