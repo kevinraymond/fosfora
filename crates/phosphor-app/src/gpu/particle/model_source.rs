@@ -1100,8 +1100,16 @@ mod tests {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
         let geometry = marker_mesh(&device);
-        let (rgba, res, _) =
-            render_to_rgba(&device, &queue, &geometry, &ModelSampleDef::default()).unwrap();
+        // Rays ON. The god-ray pass writes to a SECOND target and the readback
+        // switches to it, so orientation has to be asserted through that path
+        // too — checking only the default (rays off) exercises the branch that
+        // was never in question, which is exactly how the flip shipped.
+        let posed = ModelSampleDef {
+            light_mix: 1.0,
+            ray_strength: 0.6,
+            ..ModelSampleDef::default()
+        };
+        let (rgba, res, _) = render_to_rgba(&device, &queue, &geometry, &posed).unwrap();
 
         // Centroid of everything the sampler would keep.
         let (mut sx, mut sy, mut n) = (0f64, 0f64, 0u32);

@@ -272,7 +272,12 @@ fn vs_fullscreen(@builtin(vertex_index) vi: u32) -> FullscreenOut {
     let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
     var out: FullscreenOut;
     out.uv = uv;
-    out.clip = vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
+    // The y term is NEGATED, and that is the whole point. NDC y runs up (+1 is
+    // the top of the frame) while texture v runs down (0 is the top row), so
+    // `uv * 2 - 1` on both axes silently mirrors the frame vertically. It only
+    // showed when rays were on, because rays-off skips this pass and reads back
+    // the first target untouched.
+    out.clip = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
     return out;
 }
 
