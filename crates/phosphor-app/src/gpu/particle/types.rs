@@ -598,6 +598,34 @@ pub struct ImageSampleDef {
     pub scale: f32,
 }
 
+/// Pose and shading for a `model:` particle source (#1993).
+///
+/// The model is unit-normalized at load, so these are framing controls rather
+/// than world transforms: yaw/pitch turn it, `scale` crops in or pulls back, and
+/// `ambient` sets how far the shadowed side is lifted off black.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelSampleDef {
+    #[serde(default)]
+    pub yaw_degrees: f32,
+    #[serde(default)]
+    pub pitch_degrees: f32,
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+    #[serde(default = "default_ambient")]
+    pub ambient: f32,
+}
+
+impl Default for ModelSampleDef {
+    fn default() -> Self {
+        Self {
+            yaw_degrees: 0.0,
+            pitch_degrees: 0.0,
+            scale: 1.0,
+            ambient: default_ambient(),
+        }
+    }
+}
+
 /// Reaction-diffusion configuration for particle effects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReactionDiffusionDef {
@@ -679,6 +707,11 @@ fn default_threshold() -> f32 {
 }
 fn default_scale() -> f32 {
     1.0
+}
+/// Shadow floor for model shading. High enough that a cavity still carries tone
+/// for Pegboard/Etch to quantize, low enough that the form still reads.
+fn default_ambient() -> f32 {
+    0.25
 }
 fn default_one_u32() -> u32 {
     1
@@ -786,6 +819,9 @@ pub struct ParticleDef {
     /// Image sampling for image-to-particle decomposition (optional)
     #[serde(default)]
     pub image_sample: Option<ImageSampleDef>,
+    /// Pose and shading for a `model:` source, if the emitter names one (#1993).
+    #[serde(default)]
+    pub model_sample: Option<ModelSampleDef>,
     /// Blend mode: "additive" (default), "alpha", "wboit", or "oit"
     /// ("oit" = weighted-average OIT resolve on the compute rasterizer — the
     /// splat blend; unlike "wboit" it composes WITH render_mode "compute")

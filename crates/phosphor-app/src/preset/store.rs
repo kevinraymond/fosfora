@@ -67,6 +67,16 @@ pub struct LayerPreset {
     /// Absolute path to static image used as particle source.
     #[serde(default)]
     pub particle_image_path: Option<String>,
+    /// Absolute path to the 3D model used as particle source (#1993). Mutually
+    /// exclusive with `particle_image_path` — a model is rendered to a frame rather
+    /// than read from one.
+    #[serde(default)]
+    pub particle_model_path: Option<String>,
+    /// Pose the model was sampled at: `[yaw_degrees, pitch_degrees, scale, ambient]`.
+    /// Without it a restored model snaps back to a front-on default view, which is a
+    /// different picture from the one that was saved.
+    #[serde(default)]
+    pub particle_model_pose: Option<[f32; 4]>,
     /// Absolute path to the Gaussian-splat scene loaded on this layer
     /// (#1800). Restored via a BACKGROUND load — files can be ~1.5 GB.
     #[serde(default)]
@@ -633,6 +643,8 @@ mod tests {
                 particle_video_looping: None,
                 particle_webcam: None,
                 particle_image_path: None,
+                particle_model_path: None,
+                particle_model_pose: None,
                 splat_scene_path: None,
                 obstacle_image_path: None,
                 obstacle_mode: None,
@@ -710,6 +722,36 @@ mod tests {
         let serialized = serde_json::to_string(&lp).unwrap();
         let lp2: LayerPreset = serde_json::from_str(&serialized).unwrap();
         assert_eq!(lp2.obstacle_depth, Some(true));
+    }
+
+    #[test]
+    fn layer_preset_particle_model_serde() {
+        // A model particle source (#1993) stores its path plus the pose it was
+        // sampled at, so a restored preset shows the same picture rather than
+        // snapping back to a front-on default view.
+        let json = r#"{
+            "effect_name": "Pegboard",
+            "particle_model_path": "/home/user/models/skull.glb",
+            "particle_model_pose": [25.0, 15.0, 1.2, 0.3]
+        }"#;
+        let lp: LayerPreset = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            lp.particle_model_path.as_deref(),
+            Some("/home/user/models/skull.glb")
+        );
+        assert_eq!(lp.particle_model_pose, Some([25.0, 15.0, 1.2, 0.3]));
+
+        let lp2: LayerPreset = serde_json::from_str(&serde_json::to_string(&lp).unwrap()).unwrap();
+        assert_eq!(lp2.particle_model_path, lp.particle_model_path);
+        assert_eq!(lp2.particle_model_pose, lp.particle_model_pose);
+
+        // Every preset written before #1993 must still parse, with no model.
+        let old: LayerPreset = serde_json::from_str(
+            r#"{"effect_name":"Pegboard","particle_image_path":"/img/a.png"}"#,
+        )
+        .unwrap();
+        assert!(old.particle_model_path.is_none());
+        assert!(old.particle_model_pose.is_none());
     }
 
     #[test]
@@ -817,6 +859,8 @@ mod tests {
             particle_video_looping: None,
             particle_webcam: None,
             particle_image_path: None,
+            particle_model_path: None,
+            particle_model_pose: None,
             splat_scene_path: None,
             obstacle_image_path: None,
             obstacle_mode: None,

@@ -254,6 +254,16 @@ impl ApplicationHandler for PhosphorApp {
                                 )
                             } else if ps.image_source.is_webcam() {
                                 ("webcam".to_string(), "webcam".to_string())
+                            } else if let Some(path) = ps.static_model_path.as_ref() {
+                                // #1993 — checked before the static fallback, which
+                                // would otherwise report an empty image name.
+                                (
+                                    "model".to_string(),
+                                    std::path::Path::new(path)
+                                        .file_name()
+                                        .map(|f| f.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.clone()),
+                                )
                             } else {
                                 ("static".to_string(), ps.def.emitter.image.clone())
                             };
@@ -309,6 +319,10 @@ impl ApplicationHandler for PhosphorApp {
                                 source_loading: false, // set below
                                 source_loading_name: String::new(),
                                 builtin_images: Vec::new(), // set below
+                                model_yaw: ps.model_sample.yaw_degrees,
+                                model_pitch: ps.model_sample.pitch_degrees,
+                                model_scale: ps.model_sample.scale,
+                                model_ambient: ps.model_sample.ambient,
                                 has_splat: ps.def.splat.is_some(),
                                 splat_sorted: ps.is_splat_sorted(),
                                 splat_sh_degree: ps.splat_sh_degree(),
@@ -2553,6 +2567,51 @@ impl ApplicationHandler for PhosphorApp {
                         }
                     }
 
+                    // Load a 3D model as particle source (#1993). Dialog only on the
+                    // background thread; the raster happens where the device lives.
+                    let load_model: Option<bool> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_model")));
+                    if load_model.is_some() && !app.particle_source_loader.loading {
+                        app.particle_source_loader.open_model_dialog();
+                        app.preset_store.mark_dirty();
+                    }
+
+                    // Model pose changed — re-raster and re-sample the live model.
+                    // The panel only emits this on slider RELEASE, so this runs once
+                    // per adjustment rather than once per drag frame.
+                    let model_pose: Option<[f32; 4]> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_model_pose")));
+                    if let Some(pose) = model_pose {
+                        let def = crate::gpu::particle::types::ModelSampleDef {
+                            yaw_degrees: pose[0],
+                            pitch_degrees: pose[1],
+                            scale: pose[2],
+                            ambient: pose[3],
+                        };
+                        let (device, queue) = (&app.gpu.device, &app.gpu.queue);
+                        if let Some(ps) = app
+                            .layer_stack
+                            .active_mut()
+                            .and_then(|l| l.as_effect_mut())
+                            .and_then(|e| e.pass_executor.particle_system.as_mut())
+                        {
+                            if let Some(path) = ps.static_model_path.clone() {
+                                match ps.apply_model_source(
+                                    device,
+                                    queue,
+                                    std::path::Path::new(&path),
+                                    &def,
+                                ) {
+                                    Ok(n) => {
+                                        log::info!("Re-sampled model at new pose: {n} particles");
+                                    }
+                                    Err(e) => log::warn!("Model re-sample failed: {e}"),
+                                }
+                            }
+                        }
+                        app.preset_store.mark_dirty();
+                    }
+
                     // Splat scene picker + demo download (#1800)
                     {
                         let load_scene: Option<bool> =
@@ -2738,6 +2797,8 @@ impl ApplicationHandler for PhosphorApp {
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("morph_add_text")));
                         let morph_load_video: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("morph_load_video")));
+                        let morph_load_model: Option<bool> =
+                            ctx.data_mut(|d| d.remove_temp(egui::Id::new("morph_load_model")));
                         let morph_snapshot: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("morph_snapshot")));
                         let morph_clear_slot: Option<u32> =
@@ -2758,6 +2819,7 @@ impl ApplicationHandler for PhosphorApp {
                             || morph_add_geo.is_some()
                             || morph_add_text.is_some()
                             || morph_load_video.is_some()
+                            || morph_load_model.is_some()
                             || morph_snapshot.is_some()
                             || morph_clear_slot.is_some()
                             || morph_manual_blend.is_some()
@@ -2978,6 +3040,25 @@ impl ApplicationHandler for PhosphorApp {
                                                 ));
                                             });
                                             app.particle_source_loader.open_video_dialog();
+                                        }
+                                        if morph_load_model.is_some() {
+                                            // Only the slot needs carrying: the Model
+                                            // result arm routes to a morph target
+                                            // whenever the effect has morph state, so
+                                            // no pending flag is required.
+                                            let target_slot = morph_selected_slot;
+                                            ctx.data_mut(|d| {
+                                                if let Some(s) = target_slot {
+                                                    d.insert_temp(
+                                                        egui::Id::new("morph_pending_slot"),
+                                                        s,
+                                                    );
+                                                }
+                                                d.remove_temp::<u32>(egui::Id::new(
+                                                    "morph_selected_slot",
+                                                ));
+                                            });
+                                            app.particle_source_loader.open_model_dialog();
                                         }
                                     }
                                 }
@@ -3225,6 +3306,52 @@ impl ApplicationHandler for PhosphorApp {
                                                         }
                                                     }
                                                     let _ = (path, delays_ms);
+                                                }
+                                            }
+                                        }
+                                        crate::gpu::particle::ParticleSourceResult::Model {
+                                            path,
+                                        } => {
+                                            // The dialog thread only picked the file
+                                            // (#1993); rastering it needs the device,
+                                            // so the work lands here.
+                                            let def = ps.model_sample.clone();
+                                            let p = std::path::Path::new(&path);
+                                            // A morph effect has no meaningful "base"
+                                            // source — its aux is four interleaved
+                                            // slots — so a model always becomes a
+                                            // TARGET there, whether it arrived from the
+                                            // morph row or from the main picker.
+                                            let outcome = if ps.morph_state.is_some() {
+                                                ps.apply_model_morph_target(
+                                                    &app.gpu.device,
+                                                    &app.gpu.queue,
+                                                    p,
+                                                    &def,
+                                                    morph_pending_slot,
+                                                )
+                                                .map(|(slot, n)| {
+                                                    format!("morph slot {slot} ({n} particles)")
+                                                })
+                                            } else {
+                                                ps.apply_model_source(
+                                                    &app.gpu.device,
+                                                    &app.gpu.queue,
+                                                    p,
+                                                    &def,
+                                                )
+                                                .map(|n| format!("source ({n} particles)"))
+                                            };
+                                            match outcome {
+                                                Ok(where_) => log::info!(
+                                                    "Loaded particle model {path} into {where_}"
+                                                ),
+                                                Err(e) => {
+                                                    log::error!("Model source load failed: {e}");
+                                                    app.status_error = Some((
+                                                        format!("Model source: {e}"),
+                                                        std::time::Instant::now(),
+                                                    ));
                                                 }
                                             }
                                         }

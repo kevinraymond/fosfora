@@ -14,8 +14,8 @@ use super::splat::{SplatDriver, SplatShRec, SplatStatic};
 use super::splat_source::SplatCloud;
 use super::sprite::SpriteAtlas;
 use super::types::{
-    ImageSampleDef, ParticleAux, ParticleDef, ParticleImageSource, ParticleRenderUniforms,
-    ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
+    ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleImageSource,
+    ParticleRenderUniforms, ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
@@ -354,8 +354,19 @@ pub struct ParticleSystem {
     pub video_path: Option<String>,
     /// Path to the static image file (for preset save/load).
     pub static_image_path: Option<String>,
+    /// Path to the 3D model file when the source is a model (#1993). Set instead
+    /// of `static_image_path`, since a model is rendered to a frame rather than
+    /// read from one — the two are mutually exclusive.
+    pub static_model_path: Option<String>,
+    /// Pose/shading the current model was sampled at. Kept so the panel's sliders
+    /// start where the model actually is, and so a re-sample can build on it.
+    pub model_sample: ModelSampleDef,
     /// Cached aux data for the current static source (used as transition "from").
     pub current_aux: Vec<ParticleAux>,
+    /// How many aux entries the last write actually filled, so the next one knows
+    /// how much of the tail a smaller source leaves behind. See
+    /// [`ParticleSystem::update_aux_in_place`].
+    aux_written_len: usize,
 }
 
 impl ParticleSystem {
@@ -535,7 +546,11 @@ impl ParticleSystem {
         let aux_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle-aux"),
             size: aux_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // COPY_SRC so the buffer can be read back — the stale-tail regression
+            // (see update_aux_in_place) is only observable by inspecting it.
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -1509,7 +1524,10 @@ impl ParticleSystem {
             }),
             video_path: None,
             static_image_path: None,
+            static_model_path: None,
+            model_sample: def.model_sample.clone().unwrap_or_default(),
             current_aux: Vec::new(),
+            aux_written_len: 0,
         }
     }
 
@@ -2371,13 +2389,19 @@ impl ParticleSystem {
         self.aux_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle-aux"),
             size: aux_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            // COPY_SRC so the buffer can be read back — the stale-tail regression
+            // (see update_aux_in_place) is only observable by inspecting it.
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         if !data.is_empty() {
             queue.write_buffer(&self.aux_buffer, 0, bytemuck::cast_slice(data));
         }
         self.has_aux_data = !data.is_empty();
+        // A fresh buffer is zeroed, so everything past `data` is already inert.
+        self.aux_written_len = data.len();
 
         // Recreate compute bind groups with new aux buffer
         self.compute_bind_groups = create_compute_bind_groups(
@@ -2398,14 +2422,21 @@ impl ParticleSystem {
     /// Update aux data via write_buffer without recreating buffer or bind groups.
     /// Buffer must already be pre-allocated at max_particles size (done in `new()`).
     /// Used for per-frame updates when video/webcam source changes particle home positions.
-    pub fn update_aux_in_place(&self, queue: &Queue, data: &[ParticleAux]) {
+    ///
+    /// Anything the PREVIOUS source occupied past the end of `data` is cleared to
+    /// zero. Without that, swapping to a source that samples FEWER particles leaves
+    /// the tail of the buffer holding the old source's home positions and colours —
+    /// and since every image-sourced sim treats `home_color.a < 0.01` as "not part
+    /// of the picture" and kills the particle, a non-zero stale entry keeps that
+    /// particle alive at its old position forever. It showed up as pegs from a
+    /// previous pose still standing in Pegboard after a re-sample; `upload_aux_data`
+    /// never had the bug because a fresh wgpu buffer is already zeroed.
+    pub fn update_aux_in_place(&mut self, queue: &Queue, data: &[ParticleAux]) {
         if data.is_empty() {
             return;
         }
         let byte_len = std::mem::size_of_val(data) as u64;
-        if byte_len <= self.aux_buffer.size() {
-            queue.write_buffer(&self.aux_buffer, 0, bytemuck::cast_slice(data));
-        } else {
+        if byte_len > self.aux_buffer.size() {
             log::warn!(
                 "Aux buffer too small: need {} bytes, have {} bytes ({} vs {} particles)",
                 byte_len,
@@ -2413,7 +2444,112 @@ impl ParticleSystem {
                 data.len(),
                 self.aux_buffer.size() as usize / std::mem::size_of::<ParticleAux>()
             );
+            return;
         }
+        queue.write_buffer(&self.aux_buffer, 0, bytemuck::cast_slice(data));
+
+        // Clear only the shrinkage, not the whole tail — at 2M particles a blanket
+        // clear would push 32MB per swap, and a per-frame video source calls this
+        // every frame.
+        if self.aux_written_len > data.len() {
+            let stale = vec![ParticleAux { home: [0.0; 4] }; self.aux_written_len - data.len()];
+            queue.write_buffer(&self.aux_buffer, byte_len, bytemuck::cast_slice(&stale));
+        }
+        self.aux_written_len = data.len();
+    }
+
+    /// Re-sample the particle source from a 3D model at `model_def` (#1993).
+    ///
+    /// Shared by the "Model…" picker and the pose sliders, which re-sample on
+    /// release. Writes in place rather than recreating the aux buffer, so the
+    /// compute bind groups survive — the same swap an image source does at
+    /// runtime. Returns how many particles the model produced.
+    pub fn apply_model_source(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        path: &std::path::Path,
+        model_def: &ModelSampleDef,
+    ) -> Result<usize, String> {
+        let aux = super::model_source::sample_model(
+            device,
+            queue,
+            path,
+            &self.sample_def,
+            model_def,
+            self.max_particles,
+        )?;
+        let count = aux.len();
+        self.update_aux_in_place(queue, &aux);
+        self.store_current_aux(aux);
+        self.has_aux_data = true;
+        self.image_source = ParticleImageSource::Static;
+        self.video_path = None;
+        // A model and an image are mutually exclusive sources; clearing this is
+        // what makes the panel report "model:" rather than a stale filename.
+        self.static_image_path = None;
+        self.def.emitter.image = String::new();
+        self.static_model_path = Some(path.to_string_lossy().to_string());
+        self.def.emitter.model = path.to_string_lossy().to_string();
+        self.model_sample = model_def.clone();
+        Ok(count)
+    }
+
+    /// Load a 3D model into a MORPH SLOT rather than over the base source (#1993).
+    ///
+    /// Morph indexes aux at a ×4 stride (`aux[idx * MORPH_STRIDE + tgt]`), so writing
+    /// a flat source array over it does not replace the picture — it lands across the
+    /// interleaved slots and the model appears stuck on top of whatever else is
+    /// there. A model reaches a morph effect as a TARGET or not at all.
+    ///
+    /// `slot` defaults to the first empty one, so the picker works without making
+    /// the user choose a slot first.
+    pub fn apply_model_morph_target(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        path: &std::path::Path,
+        model_def: &ModelSampleDef,
+        slot: Option<u32>,
+    ) -> Result<(u32, usize), String> {
+        let aux = super::model_source::sample_model(
+            device,
+            queue,
+            path,
+            &self.sample_def,
+            model_def,
+            self.max_particles,
+        )?;
+        let count = aux.len();
+        let slot = slot
+            .unwrap_or_else(|| self.def.morph_targets.as_ref().map_or(0, |t| t.len()) as u32)
+            .min(super::morph::MORPH_MAX_TARGETS - 1);
+
+        let Some(morph) = self.morph_state.as_mut() else {
+            return Err("effect has no morph state".to_string());
+        };
+        morph.load_target(slot, aux);
+
+        // Record it in the def as `model:<absolute path>` so the slot survives a
+        // preset round-trip and reloads through the same resolver the .pfx uses.
+        let target = super::types::MorphTargetDef {
+            source: format!("model:{}", path.to_string_lossy()),
+            color: None,
+        };
+        if let Some(targets) = self.def.morph_targets.as_mut() {
+            while targets.len() <= slot as usize {
+                targets.push(super::types::MorphTargetDef {
+                    source: String::new(),
+                    color: None,
+                });
+            }
+            targets[slot as usize] = target;
+        } else {
+            self.def.morph_targets = Some(vec![target]);
+        }
+        self.model_sample = model_def.clone();
+        self.upload_morph_targets(device, queue);
+        Ok((slot, count))
     }
 
     /// Upload a decoded splat scene into the static attribute buffer (#1800).
@@ -5330,6 +5466,85 @@ mod trail_binding_tests {
             submission_index: None,
             timeout: None,
         });
+    }
+
+    /// Swapping to a source that samples FEWER particles must not leave the old
+    /// source's entries alive in the tail of the aux buffer.
+    ///
+    /// Reported on Pegboard: changing a model's Yaw or Zoom re-samples, and pegs
+    /// from the previous pose kept standing. Every image-sourced sim treats
+    /// `home_color.a < 0.01` as "not part of the picture" and kills the particle,
+    /// so a stale non-zero entry pins that particle in place forever.
+    /// `upload_aux_data` never showed it because a fresh wgpu buffer is zeroed.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn shrinking_the_source_clears_the_aux_tail() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let sim_src = tide_sim_src();
+        let def = tide_def();
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &def,
+            &sim_src,
+            false,
+        );
+
+        // Opaque white everywhere, then a source half the size.
+        let big = vec![
+            ParticleAux {
+                home: [0.5, 0.5, f32::from_bits(0xFFFF_FFFF), 0.0]
+            };
+            64
+        ];
+        let small = vec![
+            ParticleAux {
+                home: [0.25, 0.25, f32::from_bits(0xFFFF_FFFF), 0.0]
+            };
+            16
+        ];
+        ps.upload_aux_data(&device, &queue, &big);
+        ps.update_aux_in_place(&queue, &small);
+
+        // Read back the span the big source covered.
+        let bytes = (std::mem::size_of::<ParticleAux>() * big.len()) as u64;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("aux-tail-probe"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("aux-tail-enc"),
+        });
+        enc.copy_buffer_to_buffer(&ps.aux_buffer, 0, &staging, 0, bytes);
+        queue.submit([enc.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
+        let read: Vec<ParticleAux> =
+            bytemuck::cast_slice(&staging.slice(..).get_mapped_range()).to_vec();
+        staging.unmap();
+
+        for (i, a) in read.iter().enumerate().take(small.len()) {
+            assert_eq!(a.home[0], 0.25, "entry {i} should carry the new source");
+        }
+        for (i, a) in read.iter().enumerate().skip(small.len()) {
+            let alpha = a.home[2].to_bits() >> 24;
+            assert_eq!(
+                alpha, 0,
+                "entry {i} past the new source still has alpha {alpha} — the old \
+                 source is still alive there and its particles will never die"
+            );
+        }
     }
 
     // Reported trigger: a .pfx sets trail_length 0 while its sim calls trail_write.

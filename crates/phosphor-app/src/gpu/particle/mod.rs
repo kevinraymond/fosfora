@@ -3,6 +3,7 @@ pub mod emitter;
 pub mod flow_field;
 pub mod fluid;
 pub mod image_source;
+pub mod model_source;
 pub mod morph;
 pub mod obstacle;
 pub mod obstacle_model;

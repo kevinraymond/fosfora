@@ -62,6 +62,14 @@ pub enum ParticleSourceResult {
         frames: Vec<DecodedFrame>,
         delays_ms: Vec<u32>,
     },
+    /// A 3D model was CHOSEN (#1993) — the path only, not decoded content.
+    ///
+    /// Unlike images and video, a model cannot be decoded on this background
+    /// thread: turning it into particles means rastering it, which needs the
+    /// device and queue in step with the render loop. So the dialog thread's
+    /// whole job is picking the file, and the main thread does the work when the
+    /// path arrives — the same split the obstacle model loader uses.
+    Model { path: String },
     /// Loading failed.
     Error(String),
 }
@@ -182,6 +190,38 @@ impl ParticleSourceLoader {
                     let result = load_video_sync(&path);
                     let _ = tx.send((load_gen, result));
                 }
+            })
+            .expect("failed to spawn particle source dialog thread");
+    }
+
+    /// Open a file dialog for a 3D model on a background thread (#1993).
+    ///
+    /// Sends back the chosen path only — see [`ParticleSourceResult::Model`] for
+    /// why the raster cannot happen here.
+    pub fn open_model_dialog(&mut self) {
+        self.generation += 1;
+        let load_gen = self.generation;
+        self.loading = true;
+        self.loading_name = "choosing file...".to_string();
+
+        let (tx, rx) = bounded(1);
+        self.result_rx = rx;
+
+        thread::Builder::new()
+            .name("particle-source-dialog".into())
+            .spawn(move || {
+                let dialog = rfd::FileDialog::new()
+                    .set_title("Load 3D Model for Particle Source")
+                    .add_filter("3D model", super::model_source::MODEL_EXTENSIONS);
+                if let Some(path) = dialog.pick_file() {
+                    let _ = tx.send((
+                        load_gen,
+                        ParticleSourceResult::Model {
+                            path: path.to_string_lossy().to_string(),
+                        },
+                    ));
+                }
+                // If dialog cancelled, tx drops → Disconnected on rx → loading resets
             })
             .expect("failed to spawn particle source dialog thread");
     }

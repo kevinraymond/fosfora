@@ -73,6 +73,44 @@ filters, and a ★ Favorites row at the top. Badges mark each effect **SH** (sha
 
 See the **[Effect Gallery](GALLERY.md)** for a clip of every one at default settings.
 
+### Bring Your Own Media
+
+**Raster**, **Morph**, **Pegboard** and **Etch** build their picture out of whatever media you
+point them at, so swapping the source is the whole point of them. Select one of those layers
+and the Parameters panel grows a source row:
+
+| Source | Needs | Notes |
+|--------|-------|-------|
+| **Built-in** | — | The shipped `assets/images/` art — a bright subject on black |
+| **Image…** | — | A still, GIF or animated WebP |
+| **Video…** | `video` feature, ffmpeg | Plays back with transport controls |
+| **Model…** | — | A 3D model: `.glb`/`.gltf` mesh or `.ply`/`.splat` capture |
+
+A **model** is rendered to a frame and then sampled exactly like a picture, so it works in
+every one of these effects — your own mesh or scanned capture comes out as pegs, as scratched
+aluminium, or as two million springy pixels. Meshes are shaded from their own surface normals;
+splat captures keep the colour they were captured with. Four controls set how it is framed:
+
+- **Yaw** / **Pitch** — turn the model. It is re-sampled when you let go of the slider.
+- **Zoom** — crop in for detail, or pull back to fit more in.
+- **Ambient** — how far the shadowed side is lifted off black. Raise it if the dark side of
+  your model is coming out as a flat void; lower it for more contrast between faces.
+
+Unlike a video, a model is a **still** — it is sampled once and stays put until you move one
+of those controls.
+
+**In Morph**, a model is always a morph *target* rather than the base source — Morph blends
+between four shapes, so there is nothing for a single source to replace. Use the **Model**
+button in the target row (select a slot first to choose where it lands, or let it take the
+next empty one), then blend to it like any other target. The main **Model…** button does the
+same thing on a Morph layer.
+
+Models are saved with presets, pose included.
+
+**Tip:** the bundled art is all bright-subject-on-black, which is what these effects are tuned
+for. A photograph with a dark subject on a light ground comes out inverted — Pegboard and Etch
+have a **Polarity** parameter that flips which end of the tonal range gets inked.
+
 ### Creating Your Own Effects
 
 Effects are defined by `.pfx` files — JSON manifests that reference WGSL shaders.

@@ -1331,16 +1331,37 @@ mod tests {
                         threshold: 0.1,
                         scale: 1.0,
                     });
-            let aux = crate::gpu::particle::image_source::sample_image(
-                &img_path,
-                &sample_def,
-                def.max_count,
-            )
-            .unwrap_or_else(|e| panic!("{name}: sample {}: {e}", img_path.display()));
+            // MEDIA_MODEL aims the same sweep at a 3D model (#1993), which reaches these
+            // effects through a render-to-frame rather than a decoder. Worth running both
+            // ways: a model's silhouette and tonal distribution are nothing like the
+            // bundled art's, and an effect can read well on one and not the other.
+            let (src_label, aux) = match std::env::var("MEDIA_MODEL") {
+                Ok(m) => {
+                    let path = std::path::PathBuf::from(m);
+                    let aux = crate::gpu::particle::model_source::sample_model(
+                        &device,
+                        &queue,
+                        &path,
+                        &sample_def,
+                        &def.model_sample.clone().unwrap_or_default(),
+                        def.max_count,
+                    )
+                    .unwrap_or_else(|e| panic!("{name}: sample {}: {e}", path.display()));
+                    (path.display().to_string(), aux)
+                }
+                Err(_) => {
+                    let aux = crate::gpu::particle::image_source::sample_image(
+                        &img_path,
+                        &sample_def,
+                        def.max_count,
+                    )
+                    .unwrap_or_else(|e| panic!("{name}: sample {}: {e}", img_path.display()));
+                    (img_path.display().to_string(), aux)
+                }
+            };
             assert!(
                 !aux.is_empty(),
-                "{name}: sampling {} produced no aux — the probe would be blind",
-                img_path.display()
+                "{name}: sampling {src_label} produced no aux — the probe would be blind",
             );
 
             // Background pass (if the effect has one), built through the production preamble.

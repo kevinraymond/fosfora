@@ -552,13 +552,29 @@ fn upload_buffer(
     buffer
 }
 
-/// Load a glTF/GLB file into a single merged, world-space, unit-normalized
-/// triangle mesh.
-fn load_mesh(device: &Device, path: &Path) -> Result<ModelGeometry, String> {
+/// A merged, world-space, unit-normalized triangle mesh: the shared result of
+/// reading a glTF file, before either consumer decides what to do with it.
+///
+/// `normals` is always the same length as `positions` — a primitive that ships
+/// without them gets face normals computed instead (see [`fill_missing_normals`]),
+/// so a consumer never has to handle the missing case.
+pub(super) struct MeshData {
+    pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
+    pub indices: Vec<u32>,
+}
+
+/// Read a glTF/GLB file into a single merged, world-space, unit-normalized mesh.
+///
+/// Shared by the obstacle path (which wants positions only, for a depth raster)
+/// and the particle `model:` source (#1993, which needs normals to shade). Keeping
+/// one glTF walk means a file that loads as an obstacle also loads as a source.
+pub(super) fn load_mesh_data(path: &Path) -> Result<MeshData, String> {
     let (doc, buffers, _images) =
         gltf::import(path).map_err(|e| format!("glTF import {}: {e}", path.display()))?;
 
     let mut positions: Vec<Vec3> = Vec::new();
+    let mut normals: Vec<Vec3> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
     let scene = doc
@@ -571,6 +587,7 @@ fn load_mesh(device: &Device, path: &Path) -> Result<ModelGeometry, String> {
             Mat4::IDENTITY,
             &buffers,
             &mut positions,
+            &mut normals,
             &mut indices,
         );
     }
@@ -580,6 +597,21 @@ fn load_mesh(device: &Device, path: &Path) -> Result<ModelGeometry, String> {
     }
 
     normalize(&mut positions);
+    fill_missing_normals(&positions, &mut normals, &indices);
+
+    Ok(MeshData {
+        positions,
+        normals,
+        indices,
+    })
+}
+
+/// Load a glTF/GLB file into a single merged, world-space, unit-normalized
+/// triangle mesh. The depth raster needs positions only; normals are discarded.
+fn load_mesh(device: &Device, path: &Path) -> Result<ModelGeometry, String> {
+    let MeshData {
+        positions, indices, ..
+    } = load_mesh_data(path)?;
 
     let vbytes: Vec<u8> = positions
         .iter()
@@ -607,14 +639,25 @@ fn load_mesh(device: &Device, path: &Path) -> Result<ModelGeometry, String> {
 
 /// Recursively accumulate a node's (and children's) triangle geometry in world
 /// space.
+///
+/// `normals` is kept index-parallel with `positions`: a primitive that carries no
+/// NORMAL attribute contributes zeros, which [`fill_missing_normals`] fills in
+/// afterwards. Pushing a placeholder rather than skipping is what keeps the two
+/// vectors aligned when a file mixes primitives that have normals with ones that
+/// do not.
 fn walk_node(
     node: &gltf::Node,
     parent: Mat4,
     buffers: &[gltf::buffer::Data],
     positions: &mut Vec<Vec3>,
+    normals: &mut Vec<Vec3>,
     indices: &mut Vec<u32>,
 ) {
     let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
+    // Normals transform by the inverse transpose, which matters the moment a node
+    // carries a non-uniform scale — the plain matrix would shear them off the
+    // surface and the shading would go wrong in a way that looks like bad geometry.
+    let normal_mat = glam::Mat3::from_mat4(world).inverse().transpose();
     if let Some(mesh) = node.mesh() {
         for prim in mesh.primitives() {
             if prim.mode() != gltf::mesh::Mode::Triangles {
@@ -629,18 +672,63 @@ fn walk_node(
                 let w = world.transform_point3(Vec3::from(p));
                 positions.push(w);
             }
+            let added = positions.len() as u32 - base;
+            match reader.read_normals() {
+                Some(n_iter) => {
+                    let before = normals.len();
+                    for n in n_iter {
+                        normals.push(normal_mat * Vec3::from(n));
+                    }
+                    // A NORMAL attribute shorter than POSITION is malformed but not
+                    // worth rejecting the file over; pad so the vectors stay aligned.
+                    normals.resize(before + added as usize, Vec3::ZERO);
+                }
+                None => normals.resize(normals.len() + added as usize, Vec3::ZERO),
+            }
             match reader.read_indices() {
                 Some(idx) => indices.extend(idx.into_u32().map(|i| i + base)),
                 None => {
                     // Non-indexed: sequential triangles.
-                    let added = positions.len() as u32 - base;
                     indices.extend((0..added).map(|i| i + base));
                 }
             }
         }
     }
     for child in node.children() {
-        walk_node(&child, world, buffers, positions, indices);
+        walk_node(&child, world, buffers, positions, normals, indices);
+    }
+}
+
+/// Give every vertex whose normal is missing (left at zero by [`walk_node`]) the
+/// area-weighted average of the faces touching it, so an untextured, normal-less
+/// model still shades rather than rendering flat.
+fn fill_missing_normals(positions: &[Vec3], normals: &mut [Vec3], indices: &[u32]) {
+    debug_assert_eq!(positions.len(), normals.len());
+    let missing: Vec<bool> = normals.iter().map(|n| n.length_squared() < 1e-12).collect();
+    if !missing.iter().any(|m| *m) {
+        return;
+    }
+    for tri in indices.chunks_exact(3) {
+        let (a, b, c) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+        if a >= positions.len() || b >= positions.len() || c >= positions.len() {
+            continue;
+        }
+        // Un-normalized cross product is area-weighted, which is what makes the
+        // accumulated average follow the surface rather than the tessellation.
+        let face = (positions[b] - positions[a]).cross(positions[c] - positions[a]);
+        for i in [a, b, c] {
+            if missing[i] {
+                normals[i] += face;
+            }
+        }
+    }
+    for (i, n) in normals.iter_mut().enumerate() {
+        if missing[i] {
+            // A vertex touched by no triangle (or by degenerate ones only) still
+            // needs a direction; face it at the camera rather than leaving a zero
+            // that would normalize to NaN in the shader.
+            *n = n.try_normalize().unwrap_or(Vec3::Z);
+        }
     }
 }
 

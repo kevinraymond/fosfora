@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use super::image_source;
+use super::model_source::{self, resolve_model_path};
 use super::text_source;
-use super::types::{ImageSampleDef, MorphTargetDef, ParticleAux};
+use super::types::{ImageSampleDef, ModelSampleDef, MorphTargetDef, ParticleAux};
 
 /// Maximum number of morph targets per effect.
 pub const MORPH_MAX_TARGETS: u32 = 4;
@@ -366,11 +367,16 @@ pub fn generate_random(max_particles: u32, particle_size: f32) -> Vec<ParticleAu
 }
 
 /// Load a morph target from a MorphTargetDef.
+///
+/// `device`/`queue` are only touched by the `model:` source (#1993), which has to
+/// raster the geometry before it can sample it.
 pub fn load_morph_target(
     def: &MorphTargetDef,
     max_particles: u32,
     particle_size: f32,
     assets_dir: &Path,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
 ) -> Result<Vec<ParticleAux>, String> {
     if def.source == "random" {
         return Ok(generate_random(max_particles, particle_size));
@@ -406,6 +412,23 @@ pub fn load_morph_target(
             scale: 1.0,
         };
         return image_source::sample_image(&image_path, &sample_def, max_particles);
+    }
+
+    if let Some(model_name) = def.source.strip_prefix("model:") {
+        let model_path = resolve_model_path(assets_dir, model_name);
+        let sample_def = ImageSampleDef {
+            mode: "grid".to_string(),
+            threshold: 0.1,
+            scale: 1.0,
+        };
+        return model_source::sample_model(
+            device,
+            queue,
+            &model_path,
+            &sample_def,
+            &ModelSampleDef::default(),
+            max_particles,
+        );
     }
 
     Err(format!("Unknown morph target source: {}", def.source))

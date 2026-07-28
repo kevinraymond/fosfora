@@ -10,16 +10,22 @@ Checks:
   * `#anchors` match a real heading in the target file
   * relative <img src=...> and ![](...) targets exist
   * the effect catalogue in docs/GALLERY.md still matches assets/effects/*.pfx
+  * (--check-assets) every clip GALLERY.md references exists in the demo-assets release
 
 Remote URLs are not fetched — this is a structural check, not a link-rot check.
 
-Usage:  scripts/check_docs.py
+Usage:  scripts/check_docs.py [--check-assets]
+
+`--check-assets` is opt-in because it needs `gh` and the network. The release gate
+in .github/workflows/tag.yml passes it; the pre-commit hook does not, so committing
+still works offline.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -156,14 +162,70 @@ def check_gallery() -> list[str]:
     return errors
 
 
+def check_gallery_assets() -> list[str]:
+    """Verify every clip GALLERY.md points at actually exists in the demo-assets release.
+
+    The gallery's tile URLs are generated from the .pfx files, so adding an effect adds
+    a reference automatically — but the asset behind it only exists once someone captures
+    a clip, builds a tile and uploads it. check_gallery() confirms a clip is REFERENCED;
+    nothing confirmed it RESOLVES, so v1.27.0 shipped Pegboard and Etch as broken images
+    with every gate green (board #2004).
+
+    One `gh` call for the whole release, not one request per tile.
+
+    Note for whoever fixes a failure here: build_media.sh writes tiles to <out>/tiles/,
+    not <out>/, and `gh release upload` reports a wrong path as a bare "no such file or
+    directory" that reads like the build broke rather than like a typo.
+    """
+    gallery = REPO / "docs" / "GALLERY.md"
+    if not gallery.exists():
+        return ["docs/GALLERY.md is missing"]
+
+    referenced = set(re.findall(r"/download/demo-assets/([^\"')\s]+)", gallery.read_text()))
+    if not referenced:
+        return ["docs/GALLERY.md references no demo-assets clips at all"]
+
+    try:
+        out = subprocess.run(
+            ["gh", "release", "view", "demo-assets", "--json", "assets"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        ).stdout
+    except FileNotFoundError:
+        # Never downgrade to a skip. A silent pass here is the exact failure mode
+        # this check exists to remove.
+        return ["--check-assets needs the `gh` CLI, which is not on PATH"]
+    except subprocess.CalledProcessError as e:
+        return [f"gh release view demo-assets failed: {e.stderr.strip() or e}"]
+    except subprocess.TimeoutExpired:
+        return ["gh release view demo-assets timed out"]
+
+    published = {a["name"] for a in json.loads(out).get("assets", [])}
+    missing = sorted(referenced - published)
+    return [
+        f"docs/GALLERY.md references {m}, which is not in the demo-assets release "
+        f"(the tile will render broken)"
+        for m in missing
+    ]
+
+
 def main() -> int:
+    check_assets = "--check-assets" in sys.argv[1:]
     errors = check_links() + check_gallery()
+    if check_assets:
+        errors += check_gallery_assets()
     if errors:
         print(f"{len(errors)} problem(s):\n", file=sys.stderr)
         for e in errors:
             print(f"  {e}", file=sys.stderr)
         return 1
-    print(f"docs OK — {len(md_files())} markdown files, all relative links and anchors resolve")
+    tail = ", every gallery clip is published" if check_assets else ""
+    print(
+        f"docs OK — {len(md_files())} markdown files, all relative links and anchors "
+        f"resolve{tail}"
+    )
     return 0
 
 

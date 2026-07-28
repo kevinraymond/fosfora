@@ -5,6 +5,22 @@
 
 ## Unreleased
 
+## v1.28.0 — 2026-07-28
+
+### Added
+- **3D models are now a particle source.** Point Raster, Morph, Pegboard or Etch at a
+  `.glb`/`.gltf` mesh or a `.ply`/`.splat` capture with the new **Model…** button, and it
+  is re-made in that effect's medium — your own scan, as pegs or as scratched aluminium.
+  Yaw, Pitch, Zoom and Ambient set how it is framed; meshes are shaded from their own
+  surface normals, captures keep their captured colour. In Morph a model becomes a morph
+  target you can blend to, via the new **Model** button in the target row. Models are
+  saved and restored with presets, pose included.
+
+### Fixed
+- Swapping to a particle source that samples fewer points left the previous source's
+  particles stranded on screen — pegs from an old model pose kept standing after a
+  re-sample. The tail of the source buffer is now cleared, so they die as intended.
+
 ## v1.27.0 — 2026-07-28
 
 ### Added

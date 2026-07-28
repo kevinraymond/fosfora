@@ -29,7 +29,7 @@ pub struct ParticleInfo {
     pub is_compute_raster: bool,
     // Image source info
     pub has_image_source: bool,
-    /// "static", "video", or "webcam"
+    /// "static", "video", "webcam", or "model"
     pub source_type: String,
     /// Source filename or device name
     pub source_name: String,
@@ -44,6 +44,12 @@ pub struct ParticleInfo {
     pub source_loading_name: String,
     /// Built-in image names (e.g. "skull", "phoenix") available for quick select.
     pub builtin_images: Vec<String>,
+    /// Pose + shading the live model source was sampled at (#1993). Only shown
+    /// when `source_type == "model"`.
+    pub model_yaw: f32,
+    pub model_pitch: f32,
+    pub model_scale: f32,
+    pub model_ambient: f32,
     // Splat scene state (#1800)
     pub has_splat: bool,
     /// Sorted alpha-over path active (vs weighted-average OIT). Drives the badge.
@@ -329,6 +335,23 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(egui::Id::new("particle_load_video"), true));
             }
+
+            // 3D model source (#1993). Rendered to a frame and sampled like an
+            // image, so it works in every effect on this panel.
+            if ui
+                .add_enabled(
+                    !info.source_loading,
+                    egui::Button::new(RichText::new("Model…").size(SMALL_SIZE))
+                        .min_size(egui::vec2(0.0, 24.0)),
+                )
+                .on_hover_text(
+                    "Load a 3D model (.glb/.gltf mesh or .ply/.splat cloud) as the source",
+                )
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("particle_load_model"), true));
+            }
         });
 
         // Which source is actually live. Without it there is no way to tell a failed load
@@ -337,6 +360,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             let kind = match info.source_type.as_str() {
                 "video" => "video",
                 "webcam" => "webcam",
+                "model" => "model",
                 _ => "image",
             };
             ui.label(
@@ -356,6 +380,59 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                         .color(tc.text_secondary),
                 );
             });
+        }
+
+        // Model pose (#1993). A model source is a STILL: moving one of these
+        // re-rasters and re-samples, which is why they commit on release rather
+        // than on every tick — sampling per drag-frame would stall on a 16MB
+        // readback each time.
+        if info.source_type == "model" {
+            ui.add_space(2.0);
+            let mut pose = [
+                info.model_yaw,
+                info.model_pitch,
+                info.model_scale,
+                info.model_ambient,
+            ];
+            let rows: [(&str, usize, std::ops::RangeInclusive<f32>, &str); 4] = [
+                ("Yaw", 0, -180.0..=180.0, "{:.0}°"),
+                ("Pitch", 1, -90.0..=90.0, "{:.0}°"),
+                ("Zoom", 2, 0.3..=3.0, "{:.2}x"),
+                ("Ambient", 3, 0.0..=1.0, "{:.2}"),
+            ];
+            let mut committed = false;
+            for (label, idx, range, fmt) in rows {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(label)
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
+                    let degrees = fmt.ends_with("°");
+                    let r = ui.add(
+                        egui::Slider::new(&mut pose[idx], range)
+                            .show_value(true)
+                            .custom_formatter(move |v, _| {
+                                if degrees {
+                                    format!("{:.0}°", v)
+                                } else if idx == 2 {
+                                    format!("{:.2}x", v)
+                                } else {
+                                    format!("{:.2}", v)
+                                }
+                            }),
+                    );
+                    // Commit on release, not on change: a live drag would re-raster
+                    // and read back the whole 2048² frame every tick.
+                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                        committed = true;
+                    }
+                });
+            }
+            if committed {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("particle_model_pose"), pose));
+            }
         }
 
         // Video transport controls (only when video source is active)
@@ -722,6 +799,21 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(egui::Id::new("morph_load_video"), true);
+                });
+            }
+            // A model can only ever be a morph TARGET (#1993) — the base aux is four
+            // interleaved slots, so writing a flat source over it does not replace the
+            // picture.
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Model").size(SMALL_SIZE - 1.0))
+                        .min_size(egui::vec2(0.0, 20.0)),
+                )
+                .on_hover_text("Load a 3D model into the selected slot (or the next empty one)")
+                .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("morph_load_model"), true);
                 });
             }
         });

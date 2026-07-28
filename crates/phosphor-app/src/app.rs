@@ -1735,8 +1735,55 @@ impl App {
         );
         log::info!("Particle system created: {} particles", particles.max_count);
 
+        // Load model data for image emitters pointed at a 3D model (#1993). The
+        // model is rendered to a frame and sampled by the same code path an image
+        // takes, so it lands in the same aux buffer and every media effect gets it
+        // for free. Checked before `image` and mutually exclusive with it: a .pfx
+        // may carry an image as its fallback, but a model wins when both are set.
+        if is_image_emitter && !particles.emitter.model.is_empty() {
+            let sample_def = particles.image_sample.clone().unwrap_or(
+                crate::gpu::particle::types::ImageSampleDef {
+                    mode: "grid".to_string(),
+                    threshold: 0.1,
+                    scale: 1.0,
+                },
+            );
+            ps.sample_def = sample_def.clone();
+            let model_def = particles.model_sample.clone().unwrap_or_default();
+            let model_path = crate::gpu::particle::model_source::resolve_model_path(
+                assets_dir(),
+                &particles.emitter.model,
+            );
+            match crate::gpu::particle::model_source::sample_model(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &model_path,
+                &sample_def,
+                &model_def,
+                particles.max_count,
+            ) {
+                Ok(aux_data) => {
+                    ps.upload_aux_data(&self.gpu.device, &self.gpu.queue, &aux_data);
+                    ps.store_current_aux(aux_data.clone());
+                    ps.static_model_path = Some(model_path.to_string_lossy().to_string());
+                    ps.model_sample = model_def;
+                    log::info!(
+                        "Loaded model '{}': {} particles",
+                        particles.emitter.model,
+                        aux_data.len()
+                    );
+                }
+                Err(e) => {
+                    log::warn!("Failed to load model '{}': {e}", particles.emitter.model);
+                }
+            }
+        }
+
         // Load image data for image emitters
-        if is_image_emitter && !particles.emitter.image.is_empty() {
+        if is_image_emitter
+            && particles.emitter.model.is_empty()
+            && !particles.emitter.image.is_empty()
+        {
             let sample_def = particles.image_sample.clone().unwrap_or(
                 crate::gpu::particle::types::ImageSampleDef {
                     mode: "grid".to_string(),
@@ -1855,6 +1902,8 @@ impl App {
                         particles.max_count,
                         particles.initial_size,
                         assets,
+                        &self.gpu.device,
+                        &self.gpu.queue,
                     ) {
                         Ok(data) => {
                             log::info!(
@@ -2704,6 +2753,18 @@ impl App {
                     }
                 });
                 let particle_image_path = ps_ref.and_then(|ps| ps.static_image_path.clone());
+                let particle_model_path = ps_ref.and_then(|ps| ps.static_model_path.clone());
+                let particle_model_pose =
+                    ps_ref
+                        .filter(|ps| ps.static_model_path.is_some())
+                        .map(|ps| {
+                            [
+                                ps.model_sample.yaw_degrees,
+                                ps.model_sample.pitch_degrees,
+                                ps.model_sample.scale,
+                                ps.model_sample.ambient,
+                            ]
+                        });
                 // Splat scene (#1800): persist the absolute path; restore
                 // re-decodes in the background like media layers.
                 let splat_scene_path = ps_ref.and_then(|ps| ps.splat_scene_path.clone());
@@ -2766,6 +2827,8 @@ impl App {
                     particle_video_looping,
                     particle_webcam,
                     particle_image_path,
+                    particle_model_path,
+                    particle_model_pose,
                     splat_scene_path,
                     obstacle_image_path,
                     obstacle_mode,
@@ -3138,10 +3201,66 @@ impl App {
                 }
             }
 
+            // Restore a 3D-model particle source (#1993). Ahead of the image restore
+            // and mutually exclusive with it — the two set the same aux buffer.
+            if let Some(ref model_path) = lp.particle_model_path {
+                let path = std::path::PathBuf::from(model_path);
+                if !path.exists() {
+                    log::warn!("Particle model '{model_path}' not found for layer {i}");
+                } else {
+                    let already_loaded = self
+                        .layer_stack
+                        .layers
+                        .get(i)
+                        .and_then(|l| l.as_effect())
+                        .and_then(|e| e.pass_executor.particle_system.as_ref())
+                        .and_then(|ps| ps.static_model_path.as_ref())
+                        == Some(model_path);
+                    if !already_loaded {
+                        let pose = lp.particle_model_pose.unwrap_or([0.0, 0.0, 1.0, 0.25]);
+                        let model_def = crate::gpu::particle::types::ModelSampleDef {
+                            yaw_degrees: pose[0],
+                            pitch_degrees: pose[1],
+                            scale: pose[2],
+                            ambient: pose[3],
+                        };
+                        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+                        if let Some(ps) = self
+                            .layer_stack
+                            .layers
+                            .get_mut(i)
+                            .and_then(|l| l.as_effect_mut())
+                            .and_then(|e| e.pass_executor.particle_system.as_mut())
+                        {
+                            // A morph effect takes the model as a TARGET; anything else
+                            // takes it as the source. Same split the picker uses.
+                            let outcome = if ps.morph_state.is_some() {
+                                ps.apply_model_morph_target(device, queue, &path, &model_def, None)
+                                    .map(|(slot, _)| format!("morph slot {slot}"))
+                            } else {
+                                ps.apply_model_source(device, queue, &path, &model_def)
+                                    .map(|_| "source".to_string())
+                            };
+                            match outcome {
+                                Ok(where_) => log::info!(
+                                    "Restored particle model for layer {i}: {model_path} ({where_})"
+                                ),
+                                Err(e) => log::warn!(
+                                    "Failed to restore particle model for layer {i}: {e}"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+
             // Restore static particle image source
             if let Some(ref img_path) = lp.particle_image_path {
-                // Only restore if no video/webcam source takes priority
-                if lp.particle_video_path.is_none() && lp.particle_webcam != Some(true) {
+                // Only restore if no video/webcam/model source takes priority
+                if lp.particle_video_path.is_none()
+                    && lp.particle_webcam != Some(true)
+                    && lp.particle_model_path.is_none()
+                {
                     let path = std::path::PathBuf::from(img_path);
                     if path.exists() {
                         // Skip if the same image is already loaded

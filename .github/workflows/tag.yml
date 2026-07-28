@@ -49,8 +49,16 @@ jobs:
       # otherwise ride out to a release unnoticed (v1.17.0 nearly did — Chromatica
       # shipped without its gallery entry). The pre-commit hook runs this as well, so
       # it should rarely fail here.
+      #
+      # --check-assets is added HERE and not in the hook: it needs `gh` plus the
+      # network, which a commit must not. It confirms every clip GALLERY.md points at
+      # actually exists in the demo-assets release — v1.27.0 shipped Pegboard and Etch
+      # as broken images because listing a tile and publishing one are separate acts
+      # and only the first was checked (board #2004).
       - name: Check docs
-        run: scripts/check_docs.py
+        run: scripts/check_docs.py --check-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check version and tag
         run: |

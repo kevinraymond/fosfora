@@ -285,7 +285,13 @@ All fields with types and defaults:
             "shape": string,           // point | ring | line | screen | image
             "radius": float,           // Ring radius (default: 0.5)
             "position": [float, float],// Emitter center (default: [0,0])
-            "image": string            // Image path (shape "image" only)
+            "image": string,           // Image path (shape "image" only)
+            "video": string,           // Video path, or "webcam" (shape "image" only)
+            "model": string            // 3D model: .glb/.gltf mesh or .ply/.splat cloud,
+                                       // absolute or relative to assets/models/. Rendered
+                                       // to a frame and sampled like an image, so it works
+                                       // in every image-emitter effect. Wins over "image"
+                                       // when both are set. (shape "image" only)
         },
         "lifetime": float,            // Seconds (default: 3.0)
         "initial_speed": float,        // (default: 0.5)
@@ -307,6 +313,12 @@ All fields with types and defaults:
             "path": string,            // Source image
             "mode": string,            // grid | threshold | random
             "count": int               // Sample count
+        },
+        "model_sample": {              // Pose/shading for emitter.model (optional)
+            "yaw_degrees": float,      // (default: 0)
+            "pitch_degrees": float,    // (default: 0)
+            "scale": float,            // >1 crops in, <1 pulls back (default: 1.0)
+            "ambient": float           // Shadow floor, 0..1 (default: 0.25)
         },
         "blend": string               // "additive" (default) | "alpha"
     },

@@ -16,6 +16,12 @@ pub struct EmitterDef {
     /// Only used with "image" shape emitters.
     #[serde(default)]
     pub video: String,
+    /// 3D model path (`.glb`/`.gltf` mesh or `.ply`/`.splat` cloud) rendered to a
+    /// frame and sampled like an image (#1993). Absolute, or relative to
+    /// assets/models/. Only used with "image" shape emitters, and takes
+    /// precedence over `image` when both are set.
+    #[serde(default)]
+    pub model: String,
 }
 
 impl Default for EmitterDef {
@@ -26,6 +32,7 @@ impl Default for EmitterDef {
             position: [0.0, 0.0],
             image: String::new(),
             video: String::new(),
+            model: String::new(),
         }
     }
 }
@@ -83,6 +90,7 @@ mod tests {
         assert_eq!(e.position, [0.0, 0.0]);
         assert!(e.image.is_empty());
         assert!(e.video.is_empty());
+        assert!(e.model.is_empty());
     }
 
     #[test]
@@ -93,6 +101,7 @@ mod tests {
             position: [0.1, 0.2],
             image: "test.png".into(),
             video: String::new(),
+            model: String::new(),
         };
         let json = serde_json::to_string(&e).unwrap();
         let e2: EmitterDef = serde_json::from_str(&json).unwrap();
@@ -100,6 +109,20 @@ mod tests {
         assert!((e2.radius - 0.5).abs() < 1e-6);
         assert_eq!(e2.image, "test.png");
         assert!(e2.video.is_empty());
+        assert!(e2.model.is_empty());
+    }
+
+    #[test]
+    fn emitter_def_serde_model() {
+        // A .pfx written before #1993 has no model field and must still parse.
+        let old: EmitterDef =
+            serde_json::from_str(r#"{"shape":"image","image":"logo.png"}"#).unwrap();
+        assert!(old.model.is_empty());
+
+        let with_model: EmitterDef =
+            serde_json::from_str(r#"{"shape":"image","model":"skull.glb"}"#).unwrap();
+        assert_eq!(with_model.model, "skull.glb");
+        assert!(with_model.image.is_empty());
     }
 
     #[test]
