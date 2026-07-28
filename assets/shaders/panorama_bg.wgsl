@@ -15,7 +15,7 @@
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
-    let decay = frame_decay(param(7u));
+    let decay = param(7u);
 
     // Outward advection: sample slightly toward the centre so echoes drift
     // away from it. Scales with the measured width, so a mono mix's afterglow

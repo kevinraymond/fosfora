@@ -10,7 +10,7 @@
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
-    let decay = frame_decay(param(7u));
+    let decay = param(7u);
 
     // uv.y is down-screen, so sampling below lifts the echo. Faster when the
     // sound is bright, which is the direction the horizon is moving anyway.

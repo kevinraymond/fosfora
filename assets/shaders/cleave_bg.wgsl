@@ -17,7 +17,7 @@
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
-    let decay = frame_decay(param(7u));
+    let decay = param(7u);
 
     let d = uv - 0.5;
     // Percussive pole: sample toward center -> echoes expand radially.

@@ -47,14 +47,13 @@ const LIB_FILENAMES: &[&str] = &[
     "shaders/lib/sdf.wgsl",
     "shaders/lib/tonemap.wgsl",
     "shaders/lib/chronoflow.wgsl",
-    "shaders/lib/feedback.wgsl",
 ];
 
 /// The same libraries, embedded, for the offscreen compile/render probes — those
 /// run without an assets directory and used to hand-list `noise + palette` at each
-/// site. Adding `feedback.wgsl` broke seven of them at once, because every probe
-/// carried its own copy of the list; `probe_libs_match_production` now pins this
-/// pair to [`LIB_FILENAMES`] so the next lib cannot drift the same way.
+/// site. Adding a sixth library once broke seven of them at once, because every
+/// probe carried its own copy of the list; `probe_libs_match_production` now pins
+/// this pair to [`LIB_FILENAMES`] so the next lib cannot drift the same way.
 #[cfg(test)]
 const LIB_SOURCES: &[(&str, &str)] = &[
     (
@@ -76,10 +75,6 @@ const LIB_SOURCES: &[(&str, &str)] = &[
     (
         "shaders/lib/chronoflow.wgsl",
         include_str!("../../../../assets/shaders/lib/chronoflow.wgsl"),
-    ),
-    (
-        "shaders/lib/feedback.wgsl",
-        include_str!("../../../../assets/shaders/lib/feedback.wgsl"),
     ),
 ];
 
@@ -1554,62 +1549,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(err.is_none(), "helix_bg.wgsl failed validation: {err:?}");
     }
 
-    /// Mirrors `frame_decay` in `assets/shaders/lib/feedback.wgsl`. Kept in Rust so
-    /// the invariant is pinned even though the real implementation is WGSL — if the
-    /// shader changes, this test is the statement of what it was supposed to do.
-    fn frame_decay(d60: f32, delta_time: f32) -> f32 {
-        let d = d60.clamp(0.0, 1.0);
-        if delta_time <= 0.0 {
-            return d;
-        }
-        d.powf(delta_time * 60.0)
-    }
-
-    /// Feedback trails must fade at a rate measured in SECONDS, not frames.
-    ///
-    /// Before this, `prev * decay` applied a fixed factor per frame, so the amount
-    /// retained after one second depended entirely on frame rate — at 0.82 it
-    /// spanned 2.6e-3 at 30 fps to 2.1e-21 at 240. On this X11 setup a click on any
-    /// window produces an FPS spike from the event burst, so every click visibly
-    /// pulsed the trails.
-    #[test]
-    fn feedback_decay_is_frame_rate_independent() {
-        let d60 = 0.82_f32;
-
-        // Same wall-clock second, wildly different frame rates.
-        let retained = |fps: u32| {
-            let per_frame = frame_decay(d60, 1.0 / fps as f32);
-            per_frame.powi(fps as i32)
-        };
-        let reference = retained(60);
-        for fps in [24, 30, 60, 90, 120, 144, 240] {
-            let r = retained(fps);
-            assert!(
-                (r - reference).abs() < 1e-6,
-                "{fps} fps retained {r:e}, 60 fps retained {reference:e}"
-            );
-        }
-
-        // At exactly 60 fps the factor is untouched, which is why every shipped
-        // look and every dt=1/60 probe is preserved.
-        assert!((frame_decay(d60, 1.0 / 60.0) - d60).abs() < 1e-6);
-
-        // A caller that never filled delta_time falls back to the historical
-        // per-frame factor rather than to 1.0, which would never decay and would
-        // saturate the feedback buffer to white.
-        assert!((frame_decay(d60, 0.0) - d60).abs() < f32::EPSILON);
-        assert!((frame_decay(d60, -1.0) - d60).abs() < f32::EPSILON);
-
-        // A factor above 1 would amplify feedback; it must be clamped, not raised.
-        assert!(frame_decay(1.5, 1.0 / 60.0) <= 1.0);
-    }
-
     /// The probes compile shaders against an embedded copy of the library set,
     /// because they run with no assets directory. That copy has to stay equal to
-    /// what the app actually prepends: when `feedback.wgsl` was added to
-    /// `LIB_FILENAMES`, seven probes failed at once with "unknown identifier"
-    /// because each carried its own hand-written `noise + palette` list. Pin the
-    /// two together so the next library is a one-line change, not a scavenger hunt.
+    /// what the app actually prepends: adding one library to `LIB_FILENAMES` once
+    /// failed seven probes at once with "unknown identifier", because each carried
+    /// its own hand-written `noise + palette` list. Pin the two together so the
+    /// next library is a one-line change, not a scavenger hunt.
     #[test]
     fn probe_libs_match_production() {
         let embedded: Vec<&str> = LIB_SOURCES.iter().map(|(name, _)| *name).collect();

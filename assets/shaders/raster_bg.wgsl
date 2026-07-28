@@ -6,7 +6,7 @@
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
 
-    let decay = frame_decay(param(0u)); // trail_decay
+    let decay = param(0u); // trail_decay
 
     // When decay is 0, just output black — particles are the whole show
     if decay < 0.01 {

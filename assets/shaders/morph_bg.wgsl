@@ -6,7 +6,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Feedback from previous frame
     let prev = feedback(uv);
-    let decay = frame_decay(0.85);
+    let decay = 0.85;
 
     // Dark background with radial gradient
     let center = uv - 0.5;

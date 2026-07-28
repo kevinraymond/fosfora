@@ -12,7 +12,7 @@
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
-    let decay = frame_decay(param(7u));
+    let decay = param(7u);
 
     // Downward advection: sample the pixel above (uv y is down-screen) so
     // echoes fall with the water; faster when the mix is loud.

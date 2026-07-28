@@ -54,7 +54,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // rms drives overall beam brightness; onset adds a transient flash.
     let gain = intensity * (0.55 + u.rms * 1.4) * (1.0 + u.onset * 1.5);
     // beat kicks the persistence (trails linger a touch longer on the beat).
-    let decay = frame_decay(min(base_decay + u.beat * 0.04, 0.99));
+    let decay = min(base_decay + u.beat * 0.04, 0.99);
 
     // Phosphor persistence: decayed previous frame.
     let prev = feedback(uv);

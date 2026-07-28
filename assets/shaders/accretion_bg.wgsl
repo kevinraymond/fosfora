@@ -30,7 +30,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Differential decay: red fades fastest, blue persists longest.
     // This shifts aging trails warm→cool, preventing white-out and
     // creating the classic galaxy color gradient.
-    let decay = frame_decay(param(0u));
+    let decay = param(0u);
     let prev = feedback(warped_uv).rgb;
     let trail = prev * vec3f(decay * 0.97, decay * 0.99, decay);
 

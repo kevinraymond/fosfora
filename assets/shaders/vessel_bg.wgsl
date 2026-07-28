@@ -13,7 +13,7 @@
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let uv = frag_coord.xy / u.resolution;
-    let decay = frame_decay(mix(0.78, 0.93, param(6u)));
+    let decay = mix(0.78, 0.93, param(6u));
 
     // Upward drift: sample the pixel below (uv y is down-screen) so echoes
     // rise; the drift freezes as the buildup completes — held breath.
