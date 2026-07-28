@@ -124,6 +124,12 @@ the particle budget on the beams; turn it down if the model itself is losing def
 Because a model is a still, the shafts are fixed once sampled — they do not pulse with the
 music. What the effect does with those particles still reacts as usual.
 
+**Use Raster to see this.** Lighting lives in the *tone* of each particle, and Raster is the
+one effect that keeps that tone intact. Pegboard and Etch deliberately throw it away — they
+re-make your source in a medium with a handful of levels, so the whole gradient from bright
+cavity to unlit bone collapses into two or three peg brightnesses or scan bands. They are
+worth trying for the graphic look, but they are the wrong place to judge a light.
+
 **In Morph**, a model is always a morph *target* rather than the base source — Morph blends
 between four shapes, so there is nothing for a single source to replace. Use the **Model**
 button in the target row (select a slot first to choose where it lands, or let it take the
