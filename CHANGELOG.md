@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.26.1 — 2026-07-28
+
 ### Fixed
 - **An effect that mentioned the name of the built-in uniform block in a comment
   refused to load**, failing with "no definition in scope for identifier: u" while
