@@ -1009,6 +1009,12 @@ mod tests {
         if let Ok(v) = std::env::var("HELIX_DETAIL_STRENGTH") {
             params.render.detail_strength = v.parse().unwrap_or(params.render.detail_strength);
         }
+        // The marcher scrolls its detail FBM by `u.time`, so this knob is how you
+        // see what a frame-time jump does to the wall texture.
+        let render_time: f32 = std::env::var("HELIX_TIME")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
 
         let history = synth_history(&params, 8.0);
         let sim = HelixSim::new(&device, fmt, params.grid_res, params.slice_count);
@@ -1047,8 +1053,16 @@ mod tests {
                 // tube envelope's Z-only fade would leave hard lateral cube faces.
                 render.env_shape = 0;
             }
-            let mut ru =
-                render.build_uniforms([w as f32, h as f32], 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0);
+            let mut ru = render.build_uniforms(
+                [w as f32, h as f32],
+                render_time,
+                0.0,
+                0.0,
+                0.5,
+                0.0,
+                0.0,
+                0.0,
+            );
             ru.grid_res = params.grid_res;
             sim.upload_render_uniforms(&queue, &ru);
 
