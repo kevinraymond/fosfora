@@ -318,7 +318,12 @@ All fields with types and defaults:
             "yaw_degrees": float,      // (default: 0)
             "pitch_degrees": float,    // (default: 0)
             "scale": float,            // >1 crops in, <1 pulls back (default: 1.0)
-            "ambient": float           // Shadow floor, 0..1 (default: 0.25)
+            "ambient": float,          // Shadow floor, 0..1 (default: 0.25)
+            "light_mix": float,        // 0 = fixed key light, 1 = point light (default: 0)
+            "light_x": float,          // Point light in model space; 0,0,0 is dead
+            "light_y": float,          //   centre (inside a hollow form). The model
+            "light_z": float,          //   spans about ±1. (default: 0)
+            "ray_strength": float      // God-ray scatter from openings, 0..1 (default: 0)
         },
         "blend": string               // "additive" (default) | "alpha"
     },

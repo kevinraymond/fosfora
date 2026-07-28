@@ -5,6 +5,13 @@
 
 ## Unreleased
 
+### Added
+- **A light you can put inside a model.** A model particle source can now be lit by a
+  movable point light instead of the fixed key light: park it inside a skull and the outer
+  bone stays dark while the eye sockets glow, and **Rays** streams shafts of light out of
+  the openings. The shafts are sampled into particles like everything else, so they are
+  made of the same stuff the model is. At **Light mix** 0 a model looks exactly as before.
+
 ## v1.28.0 — 2026-07-28
 
 ### Added

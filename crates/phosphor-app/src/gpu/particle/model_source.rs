@@ -64,9 +64,20 @@ struct SampleUniforms {
     proj: [[f32; 4]; 4],
     radius_scale: f32,
     ambient: f32,
+    light_mix: f32,
+    ray_strength: f32,
+    base_color: [f32; 4],
+    // Scalar lanes, mirroring the WGSL exactly — a `[f32; 3]` here would still be
+    // 12 bytes but the shader-side `vec3f` it invites would align to 16 and
+    // desync the two. See the note atop `SampleUniforms` in model_sample.wgsl.
+    light_x: f32,
+    light_y: f32,
+    light_z: f32,
+    light_u: f32,
+    light_v: f32,
     _pad0: f32,
     _pad1: f32,
-    base_color: [f32; 4],
+    _pad2: f32,
 }
 
 /// File extensions this source accepts — the same set the obstacle model dialog
@@ -279,14 +290,34 @@ fn render_to_rgba(
     let half = (1.4 / model_def.scale.max(0.01)).max(0.01);
     let proj = Mat4::orthographic_rh(-half, half, -half, half, 1.6, 4.4);
 
+    // The light is authored in MODEL space, so `view * model` carries it exactly
+    // as it carries the geometry — a light inside a skull stays inside it at
+    // every yaw, with no separate transform to keep in sync (#1996).
+    let mv = view * model;
+    let light_model = Vec3::new(model_def.light_x, model_def.light_y, model_def.light_z);
+    let light_view = mv.transform_point3(light_model);
+    // ...and again through the projection for the radial march's screen origin.
+    // The projection is orthographic, so w is 1 and clip space IS ndc; the v flip
+    // is the usual ndc-y-up to texture-v-down.
+    let light_clip = proj.project_point3(light_view);
+    let ray_strength = model_def.ray_strength.clamp(0.0, 1.0);
+
     let uniforms = SampleUniforms {
-        mv: (view * model).to_cols_array_2d(),
+        mv: mv.to_cols_array_2d(),
         proj: proj.to_cols_array_2d(),
         radius_scale: SPLAT_RADIUS_SCALE,
         ambient: model_def.ambient.clamp(0.0, 1.0),
+        light_mix: model_def.light_mix.clamp(0.0, 1.0),
+        ray_strength,
+        base_color: [1.0, 1.0, 1.0, 1.0],
+        light_x: light_view.x,
+        light_y: light_view.y,
+        light_z: light_view.z,
+        light_u: light_clip.x * 0.5 + 0.5,
+        light_v: 0.5 - light_clip.y * 0.5,
         _pad0: 0.0,
         _pad1: 0.0,
-        base_color: [1.0, 1.0, 1.0, 1.0],
+        _pad2: 0.0,
     };
     let uniforms_buf = upload(
         device,
@@ -405,7 +436,9 @@ fn render_to_rgba(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let color_view = color_tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -478,9 +511,28 @@ fn render_to_rgba(
             }
         }
     }
+
+    // God-ray pass (#1996). Skipped outright when rays are off, so the default
+    // model source costs exactly what it did in v1.28.0 — no second 16MB target,
+    // no extra pipeline — and its readback is byte-identical.
+    let rays_tex = if ray_strength > 0.0 {
+        Some(render_godrays(
+            device,
+            &shader,
+            &bgl,
+            &bind_group,
+            &color_view,
+            extent,
+            &mut encoder,
+        ))
+    } else {
+        None
+    };
+    let readback_tex = rays_tex.as_ref().unwrap_or(&color_tex);
+
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {
-            texture: &color_tex,
+            texture: readback_tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
@@ -513,6 +565,145 @@ fn render_to_rgba(
     staging.unmap();
 
     Ok((rgba, TARGET_RES, TARGET_RES))
+}
+
+/// Radially scatter the point light over the rendered frame, into a new texture.
+///
+/// A render pass cannot sample the target it writes, so this is a second target
+/// rather than an in-place blend. It composites the model back over the rays it
+/// produces, so the result is a drop-in replacement for the first pass's output —
+/// same format, same transparent background, same contract with the sampler.
+#[allow(clippy::too_many_arguments)]
+fn render_godrays(
+    device: &Device,
+    shader: &wgpu::ShaderModule,
+    uniform_bgl: &wgpu::BindGroupLayout,
+    uniform_bg: &wgpu::BindGroup,
+    src_view: &wgpu::TextureView,
+    extent: wgpu::Extent3d,
+    encoder: &mut wgpu::CommandEncoder,
+) -> wgpu::Texture {
+    let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("model-godray-tex-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    // Clamp-to-edge is safe precisely because the model is fitted inside the frame
+    // with margin: the border texels are the transparent clear, so a march that
+    // walks off the edge reads emission 0 rather than smearing a lit pixel.
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("model-godray-sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let tex_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("model-godray-tex-bg"),
+        layout: &tex_bgl,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("model-godray-layout"),
+        bind_group_layouts: &[uniform_bgl, &tex_bgl],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("model-godray-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_fullscreen"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        // No depth: this pass covers the frame once and blends nothing.
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_godray"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+
+    let rays_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("model-godray-color"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let rays_view = rays_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("model-godray-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &rays_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // Every texel is written by the fullscreen triangle, but clear
+                    // transparent anyway: the invariant that untouched frame is
+                    // alpha 0 is what the sampler leans on.
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, uniform_bg, &[]);
+        pass.set_bind_group(1, &tex_bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    rays_tex
 }
 
 #[cfg(test)]
@@ -674,6 +865,244 @@ mod tests {
     ///
     /// `MODEL_FILE=/path/to/thing.glb` aims it at a real asset; with nothing set it
     /// renders the built-in cube. `MODEL_PNG_DIR` overrides the output directory.
+    /// A closed box with a square hole in the wall facing the camera, normals
+    /// OUTWARD throughout — the convention a real `.glb` uses.
+    ///
+    /// This is the #1996 picture reduced to its essentials: a hollow form whose
+    /// interior is visible only through an opening. A light at the origin sits
+    /// inside it, so the near wall is lit from behind (and must stay dark) while
+    /// the far wall's interior shows through the hole (and must not).
+    fn holed_box_mesh(device: &Device) -> Geometry {
+        let (o, h) = (0.5f32, 0.2f32);
+        let mut vbytes: Vec<u8> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut quad = |c: [Vec3; 4], n: Vec3| {
+            let base = (vbytes.len() / 24) as u32;
+            for p in c {
+                for v in [p.x, p.y, p.z, n.x, n.y, n.z] {
+                    vbytes.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        };
+
+        // Five solid walls.
+        for (n, axis) in [
+            (Vec3::new(0.0, 0.0, -1.0), 2),
+            (Vec3::new(-1.0, 0.0, 0.0), 0),
+            (Vec3::new(1.0, 0.0, 0.0), 0),
+            (Vec3::new(0.0, -1.0, 0.0), 1),
+            (Vec3::new(0.0, 1.0, 0.0), 1),
+        ] {
+            let k = if n[axis] > 0.0 { o } else { -o };
+            let corners = match axis {
+                0 => [
+                    Vec3::new(k, -o, -o),
+                    Vec3::new(k, o, -o),
+                    Vec3::new(k, o, o),
+                    Vec3::new(k, -o, o),
+                ],
+                1 => [
+                    Vec3::new(-o, k, -o),
+                    Vec3::new(o, k, -o),
+                    Vec3::new(o, k, o),
+                    Vec3::new(-o, k, o),
+                ],
+                _ => [
+                    Vec3::new(-o, -o, k),
+                    Vec3::new(o, -o, k),
+                    Vec3::new(o, o, k),
+                    Vec3::new(-o, o, k),
+                ],
+            };
+            quad(corners, n);
+        }
+
+        // Near wall, as four strips around a hole spanning [-h, h]².
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        for (x0, x1, y0, y1) in [
+            (-o, -h, -o, o),
+            (h, o, -o, o),
+            (-h, h, -o, -h),
+            (-h, h, h, o),
+        ] {
+            quad(
+                [
+                    Vec3::new(x0, y0, o),
+                    Vec3::new(x1, y0, o),
+                    Vec3::new(x1, y1, o),
+                    Vec3::new(x0, y1, o),
+                ],
+                n,
+            );
+        }
+
+        Geometry::Mesh {
+            vbuf: upload(
+                device,
+                "test-holed-vbuf",
+                &vbytes,
+                wgpu::BufferUsages::VERTEX,
+            ),
+            ibuf: upload(
+                device,
+                "test-holed-ibuf",
+                bytemuck::cast_slice(&indices),
+                wgpu::BufferUsages::INDEX,
+            ),
+            index_count: indices.len() as u32,
+        }
+    }
+
+    /// Mean red of a small patch, to keep assertions off single-texel noise.
+    fn patch_red(rgba: &[u8], res: u32, cx: u32, cy: u32) -> f32 {
+        let mut sum = 0u32;
+        let mut n = 0u32;
+        for y in cy - 8..cy + 8 {
+            for x in cx - 8..cx + 8 {
+                sum += rgba[((y * res + x) * 4) as usize] as u32;
+                n += 1;
+            }
+        }
+        sum as f32 / n as f32
+    }
+
+    /// Texels the sampler would accept (alpha >= 10) outside a centred square of
+    /// half-width `margin`. `cube_mesh` spans a bounding radius of 0.87 inside a
+    /// half-extent-1.4 ortho box, so at any pose its silhouette stays well inside
+    /// margin 500 of 1024 — anything counted here is background the first pass
+    /// left transparent.
+    fn alpha_outside(rgba: &[u8], res: u32, margin: u32) -> usize {
+        let half = res / 2;
+        rgba.chunks_exact(4)
+            .enumerate()
+            .filter(|(i, p)| {
+                let (x, y) = (*i as u32 % res, *i as u32 / res);
+                let out = x.abs_diff(half) > margin || y.abs_diff(half) > margin;
+                out && p[3] >= 10
+            })
+            .count()
+    }
+
+    /// The #1996 mechanism, end to end: a light inside a hollow form lights only
+    /// what faces the cavity.
+    ///
+    /// The near wall and the far wall's interior are the SAME distance-ish from
+    /// the same light and differ only in which way they face, so this separates
+    /// one-sided shading from every other reason a pixel might be dark. Restoring
+    /// the key light's `abs()` in the point-light term lights the near wall to
+    /// roughly the value the hole reads, and this test fails.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn light_inside_a_hollow_form_lights_only_what_faces_the_cavity() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let geometry = holed_box_mesh(&device);
+
+        let (rgba, res, _) = render_to_rgba(
+            &device,
+            &queue,
+            &geometry,
+            &ModelSampleDef {
+                light_mix: 1.0,
+                // Origin: inside the box, behind the near wall, facing the far one.
+                ambient: 0.0,
+                ..ModelSampleDef::default()
+            },
+        )
+        .unwrap();
+
+        // The box spans ±0.36 of clip inside the half-extent-1.4 ortho box (±366
+        // texels of centre) and the hole ±146, so the centre samples the far
+        // wall through the opening and (1300, 1024) samples the near wall.
+        let through_hole = patch_red(&rgba, res, res / 2, res / 2);
+        let near_wall = patch_red(&rgba, res, 1300, res / 2);
+        println!("hollow form: through-hole {through_hole:.1}, near wall {near_wall:.1}");
+
+        assert!(
+            through_hole > 150.0,
+            "the cavity wall visible through the opening reads {through_hole:.1}/255 \
+             — a light inside the form is not reaching what faces it"
+        );
+        assert!(
+            near_wall < 8.0,
+            "the near wall reads {near_wall:.1}/255 with the light BEHIND it — the \
+             point-light term is two-sided, so there is no inside to be lit from"
+        );
+    }
+
+    /// God rays must reach the SAMPLER, not merely the screenshot (#1996).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn godrays_write_sampler_visible_alpha() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let geometry = holed_box_mesh(&device);
+
+        let lit = ModelSampleDef {
+            light_mix: 1.0,
+            ambient: 0.0,
+            ..ModelSampleDef::default()
+        };
+
+        let (off, res, _) = render_to_rgba(&device, &queue, &geometry, &lit).unwrap();
+        let (on, _, _) = render_to_rgba(
+            &device,
+            &queue,
+            &geometry,
+            &ModelSampleDef {
+                ray_strength: 1.0,
+                ..lit
+            },
+        )
+        .unwrap();
+
+        // Alpha stepping outward from the silhouette edge — a diffable signature of
+        // how far the shafts actually carry, which the counts below cannot show.
+        let profile: Vec<u8> = (0..8)
+            .map(|k| on[((((res / 2) * res) + (1440 + k * 80).min(res - 1)) * 4 + 3) as usize])
+            .collect();
+        println!("rays-on alpha from silhouette edge outward: {profile:?}");
+
+        let (off_n, on_n) = (alpha_outside(&off, res, 500), alpha_outside(&on, res, 500));
+        println!("godray alpha outside silhouette: off {off_n}, on {on_n}");
+
+        assert_eq!(
+            off_n, 0,
+            "rays off yet {off_n} background texels carry alpha — the transparent \
+             clear is no longer load-bearing"
+        );
+        // The specific regression: rays that render as colour but carry no alpha.
+        // That frame looks correct in a PNG and produces not one extra particle,
+        // so a colour-only check would pass while the feature does nothing.
+        assert!(
+            on_n > 10_000,
+            "rays on but only {on_n} background texels are sampler-visible \
+             (alpha >= 10) — shafts that the sampler cannot see yield no particles"
+        );
+
+        // ...and finally through the sampler itself, which is the actual claim:
+        // the shafts are MADE OF particles. The raster assertions above would all
+        // hold for a frame the sampler still declined to place anything on.
+        let (sample_def, _) = defaults();
+        let beyond = |rgba: &[u8]| {
+            image_source::sample_rgba_buffer(rgba, res, res, &sample_def, 200_000)
+                .iter()
+                // The box spans ±0.36 of the frame, so anything past 0.45 sits on
+                // a shaft rather than on the model.
+                .filter(|a| a.home[0].abs().max(a.home[1].abs()) > 0.45)
+                .count()
+        };
+        let (off_p, on_p) = (beyond(&off), beyond(&on));
+        println!("particles on shafts: off {off_p}, on {on_p}");
+        assert_eq!(off_p, 0, "{off_p} particles off-model with rays off");
+        assert!(
+            on_p > 1_000,
+            "only {on_p} particles landed on the shafts — the rays reach the raster \
+             but not the particle field"
+        );
+    }
+
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn model_source_preview() {
@@ -690,15 +1119,29 @@ mod tests {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| "model".to_string()),
             ),
+            // MODEL_LIGHT renders the hollow-form fixture lit from inside with
+            // rays on, which is #1996's picture without needing a `.glb` on hand.
+            Err(_) if std::env::var("MODEL_LIGHT").is_ok() => {
+                (holed_box_mesh(&device), "holed-box-lit".to_string())
+            }
             Err(_) => (cube_mesh(&device), "cube".to_string()),
         };
 
         // Three-quarter view: a front-on cube is a flat square with one face lit,
         // which would hide exactly the shading bugs this preview exists to catch.
-        let posed = ModelSampleDef {
-            yaw_degrees: 35.0,
-            pitch_degrees: 20.0,
-            ..model_def
+        let posed = if std::env::var("MODEL_LIGHT").is_ok() {
+            ModelSampleDef {
+                light_mix: 1.0,
+                ambient: 0.0,
+                ray_strength: 1.0,
+                ..model_def
+            }
+        } else {
+            ModelSampleDef {
+                yaw_degrees: 35.0,
+                pitch_degrees: 20.0,
+                ..model_def
+            }
         };
         let (rgba, w, h) = render_to_rgba(&device, &queue, &geometry, &posed).unwrap();
 

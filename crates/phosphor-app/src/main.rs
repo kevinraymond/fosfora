@@ -323,6 +323,11 @@ impl ApplicationHandler for PhosphorApp {
                                 model_pitch: ps.model_sample.pitch_degrees,
                                 model_scale: ps.model_sample.scale,
                                 model_ambient: ps.model_sample.ambient,
+                                model_light_mix: ps.model_sample.light_mix,
+                                model_light_x: ps.model_sample.light_x,
+                                model_light_y: ps.model_sample.light_y,
+                                model_light_z: ps.model_sample.light_z,
+                                model_ray_strength: ps.model_sample.ray_strength,
                                 has_splat: ps.def.splat.is_some(),
                                 splat_sorted: ps.is_splat_sorted(),
                                 splat_sh_degree: ps.splat_sh_degree(),
@@ -2579,7 +2584,7 @@ impl ApplicationHandler for PhosphorApp {
                     // Model pose changed — re-raster and re-sample the live model.
                     // The panel only emits this on slider RELEASE, so this runs once
                     // per adjustment rather than once per drag frame.
-                    let model_pose: Option<[f32; 4]> =
+                    let model_pose: Option<[f32; 9]> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_model_pose")));
                     if let Some(pose) = model_pose {
                         let def = crate::gpu::particle::types::ModelSampleDef {
@@ -2587,6 +2592,11 @@ impl ApplicationHandler for PhosphorApp {
                             pitch_degrees: pose[1],
                             scale: pose[2],
                             ambient: pose[3],
+                            light_mix: pose[4],
+                            light_x: pose[5],
+                            light_y: pose[6],
+                            light_z: pose[7],
+                            ray_strength: pose[8],
                         };
                         let (device, queue) = (&app.gpu.device, &app.gpu.queue);
                         if let Some(ps) = app

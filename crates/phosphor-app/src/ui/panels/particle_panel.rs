@@ -50,6 +50,12 @@ pub struct ParticleInfo {
     pub model_pitch: f32,
     pub model_scale: f32,
     pub model_ambient: f32,
+    /// Point light and god rays the same sample was lit by (#1996).
+    pub model_light_mix: f32,
+    pub model_light_x: f32,
+    pub model_light_y: f32,
+    pub model_light_z: f32,
+    pub model_ray_strength: f32,
     // Splat scene state (#1800)
     pub has_splat: bool,
     /// Sorted alpha-over path active (vs weighted-average OIT). Drives the badge.
@@ -382,10 +388,10 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             });
         }
 
-        // Model pose (#1993). A model source is a STILL: moving one of these
-        // re-rasters and re-samples, which is why they commit on release rather
-        // than on every tick — sampling per drag-frame would stall on a 16MB
-        // readback each time.
+        // Model pose and lighting (#1993, #1996). A model source is a STILL:
+        // moving one of these re-rasters and re-samples, which is why they commit
+        // on release rather than on every tick — sampling per drag-frame would
+        // stall on a 16MB readback each time.
         if info.source_type == "model" {
             ui.add_space(2.0);
             let mut pose = [
@@ -393,34 +399,42 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                 info.model_pitch,
                 info.model_scale,
                 info.model_ambient,
+                info.model_light_mix,
+                info.model_light_x,
+                info.model_light_y,
+                info.model_light_z,
+                info.model_ray_strength,
             ];
-            let rows: [(&str, usize, std::ops::RangeInclusive<f32>, &str); 4] = [
-                ("Yaw", 0, -180.0..=180.0, "{:.0}°"),
-                ("Pitch", 1, -90.0..=90.0, "{:.0}°"),
-                ("Zoom", 2, 0.3..=3.0, "{:.2}x"),
-                ("Ambient", 3, 0.0..=1.0, "{:.2}"),
+            // (label, index, range, decimals, suffix). The suffix is carried
+            // rather than inferred from the index — the old formatter keyed "x"
+            // off `idx == 2`, which silently mislabels the moment a row moves.
+            //
+            // Light XYZ span slightly beyond the unit bounding radius every model
+            // is normalized to, so the light reaches from dead centre (inside a
+            // hollow form — the #1996 picture) to just outside the silhouette.
+            let rows: [(&str, usize, std::ops::RangeInclusive<f32>, usize, &str); 9] = [
+                ("Yaw", 0, -180.0..=180.0, 0, "°"),
+                ("Pitch", 1, -90.0..=90.0, 0, "°"),
+                ("Zoom", 2, 0.3..=3.0, 2, "x"),
+                ("Ambient", 3, 0.0..=1.0, 2, ""),
+                ("Light mix", 4, 0.0..=1.0, 2, ""),
+                ("Light X", 5, -1.5..=1.5, 2, ""),
+                ("Light Y", 6, -1.5..=1.5, 2, ""),
+                ("Light Z", 7, -1.5..=1.5, 2, ""),
+                ("Rays", 8, 0.0..=1.0, 2, ""),
             ];
             let mut committed = false;
-            for (label, idx, range, fmt) in rows {
+            for (label, idx, range, decimals, suffix) in rows {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(label)
                             .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     );
-                    let degrees = fmt.ends_with("°");
                     let r = ui.add(
                         egui::Slider::new(&mut pose[idx], range)
                             .show_value(true)
-                            .custom_formatter(move |v, _| {
-                                if degrees {
-                                    format!("{:.0}°", v)
-                                } else if idx == 2 {
-                                    format!("{:.2}x", v)
-                                } else {
-                                    format!("{:.2}", v)
-                                }
-                            }),
+                            .custom_formatter(move |v, _| format!("{:.*}{}", decimals, v, suffix)),
                     );
                     // Commit on release, not on change: a live drag would re-raster
                     // and read back the whole 2048² frame every tick.

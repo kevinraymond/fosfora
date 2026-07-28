@@ -99,6 +99,31 @@ splat captures keep the colour they were captured with. Four controls set how it
 Unlike a video, a model is a **still** — it is sampled once and stays put until you move one
 of those controls.
 
+### Lighting a model from the inside
+
+Five more controls put a light *anywhere* in the model, including inside it — a skull lit
+from within, glowing out through the eye sockets and trailing shafts of light.
+
+- **Light mix** — crossfades from the default fixed key light (`0.00`) to the movable light
+  alone (`1.00`). At `0.00` nothing below has any effect, which is how a model looks until
+  you reach for these.
+- **Light X / Y / Z** — where the light sits. `0, 0, 0` is dead centre — inside a hollow
+  form. The model spans roughly ±1, so values past that put the light outside it.
+- **Rays** — how strongly light escaping the openings scatters into shafts.
+
+The light is **one-sided**, which is what makes "inside" mean anything: a surface facing away
+from it stays dark. So a light inside a skull leaves the outer bone unlit and picks out only
+what faces the cavity, and the shafts stream out of the sockets rather than off the whole
+silhouette. Turning **Rays** up on a model with no interior light does nothing — only genuinely
+bright surfaces scatter.
+
+Rays are sampled into particles like everything else, so the shafts are *made of* particles
+and pick up whatever the effect does with them. A high **Rays** setting spends a real share of
+the particle budget on the beams; turn it down if the model itself is losing definition.
+
+Because a model is a still, the shafts are fixed once sampled — they do not pulse with the
+music. What the effect does with those particles still reacts as usual.
+
 **In Morph**, a model is always a morph *target* rather than the base source — Morph blends
 between four shapes, so there is nothing for a single source to replace. Use the **Model**
 button in the target row (select a slot first to choose where it lands, or let it take the

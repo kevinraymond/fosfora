@@ -603,6 +603,11 @@ pub struct ImageSampleDef {
 /// The model is unit-normalized at load, so these are framing controls rather
 /// than world transforms: yaw/pitch turn it, `scale` crops in or pulls back, and
 /// `ambient` sets how far the shadowed side is lifted off black.
+///
+/// The light fields (#1996) are in MODEL space, so a light placed inside a form
+/// stays inside it at every yaw. `light_mix` crossfades from the shipped
+/// directional key light (0) to the point light alone (1); at 0 every one of
+/// these is inert and the raster is byte-identical to the #1993 one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSampleDef {
     #[serde(default)]
@@ -613,6 +618,16 @@ pub struct ModelSampleDef {
     pub scale: f32,
     #[serde(default = "default_ambient")]
     pub ambient: f32,
+    #[serde(default)]
+    pub light_mix: f32,
+    #[serde(default)]
+    pub light_x: f32,
+    #[serde(default)]
+    pub light_y: f32,
+    #[serde(default)]
+    pub light_z: f32,
+    #[serde(default)]
+    pub ray_strength: f32,
 }
 
 impl Default for ModelSampleDef {
@@ -622,6 +637,13 @@ impl Default for ModelSampleDef {
             pitch_degrees: 0.0,
             scale: 1.0,
             ambient: default_ambient(),
+            // Light off by default: a model source keeps rendering exactly as it
+            // did in v1.28.0 until someone reaches for the new sliders.
+            light_mix: 0.0,
+            light_x: 0.0,
+            light_y: 0.0,
+            light_z: 0.0,
+            ray_strength: 0.0,
         }
     }
 }

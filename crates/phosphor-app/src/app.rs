@@ -2710,52 +2710,52 @@ impl App {
     }
 
     pub fn save_preset(&mut self, name: &str) {
-        let layer_presets: Vec<LayerPreset> = self
-            .layer_stack
-            .layers
-            .iter()
-            .map(|l| {
-                let effect_name = l
-                    .effect_index()
-                    .and_then(|i| self.effect_loader.effects.get(i))
-                    .map(|e| e.name.clone())
-                    .unwrap_or_default();
-                let media_path = l
-                    .as_media()
-                    .map(|m| m.file_path.to_string_lossy().to_string());
-                let media_speed = l.as_media().map(|m| m.transport.speed);
-                let media_looping = l.as_media().map(|m| m.transport.looping);
-                let webcam_device = l
-                    .as_media()
-                    .filter(|m| m.is_live())
-                    .map(|m| m.file_name.clone());
-                // Capture particle source info
-                let ps_ref = l
-                    .as_effect()
-                    .and_then(|e| e.pass_executor.particle_system.as_ref());
-                let particle_video_path = ps_ref.and_then(|ps| ps.video_path.clone());
-                let particle_video_speed = ps_ref.and_then(|ps| ps.image_source.video_speed());
-                let particle_video_looping = ps_ref.and_then(|ps| {
-                    #[cfg(feature = "video")]
-                    if let crate::gpu::particle::ParticleImageSource::Video { looping, .. } =
-                        &ps.image_source
-                    {
-                        return Some(*looping);
-                    }
-                    let _ = ps;
-                    None
-                });
-                let particle_webcam = ps_ref.and_then(|ps| {
-                    if ps.image_source.is_webcam() {
-                        Some(true)
-                    } else {
+        let layer_presets: Vec<LayerPreset> =
+            self.layer_stack
+                .layers
+                .iter()
+                .map(|l| {
+                    let effect_name = l
+                        .effect_index()
+                        .and_then(|i| self.effect_loader.effects.get(i))
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default();
+                    let media_path = l
+                        .as_media()
+                        .map(|m| m.file_path.to_string_lossy().to_string());
+                    let media_speed = l.as_media().map(|m| m.transport.speed);
+                    let media_looping = l.as_media().map(|m| m.transport.looping);
+                    let webcam_device = l
+                        .as_media()
+                        .filter(|m| m.is_live())
+                        .map(|m| m.file_name.clone());
+                    // Capture particle source info
+                    let ps_ref = l
+                        .as_effect()
+                        .and_then(|e| e.pass_executor.particle_system.as_ref());
+                    let particle_video_path = ps_ref.and_then(|ps| ps.video_path.clone());
+                    let particle_video_speed = ps_ref.and_then(|ps| ps.image_source.video_speed());
+                    let particle_video_looping = ps_ref.and_then(|ps| {
+                        #[cfg(feature = "video")]
+                        if let crate::gpu::particle::ParticleImageSource::Video {
+                            looping, ..
+                        } = &ps.image_source
+                        {
+                            return Some(*looping);
+                        }
+                        let _ = ps;
                         None
-                    }
-                });
-                let particle_image_path = ps_ref.and_then(|ps| ps.static_image_path.clone());
-                let particle_model_path = ps_ref.and_then(|ps| ps.static_model_path.clone());
-                let particle_model_pose =
-                    ps_ref
+                    });
+                    let particle_webcam = ps_ref.and_then(|ps| {
+                        if ps.image_source.is_webcam() {
+                            Some(true)
+                        } else {
+                            None
+                        }
+                    });
+                    let particle_image_path = ps_ref.and_then(|ps| ps.static_image_path.clone());
+                    let particle_model_path = ps_ref.and_then(|ps| ps.static_model_path.clone());
+                    let particle_model_pose = ps_ref
                         .filter(|ps| ps.static_model_path.is_some())
                         .map(|ps| {
                             [
@@ -2765,84 +2765,98 @@ impl App {
                                 ps.model_sample.ambient,
                             ]
                         });
-                // Splat scene (#1800): persist the absolute path; restore
-                // re-decodes in the background like media layers.
-                let splat_scene_path = ps_ref.and_then(|ps| ps.splat_scene_path.clone());
-                // Capture obstacle info
-                let obstacle_image_path = ps_ref.and_then(|ps| ps.obstacle_image_path.clone());
-                let obstacle_mode = ps_ref
-                    .filter(|ps| ps.obstacle_enabled)
-                    .map(|ps| ps.obstacle_mode as u32);
-                let obstacle_fit = ps_ref
-                    .filter(|ps| ps.obstacle_enabled)
-                    .map(|ps| ps.obstacle_fit as u32);
-                let obstacle_threshold = ps_ref
-                    .filter(|ps| ps.obstacle_enabled)
-                    .map(|ps| ps.obstacle_threshold);
-                let obstacle_elasticity = ps_ref
-                    .filter(|ps| ps.obstacle_enabled)
-                    .map(|ps| ps.obstacle_elasticity);
-                let obstacle_depth = ps_ref
-                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
-                    .map(|_| true);
-                let obstacle_model = ps_ref
-                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
-                    .map(|_| true);
-                // Capture live Lattice / particle-sim panel edits so they
-                // round-trip through the preset instead of snapping back to
-                // the effect's `.pfx` defaults on reload.
-                let lattice = ps_ref
-                    .filter(|ps| ps.lattice_enabled)
-                    .map(|ps| ps.lattice_params);
-                let helix = ps_ref
-                    .filter(|ps| ps.helix_enabled)
-                    .map(|ps| ps.helix_params);
-                let particle_sim = ps_ref.map(|ps| crate::preset::ParticleSimPreset {
-                    emit_rate: ps.def.emit_rate,
-                    burst_on_beat: ps.def.burst_on_beat,
-                    lifetime: ps.def.lifetime,
-                    initial_speed: ps.def.initial_speed,
-                    initial_size: ps.def.initial_size,
-                    drag: ps.def.drag,
-                    // Live allocated length (0 when off), so the preset restores
-                    // exactly what's on screen.
-                    trail_length: Some(ps.trail_length()),
-                });
-                LayerPreset {
-                    effect_name,
-                    params: l.param_store.values.clone(),
-                    blend_mode: l.blend_mode,
-                    opacity: l.opacity,
-                    displace_amount: l.displace_amount,
-                    enabled: l.enabled,
-                    locked: l.locked,
-                    pinned: l.pinned,
-                    custom_name: l.custom_name.clone(),
-                    media_path,
-                    media_speed,
-                    media_looping,
-                    webcam_device,
-                    particle_video_path,
-                    particle_video_speed,
-                    particle_video_looping,
-                    particle_webcam,
-                    particle_image_path,
-                    particle_model_path,
-                    particle_model_pose,
-                    splat_scene_path,
-                    obstacle_image_path,
-                    obstacle_mode,
-                    obstacle_fit,
-                    obstacle_threshold,
-                    obstacle_elasticity,
-                    obstacle_depth,
-                    obstacle_model,
-                    lattice,
-                    helix,
-                    particle_sim,
-                }
-            })
-            .collect();
+                    // Lighting rides alongside the pose (#1996) — a saved skull that
+                    // reloads unlit is as wrong a picture as one that reloads front-on.
+                    let particle_model_light = ps_ref
+                        .filter(|ps| ps.static_model_path.is_some())
+                        .map(|ps| {
+                            [
+                                ps.model_sample.light_mix,
+                                ps.model_sample.light_x,
+                                ps.model_sample.light_y,
+                                ps.model_sample.light_z,
+                                ps.model_sample.ray_strength,
+                            ]
+                        });
+                    // Splat scene (#1800): persist the absolute path; restore
+                    // re-decodes in the background like media layers.
+                    let splat_scene_path = ps_ref.and_then(|ps| ps.splat_scene_path.clone());
+                    // Capture obstacle info
+                    let obstacle_image_path = ps_ref.and_then(|ps| ps.obstacle_image_path.clone());
+                    let obstacle_mode = ps_ref
+                        .filter(|ps| ps.obstacle_enabled)
+                        .map(|ps| ps.obstacle_mode as u32);
+                    let obstacle_fit = ps_ref
+                        .filter(|ps| ps.obstacle_enabled)
+                        .map(|ps| ps.obstacle_fit as u32);
+                    let obstacle_threshold = ps_ref
+                        .filter(|ps| ps.obstacle_enabled)
+                        .map(|ps| ps.obstacle_threshold);
+                    let obstacle_elasticity = ps_ref
+                        .filter(|ps| ps.obstacle_enabled)
+                        .map(|ps| ps.obstacle_elasticity);
+                    let obstacle_depth = ps_ref
+                        .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
+                        .map(|_| true);
+                    let obstacle_model = ps_ref
+                        .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
+                        .map(|_| true);
+                    // Capture live Lattice / particle-sim panel edits so they
+                    // round-trip through the preset instead of snapping back to
+                    // the effect's `.pfx` defaults on reload.
+                    let lattice = ps_ref
+                        .filter(|ps| ps.lattice_enabled)
+                        .map(|ps| ps.lattice_params);
+                    let helix = ps_ref
+                        .filter(|ps| ps.helix_enabled)
+                        .map(|ps| ps.helix_params);
+                    let particle_sim = ps_ref.map(|ps| crate::preset::ParticleSimPreset {
+                        emit_rate: ps.def.emit_rate,
+                        burst_on_beat: ps.def.burst_on_beat,
+                        lifetime: ps.def.lifetime,
+                        initial_speed: ps.def.initial_speed,
+                        initial_size: ps.def.initial_size,
+                        drag: ps.def.drag,
+                        // Live allocated length (0 when off), so the preset restores
+                        // exactly what's on screen.
+                        trail_length: Some(ps.trail_length()),
+                    });
+                    LayerPreset {
+                        effect_name,
+                        params: l.param_store.values.clone(),
+                        blend_mode: l.blend_mode,
+                        opacity: l.opacity,
+                        displace_amount: l.displace_amount,
+                        enabled: l.enabled,
+                        locked: l.locked,
+                        pinned: l.pinned,
+                        custom_name: l.custom_name.clone(),
+                        media_path,
+                        media_speed,
+                        media_looping,
+                        webcam_device,
+                        particle_video_path,
+                        particle_video_speed,
+                        particle_video_looping,
+                        particle_webcam,
+                        particle_image_path,
+                        particle_model_path,
+                        particle_model_pose,
+                        particle_model_light,
+                        splat_scene_path,
+                        obstacle_image_path,
+                        obstacle_mode,
+                        obstacle_fit,
+                        obstacle_threshold,
+                        obstacle_elasticity,
+                        obstacle_depth,
+                        obstacle_model,
+                        lattice,
+                        helix,
+                        particle_sim,
+                    }
+                })
+                .collect();
 
         if layer_presets.iter().all(|l| {
             l.effect_name.is_empty() && l.media_path.is_none() && l.webcam_device.is_none()
@@ -3218,11 +3232,18 @@ impl App {
                         == Some(model_path);
                     if !already_loaded {
                         let pose = lp.particle_model_pose.unwrap_or([0.0, 0.0, 1.0, 0.25]);
+                        // Absent light block = a v1.28.0 preset, which meant "off".
+                        let light = lp.particle_model_light.unwrap_or([0.0; 5]);
                         let model_def = crate::gpu::particle::types::ModelSampleDef {
                             yaw_degrees: pose[0],
                             pitch_degrees: pose[1],
                             scale: pose[2],
                             ambient: pose[3],
+                            light_mix: light[0],
+                            light_x: light[1],
+                            light_y: light[2],
+                            light_z: light[3],
+                            ray_strength: light[4],
                         };
                         let (device, queue) = (&self.gpu.device, &self.gpu.queue);
                         if let Some(ps) = self

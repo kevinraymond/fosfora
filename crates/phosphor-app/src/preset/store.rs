@@ -77,6 +77,14 @@ pub struct LayerPreset {
     /// different picture from the one that was saved.
     #[serde(default)]
     pub particle_model_pose: Option<[f32; 4]>,
+    /// Lighting the model was sampled under (#1996):
+    /// `[light_mix, light_x, light_y, light_z, ray_strength]`.
+    ///
+    /// A separate field rather than a wider `particle_model_pose`, so presets
+    /// written by v1.28.0 keep loading — a `[f32; 4]` cannot deserialize into a
+    /// `[f32; 9]`. Absent means the light is off, which is what those presets meant.
+    #[serde(default)]
+    pub particle_model_light: Option<[f32; 5]>,
     /// Absolute path to the Gaussian-splat scene loaded on this layer
     /// (#1800). Restored via a BACKGROUND load — files can be ~1.5 GB.
     #[serde(default)]
@@ -645,6 +653,7 @@ mod tests {
                 particle_image_path: None,
                 particle_model_path: None,
                 particle_model_pose: None,
+                particle_model_light: None,
                 splat_scene_path: None,
                 obstacle_image_path: None,
                 obstacle_mode: None,
@@ -732,7 +741,8 @@ mod tests {
         let json = r#"{
             "effect_name": "Pegboard",
             "particle_model_path": "/home/user/models/skull.glb",
-            "particle_model_pose": [25.0, 15.0, 1.2, 0.3]
+            "particle_model_pose": [25.0, 15.0, 1.2, 0.3],
+            "particle_model_light": [1.0, 0.0, 0.1, 0.0, 0.6]
         }"#;
         let lp: LayerPreset = serde_json::from_str(json).unwrap();
         assert_eq!(
@@ -740,10 +750,12 @@ mod tests {
             Some("/home/user/models/skull.glb")
         );
         assert_eq!(lp.particle_model_pose, Some([25.0, 15.0, 1.2, 0.3]));
+        assert_eq!(lp.particle_model_light, Some([1.0, 0.0, 0.1, 0.0, 0.6]));
 
         let lp2: LayerPreset = serde_json::from_str(&serde_json::to_string(&lp).unwrap()).unwrap();
         assert_eq!(lp2.particle_model_path, lp.particle_model_path);
         assert_eq!(lp2.particle_model_pose, lp.particle_model_pose);
+        assert_eq!(lp2.particle_model_light, lp.particle_model_light);
 
         // Every preset written before #1993 must still parse, with no model.
         let old: LayerPreset = serde_json::from_str(
@@ -752,6 +764,18 @@ mod tests {
         .unwrap();
         assert!(old.particle_model_path.is_none());
         assert!(old.particle_model_pose.is_none());
+
+        // A v1.28.0 preset has a pose but no light block: it must keep its pose
+        // rather than failing to parse, and read as unlit. Widening the existing
+        // 4-element pose array instead of adding a field would have broken exactly
+        // this — a [f32; 4] cannot deserialize into a [f32; 9].
+        let v1_28: LayerPreset = serde_json::from_str(
+            r#"{"effect_name":"Pegboard","particle_model_path":"/m/s.glb",
+                "particle_model_pose":[25.0,15.0,1.2,0.3]}"#,
+        )
+        .unwrap();
+        assert_eq!(v1_28.particle_model_pose, Some([25.0, 15.0, 1.2, 0.3]));
+        assert!(v1_28.particle_model_light.is_none());
     }
 
     #[test]
@@ -861,6 +885,7 @@ mod tests {
             particle_image_path: None,
             particle_model_path: None,
             particle_model_pose: None,
+            particle_model_light: None,
             splat_scene_path: None,
             obstacle_image_path: None,
             obstacle_mode: None,
