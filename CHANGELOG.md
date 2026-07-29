@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.30.0 — 2026-07-29
 
 ### Changed
 - **The binding templates were rebuilt around what actually reads on screen.** Each one now
