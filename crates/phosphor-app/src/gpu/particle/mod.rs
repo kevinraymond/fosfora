@@ -7,6 +7,7 @@ pub mod model_source;
 pub mod morph;
 pub mod obstacle;
 pub mod obstacle_model;
+pub mod source;
 pub mod source_loader;
 pub mod spatial_hash;
 pub mod splat;
@@ -19,9 +20,10 @@ pub mod text_source;
 pub mod types;
 pub mod water;
 
+pub use source::{ParticleSource, ParticleSourceKind, SourcePresetFields, SourceSpec};
 pub use source_loader::{
     ParticleSourceLoader, ParticleSourceResult, builtin_raster_images, builtin_raster_path,
 };
 pub use splat_source::{SplatLoadResult, SplatSceneLoader};
 pub use system::ParticleSystem;
-pub use types::{ObstacleFit, ObstacleMode, ParticleImageSource, SourceTransition};
+pub use types::{ObstacleFit, ObstacleMode, SourceTransition};

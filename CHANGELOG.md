@@ -17,6 +17,11 @@
   the openings. The shafts are sampled into particles like everything else, so they are
   made of the same stuff the model is. At **Light mix** 0 a model looks exactly as before.
 
+### Fixed
+- Loading a picture, video or webcam over a 3D model left the panel still naming the model
+  and its pose sliders on screen, and the next slider move re-sampled the model back over
+  your picture. Switching particle sources now retires the previous one in every direction.
+
 ## v1.28.0 — 2026-07-28
 
 ### Added

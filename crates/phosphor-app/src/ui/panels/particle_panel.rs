@@ -1,5 +1,6 @@
 use egui::{RichText, Ui};
 
+use crate::gpu::particle::ParticleSourceKind;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets::rows;
@@ -29,8 +30,9 @@ pub struct ParticleInfo {
     pub is_compute_raster: bool,
     // Image source info
     pub has_image_source: bool,
-    /// "static", "video", "webcam", or "model"
-    pub source_type: String,
+    /// Which kind of source is live. Typed rather than a string, so the panel
+    /// cannot disagree with the particle system about what it is showing (#2011).
+    pub source_kind: ParticleSourceKind,
     /// Source filename or device name
     pub source_name: String,
     pub video_playing: bool,
@@ -45,7 +47,7 @@ pub struct ParticleInfo {
     /// Built-in image names (e.g. "skull", "phoenix") available for quick select.
     pub builtin_images: Vec<String>,
     /// Pose + shading the live model source was sampled at (#1993). Only shown
-    /// when `source_type == "model"`.
+    /// when `source_kind` is [`ParticleSourceKind::Model`].
     pub model_yaw: f32,
     pub model_pitch: f32,
     pub model_scale: f32,
@@ -363,11 +365,11 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
         // Which source is actually live. Without it there is no way to tell a failed load
         // from one that silently landed on the same-looking frame.
         if !info.source_name.is_empty() {
-            let kind = match info.source_type.as_str() {
-                "video" => "video",
-                "webcam" => "webcam",
-                "model" => "model",
-                _ => "image",
+            let kind = match info.source_kind {
+                ParticleSourceKind::Video => "video",
+                ParticleSourceKind::Webcam => "webcam",
+                ParticleSourceKind::Model => "model",
+                ParticleSourceKind::Image | ParticleSourceKind::None => "image",
             };
             ui.label(
                 RichText::new(format!("{kind}: {}", info.source_name))
@@ -392,7 +394,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
         // moving one of these re-rasters and re-samples, which is why they commit
         // on release rather than on every tick — sampling per drag-frame would
         // stall on a 16MB readback each time.
-        if info.source_type == "model" {
+        if info.source_kind == ParticleSourceKind::Model {
             ui.add_space(2.0);
             let mut pose = [
                 info.model_yaw,
@@ -456,7 +458,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
         }
 
         // Video transport controls (only when video source is active)
-        if info.source_type == "video" {
+        if info.source_kind == ParticleSourceKind::Video {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;

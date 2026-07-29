@@ -247,46 +247,15 @@ impl ApplicationHandler for PhosphorApp {
                         .and_then(|l| l.as_effect())
                         .and_then(|e| e.pass_executor.particle_system.as_ref())
                         .map(|ps| {
-                            let (source_type, source_name) = if ps.image_source.is_video() {
-                                (
-                                    "video".to_string(),
-                                    ps.video_path.clone().unwrap_or_default(),
-                                )
-                            } else if ps.image_source.is_webcam() {
-                                ("webcam".to_string(), "webcam".to_string())
-                            } else if let Some(path) = ps.static_model_path.as_ref() {
-                                // #1993 — checked before the static fallback, which
-                                // would otherwise report an empty image name.
-                                (
-                                    "model".to_string(),
-                                    std::path::Path::new(path)
-                                        .file_name()
-                                        .map(|f| f.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| path.clone()),
-                                )
-                            } else {
-                                ("static".to_string(), ps.def.emitter.image.clone())
-                            };
-                            let (video_playing, video_looping, video_speed) = {
-                                #[cfg(feature = "video")]
-                                {
-                                    if let crate::gpu::particle::ParticleImageSource::Video {
-                                        playing,
-                                        looping,
-                                        speed,
-                                        ..
-                                    } = &ps.image_source
-                                    {
-                                        (*playing, *looping, *speed)
-                                    } else {
-                                        (false, true, 1.0)
-                                    }
-                                }
-                                #[cfg(not(feature = "video"))]
-                                {
-                                    (false, true, 1.0)
-                                }
-                            };
+                            // One field decides both, so the label can no longer
+                            // name a source that is not the one on screen (#2011).
+                            let source_kind = ps.source.kind();
+                            let source_name = ps.source.display_name();
+                            let (video_playing, video_looping, video_speed) =
+                                match ps.source.playback() {
+                                    Some(p) => (p.playing, p.looping, p.speed),
+                                    None => (false, true, 1.0),
+                                };
                             crate::ui::panels::particle_panel::ParticleInfo {
                                 alive_count: ps.alive_count,
                                 max_count: ps.max_particles,
@@ -308,13 +277,13 @@ impl ApplicationHandler for PhosphorApp {
                                 max_scaled_count: ps.def.max_scaled_count,
                                 has_image_source: ps.has_aux_data
                                     || ps.def.emitter.shape == "image",
-                                source_type,
+                                source_kind,
                                 source_name,
                                 video_playing,
                                 video_looping,
                                 video_speed,
-                                video_position_secs: ps.image_source.video_position_secs(),
-                                video_duration_secs: ps.image_source.video_duration_secs(),
+                                video_position_secs: ps.source.video_position_secs(),
+                                video_duration_secs: ps.source.video_duration_secs(),
                                 is_transitioning: ps.source_transition.is_some(),
                                 source_loading: false, // set below
                                 source_loading_name: String::new(),
@@ -2605,7 +2574,12 @@ impl ApplicationHandler for PhosphorApp {
                             .and_then(|l| l.as_effect_mut())
                             .and_then(|e| e.pass_executor.particle_system.as_mut())
                         {
-                            if let Some(path) = ps.static_model_path.clone() {
+                            // Only a live model source re-samples on a pose change. A
+                            // stale path here is what put the model back over a picture
+                            // the user had just loaded (#2011).
+                            if let crate::gpu::particle::ParticleSource::Model { path } = &ps.source
+                            {
+                                let path = path.clone();
                                 match ps.apply_model_source(
                                     device,
                                     queue,
@@ -2760,25 +2734,19 @@ impl ApplicationHandler for PhosphorApp {
                                 if let Some(effect) = layer.as_effect_mut() {
                                     if let Some(ps) = effect.pass_executor.particle_system.as_mut()
                                     {
-                                        if let crate::gpu::particle::ParticleImageSource::Video {
-                                            playing: ref mut p,
-                                            looping: ref mut l,
-                                            speed: ref mut s,
-                                            ..
-                                        } = ps.image_source
-                                        {
+                                        if let Some(playback) = ps.source.playback_mut() {
                                             if let Some(v) = playing {
-                                                *p = v;
+                                                playback.playing = v;
                                             }
                                             if let Some(v) = looping {
-                                                *l = v;
+                                                playback.looping = v;
                                             }
                                             if let Some(v) = speed {
-                                                *s = v;
+                                                playback.speed = v;
                                             }
                                         }
                                         if let Some(v) = seek {
-                                            ps.image_source.seek_to_secs(v);
+                                            ps.source.seek_to_secs(v);
                                         }
                                     }
                                 }
@@ -3202,24 +3170,14 @@ impl ApplicationHandler for PhosphorApp {
                                                 }
                                                 ps.store_current_aux(aux);
                                                 ps.has_aux_data = true;
-                                                ps.image_source = crate::gpu::particle::ParticleImageSource::Static;
-                                                ps.video_path = None;
-                                                ps.static_image_path = Some(path.clone());
-                                                // Retire the model too. apply_model_source clears
-                                                // static_image_path when a model wins, but nothing
-                                                // did the reverse, so a picture loaded over a model
-                                                // left static_model_path set: the panel kept
-                                                // reporting "model: skull.glb" (source_type checks
-                                                // it before the static fallback) and the next pose
-                                                // change re-sampled the model straight back over
-                                                // the picture.
-                                                ps.static_model_path = None;
-                                                // Update emitter image name so UI selector reflects the change
-                                                let filename = std::path::Path::new(&path)
-                                                    .file_name()
-                                                    .map(|f| f.to_string_lossy().to_string())
-                                                    .unwrap_or_default();
-                                                ps.def.emitter.image = filename;
+                                                // Retires whatever was there — model
+                                                // included, which used to need its own
+                                                // hand-written clear here (#2011).
+                                                ps.set_source(
+                                                    crate::gpu::particle::ParticleSource::Image {
+                                                        path: path.clone(),
+                                                    },
+                                                );
                                             }
                                             log::info!(
                                                 "Loaded particle image source: {} ({}x{})",
@@ -3308,7 +3266,12 @@ impl ApplicationHandler for PhosphorApp {
                                                 }
                                                 #[cfg(not(feature = "video"))]
                                                 {
-                                                    // Without video feature, use first frame as static
+                                                    // Without the video feature this really
+                                                    // IS a still — the first frame and
+                                                    // nothing more. It used to set only
+                                                    // has_aux_data, leaving every source
+                                                    // field pointing at whatever was loaded
+                                                    // before it (#2011).
                                                     if let Some(frame) = frames.first() {
                                                         let aux = crate::gpu::particle::image_source::sample_rgba_buffer(
                                                             &frame.data, frame.width, frame.height,
@@ -3324,6 +3287,11 @@ impl ApplicationHandler for PhosphorApp {
                                                             ps.has_aux_data = true;
                                                         }
                                                     }
+                                                    ps.set_source(
+                                                        crate::gpu::particle::ParticleSource::Image {
+                                                            path: path.clone(),
+                                                        },
+                                                    );
                                                     let _ = (path, delays_ms);
                                                 }
                                             }

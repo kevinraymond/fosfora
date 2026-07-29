@@ -1153,7 +1153,7 @@ impl App {
                     for layer in &mut self.layer_stack.layers {
                         if let LayerContent::Effect(ref mut e) = layer.content {
                             if let Some(ref mut ps) = e.pass_executor.particle_system {
-                                if ps.image_source.is_webcam() {
+                                if ps.source.is_webcam() {
                                     ps.update_webcam_frame(
                                         &self.gpu.queue,
                                         &frame.data,
@@ -1765,7 +1765,9 @@ impl App {
                 Ok(aux_data) => {
                     ps.upload_aux_data(&self.gpu.device, &self.gpu.queue, &aux_data);
                     ps.store_current_aux(aux_data.clone());
-                    ps.static_model_path = Some(model_path.to_string_lossy().to_string());
+                    ps.set_source(crate::gpu::particle::ParticleSource::Model {
+                        path: model_path.to_string_lossy().to_string(),
+                    });
                     ps.model_sample = model_def;
                     log::info!(
                         "Loaded model '{}': {} particles",
@@ -1801,7 +1803,9 @@ impl App {
                 Ok(aux_data) => {
                     ps.upload_aux_data(&self.gpu.device, &self.gpu.queue, &aux_data);
                     ps.store_current_aux(aux_data.clone());
-                    ps.static_image_path = Some(image_path.to_string_lossy().to_string());
+                    ps.set_source(crate::gpu::particle::ParticleSource::Image {
+                        path: image_path.to_string_lossy().to_string(),
+                    });
                     log::info!(
                         "Loaded image '{}': {} particles",
                         particles.emitter.image,
@@ -2710,153 +2714,139 @@ impl App {
     }
 
     pub fn save_preset(&mut self, name: &str) {
-        let layer_presets: Vec<LayerPreset> =
-            self.layer_stack
-                .layers
-                .iter()
-                .map(|l| {
-                    let effect_name = l
-                        .effect_index()
-                        .and_then(|i| self.effect_loader.effects.get(i))
-                        .map(|e| e.name.clone())
-                        .unwrap_or_default();
-                    let media_path = l
-                        .as_media()
-                        .map(|m| m.file_path.to_string_lossy().to_string());
-                    let media_speed = l.as_media().map(|m| m.transport.speed);
-                    let media_looping = l.as_media().map(|m| m.transport.looping);
-                    let webcam_device = l
-                        .as_media()
-                        .filter(|m| m.is_live())
-                        .map(|m| m.file_name.clone());
-                    // Capture particle source info
-                    let ps_ref = l
-                        .as_effect()
-                        .and_then(|e| e.pass_executor.particle_system.as_ref());
-                    let particle_video_path = ps_ref.and_then(|ps| ps.video_path.clone());
-                    let particle_video_speed = ps_ref.and_then(|ps| ps.image_source.video_speed());
-                    let particle_video_looping = ps_ref.and_then(|ps| {
-                        #[cfg(feature = "video")]
-                        if let crate::gpu::particle::ParticleImageSource::Video {
-                            looping, ..
-                        } = &ps.image_source
-                        {
-                            return Some(*looping);
-                        }
-                        let _ = ps;
-                        None
-                    });
-                    let particle_webcam = ps_ref.and_then(|ps| {
-                        if ps.image_source.is_webcam() {
-                            Some(true)
-                        } else {
-                            None
-                        }
-                    });
-                    let particle_image_path = ps_ref.and_then(|ps| ps.static_image_path.clone());
-                    let particle_model_path = ps_ref.and_then(|ps| ps.static_model_path.clone());
-                    let particle_model_pose = ps_ref
-                        .filter(|ps| ps.static_model_path.is_some())
-                        .map(|ps| {
-                            [
-                                ps.model_sample.yaw_degrees,
-                                ps.model_sample.pitch_degrees,
-                                ps.model_sample.scale,
-                                ps.model_sample.ambient,
-                            ]
-                        });
-                    // Lighting rides alongside the pose (#1996) — a saved skull that
-                    // reloads unlit is as wrong a picture as one that reloads front-on.
-                    let particle_model_light = ps_ref
-                        .filter(|ps| ps.static_model_path.is_some())
-                        .map(|ps| {
-                            [
-                                ps.model_sample.light_mix,
-                                ps.model_sample.light_x,
-                                ps.model_sample.light_y,
-                                ps.model_sample.light_z,
-                                ps.model_sample.ray_strength,
-                            ]
-                        });
-                    // Splat scene (#1800): persist the absolute path; restore
-                    // re-decodes in the background like media layers.
-                    let splat_scene_path = ps_ref.and_then(|ps| ps.splat_scene_path.clone());
-                    // Capture obstacle info
-                    let obstacle_image_path = ps_ref.and_then(|ps| ps.obstacle_image_path.clone());
-                    let obstacle_mode = ps_ref
-                        .filter(|ps| ps.obstacle_enabled)
-                        .map(|ps| ps.obstacle_mode as u32);
-                    let obstacle_fit = ps_ref
-                        .filter(|ps| ps.obstacle_enabled)
-                        .map(|ps| ps.obstacle_fit as u32);
-                    let obstacle_threshold = ps_ref
-                        .filter(|ps| ps.obstacle_enabled)
-                        .map(|ps| ps.obstacle_threshold);
-                    let obstacle_elasticity = ps_ref
-                        .filter(|ps| ps.obstacle_enabled)
-                        .map(|ps| ps.obstacle_elasticity);
-                    let obstacle_depth = ps_ref
-                        .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
-                        .map(|_| true);
-                    let obstacle_model = ps_ref
-                        .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
-                        .map(|_| true);
-                    // Capture live Lattice / particle-sim panel edits so they
-                    // round-trip through the preset instead of snapping back to
-                    // the effect's `.pfx` defaults on reload.
-                    let lattice = ps_ref
-                        .filter(|ps| ps.lattice_enabled)
-                        .map(|ps| ps.lattice_params);
-                    let helix = ps_ref
-                        .filter(|ps| ps.helix_enabled)
-                        .map(|ps| ps.helix_params);
-                    let particle_sim = ps_ref.map(|ps| crate::preset::ParticleSimPreset {
-                        emit_rate: ps.def.emit_rate,
-                        burst_on_beat: ps.def.burst_on_beat,
-                        lifetime: ps.def.lifetime,
-                        initial_speed: ps.def.initial_speed,
-                        initial_size: ps.def.initial_size,
-                        drag: ps.def.drag,
-                        // Live allocated length (0 when off), so the preset restores
-                        // exactly what's on screen.
-                        trail_length: Some(ps.trail_length()),
-                    });
-                    LayerPreset {
-                        effect_name,
-                        params: l.param_store.values.clone(),
-                        blend_mode: l.blend_mode,
-                        opacity: l.opacity,
-                        displace_amount: l.displace_amount,
-                        enabled: l.enabled,
-                        locked: l.locked,
-                        pinned: l.pinned,
-                        custom_name: l.custom_name.clone(),
-                        media_path,
-                        media_speed,
-                        media_looping,
-                        webcam_device,
-                        particle_video_path,
-                        particle_video_speed,
-                        particle_video_looping,
-                        particle_webcam,
-                        particle_image_path,
-                        particle_model_path,
-                        particle_model_pose,
-                        particle_model_light,
-                        splat_scene_path,
-                        obstacle_image_path,
-                        obstacle_mode,
-                        obstacle_fit,
-                        obstacle_threshold,
-                        obstacle_elasticity,
-                        obstacle_depth,
-                        obstacle_model,
-                        lattice,
-                        helix,
-                        particle_sim,
-                    }
-                })
-                .collect();
+        let layer_presets: Vec<LayerPreset> = self
+            .layer_stack
+            .layers
+            .iter()
+            .map(|l| {
+                let effect_name = l
+                    .effect_index()
+                    .and_then(|i| self.effect_loader.effects.get(i))
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                let media_path = l
+                    .as_media()
+                    .map(|m| m.file_path.to_string_lossy().to_string());
+                let media_speed = l.as_media().map(|m| m.transport.speed);
+                let media_looping = l.as_media().map(|m| m.transport.looping);
+                let webcam_device = l
+                    .as_media()
+                    .filter(|m| m.is_live())
+                    .map(|m| m.file_name.clone());
+                // Capture particle source info
+                let ps_ref = l
+                    .as_effect()
+                    .and_then(|e| e.pass_executor.particle_system.as_ref());
+                // One source, so one conversion (#2011) — the preset can no
+                // longer disagree with itself about which one is live.
+                let source_fields = ps_ref
+                    .map(|ps| ps.source.to_preset_fields())
+                    .unwrap_or_default();
+                let particle_video_path = source_fields.video_path.clone();
+                let particle_video_speed = source_fields.video_speed;
+                let particle_video_looping = source_fields.video_looping;
+                let particle_webcam = source_fields.webcam;
+                let particle_image_path = source_fields.image_path.clone();
+                let particle_model_path = source_fields.model_path.clone();
+                let is_model_source = source_fields.model_path.is_some();
+                let particle_model_pose = ps_ref.filter(|_| is_model_source).map(|ps| {
+                    [
+                        ps.model_sample.yaw_degrees,
+                        ps.model_sample.pitch_degrees,
+                        ps.model_sample.scale,
+                        ps.model_sample.ambient,
+                    ]
+                });
+                // Lighting rides alongside the pose (#1996) — a saved skull that
+                // reloads unlit is as wrong a picture as one that reloads front-on.
+                let particle_model_light = ps_ref.filter(|_| is_model_source).map(|ps| {
+                    [
+                        ps.model_sample.light_mix,
+                        ps.model_sample.light_x,
+                        ps.model_sample.light_y,
+                        ps.model_sample.light_z,
+                        ps.model_sample.ray_strength,
+                    ]
+                });
+                // Splat scene (#1800): persist the absolute path; restore
+                // re-decodes in the background like media layers.
+                let splat_scene_path = ps_ref.and_then(|ps| ps.splat_scene_path.clone());
+                // Capture obstacle info
+                let obstacle_image_path = ps_ref.and_then(|ps| ps.obstacle_image_path.clone());
+                let obstacle_mode = ps_ref
+                    .filter(|ps| ps.obstacle_enabled)
+                    .map(|ps| ps.obstacle_mode as u32);
+                let obstacle_fit = ps_ref
+                    .filter(|ps| ps.obstacle_enabled)
+                    .map(|ps| ps.obstacle_fit as u32);
+                let obstacle_threshold = ps_ref
+                    .filter(|ps| ps.obstacle_enabled)
+                    .map(|ps| ps.obstacle_threshold);
+                let obstacle_elasticity = ps_ref
+                    .filter(|ps| ps.obstacle_enabled)
+                    .map(|ps| ps.obstacle_elasticity);
+                let obstacle_depth = ps_ref
+                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "depth")
+                    .map(|_| true);
+                let obstacle_model = ps_ref
+                    .filter(|ps| ps.obstacle_enabled && ps.obstacle_source == "model")
+                    .map(|_| true);
+                // Capture live Lattice / particle-sim panel edits so they
+                // round-trip through the preset instead of snapping back to
+                // the effect's `.pfx` defaults on reload.
+                let lattice = ps_ref
+                    .filter(|ps| ps.lattice_enabled)
+                    .map(|ps| ps.lattice_params);
+                let helix = ps_ref
+                    .filter(|ps| ps.helix_enabled)
+                    .map(|ps| ps.helix_params);
+                let particle_sim = ps_ref.map(|ps| crate::preset::ParticleSimPreset {
+                    emit_rate: ps.def.emit_rate,
+                    burst_on_beat: ps.def.burst_on_beat,
+                    lifetime: ps.def.lifetime,
+                    initial_speed: ps.def.initial_speed,
+                    initial_size: ps.def.initial_size,
+                    drag: ps.def.drag,
+                    // Live allocated length (0 when off), so the preset restores
+                    // exactly what's on screen.
+                    trail_length: Some(ps.trail_length()),
+                });
+                LayerPreset {
+                    effect_name,
+                    params: l.param_store.values.clone(),
+                    blend_mode: l.blend_mode,
+                    opacity: l.opacity,
+                    displace_amount: l.displace_amount,
+                    enabled: l.enabled,
+                    locked: l.locked,
+                    pinned: l.pinned,
+                    custom_name: l.custom_name.clone(),
+                    media_path,
+                    media_speed,
+                    media_looping,
+                    webcam_device,
+                    particle_video_path,
+                    particle_video_speed,
+                    particle_video_looping,
+                    particle_webcam,
+                    particle_image_path,
+                    particle_model_path,
+                    particle_model_pose,
+                    particle_model_light,
+                    splat_scene_path,
+                    obstacle_image_path,
+                    obstacle_mode,
+                    obstacle_fit,
+                    obstacle_threshold,
+                    obstacle_elasticity,
+                    obstacle_depth,
+                    obstacle_model,
+                    lattice,
+                    helix,
+                    particle_sim,
+                }
+            })
+            .collect();
 
         if layer_presets.iter().all(|l| {
             l.effect_name.is_empty() && l.media_path.is_none() && l.webcam_device.is_none()
@@ -3136,19 +3126,39 @@ impl App {
                 }
             }
 
-            // Restore particle source (video or webcam) if saved in preset
-            #[cfg(feature = "video")]
-            if let Some(ref video_path) = lp.particle_video_path {
-                let path = std::path::PathBuf::from(video_path);
-                if path.exists() && crate::media::video::ffmpeg_available() {
-                    match crate::media::video::probe_video(&path) {
-                        Ok(meta) => {
-                            match crate::media::video::decode_all_frames(&path, &meta) {
-                                Ok((frames, delays_ms)) => {
-                                    if let Some(layer) = self.layer_stack.layers.get_mut(i) {
-                                        if let Some(effect) = layer.as_effect_mut() {
-                                            if let Some(ps) =
-                                                effect.pass_executor.particle_system.as_mut()
+            // Restore the particle source (#2011).
+            //
+            // This used to be four blocks running in sequence, each guarded on the
+            // others' preset fields being absent. That guard was one-directional:
+            // a preset naming two sources — which the pre-#2011 save could write,
+            // because the live state itself could hold two — half-applied both.
+            // `resolve()` settles it once, so exactly one arm runs.
+            let source_fields = crate::gpu::particle::SourcePresetFields {
+                video_path: lp.particle_video_path.clone(),
+                video_speed: lp.particle_video_speed,
+                video_looping: lp.particle_video_looping,
+                webcam: lp.particle_webcam,
+                image_path: lp.particle_image_path.clone(),
+                model_path: lp.particle_model_path.clone(),
+            };
+            match source_fields.resolve() {
+                Some(crate::gpu::particle::SourceSpec::Video(video_path)) => {
+                    #[cfg(feature = "video")]
+                    {
+                        let path = std::path::PathBuf::from(&video_path);
+                        if path.exists() && crate::media::video::ffmpeg_available() {
+                            match crate::media::video::probe_video(&path) {
+                                Ok(meta) => {
+                                    match crate::media::video::decode_all_frames(&path, &meta) {
+                                        Ok((frames, delays_ms)) => {
+                                            if let Some(ps) = self
+                                                .layer_stack
+                                                .layers
+                                                .get_mut(i)
+                                                .and_then(|l| l.as_effect_mut())
+                                                .and_then(|e| {
+                                                    e.pass_executor.particle_system.as_mut()
+                                                })
                                             {
                                                 ps.set_video_source(
                                                     &self.gpu.queue,
@@ -3157,17 +3167,13 @@ impl App {
                                                     video_path.clone(),
                                                 );
                                                 // Restore transport settings
-                                                if let crate::gpu::particle::ParticleImageSource::Video {
-                                                    speed: ref mut s,
-                                                    looping: ref mut l,
-                                                    ..
-                                                } = ps.image_source
-                                                {
+                                                if let Some(playback) = ps.source.playback_mut() {
                                                     if let Some(spd) = lp.particle_video_speed {
-                                                        *s = spd;
+                                                        playback.speed = spd;
                                                     }
-                                                    if let Some(lp_loop) = lp.particle_video_looping {
-                                                        *l = lp_loop;
+                                                    if let Some(lp_loop) = lp.particle_video_looping
+                                                    {
+                                                        playback.looping = lp_loop;
                                                     }
                                                 }
                                                 log::info!(
@@ -3175,171 +3181,186 @@ impl App {
                                                 );
                                             }
                                         }
+                                        Err(e) => log::warn!(
+                                            "Failed to decode particle video for layer {i}: {e}"
+                                        ),
                                     }
                                 }
                                 Err(e) => {
-                                    log::warn!(
-                                        "Failed to decode particle video for layer {i}: {e}"
-                                    );
+                                    log::warn!("Failed to probe particle video for layer {i}: {e}");
                                 }
                             }
                         }
-                        Err(e) => log::warn!("Failed to probe particle video for layer {i}: {e}"),
+                    }
+                    #[cfg(not(feature = "video"))]
+                    {
+                        let _ = video_path;
+                        log::warn!(
+                            "Preset for layer {i} names a particle video source, \
+                             but this build has no video support"
+                        );
                     }
                 }
-            }
-
-            #[cfg(feature = "webcam")]
-            if lp.particle_webcam == Some(true) {
-                // Start webcam capture if not already running
-                if self.webcam_capture.is_none() {
-                    match self.start_webcam(self.webcam_device_index, Some((1280, 720))) {
-                        Ok(capture) => {
-                            self.webcam_capture = Some(capture);
+                Some(crate::gpu::particle::SourceSpec::Webcam) => {
+                    #[cfg(feature = "webcam")]
+                    {
+                        // Start webcam capture if not already running
+                        if self.webcam_capture.is_none() {
+                            match self.start_webcam(self.webcam_device_index, Some((1280, 720))) {
+                                Ok(capture) => {
+                                    self.webcam_capture = Some(capture);
+                                }
+                                Err(e) => {
+                                    log::error!("Failed to start webcam for particle source: {e}");
+                                }
+                            }
                         }
-                        Err(e) => {
-                            log::error!("Failed to start webcam for particle source: {e}");
-                        }
-                    }
-                }
-                if let Some(ref capture) = self.webcam_capture {
-                    let (w, h) = capture.resolution();
-                    if let Some(layer) = self.layer_stack.layers.get_mut(i) {
-                        if let Some(effect) = layer.as_effect_mut() {
-                            if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
+                        if let Some(ref capture) = self.webcam_capture {
+                            let (w, h) = capture.resolution();
+                            if let Some(ps) = self
+                                .layer_stack
+                                .layers
+                                .get_mut(i)
+                                .and_then(|l| l.as_effect_mut())
+                                .and_then(|e| e.pass_executor.particle_system.as_mut())
+                            {
                                 ps.set_webcam_source(&self.gpu.queue, w, h);
                                 log::info!("Restored particle webcam source for layer {i}");
                             }
                         }
                     }
+                    #[cfg(not(feature = "webcam"))]
+                    log::warn!(
+                        "Preset for layer {i} names a particle webcam source, \
+                         but this build has no webcam support"
+                    );
                 }
-            }
-
-            // Restore a 3D-model particle source (#1993). Ahead of the image restore
-            // and mutually exclusive with it — the two set the same aux buffer.
-            if let Some(ref model_path) = lp.particle_model_path {
-                let path = std::path::PathBuf::from(model_path);
-                if !path.exists() {
-                    log::warn!("Particle model '{model_path}' not found for layer {i}");
-                } else {
-                    let already_loaded = self
-                        .layer_stack
-                        .layers
-                        .get(i)
-                        .and_then(|l| l.as_effect())
-                        .and_then(|e| e.pass_executor.particle_system.as_ref())
-                        .and_then(|ps| ps.static_model_path.as_ref())
-                        == Some(model_path);
-                    if !already_loaded {
-                        let pose = lp.particle_model_pose.unwrap_or([0.0, 0.0, 1.0, 0.25]);
-                        // Absent light block = a v1.28.0 preset, which meant "off".
-                        let light = lp.particle_model_light.unwrap_or([0.0; 5]);
-                        let model_def = crate::gpu::particle::types::ModelSampleDef {
-                            yaw_degrees: pose[0],
-                            pitch_degrees: pose[1],
-                            scale: pose[2],
-                            ambient: pose[3],
-                            light_mix: light[0],
-                            light_x: light[1],
-                            light_y: light[2],
-                            light_z: light[3],
-                            ray_strength: light[4],
-                        };
-                        let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-                        if let Some(ps) = self
-                            .layer_stack
-                            .layers
-                            .get_mut(i)
-                            .and_then(|l| l.as_effect_mut())
-                            .and_then(|e| e.pass_executor.particle_system.as_mut())
-                        {
-                            // A morph effect takes the model as a TARGET; anything else
-                            // takes it as the source. Same split the picker uses.
-                            let outcome = if ps.morph_state.is_some() {
-                                ps.apply_model_morph_target(device, queue, &path, &model_def, None)
-                                    .map(|(slot, _)| format!("morph slot {slot}"))
-                            } else {
-                                ps.apply_model_source(device, queue, &path, &model_def)
-                                    .map(|_| "source".to_string())
-                            };
-                            match outcome {
-                                Ok(where_) => log::info!(
-                                    "Restored particle model for layer {i}: {model_path} ({where_})"
-                                ),
-                                Err(e) => log::warn!(
-                                    "Failed to restore particle model for layer {i}: {e}"
-                                ),
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Restore static particle image source
-            if let Some(ref img_path) = lp.particle_image_path {
-                // Only restore if no video/webcam/model source takes priority
-                if lp.particle_video_path.is_none()
-                    && lp.particle_webcam != Some(true)
-                    && lp.particle_model_path.is_none()
-                {
-                    let path = std::path::PathBuf::from(img_path);
-                    if path.exists() {
-                        // Skip if the same image is already loaded
+                Some(crate::gpu::particle::SourceSpec::Model(model_path)) => {
+                    let path = std::path::PathBuf::from(&model_path);
+                    if !path.exists() {
+                        log::warn!("Particle model '{model_path}' not found for layer {i}");
+                    } else {
+                        // Compares the whole source, not one path field: a live
+                        // video no longer satisfies "the model is already loaded".
                         let already_loaded = self
                             .layer_stack
                             .layers
                             .get(i)
                             .and_then(|l| l.as_effect())
                             .and_then(|e| e.pass_executor.particle_system.as_ref())
-                            .and_then(|ps| ps.static_image_path.as_ref())
-                            == Some(img_path);
-
+                            .is_some_and(|ps| {
+                                matches!(
+                                    &ps.source,
+                                    crate::gpu::particle::ParticleSource::Model { path }
+                                        if path == &model_path
+                                )
+                            });
                         if !already_loaded {
-                            if let Some(layer) = self.layer_stack.layers.get_mut(i) {
-                                if let Some(effect) = layer.as_effect_mut() {
-                                    if let Some(ps) = effect.pass_executor.particle_system.as_mut()
-                                    {
-                                        match crate::gpu::particle::image_source::sample_image(
-                                            &path,
-                                            &ps.sample_def,
-                                            ps.max_particles,
-                                        ) {
-                                            Ok(aux_data) => {
-                                                ps.upload_aux_data(
-                                                    &self.gpu.device,
-                                                    &self.gpu.queue,
-                                                    &aux_data,
-                                                );
-                                                ps.store_current_aux(aux_data);
-                                                ps.image_source =
-                                                    crate::gpu::particle::ParticleImageSource::Static;
-                                                ps.video_path = None;
-                                                ps.static_image_path = Some(img_path.clone());
-                                                // A picture retires the model (see main.rs).
-                                                ps.static_model_path = None;
-                                                let filename = path
-                                                    .file_name()
-                                                    .map(|f| f.to_string_lossy().to_string())
-                                                    .unwrap_or_default();
-                                                ps.def.emitter.image = filename;
-                                                log::info!(
-                                                    "Restored particle image source for layer {i}: {img_path}"
-                                                );
-                                            }
-                                            Err(e) => {
-                                                log::warn!(
-                                                    "Failed to restore particle image for layer {i}: {e}"
-                                                );
-                                            }
-                                        }
+                            let pose = lp.particle_model_pose.unwrap_or([0.0, 0.0, 1.0, 0.25]);
+                            // Absent light block = a v1.28.0 preset, which meant "off".
+                            let light = lp.particle_model_light.unwrap_or([0.0; 5]);
+                            let model_def = crate::gpu::particle::types::ModelSampleDef {
+                                yaw_degrees: pose[0],
+                                pitch_degrees: pose[1],
+                                scale: pose[2],
+                                ambient: pose[3],
+                                light_mix: light[0],
+                                light_x: light[1],
+                                light_y: light[2],
+                                light_z: light[3],
+                                ray_strength: light[4],
+                            };
+                            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
+                            if let Some(ps) = self
+                                .layer_stack
+                                .layers
+                                .get_mut(i)
+                                .and_then(|l| l.as_effect_mut())
+                                .and_then(|e| e.pass_executor.particle_system.as_mut())
+                            {
+                                // A morph effect takes the model as a TARGET; anything else
+                                // takes it as the source. Same split the picker uses.
+                                let outcome = if ps.morph_state.is_some() {
+                                    ps.apply_model_morph_target(
+                                        device, queue, &path, &model_def, None,
+                                    )
+                                    .map(|(slot, _)| format!("morph slot {slot}"))
+                                } else {
+                                    ps.apply_model_source(device, queue, &path, &model_def)
+                                        .map(|_| "source".to_string())
+                                };
+                                match outcome {
+                                    Ok(where_) => log::info!(
+                                        "Restored particle model for layer {i}: {model_path} ({where_})"
+                                    ),
+                                    Err(e) => log::warn!(
+                                        "Failed to restore particle model for layer {i}: {e}"
+                                    ),
+                                }
+                            }
+                        }
+                    }
+                }
+                Some(crate::gpu::particle::SourceSpec::Image(img_path)) => {
+                    let path = std::path::PathBuf::from(&img_path);
+                    if !path.exists() {
+                        log::warn!("Particle image '{}' not found for layer {}", img_path, i);
+                    } else {
+                        // Skip if the same image is already loaded — again on the
+                        // whole source, so a live video cannot satisfy it.
+                        let already_loaded = self
+                            .layer_stack
+                            .layers
+                            .get(i)
+                            .and_then(|l| l.as_effect())
+                            .and_then(|e| e.pass_executor.particle_system.as_ref())
+                            .is_some_and(|ps| {
+                                matches!(
+                                    &ps.source,
+                                    crate::gpu::particle::ParticleSource::Image { path }
+                                        if path == &img_path
+                                )
+                            });
+                        if !already_loaded {
+                            if let Some(ps) = self
+                                .layer_stack
+                                .layers
+                                .get_mut(i)
+                                .and_then(|l| l.as_effect_mut())
+                                .and_then(|e| e.pass_executor.particle_system.as_mut())
+                            {
+                                match crate::gpu::particle::image_source::sample_image(
+                                    &path,
+                                    &ps.sample_def,
+                                    ps.max_particles,
+                                ) {
+                                    Ok(aux_data) => {
+                                        ps.upload_aux_data(
+                                            &self.gpu.device,
+                                            &self.gpu.queue,
+                                            &aux_data,
+                                        );
+                                        ps.store_current_aux(aux_data);
+                                        ps.set_source(
+                                            crate::gpu::particle::ParticleSource::Image {
+                                                path: img_path.clone(),
+                                            },
+                                        );
+                                        log::info!(
+                                            "Restored particle image source for layer {i}: {img_path}"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Failed to restore particle image for layer {i}: {e}"
+                                        );
                                     }
                                 }
                             }
                         }
-                    } else {
-                        log::warn!("Particle image '{}' not found for layer {}", img_path, i);
                     }
                 }
+                None => {}
             }
 
             // Restore the Gaussian-splat scene (#1800) — a BACKGROUND load

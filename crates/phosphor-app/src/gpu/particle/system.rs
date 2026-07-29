@@ -9,13 +9,14 @@ use wgpu::{
 use super::compute_raster::ComputeRasterizer;
 use super::flow_field::FlowFieldTexture;
 use super::obstacle::ObstacleTexture;
+use super::source::ParticleSource;
 use super::spatial_hash::SpatialHashGrid;
 use super::splat::{SplatDriver, SplatShRec, SplatStatic};
 use super::splat_source::SplatCloud;
 use super::sprite::SpriteAtlas;
 use super::types::{
-    ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleImageSource,
-    ParticleRenderUniforms, ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
+    ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleRenderUniforms,
+    ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
@@ -346,20 +347,22 @@ pub struct ParticleSystem {
     /// Tracked for content-change detection in hot-reload.
     pub current_compute_source: String,
 
-    // --- Particle image source (video/webcam/static) ---
-    pub image_source: ParticleImageSource,
+    // --- Particle source (image/video/webcam/model) ---
+    /// What is feeding the particles, as one field (#2011).
+    ///
+    /// This used to be a `ParticleImageSource` enum plus three parallel
+    /// `Option<String>` paths that every writer had to keep in step by hand. One
+    /// of them had no writer that cleared it, so a picture loaded over a model
+    /// left both set and the panel named the model while showing the picture.
+    /// Change it only through [`ParticleSystem::set_source`].
+    pub source: ParticleSource,
     pub source_transition: Option<SourceTransition>,
     pub sample_def: ImageSampleDef,
-    /// Path to the video file (for preset save/load).
-    pub video_path: Option<String>,
-    /// Path to the static image file (for preset save/load).
-    pub static_image_path: Option<String>,
-    /// Path to the 3D model file when the source is a model (#1993). Set instead
-    /// of `static_image_path`, since a model is rendered to a frame rather than
-    /// read from one — the two are mutually exclusive.
-    pub static_model_path: Option<String>,
     /// Pose/shading the current model was sampled at. Kept so the panel's sliders
     /// start where the model actually is, and so a re-sample can build on it.
+    ///
+    /// Deliberately outside [`ParticleSource::Model`]: `apply_model_morph_target`
+    /// sets a pose for a morph *target*, where there is no model source at all.
     pub model_sample: ModelSampleDef,
     /// Cached aux data for the current static source (used as transition "from").
     pub current_aux: Vec<ParticleAux>,
@@ -1515,16 +1518,13 @@ impl ParticleSystem {
             burst_on_beat: def.burst_on_beat,
             def: def.clone(),
             current_compute_source: compute_source.to_string(),
-            image_source: ParticleImageSource::Static,
+            source: ParticleSource::None,
             source_transition: None,
             sample_def: def.image_sample.clone().unwrap_or(ImageSampleDef {
                 mode: "grid".to_string(),
                 threshold: 0.1,
                 scale: 1.0,
             }),
-            video_path: None,
-            static_image_path: None,
-            static_model_path: None,
             model_sample: def.model_sample.clone().unwrap_or_default(),
             current_aux: Vec::new(),
             aux_written_len: 0,
@@ -2458,6 +2458,21 @@ impl ParticleSystem {
         self.aux_written_len = data.len();
     }
 
+    /// Make `source` the active particle source, retiring whatever was there.
+    ///
+    /// The only place the source changes. It replaces the whole discriminator in
+    /// one assignment, so no caller can leave part of the previous source behind
+    /// — the failure that made a picture loaded over a model keep reporting the
+    /// model (#2011). It also re-syncs the declarative `def.emitter` fields, which
+    /// a rebuilt particle system reads back: previously only the model path did
+    /// that, so a video left a stale `emitter.image` behind for the panel to name.
+    ///
+    /// Aux upload is the caller's job — this is identity, not content.
+    pub fn set_source(&mut self, source: ParticleSource) {
+        super::source::sync_emitter(&mut self.def.emitter, &source);
+        self.source = source;
+    }
+
     /// Re-sample the particle source from a 3D model at `model_def` (#1993).
     ///
     /// Shared by the "Model…" picker and the pose sliders, which re-sample on
@@ -2483,14 +2498,9 @@ impl ParticleSystem {
         self.update_aux_in_place(queue, &aux);
         self.store_current_aux(aux);
         self.has_aux_data = true;
-        self.image_source = ParticleImageSource::Static;
-        self.video_path = None;
-        // A model and an image are mutually exclusive sources; clearing this is
-        // what makes the panel report "model:" rather than a stale filename.
-        self.static_image_path = None;
-        self.def.emitter.image = String::new();
-        self.static_model_path = Some(path.to_string_lossy().to_string());
-        self.def.emitter.model = path.to_string_lossy().to_string();
+        self.set_source(ParticleSource::Model {
+            path: path.to_string_lossy().to_string(),
+        });
         self.model_sample = model_def.clone();
         Ok(count)
     }
@@ -2631,16 +2641,16 @@ impl ParticleSystem {
     /// Advance the particle image source (video playback). If the frame changed,
     /// re-samples aux data and uploads to GPU. Returns true if aux was updated.
     pub fn update_source(&mut self, queue: &Queue, dt_secs: f64) -> bool {
-        if self.image_source.is_static() {
+        if self.source.is_static() {
             return false;
         }
 
-        let frame_changed = self.image_source.advance(dt_secs);
+        let frame_changed = self.source.advance(dt_secs);
         if !frame_changed {
             return false;
         }
 
-        if let Some(frame) = self.image_source.current_frame_data() {
+        if let Some(frame) = self.source.current_frame_data() {
             let aux = super::image_source::sample_rgba_buffer(
                 &frame.data,
                 frame.width,
@@ -2694,19 +2704,12 @@ impl ParticleSystem {
 
         self.current_aux = first_aux;
         self.has_aux_data = true;
-        self.video_path = Some(path);
-        self.static_image_path = None;
-        // ...and the model, if one was loaded before this video (see main.rs).
-        self.static_model_path = None;
-        self.image_source = ParticleImageSource::Video {
+        self.set_source(ParticleSource::Video {
+            path,
             frames,
             delays_ms,
-            current_frame: 0,
-            frame_elapsed_ms: 0.0,
-            playing: true,
-            looping: true,
-            speed: 1.0,
-        };
+            playback: super::source::VideoPlayback::default(),
+        });
     }
 
     /// Set a webcam as the particle source. Frames will be provided via `update_webcam_frame()`.
@@ -2725,12 +2728,8 @@ impl ParticleSystem {
         }
 
         self.has_aux_data = true;
-        self.video_path = None;
-        self.static_image_path = None;
-        // ...and the model, if one was loaded before this webcam (see main.rs).
-        self.static_model_path = None;
         let _ = queue; // used for API consistency
-        self.image_source = ParticleImageSource::Webcam { width, height };
+        self.set_source(ParticleSource::Webcam { width, height });
     }
 
     /// Update aux data from a webcam frame. Called per-frame from the webcam drain loop.
