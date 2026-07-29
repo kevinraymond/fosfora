@@ -81,6 +81,19 @@ zip = { version = "2", default-features = false, features = ["deflate"], optiona
 rustc-hash = "2.1.1"
 fontdue = "0.9"
 wgpu-profiler = { version = "0.25", optional = true }
+# Offline song analysis (#2027): pure-Rust decode of a song file so `--analyze` can drive the
+# production per-hop chain faster than realtime. Feature-gated — the live app never decodes a
+# file, and this is a dev-side tool, so default/release builds carry none of it.
+symphonia = { version = "0.6", default-features = false, features = [
+    "mp3",
+    "flac",
+    "wav",
+    "pcm",
+    "vorbis",
+    "ogg",
+    "isomp4",
+    "aac",
+], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
@@ -115,5 +128,7 @@ video = []
 ndi = []
 webcam = ["nokhwa"]
 depth = ["webcam", "ort", "flate2", "tar", "zip"]
+# `--analyze <file>`: offline song analysis, no GPU and no window (#2027).
+analyze = ["symphonia"]
 profiling = ["wgpu-profiler"]
 wgpu-profiler = ["dep:wgpu-profiler"]

@@ -1,3 +1,5 @@
+#[cfg(feature = "analyze")]
+mod analyze;
 mod app;
 mod audio;
 mod bindings;
@@ -3712,6 +3714,28 @@ fn main() -> Result<()> {
         {
             eprintln!("--audio-test is only supported on Linux (PulseAudio backend)");
             std::process::exit(1);
+        }
+    }
+
+    // --analyze <file>: offline song analysis (#2027). No GPU, no window, no audio device —
+    // decodes the file and runs the production per-hop chain over it faster than realtime.
+    #[cfg(feature = "analyze")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--analyze") {
+            let Some(input) = args.get(i + 1).filter(|a| !a.starts_with("--")) else {
+                eprintln!("--analyze needs a path: --analyze <file> [--out <file>] [--dense]");
+                std::process::exit(2);
+            };
+            let out = args
+                .iter()
+                .position(|a| a == "--out")
+                .and_then(|j| args.get(j + 1))
+                .map(std::path::PathBuf::from);
+            let dense = args.iter().any(|a| a == "--dense");
+            let written = crate::analyze::run(std::path::Path::new(input), out.as_deref(), dense)?;
+            println!("{}", written.display());
+            return Ok(());
         }
     }
 

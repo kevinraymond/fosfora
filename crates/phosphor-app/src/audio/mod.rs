@@ -4,6 +4,7 @@ pub mod capture;
 pub mod chroma;
 pub mod downbeat;
 pub mod features;
+pub mod hop;
 pub mod hpss;
 pub mod interp;
 pub mod key;
@@ -85,22 +86,11 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use self::analyzer::FftAnalyzer;
-use self::beat::BeatDetector;
 pub use self::beat::{TempoCommand, TempoConfig, TempoControl, TempoPreset};
 use self::capture::{AudioCapture, RingBuffer};
-use self::downbeat::DownbeatTracker;
-use self::hpss::HpssAnalyzer;
+use self::hop::HopAnalyzer;
 use self::interp::FeatureInterpolator;
-use self::key::KeyDetector;
-use self::loudness::LoudnessMeter;
-use self::normalizer::FeatureNormalizer;
-use self::pitch::PitchAnalyzer;
-use self::smoother::FeatureSmoother;
-use self::stereo::StereoAnalyzer;
 pub use self::structure::StructureConfig;
-use self::structure::StructureTracker;
-use self::timbre::DeltaMfccAnalyzer;
 use crate::settings::BandScale;
 
 /// Holds the capture backend, keeping it alive while the audio processing thread runs.
@@ -1195,21 +1185,13 @@ fn audio_thread(
     tuning: Arc<Mutex<StructureConfig>>,
     tempo: Arc<Mutex<TempoControl>>,
 ) {
-    let mut analyzer = FftAnalyzer::new(sample_rate, band_scale);
-    let mut normalizer = FeatureNormalizer::new();
-    let mut beat_detector = BeatDetector::new(
+    // Every stateful detector, in the one order that is correct (see `hop.rs`). The ring,
+    // the recording mirror, the shared-config locks and the channel stay here.
+    let mut hop_analyzer = HopAnalyzer::new(
         sample_rate,
+        band_scale,
         tempo.lock().unwrap_or_else(|e| e.into_inner()).config,
     );
-    let mut key_detector = KeyDetector::new(sample_rate);
-    let mut loudness_meter = LoudnessMeter::new(sample_rate);
-    let mut downbeat_tracker = DownbeatTracker::new();
-    let mut structure_tracker = StructureTracker::new(sample_rate / ANALYSIS_HOP as f32);
-    let mut smoother = FeatureSmoother::new();
-    let mut stereo_analyzer = StereoAnalyzer::new();
-    let mut hpss_analyzer = HpssAnalyzer::new();
-    let mut pitch_analyzer = PitchAnalyzer::new(sample_rate);
-    let mut dmfcc_analyzer = DeltaMfccAnalyzer::new();
     // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
@@ -1223,8 +1205,6 @@ fn audio_thread(
     // each hop's stereo slice aligns exactly with its mono hop.
     let mut fifo_stereo: Vec<f32> = Vec::with_capacity((read_buf.len() + ANALYSIS_HOP) * 2);
     let mut samples_consumed: u64 = 0;
-    // Fixed per-frame delta for time-constant smoothing (attack/release EMAs, onset decay).
-    let dt = ANALYSIS_HOP as f32 / sample_rate;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -1268,198 +1248,39 @@ fn audio_thread(
             samples_consumed += ANALYSIS_HOP as u64;
             let timestamp = samples_consumed as f64 / sample_rate as f64;
 
-            // Multi-resolution FFT + feature extraction. The analyzer shifts this hop into
-            // its 4096-sample window, so consecutive hops overlap 87.5%.
-            let mut raw = analyzer.analyze(hop);
-
-            // A10 (#1461): perceptual loudness on the fresh hop (each sample once). Fields
-            // are Passthrough, so — like the beat block — they survive normalize/smooth
-            // unrescaled.
-            let loud = loudness_meter.process(hop);
-            raw.loudness_m = loud.m;
-            raw.loudness_s = loud.s;
-            raw.loudness_trend = loud.trend;
-            // A6 (#1457): the onset detector gates on this perceptual silence flag.
-            let loud_silent = loudness_meter.is_silent();
-
-            // A13 (#1464): stereo field over the rolling window. Gated inside the analyzer on total
-            // stereo energy — NOT the mono `loud_silent` flag, which a fully anti-phase (maximally
-            // wide) signal would trip by cancelling to mono silence. The fields are Passthrough, so
-            // they survive normalize()/smooth() unrescaled, like the loudness/key blocks below.
-            let stereo_field = stereo_analyzer.process(hop_stereo);
-            raw.pan = stereo_field.pan;
-            raw.stereo_width = stereo_field.stereo_width;
-            raw.stereo_corr = stereo_field.stereo_corr;
-            // A13b (#1801): per-band pan, from the same analyzer and the same gate. Also
-            // Passthrough — the producer already holds an empty band at 0.5.
-            let [bp_sub, bp_bass, bp_lo, bp_mid, bp_up, bp_pres, bp_bril] = stereo_field.band_pan;
-            raw.band_pan_sub_bass = bp_sub;
-            raw.band_pan_bass = bp_bass;
-            raw.band_pan_low_mid = bp_lo;
-            raw.band_pan_mid = bp_mid;
-            raw.band_pan_upper_mid = bp_up;
-            raw.band_pan_presence = bp_pres;
-            raw.band_pan_brilliance = bp_bril;
-
-            // A14 (#1465): harmonic/percussive split from the medium (1024-pt) magnitude. The two
-            // energies arrive dB-mapped 0..1 (volume-invariant spans — see hpss.rs) and are set
-            // before normalize() so the adaptive normalizer ranges and silence-gates them like
-            // the bands (Adaptive); `harmonic_ratio` is a level-invariant 0..1 balance
-            // (Passthrough), neutral-gated inside the analyzer on `loud_silent`.
-            let hpss = hpss_analyzer.process(analyzer.mid_magnitude(), loud_silent);
-            raw.percussive_energy = hpss.percussive_energy;
-            raw.harmonic_energy = hpss.harmonic_energy;
-            raw.harmonic_ratio = hpss.harmonic_ratio;
-
-            // A15 (#1466): monophonic f0 via YIN on the analyzer's raw time-domain window. Producer-
-            // normalized to a 0..1 log-frequency (Passthrough); confidence = YIN periodicity
-            // (1 − aperiodicity). Held through unvoiced gaps with confidence 0, so a pitch-keyed
-            // visual doesn't snap to the lowest note on rests. Set before normalize() like the block
-            // above (a Passthrough field survives normalize/smooth unrescaled).
-            let pitch = pitch_analyzer.process(analyzer.time_domain(), loud_silent);
-            raw.pitch = pitch.pitch;
-            raw.pitch_confidence = pitch.pitch_confidence;
-
-            // A16 (#1467): spectral contrast — per-octave peak-vs-valley tonality on the large
-            // (4096-pt) magnitude, producer-mapped 0-60 dB -> 0..1 (Passthrough, silence-gated
-            // inside the analyzer, so it survives normalize/smooth unrescaled).
-            let contrast = analyzer.spectral_contrast(loud_silent);
-            raw.contrast_0 = contrast[0];
-            raw.contrast_1 = contrast[1];
-            raw.contrast_2 = contrast[2];
-            raw.contrast_3 = contrast[3];
-            raw.contrast_4 = contrast[4];
-            raw.contrast_5 = contrast[5];
-            raw.contrast_mean = contrast[6];
-            // A16 (#1467): delta-MFCC timbre dynamics from this hop's (pre-normalization) MFCCs.
-            // `timbre_flux` (L2 of the delta over coeffs 1..12) is a raw level set before normalize()
-            // so the adaptive normalizer ranges it like `flux` (Adaptive); the full slope vector
-            // rides the frame for the bindings-only `audio.dmfcc.N` sources.
-            let timbre = dmfcc_analyzer.process(&raw.mfcc, loud_silent);
-            raw.timbre_flux = timbre.timbre_flux;
-
-            // A3 (#1454): fill `kick` now that the silence flag is known — a single
-            // detector-owned P95 normalizer, gated so noise-floor log-flux can't fire. Set
-            // before the pre-norm snapshot so structure/downbeat see the true kick, and it
-            // survives normalize() unchanged (kick is Passthrough).
-            raw.kick = analyzer.kick_envelope(loud_silent);
-
-            // A11 (#1462): key detection on the fresh CQT chroma, before normalization
-            // rescales it. Key fields are Passthrough, so they survive normalize/smooth.
-            let key_result = key_detector.process(&raw.chroma, dt);
-            raw.key_class = key_result.key_class;
-            raw.key_is_minor = key_result.is_minor;
-            raw.key_confidence = key_result.confidence;
-
-            // A12 (#1463): capture pre-normalization chroma + per-band flux for the downbeat
-            // tracker. The adaptive normalizer rescales chroma per-bin, which would distort
-            // the inter-beat chord-change magnitude, so snapshot both before normalize().
-            let pre_norm_chroma = raw.chroma;
-            let band_flux = analyzer.band_flux_3();
-            // A18 (#1469): snapshot the whole feature set before normalize() for the structure
-            // tracker — it keys on the true loudness / sub-bass / centroid dynamics the adaptive
-            // normalizer would flatten. (`AudioFeatures` is Copy; loudness + spectral shape are
-            // already filled at this point; onset/bpm come from `beat_result` below.)
-            let pre_norm = raw;
-
-            // A2 (#1453): per-feature normalization (gated percentile / fixed-range /
-            // z-score / passthrough), silence-gated on the A10 perceptual flag.
-            raw = normalizer.normalize(&raw, loud_silent);
-
             // A7 (#1458): snapshot the shared tempo config and drain the command mailbox
-            // once per hop, same as the A18 tuning above. In auto mode the estimator owns the
+            // once per hop, same as the A18 tuning below. In auto mode the estimator owns the
             // prior centre, so publish what it adapted to back into the shared config — that's
             // what the UI slider reads, and where it freezes when auto is switched off.
             let (tempo_cfg, tempo_cmds) = {
                 let mut t = tempo.lock().unwrap_or_else(|e| e.into_inner());
                 if t.config.auto_prior {
-                    t.config.prior_center_bpm = beat_detector.prior_center_bpm();
+                    t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
                 }
                 (t.config, t.drain())
             };
-            beat_detector.set_tempo_config(tempo_cfg);
-            for cmd in tempo_cmds {
-                beat_detector.apply_tempo_command(cmd);
-            }
-
-            // Beat detection (on raw magnitude spectra)
-            let beat_result = beat_detector.process(
-                analyzer.bass_magnitude(),
-                analyzer.mid_magnitude(),
-                analyzer.high_magnitude(),
-                timestamp,
-                loud_silent,
-            );
-            raw.onset = beat_result.onset_strength;
-            raw.beat = beat_result.beat;
-            raw.beat_phase = beat_result.beat_phase;
-            raw.bpm = beat_result.bpm / 300.0; // normalize to 0-1
-            raw.beat_strength = beat_result.beat_strength;
-
-            // Count beats in an atomic so the consumer can't miss a 1-frame pulse
-            // when the channel overflows or it drains multiple frames at once.
-            if beat_result.beat > 0.5 {
-                beat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-
-            // A12 (#1463): bar/downbeat/meter tracking. Runs every frame (advances bar_phase
-            // on the audio clock, integrates flux); heavy scoring gates on a fired beat.
-            let db = downbeat_tracker.process(
-                &beat_result,
-                band_flux,
-                raw.rms,
-                &pre_norm_chroma,
-                timestamp,
-                loud_silent,
-            );
-            raw.downbeat = db.downbeat;
-            raw.bar_phase = db.bar_phase;
-            raw.beat_in_bar = db.beat_in_bar;
-            // Counter-back the downbeat trigger, same as `beat`, so a 1-frame pulse survives.
-            if db.downbeat > 0.5 {
-                downbeat_counter.fetch_add(1, Ordering::Relaxed);
-            }
-
-            // A18 (#1469): section novelty / build-up / drop. Reads the pre-normalization
-            // snapshot + the beat result; heavy work is decimated to ~10 Hz internally.
             // Snapshot the shared A18 tuning once per hop (#1510) so this frame's structure
             // detection sees a consistent set of thresholds; the UI may be writing it live.
             let struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
-            let structure =
-                structure_tracker.process(struct_cfg, &pre_norm, &beat_result, timestamp);
-            raw.section_novelty = structure.section_novelty;
-            raw.buildup = structure.buildup;
-            raw.drop = structure.drop;
-            // Counter-back the drop trigger, same as `beat`/`downbeat`.
-            if structure.drop > 0.5 {
+
+            let out = hop_analyzer.process_hop(
+                hop, hop_stereo, timestamp, struct_cfg, tempo_cfg, tempo_cmds,
+            );
+
+            // Count the three 1-frame pulses in atomics so the consumer can't miss one when
+            // the channel overflows or it drains multiple frames at once (#1976).
+            if out.beat_fired {
+                beat_counter.fetch_add(1, Ordering::Relaxed);
+            }
+            if out.downbeat_fired {
+                downbeat_counter.fetch_add(1, Ordering::Relaxed);
+            }
+            if out.drop_fired {
                 drop_counter.fetch_add(1, Ordering::Relaxed);
             }
 
-            // Smoothing (per-feature asymmetric EMA; beat/beat_phase pass through)
-            let smoothed = smoother.smooth(&raw, dt);
-
-            // A17 (#1468): sample the render-facing spectrum + mel column from the analyzer's
-            // fresh magnitude, so all three ride the same frame across the channel.
-            let frame = AudioFrame {
-                features: smoothed,
-                spectrum: Box::new(analyzer.log_spectrum_512()),
-                mel: Box::new(analyzer.spectrogram_column()),
-                // A16 (#1467): this hop's delta-MFCC slopes for the `audio.dmfcc.N` sources.
-                dmfcc: timbre.dmfcc,
-                timestamp,
-                // Mirrors the silence gate in `BeatDetector::process` exactly: it pins
-                // phase at 0 under perceptual silence, so A8's local oscillator must follow
-                // rather than free-run. Same flag the detector gates on — `raw.rms` would
-                // be wrong here, since it is post-normalization and hits 0 at the bottom of
-                // the adaptive range on loud audio.
-                phase_frozen: loud_silent,
-                // A8b (#1554): the tracker's own bar-clock denominator, so the render side
-                // advances `bar_phase` on the same rate that produced the phase above.
-                bar_duration: db.bar_duration,
-            };
-
             // Non-blocking send; drop if main thread is behind
-            let _ = tx.try_send(frame);
+            let _ = tx.try_send(out.frame);
         }
 
         // Drop the samples we consumed; keep the sub-hop remainder for next time.
@@ -1471,11 +1292,212 @@ fn audio_thread(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    /// Deterministic stereo test signal: 60 Hz sub with a 2 Hz gate (kick-like), a steady
+    /// 440 Hz mid, a 3 kHz burst every 0.5 s, and low-level LCG noise. L and R differ so the
+    /// A13 stereo block sees a real image rather than a mono duplicate. Interleaved L,R.
+    ///
+    /// No `rand` — a fixed LCG so the vector below is reproducible from source alone.
+    pub(crate) fn golden_signal(sample_rate: f32, secs: f32) -> Vec<f32> {
+        let n = (sample_rate * secs) as usize;
+        let mut out = Vec::with_capacity(n * 2);
+        let mut lcg: u32 = 0x1234_5678;
+        for i in 0..n {
+            let t = i as f32 / sample_rate;
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = ((lcg >> 8) as f32 / 8_388_608.0 - 1.0) * 0.02;
+
+            let gate = if (t * 2.0).fract() < 0.25 { 1.0 } else { 0.15 };
+            let sub = (t * 60.0 * std::f32::consts::TAU).sin() * 0.45 * gate;
+            let mid = (t * 440.0 * std::f32::consts::TAU).sin() * 0.18;
+            let burst = if (t * 2.0).fract() < 0.05 {
+                (t * 3000.0 * std::f32::consts::TAU).sin() * 0.25
+            } else {
+                0.0
+            };
+            // Mid is panned slightly left, the burst slightly right.
+            out.push(sub + mid * 1.15 + burst * 0.7 + noise);
+            out.push(sub + mid * 0.85 + burst * 1.3 + noise);
+        }
+        out
+    }
+
+    /// Run `audio_thread` over a fixed signal via its real interface and return every frame's
+    /// feature vector. Feeds the ring in chunks small enough that the 65536-sample ring never
+    /// overruns, and uses an *unbounded* channel so no frame is dropped — the per-hop values
+    /// are independent of read chunking (the FFT window is a shift register and the timestamp
+    /// comes from a pure sample counter), so the result is deterministic.
+    fn run_audio_thread_over(signal: &[f32], sample_rate: f32) -> Vec<AudioFeatures> {
+        let ring = Arc::new(RingBuffer::new());
+        let rec_ring = Arc::new(RingBuffer::new());
+        let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::unbounded();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let beat_counter = Arc::new(AtomicU32::new(0));
+        let downbeat_counter = Arc::new(AtomicU32::new(0));
+        let drop_counter = Arc::new(AtomicU32::new(0));
+
+        let handle = {
+            let (ring, shutdown) = (ring.clone(), shutdown.clone());
+            let (rec_ring, beats) = (rec_ring.clone(), beat_counter.clone());
+            let (downbeats, drops) = (downbeat_counter.clone(), drop_counter.clone());
+            thread::Builder::new()
+                .name("golden-audio".into())
+                .spawn(move || {
+                    audio_thread(
+                        ring,
+                        sample_rate,
+                        tx,
+                        shutdown,
+                        rec_ring,
+                        beats,
+                        downbeats,
+                        drops,
+                        BandScale::Db,
+                        Arc::new(Mutex::new(StructureConfig::default())),
+                        Arc::new(Mutex::new(TempoControl::new(TempoConfig::default()))),
+                    );
+                })
+                .expect("spawn golden audio thread")
+        };
+
+        // Feed in 4096-sample chunks, waiting for the consumer to drain below one chunk so the
+        // ring (65536) can never lap the reader and silently drop samples.
+        const CHUNK: usize = 4096;
+        for chunk in signal.chunks(CHUNK) {
+            let mut spins = 0;
+            while ring.available() > CHUNK {
+                thread::sleep(Duration::from_millis(2));
+                spins += 1;
+                assert!(spins < 2000, "audio thread stalled draining the ring");
+            }
+            ring.push(chunk);
+        }
+        // Let the thread consume the tail, then stop it.
+        let mut spins = 0;
+        while ring.available() >= ANALYSIS_HOP * 2 {
+            thread::sleep(Duration::from_millis(2));
+            spins += 1;
+            assert!(spins < 2000, "audio thread stalled on the tail");
+        }
+        thread::sleep(Duration::from_millis(50));
+        shutdown.store(true, Ordering::Release);
+        handle.join().expect("join golden audio thread");
+
+        rx.try_iter().map(|f| f.features).collect()
+    }
+
+    /// GOLDEN VECTOR — pins the exact output of the production per-hop analysis chain.
+    ///
+    /// This exists to guard behaviour-preserving refactors of `audio_thread`'s hop body (the
+    /// `HopAnalyzer` extraction, #2027). The values below were captured from the pre-refactor
+    /// code; any reordering of the detector chain, a moved pre-normalization snapshot, or a
+    /// dropped field moves them far beyond the tolerance. It drives the real `audio_thread`,
+    /// not a replica of it, so it cannot pass by construction.
+    #[test]
+    fn audio_thread_golden_vector() {
+        const SR: f32 = 44100.0;
+        let signal = golden_signal(SR, 4.0);
+        let frames = run_audio_thread_over(&signal, SR);
+
+        // 4 s at 44.1 kHz / 512-sample hops = 344 complete hops.
+        assert_eq!(frames.len(), 344, "hop count must be exact");
+
+        for (hop, expected) in GOLDEN_HOPS {
+            let got = frames[*hop].as_slice();
+            for (i, (&g, &e)) in got.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    approx_eq(g, e, 1e-5),
+                    "hop {hop} feature {i} ({}): got {g}, expected {e}",
+                    schema::FEATURES[i].name,
+                );
+            }
+        }
+    }
+
+    /// Captured from the production chain before the `HopAnalyzer` extraction. Three hops:
+    /// early (detectors still warming), mid, and late (percentile windows populated).
+    // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
+    // re-capture diffs cleanly against this block.
+    #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
+    pub(crate) const GOLDEN_HOPS: &[(usize, [f32; features::NUM_FEATURES])] = &[
+        (
+            40,
+            [
+                0.1402550, 0.1409504, 0.6152689, 0.0273869, 0.0032776, 0.9150822, 0.6669799,
+                0.0565823, 0.0162813, 0.3557950, 0.0031548, 0.0127018, 0.0253166, 0.4415765,
+                0.0316777, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0155589, 0.2710480,
+                0.6099700, 0.7785417, 0.7338346, 0.6270778, 0.5728501, 0.4557934, 0.3411926,
+                0.2735227, 0.2778622, 0.3016837, 0.3824752, 0.5378194, 0.6498345, 0.5876555,
+                0.3666991, 0.2351193, 0.0749365, 0.1863821, 0.1481298, 0.0841269, 0.3016749,
+                0.9999737, 0.2572653, 0.0411858, 0.8181818, 0.7539268, 0.7610285, 0.0000000,
+                0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2500000, 0.3725280,
+                0.0194502, 0.9947178, 0.0000000, 0.2187360, 0.0000000, 0.1764498, 0.0577750,
+                0.9938284, 0.6009454, 0.9458100, 0.4127851, 0.9999694, 0.4485442, 0.4881186,
+                0.4763141, 0.4603752, 0.5333866, 0.1859571, 0.4986976, 0.4986970, 0.3528318,
+                0.4987956, 0.4993192, 0.4987761, 0.4986998,
+            ],
+        ),
+        (
+            172,
+            [
+                0.1102305, 0.1080646, 0.7951319, 0.6900175, 0.7611723, 0.9349542, 0.8690848,
+                0.2405550, 0.0345201, 0.3562543, 0.0132942, 0.0128849, 0.0226155, 0.4402158,
+                0.0327185, 0.1916304, 1.0000000, 0.0000000, 0.0000000, 0.1916298, 0.4169460,
+                0.4931196, 0.5987754, 0.5700685, 0.4939806, 0.4751821, 0.5056775, 0.4571940,
+                0.4102419, 0.4235835, 0.4410326, 0.4640032, 0.5007324, 0.6384187, 0.5775567,
+                0.3584087, 0.2244768, 0.0638255, 0.1732863, 0.1376667, 0.0723760, 0.3010190,
+                0.9999934, 0.2557099, 0.0375986, 0.8181818, 0.7369184, 0.7459379, 0.0210931,
+                0.8181818, 1.0000000, 0.5127004, 1.0000000, 0.0000000, 0.0000000, 0.3879263,
+                0.0197077, 0.9949676, 0.0000000, 0.4461716, 0.0000000, 0.3710368, 0.1154715,
+                0.9693277, 0.6012465, 0.9458582, 0.3652391, 0.9999987, 0.4890802, 0.5026366,
+                0.4690945, 0.4539475, 0.5269697, 0.0719555, 0.4999761, 0.5000186, 0.3531287,
+                0.5012279, 0.5197858, 0.5005888, 0.5000213,
+            ],
+        ),
+        (
+            340,
+            [
+                0.1529431, 0.1500496, 0.7958474, 0.1752795, 0.0049733, 0.3086759, 0.5809356,
+                0.0749775, 0.0220335, 0.3558824, 0.0057794, 0.0126732, 0.0235602, 0.4388202,
+                0.0314818, 0.1036804, 0.0000000, 0.9069988, 0.3924520, 0.0002371, 0.4584618,
+                0.4586744, 0.5644562, 0.5216897, 0.4544979, 0.4381144, 0.5564201, 0.5299048,
+                0.4502555, 0.4357056, 0.4874449, 0.5473771, 0.4820934, 0.6577535, 0.5944610,
+                0.3687846, 0.2380634, 0.0745901, 0.1859395, 0.1465119, 0.0799341, 0.3005089,
+                0.9999670, 0.2597651, 0.0414844, 0.8181818, 0.7456166, 0.7435962, 0.0413094,
+                0.8181818, 1.0000000, 0.5163099, 0.0000000, 0.2267099, 0.0000000, 0.3741339,
+                0.0193157, 0.9973286, 0.0000000, 0.4420659, 0.0000000, 0.1658111, 0.1091703,
+                0.9934737, 0.6008735, 0.9454567, 0.3603241, 0.9999986, 0.4310346, 0.4896318,
+                0.4748428, 0.4592253, 0.5218554, 0.0867594, 0.5000032, 0.4999986, 0.3532110,
+                0.5011370, 0.5022405, 0.5006987, 0.5000429,
+            ],
+        ),
+    ];
+
+    /// TEMPORARY capture harness — prints the literal for `GOLDEN_HOPS`. Ignored so it never
+    /// runs in CI; invoke with `cargo test capture_golden -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "capture harness, not an assertion"]
+    fn capture_golden_vector() {
+        const SR: f32 = 44100.0;
+        let signal = golden_signal(SR, 4.0);
+        let frames = run_audio_thread_over(&signal, SR);
+        println!("FRAME COUNT = {}", frames.len());
+        for hop in [40usize, 172, 340] {
+            print!("        ({hop}, [");
+            for (i, v) in frames[hop].as_slice().iter().enumerate() {
+                if i % 6 == 0 {
+                    print!("\n            ");
+                }
+                print!("{v:.7}, ");
+            }
+            println!("\n        ]),");
+        }
     }
 
     #[test]

@@ -68,6 +68,8 @@ jobs:
         run: cargo clippy --all-targets --features webcam -- -D warnings
       - name: Clippy (depth feature)
         run: cargo clippy --all-targets --features depth -- -D warnings
+      - name: Clippy (analyze feature)
+        run: cargo clippy --all-targets --features analyze -- -D warnings
 
   test:
     name: Test
@@ -86,6 +88,8 @@ jobs:
         run: cargo test --features webcam
       - name: Test (depth feature)
         run: cargo test --features depth
+      - name: Test (analyze feature)
+        run: cargo test --features analyze
 
   build:
     name: Build (${{ matrix.name }})
