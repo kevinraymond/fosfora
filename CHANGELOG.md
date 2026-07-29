@@ -3,6 +3,16 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- Switching layers while a particle source file dialog was open dropped the image, video or
+  model onto whichever layer you had moved to, not the one that asked for it. The same
+  applied to loading a morph target.
+- Recalling a preset left a hand-loaded webcam, video or model running on any layer the
+  preset didn't name a source for. A preset now returns those layers to the source their
+  effect declares.
+
 ## v1.29.0 — 2026-07-28
 
 ### Added

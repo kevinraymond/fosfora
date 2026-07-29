@@ -47,6 +47,25 @@ pub fn builtin_raster_path(display_name: &str) -> PathBuf {
         .join(format!("raster_{display_name}.png"))
 }
 
+/// Where a load was asked for, frozen at request time (#2012).
+///
+/// The file dialog and the decode both run off the main thread, so between the
+/// click and the result landing the user can select a different layer or a
+/// different morph slot. Routing the result by whatever is live at DRAIN time
+/// puts the media on the wrong layer; the splat loader already avoids this by
+/// carrying its `layer_idx` through the request, and this is the same idea for
+/// every field the drain needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceRequest {
+    /// The layer that asked. A result whose layer is gone, is no longer an
+    /// effect, or no longer has a particle system is simply dropped.
+    pub layer_idx: usize,
+    /// Load into a morph TARGET rather than over the base source.
+    pub as_morph_target: bool,
+    /// Which morph slot; `None` means the first empty one.
+    pub morph_slot: Option<u32>,
+}
+
 /// Result from background particle source loading.
 pub enum ParticleSourceResult {
     /// Static image loaded successfully.
@@ -79,6 +98,10 @@ pub enum ParticleSourceResult {
 pub struct ParticleSourceLoader {
     result_rx: Receiver<(u64, ParticleSourceResult)>,
     generation: u64,
+    /// Context of the in-flight request, returned alongside its result. One
+    /// field is enough because the loader is single-in-flight — a new request
+    /// bumps `generation` and any older result is discarded as stale.
+    request: SourceRequest,
     pub loading: bool,
     pub loading_name: String,
 }
@@ -90,15 +113,17 @@ impl ParticleSourceLoader {
         Self {
             result_rx: rx,
             generation: 0,
+            request: SourceRequest::default(),
             loading: false,
             loading_name: String::new(),
         }
     }
 
     /// Start loading an image file in the background.
-    pub fn load_image(&mut self, path: PathBuf) {
+    pub fn load_image(&mut self, path: PathBuf, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
+        self.request = request;
         self.loading = true;
         self.loading_name = path
             .file_name()
@@ -120,9 +145,10 @@ impl ParticleSourceLoader {
     /// Start loading a video file in the background.
     #[cfg(feature = "video")]
     #[allow(dead_code)]
-    pub fn load_video(&mut self, path: PathBuf) {
+    pub fn load_video(&mut self, path: PathBuf, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
+        self.request = request;
         self.loading = true;
         self.loading_name = path
             .file_name()
@@ -143,9 +169,10 @@ impl ParticleSourceLoader {
 
     /// Open a file dialog for images on a background thread, then decode.
     /// The dialog + decode both run off the main thread to avoid freezing.
-    pub fn open_image_dialog(&mut self) {
+    pub fn open_image_dialog(&mut self, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
+        self.request = request;
         self.loading = true;
         self.loading_name = "choosing file...".to_string();
 
@@ -169,9 +196,10 @@ impl ParticleSourceLoader {
 
     /// Open a file dialog for video on a background thread, then decode.
     #[cfg(feature = "video")]
-    pub fn open_video_dialog(&mut self) {
+    pub fn open_video_dialog(&mut self, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
+        self.request = request;
         self.loading = true;
         self.loading_name = "choosing file...".to_string();
 
@@ -198,9 +226,10 @@ impl ParticleSourceLoader {
     ///
     /// Sends back the chosen path only — see [`ParticleSourceResult::Model`] for
     /// why the raster cannot happen here.
-    pub fn open_model_dialog(&mut self) {
+    pub fn open_model_dialog(&mut self, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
+        self.request = request;
         self.loading = true;
         self.loading_name = "choosing file...".to_string();
 
@@ -226,14 +255,15 @@ impl ParticleSourceLoader {
             .expect("failed to spawn particle source dialog thread");
     }
 
-    /// Check for completed results. Returns None if still loading or no result.
-    pub fn try_recv(&mut self) -> Option<ParticleSourceResult> {
+    /// Check for completed results, with the context the load was requested in.
+    /// Returns None if still loading or no result.
+    pub fn try_recv(&mut self) -> Option<(SourceRequest, ParticleSourceResult)> {
         match self.result_rx.try_recv() {
             Ok((load_gen, result)) => {
                 if load_gen == self.generation {
                     self.loading = false;
                     self.loading_name.clear();
-                    Some(result)
+                    Some((self.request, result))
                 } else {
                     None // Stale result from cancelled load
                 }

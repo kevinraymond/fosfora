@@ -3141,7 +3141,22 @@ impl App {
                 image_path: lp.particle_image_path.clone(),
                 model_path: lp.particle_model_path.clone(),
             };
-            match source_fields.resolve() {
+            // A preset that names no source resets the layer to what its EFFECT
+            // declares, rather than leaving whatever happened to be live (#2013).
+            // The rebuild is skipped when the layer already runs this effect (see
+            // `already_loaded` above, kept that way for morph), so without this a
+            // webcam or video loaded by hand outlives every preset after it. The
+            // per-arm `already_loaded` checks make the common case a no-op.
+            let declared = self
+                .effect_loader
+                .effects
+                .iter()
+                .find(|e| e.name == lp.effect_name)
+                .and_then(|e| e.particles.as_ref())
+                .and_then(|p| {
+                    crate::gpu::particle::source::declared_source(&p.emitter, assets_dir())
+                });
+            match source_fields.resolve().or(declared) {
                 Some(crate::gpu::particle::SourceSpec::Video(video_path)) => {
                     #[cfg(feature = "video")]
                     {

@@ -22,7 +22,8 @@ pub mod water;
 
 pub use source::{ParticleSource, ParticleSourceKind, SourcePresetFields, SourceSpec};
 pub use source_loader::{
-    ParticleSourceLoader, ParticleSourceResult, builtin_raster_images, builtin_raster_path,
+    ParticleSourceLoader, ParticleSourceResult, SourceRequest, builtin_raster_images,
+    builtin_raster_path,
 };
 pub use splat_source::{SplatLoadResult, SplatSceneLoader};
 pub use system::ParticleSystem;

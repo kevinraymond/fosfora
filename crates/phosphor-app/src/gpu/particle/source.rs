@@ -342,6 +342,39 @@ pub fn sync_emitter(emitter: &mut EmitterDef, source: &ParticleSource) {
     }
 }
 
+/// The source an effect file declares, or `None` when it declares none.
+///
+/// Used as the fallback when a preset names no source at all (#2013): a preset
+/// applied to a layer already running that effect deliberately skips the rebuild
+/// to keep morph state alive, so without this a hand-loaded webcam or video keeps
+/// running under a preset that never mentioned one. Resetting to what the `.pfx`
+/// declares rather than to nothing is what makes an image effect come back with
+/// its own picture instead of going blank.
+///
+/// Precedence mirrors `build_particle_system`: only an `"image"`-shaped emitter
+/// carries a media source at all, a model wins over a video, and a video wins
+/// over an image (there, the video is applied after the image, so it is the one
+/// that survives). `"webcam"` in the video slot is a UI sentinel rather than a
+/// file — no effect starts a webcam on its own.
+pub fn declared_source(emitter: &EmitterDef, assets_dir: &std::path::Path) -> Option<SourceSpec> {
+    if emitter.shape != "image" {
+        return None;
+    }
+    if !emitter.model.is_empty() {
+        let path = super::model_source::resolve_model_path(assets_dir, &emitter.model);
+        return Some(SourceSpec::Model(path.to_string_lossy().to_string()));
+    }
+    if !emitter.video.is_empty() && emitter.video != "webcam" {
+        let path = assets_dir.join("videos").join(&emitter.video);
+        return Some(SourceSpec::Video(path.to_string_lossy().to_string()));
+    }
+    if !emitter.image.is_empty() {
+        let path = assets_dir.join("images").join(&emitter.image);
+        return Some(SourceSpec::Image(path.to_string_lossy().to_string()));
+    }
+    None
+}
+
 /// What to *load*, as opposed to what is loaded. A restored preset names a file;
 /// turning it into a [`ParticleSource`] needs decoding (video) or the GPU (model),
 /// so the two types stay separate.
@@ -669,6 +702,89 @@ mod tests {
             fields.resolve(),
             Some(SourceSpec::Model("/models/skull.glb".to_string()))
         );
+    }
+
+    fn image_emitter(image: &str, video: &str, model: &str) -> EmitterDef {
+        EmitterDef {
+            shape: "image".to_string(),
+            image: image.to_string(),
+            video: video.to_string(),
+            model: model.to_string(),
+            ..EmitterDef::default()
+        }
+    }
+
+    /// #2013: a preset naming no source falls back to what the effect declares,
+    /// so a hand-loaded webcam cannot outlive a preset that never mentioned one.
+    #[test]
+    fn declared_source_mirrors_the_effect_file() {
+        let assets = std::path::Path::new("/opt/fosfora/assets");
+
+        assert_eq!(
+            declared_source(&image_emitter("raster_phoenix.png", "", ""), assets),
+            Some(SourceSpec::Image(
+                "/opt/fosfora/assets/images/raster_phoenix.png".to_string()
+            ))
+        );
+        // Model wins over an image, as it does at effect-load time.
+        assert_eq!(
+            declared_source(
+                &image_emitter("raster_phoenix.png", "", "skull.glb"),
+                assets
+            ),
+            Some(SourceSpec::Model(
+                "/opt/fosfora/assets/models/skull.glb".to_string()
+            ))
+        );
+        // An absolute model path is taken as-is, not joined under assets/.
+        assert_eq!(
+            declared_source(&image_emitter("", "", "/home/kevin/skull.glb"), assets),
+            Some(SourceSpec::Model("/home/kevin/skull.glb".to_string()))
+        );
+        // A video beats an image, because at load time it is applied afterwards.
+        assert_eq!(
+            declared_source(&image_emitter("raster_phoenix.png", "loop.mp4", ""), assets),
+            Some(SourceSpec::Video(
+                "/opt/fosfora/assets/videos/loop.mp4".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn an_effect_declaring_nothing_resets_to_nothing() {
+        let assets = std::path::Path::new("/opt/fosfora/assets");
+        // Nothing named at all.
+        assert_eq!(declared_source(&image_emitter("", "", ""), assets), None);
+        // "webcam" is a UI sentinel, not a file — no effect starts a camera itself.
+        assert_eq!(
+            declared_source(&image_emitter("", "webcam", ""), assets),
+            None
+        );
+        // A non-image emitter carries no media source however its fields read.
+        let mut point = image_emitter("raster_phoenix.png", "", "");
+        point.shape = "point".to_string();
+        assert_eq!(declared_source(&point, assets), None);
+    }
+
+    /// The preset still wins when it names one — the fallback is only a fallback.
+    #[test]
+    fn a_named_preset_source_beats_what_the_effect_declares() {
+        let assets = std::path::Path::new("/opt/fosfora/assets");
+        let declared = declared_source(&image_emitter("raster_phoenix.png", "", ""), assets);
+        let fields = SourcePresetFields {
+            model_path: Some("/home/kevin/skull.glb".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            fields.resolve().or(declared.clone()),
+            Some(SourceSpec::Model("/home/kevin/skull.glb".to_string()))
+        );
+        // ...and with nothing named, the effect's own source comes back.
+        assert_eq!(SourcePresetFields::default().resolve().or(declared), {
+            Some(SourceSpec::Image(
+                "/opt/fosfora/assets/images/raster_phoenix.png".to_string(),
+            ))
+        });
     }
 
     /// Full precedence, including the pairs the old restore never reached because

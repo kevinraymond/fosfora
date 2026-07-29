@@ -2510,6 +2510,13 @@ impl ApplicationHandler for PhosphorApp {
                 // Handle particle source change signals
                 {
                     let ctx = app.egui_overlay.context();
+                    // The layer asking is the one live NOW, not whichever is active
+                    // when the dialog returns (#2012).
+                    let base_request = crate::gpu::particle::SourceRequest {
+                        layer_idx: app.layer_stack.active_layer,
+                        as_morph_target: false,
+                        morph_slot: None,
+                    };
 
                     // Select built-in raster image
                     let select_builtin: Option<String> =
@@ -2517,7 +2524,7 @@ impl ApplicationHandler for PhosphorApp {
                     if let Some(name) = select_builtin {
                         if !app.particle_source_loader.loading {
                             let path = crate::gpu::particle::builtin_raster_path(&name);
-                            app.particle_source_loader.load_image(path);
+                            app.particle_source_loader.load_image(path, base_request);
                             app.preset_store.mark_dirty();
                         }
                     }
@@ -2526,7 +2533,7 @@ impl ApplicationHandler for PhosphorApp {
                     let load_image: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_image")));
                     if load_image.is_some() && !app.particle_source_loader.loading {
-                        app.particle_source_loader.open_image_dialog();
+                        app.particle_source_loader.open_image_dialog(base_request);
                         app.preset_store.mark_dirty();
                     }
 
@@ -2536,7 +2543,7 @@ impl ApplicationHandler for PhosphorApp {
                         let load_video: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_video")));
                         if load_video.is_some() && !app.particle_source_loader.loading {
-                            app.particle_source_loader.open_video_dialog();
+                            app.particle_source_loader.open_video_dialog(base_request);
                             app.preset_store.mark_dirty();
                         }
                     }
@@ -2546,7 +2553,7 @@ impl ApplicationHandler for PhosphorApp {
                     let load_model: Option<bool> =
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_load_model")));
                     if load_model.is_some() && !app.particle_source_loader.loading {
-                        app.particle_source_loader.open_model_dialog();
+                        app.particle_source_loader.open_model_dialog(base_request);
                         app.preset_store.mark_dirty();
                     }
 
@@ -2986,57 +2993,37 @@ impl ApplicationHandler for PhosphorApp {
                                                 ))
                                             });
                                         }
-                                        if morph_load_img.is_some() {
-                                            // Store pending flag + target slot for when result arrives
-                                            let target_slot = morph_selected_slot;
+                                        // "Which layer, which slot, is this a morph
+                                        // target" all ride with the request now, so a
+                                        // layer or slot change while the dialog is open
+                                        // cannot redirect the result (#2012).
+                                        let morph_request = crate::gpu::particle::SourceRequest {
+                                            layer_idx: app.layer_stack.active_layer,
+                                            as_morph_target: true,
+                                            morph_slot: morph_selected_slot,
+                                        };
+                                        let clear_slot = || {
                                             ctx.data_mut(|d| {
-                                                d.insert_temp(
-                                                    egui::Id::new("morph_image_pending"),
-                                                    true,
-                                                );
-                                                if let Some(s) = target_slot {
-                                                    d.insert_temp(
-                                                        egui::Id::new("morph_pending_slot"),
-                                                        s,
-                                                    );
-                                                }
                                                 d.remove_temp::<u32>(egui::Id::new(
                                                     "morph_selected_slot",
-                                                ));
+                                                ))
                                             });
-                                            app.particle_source_loader.open_image_dialog();
+                                        };
+                                        if morph_load_img.is_some() {
+                                            clear_slot();
+                                            app.particle_source_loader
+                                                .open_image_dialog(morph_request);
                                         }
                                         #[cfg(feature = "video")]
                                         if morph_load_video.is_some() {
-                                            ctx.data_mut(|d| {
-                                                d.insert_temp(
-                                                    egui::Id::new("morph_video_pending"),
-                                                    true,
-                                                );
-                                                d.remove_temp::<u32>(egui::Id::new(
-                                                    "morph_selected_slot",
-                                                ));
-                                            });
-                                            app.particle_source_loader.open_video_dialog();
+                                            clear_slot();
+                                            app.particle_source_loader
+                                                .open_video_dialog(morph_request);
                                         }
                                         if morph_load_model.is_some() {
-                                            // Only the slot needs carrying: the Model
-                                            // result arm routes to a morph target
-                                            // whenever the effect has morph state, so
-                                            // no pending flag is required.
-                                            let target_slot = morph_selected_slot;
-                                            ctx.data_mut(|d| {
-                                                if let Some(s) = target_slot {
-                                                    d.insert_temp(
-                                                        egui::Id::new("morph_pending_slot"),
-                                                        s,
-                                                    );
-                                                }
-                                                d.remove_temp::<u32>(egui::Id::new(
-                                                    "morph_selected_slot",
-                                                ));
-                                            });
-                                            app.particle_source_loader.open_model_dialog();
+                                            clear_slot();
+                                            app.particle_source_loader
+                                                .open_model_dialog(morph_request);
                                         }
                                     }
                                 }
@@ -3078,21 +3065,14 @@ impl ApplicationHandler for PhosphorApp {
                     }
 
                     // Drain background particle source loader results
-                    if let Some(result) = app.particle_source_loader.try_recv() {
-                        // Check if this image/video was requested for a morph slot
-                        let morph_pending: Option<bool> = app
-                            .egui_overlay
-                            .context()
-                            .data_mut(|d| d.remove_temp(egui::Id::new("morph_image_pending")));
-                        let morph_video_pending: Option<bool> = app
-                            .egui_overlay
-                            .context()
-                            .data_mut(|d| d.remove_temp(egui::Id::new("morph_video_pending")));
-                        let morph_pending_slot: Option<u32> = app
-                            .egui_overlay
-                            .context()
-                            .data_mut(|d| d.remove_temp(egui::Id::new("morph_pending_slot")));
-                        if let Some(layer) = app.layer_stack.active_mut() {
+                    if let Some((request, result)) = app.particle_source_loader.try_recv() {
+                        // Route by the request, not by whatever is active now — the
+                        // dialog ran on another thread and the user may have moved on
+                        // (#2012). A layer that is gone, or no longer an effect with a
+                        // particle system, drops the result rather than misplacing it.
+                        let morph_pending = request.as_morph_target;
+                        let morph_pending_slot = request.morph_slot;
+                        if let Some(layer) = app.layer_stack.layers.get_mut(request.layer_idx) {
                             if let Some(effect) = layer.as_effect_mut() {
                                 if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
                                     match result {
@@ -3108,7 +3088,7 @@ impl ApplicationHandler for PhosphorApp {
                                                 ps.max_particles,
                                             );
                                             // Load into morph slot if pending, otherwise normal source
-                                            if morph_pending.is_some() {
+                                            if morph_pending {
                                                 if !aux.is_empty() {
                                                     if let Some(ref mut morph) = ps.morph_state {
                                                         let slot = morph_pending_slot
@@ -3191,7 +3171,7 @@ impl ApplicationHandler for PhosphorApp {
                                             frames,
                                             delays_ms,
                                         } => {
-                                            if morph_video_pending.is_some() {
+                                            if morph_pending {
                                                 // Load evenly-spaced frames into morph slots
                                                 if let Some(ref mut morph) = ps.morph_state {
                                                     // When full, replace all 4 slots with video frames
