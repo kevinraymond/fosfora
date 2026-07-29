@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.29.0 — 2026-07-28
 
 ### Added
 - **Reliquary**, the 48th effect — a form that holds light. It splits your image, video or
