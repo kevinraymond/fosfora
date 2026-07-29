@@ -32,7 +32,7 @@ pub enum ScopeTab {
 #[derive(Clone, PartialEq)]
 pub enum ArmedEnd {
     Source(String),
-    Target(String),
+    Target(BindingTarget),
 }
 
 pub struct BindingMatrixState {
@@ -59,7 +59,7 @@ pub struct BindingMatrixState {
     pub expanded_binding_id: Option<String>,
     // Position tracking for connection lines (rebuilt each frame)
     pub source_positions: HashMap<String, Pos2>,
-    pub target_positions: HashMap<String, Pos2>,
+    pub target_positions: HashMap<BindingTarget, Pos2>,
     pub card_positions: HashMap<String, (Pos2, Pos2)>,
     /// Visible band of each column's scroll area this frame — curve endpoints
     /// are clamped into these so scrolled-off rows don't paint cables across
@@ -215,7 +215,7 @@ pub fn draw_binding_matrix(
                 // Set by whichever column completed a click-to-bind this frame;
                 // both borrow the bus immutably for their meters, so the insert
                 // happens once, after the columns are done.
-                let mut pending_bind: Option<(String, String)> = None;
+                let mut pending_bind: Option<(String, BindingTarget)> = None;
 
                 ui.horizontal(|ui| {
                     // Left: Sources — padded with bg
@@ -531,7 +531,7 @@ fn draw_source_column(
     ui: &mut egui::Ui,
     state: &mut BindingMatrixState,
     bus: &BindingBus,
-) -> Option<(String, String)> {
+) -> Option<(String, BindingTarget)> {
     let tc = theme_colors(ui.ctx());
 
     ui.horizontal(|ui| {
@@ -592,7 +592,7 @@ fn draw_source_column(
             state.source_viewport = ui.clip_rect();
             ui.set_width(ui.available_width());
 
-            let mut pending_bind: Option<(String, String)> = None;
+            let mut pending_bind: Option<(String, BindingTarget)> = None;
 
             let bound_sources: HashSet<&str> = bus
                 .bindings
@@ -668,9 +668,9 @@ fn draw_source_group(
     mapped_count: usize,
     bound_sources: &HashSet<&str>,
     filtering: bool,
-) -> Option<(String, String)> {
+) -> Option<(String, BindingTarget)> {
     let tc = theme_colors(ui.ctx());
-    let mut pending_bind: Option<(String, String)> = None;
+    let mut pending_bind: Option<(String, BindingTarget)> = None;
     // While filtering, a group with a surviving row is shown open — otherwise the
     // hit would sit inside a collapsed group and the column would look empty.
     let collapsed = !filtering && state.collapsed_source_groups.contains(group_id);
@@ -938,7 +938,7 @@ fn draw_target_column(
     state: &mut BindingMatrixState,
     bus: &BindingBus,
     targets: &[TargetOption],
-) -> Option<(String, String)> {
+) -> Option<(String, BindingTarget)> {
     let tc = theme_colors(ui.ctx());
 
     ui.horizontal(|ui| {
@@ -992,40 +992,20 @@ fn draw_target_column(
             state.target_viewport = ui.clip_rect();
             ui.set_width(ui.available_width());
 
-            let mut pending_bind: Option<(String, String)> = None;
+            let mut pending_bind: Option<(String, BindingTarget)> = None;
             let mut current_group: &str = "";
 
-            // Build reverse map: old-format target → new-format target id
-            // e.g. "param.Phosphor.warp" → "param.0.Phosphor.warp"
-            let old_to_new: HashMap<String, &str> = targets
-                .iter()
-                .filter_map(|opt| {
-                    // New format: param.{idx}.{effect}.{name}
-                    let parts: Vec<&str> = opt.id.split('.').collect();
-                    if parts.len() == 4 && parts[0] == "param" {
-                        // Old format would be: param.{effect}.{name}
-                        let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
-                        Some((old_key, opt.id.as_str()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // Build lookup: target_id → list of source colors bound to it
-            // Checks both the exact binding target and the new-format equivalent
-            let mut target_bindings: HashMap<&str, Vec<Color32>> = HashMap::new();
+            // Which sources drive each target, by identity rather than by a
+            // string reverse-map rebuilt every frame. `same_destination` bridges
+            // the legacy indexless param form.
+            let mut target_bindings: HashMap<&BindingTarget, Vec<Color32>> = HashMap::new();
             for b in &bus.bindings {
-                if !b.target.is_empty() {
-                    let color = source_color(&b.source);
-                    target_bindings
-                        .entry(b.target.as_str())
-                        .or_default()
-                        .push(color);
-                    // Also index under the new-format key so target dots light up
-                    if let Some(&new_id) = old_to_new.get(&b.target) {
-                        target_bindings.entry(new_id).or_default().push(color);
-                    }
+                if b.target.is_unset() {
+                    continue;
+                }
+                let color = source_color(&b.source);
+                if let Some(opt) = targets.iter().find(|o| o.id.same_destination(&b.target)) {
+                    target_bindings.entry(&opt.id).or_default().push(color);
                 }
             }
 
@@ -1122,17 +1102,12 @@ fn draw_target_column(
                     // Record position at group header for collapsed targets
                     if let Some(hr) = last_header_rect {
                         let anchor = pos2(hr.left(), hr.center().y);
-                        let parts: Vec<&str> = opt.id.split('.').collect();
-                        if parts.len() == 4 && parts[0] == "param" {
-                            let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
-                            state.target_positions.insert(old_key, anchor);
-                        }
                         state.target_positions.insert(opt.id.clone(), anchor);
                     }
                     continue;
                 }
 
-                let colors = target_bindings.get(opt.id.as_str());
+                let colors = target_bindings.get(&opt.id);
                 let is_bound = colors.is_some_and(|c| !c.is_empty());
                 let armed_here = state.armed.as_ref() == Some(&ArmedEnd::Target(opt.id.clone()));
 
@@ -1170,22 +1145,10 @@ fn draw_target_column(
 
                     // Output bar — show last value from any binding targeting this
                     // Match both new-format (param.0.Effect.name) and old-format (param.Effect.name)
-                    let old_format_id = {
-                        let p: Vec<&str> = opt.id.split('.').collect();
-                        if p.len() == 4 && p[0] == "param" {
-                            Some(format!("{}.{}.{}", p[0], p[2], p[3]))
-                        } else {
-                            None
-                        }
-                    };
                     let output_val = bus
                         .bindings
                         .iter()
-                        .filter(|b| {
-                            b.enabled
-                                && (b.target == opt.id
-                                    || old_format_id.as_deref() == Some(b.target.as_str()))
-                        })
+                        .filter(|b| b.enabled && opt.id.same_destination(&b.target))
                         .filter_map(|b| bus.runtime(&b.id).and_then(|r| r.last_output))
                         .next_back()
                         .unwrap_or(0.0);
@@ -1236,12 +1199,6 @@ fn draw_target_column(
 
                 // Record position: left-center of the row
                 let pos = pos2(rect.left(), rect.center().y);
-                // Also store old-format key so bezier lines find old bindings
-                let parts: Vec<&str> = opt.id.split('.').collect();
-                if parts.len() == 4 && parts[0] == "param" {
-                    let old_key = format!("{}.{}.{}", parts[0], parts[2], parts[3]);
-                    state.target_positions.insert(old_key, pos);
-                }
                 state.target_positions.insert(opt.id.clone(), pos);
             }
             pending_bind
@@ -1291,11 +1248,11 @@ fn draw_center_column(
 
             // Group cards by target (untargeted last) so multiple bindings
             // driving one parameter sit together; ties keep id order.
-            let mut binding_meta: Vec<(bool, String, String)> = bus
+            let mut binding_meta: Vec<(bool, BindingTarget, String)> = bus
                 .bindings
                 .iter()
                 .filter(|b| b.scope == scope_filter)
-                .map(|b| (b.target.is_empty(), b.target.clone(), b.id.clone()))
+                .map(|b| (b.target.is_unset(), b.target.clone(), b.id.clone()))
                 .collect();
             binding_meta.sort();
             let binding_ids: Vec<String> = binding_meta.into_iter().map(|(_, _, id)| id).collect();
@@ -1388,7 +1345,7 @@ fn draw_center_column(
                     ScopeTab::Effect => BindingScope::Preset,
                     ScopeTab::Global => BindingScope::Global,
                 };
-                let new_id = bus.add_binding(String::new(), String::new(), scope);
+                let new_id = bus.add_binding(String::new(), BindingTarget::Unset, scope);
                 state.expanded_binding_id = Some(new_id);
             }
         });
@@ -1598,7 +1555,7 @@ fn draw_binding_card(
             // Dead-TARGET warning, the symmetric case and the one that actually
             // bites: change a layer's effect and every binding onto its params
             // stops resolving, while still rendering a perfectly plausible label.
-            if enabled && !binding_target.is_empty() && !target_is_live(&binding_target, targets) {
+            if enabled && !binding_target.is_unset() && !target_is_live(&binding_target, targets) {
                 ui.label(RichText::new("\u{2717}").size(8.0).color(tc.warning))
                     .on_hover_text(format!(
                         "Target no longer exists \u{2014} \u{201c}{binding_target}\u{201d}.\n\
@@ -1783,7 +1740,7 @@ fn draw_expanded_content(
     bus: &mut BindingBus,
     id: &str,
     source_init: &str,
-    target_init: &str,
+    target_init: &BindingTarget,
     name_init: &str,
     enabled: bool,
     _scope_init: &BindingScope,
@@ -1795,7 +1752,7 @@ fn draw_expanded_content(
     action: &mut CardAction,
 ) {
     let mut source = source_init.to_string();
-    let mut target = target_init.to_string();
+    let mut target = target_init.clone();
     let mut name = name_init.to_string();
     let mut enabled_val = enabled;
 
@@ -2179,7 +2136,10 @@ fn draw_expanded_content(
     // Apply changes back — only on a real change: get_binding_mut marks the
     // bus dirty, and an unconditional write meant a rewrite of the bindings
     // file every debounce interval for as long as a card sat expanded.
-    if source != source_init || target != target_init || name != name_init || enabled_val != enabled
+    if source != source_init
+        || &target != target_init
+        || name != name_init
+        || enabled_val != enabled
     {
         if let Some(b) = bus.get_binding_mut(id) {
             b.source = source;
@@ -2626,11 +2586,11 @@ fn eval_cubic_bezier(from: Pos2, to: Pos2, t: f32) -> Pos2 {
 
 fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) {
     let tc = theme_colors(ui.ctx());
-    let unique_targets: HashSet<&str> = bus
+    let unique_targets: HashSet<&BindingTarget> = bus
         .bindings
         .iter()
-        .filter(|b| !b.target.is_empty())
-        .map(|b| b.target.as_str())
+        .filter(|b| !b.target.is_unset())
+        .map(|b| &b.target)
         .collect();
 
     ui.add_space(4.0);

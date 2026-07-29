@@ -36,31 +36,6 @@ pub struct BindingBus {
     pub pending_triggers: Vec<String>,
 }
 
-/// The layer a binding target names, for the two target forms that carry one.
-///
-/// `layer.{n}.{field}` and `param.{n}.{effect}.{param}`. Everything else —
-/// postfx, particle, uniform, scene, global, and the legacy indexless
-/// `param.{effect}.{param}` — has no layer to renumber.
-pub(crate) fn target_layer_index(target: &str) -> Option<usize> {
-    let mut parts = target.split('.');
-    match parts.next()? {
-        "layer" => parts.next()?.parse().ok(),
-        // Four segments means the indexed form; three is the legacy one.
-        "param" if target.split('.').count() == 4 => parts.next()?.parse().ok(),
-        _ => None,
-    }
-}
-
-/// The same target with its layer index replaced. `None` when it names no layer.
-pub(crate) fn retarget_layer(target: &str, new_idx: usize) -> Option<String> {
-    let parts: Vec<&str> = target.split('.').collect();
-    match *parts.first()? {
-        "layer" if parts.len() >= 3 => Some(format!("layer.{new_idx}.{}", parts[2..].join("."))),
-        "param" if parts.len() == 4 => Some(format!("param.{new_idx}.{}.{}", parts[2], parts[3])),
-        _ => None,
-    }
-}
-
 /// Where layer `old` ends up after moving `from` to `to`.
 ///
 /// Same permutation the active-layer index follows, kept as its own function so
@@ -114,7 +89,7 @@ impl BindingBus {
     pub fn add_binding(
         &mut self,
         source: String,
-        target: String,
+        target: BindingTarget,
         scope: BindingScope,
     ) -> BindingId {
         let id = format!("b_{:03}", self.next_id_counter);
@@ -189,23 +164,22 @@ impl BindingBus {
     /// effect; deleting one was worse, because every binding above it shifted
     /// down onto its neighbour without a word.
     ///
-    /// Legacy `param.{effect}.{param}` targets carry no index and are left
-    /// alone — they resolve against the active layer at apply time.
+    /// [`BindingTarget::layer`] is exhaustive, so a variant that grows a layer
+    /// index cannot slip past this without a compile error — which is exactly how
+    /// the string version let three renumbering bugs through.
     pub fn remap_layer_targets(&mut self, remap: impl Fn(usize) -> Option<usize>) {
         let mut dropped: Vec<String> = Vec::new();
         let mut changed = false;
 
         for b in &mut self.bindings {
-            let Some(old) = target_layer_index(&b.target) else {
+            let Some(old) = b.target.layer() else {
                 continue;
             };
             match remap(old) {
                 Some(new) if new == old => {}
                 Some(new) => {
-                    if let Some(t) = retarget_layer(&b.target, new) {
-                        b.target = t;
-                        changed = true;
-                    }
+                    b.target = b.target.with_layer(new);
+                    changed = true;
                 }
                 None => dropped.push(b.id.clone()),
             }
@@ -253,12 +227,12 @@ impl BindingBus {
         }
     }
 
-    /// Find all bindings targeting a given target string.
+    /// Find all bindings driving a given target.
     #[allow(dead_code)]
-    pub fn bindings_for_target(&self, target: &str) -> Vec<&Binding> {
+    pub fn bindings_for_target(&self, target: &BindingTarget) -> Vec<&Binding> {
         self.bindings
             .iter()
-            .filter(|b| b.target == target)
+            .filter(|b| &b.target == target)
             .collect()
     }
 
@@ -444,17 +418,13 @@ impl BindingBus {
     /// four-layer preset must not silently kill the other three layers' work.
     /// Global-scoped bindings are app-wide by design and are never touched.
     pub fn clear_preset_bindings_for_layer(&mut self, layer_idx: usize) -> usize {
-        // The trailing dot is load-bearing: without it, clearing layer 1 also
-        // takes every `param.10.*` and `param.1x.*` target with it.
-        let param_prefix = format!("param.{layer_idx}.");
-        let layer_prefix = format!("layer.{layer_idx}.");
+        // Was two string prefixes with a load-bearing trailing dot, because
+        // `param.1` without it also matched `param.10.*` and `param.12.*`. The
+        // layer is a real field now, so the comparison cannot be off by a digit.
         let doomed: Vec<String> = self
             .bindings
             .iter()
-            .filter(|b| {
-                b.scope == BindingScope::Preset
-                    && (b.target.starts_with(&param_prefix) || b.target.starts_with(&layer_prefix))
-            })
+            .filter(|b| b.scope == BindingScope::Preset && b.target.layer() == Some(layer_idx))
             .map(|b| b.id.clone())
             .collect();
         if doomed.is_empty() {
@@ -591,79 +561,51 @@ mod tests {
         }
     }
 
-    /// Only the two target forms that carry an index may be renumbered.
-    #[test]
-    fn only_layer_bearing_targets_expose_an_index() {
-        assert_eq!(target_layer_index("layer.2.opacity"), Some(2));
-        assert_eq!(target_layer_index("layer.11.blend"), Some(11));
-        assert_eq!(target_layer_index("param.3.Raster.warp"), Some(3));
-        // Legacy indexless form resolves against the active layer at apply time.
-        assert_eq!(target_layer_index("param.Raster.warp"), None);
-        // Everything global stays put.
-        for t in [
-            "postfx.vignette",
-            "particle.emit_rate",
-            "uniform.kick",
-            "scene.transport.go",
-            "global.master_opacity",
-        ] {
-            assert_eq!(target_layer_index(t), None, "{t} should carry no layer");
-        }
+    /// Parse a target the way a bindings file does, so tests stay readable.
+    fn t(s: &str) -> BindingTarget {
+        s.into()
     }
 
-    #[test]
-    fn retargeting_preserves_everything_but_the_index() {
-        assert_eq!(
-            retarget_layer("layer.0.opacity", 4).as_deref(),
-            Some("layer.4.opacity")
-        );
-        assert_eq!(
-            retarget_layer("param.0.Raster.warp_intensity", 2).as_deref(),
-            Some("param.2.Raster.warp_intensity")
-        );
-        // Effect names with dots would break a naive rejoin; the param form is
-        // fixed at four segments so this stays well-defined.
-        assert_eq!(retarget_layer("postfx.vignette", 1), None);
-        assert_eq!(retarget_layer("param.Raster.warp", 1), None);
-    }
-
-    /// Kevin's report: swap two layers and "rms → layer 0 opacity" stays on
+    /// Kevin's report: swap two layers and "rms -> layer 0 opacity" stays on
     /// layer 0, now driving whatever moved into that slot.
     #[test]
     fn moving_a_layer_carries_its_bindings() {
         let mut bus = empty_bus();
         bus.add_binding(
             "audio.rms".into(),
-            "layer.0.opacity".into(),
+            t("layer.0.opacity"),
             BindingScope::Preset,
         );
         bus.add_binding(
             "audio.kick".into(),
-            "param.0.Raster.warp".into(),
+            t("param.0.Raster.warp"),
             BindingScope::Preset,
         );
         bus.add_binding(
             "audio.beat".into(),
-            "layer.1.opacity".into(),
+            t("layer.1.opacity"),
             BindingScope::Preset,
         );
         bus.add_binding(
             "audio.centroid".into(),
-            "postfx.vignette".into(),
+            t("postfx.vignette"),
             BindingScope::Preset,
         );
 
         // Swap 0 and 1.
         bus.remap_layer_targets(|old| Some(layer_index_after_move(old, 0, 1)));
 
-        let t: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
-        assert_eq!(t[0], "layer.1.opacity", "the moved layer took its binding");
-        assert_eq!(t[1], "param.1.Raster.warp");
+        let got: Vec<String> = bus.bindings.iter().map(|b| b.target.to_string()).collect();
         assert_eq!(
-            t[2], "layer.0.opacity",
+            got[0], "layer.1.opacity",
+            "the moved layer took its binding"
+        );
+        assert_eq!(got[1], "param.1.Raster.warp");
+        assert_eq!(
+            got[2], "layer.0.opacity",
             "the displaced layer renumbered too"
         );
-        assert_eq!(t[3], "postfx.vignette", "layerless target untouched");
+        assert_eq!(got[3], "postfx.vignette", "layerless target untouched");
     }
 
     /// Worse than reorder and unreported: deleting a layer shifted every binding
@@ -674,26 +616,43 @@ mod tests {
         for i in 0..3 {
             bus.add_binding(
                 "audio.rms".into(),
-                format!("layer.{i}.opacity"),
+                t(&format!("layer.{i}.opacity")),
                 BindingScope::Preset,
             );
         }
         bus.add_binding(
             "audio.kick".into(),
-            "param.2.Frost.bite".into(),
+            t("param.2.Frost.bite"),
             BindingScope::Preset,
         );
 
         bus.remap_layer_targets(|old| layer_index_after_remove(old, 1));
 
-        let t: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
+        let got: Vec<String> = bus.bindings.iter().map(|b| b.target.to_string()).collect();
         assert_eq!(
-            t,
+            got,
             vec!["layer.0.opacity", "layer.1.opacity", "param.1.Frost.bite"],
             "layer 1's binding dropped, layer 2's moved down to 1"
         );
         // The dropped binding's runtime goes with it rather than leaking.
         assert_eq!(bus.runtimes.len(), bus.bindings.len());
+    }
+
+    /// The prefix match this replaced needed a load-bearing trailing dot, because
+    /// `param.1` also matched `param.10.*` and `param.12.*`.
+    #[test]
+    fn clearing_one_layer_does_not_take_its_double_digit_neighbours() {
+        let mut bus = empty_bus();
+        for i in [1usize, 10, 12] {
+            bus.add_binding(
+                "audio.rms".into(),
+                t(&format!("param.{i}.Raster.warp")),
+                BindingScope::Preset,
+            );
+        }
+        assert_eq!(bus.clear_preset_bindings_for_layer(1), 1);
+        let got: Vec<String> = bus.bindings.iter().map(|b| b.target.to_string()).collect();
+        assert_eq!(got, vec!["param.10.Raster.warp", "param.12.Raster.warp"]);
     }
 
     #[test]
@@ -728,7 +687,7 @@ mod tests {
         assert_eq!(bus.bindings.len(), 2);
         let clone = bus.get_binding(&new_id).unwrap();
         assert_eq!(clone.source, "audio.kick");
-        assert_eq!(clone.target, "layer.0.opacity");
+        assert_eq!(clone.target.to_string(), "layer.0.opacity");
         assert_eq!(clone.scope, BindingScope::Global);
         assert!(bus.runtimes.contains_key(&new_id));
     }
@@ -856,10 +815,10 @@ mod tests {
             BindingScope::Global,
         );
 
-        let warp_bindings = bus.bindings_for_target("param.Phosphor.warp");
+        let warp_bindings = bus.bindings_for_target(&"param.Phosphor.warp".into());
         assert_eq!(warp_bindings.len(), 2);
 
-        let opacity_bindings = bus.bindings_for_target("layer.0.opacity");
+        let opacity_bindings = bus.bindings_for_target(&"layer.0.opacity".into());
         assert_eq!(opacity_bindings.len(), 1);
     }
 

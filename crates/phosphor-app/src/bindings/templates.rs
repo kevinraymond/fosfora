@@ -1,5 +1,5 @@
 use super::bus::BindingBus;
-use super::types::{BindingScope, TransformDef};
+use super::types::{BindingScope, BindingTarget, TransformDef};
 
 /// A built-in binding template.
 #[derive(Debug)]
@@ -518,6 +518,11 @@ impl BindingBus {
                 continue;
             }
 
+            // Patterns are authored as strings for readability, so parse once
+            // here; an unresolvable one becomes Unknown rather than reaching the
+            // bus as a plausible-looking dotted string that drives nothing.
+            let target: BindingTarget = target.parse().unwrap_or_default();
+
             let mut source = entry.source.to_string();
             if let (true, Some(dev)) = (source.contains('*'), midi_device.as_deref()) {
                 source = source.replace('*', dev);
@@ -617,14 +622,23 @@ mod tests {
         assert_eq!(bus.bindings.len(), 5);
         // percussive_energy, not kick — the kick band false-fires on sustained bass (#1836).
         assert_eq!(bus.bindings[0].source, "audio.percussive_energy");
-        assert_eq!(bus.bindings[0].target, "param.0.Drift.warp_intensity");
+        assert_eq!(
+            bus.bindings[0].target.to_string(),
+            "param.0.Drift.warp_intensity"
+        );
         // color_mode is in FALLBACK_SKIP but named in the colour list, so it still wins —
         // drift.pfx's own audio_mappings ask for exactly centroid -> palette colour.
-        assert_eq!(bus.bindings[1].target, "param.0.Drift.color_mode");
-        assert_eq!(bus.bindings[2].target, "param.0.Drift.flow_speed");
+        assert_eq!(
+            bus.bindings[1].target.to_string(),
+            "param.0.Drift.color_mode"
+        );
+        assert_eq!(
+            bus.bindings[2].target.to_string(),
+            "param.0.Drift.flow_speed"
+        );
         // The SCALE slot takes density outright.
-        assert_eq!(bus.bindings[3].target, "param.0.Drift.density");
-        assert_eq!(bus.bindings[4].target, "layer.0.opacity");
+        assert_eq!(bus.bindings[3].target.to_string(), "param.0.Drift.density");
+        assert_eq!(bus.bindings[4].target.to_string(), "layer.0.opacity");
     }
 
     #[test]
@@ -647,7 +661,7 @@ mod tests {
         let hit: Vec<&str> = bus
             .bindings
             .iter()
-            .filter_map(|b| b.target.strip_prefix("param.0.Strata."))
+            .filter_map(|b| b.target.param())
             .collect();
         assert_eq!(hit.len(), 4, "every param entry should resolve: {hit:?}");
         let mut sorted = hit.clone();
@@ -664,8 +678,11 @@ mod tests {
         let params = vec!["trail_decay".to_string()];
         bus.apply_template(&AUDIO_REACTIVE, 0, "Phosphor", &params);
         assert_eq!(bus.bindings.len(), 2); // one param + layer opacity
-        assert_eq!(bus.bindings[0].target, "param.0.Phosphor.trail_decay");
-        assert_eq!(bus.bindings[1].target, "layer.0.opacity");
+        assert_eq!(
+            bus.bindings[0].target.to_string(),
+            "param.0.Phosphor.trail_decay"
+        );
+        assert_eq!(bus.bindings[1].target.to_string(), "layer.0.opacity");
     }
 
     #[test]
@@ -674,7 +691,7 @@ mod tests {
         let mut bus = test_bus();
         bus.apply_template(&AUDIO_REACTIVE, 2, "Lattice Clouds", &[]);
         assert_eq!(bus.bindings.len(), 1);
-        assert_eq!(bus.bindings[0].target, "layer.2.opacity");
+        assert_eq!(bus.bindings[0].target.to_string(), "layer.2.opacity");
     }
 
     #[test]
@@ -685,7 +702,7 @@ mod tests {
         let params = vec!["trail_decay".to_string(), "curl_scale".to_string()];
         bus.apply_template(&AUDIO_REACTIVE, 0, "X", &params);
         assert_eq!(bus.bindings[0].source, "audio.percussive_energy");
-        assert_eq!(bus.bindings[0].target, "param.0.X.curl_scale");
+        assert_eq!(bus.bindings[0].target.to_string(), "param.0.X.curl_scale");
     }
 
     #[test]
@@ -693,7 +710,7 @@ mod tests {
         let mut bus = test_bus();
         let params = vec!["trail_decay".to_string()];
         bus.apply_template(&AUDIO_REACTIVE, 0, "X", &params);
-        assert_eq!(bus.bindings[0].target, "param.0.X.trail_decay");
+        assert_eq!(bus.bindings[0].target.to_string(), "param.0.X.trail_decay");
     }
 
     #[test]
@@ -719,14 +736,14 @@ mod tests {
             .iter()
             .find(|b| b.source == "audio.beat_phase")
             .expect("beat_phase entry should resolve");
-        assert_eq!(phase.target, "param.0.Tunnel.twist_amount");
+        assert_eq!(phase.target.to_string(), "param.0.Tunnel.twist_amount");
         // …and the wildcards then take what the named passes left.
         let centroid = bus
             .bindings
             .iter()
             .find(|b| b.source == "audio.centroid")
             .expect("centroid entry should resolve");
-        assert_ne!(centroid.target, "param.0.Tunnel.twist_amount");
+        assert_ne!(centroid.target.to_string(), "param.0.Tunnel.twist_amount");
     }
 
     #[test]
@@ -736,7 +753,9 @@ mod tests {
         let mut bus = test_bus();
         bus.apply_template(&AUDIO_REACTIVE, 0, "Nothing", &[]);
         assert!(
-            !bus.bindings.iter().any(|b| b.target.contains('{')),
+            !bus.bindings
+                .iter()
+                .any(|b| matches!(b.target, BindingTarget::Unknown(_))),
             "emitted an unresolved placeholder: {:?}",
             bus.bindings.iter().map(|b| &b.target).collect::<Vec<_>>()
         );
@@ -755,9 +774,7 @@ mod tests {
             let hit: Vec<&str> = bus
                 .bindings
                 .iter()
-                .filter_map(|b| b.target.strip_prefix("param.0."))
-                .filter_map(|r| r.split_once('.'))
-                .map(|(_, p)| p)
+                .filter_map(|b| b.target.param())
                 .collect();
             assert!(!hit.is_empty(), "'{name}' gets no param binding at all");
             for p in &hit {
@@ -784,10 +801,15 @@ mod tests {
             .collect();
         bus.apply_template(&AUDIO_REACTIVE, 3, "Drift", &params);
         for b in &bus.bindings {
-            if b.target.starts_with("param.") {
-                assert!(b.target.starts_with("param.3.Drift."), "{}", b.target);
+            if matches!(b.target, BindingTarget::Param { .. }) {
+                assert_eq!(
+                    b.target.layer(),
+                    Some(3),
+                    "{} landed on the wrong layer",
+                    b.target
+                );
             } else {
-                assert_eq!(b.target, "layer.3.opacity");
+                assert_eq!(b.target.to_string(), "layer.3.opacity");
             }
         }
     }
@@ -815,11 +837,15 @@ mod tests {
         let mut bound: Vec<&str> = bus
             .bindings
             .iter()
-            .filter_map(|b| b.target.strip_prefix("param.0.Phosphor."))
+            .filter_map(|b| b.target.param())
             .collect();
         bound.sort_unstable();
         assert_eq!(bound, vec!["color", "warp"], "each param taken once");
-        assert!(bus.bindings.iter().any(|b| b.target == "layer.0.opacity"));
+        assert!(
+            bus.bindings
+                .iter()
+                .any(|b| b.target == BindingTarget::from("layer.0.opacity"))
+        );
     }
 
     #[test]
@@ -909,7 +935,7 @@ mod tests {
                 let mut bus = test_bus();
                 bus.apply_template(template, 0, &effect, &params);
                 for b in &bus.bindings {
-                    let Some(param) = b.target.strip_prefix(&format!("param.0.{effect}.")) else {
+                    let Some(param) = b.target.param() else {
                         continue;
                     };
                     // Named candidates may claim a denied param on purpose; only the
@@ -944,7 +970,7 @@ mod tests {
         let after_first = bus.bindings.len();
         bus.apply_template(&BEAT_SYNC, 0, "Drift", &params);
 
-        let mut targets: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
+        let mut targets: Vec<&BindingTarget> = bus.bindings.iter().map(|b| &b.target).collect();
         targets.sort_unstable();
         let before_dedup = targets.len();
         targets.dedup();
@@ -963,7 +989,7 @@ mod tests {
         let punch = bus
             .bindings
             .iter()
-            .find(|b| b.target == "param.0.Drift.warp_intensity")
+            .find(|b| b.target == BindingTarget::from("param.0.Drift.warp_intensity"))
             .expect("punch slot resolves on Drift");
         assert_eq!(punch.source, "audio.beat");
     }
@@ -978,7 +1004,7 @@ mod tests {
         let mut bus = test_bus();
         let mine = bus.add_binding(
             "midi.MPD218.cc.0.42".to_string(),
-            "postfx.vignette".to_string(),
+            "postfx.vignette".into(),
             BindingScope::Preset,
         );
         bus.apply_template(&AUDIO_REACTIVE, 0, "Drift", &params);
@@ -1036,7 +1062,7 @@ mod tests {
                 let param_hits: Vec<&str> = bus
                     .bindings
                     .iter()
-                    .filter_map(|b| b.target.strip_prefix(&format!("param.0.{effect}.")))
+                    .filter_map(|b| b.target.param())
                     .collect();
                 total += param_hits.len();
                 denied += param_hits

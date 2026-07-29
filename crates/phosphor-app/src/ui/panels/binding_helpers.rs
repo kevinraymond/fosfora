@@ -58,7 +58,9 @@ impl BindingPanelInfo {
 // ---------------------------------------------------------------------------
 
 pub struct TargetOption {
-    pub id: String,
+    /// Typed, so the picker and the bus compare the same thing instead of two
+    /// strings that happen to agree.
+    pub id: BindingTarget,
     pub label: String,
     pub group: std::borrow::Cow<'static, str>,
 }
@@ -81,7 +83,11 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
             format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into();
         for name in &lp.param_names {
             targets.push(TargetOption {
-                id: format!("param.{}.{}.{}", lp.index, lp.effect_name, name),
+                id: BindingTarget::Param {
+                    layer: lp.index,
+                    effect: lp.effect_name.clone(),
+                    param: name.clone(),
+                },
                 label: name.clone(),
                 group: group_label.clone(),
             });
@@ -90,15 +96,15 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
 
     // Layer targets
     for i in 0..info.layer_count {
-        for (suffix, label_suffix) in [
-            ("opacity", "opacity"),
-            ("blend", "blend"),
-            ("displace", "displace"),
-            ("enabled", "enabled"),
+        for field in [
+            LayerField::Opacity,
+            LayerField::Blend,
+            LayerField::Displace,
+            LayerField::Enabled,
         ] {
             targets.push(TargetOption {
-                id: format!("layer.{i}.{suffix}"),
-                label: format!("Layer {i} {label_suffix}"),
+                id: BindingTarget::Layer { layer: i, field },
+                label: format!("Layer {i} {}", field.as_str()),
                 group: "Layers".into(),
             });
         }
@@ -106,15 +112,15 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
 
     // PostFX targets
     for (id, label) in [
-        ("postfx.bloom_threshold", "Bloom threshold"),
-        ("postfx.bloom_intensity", "Bloom intensity"),
-        ("postfx.vignette", "Vignette"),
-        ("postfx.ca_intensity", "Chromatic aberration"),
-        ("postfx.grain_intensity", "Film grain"),
-        ("postfx.grain_rate", "Film grain rate"),
+        ("bloom_threshold", "Bloom threshold"),
+        ("bloom_intensity", "Bloom intensity"),
+        ("vignette", "Vignette"),
+        ("ca_intensity", "Chromatic aberration"),
+        ("grain_intensity", "Film grain"),
+        ("grain_rate", "Film grain rate"),
     ] {
         targets.push(TargetOption {
-            id: id.into(),
+            id: BindingTarget::PostFx(id.into()),
             label: label.into(),
             group: "PostFX".into(),
         });
@@ -122,23 +128,23 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
 
     // Particle targets
     for (id, label) in [
-        ("particle.emit_rate", "Emit rate"),
-        ("particle.burst_on_beat", "Burst on beat"),
-        ("particle.lifetime", "Lifetime"),
-        ("particle.speed", "Speed"),
-        ("particle.size", "Size"),
-        ("particle.drag", "Drag"),
-        ("particle.turbulence", "Turbulence"),
-        ("particle.gravity_x", "Gravity X"),
-        ("particle.gravity_y", "Gravity Y"),
-        ("particle.vortex_strength", "Vortex strength"),
-        ("particle.obstacle_enabled", "Obstacle enabled"),
-        ("particle.obstacle_mode", "Obstacle mode"),
-        ("particle.obstacle_threshold", "Obstacle threshold"),
-        ("particle.obstacle_elasticity", "Obstacle elasticity"),
+        ("emit_rate", "Emit rate"),
+        ("burst_on_beat", "Burst on beat"),
+        ("lifetime", "Lifetime"),
+        ("speed", "Speed"),
+        ("size", "Size"),
+        ("drag", "Drag"),
+        ("turbulence", "Turbulence"),
+        ("gravity_x", "Gravity X"),
+        ("gravity_y", "Gravity Y"),
+        ("vortex_strength", "Vortex strength"),
+        ("obstacle_enabled", "Obstacle enabled"),
+        ("obstacle_mode", "Obstacle mode"),
+        ("obstacle_threshold", "Obstacle threshold"),
+        ("obstacle_elasticity", "Obstacle elasticity"),
     ] {
         targets.push(TargetOption {
-            id: id.into(),
+            id: BindingTarget::Particle(id.into()),
             label: label.into(),
             group: "Particles".into(),
         });
@@ -147,7 +153,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     // Uniform targets (direct shader uniform override)
     for (field, label) in UNIFORM_TARGETS {
         targets.push(TargetOption {
-            id: format!("uniform.{field}"),
+            id: BindingTarget::Uniform((*field).to_string()),
             label: (*label).to_string(),
             group: "Uniforms".into(),
         });
@@ -155,12 +161,12 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
 
     // Scene transport
     for (id, label) in [
-        ("scene.transport.go", "Next cue"),
-        ("scene.transport.prev", "Previous cue"),
-        ("scene.transport.stop", "Stop scene"),
+        ("go", "Next cue"),
+        ("prev", "Previous cue"),
+        ("stop", "Stop scene"),
     ] {
         targets.push(TargetOption {
-            id: id.into(),
+            id: BindingTarget::SceneTransport(id.into()),
             label: label.into(),
             group: "Scene".into(),
         });
@@ -168,7 +174,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
 
     // Global
     targets.push(TargetOption {
-        id: "global.master_opacity".into(),
+        id: BindingTarget::GlobalMasterOpacity,
         label: "Master opacity".into(),
         group: "Global".into(),
     });
@@ -749,7 +755,7 @@ pub fn target_matches(opt: &TargetOption, filter: &str) -> bool {
     let needle = filter.trim().to_lowercase();
     opt.label.to_lowercase().contains(&needle)
         || opt.group.to_lowercase().contains(&needle)
-        || opt.id.to_lowercase().contains(&needle)
+        || opt.id.to_string().to_lowercase().contains(&needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -848,7 +854,7 @@ pub fn transform_short_label(t: &TransformDef) -> String {
     }
 }
 
-pub fn make_display_name(source: &str, target: &str) -> String {
+pub fn make_display_name(source: &str, target: &BindingTarget) -> String {
     let src = if source.starts_with("audio.") {
         audio_source_info(source).friendly
     } else {
@@ -927,59 +933,27 @@ pub fn ws_source_display_name(source_name: &str) -> String {
         .join(" ")
 }
 
-pub fn friendly_target(target: &str) -> String {
-    if target.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<&str> = target.split('.').collect();
-    match parts.first().copied() {
-        Some("param") => {
-            // New format: param.{layer}.{effect}.{name} (4 parts)
-            // Old format: param.{effect}.{name} (3 parts)
-            if parts.len() >= 4 {
-                let idx = parts[1];
-                let name = parts[3];
-                format!("L{idx} {name}")
-            } else {
-                (*parts.get(2).unwrap_or(&"?")).to_string()
-            }
-        }
-        Some("layer") => {
-            let idx = parts.get(1).unwrap_or(&"?");
-            let field = parts.get(2).unwrap_or(&"?");
-            format!("L{idx} {field}")
-        }
-        Some("global") => {
-            let field = parts.get(1).unwrap_or(&"?");
-            field.replace('_', " ")
-        }
-        Some("postfx") => {
-            let field = parts.get(1).unwrap_or(&"?");
-            field.replace('_', " ")
-        }
-        Some("particle") => {
-            let field = parts.get(1).unwrap_or(&"?");
-            field.replace('_', " ")
-        }
-        Some("uniform") => {
-            let field = parts.get(1).unwrap_or(&"?");
-            format!("u.{field}")
-        }
-        Some("scene") => {
-            let action = parts.get(2).unwrap_or(&"?");
-            format!("scene {action}")
-        }
-        _ => target.to_string(),
+pub fn friendly_target(target: &BindingTarget) -> String {
+    match target {
+        BindingTarget::Unset => String::new(),
+        BindingTarget::Param { layer, param, .. } => format!("L{layer} {param}"),
+        BindingTarget::LegacyParam { param, .. } => param.clone(),
+        BindingTarget::Layer { layer, field } => format!("L{layer} {}", field.as_str()),
+        BindingTarget::GlobalMasterOpacity => "master opacity".to_string(),
+        BindingTarget::PostFx(field) | BindingTarget::Particle(field) => field.replace('_', " "),
+        BindingTarget::Uniform(field) => format!("u.{field}"),
+        BindingTarget::SceneTransport(action) => format!("scene {action}"),
+        BindingTarget::Unknown(raw) => raw.clone(),
     }
 }
 
-pub fn target_display_label(target: &str, targets: &[TargetOption]) -> String {
-    if target.is_empty() {
+pub fn target_display_label(target: &BindingTarget, targets: &[TargetOption]) -> String {
+    if target.is_unset() {
         return "(select target)".into();
     }
     targets
         .iter()
-        .find(|t| t.id == target)
+        .find(|t| &t.id == target)
         .map(|t| t.label.clone())
         .unwrap_or_else(|| friendly_target(target))
 }
@@ -990,23 +964,8 @@ pub fn target_display_label(target: &str, targets: &[TargetOption]) -> String {
 /// different one — `param.0.Raster.warp` after layer 0 switches to Frost. Nothing
 /// said so: [`target_display_label`] falls back to a prettified version of the id,
 /// so a dead binding rendered identically to a working one and simply did nothing.
-pub fn target_is_live(target: &str, targets: &[TargetOption]) -> bool {
-    if target.is_empty() {
-        return false;
-    }
-    if targets.iter().any(|t| t.id == target) {
-        return true;
-    }
-    // The legacy indexless `param.{effect}.{param}` form resolves against
-    // whichever layer currently runs that effect, so it is live if any does.
-    let parts: Vec<&str> = target.split('.').collect();
-    if parts.len() == 3 && parts[0] == "param" {
-        return targets.iter().any(|t| {
-            let p: Vec<&str> = t.id.split('.').collect();
-            p.len() == 4 && p[0] == "param" && p[2] == parts[1] && p[3] == parts[2]
-        });
-    }
-    false
+pub fn target_is_live(target: &BindingTarget, targets: &[TargetOption]) -> bool {
+    !target.is_unset() && targets.iter().any(|t| t.id.same_destination(target))
 }
 
 /// Draw a source row in the picker popup.
@@ -1292,18 +1251,21 @@ mod tests {
         let targets = build_target_options(&info);
 
         // Live: the layer really does offer this param.
-        assert!(target_is_live("param.0.Frost.bite", &targets));
+        assert!(target_is_live(&"param.0.Frost.bite".into(), &targets));
         // Dead: layer 0 used to run Raster. This is what a card showed as a
         // perfectly ordinary "warp intensity" while doing nothing.
-        assert!(!target_is_live("param.0.Raster.warp_intensity", &targets));
+        assert!(!target_is_live(
+            &"param.0.Raster.warp_intensity".into(),
+            &targets
+        ));
         // Dead: the layer itself is gone.
-        assert!(!target_is_live("param.3.Frost.bite", &targets));
+        assert!(!target_is_live(&"param.3.Frost.bite".into(), &targets));
         // Layerless targets never go dead.
-        assert!(target_is_live("postfx.vignette", &targets));
-        assert!(target_is_live("global.master_opacity", &targets));
-        assert!(target_is_live("layer.0.opacity", &targets));
+        assert!(target_is_live(&"postfx.vignette".into(), &targets));
+        assert!(target_is_live(&"global.master_opacity".into(), &targets));
+        assert!(target_is_live(&"layer.0.opacity".into(), &targets));
         // An empty target is not "dead", it is unset — the card says so already.
-        assert!(!target_is_live("", &targets));
+        assert!(!target_is_live(&"".into(), &targets));
     }
 
     /// The legacy indexless form resolves against whichever layer runs that
@@ -1321,8 +1283,8 @@ mod tests {
             preset_name: String::new(),
         };
         let targets = build_target_options(&info);
-        assert!(target_is_live("param.Frost.bite", &targets));
-        assert!(!target_is_live("param.Raster.warp", &targets));
+        assert!(target_is_live(&"param.Frost.bite".into(), &targets));
+        assert!(!target_is_live(&"param.Raster.warp".into(), &targets));
     }
 
     #[test]
@@ -1340,7 +1302,7 @@ mod tests {
         let targets = build_target_options(&info);
         let opt = targets
             .iter()
-            .find(|t| t.id == "param.0.Raster.warp_intensity")
+            .find(|t| t.id == BindingTarget::from("param.0.Raster.warp_intensity"))
             .expect("built above");
 
         assert!(target_matches(opt, ""));

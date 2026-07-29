@@ -2463,284 +2463,261 @@ impl App {
     }
 
     /// Apply a single binding bus result to its target.
-    fn apply_binding_target(&mut self, target: &str, value: f32, rising: bool) {
-        let mut parts = target.splitn(2, '.');
-        let category = match parts.next() {
-            Some(c) => c,
-            None => return,
-        };
-        let rest = parts.next().unwrap_or("");
-        match category {
-            "param" => {
-                // New format: param.{layer_idx}.{effect}.{param_name} (4 parts)
-                // Old format: param.{effect_or_wildcard}.{param_name} (3 parts)
-                let (layer_idx, effect_part, param_name) = {
-                    let mut segs = rest.splitn(3, '.');
-                    let seg1 = match segs.next() {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    let seg2 = match segs.next() {
-                        Some(s) => s,
-                        None => return,
-                    };
-                    if let Some(seg3) = segs.next() {
-                        // 4-part: param.{idx}.{effect}.{param}
-                        if let Ok(idx) = seg1.parse::<usize>() {
-                            (Some(idx), seg2, seg3)
-                        } else {
-                            return;
-                        }
-                    } else {
-                        // 3-part: param.{effect}.{param}
-                        (None, seg1, seg2)
-                    }
-                };
+    /// Send one bus value to whatever it drives.
+    ///
+    /// Used to take a `&str` and re-parse the dotted form on every frame, for
+    /// every enabled binding. The shape is now decided once, at load, so this is
+    /// a match — and a new layer-bearing variant cannot be added without the
+    /// compiler pointing here.
+    fn apply_binding_target(
+        &mut self,
+        target: &crate::bindings::types::BindingTarget,
+        value: f32,
+        rising: bool,
+    ) {
+        use crate::bindings::types::{BindingTarget, LayerField};
+        match target {
+            // Unset is a half-made binding; Unknown is one we did not recognise
+            // and are carrying verbatim rather than discarding.
+            BindingTarget::Unset | BindingTarget::Unknown(_) => {}
 
-                // Resolve the target layer
-                let target_layer_idx = if let Some(idx) = layer_idx {
-                    idx
-                } else if effect_part == "*" {
-                    self.layer_stack.active_layer
-                } else {
-                    // Legacy: match effect name against active layer
-                    let matches = self
+            BindingTarget::Param { layer, param, .. } => {
+                self.apply_param_binding(*layer, param, value);
+            }
+
+            // Pre-#1792 form: no index, so it means the ACTIVE layer, and only
+            // when that layer really runs the named effect. `*` matched any.
+            BindingTarget::LegacyParam { effect, param } => {
+                let active = self.layer_stack.active_layer;
+                let matches = effect == "*"
+                    || self
                         .layer_stack
                         .active()
                         .and_then(|l| l.effect_index())
                         .and_then(|idx| self.effect_loader.effects.get(idx))
-                        .map(|eff| eff.name == effect_part)
+                        .map(|eff| &eff.name == effect)
                         .unwrap_or(false);
-                    if !matches {
-                        return;
-                    }
-                    self.layer_stack.active_layer
-                };
+                if matches {
+                    self.apply_param_binding(active, param, value);
+                }
+            }
 
-                if let Some(layer) = self.layer_stack.layers.get_mut(target_layer_idx) {
-                    if let Some(def) = layer
-                        .param_store
-                        .defs
-                        .iter()
-                        .find(|d| d.name() == param_name)
-                        .cloned()
-                    {
-                        match def {
-                            crate::params::ParamDef::Float { min, max, .. } => {
-                                let val = min + (max - min) * value.clamp(0.0, 1.0);
-                                layer.param_store.set(param_name, ParamValue::Float(val));
-                            }
-                            crate::params::ParamDef::Bool { .. } => {
-                                layer
-                                    .param_store
-                                    .set(param_name, ParamValue::Bool(value > 0.5));
-                            }
-                            _ => {}
+            BindingTarget::Layer { layer, field } => {
+                if let Some(l) = self.layer_stack.layers.get_mut(*layer) {
+                    match field {
+                        LayerField::Opacity => l.opacity = value.clamp(0.0, 1.0),
+                        LayerField::Blend => {
+                            use crate::gpu::layer::BlendMode;
+                            // Bus outputs are normalized 0..1 (#1792): spread across
+                            // the 10 color modes instead of rounding to 0|1
+                            // (Normal|Add). The displacement modes are deliberately
+                            // outside the sweep — see BlendMode::from_normalized.
+                            // The raw-integer OSC/WS paths use from_u32 directly.
+                            l.blend_mode = BlendMode::from_normalized(value);
                         }
+                        LayerField::Displace => l.displace_amount = value.clamp(0.0, 1.0),
+                        LayerField::Enabled => l.enabled = value > 0.5,
                     }
                 }
             }
-            "layer" => {
-                // layer.{n}.opacity or layer.{n}.blend or layer.{n}.enabled
-                let mut segs = rest.splitn(2, '.');
-                if let (Some(idx_str), Some(field)) = (segs.next(), segs.next()) {
-                    if let Ok(idx) = idx_str.parse::<usize>() {
-                        if let Some(layer) = self.layer_stack.layers.get_mut(idx) {
-                            match field {
-                                "opacity" => {
-                                    layer.opacity = value.clamp(0.0, 1.0);
+
+            BindingTarget::GlobalMasterOpacity => {
+                let clamped = value.clamp(0.0, 1.0);
+                for layer in &mut self.layer_stack.layers {
+                    layer.opacity = clamped;
+                }
+            }
+
+            // Edge-triggered (#1791): fire only on the frame the output rises
+            // above 0.5, not every frame a source is held high.
+            BindingTarget::SceneTransport(action) => {
+                if rising && !action.is_empty() {
+                    self.binding_bus
+                        .pending_triggers
+                        .push(format!("scene.transport.{action}"));
+                }
+            }
+
+            BindingTarget::PostFx(rest) => {
+                if let Some(layer) = self.layer_stack.active_mut() {
+                    let rest = rest.as_str();
+                    match rest {
+                        "bloom_threshold" => {
+                            layer.postprocess.bloom_threshold = value * 1.5;
+                        }
+                        "bloom_intensity" => {
+                            layer.postprocess.bloom_intensity = value.clamp(0.0, 1.0);
+                        }
+                        "vignette" => {
+                            layer.postprocess.vignette = value.clamp(0.0, 1.0);
+                        }
+                        "ca_intensity" => {
+                            layer.postprocess.ca_intensity = value.clamp(0.0, 1.0);
+                        }
+                        "grain_intensity" => {
+                            layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
+                        }
+                        "grain_rate" => {
+                            // Hz, not 0..1 like its neighbours — the bus
+                            // delivers normalized, the field is a rate.
+                            layer.postprocess.grain_rate = value.clamp(0.0, 1.0) * 60.0;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Applies to every layer's particle system.
+            BindingTarget::Particle(rest) => {
+                let v = value.clamp(0.0, 1.0);
+                let rest = rest.as_str();
+                for layer in &mut self.layer_stack.layers {
+                    if let Some(effect) = layer.as_effect_mut() {
+                        if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
+                            match rest {
+                                "emit_rate" => {
+                                    let r = v * 10000.0;
+                                    ps.emit_rate = r;
+                                    ps.def.emit_rate = r;
                                 }
-                                "blend" => {
-                                    use crate::gpu::layer::BlendMode;
-                                    // Bus outputs are normalized 0..1 (#1792): spread across
-                                    // the 10 color modes instead of rounding to 0|1
-                                    // (Normal|Add). The displacement modes are deliberately
-                                    // outside the sweep — see BlendMode::from_normalized.
-                                    // The raw-integer OSC/WS paths use from_u32 directly.
-                                    layer.blend_mode = BlendMode::from_normalized(value);
+                                "burst_on_beat" => {
+                                    let r = (v * 2000.0).round() as u32;
+                                    ps.burst_on_beat = r;
+                                    ps.def.burst_on_beat = r;
                                 }
-                                "displace" => {
-                                    layer.displace_amount = value.clamp(0.0, 1.0);
+                                "lifetime" => ps.def.lifetime = 0.5 + v * 29.5,
+                                "speed" => ps.def.initial_speed = v * 2.0,
+                                "size" => {
+                                    ps.def.initial_size = 0.001 + v * 0.099;
                                 }
-                                "enabled" => {
-                                    layer.enabled = value > 0.5;
+                                "drag" => ps.def.drag = 0.8 + v * 0.2,
+                                "turbulence" => ps.def.turbulence = v * 2.0,
+                                "gravity_x" => {
+                                    ps.def.gravity[0] = -2.0 + v * 4.0;
                                 }
+                                "gravity_y" => {
+                                    ps.def.gravity[1] = -2.0 + v * 4.0;
+                                }
+                                "vortex_strength" => {
+                                    ps.def.vortex_strength = -5.0 + v * 10.0;
+                                }
+                                // Obstacle state lives on the system itself, not the
+                                // def (system.rs), so these write ps.* only (#1793).
+                                "obstacle_enabled" => ps.obstacle_enabled = v > 0.5,
+                                "obstacle_mode" => {
+                                    // Bus outputs are normalized 0..1 (#1792): spread
+                                    // across all 4 modes. The raw-integer OSC path
+                                    // uses from_u32 directly.
+                                    ps.obstacle_mode =
+                                        crate::gpu::particle::ObstacleMode::from_normalized(v);
+                                }
+                                "obstacle_threshold" => ps.obstacle_threshold = v,
+                                "obstacle_elasticity" => ps.obstacle_elasticity = v,
                                 _ => {}
                             }
                         }
                     }
                 }
             }
-            "global"
-                // global.master_opacity
-                if rest == "master_opacity" => {
-                    let clamped = value.clamp(0.0, 1.0);
-                    for layer in &mut self.layer_stack.layers {
-                        layer.opacity = clamped;
-                    }
-                }
-            "scene" => {
-                // scene.transport.go / scene.transport.prev / scene.transport.stop
-                // Edge-triggered (#1791): fire only on the frame the output
-                // rises above 0.5, not every frame a source is held high.
-                if let Some(action) = rest.strip_prefix("transport.") {
-                    if rising && !action.is_empty() {
-                        let trigger = format!("scene.transport.{action}");
-                        self.binding_bus.pending_triggers.push(trigger);
-                    }
+
+            // Direct shader uniform override.
+            BindingTarget::Uniform(rest) => {
+                let v = value.clamp(0.0, 1.0);
+                let rest = rest.as_str();
+                match rest {
+                    "sub_bass" => self.uniforms.sub_bass = v,
+                    "bass" => self.uniforms.bass = v,
+                    "low_mid" => self.uniforms.low_mid = v,
+                    "mid" => self.uniforms.mid = v,
+                    "upper_mid" => self.uniforms.upper_mid = v,
+                    "presence" => self.uniforms.presence = v,
+                    "brilliance" => self.uniforms.brilliance = v,
+                    "rms" => self.uniforms.rms = v,
+                    "kick" => self.uniforms.kick = v,
+                    "centroid" => self.uniforms.centroid = v,
+                    "flux" => self.uniforms.flux = v,
+                    "flatness" => self.uniforms.flatness = v,
+                    "rolloff" => self.uniforms.rolloff = v,
+                    "bandwidth" => self.uniforms.bandwidth = v,
+                    "zcr" => self.uniforms.zcr = v,
+                    "onset" => self.uniforms.onset = v,
+                    "beat" => self.uniforms.beat = v,
+                    "beat_phase" => self.uniforms.beat_phase = v,
+                    "bpm" => self.uniforms.bpm = v,
+                    "beat_strength" => self.uniforms.beat_strength = v,
+                    "dominant_chroma" => self.uniforms.dominant_chroma = v,
+                    // Reserved audio features (batched ABI bump #1505) — allow
+                    // manual override before their detectors land.
+                    "loudness_m" => self.uniforms.loudness_m = v,
+                    "loudness_s" => self.uniforms.loudness_s = v,
+                    "loudness_trend" => self.uniforms.loudness_trend = v,
+                    "key_class" => self.uniforms.key_class = v,
+                    "key_is_minor" => self.uniforms.key_is_minor = v,
+                    "key_confidence" => self.uniforms.key_confidence = v,
+                    "downbeat" => self.uniforms.downbeat = v,
+                    "bar_phase" => self.uniforms.bar_phase = v,
+                    "beat_in_bar" => self.uniforms.beat_in_bar = v,
+                    "pan" => self.uniforms.pan = v,
+                    "stereo_width" => self.uniforms.stereo_width = v,
+                    "stereo_corr" => self.uniforms.stereo_corr = v,
+                    // A13b per-band pan (#1801).
+                    "band_pan_sub_bass" => self.uniforms.band_pan[0] = v,
+                    "band_pan_bass" => self.uniforms.band_pan[1] = v,
+                    "band_pan_low_mid" => self.uniforms.band_pan[2] = v,
+                    "band_pan_mid" => self.uniforms.band_pan[3] = v,
+                    "band_pan_upper_mid" => self.uniforms.band_pan[4] = v,
+                    "band_pan_presence" => self.uniforms.band_pan[5] = v,
+                    "band_pan_brilliance" => self.uniforms.band_pan[6] = v,
+                    "section_novelty" => self.uniforms.section_novelty = v,
+                    "buildup" => self.uniforms.buildup = v,
+                    "drop" => self.uniforms.drop = v,
+                    // Reserved audio features (batched ABI bump #1629, "v3").
+                    "percussive_energy" => self.uniforms.percussive_energy = v,
+                    "harmonic_energy" => self.uniforms.harmonic_energy = v,
+                    "harmonic_ratio" => self.uniforms.harmonic_ratio = v,
+                    "pitch" => self.uniforms.pitch = v,
+                    "pitch_confidence" => self.uniforms.pitch_confidence = v,
+                    "contrast_0" => self.uniforms.contrast_0 = v,
+                    "contrast_1" => self.uniforms.contrast_1 = v,
+                    "contrast_2" => self.uniforms.contrast_2 = v,
+                    "contrast_3" => self.uniforms.contrast_3 = v,
+                    "contrast_4" => self.uniforms.contrast_4 = v,
+                    "contrast_5" => self.uniforms.contrast_5 = v,
+                    "contrast_mean" => self.uniforms.contrast_mean = v,
+                    "timbre_flux" => self.uniforms.timbre_flux = v,
+                    "feedback_decay" => self.uniforms.feedback_decay = v,
+                    "time" => self.uniforms.time = value, // time not clamped
+                    _ => {}
                 }
             }
-            "postfx"
-                // postfx.bloom_threshold, postfx.bloom_intensity, etc.
-                if !rest.is_empty() => {
-                    if let Some(layer) = self.layer_stack.active_mut() {
-                        match rest {
-                            "bloom_threshold" => {
-                                layer.postprocess.bloom_threshold = value * 1.5;
-                            }
-                            "bloom_intensity" => {
-                                layer.postprocess.bloom_intensity = value.clamp(0.0, 1.0);
-                            }
-                            "vignette" => {
-                                layer.postprocess.vignette = value.clamp(0.0, 1.0);
-                            }
-                            "ca_intensity" => {
-                                layer.postprocess.ca_intensity = value.clamp(0.0, 1.0);
-                            }
-                            "grain_intensity" => {
-                                layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
-                            }
-                            "grain_rate" => {
-                                // Hz, not 0..1 like its neighbours — the bus
-                                // delivers normalized, the field is a rate.
-                                layer.postprocess.grain_rate = value.clamp(0.0, 1.0) * 60.0;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            "particle"
-                // particle.{setting_name} — applies to all layers' particle systems
-                if !rest.is_empty() => {
-                    let v = value.clamp(0.0, 1.0);
-                    for layer in &mut self.layer_stack.layers {
-                        if let Some(effect) = layer.as_effect_mut() {
-                            if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
-                                match rest {
-                                    "emit_rate" => {
-                                        let r = v * 10000.0;
-                                        ps.emit_rate = r;
-                                        ps.def.emit_rate = r;
-                                    }
-                                    "burst_on_beat" => {
-                                        let r = (v * 2000.0).round() as u32;
-                                        ps.burst_on_beat = r;
-                                        ps.def.burst_on_beat = r;
-                                    }
-                                    "lifetime" => ps.def.lifetime = 0.5 + v * 29.5,
-                                    "speed" => ps.def.initial_speed = v * 2.0,
-                                    "size" => {
-                                        ps.def.initial_size = 0.001 + v * 0.099;
-                                    }
-                                    "drag" => ps.def.drag = 0.8 + v * 0.2,
-                                    "turbulence" => ps.def.turbulence = v * 2.0,
-                                    "gravity_x" => {
-                                        ps.def.gravity[0] = -2.0 + v * 4.0;
-                                    }
-                                    "gravity_y" => {
-                                        ps.def.gravity[1] = -2.0 + v * 4.0;
-                                    }
-                                    "vortex_strength" => {
-                                        ps.def.vortex_strength = -5.0 + v * 10.0;
-                                    }
-                                    // Obstacle state lives on the system itself, not the
-                                    // def (system.rs), so these write ps.* only (#1793).
-                                    "obstacle_enabled" => ps.obstacle_enabled = v > 0.5,
-                                    "obstacle_mode" => {
-                                        // Bus outputs are normalized 0..1 (#1792): spread
-                                        // across all 4 modes. The raw-integer OSC path
-                                        // uses from_u32 directly.
-                                        ps.obstacle_mode =
-                                            crate::gpu::particle::ObstacleMode::from_normalized(v);
-                                    }
-                                    "obstacle_threshold" => ps.obstacle_threshold = v,
-                                    "obstacle_elasticity" => ps.obstacle_elasticity = v,
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-            "uniform"
-                // Direct shader uniform override: uniform.{field_name}
-                if !rest.is_empty() => {
-                    let v = value.clamp(0.0, 1.0);
-                    match rest {
-                        "sub_bass" => self.uniforms.sub_bass = v,
-                        "bass" => self.uniforms.bass = v,
-                        "low_mid" => self.uniforms.low_mid = v,
-                        "mid" => self.uniforms.mid = v,
-                        "upper_mid" => self.uniforms.upper_mid = v,
-                        "presence" => self.uniforms.presence = v,
-                        "brilliance" => self.uniforms.brilliance = v,
-                        "rms" => self.uniforms.rms = v,
-                        "kick" => self.uniforms.kick = v,
-                        "centroid" => self.uniforms.centroid = v,
-                        "flux" => self.uniforms.flux = v,
-                        "flatness" => self.uniforms.flatness = v,
-                        "rolloff" => self.uniforms.rolloff = v,
-                        "bandwidth" => self.uniforms.bandwidth = v,
-                        "zcr" => self.uniforms.zcr = v,
-                        "onset" => self.uniforms.onset = v,
-                        "beat" => self.uniforms.beat = v,
-                        "beat_phase" => self.uniforms.beat_phase = v,
-                        "bpm" => self.uniforms.bpm = v,
-                        "beat_strength" => self.uniforms.beat_strength = v,
-                        "dominant_chroma" => self.uniforms.dominant_chroma = v,
-                        // Reserved audio features (batched ABI bump #1505) — allow
-                        // manual override before their detectors land.
-                        "loudness_m" => self.uniforms.loudness_m = v,
-                        "loudness_s" => self.uniforms.loudness_s = v,
-                        "loudness_trend" => self.uniforms.loudness_trend = v,
-                        "key_class" => self.uniforms.key_class = v,
-                        "key_is_minor" => self.uniforms.key_is_minor = v,
-                        "key_confidence" => self.uniforms.key_confidence = v,
-                        "downbeat" => self.uniforms.downbeat = v,
-                        "bar_phase" => self.uniforms.bar_phase = v,
-                        "beat_in_bar" => self.uniforms.beat_in_bar = v,
-                        "pan" => self.uniforms.pan = v,
-                        "stereo_width" => self.uniforms.stereo_width = v,
-                        "stereo_corr" => self.uniforms.stereo_corr = v,
-                        // A13b per-band pan (#1801).
-                        "band_pan_sub_bass" => self.uniforms.band_pan[0] = v,
-                        "band_pan_bass" => self.uniforms.band_pan[1] = v,
-                        "band_pan_low_mid" => self.uniforms.band_pan[2] = v,
-                        "band_pan_mid" => self.uniforms.band_pan[3] = v,
-                        "band_pan_upper_mid" => self.uniforms.band_pan[4] = v,
-                        "band_pan_presence" => self.uniforms.band_pan[5] = v,
-                        "band_pan_brilliance" => self.uniforms.band_pan[6] = v,
-                        "section_novelty" => self.uniforms.section_novelty = v,
-                        "buildup" => self.uniforms.buildup = v,
-                        "drop" => self.uniforms.drop = v,
-                        // Reserved audio features (batched ABI bump #1629, "v3").
-                        "percussive_energy" => self.uniforms.percussive_energy = v,
-                        "harmonic_energy" => self.uniforms.harmonic_energy = v,
-                        "harmonic_ratio" => self.uniforms.harmonic_ratio = v,
-                        "pitch" => self.uniforms.pitch = v,
-                        "pitch_confidence" => self.uniforms.pitch_confidence = v,
-                        "contrast_0" => self.uniforms.contrast_0 = v,
-                        "contrast_1" => self.uniforms.contrast_1 = v,
-                        "contrast_2" => self.uniforms.contrast_2 = v,
-                        "contrast_3" => self.uniforms.contrast_3 = v,
-                        "contrast_4" => self.uniforms.contrast_4 = v,
-                        "contrast_5" => self.uniforms.contrast_5 = v,
-                        "contrast_mean" => self.uniforms.contrast_mean = v,
-                        "timbre_flux" => self.uniforms.timbre_flux = v,
-                        "feedback_decay" => self.uniforms.feedback_decay = v,
-                        "time" => self.uniforms.time = value, // time not clamped
-                        _ => {}
-                    }
-                }
+        }
+    }
+
+    /// Write one normalized value into a layer's param store, scaled to that
+    /// param's declared range.
+    fn apply_param_binding(&mut self, layer_idx: usize, param_name: &str, value: f32) {
+        let Some(layer) = self.layer_stack.layers.get_mut(layer_idx) else {
+            return;
+        };
+        let Some(def) = layer
+            .param_store
+            .defs
+            .iter()
+            .find(|d| d.name() == param_name)
+            .cloned()
+        else {
+            return;
+        };
+        match def {
+            crate::params::ParamDef::Float { min, max, .. } => {
+                let val = min + (max - min) * value.clamp(0.0, 1.0);
+                layer.param_store.set(param_name, ParamValue::Float(val));
+            }
+            crate::params::ParamDef::Bool { .. } => {
+                layer
+                    .param_store
+                    .set(param_name, ParamValue::Bool(value > 0.5));
+            }
             _ => {}
         }
     }
@@ -2934,19 +2911,19 @@ impl App {
             if binding.scope != crate::bindings::types::BindingScope::Preset {
                 continue;
             }
-            let mut segs = binding.target.splitn(3, '.');
-            if let (Some("param"), Some(effect_name), Some(param_name)) =
-                (segs.next(), segs.next(), segs.next())
+            // Upgrade the pre-#1792 indexless form now that we know which
+            // layer runs that effect. Was a splitn(3) on the raw string, which
+            // could not tell a 3-part target from a 4-part one whose param name
+            // happened to contain a dot; the parse settles that at load.
+            if let crate::bindings::types::BindingTarget::LegacyParam { effect, param } =
+                &binding.target
             {
-                // Only migrate 3-part targets (no further dots in param_name)
-                if !param_name.contains('.') {
-                    if let Some(idx) = preset
-                        .layers
-                        .iter()
-                        .position(|l| l.effect_name == effect_name)
-                    {
-                        binding.target = format!("param.{idx}.{effect_name}.{param_name}");
-                    }
+                if let Some(idx) = preset.layers.iter().position(|l| &l.effect_name == effect) {
+                    binding.target = crate::bindings::types::BindingTarget::Param {
+                        layer: idx,
+                        effect: effect.clone(),
+                        param: param.clone(),
+                    };
                 }
             }
         }

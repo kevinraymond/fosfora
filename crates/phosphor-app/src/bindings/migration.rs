@@ -33,7 +33,12 @@ pub fn migrate_legacy_if_needed() {
             "midi.{}.{}.{}.{}",
             device_sanitized, msg_prefix, mapping.channel, mapping.cc
         );
-        let target = format!("param.*.{param_name}"); // wildcard effect
+        // `*` for the effect: these came from the old per-param MIDI/OSC maps,
+        // which had no notion of a layer and always meant "whatever is active".
+        let target = BindingTarget::LegacyParam {
+            effect: "*".to_string(),
+            param: param_name.clone(),
+        };
 
         let mut transforms = Vec::new();
         if mapping.invert {
@@ -64,7 +69,10 @@ pub fn migrate_legacy_if_needed() {
     let osc_config = crate::osc::types::OscConfig::load();
     for (param_name, mapping) in &osc_config.params {
         let source = format!("osc.{}", mapping.address);
-        let target = format!("param.*.{param_name}");
+        let target = BindingTarget::LegacyParam {
+            effect: "*".to_string(),
+            param: param_name.clone(),
+        };
 
         bindings.push(Binding {
             id: format!("b_{:03}", next_id),
