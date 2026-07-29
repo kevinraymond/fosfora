@@ -167,8 +167,11 @@ impl ApplicationHandler for PhosphorApp {
             } if !egui_consumed || !app.egui_overlay.wants_keyboard() => {
                 match key {
                     KeyCode::Escape => {
-                        // Close binding matrix first, then shader editor, then quit
-                        if app.binding_matrix.open {
+                        // Cancel a half-finished click-to-bind, then close the
+                        // binding matrix, then the shader editor, then quit.
+                        if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
+                            app.binding_matrix.armed = None;
+                        } else if app.binding_matrix.open {
                             app.binding_matrix.open = false;
                         } else if !app.shader_editor.open {
                             app.quit_requested = true;

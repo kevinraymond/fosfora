@@ -5,7 +5,15 @@
 
 ## Unreleased
 
+### Changed
+- **You can now make a binding by clicking one.** Click a source in the binding matrix, then
+  a target — or the other way round — and the binding is created and opened. Both columns
+  gained a filter box, so finding one of ~330 sources or ~150 targets no longer means
+  scrolling, and the target list starts collapsed.
+
 ### Fixed
+- **"Collapse all" in the binding matrix skipped the per-layer parameter groups** — the
+  longest ones on screen — whenever more than one layer was loaded.
 - Switching layers while a particle source file dialog was open dropped the image, video or
   model onto whichever layer you had moved to, not the one that asked for it. The same
   applied to loading a morph target.

@@ -1,5 +1,6 @@
 use egui::{Color32, Pos2, RichText, Ui};
 
+use crate::bindings::sources::SourceSnapshot;
 use crate::bindings::types::*;
 use crate::ui::theme::colors::theme_colors;
 
@@ -553,19 +554,201 @@ pub fn audio_source_groups() -> Vec<(String, String, Vec<&'static str>)> {
     out
 }
 
-/// Collapse ids for every audio group, static and dynamic — what "Collapse all" writes
-/// and what the default-collapsed set is chosen from.
-pub fn audio_group_ids() -> Vec<String> {
-    let mut ids: Vec<String> = audio_source_groups()
-        .into_iter()
-        .map(|(_, id, _)| id)
+/// One group of bindable sources, as both the column and the card picker show it.
+pub struct SourceGroup {
+    pub label: String,
+    /// Collapse id, also what "Collapse all" writes.
+    pub id: String,
+    pub color: Color32,
+    pub keys: Vec<String>,
+}
+
+/// Every bindable source this frame, grouped and ordered.
+///
+/// ONE definition on purpose. The column and the expanded-card picker each used
+/// to walk the snapshot with their own hardcoded list; they drifted (20 keys
+/// against 21) and both missed the same 28 features, which were collected every
+/// frame but reachable only by hand-editing `global-bindings.json` while the
+/// README promised all 74 were bindable. Anything that reads the snapshot for
+/// display goes through here now, so a new source cannot appear in one list and
+/// not the other.
+pub fn all_source_groups(snapshot: &SourceSnapshot) -> Vec<SourceGroup> {
+    let mut out: Vec<SourceGroup> = Vec::new();
+
+    let has_audio = snapshot.keys().any(|k| k.starts_with("audio."));
+    if has_audio {
+        for (label, id, keys) in audio_source_groups() {
+            out.push(SourceGroup {
+                label,
+                id,
+                color: AUDIO_COLOR,
+                keys: keys.iter().map(|k| (*k).to_string()).collect(),
+            });
+        }
+    }
+
+    // Numerically-indexed audio families, present only once their detector runs.
+    // Sorted by index rather than lexically, so band 2 does not follow band 11.
+    fn indexed(
+        snapshot: &SourceSnapshot,
+        prefix: &str,
+        label: &str,
+        id: &str,
+    ) -> Option<SourceGroup> {
+        let mut keys: Vec<String> = snapshot
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        if keys.is_empty() {
+            return None;
+        }
+        keys.sort_by_key(|k| {
+            k.strip_prefix(prefix)
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(u32::MAX)
+        });
+        Some(SourceGroup {
+            label: label.to_string(),
+            id: id.to_string(),
+            color: AUDIO_COLOR,
+            keys,
+        })
+    }
+    out.extend(indexed(
+        snapshot,
+        "audio.mfcc.",
+        "Audio \u{00b7} MFCC",
+        "audio_mfcc",
+    ));
+
+    // Chroma leads with the dominant pitch class, then the twelve bins.
+    {
+        let mut keys: Vec<String> = Vec::new();
+        if snapshot.contains_key("audio.dominant_chroma") {
+            keys.push("audio.dominant_chroma".to_string());
+        }
+        let mut bins: Vec<String> = snapshot
+            .keys()
+            .filter(|k| k.starts_with("audio.chroma."))
+            .cloned()
+            .collect();
+        bins.sort_by_key(|k| {
+            k.strip_prefix("audio.chroma.")
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(u32::MAX)
+        });
+        keys.extend(bins);
+        if !keys.is_empty() {
+            out.push(SourceGroup {
+                label: "Audio \u{00b7} Chroma".to_string(),
+                id: "audio_chroma".to_string(),
+                color: AUDIO_COLOR,
+                keys,
+            });
+        }
+    }
+
+    out.extend(indexed(
+        snapshot,
+        "audio.mel.",
+        "Audio \u{00b7} Mel",
+        "audio_mel",
+    ));
+    out.extend(indexed(
+        snapshot,
+        "audio.dmfcc.",
+        "Audio \u{00b7} \u{0394}MFCC",
+        "audio_dmfcc",
+    ));
+
+    for (prefix, label, id, color) in [
+        ("midi.", "MIDI", "midi", MIDI_COLOR),
+        ("osc.", "OSC", "osc", OSC_COLOR),
+    ] {
+        let mut keys: Vec<String> = snapshot
+            .keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect();
+        if keys.is_empty() {
+            continue;
+        }
+        keys.sort();
+        out.push(SourceGroup {
+            label: label.to_string(),
+            id: id.to_string(),
+            color,
+            keys,
+        });
+    }
+
+    // WebSocket bridges get one group each, keyed `ws.{bridge}.{field}`.
+    let mut ws_keys: Vec<String> = snapshot
+        .keys()
+        .filter(|k| k.starts_with("ws."))
+        .cloned()
         .collect();
-    ids.extend(
-        ["audio_mfcc", "audio_chroma", "audio_mel", "audio_dmfcc"]
-            .iter()
-            .map(|s| s.to_string()),
-    );
-    ids
+    ws_keys.sort();
+    for key in ws_keys {
+        let bridge = key
+            .strip_prefix("ws.")
+            .and_then(|rest| rest.split('.').next())
+            .unwrap_or("ws")
+            .to_string();
+        let group_id = format!("ws.{bridge}");
+        match out.last_mut() {
+            Some(g) if g.id == group_id => g.keys.push(key),
+            _ => out.push(SourceGroup {
+                label: ws_source_display_name(&bridge),
+                id: group_id,
+                color: WS_COLOR,
+                keys: vec![key],
+            }),
+        }
+    }
+
+    out
+}
+
+/// The keys of `group` matching `filter`, case-insensitively, over both the raw
+/// key and the friendly label — a user hunting "kick" should not have to know
+/// whether it is `audio.kick` or "Kick". An empty filter keeps everything.
+pub fn filter_source_keys<'a>(group: &'a SourceGroup, filter: &str) -> Vec<&'a str> {
+    if filter.trim().is_empty() {
+        return group.keys.iter().map(|k| k.as_str()).collect();
+    }
+    let needle = filter.trim().to_lowercase();
+    group
+        .keys
+        .iter()
+        .filter(|k| {
+            k.to_lowercase().contains(&needle)
+                || friendly_source_label(k).to_lowercase().contains(&needle)
+                || group.label.to_lowercase().contains(&needle)
+        })
+        .map(|k| k.as_str())
+        .collect()
+}
+
+/// What a source row is labelled, whichever family it belongs to.
+pub fn friendly_source_label(key: &str) -> String {
+    if key.starts_with("audio.") {
+        audio_source_info(key).friendly
+    } else {
+        friendly_source(key)
+    }
+}
+
+/// Whether a target matches `filter`, over its label, its group and its id.
+pub fn target_matches(opt: &TargetOption, filter: &str) -> bool {
+    if filter.trim().is_empty() {
+        return true;
+    }
+    let needle = filter.trim().to_lowercase();
+    opt.label.to_lowercase().contains(&needle)
+        || opt.group.to_lowercase().contains(&needle)
+        || opt.id.to_lowercase().contains(&needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -942,6 +1125,159 @@ mod tests {
             dead.is_empty(),
             "listed in the picker but never collected: {dead:?}"
         );
+    }
+
+    fn raw() -> SourceRaw {
+        SourceRaw {
+            display: String::new(),
+            numeric: 0.0,
+        }
+    }
+
+    /// A snapshot holding every key both collectors and the dynamic families emit.
+    fn full_snapshot() -> SourceSnapshot {
+        let mut snap: SourceSnapshot = SourceSnapshot::new();
+        for k in all_collected_audio_sources() {
+            snap.insert(k, (0.0, raw()));
+        }
+        for i in 0..13 {
+            snap.insert(format!("audio.mfcc.{i}"), (0.0, raw()));
+        }
+        for i in 0..12 {
+            snap.insert(format!("audio.chroma.{i}"), (0.0, raw()));
+        }
+        snap.insert("audio.dominant_chroma".to_string(), (0.0, raw()));
+        snap.insert("midi.MPD218.cc.0.42".to_string(), (0.0, raw()));
+        snap.insert("osc./foo/bar".to_string(), (0.0, raw()));
+        snap.insert("ws.mediapipe.left_thumb_y".to_string(), (0.0, raw()));
+        snap.insert("ws.mediapipe.right_index_x".to_string(), (0.0, raw()));
+        snap
+    }
+
+    /// The drift guard the column and the picker never had.
+    ///
+    /// They used to walk the snapshot separately with their own hardcoded lists,
+    /// drifted to 20 keys against 21, and both missed the same 28 features. Now
+    /// both read `all_source_groups`, so the only way a source can go unlistable
+    /// is if it falls through every group — which is what this asserts.
+    #[test]
+    fn every_snapshot_key_lands_in_exactly_one_group() {
+        let snap = full_snapshot();
+        let groups = all_source_groups(&snap);
+
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for g in &groups {
+            for k in &g.keys {
+                *seen.entry(k.as_str()).or_insert(0) += 1;
+            }
+        }
+
+        let missing: Vec<&String> = snap
+            .keys()
+            .filter(|k| !seen.contains_key(k.as_str()))
+            .collect();
+        assert!(missing.is_empty(), "snapshot keys in no group: {missing:?}");
+
+        let duplicated: Vec<&&str> = seen
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(k, _)| k)
+            .collect();
+        assert!(duplicated.is_empty(), "keys listed twice: {duplicated:?}");
+    }
+
+    #[test]
+    fn group_ids_are_unique_so_collapse_state_cannot_collide() {
+        // Two groups sharing an id would collapse and expand as one.
+        let groups = all_source_groups(&full_snapshot());
+        let mut ids = std::collections::HashSet::new();
+        for g in &groups {
+            assert!(ids.insert(g.id.clone()), "duplicate group id '{}'", g.id);
+        }
+        // Each WS bridge gets its own group rather than being lumped together.
+        assert!(groups.iter().any(|g| g.id == "ws.mediapipe"));
+    }
+
+    #[test]
+    fn filtering_matches_key_and_friendly_name() {
+        let groups = all_source_groups(&full_snapshot());
+        let beat = groups
+            .iter()
+            .find(|g| g.keys.iter().any(|k| k == "audio.kick"))
+            .expect("kick is collected");
+
+        // Empty filter keeps the whole group.
+        assert_eq!(filter_source_keys(beat, "").len(), beat.keys.len());
+        // The raw id...
+        assert!(filter_source_keys(beat, "audio.kick").contains(&"audio.kick"));
+        // ...and the friendly label, case-insensitively — a user hunting "Kick"
+        // should not have to know the key spelling.
+        assert!(filter_source_keys(beat, "KICK").contains(&"audio.kick"));
+        // A miss returns nothing rather than everything.
+        assert!(filter_source_keys(beat, "zzzznope").is_empty());
+    }
+
+    /// Collapse-all used to write seven hardcoded ids, so with more than one layer
+    /// the `Layer N • Effect` param groups — the biggest ones — were silently
+    /// skipped. Both sides now enumerate the groups actually present.
+    #[test]
+    fn target_groups_include_per_layer_names() {
+        let info = BindingPanelInfo {
+            layers: vec![
+                LayerParamInfo {
+                    index: 0,
+                    effect_name: "Raster".to_string(),
+                    param_names: vec!["warp".to_string()],
+                },
+                LayerParamInfo {
+                    index: 1,
+                    effect_name: "Frost".to_string(),
+                    param_names: vec!["bite".to_string()],
+                },
+            ],
+            active_layer: 0,
+            layer_count: 2,
+            preset_name: String::new(),
+        };
+        let targets = build_target_options(&info);
+        let groups: std::collections::HashSet<&str> =
+            targets.iter().map(|t| t.group.as_ref()).collect();
+        assert!(groups.contains("Layer 0 \u{2022} Raster"));
+        assert!(groups.contains("Layer 1 \u{2022} Frost"));
+        // The seven fixed ids alone would not have covered those two.
+        assert!(groups.len() > 7);
+    }
+
+    #[test]
+    fn target_filter_matches_label_group_and_id() {
+        let info = BindingPanelInfo {
+            layers: vec![LayerParamInfo {
+                index: 0,
+                effect_name: "Raster".to_string(),
+                param_names: vec!["warp_intensity".to_string()],
+            }],
+            active_layer: 0,
+            layer_count: 1,
+            preset_name: String::new(),
+        };
+        let targets = build_target_options(&info);
+        let opt = targets
+            .iter()
+            .find(|t| t.id == "param.0.Raster.warp_intensity")
+            .expect("built above");
+
+        assert!(target_matches(opt, ""));
+        assert!(target_matches(opt, "warp")); // label
+        assert!(target_matches(opt, "Params")); // group
+        assert!(target_matches(opt, "raster")); // id, case-insensitively
+        assert!(!target_matches(opt, "zzzznope"));
+
+        // Filtering narrows a real list rather than emptying it.
+        let hits: Vec<_> = targets
+            .iter()
+            .filter(|t| target_matches(t, "bloom"))
+            .collect();
+        assert!(!hits.is_empty() && hits.len() < targets.len());
     }
 
     #[test]

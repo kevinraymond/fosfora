@@ -22,15 +22,40 @@ pub enum ScopeTab {
     Global,
 }
 
+/// One end of a binding the user has clicked, waiting for the other.
+///
+/// The two side columns used to be read-only meters: the only way to make a
+/// binding was to scroll the middle column to the bottom, press "+ New Binding",
+/// then pick both ends from combo boxes that re-listed all ~330 sources and
+/// ~150 targets with no filter. Clicking a row on either side now arms it, and
+/// clicking a row on the other side completes the binding.
+#[derive(Clone, PartialEq)]
+pub enum ArmedEnd {
+    Source(String),
+    Target(String),
+}
+
 pub struct BindingMatrixState {
     pub open: bool,
     pub scope_tab: ScopeTab,
+    /// Half-finished binding: click a source then a target, or the reverse.
+    pub armed: Option<ArmedEnd>,
+    /// Case-insensitive row filters for the two side columns. Without these the
+    /// only way through the list was scrolling.
+    pub source_filter: String,
+    pub target_filter: String,
     pub collapsed_source_groups: HashSet<String>,
     /// What the collapse-all button reports. Tracked explicitly because the source
     /// list now starts with the long groups collapsed, so "is the collapsed set empty"
     /// is no longer the same question.
     pub source_groups_collapsed: bool,
-    pub collapsed_target_groups: HashSet<String>,
+    /// Target groups the user has opened. Inverted relative to the source side,
+    /// and deliberately: target group ids are partly dynamic (`Layer 2 • Raster`),
+    /// so a *collapsed* set could only ever be filled from a hardcoded list of the
+    /// seven fixed ones — which is exactly how "Collapse all" came to silently
+    /// skip the per-layer param groups, the biggest ones on screen. Tracking what
+    /// is open needs no such list: collapse-all is `clear()`.
+    pub expanded_target_groups: HashSet<String>,
     pub expanded_binding_id: Option<String>,
     // Position tracking for connection lines (rebuilt each frame)
     pub source_positions: HashMap<String, Pos2>,
@@ -54,6 +79,9 @@ impl BindingMatrixState {
         Self {
             open: false,
             scope_tab: ScopeTab::Effect,
+            armed: None,
+            source_filter: String::new(),
+            target_filter: String::new(),
             // Bands, Features and Beat stay open — they are what most patches start
             // from. The rest would push 74 sources' worth of rows above the fold.
             collapsed_source_groups: [
@@ -73,7 +101,9 @@ impl BindingMatrixState {
             .map(|s| s.to_string())
             .collect(),
             source_groups_collapsed: false,
-            collapsed_target_groups: HashSet::new(),
+            // Empty = everything collapsed. A 3-layer session lists 90-150 targets
+            // and they used to all render on first open in a 240px column.
+            expanded_target_groups: HashSet::new(),
             expanded_binding_id: None,
             source_positions: HashMap::new(),
             target_positions: HashMap::new(),
@@ -182,6 +212,11 @@ pub fn draw_binding_matrix(
                 let side_bg = Color32::from_rgb(tc.panel.r(), tc.panel.g(), tc.panel.b());
                 let side_pad = 6.0;
 
+                // Set by whichever column completed a click-to-bind this frame;
+                // both borrow the bus immutably for their meters, so the insert
+                // happens once, after the columns are done.
+                let mut pending_bind: Option<(String, String)> = None;
+
                 ui.horizontal(|ui| {
                     // Left: Sources — padded with bg
                     let left_bg_idx = ui.painter().add(egui::Shape::Noop);
@@ -191,7 +226,9 @@ pub fn draw_binding_matrix(
                         ui.add_space(side_pad);
                         ui.indent(Id::new("src_pad"), |ui| {
                             ui.set_width(col_source_w);
-                            draw_source_column(ui, state, bus);
+                            if let Some(b) = draw_source_column(ui, state, bus) {
+                                pending_bind = Some(b);
+                            }
                         });
                     });
                     ui.painter().set(
@@ -232,7 +269,9 @@ pub fn draw_binding_matrix(
                         ui.add_space(side_pad);
                         ui.indent(Id::new("tgt_pad"), |ui| {
                             ui.set_width(col_target_w);
-                            draw_target_column(ui, state, bus, &targets);
+                            if let Some(b) = draw_target_column(ui, state, bus, &targets) {
+                                pending_bind = Some(b);
+                            }
                         });
                     });
                     ui.painter().set(
@@ -241,8 +280,19 @@ pub fn draw_binding_matrix(
                     );
                 });
 
+                // A click-to-bind completed: create it and open its card, so the
+                // transforms and the name are one click away rather than a hunt.
+                if let Some((source, target)) = pending_bind {
+                    let scope = match state.scope_tab {
+                        ScopeTab::Effect => BindingScope::Preset,
+                        ScopeTab::Global => BindingScope::Global,
+                    };
+                    let id = bus.add_binding(source, target, scope);
+                    state.expanded_binding_id = Some(id);
+                }
+
                 // Footer
-                draw_footer(ui, bus);
+                draw_footer(ui, state, bus);
             });
         });
 
@@ -404,7 +454,40 @@ fn draw_header(
 // Source column (left)
 // ---------------------------------------------------------------------------
 
-fn draw_source_column(ui: &mut egui::Ui, state: &mut BindingMatrixState, bus: &BindingBus) {
+/// A one-line filter with a clear button, shared by both side columns.
+fn draw_filter_box(ui: &mut egui::Ui, filter: &mut String, id: &str) {
+    let tc = theme_colors(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let width = ui.available_width() - if filter.is_empty() { 0.0 } else { 16.0 };
+        ui.add(
+            egui::TextEdit::singleline(filter)
+                .id_salt(id)
+                .hint_text(RichText::new("filter").size(8.0))
+                .desired_width(width)
+                .font(egui::FontId::proportional(9.0)),
+        );
+        if !filter.is_empty()
+            && ui
+                .add(
+                    egui::Button::new(RichText::new("\u{00d7}").size(9.0).color(tc.text_dim))
+                        .frame(false)
+                        .min_size(egui::vec2(14.0, 14.0)),
+                )
+                .on_hover_text("Clear filter")
+                .clicked()
+        {
+            filter.clear();
+        }
+    });
+}
+
+/// Returns `(source, target)` when a click here completed a binding.
+fn draw_source_column(
+    ui: &mut egui::Ui,
+    state: &mut BindingMatrixState,
+    bus: &BindingBus,
+) -> Option<(String, String)> {
     let tc = theme_colors(ui.ctx());
 
     ui.horizontal(|ui| {
@@ -442,24 +525,22 @@ fn draw_source_column(ui: &mut egui::Ui, state: &mut BindingMatrixState, bus: &B
                 if all_collapsed {
                     state.collapsed_source_groups.clear();
                 } else {
-                    for id in audio_group_ids() {
-                        state.collapsed_source_groups.insert(id);
-                    }
-                    for id in ["midi", "osc"] {
-                        state.collapsed_source_groups.insert(id.to_string());
-                    }
-                    for key in bus.last_snapshot.keys() {
-                        if let Some(rest) = key.strip_prefix("ws.") {
-                            if let Some(name) = rest.split('.').next() {
-                                state.collapsed_source_groups.insert(format!("ws.{name}"));
-                            }
-                        }
+                    // Every group actually present, so nothing is missed the way
+                    // the target side used to miss its per-layer groups.
+                    for g in all_source_groups(&bus.last_snapshot) {
+                        state.collapsed_source_groups.insert(g.id);
                     }
                 }
             }
         });
     });
+    ui.add_space(2.0);
+    draw_filter_box(ui, &mut state.source_filter, "matrix_source_filter");
     ui.add_space(4.0);
+
+    // A live filter opens every group with a hit, so a match cannot hide inside
+    // a collapsed group.
+    let filtering = !state.source_filter.trim().is_empty();
 
     ScrollArea::vertical()
         .id_salt("matrix_sources")
@@ -467,7 +548,8 @@ fn draw_source_column(ui: &mut egui::Ui, state: &mut BindingMatrixState, bus: &B
             state.source_viewport = ui.clip_rect();
             ui.set_width(ui.available_width());
 
-            // Build source groups
+            let mut pending_bind: Option<(String, String)> = None;
+
             let bound_sources: HashSet<&str> = bus
                 .bindings
                 .iter()
@@ -475,276 +557,62 @@ fn draw_source_column(ui: &mut egui::Ui, state: &mut BindingMatrixState, bus: &B
                 .map(|b| b.source.as_str())
                 .collect();
 
-            // Audio groups, derived from AUDIO_SOURCE_ORDER rather than listed again.
-            // This column and the expanded-card picker each had their own hardcoded
-            // list (20 keys here, 21 there) and both were missing the same 28 v2/v3
-            // features; deriving one from the other removes the way they drift.
-            // `dominant_chroma` is skipped: it heads the dynamic Chroma group below.
-            let audio_groups = audio_source_groups();
+            // One list, shared with the expanded-card picker. The two used to be
+            // built separately and drifted, leaving 28 collected features listed
+            // in neither.
+            let groups = all_source_groups(&bus.last_snapshot);
+            let mut any_row = false;
 
-            for (group_label, group_id, keys) in &audio_groups {
-                let mapped_count = keys.iter().filter(|k| bound_sources.contains(*k)).count();
-                draw_source_group(
+            for group in &groups {
+                let keys = filter_source_keys(group, &state.source_filter);
+                if keys.is_empty() {
+                    continue;
+                }
+                any_row = true;
+                let mapped = keys.iter().filter(|k| bound_sources.contains(*k)).count();
+                if let Some(bind) = draw_source_group(
                     ui,
                     state,
                     bus,
-                    group_label,
-                    group_id,
-                    AUDIO_COLOR,
-                    keys,
-                    mapped_count,
-                    &bound_sources,
-                );
-            }
-
-            // MFCC (dynamic)
-            let mut mfcc_keys: Vec<String> = bus
-                .last_snapshot
-                .keys()
-                .filter(|k| k.starts_with("audio.mfcc."))
-                .cloned()
-                .collect();
-            if !mfcc_keys.is_empty() {
-                mfcc_keys.sort_by_key(|k| {
-                    k.strip_prefix("audio.mfcc.")
-                        .and_then(|n| n.parse::<u32>().ok())
-                        .unwrap_or(99)
-                });
-                let mfcc_refs: Vec<&str> = mfcc_keys.iter().map(|s| s.as_str()).collect();
-                let mapped = mfcc_refs
-                    .iter()
-                    .filter(|k| bound_sources.contains(*k))
-                    .count();
-                draw_source_group(
-                    ui,
-                    state,
-                    bus,
-                    "Audio \u{00b7} MFCC",
-                    "audio_mfcc",
-                    AUDIO_COLOR,
-                    &mfcc_refs,
+                    &group.label,
+                    &group.id,
+                    group.color,
+                    &keys,
                     mapped,
                     &bound_sources,
-                );
-            }
-
-            // Chroma (dominant + individual notes)
-            {
-                let mut chroma_keys: Vec<String> = Vec::new();
-                // dominant_chroma first
-                if bus.last_snapshot.contains_key("audio.dominant_chroma") {
-                    chroma_keys.push("audio.dominant_chroma".to_string());
-                }
-                // Then individual chroma bins
-                let mut note_keys: Vec<String> = bus
-                    .last_snapshot
-                    .keys()
-                    .filter(|k| k.starts_with("audio.chroma."))
-                    .cloned()
-                    .collect();
-                note_keys.sort_by_key(|k| {
-                    k.strip_prefix("audio.chroma.")
-                        .and_then(|n| n.parse::<u32>().ok())
-                        .unwrap_or(99)
-                });
-                chroma_keys.extend(note_keys);
-
-                if !chroma_keys.is_empty() {
-                    let chroma_refs: Vec<&str> = chroma_keys.iter().map(|s| s.as_str()).collect();
-                    let mapped = chroma_refs
-                        .iter()
-                        .filter(|k| bound_sources.contains(*k))
-                        .count();
-                    draw_source_group(
-                        ui,
-                        state,
-                        bus,
-                        "Audio \u{00b7} Chroma",
-                        "audio_chroma",
-                        AUDIO_COLOR,
-                        &chroma_refs,
-                        mapped,
-                        &bound_sources,
-                    );
+                    filtering,
+                ) {
+                    pending_bind = Some(bind);
                 }
             }
 
-            // Mel bands (A1b #1512, dynamic)
-            let mut mel_keys: Vec<String> = bus
-                .last_snapshot
-                .keys()
-                .filter(|k| k.starts_with("audio.mel."))
-                .cloned()
-                .collect();
-            if !mel_keys.is_empty() {
-                mel_keys.sort_by_key(|k| {
-                    k.strip_prefix("audio.mel.")
-                        .and_then(|n| n.parse::<u32>().ok())
-                        .unwrap_or(99)
-                });
-                let mel_refs: Vec<&str> = mel_keys.iter().map(|s| s.as_str()).collect();
-                let mapped = mel_refs
-                    .iter()
-                    .filter(|k| bound_sources.contains(*k))
-                    .count();
-                draw_source_group(
-                    ui,
-                    state,
-                    bus,
-                    "Audio \u{00b7} Mel",
-                    "audio_mel",
-                    AUDIO_COLOR,
-                    &mel_refs,
-                    mapped,
-                    &bound_sources,
-                );
-            }
-
-            // Delta-MFCC (A16 #1467, dynamic — bindings-only, like Mel)
-            let mut dmfcc_keys: Vec<String> = bus
-                .last_snapshot
-                .keys()
-                .filter(|k| k.starts_with("audio.dmfcc."))
-                .cloned()
-                .collect();
-            if !dmfcc_keys.is_empty() {
-                dmfcc_keys.sort_by_key(|k| {
-                    k.strip_prefix("audio.dmfcc.")
-                        .and_then(|n| n.parse::<u32>().ok())
-                        .unwrap_or(99)
-                });
-                let dmfcc_refs: Vec<&str> = dmfcc_keys.iter().map(|s| s.as_str()).collect();
-                let mapped = dmfcc_refs
-                    .iter()
-                    .filter(|k| bound_sources.contains(*k))
-                    .count();
-                draw_source_group(
-                    ui,
-                    state,
-                    bus,
-                    "Audio \u{00b7} \u{0394}MFCC",
-                    "audio_dmfcc",
-                    AUDIO_COLOR,
-                    &dmfcc_refs,
-                    mapped,
-                    &bound_sources,
-                );
-            }
-
-            // MIDI sources (dynamic)
-            let mut midi_keys: Vec<String> = bus
-                .last_snapshot
-                .keys()
-                .filter(|k| k.starts_with("midi."))
-                .cloned()
-                .collect();
-            if !midi_keys.is_empty() {
-                midi_keys.sort();
-                let midi_refs: Vec<&str> = midi_keys.iter().map(|s| s.as_str()).collect();
-                let mapped = midi_refs
-                    .iter()
-                    .filter(|k| bound_sources.contains(*k))
-                    .count();
-                draw_source_group(
-                    ui,
-                    state,
-                    bus,
-                    "MIDI",
-                    "midi",
-                    MIDI_COLOR,
-                    &midi_refs,
-                    mapped,
-                    &bound_sources,
-                );
-            }
-
-            // OSC sources (dynamic)
-            let mut osc_keys: Vec<String> = bus
-                .last_snapshot
-                .keys()
-                .filter(|k| k.starts_with("osc."))
-                .cloned()
-                .collect();
-            if !osc_keys.is_empty() {
-                osc_keys.sort();
-                let osc_refs: Vec<&str> = osc_keys.iter().map(|s| s.as_str()).collect();
-                let mapped = osc_refs
-                    .iter()
-                    .filter(|k| bound_sources.contains(*k))
-                    .count();
-                draw_source_group(
-                    ui,
-                    state,
-                    bus,
-                    "OSC",
-                    "osc",
-                    OSC_COLOR,
-                    &osc_refs,
-                    mapped,
-                    &bound_sources,
-                );
-            }
-
-            // WS sources (dynamic) — sub-grouped by source name
-            {
-                let mut ws_keys: Vec<String> = bus
-                    .last_snapshot
-                    .keys()
-                    .filter(|k| k.starts_with("ws."))
-                    .cloned()
-                    .collect();
-                ws_keys.sort();
-
-                // Group by source name: ws.{source}.{field} → source
-                let mut ws_groups: Vec<(String, Vec<String>)> = Vec::new();
-                for key in &ws_keys {
-                    let source_name = key
-                        .strip_prefix("ws.")
-                        .and_then(|rest| rest.split('.').next())
-                        .unwrap_or("ws");
-                    if ws_groups
-                        .last()
-                        .is_some_and(|(name, _)| name == source_name)
-                    {
-                        ws_groups
-                            .last_mut()
-                            .expect("checked non-empty via is_some_and")
-                            .1
-                            .push(key.clone());
+            if !any_row {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(if filtering {
+                        "no sources match"
                     } else {
-                        ws_groups.push((source_name.to_string(), vec![key.clone()]));
-                    }
-                }
-
-                let active_sources: HashSet<String> =
-                    ws_groups.iter().map(|(name, _)| name.clone()).collect();
-
-                for (source_name, keys) in &ws_groups {
-                    let refs: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-                    let mapped = refs.iter().filter(|k| bound_sources.contains(*k)).count();
-                    let label = ws_source_display_name(source_name);
-                    let group_id = format!("ws.{source_name}");
-                    draw_source_group(
-                        ui,
-                        state,
-                        bus,
-                        &label,
-                        &group_id,
-                        WS_COLOR,
-                        &refs,
-                        mapped,
-                        &bound_sources,
-                    );
-                }
-
-                // Clean up preview textures for expired sources
-                state
-                    .preview_textures
-                    .retain(|k, _| active_sources.contains(k));
+                        "no sources yet"
+                    })
+                    .size(8.0)
+                    .color(tc.text_dim),
+                );
             }
-        });
+
+            // Drop cached preview textures for bridges that stopped reporting.
+            let live: HashSet<String> = groups
+                .iter()
+                .filter_map(|g| g.id.strip_prefix("ws.").map(|s| s.to_string()))
+                .collect();
+            state.preview_textures.retain(|k, _| live.contains(k));
+
+            pending_bind
+        })
+        .inner
 }
 
+/// Returns `(source, target)` when a click here completed a binding.
+#[allow(clippy::too_many_arguments)]
 fn draw_source_group(
     ui: &mut egui::Ui,
     state: &mut BindingMatrixState,
@@ -755,9 +623,13 @@ fn draw_source_group(
     keys: &[&str],
     mapped_count: usize,
     bound_sources: &HashSet<&str>,
-) {
+    filtering: bool,
+) -> Option<(String, String)> {
     let tc = theme_colors(ui.ctx());
-    let collapsed = state.collapsed_source_groups.contains(group_id);
+    let mut pending_bind: Option<(String, String)> = None;
+    // While filtering, a group with a surviving row is shown open — otherwise the
+    // hit would sit inside a collapsed group and the column would look empty.
+    let collapsed = !filtering && state.collapsed_source_groups.contains(group_id);
 
     // Group header — full-width clickable bar with dark bg
     let avail_w = ui.available_width();
@@ -838,7 +710,7 @@ fn draw_source_group(
 
     // Toggle on click
     if header_resp.clicked() {
-        if collapsed {
+        if state.collapsed_source_groups.contains(group_id) {
             state.collapsed_source_groups.remove(group_id);
         } else {
             state.collapsed_source_groups.insert(group_id.to_string());
@@ -867,14 +739,10 @@ fn draw_source_group(
             let is_bound = bound_sources.contains(key);
             let val = bus.last_snapshot.get(key).map(|(v, _)| *v).unwrap_or(0.0);
 
-            let info = audio_source_info(key);
-            let friendly = if key.starts_with("audio.") {
-                info.friendly
-            } else {
-                friendly_source(key)
-            };
+            let friendly = friendly_source_label(key);
+            let armed_here = state.armed.as_ref() == Some(&ArmedEnd::Source(key.to_string()));
 
-            ui.horizontal(|ui| {
+            let row_resp = ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.add_space(12.0); // indent
 
@@ -934,10 +802,42 @@ fn draw_source_group(
                         .insert(key.to_string(), anchor_rect.center());
                 });
             });
+
+            // Clicking a source arms it, or completes a binding from an armed
+            // target. Both side columns were read-only meters before this.
+            let rect = row_resp.response.rect;
+            let click = ui.interact(
+                rect,
+                ui.make_persistent_id(("matrix_source_row", key)),
+                Sense::click(),
+            );
+            if armed_here || click.hovered() {
+                let fill = if armed_here {
+                    tc.accent.linear_multiply(0.22)
+                } else {
+                    tc.hover_fill
+                };
+                ui.painter()
+                    .rect_filled(rect.expand2(egui::vec2(2.0, 1.0)), 3.0, fill);
+            }
+            if click.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if click.clicked() {
+                match state.armed.clone() {
+                    Some(ArmedEnd::Target(t)) => {
+                        pending_bind = Some((key.to_string(), t));
+                        state.armed = None;
+                    }
+                    Some(ArmedEnd::Source(s)) if s == key => state.armed = None,
+                    _ => state.armed = Some(ArmedEnd::Source(key.to_string())),
+                }
+            }
         }
     }
 
     ui.add_space(2.0);
+    pending_bind
 }
 
 /// Render a WS bridge preview thumbnail inline in the source column.
@@ -987,12 +887,14 @@ fn draw_ws_preview(
 // Target column (right)
 // ---------------------------------------------------------------------------
 
+/// Returns `(source, target)` when a click here completed a binding — the bus is
+/// borrowed immutably for the meters, so the caller does the insert.
 fn draw_target_column(
     ui: &mut egui::Ui,
     state: &mut BindingMatrixState,
     bus: &BindingBus,
     targets: &[TargetOption],
-) {
+) -> Option<(String, String)> {
     let tc = theme_colors(ui.ctx());
 
     ui.horizontal(|ui| {
@@ -1003,16 +905,12 @@ fn draw_target_column(
                 .color(tc.text_secondary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let all_collapsed = !state.collapsed_target_groups.is_empty();
-            let icon = if all_collapsed {
-                "\u{25bc}"
-            } else {
-                "\u{25b6}"
-            };
-            let hint = if all_collapsed {
-                "Expand all"
-            } else {
+            let any_open = !state.expanded_target_groups.is_empty();
+            let icon = if any_open { "\u{25b6}" } else { "\u{25bc}" };
+            let hint = if any_open {
                 "Collapse all"
+            } else {
+                "Expand all"
             };
             if ui
                 .add(
@@ -1023,25 +921,26 @@ fn draw_target_column(
                 .on_hover_text(hint)
                 .clicked()
             {
-                if all_collapsed {
-                    state.collapsed_target_groups.clear();
+                if any_open {
+                    // No hardcoded id list, so the per-layer groups cannot be missed.
+                    state.expanded_target_groups.clear();
                 } else {
-                    for id in [
-                        "Params",
-                        "Layers",
-                        "PostFX",
-                        "Particles",
-                        "Uniforms",
-                        "Scene",
-                        "Global",
-                    ] {
-                        state.collapsed_target_groups.insert(id.to_string());
+                    for opt in targets {
+                        state
+                            .expanded_target_groups
+                            .insert(opt.group.as_ref().to_string());
                     }
                 }
             }
         });
     });
+    ui.add_space(2.0);
+    draw_filter_box(ui, &mut state.target_filter, "matrix_target_filter");
     ui.add_space(4.0);
+
+    // A live filter opens every group with a hit — otherwise a match could sit
+    // inside a collapsed group and the column would look empty.
+    let filtering = !state.target_filter.trim().is_empty();
 
     ScrollArea::vertical()
         .id_salt("matrix_targets")
@@ -1049,6 +948,7 @@ fn draw_target_column(
             state.target_viewport = ui.clip_rect();
             ui.set_width(ui.available_width());
 
+            let mut pending_bind: Option<(String, String)> = None;
             let mut current_group: &str = "";
 
             // Build reverse map: old-format target → new-format target id
@@ -1087,10 +987,26 @@ fn draw_target_column(
 
             let mut last_header_rect: Option<Rect> = None;
 
-            for opt in targets {
+            // Groups with no surviving row are dropped entirely while filtering,
+            // so the column shows hits rather than a list of empty headers.
+            let visible: Vec<&TargetOption> = targets
+                .iter()
+                .filter(|opt| target_matches(opt, &state.target_filter))
+                .collect();
+            if filtering && visible.is_empty() {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("no targets match")
+                        .size(8.0)
+                        .color(tc.text_dim),
+                );
+            }
+
+            for opt in visible {
                 if opt.group != current_group {
                     current_group = opt.group.as_ref();
-                    let collapsed = state.collapsed_target_groups.contains(current_group);
+                    let collapsed =
+                        !filtering && !state.expanded_target_groups.contains(current_group);
                     let caret = if collapsed { "\u{25b6}" } else { "\u{25bc}" };
 
                     // Full-width clickable header bar
@@ -1143,11 +1059,11 @@ fn draw_target_column(
                     );
 
                     if hdr_resp.clicked() {
-                        if collapsed {
-                            state.collapsed_target_groups.remove(current_group);
+                        if state.expanded_target_groups.contains(current_group) {
+                            state.expanded_target_groups.remove(current_group);
                         } else {
                             state
-                                .collapsed_target_groups
+                                .expanded_target_groups
                                 .insert(current_group.to_string());
                         }
                     }
@@ -1158,7 +1074,7 @@ fn draw_target_column(
                     last_header_rect = Some(hdr_rect);
                 }
 
-                if state.collapsed_target_groups.contains(opt.group.as_ref()) {
+                if !filtering && !state.expanded_target_groups.contains(opt.group.as_ref()) {
                     // Record position at group header for collapsed targets
                     if let Some(hr) = last_header_rect {
                         let anchor = pos2(hr.left(), hr.center().y);
@@ -1174,6 +1090,7 @@ fn draw_target_column(
 
                 let colors = target_bindings.get(opt.id.as_str());
                 let is_bound = colors.is_some_and(|c| !c.is_empty());
+                let armed_here = state.armed.as_ref() == Some(&ArmedEnd::Target(opt.id.clone()));
 
                 let row_resp = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
@@ -1241,8 +1158,39 @@ fn draw_target_column(
                     }
                 });
 
-                // Record position: left-center of the row
+                // Clicking a target arms it, or completes a binding from an armed
+                // source. This row used to be a read-only meter — the only way in
+                // was two unfiltered combo boxes inside a card.
                 let rect = row_resp.response.rect;
+                let click = ui.interact(
+                    rect,
+                    ui.make_persistent_id(("matrix_target_row", &opt.id)),
+                    Sense::click(),
+                );
+                if armed_here || click.hovered() {
+                    let fill = if armed_here {
+                        tc.accent.linear_multiply(0.22)
+                    } else {
+                        tc.hover_fill
+                    };
+                    ui.painter()
+                        .rect_filled(rect.expand2(egui::vec2(2.0, 1.0)), 3.0, fill);
+                }
+                if click.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if click.clicked() {
+                    match state.armed.clone() {
+                        Some(ArmedEnd::Source(src)) => {
+                            pending_bind = Some((src, opt.id.clone()));
+                            state.armed = None;
+                        }
+                        Some(ArmedEnd::Target(t)) if t == opt.id => state.armed = None,
+                        _ => state.armed = Some(ArmedEnd::Target(opt.id.clone())),
+                    }
+                }
+
+                // Record position: left-center of the row
                 let pos = pos2(rect.left(), rect.center().y);
                 // Also store old-format key so bezier lines find old bindings
                 let parts: Vec<&str> = opt.id.split('.').collect();
@@ -1252,7 +1200,9 @@ fn draw_target_column(
                 }
                 state.target_positions.insert(opt.id.clone(), pos);
             }
-        });
+            pending_bind
+        })
+        .inner
 }
 
 // ---------------------------------------------------------------------------
@@ -1773,7 +1723,7 @@ fn draw_binding_card(
 #[allow(clippy::too_many_arguments)]
 fn draw_expanded_content(
     ui: &mut egui::Ui,
-    _state: &mut BindingMatrixState,
+    state: &mut BindingMatrixState,
     bus: &mut BindingBus,
     id: &str,
     source_init: &str,
@@ -1855,7 +1805,7 @@ fn draw_expanded_content(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         // Source picker
-        draw_matrix_source_picker(ui, bus, id, &mut source, tc);
+        draw_matrix_source_picker(ui, state, bus, id, &mut source, tc);
 
         ui.label(RichText::new("\u{2192}").size(10.0).color(tc.text_dim));
 
@@ -1866,8 +1816,18 @@ fn draw_expanded_content(
             .selected_text(RichText::new(&current_label).size(9.0))
             .width((total_w - 10.0).min(200.0))
             .show_ui(ui, |ui| {
+                // Same filter the target column uses, so this popup narrows too
+                // instead of re-listing every param of every effect on every layer.
+                draw_filter_box(ui, &mut state.target_filter, "matrix_tpicker_filter");
+                ui.add_space(2.0);
+
                 let mut current_group: &str = "";
-                for opt in targets {
+                let mut any = false;
+                for opt in targets
+                    .iter()
+                    .filter(|o| target_matches(o, &state.target_filter))
+                {
+                    any = true;
                     if opt.group != current_group {
                         current_group = opt.group.as_ref();
                         ui.label(
@@ -1884,6 +1844,13 @@ fn draw_expanded_content(
                     {
                         target = opt.id.clone();
                     }
+                }
+                if !any {
+                    ui.label(
+                        RichText::new("no targets match")
+                            .size(8.0)
+                            .color(tc.text_dim),
+                    );
                 }
             });
     });
@@ -2337,6 +2304,7 @@ fn draw_transform_params_inline(
 
 fn draw_matrix_source_picker(
     ui: &mut egui::Ui,
+    state: &mut BindingMatrixState,
     bus: &mut BindingBus,
     id: &str,
     source: &mut String,
@@ -2345,10 +2313,8 @@ fn draw_matrix_source_picker(
     ui.horizontal(|ui| {
         let current_display = if source.is_empty() {
             "(select source)".to_string()
-        } else if source.starts_with("audio.") {
-            audio_source_info(source).friendly
         } else {
-            friendly_source(source)
+            friendly_source_label(source)
         };
 
         egui::ComboBox::from_id_salt(format!("matrix_source_{id}"))
@@ -2359,275 +2325,56 @@ fn draw_matrix_source_picker(
                 ui.set_min_width(260.0);
                 ui.spacing_mut().item_spacing.y = 1.0;
 
-                let group_header = |ui: &mut egui::Ui, label: &str, color: Color32| {
+                // Same filter the column uses, so typing "kick" here narrows the
+                // popup instead of leaving ~330 rows to scroll.
+                draw_filter_box(ui, &mut state.source_filter, "matrix_picker_filter");
+                ui.add_space(2.0);
+
+                let tc = theme_colors(ui.ctx());
+                let mut any = false;
+                // One list, shared with the column — see all_source_groups.
+                for group in all_source_groups(&bus.last_snapshot) {
+                    let keys = filter_source_keys(&group, &state.source_filter);
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    any = true;
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new(label)
+                        RichText::new(&group.label)
                             .size(7.0)
                             .strong()
-                            .color(color.linear_multiply(0.7)),
+                            .color(group.color.linear_multiply(0.7)),
                     );
                     ui.add_space(1.0);
-                };
-
-                let has_audio = bus.last_snapshot.keys().any(|k| k.starts_with("audio."));
-                if has_audio {
-                    let mut current_sub_group = "";
-                    for &key in AUDIO_SOURCE_ORDER {
-                        let info = audio_source_info(key);
-                        if info.sub_group != current_sub_group {
-                            current_sub_group = info.sub_group;
-                            group_header(
-                                ui,
-                                &format!("Audio \u{2014} {current_sub_group}"),
-                                AUDIO_COLOR,
-                            );
-                        }
+                    for key in keys {
                         let val = bus.last_snapshot.get(key).map(|(v, _)| *v).unwrap_or(0.0);
+                        let info = audio_source_info(key);
+                        let friendly = friendly_source_label(key);
+                        let uniform = if key.starts_with("audio.") {
+                            info.uniform
+                        } else {
+                            String::new()
+                        };
                         draw_source_row(
                             ui,
                             key,
-                            &info.friendly,
-                            &info.uniform,
+                            &friendly,
+                            &uniform,
                             val,
-                            AUDIO_COLOR,
+                            group.color,
                             source.as_str() == key,
                             source,
                         );
                     }
-
-                    // MFCC
-                    let mut mfcc_keys: Vec<String> = bus
-                        .last_snapshot
-                        .keys()
-                        .filter(|k| k.starts_with("audio.mfcc."))
-                        .cloned()
-                        .collect();
-                    if !mfcc_keys.is_empty() {
-                        mfcc_keys.sort_by_key(|k| {
-                            k.strip_prefix("audio.mfcc.")
-                                .and_then(|n| n.parse::<u32>().ok())
-                                .unwrap_or(99)
-                        });
-                        group_header(ui, "Audio \u{2014} MFCC", AUDIO_COLOR);
-                        for key in &mfcc_keys {
-                            let info = audio_source_info(key);
-                            let val = bus
-                                .last_snapshot
-                                .get(key.as_str())
-                                .map(|(v, _)| *v)
-                                .unwrap_or(0.0);
-                            draw_source_row(
-                                ui,
-                                key,
-                                &info.friendly,
-                                &info.uniform,
-                                val,
-                                AUDIO_COLOR,
-                                source.as_str() == key.as_str(),
-                                source,
-                            );
-                        }
-                    }
-
-                    // Chroma
-                    let mut chroma_keys: Vec<String> = bus
-                        .last_snapshot
-                        .keys()
-                        .filter(|k| k.starts_with("audio.chroma."))
-                        .cloned()
-                        .collect();
-                    if !chroma_keys.is_empty() {
-                        chroma_keys.sort_by_key(|k| {
-                            k.strip_prefix("audio.chroma.")
-                                .and_then(|n| n.parse::<u32>().ok())
-                                .unwrap_or(99)
-                        });
-                        group_header(ui, "Audio \u{2014} Chroma", AUDIO_COLOR);
-                        for key in &chroma_keys {
-                            let info = audio_source_info(key);
-                            let val = bus
-                                .last_snapshot
-                                .get(key.as_str())
-                                .map(|(v, _)| *v)
-                                .unwrap_or(0.0);
-                            draw_source_row(
-                                ui,
-                                key,
-                                &info.friendly,
-                                &info.uniform,
-                                val,
-                                AUDIO_COLOR,
-                                source.as_str() == key.as_str(),
-                                source,
-                            );
-                        }
-                    }
-
-                    // Mel bands (A1b #1512)
-                    let mut mel_keys: Vec<String> = bus
-                        .last_snapshot
-                        .keys()
-                        .filter(|k| k.starts_with("audio.mel."))
-                        .cloned()
-                        .collect();
-                    if !mel_keys.is_empty() {
-                        mel_keys.sort_by_key(|k| {
-                            k.strip_prefix("audio.mel.")
-                                .and_then(|n| n.parse::<u32>().ok())
-                                .unwrap_or(99)
-                        });
-                        group_header(ui, "Audio \u{2014} Mel", AUDIO_COLOR);
-                        for key in &mel_keys {
-                            let info = audio_source_info(key);
-                            let val = bus
-                                .last_snapshot
-                                .get(key.as_str())
-                                .map(|(v, _)| *v)
-                                .unwrap_or(0.0);
-                            draw_source_row(
-                                ui,
-                                key,
-                                &info.friendly,
-                                &info.uniform,
-                                val,
-                                AUDIO_COLOR,
-                                source.as_str() == key.as_str(),
-                                source,
-                            );
-                        }
-                    }
-
-                    // Delta-MFCC (A16 #1467) — bindings-only, like Mel
-                    let mut dmfcc_keys: Vec<String> = bus
-                        .last_snapshot
-                        .keys()
-                        .filter(|k| k.starts_with("audio.dmfcc."))
-                        .cloned()
-                        .collect();
-                    if !dmfcc_keys.is_empty() {
-                        dmfcc_keys.sort_by_key(|k| {
-                            k.strip_prefix("audio.dmfcc.")
-                                .and_then(|n| n.parse::<u32>().ok())
-                                .unwrap_or(99)
-                        });
-                        group_header(ui, "Audio \u{2014} \u{0394}MFCC", AUDIO_COLOR);
-                        for key in &dmfcc_keys {
-                            let info = audio_source_info(key);
-                            let val = bus
-                                .last_snapshot
-                                .get(key.as_str())
-                                .map(|(v, _)| *v)
-                                .unwrap_or(0.0);
-                            draw_source_row(
-                                ui,
-                                key,
-                                &info.friendly,
-                                &info.uniform,
-                                val,
-                                AUDIO_COLOR,
-                                source.as_str() == key.as_str(),
-                                source,
-                            );
-                        }
-                    }
                 }
-
-                // MIDI
-                let mut midi_keys: Vec<&String> = bus
-                    .last_snapshot
-                    .keys()
-                    .filter(|k| k.starts_with("midi."))
-                    .collect();
-                if !midi_keys.is_empty() {
-                    midi_keys.sort();
-                    group_header(ui, "MIDI", MIDI_COLOR);
-                    for key in &midi_keys {
-                        let val = bus
-                            .last_snapshot
-                            .get(key.as_str())
-                            .map(|(v, _)| *v)
-                            .unwrap_or(0.0);
-                        let display = friendly_source(key);
-                        draw_source_row(
-                            ui,
-                            key,
-                            &display,
-                            "",
-                            val,
-                            MIDI_COLOR,
-                            source.as_str() == key.as_str(),
-                            source,
-                        );
-                    }
-                }
-
-                // OSC
-                let mut osc_keys: Vec<&String> = bus
-                    .last_snapshot
-                    .keys()
-                    .filter(|k| k.starts_with("osc."))
-                    .collect();
-                if !osc_keys.is_empty() {
-                    osc_keys.sort();
-                    group_header(ui, "OSC", OSC_COLOR);
-                    for key in &osc_keys {
-                        let val = bus
-                            .last_snapshot
-                            .get(key.as_str())
-                            .map(|(v, _)| *v)
-                            .unwrap_or(0.0);
-                        let display = friendly_source(key);
-                        draw_source_row(
-                            ui,
-                            key,
-                            &display,
-                            "",
-                            val,
-                            OSC_COLOR,
-                            source.as_str() == key.as_str(),
-                            source,
-                        );
-                    }
-                }
-
-                // WS — sub-grouped by source name
-                {
-                    let mut ws_keys: Vec<&String> = bus
-                        .last_snapshot
-                        .keys()
-                        .filter(|k| k.starts_with("ws."))
-                        .collect();
-                    ws_keys.sort();
-
-                    let mut current_source: Option<&str> = None;
-                    for key in &ws_keys {
-                        let src = key
-                            .strip_prefix("ws.")
-                            .and_then(|rest| rest.split('.').next())
-                            .unwrap_or("ws");
-                        if current_source != Some(src) {
-                            let label = ws_source_display_name(src);
-                            group_header(ui, &label, WS_COLOR);
-                            current_source = Some(src);
-                        }
-                        let val = bus
-                            .last_snapshot
-                            .get(key.as_str())
-                            .map(|(v, _)| *v)
-                            .unwrap_or(0.0);
-                        let display = friendly_source(key);
-                        draw_source_row(
-                            ui,
-                            key,
-                            &display,
-                            "",
-                            val,
-                            WS_COLOR,
-                            source.as_str() == key.as_str(),
-                            source,
-                        );
-                    }
+                if !any {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("no sources match")
+                            .size(8.0)
+                            .color(tc.text_dim),
+                    );
                 }
             });
 
@@ -2821,7 +2568,7 @@ fn eval_cubic_bezier(from: Pos2, to: Pos2, t: f32) -> Pos2 {
 // Footer
 // ---------------------------------------------------------------------------
 
-fn draw_footer(ui: &mut egui::Ui, bus: &BindingBus) {
+fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) {
     let tc = theme_colors(ui.ctx());
     let unique_targets: HashSet<&str> = bus
         .bindings
@@ -2831,14 +2578,35 @@ fn draw_footer(ui: &mut egui::Ui, bus: &BindingBus) {
         .collect();
 
     ui.add_space(4.0);
-    ui.label(
-        RichText::new(format!(
-            "{} sources \u{00b7} {} bindings \u{00b7} {} targets",
-            bus.last_snapshot.len(),
-            bus.bindings.len(),
-            unique_targets.len(),
-        ))
-        .size(9.0)
-        .color(tc.text_secondary),
-    );
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "{} sources \u{00b7} {} bindings \u{00b7} {} targets",
+                bus.last_snapshot.len(),
+                bus.bindings.len(),
+                unique_targets.len(),
+            ))
+            .size(9.0)
+            .color(tc.text_secondary),
+        );
+        // Click-to-bind is only discoverable if the half-finished state says so.
+        if let Some(armed) = &state.armed {
+            let (what, name) = match armed {
+                ArmedEnd::Source(s) => ("source", friendly_source_label(s)),
+                ArmedEnd::Target(t) => ("target", friendly_target(t)),
+            };
+            let other = if matches!(armed, ArmedEnd::Source(_)) {
+                "target"
+            } else {
+                "source"
+            };
+            ui.label(
+                RichText::new(format!(
+                    "\u{2014}  {what} \u{201c}{name}\u{201d} armed \u{00b7} pick a {other} to bind, Esc to cancel"
+                ))
+                .size(9.0)
+                .color(tc.accent),
+            );
+        }
+    });
 }
