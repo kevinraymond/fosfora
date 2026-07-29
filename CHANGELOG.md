@@ -6,6 +6,13 @@
 ## Unreleased
 
 ### Changed
+- **The binding templates were rebuilt around what actually reads on screen.** Each one now
+  drives four axes — impact, colour, motion and size — and picks its params by meaning
+  rather than by position, so no template sweeps a mode selector or strobes the trail
+  buffer. **Audio Reactive** follows percussive hits instead of the kick band, which fired
+  all the way through sustained bass. New **Ambient** template for pads and drones, where
+  the beat-driven ones sit still. Picking a second template now replaces the first on any
+  parameter they share instead of leaving both fighting for it.
 - **You can now make a binding by clicking one.** Click a source in the binding matrix, then
   a target — or the other way round — and the binding is created and opened. Both columns
   gained a filter box, so finding one of ~330 sources or ~150 targets no longer means

@@ -65,34 +65,79 @@ const T_MOTION: &str = "param.{layer}.{effect}.{param: rotation|rotation_speed|f
 |growth_speed|sim_speed|speed_mult|inward_speed|flow_speed|dt_scale|camera_pitch|ribbon_drift\
 |speed|*}";
 
+/// "The param that makes it bigger or denser" — sustained energy.
+///
+/// Added because every template had only three slots to aim at, so a fourth
+/// source had nowhere to go but a positional guess. 30 of the 48 shipped effects
+/// name one of these outright.
+const T_SCALE: &str = "param.{layer}.{effect}.{param: zoom|spread|density|radius|ring_radius\
+|orbit_radius|tunnel_radius|max_radius|thickness|arc_thickness|ring_width|band_spread\
+|cell_scale|pattern_scale|splat_scale|splat_radius|height_scale|explode_amount|fill_amount\
+|target_density|rib_density|scatter_amount|*}";
+
 /// All available built-in templates.
 pub fn builtin_templates() -> &'static [&'static BindingTemplate] {
-    static ALL: &[&BindingTemplate] = &[&AUDIO_REACTIVE, &BEAT_SYNC, &SPECTRAL_BANDS, &MIDI_FADERS];
+    static ALL: &[&BindingTemplate] = &[
+        &AUDIO_REACTIVE,
+        &BEAT_SYNC,
+        &SPECTRAL_BANDS,
+        &AMBIENT,
+        &MIDI_FADERS,
+    ];
     ALL
 }
 
-static AUDIO_REACTIVE: BindingTemplate = BindingTemplate {
-    name: "Audio Reactive",
-    description: "Kick, RMS, centroid, and beat phase mapped to common params",
-    entries: &[
+/// The entry every audio template ends with, so none of them is a silent no-op.
+///
+/// The eight Lattice rules declare no params at all, so on a sixth of the shipped
+/// effects this is the ONLY entry that resolves — a template that bound nothing
+/// there would look like the feature being broken.
+///
+/// A gentle breathe rather than a fade: the floor is 0.72, not the 0.3 this used
+/// to sit at, because bottoming out through a breakdown reads as the app dropping
+/// out rather than as the music moving.
+macro_rules! opacity_breathe {
+    ($source:expr) => {
         TemplateEntry {
-            source: "audio.kick",
-            target_pattern: T_PUNCH,
-            transforms: || vec![TransformDef::Smooth { factor: 0.7 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
-            source: "audio.rms",
+            source: $source,
             target_pattern: "layer.{layer}.opacity",
             transforms: || {
                 vec![
                     TransformDef::Remap {
                         in_lo: 0.0,
-                        in_hi: 0.8,
-                        out_lo: 0.3,
+                        in_hi: 0.7,
+                        out_lo: 0.72,
                         out_hi: 1.0,
                     },
                     TransformDef::Smooth { factor: 0.85 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        }
+    };
+}
+
+static AUDIO_REACTIVE: BindingTemplate = BindingTemplate {
+    name: "Audio Reactive",
+    description: "Hits, brightness, beat and energy on four axes \u{2014} the general-purpose one",
+    entries: &[
+        // percussive_energy, NOT kick: the kick band false-fires 78-84% of the time
+        // on a sustained bass note (#1836), so a kick-driven template pulses all the
+        // way through a pad and reads as broken. HPSS reads ~0 on the same drone.
+        TemplateEntry {
+            source: "audio.percussive_energy",
+            target_pattern: T_PUNCH,
+            transforms: || {
+                vec![
+                    // Percussive energy sits low even on busy material; open it up
+                    // or the punch never reaches the top of the param's range.
+                    TransformDef::Remap {
+                        in_lo: 0.05,
+                        in_hi: 0.6,
+                        out_lo: 0.0,
+                        out_hi: 1.0,
+                    },
+                    TransformDef::Smooth { factor: 0.55 },
                 ]
             },
             scope: BindingScope::Preset,
@@ -100,21 +145,42 @@ static AUDIO_REACTIVE: BindingTemplate = BindingTemplate {
         TemplateEntry {
             source: "audio.centroid",
             target_pattern: T_COLOUR,
+            // Colour should drift with the mix, not flicker per frame.
             transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "audio.beat_phase",
             target_pattern: T_MOTION,
+            // Deliberately unsmoothed: it is a sawtooth, and smoothing rounds off
+            // the reset that makes the motion land on the beat.
             transforms: || vec![],
             scope: BindingScope::Preset,
         },
+        // Energy drives SIZE, which is the visible one.
+        TemplateEntry {
+            source: "audio.rms",
+            target_pattern: T_SCALE,
+            transforms: || {
+                vec![
+                    TransformDef::Remap {
+                        in_lo: 0.0,
+                        in_hi: 0.7,
+                        out_lo: 0.25,
+                        out_hi: 1.0,
+                    },
+                    TransformDef::Smooth { factor: 0.85 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        },
+        opacity_breathe!("audio.rms"),
     ],
 };
 
 static BEAT_SYNC: BindingTemplate = BindingTemplate {
     name: "Beat Sync",
-    description: "Beat gate and smooth phase for rhythmic control",
+    description: "Locked to the grid \u{2014} hits on the beat, sweeps across the bar",
     entries: &[
         TemplateEntry {
             source: "audio.beat",
@@ -130,111 +196,192 @@ static BEAT_SYNC: BindingTemplate = BindingTemplate {
         TemplateEntry {
             source: "audio.beat_phase",
             target_pattern: T_MOTION,
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
+            transforms: || vec![],
             scope: BindingScope::Preset,
         },
+        // The bar clock is what makes this read as musical rather than merely
+        // periodic: a four-beat sweep the eye can predict.
+        TemplateEntry {
+            source: "audio.bar_phase",
+            target_pattern: T_SCALE,
+            transforms: || vec![],
+            scope: BindingScope::Preset,
+        },
+        // Colour turns over on the "1", so the phrase has a visible downbeat.
+        TemplateEntry {
+            source: "audio.downbeat",
+            target_pattern: T_COLOUR,
+            transforms: || {
+                vec![
+                    TransformDef::Gate { threshold: 0.5 },
+                    TransformDef::Smooth { factor: 0.9 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        },
+        // Beat strength rather than rms here, so this one still pulses on the grid
+        // when it is the only entry that resolves.
+        opacity_breathe!("audio.beat_strength"),
     ],
 };
 
 static SPECTRAL_BANDS: BindingTemplate = BindingTemplate {
     name: "Spectral Bands",
-    description: "7 frequency bands mapped to first 7 params",
+    description: "Sub, bass, mid and air each drive a different axis",
+    // Was seven bands onto the first seven params BY POSITION, which is close to
+    // random: param 0 is `trail_decay` on 11 of the 40 effects that have params,
+    // and sweeping that strobes the whole feedback buffer. 13% of the bindings it
+    // produced landed on params the semantic slots deliberately refuse, and ten
+    // effects had entries silently dropped for having fewer than seven params.
     entries: &[
         TemplateEntry {
-            source: "audio.band.0",
-            target_pattern: "param.{layer}.{effect}.{param_0}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
             source: "audio.band.1",
-            target_pattern: "param.{layer}.{effect}.{param_1}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
-            source: "audio.band.2",
-            target_pattern: "param.{layer}.{effect}.{param_2}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
-            source: "audio.band.3",
-            target_pattern: "param.{layer}.{effect}.{param_3}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
-            source: "audio.band.4",
-            target_pattern: "param.{layer}.{effect}.{param_4}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
-            scope: BindingScope::Preset,
-        },
-        TemplateEntry {
-            source: "audio.band.5",
-            target_pattern: "param.{layer}.{effect}.{param_5}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
+            target_pattern: T_PUNCH,
+            transforms: || vec![TransformDef::Smooth { factor: 0.6 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "audio.band.6",
-            target_pattern: "param.{layer}.{effect}.{param_6}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.8 }],
+            target_pattern: T_COLOUR,
+            transforms: || vec![TransformDef::Smooth { factor: 0.85 }],
             scope: BindingScope::Preset,
         },
+        TemplateEntry {
+            source: "audio.band.3",
+            target_pattern: T_MOTION,
+            transforms: || vec![TransformDef::Smooth { factor: 0.75 }],
+            scope: BindingScope::Preset,
+        },
+        TemplateEntry {
+            source: "audio.band.0",
+            target_pattern: T_SCALE,
+            transforms: || {
+                vec![
+                    TransformDef::Remap {
+                        in_lo: 0.0,
+                        in_hi: 0.8,
+                        out_lo: 0.2,
+                        out_hi: 1.0,
+                    },
+                    TransformDef::Smooth { factor: 0.8 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        },
+        opacity_breathe!("audio.rms"),
+    ],
+};
+
+static AMBIENT: BindingTemplate = BindingTemplate {
+    name: "Ambient",
+    description: "For pads and drones \u{2014} texture and stereo, no beat needed",
+    // The other three templates all rest on transients, so on ambient material they
+    // sit almost still and the app looks dead. Every source here responds to
+    // sustained sound: harmonic_ratio is level-invariant and neutral at 0.5 on
+    // silence, so it moves with the material rather than with the fader.
+    entries: &[
+        TemplateEntry {
+            source: "audio.harmonic_energy",
+            target_pattern: T_PUNCH,
+            transforms: || {
+                vec![
+                    TransformDef::Remap {
+                        in_lo: 0.0,
+                        in_hi: 0.7,
+                        out_lo: 0.0,
+                        out_hi: 0.8,
+                    },
+                    TransformDef::Smooth { factor: 0.9 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        },
+        TemplateEntry {
+            source: "audio.harmonic_ratio",
+            target_pattern: T_COLOUR,
+            transforms: || vec![TransformDef::Smooth { factor: 0.92 }],
+            scope: BindingScope::Preset,
+        },
+        TemplateEntry {
+            source: "audio.stereo_width",
+            target_pattern: T_MOTION,
+            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            scope: BindingScope::Preset,
+        },
+        TemplateEntry {
+            source: "audio.rms",
+            target_pattern: T_SCALE,
+            transforms: || {
+                vec![
+                    TransformDef::Remap {
+                        in_lo: 0.0,
+                        in_hi: 0.5,
+                        out_lo: 0.3,
+                        out_hi: 1.0,
+                    },
+                    TransformDef::Smooth { factor: 0.93 },
+                ]
+            },
+            scope: BindingScope::Preset,
+        },
+        opacity_breathe!("audio.harmonic_energy"),
     ],
 };
 
 static MIDI_FADERS: BindingTemplate = BindingTemplate {
     name: "MIDI Faders",
-    description: "CC 1-8 mapped to first 8 params",
+    description: "CC 1-8 onto the first eight params, in order",
+    // Positional here is the RIGHT call, unlike the audio templates: the user is
+    // driving, so landing on a mode selector is immediately visible and immediately
+    // undone. Smoothing is light for the same reason — a fader that lags reads as
+    // broken hardware.
     entries: &[
         TemplateEntry {
             source: "midi.*.cc.0.1",
             target_pattern: "param.{layer}.{effect}.{param_0}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.2",
             target_pattern: "param.{layer}.{effect}.{param_1}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.3",
             target_pattern: "param.{layer}.{effect}.{param_2}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.4",
             target_pattern: "param.{layer}.{effect}.{param_3}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.5",
             target_pattern: "param.{layer}.{effect}.{param_4}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.6",
             target_pattern: "param.{layer}.{effect}.{param_5}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.7",
             target_pattern: "param.{layer}.{effect}.{param_6}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
         TemplateEntry {
             source: "midi.*.cc.0.8",
             target_pattern: "param.{layer}.{effect}.{param_7}",
-            transforms: || vec![TransformDef::Smooth { factor: 0.9 }],
+            transforms: || vec![TransformDef::Smooth { factor: 0.45 }],
             scope: BindingScope::Preset,
         },
     ],
@@ -283,16 +430,23 @@ fn resolve_template_params(
     }
 
     // Pass 2 — wildcards take whatever is left, preferring a param that is safe to
-    // sweep but taking a skipped one rather than resolving to nothing.
+    // sweep. A denied param is taken only when the template would otherwise bind
+    // NOTHING at all: a jarring binding beats a dead one, but only as a last
+    // resort. Without that condition the templates scrape a small effect down to
+    // its leftovers — Beam declares [mode, trail_decay, beam_focus, intensity], and
+    // with four slots competing the tail ones landed beat_phase on `mode` and rms
+    // on `trail_decay`, which snaps between looks and strobes the feedback buffer
+    // respectively, on top of two slots that had already resolved cleanly.
     for (i, body) in bodies.iter().enumerate() {
         let Some(body) = body else { continue };
         if out[i].is_some() || !body.split('|').any(|c| c.trim() == "*") {
             continue;
         }
         let free = || param_names.iter().filter(|n| !claimed.contains(n));
+        let last_resort = claimed.is_empty();
         let pick = free()
             .find(|n| !FALLBACK_SKIP.contains(&n.as_str()))
-            .or_else(|| free().next())
+            .or_else(|| if last_resort { free().next() } else { None })
             .cloned();
         if let Some(name) = pick {
             claimed.push(name.clone());
@@ -368,6 +522,24 @@ impl BindingBus {
             if let (true, Some(dev)) = (source.contains('*'), midi_device.as_deref()) {
                 source = source.replace('*', dev);
             }
+
+            // Replace any preset-scope binding already driving this exact target.
+            //
+            // Templates used to append unconditionally, so trying a second one left
+            // both sets live and two sources fighting over the same param, last
+            // write per frame winning — which looks like the app ignoring the
+            // template rather than like a conflict. Scoped to this target and to
+            // preset scope, so hand-made and global bindings elsewhere survive.
+            let replaced: Vec<String> = self
+                .bindings
+                .iter()
+                .filter(|b| b.target == target && b.scope == BindingScope::Preset)
+                .map(|b| b.id.clone())
+                .collect();
+            for id in replaced {
+                self.remove_binding(&id);
+            }
+
             let id = self.add_binding(source, target, entry.scope.clone());
 
             // Apply transforms
@@ -442,14 +614,17 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         bus.apply_template(&AUDIO_REACTIVE, 0, "Drift", &params);
-        assert_eq!(bus.bindings.len(), 4);
-        assert_eq!(bus.bindings[0].source, "audio.kick");
+        assert_eq!(bus.bindings.len(), 5);
+        // percussive_energy, not kick — the kick band false-fires on sustained bass (#1836).
+        assert_eq!(bus.bindings[0].source, "audio.percussive_energy");
         assert_eq!(bus.bindings[0].target, "param.0.Drift.warp_intensity");
-        assert_eq!(bus.bindings[1].target, "layer.0.opacity");
         // color_mode is in FALLBACK_SKIP but named in the colour list, so it still wins —
         // drift.pfx's own audio_mappings ask for exactly centroid -> palette colour.
-        assert_eq!(bus.bindings[2].target, "param.0.Drift.color_mode");
-        assert_eq!(bus.bindings[3].target, "param.0.Drift.flow_speed");
+        assert_eq!(bus.bindings[1].target, "param.0.Drift.color_mode");
+        assert_eq!(bus.bindings[2].target, "param.0.Drift.flow_speed");
+        // The SCALE slot takes density outright.
+        assert_eq!(bus.bindings[3].target, "param.0.Drift.density");
+        assert_eq!(bus.bindings[4].target, "layer.0.opacity");
     }
 
     #[test]
@@ -468,17 +643,17 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
         bus.apply_template(&AUDIO_REACTIVE, 0, "Strata", &params);
-        assert_eq!(bus.bindings.len(), 4);
+        assert_eq!(bus.bindings.len(), 5);
         let hit: Vec<&str> = bus
             .bindings
             .iter()
             .filter_map(|b| b.target.strip_prefix("param.0.Strata."))
             .collect();
-        assert_eq!(hit.len(), 3, "every param entry should resolve: {hit:?}");
+        assert_eq!(hit.len(), 4, "every param entry should resolve: {hit:?}");
         let mut sorted = hit.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), 3, "a param was bound twice: {hit:?}");
+        assert_eq!(sorted.len(), 4, "a param was bound twice: {hit:?}");
     }
 
     #[test]
@@ -509,7 +684,7 @@ mod tests {
         let mut bus = test_bus();
         let params = vec!["trail_decay".to_string(), "curl_scale".to_string()];
         bus.apply_template(&AUDIO_REACTIVE, 0, "X", &params);
-        assert_eq!(bus.bindings[0].source, "audio.kick");
+        assert_eq!(bus.bindings[0].source, "audio.percussive_energy");
         assert_eq!(bus.bindings[0].target, "param.0.X.curl_scale");
     }
 
@@ -627,12 +802,24 @@ mod tests {
 
     #[test]
     fn spectral_skips_missing_params() {
+        // Two params and four semantic slots: the two that resolve get one each,
+        // the rest drop, and the opacity entry always lands. Previously this
+        // template was seven bands onto param_0..param_6 by POSITION, so the same
+        // effect dropped five entries and the two it kept were whatever happened
+        // to be declared first.
         let mut bus = test_bus();
-        let params = vec!["warp".into(), "color".into()]; // Only 2 params
+        let params = vec!["warp".into(), "color".into()];
         bus.apply_template(&SPECTRAL_BANDS, 0, "Phosphor", &params);
-        // Should only create 2 bindings (bands 0 and 1), skip 2-6
-        assert_eq!(bus.bindings.len(), 2);
-        assert_eq!(bus.bindings[0].target, "param.0.Phosphor.warp");
+        assert_eq!(bus.bindings.len(), 3);
+
+        let mut bound: Vec<&str> = bus
+            .bindings
+            .iter()
+            .filter_map(|b| b.target.strip_prefix("param.0.Phosphor."))
+            .collect();
+        bound.sort_unstable();
+        assert_eq!(bound, vec!["color", "warp"], "each param taken once");
+        assert!(bus.bindings.iter().any(|b| b.target == "layer.0.opacity"));
     }
 
     #[test]
@@ -669,10 +856,203 @@ mod tests {
     #[test]
     fn builtin_templates_available() {
         let templates = builtin_templates();
-        assert_eq!(templates.len(), 4);
+        assert_eq!(templates.len(), 5);
         assert_eq!(templates[0].name, "Audio Reactive");
         assert_eq!(templates[1].name, "Beat Sync");
         assert_eq!(templates[2].name, "Spectral Bands");
-        assert_eq!(templates[3].name, "MIDI Faders");
+        assert_eq!(templates[3].name, "Ambient");
+        assert_eq!(templates[4].name, "MIDI Faders");
+    }
+
+    /// Every audio template must move something on every shipped effect.
+    ///
+    /// A template that resolves nothing is indistinguishable from a broken
+    /// feature, and a sixth of the shipped effects (the Lattice rules) declare no
+    /// params at all — which is exactly where a param-only template goes silent.
+    #[test]
+    fn every_audio_template_binds_something_on_every_effect() {
+        for template in builtin_templates() {
+            if template.name == "MIDI Faders" {
+                continue; // hardware-only, and positional by design
+            }
+            for (effect, params) in shipped_effects() {
+                let mut bus = test_bus();
+                bus.apply_template(template, 0, &effect, &params);
+                assert!(
+                    !bus.bindings.is_empty(),
+                    "template '{}' bound nothing on '{effect}' ({} params)",
+                    template.name,
+                    params.len()
+                );
+            }
+        }
+    }
+
+    /// No audio template may drive a param through a source the audio side refuses.
+    ///
+    /// The old Spectral Bands mapped seven bands onto the first seven params BY
+    /// POSITION, and `param_0` is `trail_decay` on 11 of the 40 effects that have
+    /// params — so sub-bass strobed the whole feedback buffer. 13% of the bindings
+    /// it produced landed on a param the semantic slots deliberately refuse.
+    #[test]
+    fn no_audio_template_sweeps_a_simulation_resetting_param() {
+        for template in builtin_templates() {
+            if template.name == "MIDI Faders" {
+                continue; // user-driven, and immediately undone if it lands badly
+            }
+            for (effect, params) in shipped_effects() {
+                // An effect whose ONLY params are denied has to use one anyway —
+                // a jarring binding still beats a dead one.
+                if params.iter().all(|p| FALLBACK_SKIP.contains(&p.as_str())) {
+                    continue;
+                }
+                let mut bus = test_bus();
+                bus.apply_template(template, 0, &effect, &params);
+                for b in &bus.bindings {
+                    let Some(param) = b.target.strip_prefix(&format!("param.0.{effect}.")) else {
+                        continue;
+                    };
+                    // Named candidates may claim a denied param on purpose; only the
+                    // `*` fallback is forbidden from reaching one. color_mode is the
+                    // documented case — drift.pfx asks for centroid -> palette.
+                    if param == "color_mode" {
+                        continue;
+                    }
+                    assert!(
+                        !FALLBACK_SKIP.contains(&param),
+                        "template '{}' put {} on '{effect}.{param}', which resets \
+                         rather than modulates",
+                        template.name,
+                        b.source
+                    );
+                }
+            }
+        }
+    }
+
+    /// Applying a second template must replace the first on any shared target,
+    /// not stack a second source onto it where the two fight and the last write
+    /// each frame wins.
+    #[test]
+    fn a_second_template_replaces_rather_than_stacks() {
+        let params: Vec<String> = ["warp_intensity", "flow_speed", "hue", "density"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut bus = test_bus();
+        bus.apply_template(&AUDIO_REACTIVE, 0, "Drift", &params);
+        let after_first = bus.bindings.len();
+        bus.apply_template(&BEAT_SYNC, 0, "Drift", &params);
+
+        let mut targets: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
+        targets.sort_unstable();
+        let before_dedup = targets.len();
+        targets.dedup();
+        assert_eq!(
+            before_dedup,
+            targets.len(),
+            "two bindings share a target after applying a second template"
+        );
+        assert!(
+            bus.bindings.len() <= after_first + 1,
+            "second template stacked instead of replacing: {} -> {}",
+            after_first,
+            bus.bindings.len()
+        );
+        // ...and the second template is the one now driving.
+        let punch = bus
+            .bindings
+            .iter()
+            .find(|b| b.target == "param.0.Drift.warp_intensity")
+            .expect("punch slot resolves on Drift");
+        assert_eq!(punch.source, "audio.beat");
+    }
+
+    /// A hand-made binding on an unrelated target survives a template.
+    #[test]
+    fn applying_a_template_leaves_unrelated_bindings_alone() {
+        let params: Vec<String> = ["warp_intensity", "flow_speed", "hue", "density"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut bus = test_bus();
+        let mine = bus.add_binding(
+            "midi.MPD218.cc.0.42".to_string(),
+            "postfx.vignette".to_string(),
+            BindingScope::Preset,
+        );
+        bus.apply_template(&AUDIO_REACTIVE, 0, "Drift", &params);
+        assert!(
+            bus.bindings.iter().any(|b| b.id == mine),
+            "a template removed a hand-made binding on an unrelated target"
+        );
+    }
+
+    /// Every source a template names must be one the bus actually collects.
+    ///
+    /// A mistyped id binds to nothing and reads a permanent 0.0 — the failure
+    /// mode that left seven band-pan sources dead for several releases (#1801).
+    #[test]
+    fn every_template_source_is_really_collected() {
+        use crate::bindings::sources;
+        let mut collected: std::collections::HashSet<String> =
+            sources::collect_audio(&Default::default())
+                .into_keys()
+                .collect();
+        collected.extend(sources::collect_mel_bands(&[0.0; 64]).into_keys());
+        collected.extend(sources::collect_dmfcc_bands(&[0.0; 13]).into_keys());
+
+        for template in builtin_templates() {
+            for entry in template.entries {
+                if !entry.source.starts_with("audio.") {
+                    continue; // midi.*/osc./ws. are discovered at runtime
+                }
+                assert!(
+                    collected.contains(entry.source),
+                    "template '{}' names '{}', which no collector publishes",
+                    template.name,
+                    entry.source
+                );
+            }
+        }
+    }
+
+    /// Not an assertion — prints what each template actually produces on every
+    /// shipped effect, so the mapping can be reviewed rather than assumed.
+    /// Run: cargo test -p phosphor-app -- --ignored template_coverage_report --nocapture
+    #[test]
+    #[ignore = "reporting probe, not an assertion"]
+    fn template_coverage_report() {
+        for template in builtin_templates() {
+            if template.name == "MIDI Faders" {
+                continue;
+            }
+            let mut denied = 0usize;
+            let mut total = 0usize;
+            let mut only_opacity = Vec::new();
+            for (effect, params) in shipped_effects() {
+                let mut bus = test_bus();
+                bus.apply_template(template, 0, &effect, &params);
+                let param_hits: Vec<&str> = bus
+                    .bindings
+                    .iter()
+                    .filter_map(|b| b.target.strip_prefix(&format!("param.0.{effect}.")))
+                    .collect();
+                total += param_hits.len();
+                denied += param_hits
+                    .iter()
+                    .filter(|p| FALLBACK_SKIP.contains(p) && **p != "color_mode")
+                    .count();
+                if param_hits.is_empty() {
+                    only_opacity.push(effect.clone());
+                }
+            }
+            println!(
+                "{:<16} {total:3} param bindings, {denied} on a denied param, \
+                 {} effects opacity-only",
+                template.name,
+                only_opacity.len()
+            );
+        }
     }
 }
