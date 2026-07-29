@@ -19,6 +19,14 @@
   scrolling, and the target list starts collapsed.
 
 ### Fixed
+- **Reordering or deleting a layer left its bindings behind on the old slot**, so an
+  audio source that drove one effect silently started driving whichever effect moved into
+  its place. Deleting was worse: every binding above the removed layer shifted down onto
+  its neighbour. Bindings now move with their layer, and a deleted layer takes its own
+  with it.
+- **The binding matrix now names the layer and effect it is editing**, in the header and on
+  every parameter group, and flags a binding whose target no longer exists — changing a
+  layer's effect used to leave bindings that looked fine and did nothing.
 - **"Collapse all" in the binding matrix skipped the per-layer parameter groups** — the
   longest ones on screen — whenever more than one layer was loaded.
 - Switching layers while a particle source file dialog was open dropped the image, video or

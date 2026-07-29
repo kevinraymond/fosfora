@@ -2405,6 +2405,38 @@ impl App {
         }
     }
 
+    /// Remove a layer, carrying its bindings with it.
+    ///
+    /// Wrapped rather than left to each call site: binding targets pin a layer by
+    /// index, so a bare `layer_stack.remove_layer` leaves every binding above the
+    /// hole pointing one layer too high — silently driving the wrong effect.
+    pub fn remove_layer(&mut self, index: usize) {
+        let before = self.layer_stack.layers.len();
+        self.layer_stack.remove_layer(index);
+        if self.layer_stack.layers.len() == before {
+            return; // refused (last layer, or out of range)
+        }
+        self.binding_bus
+            .remap_layer_targets(|old| crate::bindings::bus::layer_index_after_remove(old, index));
+        self.sync_active_layer();
+    }
+
+    /// Move a layer, carrying its bindings with it.
+    ///
+    /// Reordering used to leave "rms → layer 0 opacity" behind on slot 0 while the
+    /// effect that binding was made for moved elsewhere.
+    pub fn move_layer(&mut self, from: usize, to: usize) {
+        let n = self.layer_stack.layers.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        self.layer_stack.move_layer(from, to);
+        self.binding_bus.remap_layer_targets(|old| {
+            Some(crate::bindings::bus::layer_index_after_move(old, from, to))
+        });
+        self.sync_active_layer();
+    }
+
     /// Sync effect_loader.current_effect to match active layer.
     pub fn sync_active_layer(&mut self) {
         if let Some(layer) = self.layer_stack.active() {

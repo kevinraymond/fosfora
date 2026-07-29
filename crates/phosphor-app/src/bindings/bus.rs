@@ -36,6 +36,50 @@ pub struct BindingBus {
     pub pending_triggers: Vec<String>,
 }
 
+/// The layer a binding target names, for the two target forms that carry one.
+///
+/// `layer.{n}.{field}` and `param.{n}.{effect}.{param}`. Everything else —
+/// postfx, particle, uniform, scene, global, and the legacy indexless
+/// `param.{effect}.{param}` — has no layer to renumber.
+pub(crate) fn target_layer_index(target: &str) -> Option<usize> {
+    let mut parts = target.split('.');
+    match parts.next()? {
+        "layer" => parts.next()?.parse().ok(),
+        // Four segments means the indexed form; three is the legacy one.
+        "param" if target.split('.').count() == 4 => parts.next()?.parse().ok(),
+        _ => None,
+    }
+}
+
+/// The same target with its layer index replaced. `None` when it names no layer.
+pub(crate) fn retarget_layer(target: &str, new_idx: usize) -> Option<String> {
+    let parts: Vec<&str> = target.split('.').collect();
+    match *parts.first()? {
+        "layer" if parts.len() >= 3 => Some(format!("layer.{new_idx}.{}", parts[2..].join("."))),
+        "param" if parts.len() == 4 => Some(format!("param.{new_idx}.{}.{}", parts[2], parts[3])),
+        _ => None,
+    }
+}
+
+/// Where layer `old` ends up after moving `from` to `to`.
+///
+/// Same permutation the active-layer index follows, kept as its own function so
+/// bindings and the active layer cannot drift apart.
+pub fn layer_index_after_move(old: usize, from: usize, to: usize) -> usize {
+    crate::gpu::layer::adjusted_active_after_move(old, from, to)
+}
+
+/// Where layer `old` ends up after removing `removed` — `None` if it WAS the
+/// removed one, since its target no longer exists.
+pub fn layer_index_after_remove(old: usize, removed: usize) -> Option<usize> {
+    use std::cmp::Ordering;
+    match old.cmp(&removed) {
+        Ordering::Equal => None,
+        Ordering::Less => Some(old),
+        Ordering::Greater => Some(old - 1),
+    }
+}
+
 impl BindingBus {
     pub fn new() -> Self {
         let global = persistence::load_global();
@@ -132,6 +176,52 @@ impl BindingBus {
         self.save_global();
         if was_preset {
             self.preset_scope_dirty = true;
+        }
+    }
+
+    /// Rewrite the layer index inside every binding target, dropping bindings
+    /// whose layer `remap` reports as gone.
+    ///
+    /// Binding targets pin a layer by INDEX (`layer.0.opacity`,
+    /// `param.0.Raster.warp`), so any edit that renumbers the stack silently
+    /// re-points them at whatever now sits at that index. Reordering two layers
+    /// left "rms → opacity" behind on the old slot, now driving a different
+    /// effect; deleting one was worse, because every binding above it shifted
+    /// down onto its neighbour without a word.
+    ///
+    /// Legacy `param.{effect}.{param}` targets carry no index and are left
+    /// alone — they resolve against the active layer at apply time.
+    pub fn remap_layer_targets(&mut self, remap: impl Fn(usize) -> Option<usize>) {
+        let mut dropped: Vec<String> = Vec::new();
+        let mut changed = false;
+
+        for b in &mut self.bindings {
+            let Some(old) = target_layer_index(&b.target) else {
+                continue;
+            };
+            match remap(old) {
+                Some(new) if new == old => {}
+                Some(new) => {
+                    if let Some(t) = retarget_layer(&b.target, new) {
+                        b.target = t;
+                        changed = true;
+                    }
+                }
+                None => dropped.push(b.id.clone()),
+            }
+        }
+
+        for id in &dropped {
+            self.runtimes.remove(id);
+        }
+        if !dropped.is_empty() {
+            self.bindings.retain(|b| !dropped.contains(&b.id));
+        }
+
+        if changed || !dropped.is_empty() {
+            self.mark_dirty();
+            self.preset_scope_dirty = true;
+            self.save_global();
         }
     }
 
@@ -499,6 +589,130 @@ mod tests {
             target: "layer.0.opacity".into(),
             transforms: Vec::new(),
         }
+    }
+
+    /// Only the two target forms that carry an index may be renumbered.
+    #[test]
+    fn only_layer_bearing_targets_expose_an_index() {
+        assert_eq!(target_layer_index("layer.2.opacity"), Some(2));
+        assert_eq!(target_layer_index("layer.11.blend"), Some(11));
+        assert_eq!(target_layer_index("param.3.Raster.warp"), Some(3));
+        // Legacy indexless form resolves against the active layer at apply time.
+        assert_eq!(target_layer_index("param.Raster.warp"), None);
+        // Everything global stays put.
+        for t in [
+            "postfx.vignette",
+            "particle.emit_rate",
+            "uniform.kick",
+            "scene.transport.go",
+            "global.master_opacity",
+        ] {
+            assert_eq!(target_layer_index(t), None, "{t} should carry no layer");
+        }
+    }
+
+    #[test]
+    fn retargeting_preserves_everything_but_the_index() {
+        assert_eq!(
+            retarget_layer("layer.0.opacity", 4).as_deref(),
+            Some("layer.4.opacity")
+        );
+        assert_eq!(
+            retarget_layer("param.0.Raster.warp_intensity", 2).as_deref(),
+            Some("param.2.Raster.warp_intensity")
+        );
+        // Effect names with dots would break a naive rejoin; the param form is
+        // fixed at four segments so this stays well-defined.
+        assert_eq!(retarget_layer("postfx.vignette", 1), None);
+        assert_eq!(retarget_layer("param.Raster.warp", 1), None);
+    }
+
+    /// Kevin's report: swap two layers and "rms → layer 0 opacity" stays on
+    /// layer 0, now driving whatever moved into that slot.
+    #[test]
+    fn moving_a_layer_carries_its_bindings() {
+        let mut bus = empty_bus();
+        bus.add_binding(
+            "audio.rms".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Preset,
+        );
+        bus.add_binding(
+            "audio.kick".into(),
+            "param.0.Raster.warp".into(),
+            BindingScope::Preset,
+        );
+        bus.add_binding(
+            "audio.beat".into(),
+            "layer.1.opacity".into(),
+            BindingScope::Preset,
+        );
+        bus.add_binding(
+            "audio.centroid".into(),
+            "postfx.vignette".into(),
+            BindingScope::Preset,
+        );
+
+        // Swap 0 and 1.
+        bus.remap_layer_targets(|old| Some(layer_index_after_move(old, 0, 1)));
+
+        let t: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
+        assert_eq!(t[0], "layer.1.opacity", "the moved layer took its binding");
+        assert_eq!(t[1], "param.1.Raster.warp");
+        assert_eq!(
+            t[2], "layer.0.opacity",
+            "the displaced layer renumbered too"
+        );
+        assert_eq!(t[3], "postfx.vignette", "layerless target untouched");
+    }
+
+    /// Worse than reorder and unreported: deleting a layer shifted every binding
+    /// above it down onto its neighbour without a word.
+    #[test]
+    fn removing_a_layer_drops_its_bindings_and_shifts_the_rest() {
+        let mut bus = empty_bus();
+        for i in 0..3 {
+            bus.add_binding(
+                "audio.rms".into(),
+                format!("layer.{i}.opacity"),
+                BindingScope::Preset,
+            );
+        }
+        bus.add_binding(
+            "audio.kick".into(),
+            "param.2.Frost.bite".into(),
+            BindingScope::Preset,
+        );
+
+        bus.remap_layer_targets(|old| layer_index_after_remove(old, 1));
+
+        let t: Vec<&str> = bus.bindings.iter().map(|b| b.target.as_str()).collect();
+        assert_eq!(
+            t,
+            vec!["layer.0.opacity", "layer.1.opacity", "param.1.Frost.bite"],
+            "layer 1's binding dropped, layer 2's moved down to 1"
+        );
+        // The dropped binding's runtime goes with it rather than leaking.
+        assert_eq!(bus.runtimes.len(), bus.bindings.len());
+    }
+
+    #[test]
+    fn remap_index_math_matches_the_active_layer() {
+        // Bindings must follow exactly the permutation the active layer follows,
+        // or the two disagree about which layer you are looking at.
+        for from in 0..4usize {
+            for to in 0..4usize {
+                for old in 0..4usize {
+                    assert_eq!(
+                        layer_index_after_move(old, from, to),
+                        crate::gpu::layer::adjusted_active_after_move(old, from, to)
+                    );
+                }
+            }
+        }
+        assert_eq!(layer_index_after_remove(1, 1), None);
+        assert_eq!(layer_index_after_remove(0, 1), Some(0));
+        assert_eq!(layer_index_after_remove(2, 1), Some(1));
     }
 
     #[test]

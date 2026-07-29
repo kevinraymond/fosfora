@@ -342,6 +342,50 @@ fn draw_header(
                 .color(tc.text_primary),
         );
 
+        ui.add_space(10.0);
+
+        // WHAT AM I EDITING. Templates land on the active layer and every target
+        // is pinned to a layer index, but nothing on screen said which layer that
+        // was — so with a stack loaded it was guesswork.
+        {
+            let active = info.layers.iter().find(|l| l.index == info.active_layer);
+            let (label, known) = match active {
+                Some(l) if !l.effect_name.is_empty() => (
+                    format!("Layer {} \u{2022} {}", l.index, l.effect_name),
+                    true,
+                ),
+                _ => (
+                    format!("Layer {} \u{2022} no effect", info.active_layer),
+                    false,
+                ),
+            };
+            let fg = if known { tc.accent } else { tc.text_dim };
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), fg);
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(galley.size().x + 16.0, 22.0), Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 4.0, fg.linear_multiply(0.16));
+            ui.painter().rect_stroke(
+                rect,
+                4.0,
+                Stroke::new(1.0_f32, fg.linear_multiply(0.5)),
+                StrokeKind::Inside,
+            );
+            ui.painter().galley(
+                pos2(rect.left() + 8.0, rect.center().y - galley.size().y * 0.5),
+                galley,
+                fg,
+            );
+            resp.on_hover_text(if known {
+                "Templates apply here, and the Params group below belongs to this layer.\n\
+                 Switch layers in the Layers panel to bind a different one."
+            } else {
+                "This layer has no effect loaded, so it has no parameters to bind."
+            });
+        }
+
         ui.add_space(12.0);
 
         // Source type legend dots
@@ -1549,6 +1593,18 @@ fn draw_binding_card(
                     .on_hover_text(
                         "Source not currently available \u{2014} check the device or re-Learn",
                     );
+            }
+
+            // Dead-TARGET warning, the symmetric case and the one that actually
+            // bites: change a layer's effect and every binding onto its params
+            // stops resolving, while still rendering a perfectly plausible label.
+            if enabled && !binding_target.is_empty() && !target_is_live(&binding_target, targets) {
+                ui.label(RichText::new("\u{2717}").size(8.0).color(tc.warning))
+                    .on_hover_text(format!(
+                        "Target no longer exists \u{2014} \u{201c}{binding_target}\u{201d}.\n\
+                         The layer it names has a different effect now, or is gone.\n\
+                         Pick a new target, or delete this binding.",
+                    ));
             }
 
             // Transform chain summary pills

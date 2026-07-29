@@ -2336,7 +2336,7 @@ impl ApplicationHandler for PhosphorApp {
                         // Stop capture and remove the active webcam layer
                         app.webcam_capture = None;
                         let active = app.layer_stack.active_layer;
-                        app.layer_stack.remove_layer(active);
+                        app.remove_layer(active);
                         app.sync_active_layer();
                         app.preset_store.mark_dirty();
                     }
@@ -3354,8 +3354,9 @@ impl ApplicationHandler for PhosphorApp {
                     .context()
                     .data_mut(|d| d.remove_temp(egui::Id::new("remove_layer")));
                 if let Some(idx) = remove_layer {
-                    app.layer_stack.remove_layer(idx);
-                    app.sync_active_layer();
+                    // App::remove_layer, not layer_stack's — it carries the
+                    // bindings with the renumbering (#2026).
+                    app.remove_layer(idx);
                     app.preset_store.mark_dirty();
                     #[cfg(feature = "webcam")]
                     app.cleanup_webcam_if_unused();
@@ -3465,8 +3466,7 @@ impl ApplicationHandler for PhosphorApp {
                     .context()
                     .data_mut(|d| d.remove_temp(egui::Id::new("layer_move")));
                 if let Some((from, to)) = layer_move {
-                    app.layer_stack.move_layer(from, to);
-                    app.sync_active_layer();
+                    app.move_layer(from, to);
                     app.preset_store.mark_dirty();
                 }
 

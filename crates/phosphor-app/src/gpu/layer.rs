@@ -497,7 +497,7 @@ pub(crate) fn adjusted_active_after_remove(
 }
 
 /// Compute adjusted active layer index after moving a layer from `from` to `to`.
-pub(crate) fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usize {
+pub fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usize {
     if active == from {
         to
     } else if from < to && active > from && active <= to {

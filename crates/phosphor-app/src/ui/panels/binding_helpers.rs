@@ -73,11 +73,12 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         }
         // Cow, not Box::leak — this runs every frame while the matrix is open,
         // and a leaked label per layer-group per frame is an unbounded leak.
-        let group_label: std::borrow::Cow<'static, str> = if info.layer_count == 1 {
-            "Params".into()
-        } else {
-            format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into()
-        };
+        //
+        // Always named, even with one layer: a bare "Params" left the user to
+        // work out which effect it belonged to, and every target under it is
+        // pinned to that layer's index.
+        let group_label: std::borrow::Cow<'static, str> =
+            format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into();
         for name in &lp.param_names {
             targets.push(TargetOption {
                 id: format!("param.{}.{}.{}", lp.index, lp.effect_name, name),
@@ -983,6 +984,31 @@ pub fn target_display_label(target: &str, targets: &[TargetOption]) -> String {
         .unwrap_or_else(|| friendly_target(target))
 }
 
+/// Whether a binding target still resolves against the layer stack as it is now.
+///
+/// A target goes dead when the layer it names loses its effect or is given a
+/// different one — `param.0.Raster.warp` after layer 0 switches to Frost. Nothing
+/// said so: [`target_display_label`] falls back to a prettified version of the id,
+/// so a dead binding rendered identically to a working one and simply did nothing.
+pub fn target_is_live(target: &str, targets: &[TargetOption]) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    if targets.iter().any(|t| t.id == target) {
+        return true;
+    }
+    // The legacy indexless `param.{effect}.{param}` form resolves against
+    // whichever layer currently runs that effect, so it is live if any does.
+    let parts: Vec<&str> = target.split('.').collect();
+    if parts.len() == 3 && parts[0] == "param" {
+        return targets.iter().any(|t| {
+            let p: Vec<&str> = t.id.split('.').collect();
+            p.len() == 4 && p[0] == "param" && p[2] == parts[1] && p[3] == parts[2]
+        });
+    }
+    false
+}
+
 /// Draw a source row in the picker popup.
 /// Layout: [name ·····  bar 0.42  u.field]
 pub fn draw_source_row(
@@ -1248,6 +1274,57 @@ mod tests {
         assert!(groups.len() > 7);
     }
 
+    /// A binding onto a layer whose effect has changed must be flagged, and a
+    /// working one must NOT be — a false warning on every card is as useless as
+    /// no warning at all.
+    #[test]
+    fn a_target_whose_effect_is_gone_reads_as_dead() {
+        let info = BindingPanelInfo {
+            layers: vec![LayerParamInfo {
+                index: 0,
+                effect_name: "Frost".to_string(),
+                param_names: vec!["bite".to_string()],
+            }],
+            active_layer: 0,
+            layer_count: 1,
+            preset_name: String::new(),
+        };
+        let targets = build_target_options(&info);
+
+        // Live: the layer really does offer this param.
+        assert!(target_is_live("param.0.Frost.bite", &targets));
+        // Dead: layer 0 used to run Raster. This is what a card showed as a
+        // perfectly ordinary "warp intensity" while doing nothing.
+        assert!(!target_is_live("param.0.Raster.warp_intensity", &targets));
+        // Dead: the layer itself is gone.
+        assert!(!target_is_live("param.3.Frost.bite", &targets));
+        // Layerless targets never go dead.
+        assert!(target_is_live("postfx.vignette", &targets));
+        assert!(target_is_live("global.master_opacity", &targets));
+        assert!(target_is_live("layer.0.opacity", &targets));
+        // An empty target is not "dead", it is unset — the card says so already.
+        assert!(!target_is_live("", &targets));
+    }
+
+    /// The legacy indexless form resolves against whichever layer runs that
+    /// effect, so it must not be flagged just for lacking an index.
+    #[test]
+    fn a_legacy_indexless_target_is_live_when_its_effect_is_loaded() {
+        let info = BindingPanelInfo {
+            layers: vec![LayerParamInfo {
+                index: 2,
+                effect_name: "Frost".to_string(),
+                param_names: vec!["bite".to_string()],
+            }],
+            active_layer: 2,
+            layer_count: 3,
+            preset_name: String::new(),
+        };
+        let targets = build_target_options(&info);
+        assert!(target_is_live("param.Frost.bite", &targets));
+        assert!(!target_is_live("param.Raster.warp", &targets));
+    }
+
     #[test]
     fn target_filter_matches_label_group_and_id() {
         let info = BindingPanelInfo {
@@ -1268,7 +1345,10 @@ mod tests {
 
         assert!(target_matches(opt, ""));
         assert!(target_matches(opt, "warp")); // label
-        assert!(target_matches(opt, "Params")); // group
+        // The group names its layer and effect even with one layer loaded, so a
+        // user can tell what they are about to bind.
+        assert_eq!(opt.group.as_ref(), "Layer 0 \u{2022} Raster");
+        assert!(target_matches(opt, "Layer 0")); // group
         assert!(target_matches(opt, "raster")); // id, case-insensitively
         assert!(!target_matches(opt, "zzzznope"));
 
