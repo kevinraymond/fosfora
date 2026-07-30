@@ -81,6 +81,10 @@ pub struct Timeline {
     pub beat_count: u32,
     /// Last beat state (for rising-edge detection).
     last_beat: bool,
+    /// Seconds per beat, fed by the caller each frame (60 / detected BPM), so
+    /// `transition_beats` can be resolved to seconds without the timeline
+    /// reading a clock or the audio system. `None` while no tempo is known.
+    beat_period_secs: Option<f32>,
 }
 
 impl Timeline {
@@ -93,7 +97,14 @@ impl Timeline {
             active: false,
             beat_count: 0,
             last_beat: false,
+            beat_period_secs: None,
         }
+    }
+
+    /// Update the tempo used to resolve `transition_beats`. Call each frame
+    /// with the current beat period; pass `None` when no tempo is detected.
+    pub fn set_beat_period(&mut self, secs: Option<f32>) {
+        self.beat_period_secs = secs.filter(|s| *s > 0.0 && s.is_finite());
     }
 
     /// Start the timeline at cue 0 (or given index).
@@ -356,7 +367,19 @@ impl Timeline {
     fn begin_transition(&mut self, from: usize, to: usize) -> TimelineEvent {
         let cue = &self.cues[to];
         let transition_type = cue.transition;
-        let duration = cue.transition_secs;
+        // `transition_beats` is documented (scene/types.rs) as the BeatSync
+        // override of `transition_secs`. It shipped unread for a long time —
+        // every transition used seconds — so the gating here is deliberate and
+        // narrow: beats only apply in BeatSync mode AND with a known tempo,
+        // everything else falls back to the seconds field exactly as before.
+        let duration = match (
+            &self.advance_mode,
+            cue.transition_beats,
+            self.beat_period_secs,
+        ) {
+            (AdvanceMode::BeatSync { .. }, Some(beats), Some(period)) => beats as f32 * period,
+            _ => cue.transition_secs,
+        };
 
         match transition_type {
             TransitionType::Cut => {
@@ -415,6 +438,86 @@ mod tests {
                 transition_beats: None,
             },
         ]
+    }
+
+    /// `transition_beats` shipped unread — this pins the fix: in BeatSync with
+    /// a known tempo the duration is beats x period; everywhere else the
+    /// seconds field is authoritative, exactly as before the fix.
+    #[test]
+    fn transition_beats_resolves_only_in_beatsync_with_tempo() {
+        let cues = |beats: Option<u32>| {
+            vec![
+                SceneCue::new("A"),
+                SceneCue {
+                    preset_name: "B".to_string(),
+                    transition: TransitionType::Dissolve,
+                    transition_secs: 2.0,
+                    hold_secs: None,
+                    label: None,
+                    param_overrides: Vec::new(),
+                    transition_beats: beats,
+                },
+            ]
+        };
+
+        // BeatSync + tempo known: 8 beats at 0.5 s/beat = 4 s.
+        let mut tl = Timeline::new(
+            cues(Some(8)),
+            false,
+            AdvanceMode::BeatSync { beats_per_cue: 4 },
+        );
+        tl.set_beat_period(Some(0.5));
+        tl.start(0);
+        match tl.go_next() {
+            TimelineEvent::BeginTransition { duration, .. } => {
+                assert!((duration - 4.0).abs() < 1e-6, "got {duration}");
+            }
+            other => panic!("expected BeginTransition, got {other:?}"),
+        }
+
+        // BeatSync but NO tempo: seconds field wins.
+        let mut tl = Timeline::new(
+            cues(Some(8)),
+            false,
+            AdvanceMode::BeatSync { beats_per_cue: 4 },
+        );
+        tl.start(0);
+        match tl.go_next() {
+            TimelineEvent::BeginTransition { duration, .. } => {
+                assert!((duration - 2.0).abs() < 1e-6, "got {duration}");
+            }
+            other => panic!("expected BeginTransition, got {other:?}"),
+        }
+
+        // Timer mode: beats are ignored even with a tempo.
+        let mut tl = Timeline::new(cues(Some(8)), false, AdvanceMode::Timer);
+        tl.set_beat_period(Some(0.5));
+        tl.start(0);
+        match tl.go_next() {
+            TimelineEvent::BeginTransition { duration, .. } => {
+                assert!((duration - 2.0).abs() < 1e-6, "got {duration}");
+            }
+            other => panic!("expected BeginTransition, got {other:?}"),
+        }
+    }
+
+    /// A zero, negative or non-finite period must not arm (division by the
+    /// period's product happens in tick), so the setter filters it.
+    #[test]
+    fn set_beat_period_rejects_degenerate_values() {
+        let mut tl = Timeline::new(
+            make_cues(),
+            false,
+            AdvanceMode::BeatSync { beats_per_cue: 4 },
+        );
+        tl.set_beat_period(Some(0.0));
+        assert!(tl.beat_period_secs.is_none());
+        tl.set_beat_period(Some(-1.0));
+        assert!(tl.beat_period_secs.is_none());
+        tl.set_beat_period(Some(f32::NAN));
+        assert!(tl.beat_period_secs.is_none());
+        tl.set_beat_period(Some(0.5));
+        assert!(tl.beat_period_secs.is_some());
     }
 
     #[test]

@@ -3,6 +3,17 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **Scene cues' per-cue parameter overrides and beat-length transitions now work.** A cue
+  that overrode layer parameters played back exactly like the plain preset — the field
+  saved, loaded, validated, and did nothing — and `transition_beats` was likewise ignored,
+  every transition using its length in seconds. Overrides now apply when the cue loads
+  (including presets with media still decoding), morph transitions land on the overridden
+  values, and in Beat Sync mode a transition given in beats follows the detected tempo.
+  Locked layers keep their live values, as on preset load.
+
 ## v1.30.0 — 2026-07-29
 
 ### Changed

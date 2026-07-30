@@ -100,18 +100,25 @@ pub struct App {
     pub scene_store: SceneStore,
     pub timeline: Timeline,
     pub transition_renderer: Option<TransitionRenderer>,
-    /// When a dissolve begins, render() captures the outgoing frame then loads this preset.
-    pub dissolve_capture_pending: Option<usize>,
+    /// When a dissolve begins, render() captures the outgoing frame then loads
+    /// this `(preset index, cue index)` — the cue rides along so its
+    /// `param_overrides` apply to the deferred load too.
+    pub dissolve_capture_pending: Option<(usize, usize)>,
+    /// Cue whose `param_overrides` apply after the next preset finishes
+    /// loading. Consumed at the END of `apply_preset_immediately`, which is the
+    /// one point every load path funnels through — the sync fast path, the
+    /// async media-decode completion, and the dissolve deferred load. Applying
+    /// eagerly at the timeline event instead would be clobbered by the async
+    /// path, whose decode lands whole frames later.
+    pub pending_cue_overrides: Option<usize>,
     pub midi_clock: MidiClock,
     /// Whether MIDI clock was playing last frame (for rising-edge transport detection).
     pub midi_clock_was_playing: bool,
     /// Whether a MIDI clock beat boundary was crossed this frame.
     pub midi_clock_beat_crossed: bool,
-    /// Morph transition state: from/to params per layer (layer_idx → param_name → value).
-    pub morph_from_params: Option<Vec<std::collections::HashMap<String, ParamValue>>>,
-    pub morph_to_params: Option<Vec<std::collections::HashMap<String, ParamValue>>>,
-    pub morph_from_opacities: Option<Vec<f32>>,
-    pub morph_to_opacities: Option<Vec<f32>>,
+    /// Morph transition state: the param/opacity endpoints per layer.
+    pub morph_from: Option<crate::scene::cueing::MorphSnapshot>,
+    pub morph_to: Option<crate::scene::cueing::MorphSnapshot>,
     // Shader editor
     pub shader_editor: ShaderEditorState,
     // Binding matrix modal
@@ -444,13 +451,12 @@ impl App {
             timeline: Timeline::new(Vec::new(), false, AdvanceMode::Manual),
             transition_renderer: None,
             dissolve_capture_pending: None,
+            pending_cue_overrides: None,
             midi_clock: MidiClock::new(),
             midi_clock_was_playing: false,
             midi_clock_beat_crossed: false,
-            morph_from_params: None,
-            morph_to_params: None,
-            morph_from_opacities: None,
-            morph_to_opacities: None,
+            morph_from: None,
+            morph_to: None,
             settings,
             egui_overlay,
             effect_loader,
@@ -1024,6 +1030,16 @@ impl App {
 
         // Advance timeline (scene system)
         if self.timeline.active {
+            // Tempo for transition_beats resolution. From latest_audio, not
+            // uniforms.bpm: a `uniform.bpm` binding evaluated above can have
+            // overwritten the uniform mirror by now, and a binding must not be
+            // able to warp transition lengths.
+            self.timeline.set_beat_period(
+                self.latest_audio
+                    .as_ref()
+                    .map(|a| 60.0 / a.bpm)
+                    .filter(|p| p.is_finite() && *p > 0.0),
+            );
             // Feed beat signal for BeatSync mode:
             // prefer MIDI clock beat when playing, fall back to audio beat detector
             let beat_on = if self.midi_clock.playing() {
@@ -2903,6 +2919,22 @@ impl App {
     }
 
     pub fn load_preset(&mut self, index: usize) {
+        // A plain preset load (UI click, OSC) is not a cue: cancel any override
+        // still pending from an earlier cue whose async media never finished,
+        // or the stale overrides would apply to this unrelated preset.
+        self.pending_cue_overrides = None;
+        self.load_preset_inner(index);
+    }
+
+    /// Load the preset a cue points at, remembering the cue so its
+    /// `param_overrides` apply once the load completes (see
+    /// `pending_cue_overrides` for why application is deferred).
+    pub fn load_preset_for_cue(&mut self, index: usize, cue_index: usize) {
+        self.pending_cue_overrides = Some(cue_index);
+        self.load_preset_inner(index);
+    }
+
+    fn load_preset_inner(&mut self, index: usize) {
         let preset = match self.preset_store.load(index) {
             Some(p) => p.clone(),
             None => return,
@@ -3658,6 +3690,21 @@ impl App {
         for layer in &mut self.layer_stack.layers {
             layer.param_store.changed = false;
         }
+        // If this load came from a cue, apply the cue's param_overrides on top
+        // of the preset values — this is the one funnel every load path exits
+        // through, so sync, async-media, and dissolve-deferred loads all get
+        // them (see the field's doc for the clobbering hazard this avoids).
+        if let Some(cue_idx) = self.pending_cue_overrides.take() {
+            if let Some(cue) = self.timeline.cues.get(cue_idx).cloned() {
+                crate::scene::cueing::apply_cue_param_overrides(
+                    &cue,
+                    self.layer_stack.layers.iter_mut().map(|l| {
+                        let locked = l.locked;
+                        (&mut l.param_store, locked)
+                    }),
+                );
+            }
+        }
         if let Some((name, _)) = self.preset_store.presets.get(index) {
             log::info!("Loaded preset '{}'", name);
         }
@@ -3764,7 +3811,7 @@ impl App {
                         .iter()
                         .position(|(name, _)| name == &preset_name);
                     if let Some(idx) = preset_idx {
-                        self.load_preset(idx);
+                        self.load_preset_for_cue(idx, cue_index);
                     } else {
                         log::warn!("Preset '{}' not found for cue {}", preset_name, cue_index);
                     }
@@ -3787,28 +3834,31 @@ impl App {
                         }
                         // Defer preset load until render() captures the outgoing frame.
                         // render() will: capture snapshot → load preset → crossfade.
+                        // The cue index rides along so its param_overrides apply
+                        // to that deferred load.
                         let preset_idx = self.timeline.cues.get(to_cue).and_then(|cue| {
                             self.preset_store
                                 .presets
                                 .iter()
                                 .position(|(name, _)| name == &cue.preset_name)
                         });
-                        self.dissolve_capture_pending = preset_idx;
+                        self.dissolve_capture_pending = preset_idx.map(|p| (p, to_cue));
                     }
                     crate::scene::types::TransitionType::ParamMorph => {
-                        // Snapshot current (outgoing) params
-                        let from_params: Vec<std::collections::HashMap<String, ParamValue>> = self
-                            .layer_stack
-                            .layers
-                            .iter()
-                            .map(|l| l.param_store.values.clone())
-                            .collect();
-                        let from_opacities: Vec<f32> =
-                            self.layer_stack.layers.iter().map(|l| l.opacity).collect();
-                        self.morph_from_params = Some(from_params);
-                        self.morph_from_opacities = Some(from_opacities);
+                        use crate::scene::cueing::MorphSnapshot;
 
-                        // Load target preset
+                        // Snapshot current (outgoing) params
+                        self.morph_from = Some(MorphSnapshot::capture(
+                            self.layer_stack
+                                .layers
+                                .iter()
+                                .map(|l| (&l.param_store.values, l.opacity)),
+                        ));
+
+                        // Load target preset. The cue-aware load applies the
+                        // cue's param_overrides before the `to` snapshot below,
+                        // so the morph lands ON the overridden values rather
+                        // than the preset's saved ones.
                         if let Some(cue) = self.timeline.cues.get(to_cue) {
                             let preset_name = cue.preset_name.clone();
                             let preset_idx = self
@@ -3817,21 +3867,17 @@ impl App {
                                 .iter()
                                 .position(|(name, _)| name == &preset_name);
                             if let Some(idx) = preset_idx {
-                                self.load_preset(idx);
+                                self.load_preset_for_cue(idx, to_cue);
                             }
                         }
 
                         // Snapshot target (incoming) params after preset load
-                        let to_params: Vec<std::collections::HashMap<String, ParamValue>> = self
-                            .layer_stack
-                            .layers
-                            .iter()
-                            .map(|l| l.param_store.values.clone())
-                            .collect();
-                        let to_opacities: Vec<f32> =
-                            self.layer_stack.layers.iter().map(|l| l.opacity).collect();
-                        self.morph_to_params = Some(to_params);
-                        self.morph_to_opacities = Some(to_opacities);
+                        self.morph_to = Some(MorphSnapshot::capture(
+                            self.layer_stack
+                                .layers
+                                .iter()
+                                .map(|l| (&l.param_store.values, l.opacity)),
+                        ));
                     }
                     crate::scene::types::TransitionType::Cut => {
                         // Handled by LoadCue
@@ -3844,46 +3890,28 @@ impl App {
             }
             TimelineEvent::TransitionComplete { cue_index: _ } => {
                 // Clear morph state
-                self.morph_from_params = None;
-                self.morph_to_params = None;
-                self.morph_from_opacities = None;
-                self.morph_to_opacities = None;
+                self.morph_from = None;
+                self.morph_to = None;
             }
         }
     }
 
-    /// Apply morph interpolation between saved from/to param snapshots.
+    /// Apply morph interpolation between saved from/to snapshots. The math
+    /// lives in `scene::cueing` so the headless renderer runs the identical
+    /// interpolation.
     fn apply_morph_interpolation(&mut self, progress: f32) {
-        let from_params = match &self.morph_from_params {
-            Some(p) => p,
-            None => return,
+        let (Some(from), Some(to)) = (&self.morph_from, &self.morph_to) else {
+            return;
         };
-        let to_params = match &self.morph_to_params {
-            Some(p) => p,
-            None => return,
-        };
-
-        for (i, layer) in self.layer_stack.layers.iter_mut().enumerate() {
-            // Interpolate params using saved from/to snapshots
-            if let (Some(from_layer), Some(to_layer)) = (from_params.get(i), to_params.get(i)) {
-                for (name, to_val) in to_layer {
-                    if let Some(from_val) = from_layer.get(name) {
-                        let interpolated = from_val.lerp(to_val, progress);
-                        layer.param_store.set(name, interpolated);
-                    }
-                }
-            }
-
-            // Interpolate opacity using saved from/to snapshots
-            if let (Some(from_op), Some(to_op)) = (
-                self.morph_from_opacities.as_ref(),
-                self.morph_to_opacities.as_ref(),
-            ) {
-                if let (Some(&from_o), Some(&to_o)) = (from_op.get(i), to_op.get(i)) {
-                    layer.opacity = from_o + (to_o - from_o) * progress;
-                }
-            }
-        }
+        crate::scene::cueing::apply_morph(
+            from,
+            to,
+            progress,
+            self.layer_stack
+                .layers
+                .iter_mut()
+                .map(|l| (&mut l.param_store, &mut l.opacity)),
+        );
     }
 
     /// Build SceneInfo snapshot for UI.
@@ -4009,15 +4037,16 @@ impl App {
         // Dissolve capture: on the first frame of a dissolve, capture outgoing then load incoming.
         // We must: (1) capture the snapshot from this frame's render, (2) submit those commands,
         // (3) load the new preset (mutates self), (4) re-render layers for the incoming scene.
-        if let Some(preset_idx) = self.dissolve_capture_pending.take() {
+        if let Some((preset_idx, cue_idx)) = self.dissolve_capture_pending.take() {
             if let Some(ref mut tr) = self.transition_renderer {
                 tr.capture_snapshot(&self.gpu.device, &self.gpu.queue, &mut encoder, source);
             }
             // Submit capture commands so snapshot texture is filled
             self.gpu.queue.submit(std::iter::once(encoder.finish()));
 
-            // Load the incoming preset (needs &mut self, no outstanding borrows now)
-            self.load_preset(preset_idx);
+            // Load the incoming preset (needs &mut self, no outstanding borrows
+            // now). Cue-aware so the cue's param_overrides land on it.
+            self.load_preset_for_cue(preset_idx, cue_idx);
 
             // Create fresh encoder and re-render layers for crossfade
             encoder = self
