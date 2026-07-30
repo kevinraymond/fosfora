@@ -494,7 +494,8 @@ fn check_target(
 fn check_scene(
     file_name: &str,
     scene: &SceneSet,
-    preset_names: &BTreeSet<String>,
+    presets: &[(String, Preset)],
+    effects: &EffectTable,
     report: &mut Report,
 ) {
     if scene.name.trim().is_empty() {
@@ -508,7 +509,8 @@ fn check_scene(
     for (i, cue) in scene.cues.iter().enumerate() {
         let where_ = format!("{file_name} cue {i} ('{}')", cue.preset_name);
 
-        if !preset_names.contains(&cue.preset_name) {
+        let preset = presets.iter().find(|(n, _)| n == &cue.preset_name);
+        if preset.is_none() {
             report.bad(
                 &where_,
                 format!(
@@ -516,6 +518,44 @@ fn check_scene(
                     cue.preset_name
                 ),
             );
+        }
+
+        // param_overrides is a per-layer Vec, positional: entry 0 overrides layer
+        // 0. Nothing checks its length against the preset, and an override on a
+        // param the effect does not have is dropped like any other unknown key —
+        // so a generator varying one look across cues can silently do nothing.
+        if let Some((_, preset)) = preset {
+            if cue.param_overrides.len() > preset.layers.len() {
+                report.bad(
+                    &where_,
+                    format!(
+                        "param_overrides has {} entries but '{}' has {} layer(s); the extra \
+                         entries apply to no layer",
+                        cue.param_overrides.len(),
+                        cue.preset_name,
+                        preset.layers.len()
+                    ),
+                );
+            }
+            for (layer_idx, overrides) in cue.param_overrides.iter().enumerate() {
+                let Some(layer) = preset.layers.get(layer_idx) else {
+                    continue;
+                };
+                for (param, value) in overrides {
+                    let at = format!("{where_} param_overrides[{layer_idx}] '{param}'");
+                    match effects.param(&layer.effect_name, param) {
+                        Some(def) => check_param_value(&at, def, value, report),
+                        None => report.bad(
+                            &at,
+                            format!(
+                                "layer {layer_idx} runs '{}', which has no param '{param}' — \
+                                 the override is dropped",
+                                layer.effect_name
+                            ),
+                        ),
+                    }
+                }
+            }
         }
         // The one that costs a whole show: under Timer, timeline.rs only arms a
         // timer when hold_secs is Some. A None cue holds forever.
@@ -533,15 +573,21 @@ fn check_scene(
         }
     }
 
-    // Adjacent cues that put the same effect on the same layer index hit the
-    // already-loaded morph-safe skip, which carries particle and obstacle state
-    // across what should be a cut.
+    // Two cues in a row on the same preset change nothing at the boundary —
+    // *unless* the second varies it with param_overrides, which is the intended
+    // way to give one look several intensities. A song whose structure repeats an
+    // identity across consecutive sections (very common) authors exactly that, so
+    // only flag the genuinely inert case.
     for (i, pair) in scene.cues.windows(2).enumerate() {
-        if pair[0].preset_name == pair[1].preset_name {
+        if pair[0].preset_name == pair[1].preset_name
+            && pair[1].param_overrides.iter().all(|layer| layer.is_empty())
+        {
             report.bad(
                 format!("{file_name} cues {i}-{}", i + 1),
                 format!(
-                    "both name preset '{}'; the second is a no-op transition",
+                    "both name preset '{}' and the second has no param_overrides, so the \
+                     transition changes nothing. Either merge them into one cue with the \
+                     combined hold_secs, or vary the second with param_overrides",
                     pair[0].preset_name
                 ),
             );
@@ -595,8 +641,6 @@ pub fn check_dir(dir: &Path, effects: &[PfxEffect], sources: &BTreeSet<String>) 
         }
     }
 
-    let preset_names: BTreeSet<String> = presets.iter().map(|(n, _)| n.clone()).collect();
-
     for path in entries.iter().filter(|p| is_sidecar(p)) {
         let file_name = path
             .file_name()
@@ -631,7 +675,7 @@ pub fn check_dir(dir: &Path, effects: &[PfxEffect], sources: &BTreeSet<String>) 
         match serde_json::from_str::<SceneSet>(&text) {
             Ok(scene) => {
                 report.cues_checked += scene.cues.len();
-                check_scene(file_name, &scene, &preset_names, &mut report);
+                check_scene(file_name, &scene, &presets, &table, &mut report);
             }
             Err(e) => report.bad(file_name, format!("does not parse: {e}")),
         }
@@ -915,6 +959,97 @@ mod tests {
                    "media_path":"/nope/definitely-not-here.mp4"}],"active_layer":0}"#,
             )],
             "does not exist",
+        );
+    }
+
+    /// A song whose structure repeats an identity across consecutive sections is
+    /// the normal case, not an edge case — the track this was first run against
+    /// has three B sections in a row at descending energy. The right authoring is
+    /// one preset varied per cue, so this must pass.
+    #[test]
+    fn repeated_preset_with_param_overrides_is_fine() {
+        let report = run_on(&[
+            ("P.json", &good_preset()),
+            (
+                "_scene.json",
+                r#"{"version":1,"name":"S","advance_mode":"Timer","cues":[
+                     {"preset_name":"P","hold_secs":30.0},
+                     {"preset_name":"P","hold_secs":15.0,
+                      "param_overrides":[{"curtain_speed":{"Float":0.8}}]}]}"#,
+            ),
+        ]);
+        assert!(
+            report.is_clean(),
+            "a repeated preset varied by param_overrides is the intended way to \
+             rank recurrences: {:#?}",
+            report
+                .problems
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The genuinely inert case still has to be caught, or the check above would
+    /// have just deleted the guard rather than narrowed it.
+    #[test]
+    fn repeated_preset_without_param_overrides_is_rejected() {
+        assert_flags(
+            &[
+                ("P.json", &good_preset()),
+                (
+                    "_scene.json",
+                    r#"{"version":1,"name":"S","advance_mode":"Timer","cues":[
+                         {"preset_name":"P","hold_secs":30.0},
+                         {"preset_name":"P","hold_secs":15.0}]}"#,
+                ),
+            ],
+            "the transition changes nothing",
+        );
+    }
+
+    /// param_overrides is a positional per-layer list of free-form param names,
+    /// so it has the same silent-drop behaviour as a preset's own params.
+    #[test]
+    fn bad_param_overrides_are_rejected() {
+        // Unknown param name on the layer's effect.
+        assert_flags(
+            &[
+                ("P.json", &good_preset()),
+                (
+                    "_scene.json",
+                    r#"{"version":1,"name":"S","advance_mode":"Timer","cues":[
+                         {"preset_name":"P","hold_secs":8.0,
+                          "param_overrides":[{"not_a_param":{"Float":0.5}}]}]}"#,
+                ),
+            ],
+            "has no param 'not_a_param'",
+        );
+        // Out of range for the param's declared min..max.
+        assert_flags(
+            &[
+                ("P.json", &good_preset()),
+                (
+                    "_scene.json",
+                    r#"{"version":1,"name":"S","advance_mode":"Timer","cues":[
+                         {"preset_name":"P","hold_secs":8.0,
+                          "param_overrides":[{"curtain_speed":{"Float":9.0}}]}]}"#,
+                ),
+            ],
+            "outside the declared range",
+        );
+        // More override groups than the preset has layers.
+        assert_flags(
+            &[
+                ("P.json", &good_preset()),
+                (
+                    "_scene.json",
+                    r#"{"version":1,"name":"S","advance_mode":"Timer","cues":[
+                         {"preset_name":"P","hold_secs":8.0,
+                          "param_overrides":[{},{},{"curtain_speed":{"Float":0.5}}]}]}"#,
+                ),
+            ],
+            "the extra entries apply to no layer",
         );
     }
 
