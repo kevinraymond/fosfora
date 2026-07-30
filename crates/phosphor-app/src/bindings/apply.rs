@@ -281,3 +281,30 @@ pub(crate) fn apply_param_binding(
         _ => {}
     }
 }
+
+/// Upgrade the pre-#1792 indexless `param.{effect}.{param}` form now that we
+/// know which layer runs that effect. Was a splitn(3) on the raw string, which
+/// could not tell a 3-part target from a 4-part one whose param name happened
+/// to contain a dot; the parse settles that at load. Shared by the app's
+/// preset load and the headless renderer's.
+pub(crate) fn upgrade_legacy_targets(
+    bus: &mut crate::bindings::bus::BindingBus,
+    preset: &crate::preset::Preset,
+) {
+    for binding in &mut bus.bindings {
+        if binding.scope != crate::bindings::types::BindingScope::Preset {
+            continue;
+        }
+        if let crate::bindings::types::BindingTarget::LegacyParam { effect, param } =
+            &binding.target
+        {
+            if let Some(idx) = preset.layers.iter().position(|l| &l.effect_name == effect) {
+                binding.target = crate::bindings::types::BindingTarget::Param {
+                    layer: idx,
+                    effect: effect.clone(),
+                    param: param.clone(),
+                };
+            }
+        }
+    }
+}

@@ -85,6 +85,59 @@ impl BindingBus {
         }
     }
 
+    /// A bus that starts EMPTY instead of loading the operator's global
+    /// bindings from the config dir. The headless renderer judges a scene on
+    /// its own sidecars only — inheriting whatever global bindings happen to be
+    /// on this machine would make the same scene render differently per host.
+    #[cfg(feature = "analyze")]
+    pub(crate) fn new_isolated() -> Self {
+        Self {
+            bindings: Vec::new(),
+            runtimes: HashMap::new(),
+            ws_bind_values: HashMap::new(),
+            ws_preview_images: HashMap::new(),
+            ws_field_last_seen: HashMap::new(),
+            next_id_counter: 1,
+            dirty: false,
+            dirty_since: None,
+            preset_scope_dirty: false,
+            learn_target: None,
+            last_snapshot: HashMap::new(),
+            pending_triggers: Vec::new(),
+        }
+    }
+
+    /// Evaluate against audio-derived sources only — no MIDI enumeration, no
+    /// UDP socket, no WebSocket state. The offline replay's per-hop entry.
+    #[cfg(feature = "analyze")]
+    pub(crate) fn evaluate_offline(
+        &mut self,
+        audio: Option<&AudioFeatures>,
+        mel: &[f32],
+        dmfcc: &[f32; 13],
+    ) -> Vec<BindingOutput> {
+        let mut snapshot = HashMap::with_capacity(128);
+        if let Some(features) = audio {
+            snapshot.extend(sources::collect_audio(features));
+        }
+        if !mel.is_empty() {
+            snapshot.extend(sources::collect_mel_bands(mel));
+        }
+        snapshot.extend(sources::collect_dmfcc_bands(dmfcc));
+        self.evaluate_snapshot(snapshot)
+    }
+
+    /// Load preset-scoped bindings from an explicit sidecar path rather than
+    /// the config dir — the headless renderer reads a scene directory, and
+    /// setting XDG_CONFIG_HOME process-wide would also redirect settings and
+    /// caches. A missing file simply clears the preset scope, matching how a
+    /// preset without a sidecar loads live.
+    #[cfg(feature = "analyze")]
+    pub(crate) fn load_preset_bindings_from(&mut self, sidecar_path: &std::path::Path) {
+        self.bindings.retain(|b| b.scope != BindingScope::Preset);
+        self.merge_preset_bindings(persistence::load_from_path(&sidecar_path.to_path_buf()));
+    }
+
     /// Create a new binding with default settings.
     pub fn add_binding(
         &mut self,
@@ -321,9 +374,10 @@ impl BindingBus {
     }
 
     /// Core per-frame evaluation against a prebuilt source snapshot. Split from
-    /// `evaluate` so tests can drive it without `MidiSystem`/`OscSystem`, whose
-    /// constructors touch config files, MIDI ports, and UDP sockets.
-    fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> Vec<BindingOutput> {
+    /// `evaluate` so tests — and the headless renderer's `evaluate_offline` —
+    /// can drive it without `MidiSystem`/`OscSystem`, whose constructors touch
+    /// config files, MIDI ports, and UDP sockets.
+    pub(crate) fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> Vec<BindingOutput> {
         if self.bindings.is_empty() {
             self.last_snapshot = snapshot;
             return Vec::new();

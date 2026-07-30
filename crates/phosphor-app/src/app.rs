@@ -2182,26 +2182,7 @@ impl App {
         self.binding_bus.load_preset_bindings(&preset_name);
         // Freshly loaded bindings match disk — clear any stale unsaved flag.
         self.binding_bus.preset_scope_dirty = false;
-        for binding in &mut self.binding_bus.bindings {
-            if binding.scope != crate::bindings::types::BindingScope::Preset {
-                continue;
-            }
-            // Upgrade the pre-#1792 indexless form now that we know which
-            // layer runs that effect. Was a splitn(3) on the raw string, which
-            // could not tell a 3-part target from a 4-part one whose param name
-            // happened to contain a dot; the parse settles that at load.
-            if let crate::bindings::types::BindingTarget::LegacyParam { effect, param } =
-                &binding.target
-            {
-                if let Some(idx) = preset.layers.iter().position(|l| &l.effect_name == effect) {
-                    binding.target = crate::bindings::types::BindingTarget::Param {
-                        layer: idx,
-                        effect: effect.clone(),
-                        param: param.clone(),
-                    };
-                }
-            }
-        }
+        crate::bindings::apply::upgrade_legacy_targets(&mut self.binding_bus, &preset);
 
         // Scan for media layers that need decoding (skip locked, skip missing files)
         let mut media_jobs: Vec<(usize, std::path::PathBuf)> = Vec::new();

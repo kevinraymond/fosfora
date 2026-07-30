@@ -51,7 +51,7 @@ pub fn save_preset(name: &str, bindings: &[Binding]) {
     save_to_path(&preset_path(name), bindings);
 }
 
-fn load_from_path(path: &PathBuf) -> Vec<Binding> {
+pub(crate) fn load_from_path(path: &PathBuf) -> Vec<Binding> {
     match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<BindingsFile>(&contents) {
             Ok(file) => {

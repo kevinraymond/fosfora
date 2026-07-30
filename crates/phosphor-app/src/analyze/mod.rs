@@ -72,9 +72,15 @@ pub fn analyze_file(path: &Path) -> Result<HopStream> {
     Ok(drive(&audio))
 }
 
-/// Drive [`HopAnalyzer`] over decoded audio. Split out so tests can feed synthetic signal
-/// without touching the filesystem.
-pub fn drive(audio: &decode::DecodedAudio) -> HopStream {
+/// Drive [`HopAnalyzer`] over decoded audio, handing every complete hop's full
+/// [`crate::audio::hop::HopOutput`] to `f`. The offline scene renderer consumes
+/// this directly — `HopOutput` carries `frame.mel`/`spectrum`/`dmfcc`, which
+/// [`HopStream`] deliberately drops — while [`drive`] remains the analysis
+/// entry point. One implementation of the mono fold and the sample clock.
+pub fn drive_with(
+    audio: &decode::DecodedAudio,
+    mut f: impl FnMut(usize, f64, &crate::audio::hop::HopOutput),
+) {
     let sample_rate = audio.sample_rate;
     // Defaults throughout: this is a measurement tool, so it must not inherit whatever the
     // operator happens to have left in the UI. The band scale matters — `Db` is the shipped
@@ -84,8 +90,28 @@ pub fn drive(audio: &decode::DecodedAudio) -> HopStream {
     let tempo_cfg = TempoConfig::default();
 
     let hops = audio.frames() / ANALYSIS_HOP;
+    let mut mono = vec![0.0f32; ANALYSIS_HOP];
+    for h in 0..hops {
+        let base = h * ANALYSIS_HOP;
+        let stereo = &audio.interleaved[base * 2..(base + ANALYSIS_HOP) * 2];
+        // Same mono fold the audio thread applies to the capture ring.
+        for (m, s) in mono.iter_mut().zip(stereo.chunks_exact(2)) {
+            *m = (s[0] + s[1]) * 0.5;
+        }
+        // Identical to `audio_thread`'s sample clock: hops are exactly ANALYSIS_HOP apart.
+        let timestamp = ((base + ANALYSIS_HOP) as f64) / f64::from(sample_rate);
+
+        let o = analyzer.process_hop(&mono, stereo, timestamp, struct_cfg, tempo_cfg, Vec::new());
+        f(h, timestamp, &o);
+    }
+}
+
+/// Drive [`HopAnalyzer`] over decoded audio into a [`HopStream`]. Split out so
+/// tests can feed synthetic signal without touching the filesystem.
+pub fn drive(audio: &decode::DecodedAudio) -> HopStream {
+    let hops = audio.frames() / ANALYSIS_HOP;
     let mut out = HopStream {
-        sample_rate,
+        sample_rate: audio.sample_rate,
         source_channels: audio.source_channels,
         duration_secs: audio.duration_secs(),
         timestamps: Vec::with_capacity(hops),
@@ -95,20 +121,7 @@ pub fn drive(audio: &decode::DecodedAudio) -> HopStream {
         downbeats: Vec::new(),
         drops: Vec::new(),
     };
-
-    let mut mono = vec![0.0f32; ANALYSIS_HOP];
-    for h in 0..hops {
-        let base = h * ANALYSIS_HOP;
-        let stereo = &audio.interleaved[base * 2..(base + ANALYSIS_HOP) * 2];
-        // Same mono fold the audio thread applies to the capture ring.
-        for (m, f) in mono.iter_mut().zip(stereo.chunks_exact(2)) {
-            *m = (f[0] + f[1]) * 0.5;
-        }
-        // Identical to `audio_thread`'s sample clock: hops are exactly ANALYSIS_HOP apart.
-        let timestamp = ((base + ANALYSIS_HOP) as f64) / f64::from(sample_rate);
-
-        let o = analyzer.process_hop(&mono, stereo, timestamp, struct_cfg, tempo_cfg, Vec::new());
-
+    drive_with(audio, |h, timestamp, o| {
         if o.beat_fired {
             out.beats.push(h);
         }
@@ -121,7 +134,7 @@ pub fn drive(audio: &decode::DecodedAudio) -> HopStream {
         out.timestamps.push(timestamp);
         out.live.push(o.frame.features);
         out.raw.push(o.pre_norm);
-    }
+    });
     out
 }
 

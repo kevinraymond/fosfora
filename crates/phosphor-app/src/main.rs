@@ -8,6 +8,8 @@ mod depth;
 mod download;
 mod effect;
 mod gpu;
+#[cfg(feature = "analyze")]
+mod headless;
 mod media;
 mod midi;
 #[cfg(feature = "ndi")]
@@ -3753,6 +3755,60 @@ fn main() -> Result<()> {
                 .map(std::path::PathBuf::from);
             let written = crate::analyze::schema_dump::run(out.as_deref())?;
             println!("{}", written.display());
+            return Ok(());
+        }
+    }
+
+    // --render-scene <dir> --song <file>: render a generated scene headless
+    // against the song's own feature stream, writing stills + audio-muxed clips
+    // (#2027). Needs a GPU but no window, no audio device, no wall clock.
+    #[cfg(feature = "analyze")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--render-scene") {
+            let Some(dir) = args.get(i + 1).filter(|a| !a.starts_with("--")) else {
+                eprintln!(
+                    "--render-scene needs a directory: --render-scene <scene_dir> --song <audio>                      [--out <dir>] [--res WxH] [--quality low|medium|high] [--window-secs N]"
+                );
+                std::process::exit(2);
+            };
+            let flag = |name: &str| {
+                args.iter()
+                    .position(|a| a == name)
+                    .and_then(|j| args.get(j + 1))
+                    .cloned()
+            };
+            let Some(song) = flag("--song") else {
+                eprintln!("--render-scene needs --song <audio file>");
+                std::process::exit(2);
+            };
+            let out = flag("--out")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from(dir).join("_render"));
+            let (width, height) = flag("--res")
+                .and_then(|r| {
+                    let (w, h) = r.split_once('x')?;
+                    Some((w.parse().ok()?, h.parse().ok()?))
+                })
+                .unwrap_or((640, 360));
+            let quality = match flag("--quality").as_deref() {
+                Some("low") => crate::settings::ParticleQuality::Low,
+                Some("high") => crate::settings::ParticleQuality::High,
+                _ => crate::settings::ParticleQuality::Medium,
+            };
+            let window_secs = flag("--window-secs")
+                .and_then(|w| w.parse().ok())
+                .unwrap_or(6.0);
+            let render_args = crate::headless::driver::RenderSceneArgs {
+                scene_dir: std::path::PathBuf::from(dir),
+                song: std::path::PathBuf::from(song),
+                out,
+                width,
+                height,
+                quality,
+                window_secs,
+            };
+            crate::headless::driver::run(&render_args)?;
             return Ok(());
         }
     }
