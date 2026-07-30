@@ -999,24 +999,11 @@ mod tests {
         // Crucible layer 7 and Spectral Eye layer 2 shipped for months pointing at
         // "Swarm", deleted in a42c6cb. Nothing caught it: apply_preset_immediately
         // only warned, and the layer kept whatever effect was loaded before it.
-        //
-        // CARGO_MANIFEST_DIR, not assets_dir(): that resolves CWD-relative, and
-        // `cargo test` runs with CWD = crates/phosphor-app, which has no assets/.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
-        let shipped: std::collections::HashSet<String> = std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .filter_map(|j| serde_json::from_str::<crate::effect::format::PfxEffect>(&j).ok())
-            .map(|p| p.name)
-            .collect();
-        assert!(
-            !shipped.is_empty(),
-            "no .pfx files found in {}",
-            dir.display()
-        );
+        let shipped: std::collections::HashSet<String> =
+            crate::effect::loader::shipped_effects_for_test()
+                .into_iter()
+                .map(|p| p.name)
+                .collect();
 
         for &(preset_name, json) in BUILTIN_PRESETS {
             let preset: Preset = serde_json::from_str(json).unwrap();
@@ -1039,15 +1026,7 @@ mod tests {
         // The other half of the Swarm fallout: ParamStore::set does NOT clamp to the
         // declared range (params/store.rs), so a stale value reaches the shader out of
         // bounds. Crucible's trail_decay was 0.98, above Array's max of 0.96.
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
-        let effects: Vec<crate::effect::format::PfxEffect> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .filter_map(|j| serde_json::from_str(&j).ok())
-            .collect();
+        let effects = crate::effect::loader::shipped_effects_for_test();
 
         for &(preset_name, json) in BUILTIN_PRESETS {
             let preset: Preset = serde_json::from_str(json).unwrap();

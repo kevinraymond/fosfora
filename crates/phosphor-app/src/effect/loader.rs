@@ -6,6 +6,31 @@ use anyhow::Result;
 use super::format::PfxEffect;
 
 /// Resolve the assets directory once (CWD-relative → exe-relative → macOS bundle).
+/// The shipped `.pfx` effects, for tests that need the real effect table.
+///
+/// `CARGO_MANIFEST_DIR`, not [`assets_dir`]: that resolves CWD-relative and
+/// `cargo test` runs with CWD = `crates/phosphor-app`, which has no `assets/`.
+/// `preset/store.rs`, `bindings/templates.rs` and `gpu/pass_executor.rs` each
+/// grew their own copy of this walk before it lived here.
+#[cfg(test)]
+pub fn shipped_effects_for_test() -> Vec<PfxEffect> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
+    let effects: Vec<PfxEffect> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|j| serde_json::from_str::<PfxEffect>(&j).ok())
+        .collect();
+    assert!(
+        !effects.is_empty(),
+        "no .pfx files parsed from {}",
+        dir.display()
+    );
+    effects
+}
+
 pub fn assets_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {

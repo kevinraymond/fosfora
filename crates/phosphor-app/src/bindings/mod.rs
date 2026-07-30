@@ -1,4 +1,5 @@
 pub mod bus;
+pub mod catalog;
 pub mod migration;
 pub mod persistence;
 pub mod sources;

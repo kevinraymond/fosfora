@@ -18,6 +18,19 @@ pub enum LayerField {
 }
 
 impl LayerField {
+    /// Every variant, so callers that need to enumerate the set (the target
+    /// catalog, the schema dump) cannot silently miss one: adding a variant
+    /// changes the array length and breaks the build here.
+    ///
+    /// Gated with the catalog that reads it — see `bindings/catalog.rs`.
+    #[cfg(any(feature = "analyze", test))]
+    pub const ALL: [LayerField; 4] = [
+        LayerField::Opacity,
+        LayerField::Blend,
+        LayerField::Displace,
+        LayerField::Enabled,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             LayerField::Opacity => "opacity",
@@ -27,7 +40,7 @@ impl LayerField {
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "opacity" => LayerField::Opacity,
             "blend" => LayerField::Blend,

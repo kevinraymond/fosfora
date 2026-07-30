@@ -12,7 +12,9 @@
 
 pub mod decode;
 pub mod report;
+pub mod schema_dump;
 pub mod structure_offline;
+pub mod validate;
 
 use std::path::{Path, PathBuf};
 

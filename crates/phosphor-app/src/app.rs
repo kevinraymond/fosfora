@@ -2158,7 +2158,13 @@ impl App {
     /// Add a new empty layer with the default shader.
     pub fn add_layer(&mut self) {
         let num = self.layer_stack.layers.len();
-        if num >= 8 {
+        if num >= crate::bindings::catalog::MAX_LAYERS {
+            // Deliberately quiet for the UI's "+" button, which is already
+            // disabled at the cap. It is not quiet enough for
+            // `apply_preset_immediately`, which builds a preset's layers by
+            // calling this in a loop: an over-tall preset loads with the extras
+            // dropped and nothing said. Offline validation catches that before
+            // the file gets here.
             return;
         }
         let name = format!("Layer {}", num + 1);
@@ -2235,8 +2241,11 @@ impl App {
     /// Add a new media layer from a file path.
     pub fn add_media_layer(&mut self, path: std::path::PathBuf) {
         let num = self.layer_stack.layers.len();
-        if num >= 8 {
-            log::warn!("Maximum 8 layers reached");
+        if num >= crate::bindings::catalog::MAX_LAYERS {
+            log::warn!(
+                "Maximum {} layers reached",
+                crate::bindings::catalog::MAX_LAYERS
+            );
             return;
         }
 
@@ -2272,8 +2281,11 @@ impl App {
     #[cfg(feature = "webcam")]
     pub fn add_webcam_layer(&mut self, device_index: u32) {
         let num = self.layer_stack.layers.len();
-        if num >= 8 {
-            log::warn!("Maximum 8 layers reached");
+        if num >= crate::bindings::catalog::MAX_LAYERS {
+            log::warn!(
+                "Maximum {} layers reached",
+                crate::bindings::catalog::MAX_LAYERS
+            );
             return;
         }
 

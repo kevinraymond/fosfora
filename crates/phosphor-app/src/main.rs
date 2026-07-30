@@ -3739,6 +3739,56 @@ fn main() -> Result<()> {
         }
     }
 
+    // --dump-schema: what this build can be told to do, as JSON (#2027). Same
+    // no-GPU early exit as --analyze. The scene generator reads this instead of
+    // carrying its own copy of the effect, source and target vocabulary.
+    #[cfg(feature = "analyze")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--dump-schema") {
+            let out = args
+                .iter()
+                .position(|a| a == "--out")
+                .and_then(|j| args.get(j + 1))
+                .map(std::path::PathBuf::from);
+            let written = crate::analyze::schema_dump::run(out.as_deref())?;
+            println!("{}", written.display());
+            return Ok(());
+        }
+    }
+
+    // --validate <dir>: reject a generated scene before the app loads it (#2027).
+    // Exits 1 on problems so a generator's repair loop can branch on it.
+    #[cfg(feature = "analyze")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--validate") {
+            let Some(dir) = args.get(i + 1).filter(|a| !a.starts_with("--")) else {
+                eprintln!("--validate needs a directory: --validate <dir>");
+                std::process::exit(2);
+            };
+            let report = crate::analyze::validate::run(std::path::Path::new(dir))?;
+            for problem in &report.problems {
+                println!("{problem}");
+            }
+            for note in &report.notes {
+                println!("note: {note}");
+            }
+            println!(
+                "\n{} preset(s), {} binding(s), {} cue(s) checked — {}",
+                report.presets_checked,
+                report.bindings_checked,
+                report.cues_checked,
+                if report.is_clean() {
+                    "clean".to_string()
+                } else {
+                    format!("{} problem(s)", report.problems.len())
+                }
+            );
+            std::process::exit(i32::from(!report.is_clean()));
+        }
+    }
+
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
