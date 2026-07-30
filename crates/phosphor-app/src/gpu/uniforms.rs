@@ -214,6 +214,77 @@ impl UniformBuffer {
     }
 }
 
+/// Mirror every [`AudioFeatures`] field into its shader-uniform slot.
+///
+/// Extracted verbatim from `App::update`'s drain block so the headless scene
+/// renderer (#2027) forwards features identically — a slot missed here is a
+/// shader input that silently stays 0.0 offline while moving live.
+pub fn mirror_audio_features(u: &mut ShaderUniforms, f: &crate::audio::AudioFeatures) {
+    u.sub_bass = f.sub_bass;
+    u.bass = f.bass;
+    u.low_mid = f.low_mid;
+    u.mid = f.mid;
+    u.upper_mid = f.upper_mid;
+    u.presence = f.presence;
+    u.brilliance = f.brilliance;
+    u.rms = f.rms;
+    u.kick = f.kick;
+    u.centroid = f.centroid;
+    u.flux = f.flux;
+    u.flatness = f.flatness;
+    u.rolloff = f.rolloff;
+    u.bandwidth = f.bandwidth;
+    u.zcr = f.zcr;
+    u.onset = f.onset;
+    u.beat = f.beat;
+    u.beat_phase = f.beat_phase;
+    u.bpm = f.bpm;
+    u.beat_strength = f.beat_strength;
+    u.mfcc[..13].copy_from_slice(&f.mfcc);
+    u.mfcc[13..].fill(0.0);
+    u.chroma.copy_from_slice(&f.chroma);
+    u.dominant_chroma = f.dominant_chroma;
+    // Reserved audio features (batched ABI bump #1505) — forwarded now so
+    // each detector's follow-up only has to fill the AudioFeatures field.
+    u.loudness_m = f.loudness_m;
+    u.loudness_s = f.loudness_s;
+    u.loudness_trend = f.loudness_trend;
+    u.key_class = f.key_class;
+    u.key_is_minor = f.key_is_minor;
+    u.key_confidence = f.key_confidence;
+    u.downbeat = f.downbeat;
+    u.bar_phase = f.bar_phase;
+    u.beat_in_bar = f.beat_in_bar;
+    u.pan = f.pan;
+    u.stereo_width = f.stereo_width;
+    u.stereo_corr = f.stereo_corr;
+    // A13b per-band pan (#1801). Slot 7 is padding for the vec4 stride.
+    u.band_pan[0] = f.band_pan_sub_bass;
+    u.band_pan[1] = f.band_pan_bass;
+    u.band_pan[2] = f.band_pan_low_mid;
+    u.band_pan[3] = f.band_pan_mid;
+    u.band_pan[4] = f.band_pan_upper_mid;
+    u.band_pan[5] = f.band_pan_presence;
+    u.band_pan[6] = f.band_pan_brilliance;
+    u.section_novelty = f.section_novelty;
+    u.buildup = f.buildup;
+    u.drop = f.drop;
+    // Reserved audio features (batched ABI bump #1629, "v3").
+    u.percussive_energy = f.percussive_energy;
+    u.harmonic_energy = f.harmonic_energy;
+    u.harmonic_ratio = f.harmonic_ratio;
+    u.pitch = f.pitch;
+    u.pitch_confidence = f.pitch_confidence;
+    u.contrast_0 = f.contrast_0;
+    u.contrast_1 = f.contrast_1;
+    u.contrast_2 = f.contrast_2;
+    u.contrast_3 = f.contrast_3;
+    u.contrast_4 = f.contrast_4;
+    u.contrast_5 = f.contrast_5;
+    u.contrast_mean = f.contrast_mean;
+    u.timbre_flux = f.timbre_flux;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

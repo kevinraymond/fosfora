@@ -145,12 +145,13 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// The `app.rs` source, so the catalog can be checked against the arms it
+    /// The dispatch source, so the catalog can be checked against the arms it
     /// mirrors. A scan rather than a refactor: the alternative is threading a
-    /// `-> bool` "handled" return through three nested matches that write into
-    /// `self`, which is a lot of churn in the hottest dispatch path to prove one
-    /// list is complete.
-    const APP_RS: &str = include_str!("../app.rs");
+    /// `-> bool` "handled" return through three nested matches, which is churn
+    /// in the hottest dispatch path to prove one list is complete. The dispatch
+    /// moved from app.rs to bindings/apply.rs for the headless renderer; this
+    /// include moved with it.
+    const APPLY_RS: &str = include_str!("apply.rs");
     const MAIN_RS: &str = include_str!("../main.rs");
 
     /// Pull the `"leaf" =>` arm names out of one `match rest { .. }` block,
@@ -205,7 +206,7 @@ mod tests {
                 "UNIFORM_TARGETS",
             ),
         ] {
-            let scanned = arms_after(APP_RS, marker);
+            let scanned = arms_after(APPLY_RS, marker);
             assert!(
                 !scanned.is_empty(),
                 "{label}: the arm scan found nothing — the scan itself is broken, \

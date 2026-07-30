@@ -12,6 +12,7 @@ use crate::effect::loader::assets_dir;
 use crate::gpu::audio_textures::{AudioTextures, WAVEFORM_PEEK};
 use crate::gpu::compositor::Compositor;
 use crate::gpu::layer::{EffectLayer, Layer, LayerContent, LayerInfo, LayerStack};
+use crate::gpu::layer_builder::read_default_shader;
 use crate::gpu::particle::ParticleSystem;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
@@ -556,69 +557,7 @@ impl App {
         // Drain audio features
         if let Some(features) = self.audio.latest_features(dt) {
             self.latest_audio = Some(features);
-            self.uniforms.sub_bass = features.sub_bass;
-            self.uniforms.bass = features.bass;
-            self.uniforms.low_mid = features.low_mid;
-            self.uniforms.mid = features.mid;
-            self.uniforms.upper_mid = features.upper_mid;
-            self.uniforms.presence = features.presence;
-            self.uniforms.brilliance = features.brilliance;
-            self.uniforms.rms = features.rms;
-            self.uniforms.kick = features.kick;
-            self.uniforms.centroid = features.centroid;
-            self.uniforms.flux = features.flux;
-            self.uniforms.flatness = features.flatness;
-            self.uniforms.rolloff = features.rolloff;
-            self.uniforms.bandwidth = features.bandwidth;
-            self.uniforms.zcr = features.zcr;
-            self.uniforms.onset = features.onset;
-            self.uniforms.beat = features.beat;
-            self.uniforms.beat_phase = features.beat_phase;
-            self.uniforms.bpm = features.bpm;
-            self.uniforms.beat_strength = features.beat_strength;
-            self.uniforms.mfcc[..13].copy_from_slice(&features.mfcc);
-            self.uniforms.mfcc[13..].fill(0.0);
-            self.uniforms.chroma.copy_from_slice(&features.chroma);
-            self.uniforms.dominant_chroma = features.dominant_chroma;
-            // Reserved audio features (batched ABI bump #1505) — forwarded now so
-            // each detector's follow-up only has to fill the AudioFeatures field.
-            self.uniforms.loudness_m = features.loudness_m;
-            self.uniforms.loudness_s = features.loudness_s;
-            self.uniforms.loudness_trend = features.loudness_trend;
-            self.uniforms.key_class = features.key_class;
-            self.uniforms.key_is_minor = features.key_is_minor;
-            self.uniforms.key_confidence = features.key_confidence;
-            self.uniforms.downbeat = features.downbeat;
-            self.uniforms.bar_phase = features.bar_phase;
-            self.uniforms.beat_in_bar = features.beat_in_bar;
-            self.uniforms.pan = features.pan;
-            self.uniforms.stereo_width = features.stereo_width;
-            self.uniforms.stereo_corr = features.stereo_corr;
-            // A13b per-band pan (#1801). Slot 7 is padding for the vec4 stride.
-            self.uniforms.band_pan[0] = features.band_pan_sub_bass;
-            self.uniforms.band_pan[1] = features.band_pan_bass;
-            self.uniforms.band_pan[2] = features.band_pan_low_mid;
-            self.uniforms.band_pan[3] = features.band_pan_mid;
-            self.uniforms.band_pan[4] = features.band_pan_upper_mid;
-            self.uniforms.band_pan[5] = features.band_pan_presence;
-            self.uniforms.band_pan[6] = features.band_pan_brilliance;
-            self.uniforms.section_novelty = features.section_novelty;
-            self.uniforms.buildup = features.buildup;
-            self.uniforms.drop = features.drop;
-            // Reserved audio features (batched ABI bump #1629, "v3").
-            self.uniforms.percussive_energy = features.percussive_energy;
-            self.uniforms.harmonic_energy = features.harmonic_energy;
-            self.uniforms.harmonic_ratio = features.harmonic_ratio;
-            self.uniforms.pitch = features.pitch;
-            self.uniforms.pitch_confidence = features.pitch_confidence;
-            self.uniforms.contrast_0 = features.contrast_0;
-            self.uniforms.contrast_1 = features.contrast_1;
-            self.uniforms.contrast_2 = features.contrast_2;
-            self.uniforms.contrast_3 = features.contrast_3;
-            self.uniforms.contrast_4 = features.contrast_4;
-            self.uniforms.contrast_5 = features.contrast_5;
-            self.uniforms.contrast_mean = features.contrast_mean;
-            self.uniforms.timbre_flux = features.timbre_flux;
+            crate::gpu::uniforms::mirror_audio_features(&mut self.uniforms, &features);
         }
 
         // Diagnostic (PHOSPHOR_FRAME_LOG=1): one CSV line per frame covering both
@@ -1250,100 +1189,20 @@ impl App {
             }
         }
 
-        // Update each layer's uniforms from global template + per-layer params
-        let active_layer_idx = self.layer_stack.active_layer;
-        let vol_enabled = self.volumetric_enabled;
-        let vol_params = self.volumetric_params;
-        let vol_hdr = GpuContext::hdr_format();
-        for (layer_idx, layer) in self.layer_stack.layers.iter_mut().enumerate() {
-            if let LayerContent::Effect(ref mut e) = layer.content {
-                e.uniforms = self.uniforms;
-                e.uniforms.params = layer.param_store.pack_to_buffer();
-
-                // Update particle systems
-                if let Some(ref mut ps) = e.pass_executor.particle_system {
-                    ps.update_uniforms(
-                        dt,
-                        self.uniforms.time,
-                        self.uniforms.resolution,
-                        self.uniforms.beat,
-                    );
-                    // Forward first 8 effect params to compute shader
-                    let p = e.uniforms.params;
-                    ps.uniforms.effect_params = [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]];
-                    // Advance obstacle video playback
-                    if ps.obstacle_source == "video" {
-                        ps.advance_obstacle_video(&self.gpu.device, &self.gpu.queue, dt as f64);
-                    }
-                    // Pack obstacle collision uniforms
-                    ps.uniforms.obstacle_enabled = if ps.obstacle_enabled { 1.0 } else { 0.0 };
-                    ps.uniforms.obstacle_threshold = ps.obstacle_threshold;
-                    ps.uniforms.obstacle_mode = ps.obstacle_mode as u32;
-                    ps.uniforms.obstacle_elasticity = ps.obstacle_elasticity;
-                    ps.uniforms.obstacle_fit = ps.obstacle_fit as u32;
-                    let audio = self.latest_audio.unwrap_or_default();
-                    ps.update_audio(&audio);
-                    // Re-raster the 3D-model obstacle depth for this frame
-                    // (#1851). Submitted here in update(), before the particle
-                    // compute pass samples the obstacle in render().
-                    if ps.obstacle_source == "model" {
-                        ps.render_obstacle_model(&self.gpu.device, &self.gpu.queue, &audio, dt);
-                    }
-                    // Reconcile the obstacle water sim (#1851) before dispatch.
-                    ps.sync_water(&self.gpu.device, &self.gpu.queue);
-                    // Reconcile the obstacle fluid sim (#1939) after water, so the
-                    // solver can fold pooled water into its solid mask.
-                    ps.sync_fluid(&self.gpu.device, &self.gpu.queue);
-                    // Splat (#1800): camera params ride slots 8–11 and roundness
-                    // slot 12 (only 0–7 reach the sim); advance the CPU
-                    // orbit/envelope driver with this frame's dt + audio (no-op
-                    // for non-splat).
-                    ps.splat_ui_params = [p[8], p[9], p[10], p[11], p[12]];
-                    ps.update_splat_driver();
-
-                    // Helix (#1802): the ribbon has no sim shader, so its twelve
-                    // performance knobs ride slots 0–11 and are applied CPU-side.
-                    // They live in `inputs` rather than the contextual panel
-                    // precisely so they reach the binding bus — a panel's state
-                    // never does.
-                    if ps.helix_enabled {
-                        let ui: [f32; crate::gpu::helix::HELIX_PARAM_NAMES.len()] = [
-                            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10],
-                            p[11],
-                        ];
-                        ps.helix_params.apply_ui_params(&ui);
-                    }
-
-                    // Volumetric mode (R3): apply the global toggle to the active
-                    // particle layer only (V1); lazily build the renderer on enable.
-                    let vol_on = vol_enabled && layer_idx == active_layer_idx;
-                    ps.volumetric_enabled = vol_on;
-                    if vol_on {
-                        ps.init_volumetric(&self.gpu.device, vol_hdr);
-                        ps.volumetric_params = vol_params;
-                    }
-
-                    // Symbiosis force matrix management
-                    if let Some(ref mut sym) = ps.symbiosis_state {
-                        // param(0) = num_species (0-1 maps to 2-8)
-                        let ns = (p[0] * 6.0 + 2.0).round() as u32;
-                        sym.set_num_species(ns);
-                        // param(6) = preset (0-1 maps to preset index)
-                        let preset_idx = (p[6]
-                            * (crate::gpu::particle::symbiosis::SymbiosisPreset::count() as f32
-                                - 0.01)) as usize;
-                        sym.set_preset(preset_idx);
-                        sym.update(dt, &audio);
-                        ps.uniforms.force_matrix = sym.active_matrix();
-                    }
-
-                    // Morph state management
-                    if let Some(ref mut morph) = ps.morph_state {
-                        morph.update(dt, audio.beat, audio.dominant_chroma);
-                    }
-                }
-            }
-        }
+        // Update each layer's uniforms from global template + per-layer params.
+        // The body lives in gpu/frame_prep.rs so the headless renderer runs the
+        // identical per-frame preparation.
+        crate::gpu::frame_prep::prepare_effect_layers(
+            &mut self.layer_stack.layers,
+            &self.uniforms,
+            &self.latest_audio.unwrap_or_default(),
+            dt,
+            &self.gpu.device,
+            &self.gpu.queue,
+            self.layer_stack.active_layer,
+            self.volumetric_enabled,
+            self.volumetric_params,
+        );
 
         // Apply completed background shader compilations
         for result in self.shader_compiler.drain_results() {
@@ -1670,284 +1529,6 @@ impl App {
 
     /// Build a ParticleSystem from a ParticleDef, or None if the effect doesn't use particles.
     /// Applies the particle quality multiplier to max_count and emit_rate.
-    fn build_particle_system(
-        &self,
-        particles: &crate::gpu::particle::types::ParticleDef,
-    ) -> Option<ParticleSystem> {
-        let multiplier = self.settings.particle_quality.multiplier();
-        let mut particles = particles.clone();
-        let original_count = particles.max_count;
-        particles.max_count = (particles.max_count as f32 * multiplier).round() as u32;
-        particles.emit_rate *= multiplier;
-
-        // Per-effect cap: don't scale past max_scaled_count if set
-        if particles.max_scaled_count > 0 && particles.max_count > particles.max_scaled_count {
-            let ratio = particles.max_scaled_count as f32 / particles.max_count as f32;
-            particles.max_count = particles.max_scaled_count;
-            particles.emit_rate *= ratio;
-        }
-
-        // Cap particle count to device storage buffer binding limit.
-        // The largest buffer is sorted_particles_buffer = max_particles × 9 × 4 bytes
-        // (3×3 tile coverage in compute rasterizer scatter pass).
-        let max_binding = self.gpu.device.limits().max_storage_buffer_binding_size as u64;
-        let max_from_binding = (max_binding / (9 * 4)) as u32;
-        if particles.max_count > max_from_binding {
-            log::warn!(
-                "Capping particles from {} to {} (storage buffer binding limit {}MB)",
-                particles.max_count,
-                max_from_binding,
-                max_binding / (1024 * 1024),
-            );
-            particles.max_count = max_from_binding;
-            particles.emit_rate = particles.emit_rate.min(max_from_binding as f32);
-        }
-
-        if particles.max_count != original_count {
-            log::info!(
-                "Particle quality {}: {} -> {} particles",
-                self.settings.particle_quality.display_name(),
-                original_count,
-                particles.max_count,
-            );
-        }
-        let particles = &particles;
-
-        let hdr_format = GpuContext::hdr_format();
-        let is_image_emitter = particles.emitter.shape == "image";
-
-        // For image emitters, use the builtin image_scatter compute shader
-        let compute_source = if is_image_emitter && particles.compute_shader.is_empty() {
-            self.effect_loader.prepend_compute_libraries(include_str!(
-                "../../../assets/shaders/builtin/image_scatter.wgsl"
-            ))
-        } else if particles.compute_shader.is_empty() {
-            self.effect_loader.prepend_compute_libraries(include_str!(
-                "../../../assets/shaders/builtin/particle_sim.wgsl"
-            ))
-        } else {
-            match self
-                .effect_loader
-                .load_compute_source(&particles.compute_shader)
-            {
-                Ok(src) => src,
-                Err(e) => {
-                    log::error!(
-                        "Failed to load compute shader '{}': {e}",
-                        particles.compute_shader
-                    );
-                    return None;
-                }
-            }
-        };
-
-        let mut ps = ParticleSystem::new(
-            &self.gpu.device,
-            &self.gpu.queue,
-            hdr_format,
-            particles,
-            &compute_source,
-            particles.interaction,
-        );
-        log::info!("Particle system created: {} particles", particles.max_count);
-
-        // Load model data for image emitters pointed at a 3D model (#1993). The
-        // model is rendered to a frame and sampled by the same code path an image
-        // takes, so it lands in the same aux buffer and every media effect gets it
-        // for free. Checked before `image` and mutually exclusive with it: a .pfx
-        // may carry an image as its fallback, but a model wins when both are set.
-        if is_image_emitter && !particles.emitter.model.is_empty() {
-            let sample_def = particles.image_sample.clone().unwrap_or(
-                crate::gpu::particle::types::ImageSampleDef {
-                    mode: "grid".to_string(),
-                    threshold: 0.1,
-                    scale: 1.0,
-                },
-            );
-            ps.sample_def = sample_def.clone();
-            let model_def = particles.model_sample.clone().unwrap_or_default();
-            let model_path = crate::gpu::particle::model_source::resolve_model_path(
-                assets_dir(),
-                &particles.emitter.model,
-            );
-            match crate::gpu::particle::model_source::sample_model(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &model_path,
-                &sample_def,
-                &model_def,
-                particles.max_count,
-            ) {
-                Ok(aux_data) => {
-                    ps.upload_aux_data(&self.gpu.device, &self.gpu.queue, &aux_data);
-                    ps.store_current_aux(aux_data.clone());
-                    ps.set_source(crate::gpu::particle::ParticleSource::Model {
-                        path: model_path.to_string_lossy().to_string(),
-                    });
-                    ps.model_sample = model_def;
-                    log::info!(
-                        "Loaded model '{}': {} particles",
-                        particles.emitter.model,
-                        aux_data.len()
-                    );
-                }
-                Err(e) => {
-                    log::warn!("Failed to load model '{}': {e}", particles.emitter.model);
-                }
-            }
-        }
-
-        // Load image data for image emitters
-        if is_image_emitter
-            && particles.emitter.model.is_empty()
-            && !particles.emitter.image.is_empty()
-        {
-            let sample_def = particles.image_sample.clone().unwrap_or(
-                crate::gpu::particle::types::ImageSampleDef {
-                    mode: "grid".to_string(),
-                    threshold: 0.1,
-                    scale: 1.0,
-                },
-            );
-            ps.sample_def = sample_def.clone();
-            let image_path = assets_dir().join("images").join(&particles.emitter.image);
-            match crate::gpu::particle::image_source::sample_image(
-                &image_path,
-                &sample_def,
-                particles.max_count,
-            ) {
-                Ok(aux_data) => {
-                    ps.upload_aux_data(&self.gpu.device, &self.gpu.queue, &aux_data);
-                    ps.store_current_aux(aux_data.clone());
-                    ps.set_source(crate::gpu::particle::ParticleSource::Image {
-                        path: image_path.to_string_lossy().to_string(),
-                    });
-                    log::info!(
-                        "Loaded image '{}': {} particles",
-                        particles.emitter.image,
-                        aux_data.len()
-                    );
-                }
-                Err(e) => {
-                    log::warn!("Failed to load image '{}': {e}", particles.emitter.image);
-                }
-            }
-
-            // If a video source is specified, set up video playback
-            #[cfg(feature = "video")]
-            if !particles.emitter.video.is_empty() && particles.emitter.video != "webcam" {
-                let video_path = assets_dir().join("videos").join(&particles.emitter.video);
-                if video_path.exists() {
-                    if crate::media::video::ffmpeg_available() {
-                        match crate::media::video::probe_video(&video_path) {
-                            Ok(meta) => {
-                                match crate::media::video::decode_all_frames(&video_path, &meta) {
-                                    Ok((frames, delays_ms)) => {
-                                        let path_str = video_path.to_string_lossy().to_string();
-                                        ps.set_video_source(
-                                            &self.gpu.queue,
-                                            frames,
-                                            delays_ms,
-                                            path_str,
-                                        );
-                                        log::info!(
-                                            "Particle video source: '{}'",
-                                            particles.emitter.video
-                                        );
-                                    }
-                                    Err(e) => log::warn!(
-                                        "Failed to decode particle video '{}': {e}",
-                                        particles.emitter.video
-                                    ),
-                                }
-                            }
-                            Err(e) => log::warn!(
-                                "Failed to probe particle video '{}': {e}",
-                                particles.emitter.video
-                            ),
-                        }
-                    }
-                }
-            }
-        }
-
-        // Load sprite texture if defined
-        if let Some(ref sprite_def) = particles.sprite {
-            let sprite_path = assets_dir().join("images").join(&sprite_def.texture);
-            match crate::gpu::particle::sprite::SpriteAtlas::load_with_def(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &sprite_path,
-                sprite_def.cols,
-                sprite_def.rows,
-                sprite_def.animated,
-                sprite_def.frames,
-            ) {
-                Ok(atlas) => {
-                    ps.set_sprite(&self.gpu.device, atlas);
-                    log::info!("Loaded sprite atlas: {}", sprite_def.texture);
-                }
-                Err(e) => {
-                    log::warn!("Failed to load sprite '{}': {e}", sprite_def.texture);
-                }
-            }
-        }
-
-        // Set up trail rendering if trail_length specified
-        if particles.trail_length >= 2 {
-            ps.setup_trails(
-                &self.gpu.device,
-                hdr_format,
-                particles.trail_length,
-                particles.trail_width,
-            );
-            log::info!(
-                "Trail rendering enabled: {} points, width {}",
-                particles.trail_length,
-                particles.trail_width
-            );
-        }
-
-        if particles.interaction {
-            log::info!("Spatial hash enabled for particle interaction");
-        }
-
-        // Morph target loading
-        if particles.morph {
-            if let Some(ref targets) = particles.morph_targets {
-                let assets = assets_dir();
-                for (slot, target_def) in targets.iter().take(4).enumerate() {
-                    match crate::gpu::particle::morph::load_morph_target(
-                        target_def,
-                        particles.max_count,
-                        particles.initial_size,
-                        assets,
-                        &self.gpu.device,
-                        &self.gpu.queue,
-                    ) {
-                        Ok(data) => {
-                            log::info!(
-                                "Morph target {}: '{}' ({} particles)",
-                                slot,
-                                target_def.source,
-                                data.len()
-                            );
-                            if let Some(ref mut morph) = ps.morph_state {
-                                morph.load_target(slot as u32, data);
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to load morph target {}: {e}", target_def.source);
-                        }
-                    }
-                }
-                ps.upload_morph_targets(&self.gpu.device, &self.gpu.queue);
-            }
-        }
-
-        Some(ps)
-    }
-
     /// Load an effect on the active layer, as a deliberate user choice —
     /// the effect browser, the next/prev-effect trigger, the web client.
     ///
@@ -1979,26 +1560,24 @@ impl App {
             return;
         }
 
-        let hdr_format = GpuContext::hdr_format();
-        let passes = effect.normalized_passes();
-        if passes.is_empty() {
-            log::error!("Effect '{}' has no shader or passes defined", effect.name);
-            return;
-        }
-
-        // Update spatial hash grid dims for this particle count before building
-        if let Some(ref pd) = effect.particles {
-            if pd.interaction {
-                use crate::gpu::particle::spatial_hash::grid_dims;
-                self.effect_loader.grid_dims = grid_dims(pd.max_count, pd.grid_max);
-            }
-        }
-
-        // Build particle system before borrowing layer mutably (avoids borrow conflict)
-        let particle_system = effect
-            .particles
-            .as_ref()
-            .and_then(|pd| self.build_particle_system(pd));
+        // Build the particle system first (grid-dims prep + quality scaling in
+        // one shared helper), because the splat kick below wants to inspect it
+        // before it moves into the executor.
+        let particle_system = {
+            // Built inline rather than via layer_build_ctx(): that borrows all
+            // of self, and prepare_particles needs effect_loader mutably.
+            let ctx = crate::gpu::layer_builder::LayerBuildCtx {
+                device: &self.gpu.device,
+                queue: &self.gpu.queue,
+                pipeline_cache: self.gpu.pipeline_cache.as_ref(),
+                width: self.gpu.surface_config.width,
+                height: self.gpu.surface_config.height,
+                placeholder: &self.placeholder,
+                audio_textures: &self.audio_textures,
+                particle_quality: self.settings.particle_quality,
+            };
+            crate::gpu::layer_builder::prepare_particles(&ctx, &mut self.effect_loader, &effect)
+        };
 
         // Splat scene load (#1800): kick off the background decode now that
         // the final (quality-scaled) particle budget is known. The effect
@@ -2016,126 +1595,41 @@ impl App {
             }
         }
 
-        // If layer is currently Media, convert to Effect first
         let is_media = self.layer_stack.layers[layer_idx].is_media();
-        if is_media {
-            let uniform_buffer = UniformBuffer::new(&self.gpu.device);
-            let feedback = PingPongTarget::new_cleared(
-                &self.gpu.device,
-                &self.gpu.queue,
-                self.gpu.surface_config.width,
-                self.gpu.surface_config.height,
-                hdr_format,
-                1.0,
-            );
-            // Temporary pipeline — will be replaced by executor_result below
-            let default_source = read_default_shader();
-            if let Ok(pipeline) = ShaderPipeline::new(
-                &self.gpu.device,
-                hdr_format,
-                &default_source,
-                self.gpu.pipeline_cache.as_ref(),
-                0,
-            ) {
-                let pass_executor = PassExecutor::single_pass(
-                    pipeline,
-                    feedback,
-                    &uniform_buffer,
-                    &self.gpu.device,
-                    &self.placeholder,
-                    &self.audio_textures,
-                );
-                self.layer_stack.layers[layer_idx].content =
-                    LayerContent::Effect(Box::new(EffectLayer {
-                        pass_executor,
-                        uniform_buffer,
-                        uniforms: ShaderUniforms::zeroed(),
-                        effect_index: None,
-                        shader_sources: vec![],
-                        shader_error: None,
-                        pending_rebuild: false,
-                    }));
-            }
-        }
-
-        // Need the layer's uniform buffer reference for PassExecutor::new.
-        let LayerContent::Effect(ref eff) = self.layer_stack.layers[layer_idx].content else {
-            return;
+        let result = {
+            let ctx = crate::gpu::layer_builder::LayerBuildCtx {
+                device: &self.gpu.device,
+                queue: &self.gpu.queue,
+                pipeline_cache: self.gpu.pipeline_cache.as_ref(),
+                width: self.gpu.surface_config.width,
+                height: self.gpu.surface_config.height,
+                placeholder: &self.placeholder,
+                audio_textures: &self.audio_textures,
+                particle_quality: self.settings.particle_quality,
+            };
+            crate::gpu::layer_builder::load_effect_into_layer(
+                &ctx,
+                &self.effect_loader,
+                &mut self.layer_stack.layers[layer_idx],
+                layer_idx,
+                &effect,
+                effect_index,
+                particle_system,
+            )
         };
-        let uniform_buffer_ref = &eff.uniform_buffer;
-        let executor_result = PassExecutor::new(
-            &self.gpu.device,
-            hdr_format,
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-            &passes,
-            &self.effect_loader,
-            uniform_buffer_ref,
-            &self.placeholder,
-            &self.audio_textures,
-            &self.gpu.queue,
-            self.gpu.pipeline_cache.as_ref(),
-        );
 
-        match executor_result {
-            Ok(mut executor) => {
-                let layer = &mut self.layer_stack.layers[layer_idx];
-                let LayerContent::Effect(ref mut e) = layer.content else {
-                    return;
-                };
-                executor.set_particle_system(
-                    particle_system,
-                    &self.gpu.device,
-                    &e.uniform_buffer,
-                    &self.placeholder,
-                    &self.audio_textures,
-                );
-                e.pass_executor = executor;
-                layer.param_store.load_from_defs(&effect.inputs);
-                e.shader_error = None;
-                e.pending_rebuild = false;
-                e.effect_index = Some(effect_index);
-                // Apply per-effect postprocess overrides
-                let pp = effect.postprocess.clone().unwrap_or_default();
-                layer.postprocess = pp.clone();
-                // If this is the active layer, update global postprocess
+        match result {
+            Ok(()) => {
+                // If this is the active layer, update global postprocess + grid
+                // selection — UI state, so it stays out of the shared core.
                 if layer_idx == self.layer_stack.active_layer {
-                    self.post_process.enabled = pp.enabled;
+                    self.post_process.enabled =
+                        self.layer_stack.layers[layer_idx].postprocess.enabled;
                     self.effect_loader.current_effect = Some(effect_index);
                 }
-                // Track shader sources for hot-reload
-                e.shader_sources = passes
-                    .iter()
-                    .filter_map(|p| {
-                        self.effect_loader
-                            .load_effect_source_with_inputs(&p.shader, p.input_count())
-                            .ok()
-                    })
-                    .collect();
                 self.shader_watcher.drain_changes();
-                log::info!(
-                    "Layer {}: loaded effect '{}' ({} pass{})",
-                    layer_idx,
-                    effect.name,
-                    passes.len(),
-                    if passes.len() == 1 { "" } else { "es" }
-                );
             }
             Err(e) => {
-                log::error!("Failed to load effect '{}': {e}", effect.name);
-                // The GPU state stays on the previous effect — a broken shader
-                // cannot render. Everything CPU-side moves to the new effect so
-                // the panel, the grid and "Edit Shader" agree with each other,
-                // and `pending_rebuild` records that the two disagree, so shader
-                // hot-reload retries the whole load instead of patching a
-                // pipeline into the previous effect's executor (#1855).
-                let layer = &mut self.layer_stack.layers[layer_idx];
-                if let LayerContent::Effect(ref mut eff) = layer.content {
-                    eff.shader_error = Some(format!("Load error: {e}"));
-                    eff.effect_index = Some(effect_index);
-                    eff.pending_rebuild = true;
-                    layer.param_store.load_from_defs(&effect.inputs);
-                }
                 // Update current_effect so the grid selection reflects the broken effect
                 if layer_idx == self.layer_stack.active_layer {
                     self.effect_loader.current_effect = Some(effect_index);
@@ -2143,6 +1637,7 @@ impl App {
                 // Auto-open the editor so the user can fix the shader. Retries land
                 // here too, so don't re-open a file the editor already shows — that
                 // would reset the user's cursor and scroll on every save.
+                let passes = effect.normalized_passes();
                 if let Some(pass) = passes.first() {
                     let path = self.effect_loader.resolve_shader_path(&pass.shader);
                     let already_open = self.shader_editor.open
@@ -2169,6 +1664,8 @@ impl App {
         if is_media {
             self.cleanup_webcam_if_unused();
         }
+        #[cfg(not(feature = "webcam"))]
+        let _ = is_media;
     }
 
     /// Add a new empty layer with the default shader.
@@ -2184,57 +1681,27 @@ impl App {
             return;
         }
         let name = format!("Layer {}", num + 1);
-        let hdr_format = GpuContext::hdr_format();
-
-        let source = read_default_shader();
-
-        let uniform_buffer = UniformBuffer::new(&self.gpu.device);
-        let feedback = PingPongTarget::new_cleared(
-            &self.gpu.device,
-            &self.gpu.queue,
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-            hdr_format,
-            1.0,
-        );
-
-        match ShaderPipeline::new(
-            &self.gpu.device,
-            hdr_format,
-            &source,
-            self.gpu.pipeline_cache.as_ref(),
-            0,
-        ) {
-            Ok(pipeline) => {
-                let executor = PassExecutor::single_pass(
-                    pipeline,
-                    feedback,
-                    &uniform_buffer,
-                    &self.gpu.device,
-                    &self.placeholder,
-                    &self.audio_textures,
-                );
-
-                self.layer_stack.layers.push(Layer::new_effect(
-                    name,
-                    EffectLayer {
-                        pass_executor: executor,
-                        uniform_buffer,
-                        uniforms: ShaderUniforms::zeroed(),
-                        effect_index: None,
-                        shader_sources: vec![source],
-                        shader_error: None,
-                        pending_rebuild: false,
-                    },
-                    ParamStore::new(),
-                ));
+        let layer = {
+            let ctx = crate::gpu::layer_builder::LayerBuildCtx {
+                device: &self.gpu.device,
+                queue: &self.gpu.queue,
+                pipeline_cache: self.gpu.pipeline_cache.as_ref(),
+                width: self.gpu.surface_config.width,
+                height: self.gpu.surface_config.height,
+                placeholder: &self.placeholder,
+                audio_textures: &self.audio_textures,
+                particle_quality: self.settings.particle_quality,
+            };
+            crate::gpu::layer_builder::new_default_layer(&ctx, name)
+        };
+        match layer {
+            Some(layer) => {
+                self.layer_stack.layers.push(layer);
                 // Select the new layer
                 self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
                 log::info!("Added layer {}", self.layer_stack.layers.len());
             }
-            Err(e) => {
-                log::error!("Failed to create layer: {e}");
-            }
+            None => log::error!("Failed to create layer: default shader pipeline error"),
         }
     }
 
@@ -2497,257 +1964,21 @@ impl App {
     /// every enabled binding. The shape is now decided once, at load, so this is
     /// a match — and a new layer-bearing variant cannot be added without the
     /// compiler pointing here.
+    /// Thin wrapper over [`crate::bindings::apply::apply_binding_target`] —
+    /// the dispatch itself lives there so the headless renderer shares it.
     fn apply_binding_target(
         &mut self,
         target: &crate::bindings::types::BindingTarget,
         value: f32,
         rising: bool,
     ) {
-        use crate::bindings::types::{BindingTarget, LayerField};
-        match target {
-            // Unset is a half-made binding; Unknown is one we did not recognise
-            // and are carrying verbatim rather than discarding.
-            BindingTarget::Unset | BindingTarget::Unknown(_) => {}
-
-            BindingTarget::Param { layer, param, .. } => {
-                self.apply_param_binding(*layer, param, value);
-            }
-
-            // Pre-#1792 form: no index, so it means the ACTIVE layer, and only
-            // when that layer really runs the named effect. `*` matched any.
-            BindingTarget::LegacyParam { effect, param } => {
-                let active = self.layer_stack.active_layer;
-                let matches = effect == "*"
-                    || self
-                        .layer_stack
-                        .active()
-                        .and_then(|l| l.effect_index())
-                        .and_then(|idx| self.effect_loader.effects.get(idx))
-                        .map(|eff| &eff.name == effect)
-                        .unwrap_or(false);
-                if matches {
-                    self.apply_param_binding(active, param, value);
-                }
-            }
-
-            BindingTarget::Layer { layer, field } => {
-                if let Some(l) = self.layer_stack.layers.get_mut(*layer) {
-                    match field {
-                        LayerField::Opacity => l.opacity = value.clamp(0.0, 1.0),
-                        LayerField::Blend => {
-                            use crate::gpu::layer::BlendMode;
-                            // Bus outputs are normalized 0..1 (#1792): spread across
-                            // the 10 color modes instead of rounding to 0|1
-                            // (Normal|Add). The displacement modes are deliberately
-                            // outside the sweep — see BlendMode::from_normalized.
-                            // The raw-integer OSC/WS paths use from_u32 directly.
-                            l.blend_mode = BlendMode::from_normalized(value);
-                        }
-                        LayerField::Displace => l.displace_amount = value.clamp(0.0, 1.0),
-                        LayerField::Enabled => l.enabled = value > 0.5,
-                    }
-                }
-            }
-
-            BindingTarget::GlobalMasterOpacity => {
-                let clamped = value.clamp(0.0, 1.0);
-                for layer in &mut self.layer_stack.layers {
-                    layer.opacity = clamped;
-                }
-            }
-
-            // Edge-triggered (#1791): fire only on the frame the output rises
-            // above 0.5, not every frame a source is held high.
-            BindingTarget::SceneTransport(action) => {
-                if rising && !action.is_empty() {
-                    self.binding_bus
-                        .pending_triggers
-                        .push(format!("scene.transport.{action}"));
-                }
-            }
-
-            BindingTarget::PostFx(rest) => {
-                if let Some(layer) = self.layer_stack.active_mut() {
-                    let rest = rest.as_str();
-                    match rest {
-                        "bloom_threshold" => {
-                            layer.postprocess.bloom_threshold = value * 1.5;
-                        }
-                        "bloom_intensity" => {
-                            layer.postprocess.bloom_intensity = value.clamp(0.0, 1.0);
-                        }
-                        "vignette" => {
-                            layer.postprocess.vignette = value.clamp(0.0, 1.0);
-                        }
-                        "ca_intensity" => {
-                            layer.postprocess.ca_intensity = value.clamp(0.0, 1.0);
-                        }
-                        "grain_intensity" => {
-                            layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
-                        }
-                        "grain_rate" => {
-                            // Hz, not 0..1 like its neighbours — the bus
-                            // delivers normalized, the field is a rate.
-                            layer.postprocess.grain_rate = value.clamp(0.0, 1.0) * 60.0;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // Applies to every layer's particle system.
-            BindingTarget::Particle(rest) => {
-                let v = value.clamp(0.0, 1.0);
-                let rest = rest.as_str();
-                for layer in &mut self.layer_stack.layers {
-                    if let Some(effect) = layer.as_effect_mut() {
-                        if let Some(ps) = effect.pass_executor.particle_system.as_mut() {
-                            match rest {
-                                "emit_rate" => {
-                                    let r = v * 10000.0;
-                                    ps.emit_rate = r;
-                                    ps.def.emit_rate = r;
-                                }
-                                "burst_on_beat" => {
-                                    let r = (v * 2000.0).round() as u32;
-                                    ps.burst_on_beat = r;
-                                    ps.def.burst_on_beat = r;
-                                }
-                                "lifetime" => ps.def.lifetime = 0.5 + v * 29.5,
-                                "speed" => ps.def.initial_speed = v * 2.0,
-                                "size" => {
-                                    ps.def.initial_size = 0.001 + v * 0.099;
-                                }
-                                "drag" => ps.def.drag = 0.8 + v * 0.2,
-                                "turbulence" => ps.def.turbulence = v * 2.0,
-                                "gravity_x" => {
-                                    ps.def.gravity[0] = -2.0 + v * 4.0;
-                                }
-                                "gravity_y" => {
-                                    ps.def.gravity[1] = -2.0 + v * 4.0;
-                                }
-                                "vortex_strength" => {
-                                    ps.def.vortex_strength = -5.0 + v * 10.0;
-                                }
-                                // Obstacle state lives on the system itself, not the
-                                // def (system.rs), so these write ps.* only (#1793).
-                                "obstacle_enabled" => ps.obstacle_enabled = v > 0.5,
-                                "obstacle_mode" => {
-                                    // Bus outputs are normalized 0..1 (#1792): spread
-                                    // across all 4 modes. The raw-integer OSC path
-                                    // uses from_u32 directly.
-                                    ps.obstacle_mode =
-                                        crate::gpu::particle::ObstacleMode::from_normalized(v);
-                                }
-                                "obstacle_threshold" => ps.obstacle_threshold = v,
-                                "obstacle_elasticity" => ps.obstacle_elasticity = v,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Direct shader uniform override.
-            BindingTarget::Uniform(rest) => {
-                let v = value.clamp(0.0, 1.0);
-                let rest = rest.as_str();
-                match rest {
-                    "sub_bass" => self.uniforms.sub_bass = v,
-                    "bass" => self.uniforms.bass = v,
-                    "low_mid" => self.uniforms.low_mid = v,
-                    "mid" => self.uniforms.mid = v,
-                    "upper_mid" => self.uniforms.upper_mid = v,
-                    "presence" => self.uniforms.presence = v,
-                    "brilliance" => self.uniforms.brilliance = v,
-                    "rms" => self.uniforms.rms = v,
-                    "kick" => self.uniforms.kick = v,
-                    "centroid" => self.uniforms.centroid = v,
-                    "flux" => self.uniforms.flux = v,
-                    "flatness" => self.uniforms.flatness = v,
-                    "rolloff" => self.uniforms.rolloff = v,
-                    "bandwidth" => self.uniforms.bandwidth = v,
-                    "zcr" => self.uniforms.zcr = v,
-                    "onset" => self.uniforms.onset = v,
-                    "beat" => self.uniforms.beat = v,
-                    "beat_phase" => self.uniforms.beat_phase = v,
-                    "bpm" => self.uniforms.bpm = v,
-                    "beat_strength" => self.uniforms.beat_strength = v,
-                    "dominant_chroma" => self.uniforms.dominant_chroma = v,
-                    // Reserved audio features (batched ABI bump #1505) — allow
-                    // manual override before their detectors land.
-                    "loudness_m" => self.uniforms.loudness_m = v,
-                    "loudness_s" => self.uniforms.loudness_s = v,
-                    "loudness_trend" => self.uniforms.loudness_trend = v,
-                    "key_class" => self.uniforms.key_class = v,
-                    "key_is_minor" => self.uniforms.key_is_minor = v,
-                    "key_confidence" => self.uniforms.key_confidence = v,
-                    "downbeat" => self.uniforms.downbeat = v,
-                    "bar_phase" => self.uniforms.bar_phase = v,
-                    "beat_in_bar" => self.uniforms.beat_in_bar = v,
-                    "pan" => self.uniforms.pan = v,
-                    "stereo_width" => self.uniforms.stereo_width = v,
-                    "stereo_corr" => self.uniforms.stereo_corr = v,
-                    // A13b per-band pan (#1801).
-                    "band_pan_sub_bass" => self.uniforms.band_pan[0] = v,
-                    "band_pan_bass" => self.uniforms.band_pan[1] = v,
-                    "band_pan_low_mid" => self.uniforms.band_pan[2] = v,
-                    "band_pan_mid" => self.uniforms.band_pan[3] = v,
-                    "band_pan_upper_mid" => self.uniforms.band_pan[4] = v,
-                    "band_pan_presence" => self.uniforms.band_pan[5] = v,
-                    "band_pan_brilliance" => self.uniforms.band_pan[6] = v,
-                    "section_novelty" => self.uniforms.section_novelty = v,
-                    "buildup" => self.uniforms.buildup = v,
-                    "drop" => self.uniforms.drop = v,
-                    // Reserved audio features (batched ABI bump #1629, "v3").
-                    "percussive_energy" => self.uniforms.percussive_energy = v,
-                    "harmonic_energy" => self.uniforms.harmonic_energy = v,
-                    "harmonic_ratio" => self.uniforms.harmonic_ratio = v,
-                    "pitch" => self.uniforms.pitch = v,
-                    "pitch_confidence" => self.uniforms.pitch_confidence = v,
-                    "contrast_0" => self.uniforms.contrast_0 = v,
-                    "contrast_1" => self.uniforms.contrast_1 = v,
-                    "contrast_2" => self.uniforms.contrast_2 = v,
-                    "contrast_3" => self.uniforms.contrast_3 = v,
-                    "contrast_4" => self.uniforms.contrast_4 = v,
-                    "contrast_5" => self.uniforms.contrast_5 = v,
-                    "contrast_mean" => self.uniforms.contrast_mean = v,
-                    "timbre_flux" => self.uniforms.timbre_flux = v,
-                    "feedback_decay" => self.uniforms.feedback_decay = v,
-                    "time" => self.uniforms.time = value, // time not clamped
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    /// Write one normalized value into a layer's param store, scaled to that
-    /// param's declared range.
-    fn apply_param_binding(&mut self, layer_idx: usize, param_name: &str, value: f32) {
-        let Some(layer) = self.layer_stack.layers.get_mut(layer_idx) else {
-            return;
+        let mut ctx = crate::bindings::apply::BindingTargetCtx {
+            layer_stack: &mut self.layer_stack,
+            effects: &self.effect_loader.effects,
+            uniforms: &mut self.uniforms,
+            pending_triggers: &mut self.binding_bus.pending_triggers,
         };
-        let Some(def) = layer
-            .param_store
-            .defs
-            .iter()
-            .find(|d| d.name() == param_name)
-            .cloned()
-        else {
-            return;
-        };
-        match def {
-            crate::params::ParamDef::Float { min, max, .. } => {
-                let val = min + (max - min) * value.clamp(0.0, 1.0);
-                layer.param_store.set(param_name, ParamValue::Float(val));
-            }
-            crate::params::ParamDef::Bool { .. } => {
-                layer
-                    .param_store
-                    .set(param_name, ParamValue::Bool(value > 0.5));
-            }
-            _ => {}
-        }
+        crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
     }
 
     pub fn save_preset(&mut self, name: &str) {
@@ -3304,128 +2535,39 @@ impl App {
                     );
                 }
                 Some(crate::gpu::particle::SourceSpec::Model(model_path)) => {
-                    let path = std::path::PathBuf::from(&model_path);
-                    if !path.exists() {
-                        log::warn!("Particle model '{model_path}' not found for layer {i}");
-                    } else {
-                        // Compares the whole source, not one path field: a live
-                        // video no longer satisfies "the model is already loaded".
-                        let already_loaded = self
-                            .layer_stack
-                            .layers
-                            .get(i)
-                            .and_then(|l| l.as_effect())
-                            .and_then(|e| e.pass_executor.particle_system.as_ref())
-                            .is_some_and(|ps| {
-                                matches!(
-                                    &ps.source,
-                                    crate::gpu::particle::ParticleSource::Model { path }
-                                        if path == &model_path
-                                )
-                            });
-                        if !already_loaded {
-                            let pose = lp.particle_model_pose.unwrap_or([0.0, 0.0, 1.0, 0.25]);
-                            // Absent light block = a v1.28.0 preset, which meant "off".
-                            let light = lp.particle_model_light.unwrap_or([0.0; 5]);
-                            let model_def = crate::gpu::particle::types::ModelSampleDef {
-                                yaw_degrees: pose[0],
-                                pitch_degrees: pose[1],
-                                scale: pose[2],
-                                ambient: pose[3],
-                                light_mix: light[0],
-                                light_x: light[1],
-                                light_y: light[2],
-                                light_z: light[3],
-                                ray_strength: light[4],
-                            };
-                            let (device, queue) = (&self.gpu.device, &self.gpu.queue);
-                            if let Some(ps) = self
-                                .layer_stack
-                                .layers
-                                .get_mut(i)
-                                .and_then(|l| l.as_effect_mut())
-                                .and_then(|e| e.pass_executor.particle_system.as_mut())
-                            {
-                                // A morph effect takes the model as a TARGET; anything else
-                                // takes it as the source. Same split the picker uses.
-                                let outcome = if ps.morph_state.is_some() {
-                                    ps.apply_model_morph_target(
-                                        device, queue, &path, &model_def, None,
-                                    )
-                                    .map(|(slot, _)| format!("morph slot {slot}"))
-                                } else {
-                                    ps.apply_model_source(device, queue, &path, &model_def)
-                                        .map(|_| "source".to_string())
-                                };
-                                match outcome {
-                                    Ok(where_) => log::info!(
-                                        "Restored particle model for layer {i}: {model_path} ({where_})"
-                                    ),
-                                    Err(e) => log::warn!(
-                                        "Failed to restore particle model for layer {i}: {e}"
-                                    ),
-                                }
-                            }
-                        }
+                    if let Some(ps) = self
+                        .layer_stack
+                        .layers
+                        .get_mut(i)
+                        .and_then(|l| l.as_effect_mut())
+                        .and_then(|e| e.pass_executor.particle_system.as_mut())
+                    {
+                        crate::gpu::particle::source_restore::restore_model_source(
+                            &self.gpu.device,
+                            &self.gpu.queue,
+                            ps,
+                            &model_path,
+                            lp.particle_model_pose,
+                            lp.particle_model_light,
+                            i,
+                        );
                     }
                 }
                 Some(crate::gpu::particle::SourceSpec::Image(img_path)) => {
-                    let path = std::path::PathBuf::from(&img_path);
-                    if !path.exists() {
-                        log::warn!("Particle image '{}' not found for layer {}", img_path, i);
-                    } else {
-                        // Skip if the same image is already loaded — again on the
-                        // whole source, so a live video cannot satisfy it.
-                        let already_loaded = self
-                            .layer_stack
-                            .layers
-                            .get(i)
-                            .and_then(|l| l.as_effect())
-                            .and_then(|e| e.pass_executor.particle_system.as_ref())
-                            .is_some_and(|ps| {
-                                matches!(
-                                    &ps.source,
-                                    crate::gpu::particle::ParticleSource::Image { path }
-                                        if path == &img_path
-                                )
-                            });
-                        if !already_loaded {
-                            if let Some(ps) = self
-                                .layer_stack
-                                .layers
-                                .get_mut(i)
-                                .and_then(|l| l.as_effect_mut())
-                                .and_then(|e| e.pass_executor.particle_system.as_mut())
-                            {
-                                match crate::gpu::particle::image_source::sample_image(
-                                    &path,
-                                    &ps.sample_def,
-                                    ps.max_particles,
-                                ) {
-                                    Ok(aux_data) => {
-                                        ps.upload_aux_data(
-                                            &self.gpu.device,
-                                            &self.gpu.queue,
-                                            &aux_data,
-                                        );
-                                        ps.store_current_aux(aux_data);
-                                        ps.set_source(
-                                            crate::gpu::particle::ParticleSource::Image {
-                                                path: img_path.clone(),
-                                            },
-                                        );
-                                        log::info!(
-                                            "Restored particle image source for layer {i}: {img_path}"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log::warn!(
-                                            "Failed to restore particle image for layer {i}: {e}"
-                                        );
-                                    }
-                                }
-                            }
-                        }
+                    if let Some(ps) = self
+                        .layer_stack
+                        .layers
+                        .get_mut(i)
+                        .and_then(|l| l.as_effect_mut())
+                        .and_then(|e| e.pass_executor.particle_system.as_mut())
+                    {
+                        crate::gpu::particle::source_restore::restore_image_source(
+                            &self.gpu.device,
+                            &self.gpu.queue,
+                            ps,
+                            &img_path,
+                            i,
+                        );
                     }
                 }
                 None => {}
@@ -3976,14 +3118,6 @@ impl App {
                 label: Some("phosphor-encoder"),
             });
 
-        // Execute all enabled layers
-        let mut enabled_layers: Vec<usize> = Vec::with_capacity(self.layer_stack.layers.len());
-        for (i, l) in self.layer_stack.layers.iter().enumerate() {
-            if l.enabled {
-                enabled_layers.push(i);
-            }
-        }
-
         // Poll particle counter readback from previous frame (non-blocking)
         for layer in &mut self.layer_stack.layers {
             if let Some(effect) = layer.as_effect_mut() {
@@ -3994,45 +3128,15 @@ impl App {
             }
         }
 
-        // Compute the HDR source from layer execution + compositing.
-        let (source, postprocess) = if enabled_layers.is_empty() {
-            (
-                self.compositor.accumulator.write_target()
-                    as &crate::gpu::render_target::RenderTarget,
-                PostProcessDef::default(),
-            )
-        } else if enabled_layers.len() == 1
-            && self.layer_stack.layers[enabled_layers[0]].opacity >= 1.0
-        {
-            // Single-layer fast path: skip compositing entirely (only when fully opaque)
-            let idx = enabled_layers[0];
-            let target = self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-            (target, self.current_postprocess())
-        } else {
-            // Multi-layer: render each layer, then composite
-            let mut layer_outputs: Vec<crate::gpu::compositor::LayerComposite<'_>> =
-                Vec::with_capacity(enabled_layers.len());
-            for &idx in &enabled_layers {
-                let target = self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-                let layer = &self.layer_stack.layers[idx];
-                layer_outputs.push(crate::gpu::compositor::LayerComposite {
-                    target,
-                    blend_mode: layer.blend_mode,
-                    opacity: layer.opacity,
-                    displace_amount: layer.displace_amount,
-                });
-            }
-            // Reverse so top-of-UI-list renders visually on top
-            layer_outputs.reverse();
-
-            let composited = self.compositor.composite(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                &layer_outputs,
-            );
-            (composited, self.current_postprocess())
-        };
+        // Compute the HDR source from layer execution + compositing — shared
+        // with the dissolve re-render below and the headless renderer.
+        let (source, postprocess) = crate::gpu::frame_graph::execute_and_composite(
+            &self.layer_stack,
+            &mut self.compositor,
+            &self.gpu.device,
+            &self.gpu.queue,
+            &mut encoder,
+        );
 
         // Dissolve capture: on the first frame of a dissolve, capture outgoing then load incoming.
         // We must: (1) capture the snapshot from this frame's render, (2) submit those commands,
@@ -4055,47 +3159,13 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("phosphor-encoder-dissolve"),
                 });
-            let mut enabled_layers2: Vec<usize> = Vec::with_capacity(self.layer_stack.layers.len());
-            for (i, l) in self.layer_stack.layers.iter().enumerate() {
-                if l.enabled {
-                    enabled_layers2.push(i);
-                }
-            }
-            let (new_source, new_pp) = if enabled_layers2.is_empty() {
-                (
-                    self.compositor.accumulator.write_target()
-                        as &crate::gpu::render_target::RenderTarget,
-                    PostProcessDef::default(),
-                )
-            } else if enabled_layers2.len() == 1
-                && self.layer_stack.layers[enabled_layers2[0]].opacity >= 1.0
-            {
-                let idx = enabled_layers2[0];
-                let target = self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-                (target, self.current_postprocess())
-            } else {
-                let mut layer_outputs2: Vec<crate::gpu::compositor::LayerComposite<'_>> =
-                    Vec::with_capacity(enabled_layers2.len());
-                for &idx in &enabled_layers2 {
-                    let target =
-                        self.layer_stack.layers[idx].execute(&mut encoder, &self.gpu.queue);
-                    let layer = &self.layer_stack.layers[idx];
-                    layer_outputs2.push(crate::gpu::compositor::LayerComposite {
-                        target,
-                        blend_mode: layer.blend_mode,
-                        opacity: layer.opacity,
-                        displace_amount: layer.displace_amount,
-                    });
-                }
-                layer_outputs2.reverse();
-                let composited = self.compositor.composite(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    &mut encoder,
-                    &layer_outputs2,
-                );
-                (composited, self.current_postprocess())
-            };
+            let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
+                &self.layer_stack,
+                &mut self.compositor,
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+            );
             // Crossfade snapshot (outgoing) + new_source (incoming)
             let source = if let Some(ref tr) = self.transition_renderer {
                 if tr.has_snapshot() {
@@ -4511,13 +3581,6 @@ impl ShaderUniforms {
     pub fn zeroed() -> Self {
         bytemuck::Zeroable::zeroed()
     }
-}
-
-/// Read default.wgsl from assets dir, falling back to embedded copy.
-fn read_default_shader() -> String {
-    let path = assets_dir().join("shaders/default.wgsl");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|_| include_str!("../../../assets/shaders/default.wgsl").to_string())
 }
 
 /// Does a batch of changed shader paths touch this effect?

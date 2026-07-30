@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod bus;
 pub mod catalog;
 pub mod migration;

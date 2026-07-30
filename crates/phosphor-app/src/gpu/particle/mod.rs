@@ -1,3 +1,4 @@
+pub mod build;
 pub mod compute_raster;
 pub mod emitter;
 pub mod flow_field;
@@ -9,6 +10,7 @@ pub mod obstacle;
 pub mod obstacle_model;
 pub mod source;
 pub mod source_loader;
+pub mod source_restore;
 pub mod spatial_hash;
 pub mod splat;
 pub mod splat_sort;
