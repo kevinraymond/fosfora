@@ -101,6 +101,9 @@ pub struct App {
     // Spout output (Windows texture sharing, feature-gated)
     #[cfg(all(target_os = "windows", feature = "spout"))]
     pub spout: crate::spout::SpoutSystem,
+    // Syphon output (macOS texture sharing, feature-gated)
+    #[cfg(all(target_os = "macos", feature = "syphon"))]
+    pub syphon: crate::syphon::SyphonSystem,
     // Video recording (always available — ffmpeg is a subprocess)
     pub recording: crate::recording::RecordingSystem,
     // Scenes
@@ -440,6 +443,13 @@ impl App {
             gpu.surface_config.width,
             gpu.surface_config.height,
         );
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        let syphon = crate::syphon::SyphonSystem::new(
+            &gpu.device,
+            gpu.format,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
         let recording = crate::recording::RecordingSystem::new();
 
         #[cfg(feature = "profiling")]
@@ -495,6 +505,8 @@ impl App {
             v4l2,
             #[cfg(all(target_os = "windows", feature = "spout"))]
             spout,
+            #[cfg(all(target_os = "macos", feature = "syphon"))]
+            syphon,
             recording,
             shader_editor: ShaderEditorState::default(),
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
@@ -553,9 +565,12 @@ impl App {
         #[cfg(feature = "ndi")]
         self.ndi.resize(&self.gpu.device, width, height);
         // v4l2 deliberately does not resize (readers can't tolerate mid-stream
-        // geometry changes); Spout receivers adapt, so it follows the window.
+        // geometry changes); Spout and Syphon receivers adapt, so they follow
+        // the window.
         #[cfg(all(target_os = "windows", feature = "spout"))]
         self.spout.resize(&self.gpu.device, width, height);
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        self.syphon.resize(&self.gpu.device, width, height);
     }
 
     pub fn update(&mut self) {
@@ -567,6 +582,8 @@ impl App {
         self.v4l2.pipeline.poll_health();
         #[cfg(all(target_os = "windows", feature = "spout"))]
         self.spout.pipeline.poll_health();
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        self.syphon.pipeline.poll_health();
 
         let now = Instant::now();
         // Clamped: a frame hitch (mouse click stall, window drag, effect swap)
@@ -3263,6 +3280,17 @@ impl App {
                 );
             }
 
+            // Syphon capture
+            #[cfg(all(target_os = "macos", feature = "syphon"))]
+            if self.syphon.is_running() {
+                self.syphon.capture_frame(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.post_process,
+                    source,
+                );
+            }
+
             // Recording capture
             if self.recording.is_recording() {
                 self.recording.capture_frame(
@@ -3318,6 +3346,11 @@ impl App {
             #[cfg(all(target_os = "windows", feature = "spout"))]
             if self.spout.is_running() {
                 self.spout.post_submit();
+            }
+
+            #[cfg(all(target_os = "macos", feature = "syphon"))]
+            if self.syphon.is_running() {
+                self.syphon.post_submit();
             }
 
             if self.recording.is_recording() {
@@ -3400,6 +3433,13 @@ impl App {
                 .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
         }
 
+        // Syphon capture
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        if self.syphon.is_running() {
+            self.syphon
+                .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
+        }
+
         // Recording capture
         if self.recording.is_recording() {
             self.recording.capture_frame(
@@ -3468,6 +3508,11 @@ impl App {
         #[cfg(all(target_os = "windows", feature = "spout"))]
         if self.spout.is_running() {
             self.spout.post_submit();
+        }
+
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        if self.syphon.is_running() {
+            self.syphon.post_submit();
         }
 
         if self.recording.is_recording() {

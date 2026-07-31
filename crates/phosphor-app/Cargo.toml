@@ -124,6 +124,25 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSWorkspace",
     "NSAccessibility",
 ] }
+# Syphon output (GH #4). Syphon.framework itself is dlopen'd at runtime (it
+# ships inside the release app bundle), so only Metal/Foundation — system
+# frameworks, always present — are linked at build time. Versions chosen to
+# unify with the objc2 0.6 tree already in the graph via objc2-app-kit 0.3.
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "NSString",
+    "NSGeometry",
+], optional = true }
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "MTLAllocation",
+    "MTLDevice",
+    "MTLTexture",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLResource",
+    "MTLTypes",
+    "MTLPixelFormat",
+], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -143,6 +162,10 @@ v4l2 = ["dep:v4l"]
 # (and itself a stub off-Windows) and all code is cfg-gated, so one flat
 # feature string works on every CI matrix leg.
 spout = ["dep:spout2-rs"]
+# Syphon texture sharing (GH #4). Inert off-macOS: the deps are target-scoped
+# and all code is cfg-gated, so one flat feature string works on every CI
+# matrix leg.
+syphon = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
 webcam = ["nokhwa"]
 depth = ["webcam", "ort", "flate2", "tar", "zip"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).

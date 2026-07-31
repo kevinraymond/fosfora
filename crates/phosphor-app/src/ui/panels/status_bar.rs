@@ -57,6 +57,7 @@ pub fn draw_status_bar(
     ndi_running: bool,
     v4l2_running: bool,
     spout_running: bool,
+    syphon_running: bool,
     scene_active: bool,
     scene_cue: Option<(usize, usize)>,
     status_error: &Option<(String, std::time::Instant)>,
@@ -160,6 +161,16 @@ pub fn draw_status_bar(
             }
             #[cfg(not(all(target_os = "windows", feature = "spout")))]
             let _ = spout_running;
+
+            // Syphon — only where the build can have one
+            #[cfg(all(target_os = "macos", feature = "syphon"))]
+            {
+                dot(ui, syphon_running, Color32::from_rgb(0xA0, 0x60, 0xE0));
+                label(ui, "SYP");
+                ui.add_space(6.0);
+            }
+            #[cfg(not(all(target_os = "macos", feature = "syphon")))]
+            let _ = syphon_running;
 
             // Web — always show
             {

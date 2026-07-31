@@ -45,8 +45,8 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.target }}-v2
 
       - name: Build release
-        # v4l2 and spout are inert off their OS (target-scoped deps + cfg-gated code)
-        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam,depth,v4l2,spout"
+        # v4l2, spout and syphon are inert off their OS (target-scoped deps + cfg-gated code)
+        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam,depth,v4l2,spout,syphon"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -112,6 +112,26 @@ jobs:
           name: fosfora-x86_64-apple-darwin
           path: artifacts/x86_64
 
+      - name: Build Syphon.framework (pinned source)
+        # No usable binary release exists: the 2019 "SDK 5" zip is x86_64-only
+        # and predates Metal support entirely (board #2052), so the framework
+        # is built from a pinned commit — the sha is the integrity pin. This
+        # Xcode generation ships the Metal shader compiler as a separate
+        # component, hence the MetalToolchain check.
+        run: |
+          git clone https://github.com/Syphon/Syphon-Framework.git syphon-framework
+          git -C syphon-framework checkout 71351d4b484cd2d1917867f7846a5cdca724552d
+          xcrun -sdk macosx metal --version >/dev/null 2>&1 \
+            || sudo xcodebuild -downloadComponent MetalToolchain
+          xcodebuild -project syphon-framework/Syphon.xcodeproj -target Syphon \
+            -configuration Release ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64" \
+            MACOSX_DEPLOYMENT_TARGET=13.0 \
+            SYMROOT="$PWD/syphon-framework/build" build
+          FW="syphon-framework/build/Release/Syphon.framework"
+          lipo -info "$FW/Versions/A/Syphon"
+          lipo -info "$FW/Versions/A/Syphon" | grep -q x86_64
+          lipo -info "$FW/Versions/A/Syphon" | grep -q arm64
+
       - name: Create universal .app, sign, notarize, and staple
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -146,6 +166,11 @@ jobs:
           cp -r assets "$APP/Contents/Resources/assets"
           sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 
+          # Bundle the Syphon framework (the app dlopens it from
+          # Contents/Frameworks at runtime)
+          mkdir -p "$APP/Contents/Frameworks"
+          cp -R syphon-framework/build/Release/Syphon.framework "$APP/Contents/Frameworks/"
+
           # Generate .icns from source PNG
           ICONSET="Fosfora.iconset"
           mkdir -p "$ICONSET"
@@ -161,7 +186,11 @@ jobs:
           iconutil --convert icns "$ICONSET" --output "$APP/Contents/Resources/Fosfora.icns"
           rm -rf "$ICONSET"
 
-          # Codesign the bundle
+          # Codesign: the bundled framework first (nested code must be signed
+          # inside-out for notarization), then the bundle
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" \
+            "$APP/Contents/Frameworks/Syphon.framework/Versions/A"
           codesign --force --deep --options runtime \
             --entitlements packaging/macos/entitlements.plist \
             --sign "Developer ID Application" "$APP" --timestamp

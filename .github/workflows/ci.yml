@@ -71,7 +71,7 @@ jobs:
       - name: Clippy (analyze feature)
         run: cargo clippy --all-targets --features analyze -- -D warnings
       - name: Clippy (output sinks)
-        run: cargo clippy --all-targets --features "ndi,v4l2,spout" -- -D warnings
+        run: cargo clippy --all-targets --features "ndi,v4l2,spout,syphon" -- -D warnings
 
   test:
     name: Test
@@ -93,7 +93,7 @@ jobs:
       - name: Test (analyze feature)
         run: cargo test --features analyze
       - name: Test (output sinks)
-        run: cargo test --features "ndi,v4l2,spout"
+        run: cargo test --features "ndi,v4l2,spout,syphon"
 
   build:
     name: Build (${{ matrix.name }})
@@ -131,7 +131,7 @@ jobs:
       - name: Clippy (cross-target)
         run: cargo clippy --target ${{ matrix.target }} -- -D warnings
       - name: Clippy (all features)
-        run: cargo clippy --target ${{ matrix.target }} --features "video,webcam,ndi,v4l2,spout" -- -D warnings
+        run: cargo clippy --target ${{ matrix.target }} --features "video,webcam,ndi,v4l2,spout,syphon" -- -D warnings
       - name: Build
         run: cargo build --target ${{ matrix.target }}
       - name: Build (video feature)
@@ -141,7 +141,7 @@ jobs:
       - name: Build (depth feature)
         run: cargo build --target ${{ matrix.target }} --features depth
       - name: Build (all features)
-        run: cargo build --target ${{ matrix.target }} --features "video,webcam,ndi,v4l2,spout"
+        run: cargo build --target ${{ matrix.target }} --features "video,webcam,ndi,v4l2,spout,syphon"
 
       - name: Stage artifact (Linux)
         if: runner.os == 'Linux'

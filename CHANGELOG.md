@@ -14,6 +14,10 @@
   Resolume, OBS, TouchDesigner — see Fosfora as a live texture source named "Fosfora"
   (configurable). No runtime to install; it follows window resizes, and failures show in
   the panel instead of failing silently.
+- **Syphon output on macOS.** Enable it under Settings → Outputs and Syphon-aware apps —
+  VDMX, OBS, MadMapper, Magic — see Fosfora as a live texture source named "Fosfora"
+  (configurable). The Syphon framework ships inside the app bundle, so there is nothing
+  to install; it follows window resizes, and failures show in the panel.
 
 ### Fixed
 - **Minimizing the window no longer crashes the app when an output is streaming.** On

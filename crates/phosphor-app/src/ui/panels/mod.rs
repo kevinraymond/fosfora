@@ -24,6 +24,8 @@ pub mod shader_editor;
 #[cfg(all(target_os = "windows", feature = "spout"))]
 pub mod spout_panel;
 pub mod status_bar;
+#[cfg(all(target_os = "macos", feature = "syphon"))]
+pub mod syphon_panel;
 pub mod timeline_bar;
 pub mod triggers_panel;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -111,6 +113,13 @@ pub fn draw_panels(
         });
         #[cfg(not(all(target_os = "windows", feature = "spout")))]
         let spout_running = false;
+        #[cfg(all(target_os = "macos", feature = "syphon"))]
+        let syphon_running = ctx.data_mut(|d| {
+            d.get_temp::<bool>(egui::Id::new("syphon_running"))
+                .unwrap_or(false)
+        });
+        #[cfg(not(all(target_os = "macos", feature = "syphon")))]
+        let syphon_running = false;
         let preset_loading: Option<String> = ctx.data_mut(|d| {
             d.get_temp::<crate::preset::loader::PresetLoadingState>(egui::Id::new(
                 "preset_loading_state",
@@ -145,6 +154,7 @@ pub fn draw_panels(
             ndi_running,
             v4l2_running,
             spout_running,
+            syphon_running,
             scene_active,
             scene_cue,
             status_error,
@@ -294,6 +304,13 @@ pub fn draw_panels(
                 #[cfg(all(target_os = "windows", feature = "spout"))]
                 let spout_on = spout_info.as_ref().map_or(false, |i| i.running);
 
+                #[cfg(all(target_os = "macos", feature = "syphon"))]
+                let syphon_info: Option<syphon_panel::SyphonInfo> = ui
+                    .ctx()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("syphon_info")));
+                #[cfg(all(target_os = "macos", feature = "syphon"))]
+                let syphon_on = syphon_info.as_ref().map_or(false, |i| i.running);
+
                 let rec_info: Option<recording_panel::RecordingInfo> = ui
                     .ctx()
                     .data_mut(|d| d.remove_temp(egui::Id::new("recording_info")));
@@ -308,6 +325,8 @@ pub fn draw_panels(
                 let dot_active_v4l2 = egui::Color32::from_rgb(0x40, 0xB0, 0xB0);
                 #[cfg(all(target_os = "windows", feature = "spout"))]
                 let dot_active_spout = egui::Color32::from_rgb(0xC0, 0x90, 0x40);
+                #[cfg(all(target_os = "macos", feature = "syphon"))]
+                let dot_active_syphon = egui::Color32::from_rgb(0xA0, 0x60, 0xE0);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
                 let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
@@ -339,6 +358,8 @@ pub fn draw_panels(
                             };
                         // Drawn right-to-left, so reverse visual order
                         status_dot(ui, rec_on, dot_active_rec, "REC");
+                        #[cfg(all(target_os = "macos", feature = "syphon"))]
+                        status_dot(ui, syphon_on, dot_active_syphon, "SYP");
                         #[cfg(all(target_os = "windows", feature = "spout"))]
                         status_dot(ui, spout_on, dot_active_spout, "SPT");
                         #[cfg(all(target_os = "linux", feature = "v4l2"))]
@@ -466,6 +487,16 @@ pub fn draw_panels(
                                     {
                                         false
                                     }
+                                }
+                                || {
+                                    #[cfg(all(target_os = "macos", feature = "syphon"))]
+                                    {
+                                        syphon_on
+                                    }
+                                    #[cfg(not(all(target_os = "macos", feature = "syphon")))]
+                                    {
+                                        false
+                                    }
                                 };
                             let (out_badge, out_color) = if rec_on {
                                 ("REC", dot_active_rec)
@@ -516,6 +547,14 @@ pub fn draw_panels(
                                         ui.add_space(6.0);
                                         ui.label(egui::RichText::new("Spout").size(10.0).strong());
                                         spout_panel::draw_spout_panel(ui, info);
+                                    }
+
+                                    // Syphon (macOS, feature-gated)
+                                    #[cfg(all(target_os = "macos", feature = "syphon"))]
+                                    if let Some(ref info) = syphon_info {
+                                        ui.add_space(6.0);
+                                        ui.label(egui::RichText::new("Syphon").size(10.0).strong());
+                                        syphon_panel::draw_syphon_panel(ui, info);
                                     }
                                 },
                             );
