@@ -13,3 +13,8 @@ Thumbs.db
 # ship are copied into assets/media/tiles/ by hand.
 /capture-out*/
 /capture-vol/
+
+# casting catalog (board #2041): renders are regenerable, descriptions get checked in
+/catalog/renders/
+/catalog/test_track.wav
+/catalog/capabilities.json
