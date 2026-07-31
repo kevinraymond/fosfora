@@ -45,7 +45,8 @@ jobs:
           key: ${{ matrix.os }}-${{ matrix.target }}-v2
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam,depth"
+        # v4l2 is inert off-Linux (target-scoped dep + cfg-gated code)
+        run: cargo build --release --target ${{ matrix.target }} --features "video,ndi,webcam,depth,v4l2"
 
       - name: Package (Linux)
         if: runner.os == 'Linux'

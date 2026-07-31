@@ -5,6 +5,12 @@
 
 ## Unreleased
 
+### Added
+- **Fosfora is now a virtual camera on Linux.** Enable it under Settings → Outputs and any
+  V4L2 consumer — OBS, Zoom, browsers, ffmpeg — sees the live output as a webcam. Needs the
+  `v4l2loopback` kernel module (the panel shows setup instructions when it's missing);
+  defaults to browser-compatible YUYV, with a BGRX passthrough option.
+
 ### Fixed
 - **A failed NDI sender no longer looks healthy.** If the sender died after startup, the
   status dot stayed green with zero frames sent; the panel now shows the failure in red

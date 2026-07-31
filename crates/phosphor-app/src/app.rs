@@ -95,6 +95,9 @@ pub struct App {
     // NDI output (feature-gated)
     #[cfg(feature = "ndi")]
     pub ndi: crate::ndi::NdiSystem,
+    // v4l2 loopback output (Linux virtual camera, feature-gated)
+    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+    pub v4l2: crate::v4l2::V4l2System,
     // Video recording (always available — ffmpeg is a subprocess)
     pub recording: crate::recording::RecordingSystem,
     // Scenes
@@ -420,6 +423,13 @@ impl App {
             gpu.surface_config.width,
             gpu.surface_config.height,
         );
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        let v4l2 = crate::v4l2::V4l2System::new(
+            &gpu.device,
+            gpu.format,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
         let recording = crate::recording::RecordingSystem::new();
 
         #[cfg(feature = "profiling")]
@@ -471,6 +481,8 @@ impl App {
             audio_textures,
             #[cfg(feature = "ndi")]
             ndi,
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            v4l2,
             recording,
             shader_editor: ShaderEditorState::default(),
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
@@ -529,6 +541,8 @@ impl App {
         // status dot goes off instead of staying green with zero frames sent.
         #[cfg(feature = "ndi")]
         self.ndi.pipeline.poll_health();
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        self.v4l2.pipeline.poll_health();
 
         let now = Instant::now();
         // Clamped: a frame hitch (mouse click stall, window drag, effect swap)
@@ -3207,6 +3221,13 @@ impl App {
                     .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
             }
 
+            // v4l2 capture
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            if self.v4l2.is_running() {
+                self.v4l2
+                    .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
+            }
+
             // Recording capture
             if self.recording.is_recording() {
                 self.recording.capture_frame(
@@ -3252,6 +3273,11 @@ impl App {
             #[cfg(feature = "ndi")]
             if self.ndi.is_running() {
                 self.ndi.post_submit();
+            }
+
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            if self.v4l2.is_running() {
+                self.v4l2.post_submit();
             }
 
             if self.recording.is_recording() {
@@ -3320,6 +3346,13 @@ impl App {
                 .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
         }
 
+        // v4l2 capture
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        if self.v4l2.is_running() {
+            self.v4l2
+                .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
+        }
+
         // Recording capture
         if self.recording.is_recording() {
             self.recording.capture_frame(
@@ -3378,6 +3411,11 @@ impl App {
         #[cfg(feature = "ndi")]
         if self.ndi.is_running() {
             self.ndi.post_submit();
+        }
+
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        if self.v4l2.is_running() {
+            self.v4l2.post_submit();
         }
 
         if self.recording.is_recording() {

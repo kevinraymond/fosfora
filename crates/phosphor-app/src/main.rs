@@ -15,7 +15,7 @@ mod midi;
 #[cfg(feature = "ndi")]
 mod ndi;
 mod osc;
-#[cfg(feature = "ndi")]
+#[cfg(any(feature = "ndi", all(target_os = "linux", feature = "v4l2")))]
 mod output;
 mod params;
 mod preset;
@@ -24,6 +24,8 @@ mod scene;
 mod settings;
 mod shader;
 mod ui;
+#[cfg(all(target_os = "linux", feature = "v4l2"))]
+mod v4l2;
 mod web;
 
 use std::path::PathBuf;
@@ -679,6 +681,34 @@ impl ApplicationHandler for PhosphorApp {
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("ndi_info"), ndi_info);
                             d.insert_temp(egui::Id::new("ndi_running"), app.ndi.is_running());
+                        });
+                    }
+
+                    // Store v4l2 state in egui temp data for UI panels
+                    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                    {
+                        let v4l2_info = crate::ui::panels::v4l2_panel::V4l2Info {
+                            enabled: app.v4l2.config.enabled,
+                            running: app.v4l2.is_running(),
+                            devices: app
+                                .v4l2
+                                .devices
+                                .iter()
+                                .map(|d| (d.path.clone(), d.name.clone()))
+                                .collect(),
+                            device_path: app.v4l2.config.device_path.clone(),
+                            resolved_path: app.v4l2.resolved_path().map(String::from),
+                            resolution: app.v4l2.config.resolution,
+                            pixel_format: app.v4l2.config.pixel_format,
+                            frames_sent: app.v4l2.frames_sent(),
+                            frames_dropped: app.v4l2.pipeline.frames_dropped(),
+                            output_width: app.v4l2.capture_dimensions().0,
+                            output_height: app.v4l2.capture_dimensions().1,
+                            error: app.v4l2.pipeline.last_error().map(String::from),
+                        };
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("v4l2_info"), v4l2_info);
+                            d.insert_temp(egui::Id::new("v4l2_running"), app.v4l2.is_running());
                         });
                     }
 
@@ -1343,6 +1373,85 @@ impl ApplicationHandler for PhosphorApp {
                             app.gpu.surface_config.width,
                             app.gpu.surface_config.height,
                         );
+                    }
+                }
+
+                // Handle v4l2 signals from UI
+                #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                {
+                    let v4l2_enable: Option<bool> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_set_enabled")));
+                    if let Some(enabled) = v4l2_enable {
+                        app.v4l2.set_enabled(
+                            enabled,
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let v4l2_device: Option<Option<String>> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_device_path")));
+                    if let Some(path) = v4l2_device {
+                        app.v4l2.config.device_path = path;
+                        app.v4l2.config.save();
+                        app.v4l2.restart(
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let v4l2_res: Option<u8> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_resolution_change")));
+                    if let Some(res_u8) = v4l2_res {
+                        let res = crate::v4l2::types::OutputResolution::ALL
+                            .get(res_u8 as usize)
+                            .copied()
+                            .unwrap_or(crate::v4l2::types::OutputResolution::Match);
+                        app.v4l2.config.resolution = res;
+                        app.v4l2.config.save();
+                        app.v4l2.restart(
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let v4l2_fmt: Option<u8> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_pixel_format")));
+                    if let Some(fmt_u8) = v4l2_fmt {
+                        let fmt = crate::v4l2::types::V4l2PixelFormat::ALL
+                            .get(fmt_u8 as usize)
+                            .copied()
+                            .unwrap_or_default();
+                        app.v4l2.config.pixel_format = fmt;
+                        app.v4l2.config.save();
+                        app.v4l2.restart(
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let v4l2_refresh: Option<bool> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_refresh_devices")));
+                    if v4l2_refresh.is_some() {
+                        app.v4l2.refresh_devices();
                     }
                 }
 

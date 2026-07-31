@@ -55,6 +55,7 @@ pub fn draw_status_bar(
     web_enabled: bool,
     web_client_count: usize,
     ndi_running: bool,
+    v4l2_running: bool,
     scene_active: bool,
     scene_cue: Option<(usize, usize)>,
     status_error: &Option<(String, std::time::Instant)>,
@@ -138,6 +139,16 @@ pub fn draw_status_bar(
             dot(ui, ndi_running, Color32::from_rgb(0x40, 0xC0, 0x40));
             label(ui, "NDI");
             ui.add_space(6.0);
+
+            // Virtual camera — only where the build can have one
+            #[cfg(all(target_os = "linux", feature = "v4l2"))]
+            {
+                dot(ui, v4l2_running, Color32::from_rgb(0x40, 0xB0, 0xB0));
+                label(ui, "V4L");
+                ui.add_space(6.0);
+            }
+            #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
+            let _ = v4l2_running;
 
             // Web — always show
             {

@@ -220,7 +220,9 @@ impl OutputPipeline {
     }
 
     /// Resize the capture target. Sinks whose consumers cannot tolerate mid-stream
-    /// geometry changes (v4l2) simply never call this.
+    /// geometry changes (v4l2) simply never call this — dead code in builds with
+    /// only such sinks enabled.
+    #[allow(dead_code)]
     pub fn resize(&mut self, device: &Device, width: u32, height: u32) {
         if !self.is_running() {
             return;

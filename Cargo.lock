@@ -3347,6 +3347,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tungstenite",
  "ureq",
+ "v4l",
  "wgpu",
  "wgpu-profiler",
  "windows 0.61.3",

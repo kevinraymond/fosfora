@@ -95,6 +95,10 @@ symphonia = { version = "0.6", default-features = false, features = [
     "aac",
 ], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# v4l2 loopback output (GH #6). MIT; already in the graph transitively via nokhwa.
+v4l = { version = "0.14", optional = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Media_Audio",
@@ -126,6 +130,10 @@ workspace = true
 default = []
 video = []
 ndi = []
+# Virtual camera via v4l2loopback (GH #6). Inert off-Linux: the dep is
+# target-scoped and all code is #[cfg(target_os = "linux")]-gated, so one
+# flat feature string works on every CI matrix leg.
+v4l2 = ["dep:v4l"]
 webcam = ["nokhwa"]
 depth = ["webcam", "ort", "flate2", "tar", "zip"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).

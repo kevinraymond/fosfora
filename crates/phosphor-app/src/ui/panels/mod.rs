@@ -24,6 +24,8 @@ pub mod shader_editor;
 pub mod status_bar;
 pub mod timeline_bar;
 pub mod triggers_panel;
+#[cfg(all(target_os = "linux", feature = "v4l2"))]
+pub mod v4l2_panel;
 pub mod volumetric_panel;
 pub mod web_panel;
 pub mod webcam_panel;
@@ -93,6 +95,13 @@ pub fn draw_panels(
         });
         #[cfg(not(feature = "ndi"))]
         let ndi_running = false;
+        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+        let v4l2_running = ctx.data_mut(|d| {
+            d.get_temp::<bool>(egui::Id::new("v4l2_running"))
+                .unwrap_or(false)
+        });
+        #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
+        let v4l2_running = false;
         let preset_loading: Option<String> = ctx.data_mut(|d| {
             d.get_temp::<crate::preset::loader::PresetLoadingState>(egui::Id::new(
                 "preset_loading_state",
@@ -125,6 +134,7 @@ pub fn draw_panels(
             web.config.enabled,
             web.client_count,
             ndi_running,
+            v4l2_running,
             scene_active,
             scene_cue,
             status_error,
@@ -260,6 +270,13 @@ pub fn draw_panels(
                 #[cfg(feature = "ndi")]
                 let ndi_on = ndi_info.as_ref().map_or(false, |i| i.running);
 
+                #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                let v4l2_info: Option<v4l2_panel::V4l2Info> = ui
+                    .ctx()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_info")));
+                #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                let v4l2_on = v4l2_info.as_ref().map_or(false, |i| i.running);
+
                 let rec_info: Option<recording_panel::RecordingInfo> = ui
                     .ctx()
                     .data_mut(|d| d.remove_temp(egui::Id::new("recording_info")));
@@ -270,6 +287,8 @@ pub fn draw_panels(
                 let dot_active_web = egui::Color32::from_rgb(0x50, 0x90, 0xE0);
                 #[cfg(feature = "ndi")]
                 let dot_active_ndi = egui::Color32::from_rgb(0x40, 0xC0, 0x40);
+                #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                let dot_active_v4l2 = egui::Color32::from_rgb(0x40, 0xB0, 0xB0);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
                 let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
@@ -301,6 +320,8 @@ pub fn draw_panels(
                             };
                         // Drawn right-to-left, so reverse visual order
                         status_dot(ui, rec_on, dot_active_rec, "REC");
+                        #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                        status_dot(ui, v4l2_on, dot_active_v4l2, "V4L");
                         #[cfg(feature = "ndi")]
                         status_dot(ui, ndi_on, dot_active_ndi, "NDI");
                         status_dot(ui, web_on, dot_active_web, "WEB");
@@ -392,18 +413,29 @@ pub fn draw_panels(
                             },
                         );
 
-                        // Outputs subsection (Recording + NDI)
+                        // Outputs subsection (Recording + NDI + virtual camera)
                         {
-                            let outputs_on = rec_on || {
-                                #[cfg(feature = "ndi")]
-                                {
-                                    ndi_on
+                            let outputs_on = rec_on
+                                || {
+                                    #[cfg(feature = "ndi")]
+                                    {
+                                        ndi_on
+                                    }
+                                    #[cfg(not(feature = "ndi"))]
+                                    {
+                                        false
+                                    }
                                 }
-                                #[cfg(not(feature = "ndi"))]
-                                {
-                                    false
-                                }
-                            };
+                                || {
+                                    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                                    {
+                                        v4l2_on
+                                    }
+                                    #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
+                                    {
+                                        false
+                                    }
+                                };
                             let (out_badge, out_color) = if rec_on {
                                 ("REC", dot_active_rec)
                             } else if outputs_on {
@@ -433,6 +465,18 @@ pub fn draw_panels(
                                         ui.add_space(6.0);
                                         ui.label(egui::RichText::new("NDI®").size(10.0).strong());
                                         ndi_panel::draw_ndi_panel(ui, info);
+                                    }
+
+                                    // Virtual camera (Linux, feature-gated)
+                                    #[cfg(all(target_os = "linux", feature = "v4l2"))]
+                                    if let Some(ref info) = v4l2_info {
+                                        ui.add_space(6.0);
+                                        ui.label(
+                                            egui::RichText::new("Virtual Camera")
+                                                .size(10.0)
+                                                .strong(),
+                                        );
+                                        v4l2_panel::draw_v4l2_panel(ui, info);
                                     }
                                 },
                             );
