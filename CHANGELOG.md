@@ -6,6 +6,9 @@
 ## Unreleased
 
 ### Fixed
+- **A failed NDI sender no longer looks healthy.** If the sender died after startup, the
+  status dot stayed green with zero frames sent; the panel now shows the failure in red
+  and the dot goes off. It also reports frames sent and frames dropped while streaming.
 - **Scene cues' per-cue parameter overrides and beat-length transitions now work.** A cue
   that overrode layer parameters played back exactly like the plain preset — the field
   saved, loaded, validated, and did nothing — and `transition_beats` was likewise ignored,

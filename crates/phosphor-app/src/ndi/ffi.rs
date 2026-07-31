@@ -5,11 +5,16 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int};
 use std::sync::OnceLock;
 
+use crate::output::sink::FrameLayout;
+
 /// Opaque NDI sender instance handle.
 pub type NdiSendInstance = *mut std::ffi::c_void;
 
 /// FourCC for BGRA pixel format.
 pub const FOURCC_BGRA: u32 = fourcc(b'B', b'G', b'R', b'A');
+
+/// FourCC for RGBA pixel format.
+pub const FOURCC_RGBA: u32 = fourcc(b'R', b'G', b'B', b'A');
 
 /// Timecode value that tells NDI to synthesize timing.
 pub const TIMECODE_SYNTHESIZE: i64 = i64::MAX;
@@ -159,13 +164,17 @@ impl NdiSender {
         })
     }
 
-    /// Send a BGRA video frame.
-    pub fn send_video(&self, data: &[u8], width: u32, height: u32) {
+    /// Send a 32-bit video frame; `layout` selects the FourCC tag.
+    pub fn send_video(&self, data: &[u8], width: u32, height: u32, layout: FrameLayout) {
+        let four_cc = match layout {
+            FrameLayout::Bgra8 => FOURCC_BGRA,
+            FrameLayout::Rgba8 => FOURCC_RGBA,
+        };
         let stride = (width * 4) as c_int;
         let frame = NdiVideoFrame {
             xres: width as c_int,
             yres: height as c_int,
-            four_cc: FOURCC_BGRA,
+            four_cc,
             frame_rate_n: 60,
             frame_rate_d: 1,
             picture_aspect_ratio: 0.0, // square pixels

@@ -525,6 +525,11 @@ impl App {
     }
 
     pub fn update(&mut self) {
+        // Surface sender-thread failures (dead NDI runtime, closed device) so the
+        // status dot goes off instead of staying green with zero frames sent.
+        #[cfg(feature = "ndi")]
+        self.ndi.pipeline.poll_health();
+
         let now = Instant::now();
         // Clamped: a frame hitch (mouse click stall, window drag, effect swap)
         // otherwise integrates as one giant step — particles teleport past

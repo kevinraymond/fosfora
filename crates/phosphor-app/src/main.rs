@@ -15,6 +15,8 @@ mod midi;
 #[cfg(feature = "ndi")]
 mod ndi;
 mod osc;
+#[cfg(feature = "ndi")]
+mod output;
 mod params;
 mod preset;
 mod recording;
@@ -668,9 +670,11 @@ impl ApplicationHandler for PhosphorApp {
                             source_name: app.ndi.config.source_name.clone(),
                             resolution: app.ndi.config.resolution,
                             frames_sent: app.ndi.frames_sent(),
+                            frames_dropped: app.ndi.pipeline.frames_dropped(),
                             output_width: app.ndi.capture_dimensions().0,
                             output_height: app.ndi.capture_dimensions().1,
                             alpha_from_luma: app.ndi.config.alpha_from_luma,
+                            error: app.ndi.pipeline.last_error().map(String::from),
                         };
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("ndi_info"), ndi_info);

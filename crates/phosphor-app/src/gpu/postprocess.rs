@@ -443,7 +443,7 @@ impl PostProcessChain {
     ) {
         if !self.enabled {
             let bg = device.create_bind_group(&BindGroupDescriptor {
-                label: Some("ndi-blit-bg"),
+                label: Some("output-blit-bg"),
                 layout: &self.blit_bgl,
                 entries: &[
                     BindGroupEntry {
@@ -456,12 +456,18 @@ impl PostProcessChain {
                     },
                 ],
             });
-            run_fullscreen_pass(encoder, "ndi-blit", &self.blit_pipeline, &bg, capture_view);
+            run_fullscreen_pass(
+                encoder,
+                "output-blit",
+                &self.blit_pipeline,
+                &bg,
+                capture_view,
+            );
             return;
         }
 
         let bg = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("ndi-composite-bg"),
+            label: Some("output-composite-bg"),
             layout: &self.composite_bgl,
             entries: &[
                 BindGroupEntry {
@@ -488,7 +494,7 @@ impl PostProcessChain {
         });
         run_fullscreen_pass(
             encoder,
-            "ndi-composite",
+            "output-composite",
             &self.composite_pipeline,
             &bg,
             capture_view,

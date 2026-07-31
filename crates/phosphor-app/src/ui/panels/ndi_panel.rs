@@ -13,11 +13,12 @@ pub struct NdiInfo {
     pub ndi_available: bool,
     pub source_name: String,
     pub resolution: OutputResolution,
-    #[allow(dead_code)]
     pub frames_sent: u64,
+    pub frames_dropped: u64,
     pub output_width: u32,
     pub output_height: u32,
     pub alpha_from_luma: bool,
+    pub error: Option<String>,
 }
 
 pub fn draw_ndi_panel(ui: &mut Ui, info: &NdiInfo) {
@@ -126,12 +127,17 @@ pub fn draw_ndi_panel(ui: &mut Ui, info: &NdiInfo) {
         }
     });
 
+    // Show sender failure if any (dead runtime, name collision, ...)
+    if let Some(ref err) = info.error {
+        ui.label(RichText::new(err).size(SMALL_SIZE).color(tc.error));
+    }
+
     // Show output dimensions when running
     if info.running && info.output_width > 0 {
         ui.label(
             RichText::new(format!(
-                "Output: {}x{}",
-                info.output_width, info.output_height
+                "Output: {}x{} · sent {} · dropped {}",
+                info.output_width, info.output_height, info.frames_sent, info.frames_dropped
             ))
             .size(SMALL_SIZE)
             .color(tc.text_secondary),
