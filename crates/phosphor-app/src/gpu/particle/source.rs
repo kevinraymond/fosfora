@@ -714,6 +714,16 @@ mod tests {
         }
     }
 
+    /// Expected paths must be built the way the code builds them (Path::join),
+    /// or these tests fail on Windows over `\` vs `/`.
+    fn under_assets(kind: &str, file: &str) -> String {
+        std::path::Path::new("/opt/fosfora/assets")
+            .join(kind)
+            .join(file)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     /// #2013: a preset naming no source falls back to what the effect declares,
     /// so a hand-loaded webcam cannot outlive a preset that never mentioned one.
     #[test]
@@ -722,9 +732,10 @@ mod tests {
 
         assert_eq!(
             declared_source(&image_emitter("raster_phoenix.png", "", ""), assets),
-            Some(SourceSpec::Image(
-                "/opt/fosfora/assets/images/raster_phoenix.png".to_string()
-            ))
+            Some(SourceSpec::Image(under_assets(
+                "images",
+                "raster_phoenix.png"
+            )))
         );
         // Model wins over an image, as it does at effect-load time.
         assert_eq!(
@@ -732,9 +743,7 @@ mod tests {
                 &image_emitter("raster_phoenix.png", "", "skull.glb"),
                 assets
             ),
-            Some(SourceSpec::Model(
-                "/opt/fosfora/assets/models/skull.glb".to_string()
-            ))
+            Some(SourceSpec::Model(under_assets("models", "skull.glb")))
         );
         // An absolute model path is taken as-is, not joined under assets/.
         assert_eq!(
@@ -744,9 +753,7 @@ mod tests {
         // A video beats an image, because at load time it is applied afterwards.
         assert_eq!(
             declared_source(&image_emitter("raster_phoenix.png", "loop.mp4", ""), assets),
-            Some(SourceSpec::Video(
-                "/opt/fosfora/assets/videos/loop.mp4".to_string()
-            ))
+            Some(SourceSpec::Video(under_assets("videos", "loop.mp4")))
         );
     }
 
@@ -781,9 +788,10 @@ mod tests {
         );
         // ...and with nothing named, the effect's own source comes back.
         assert_eq!(SourcePresetFields::default().resolve().or(declared), {
-            Some(SourceSpec::Image(
-                "/opt/fosfora/assets/images/raster_phoenix.png".to_string(),
-            ))
+            Some(SourceSpec::Image(under_assets(
+                "images",
+                "raster_phoenix.png",
+            )))
         });
     }
 
