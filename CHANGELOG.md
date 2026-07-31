@@ -16,6 +16,10 @@
   the panel instead of failing silently.
 
 ### Fixed
+- **Minimizing the window no longer crashes the app when an output is streaming.** On
+  Windows, minimize arrives as a zero-size resize; with NDI (or any output) active this
+  killed the app outright. Outputs now hold their last real size while minimized — the
+  stream keeps playing uninterrupted.
 - **A failed NDI sender no longer looks healthy.** If the sender died after startup, the
   status dot stayed green with zero frames sent; the panel now shows the failure in red
   and the dot goes off. It also reports frames sent and frames dropped while streaming.

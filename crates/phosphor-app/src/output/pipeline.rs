@@ -227,12 +227,16 @@ impl OutputPipeline {
         if !self.is_running() {
             return;
         }
-        // Minimize on Windows arrives as a 0x0 resize; a zero-size capture
-        // texture is invalid and a zero-size staging buffer panics on map.
-        // Hold the last real size — the composite blit rescales into it, and
-        // the restore event brings the true size back. (Found on hardware:
-        // this crashed the app, board #2048.)
-        if width == 0 || height == 0 {
+        // Hold the last real size on degenerate geometry — the composite blit
+        // rescales into it and the next sane resize takes over. Both cases hit
+        // on Windows hardware (board #2048): minimize arrives as a 0x0 resize
+        // (zero-size staging buffer panics on map), and a minimized window
+        // manipulated by other software can report ~32k dimensions, which
+        // exceeds the texture limit, invalidates the capture, and kills the
+        // sender thread.
+        let max_dim = device.limits().max_texture_dimension_2d;
+        if width == 0 || height == 0 || width > max_dim || height > max_dim {
+            log::warn!("output resize ignored: {width}x{height} (max {max_dim})");
             return;
         }
         if width == self.output_width && height == self.output_height {
