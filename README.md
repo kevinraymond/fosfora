@@ -17,7 +17,8 @@
 Fosfora is a free, open-source music visualizer built for actually performing with. There's
 nothing to code, no account to make, and no project to set up: open it, play music, and it
 reacts. When you want more, every knob is there — 48 effects, an eight-layer stack, MIDI, OSC,
-your phone as a control surface, a webcam, and NDI out to your video mixer.
+your phone as a control surface, a webcam, and four ways out to your video mixer: NDI, Spout,
+Syphon, or a virtual camera.
 
 ## See it move
 
@@ -75,8 +76,9 @@ Three steps, and you can't break anything — every setting saves to its own fil
   <img src="assets/media/ui.webp" alt="The Fosfora interface" width="100%" />
 </p>
 
-NDI® output is built into the official downloads — to use it, install the
-[NDI® runtime](https://ndi.video). That's the only extra step anything here needs.
+Every output is built into the official downloads. Spout (Windows) and Syphon (macOS) just
+work — nothing to install. NDI® needs the free [NDI® runtime](https://ndi.video); the Linux
+virtual camera needs the `v4l2loopback` kernel module (its panel shows the one-line setup).
 
 <details>
 <summary><strong>Build from source instead</strong></summary>
@@ -90,6 +92,7 @@ cargo run --release                    # no extra deps
 cargo run --release --features video   # video layers — needs ffmpeg on PATH
 cargo run --release --features webcam  # webcam layers — needs libclang-dev, v4l-utils (Linux)
 cargo run --release --features ndi     # NDI out — needs the NDI runtime
+cargo run --release --features "v4l2,spout,syphon"  # virtual camera / Spout / Syphon — each inert off its OS
 cargo run --release --features depth   # webcam + MiDaS depth — needs libssl-dev, libclang-dev
 ```
 
@@ -103,7 +106,7 @@ cargo run --release --features depth   # webcam + MiDaS depth — needs libssl-d
 | **Perform it live** | Map any MIDI knob to any parameter by clicking **M** and wiggling the knob. Same for OSC. Or open your phone's browser and use it as a touch surface — no app to install. |
 | **It genuinely listens** | Not just "loud = big". Fosfora tracks 74 things about your music 86 times a second — beat and tempo, key and chord, drums separated from melody, the moment a build turns into a drop — and any of them can drive any parameter. |
 | **Bring the room in** | Feed it a webcam and let particles flow around your silhouette, or a photo, or a depth map. Hand and body tracking stream in over the [bridges](bridges/README.md). |
-| **Send it anywhere** | NDI out to your video mixer, or record straight to a file — H.264, HEVC or AV1 in MP4 or MKV, up to 8K, hardware-encoded, with the audio muxed in. |
+| **Send it anywhere** | Spout (Windows), Syphon (macOS) or NDI out to your video mixer, a Linux virtual camera that Zoom and browsers see as a webcam, or record straight to a file — H.264, HEVC or AV1 in MP4 or MKV, up to 8K, hardware-encoded, with the audio muxed in. |
 | **Save the moment** | Presets store your whole layer stack. Scenes chain them into a cue list that advances on a timer, on the beat, or when you hit the spacebar. |
 | **Make it yours** | Every effect is a WGSL shader you can open in the built-in editor and edit while it's running — it recompiles on save and tells you where you broke it. |
 
@@ -183,8 +186,9 @@ The official `.dmg` is signed and notarized, so downloading and dragging should 
 macOS still blocks it, right-click the app → **Open** the first time.
 
 **Can I use it with my VJ software?**
-Yes — turn on NDI and it shows up as a source in Resolume, OBS, TouchDesigner and anything else
-that speaks NDI. Or record to a file and drop that in.
+Yes — turn on Spout (Windows) or Syphon (macOS) and Fosfora shows up as a live source in
+Resolume, VDMX, OBS, TouchDesigner and anything else that speaks them, with nothing to
+install. NDI does the same across the network. Or record to a file and drop that in.
 
 ## From the dev
 
