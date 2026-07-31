@@ -84,15 +84,19 @@ pub fn open_output(
     let actual =
         Output::set_format(&dev, &fmt).map_err(|e| format!("{path}: S_FMT failed: {e}"))?;
 
+    // The driver echoes the format a still-attached reader is holding instead of
+    // honoring ours — v4l2loopback pins the format until every consumer closes.
     if actual.width != width || actual.height != height {
         return Err(format!(
-            "{path} negotiated {}x{} instead of {width}x{height}",
+            "{path} negotiated {}x{} instead of {width}x{height} — another app is \
+             still reading the old format; close it, then re-enable",
             actual.width, actual.height
         ));
     }
     if actual.fourcc != FourCC::new(fourcc) {
         return Err(format!(
-            "{path} refused format {} (driver gave {})",
+            "{path} refused format {} (driver gave {}) — another app is still \
+             reading the old format; close it, then re-enable",
             FourCC::new(fourcc),
             actual.fourcc
         ));
