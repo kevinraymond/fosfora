@@ -3,6 +3,7 @@
 //! Consumed by a scene generator, but useful on its own as a "what is this song made of"
 //! report. Versioned from the start because a generator will be pinned against it.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,13 @@ pub struct SectionReport {
     /// Mean of a handful of named features over the section, for a generator to read without
     /// having to understand the fingerprint.
     pub descriptors: Descriptors,
+    /// p10/p50/p90 of each live feature over the section's hop span, keyed by feature name
+    /// (no `audio.` prefix). Calibration data for remap input ranges (#2037): a binding reads
+    /// exactly these values at runtime, so a remap ranged by them tracks the song instead of
+    /// pinning on a compressed master. The mfcc rows are skipped, mirroring the generator's
+    /// curated source list. Additive since version 1; absent in older files.
+    #[serde(default)]
+    pub percentiles: BTreeMap<String, [f32; 3]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +243,7 @@ fn section_report(index: usize, s: &Section, stream: &HopStream) -> SectionRepor
     let dur = (s.end_secs - s.start_secs).max(1e-3);
 
     SectionReport {
+        percentiles: span_percentiles(span),
         index,
         start_secs: s.start_secs,
         end_secs: s.end_secs,
@@ -253,5 +262,100 @@ fn section_report(index: usize, s: &Section, stream: &HopStream) -> SectionRepor
             stereo_width: mean(|f| f.stereo_width),
             onset_density: (beats_here as f64 / dur) as f32,
         },
+    }
+}
+
+/// p10/p50/p90 per live feature over a hop span, by slot against [`schema::FEATURES`].
+fn span_percentiles(span: &[crate::audio::AudioFeatures]) -> BTreeMap<String, [f32; 3]> {
+    let mut out = BTreeMap::new();
+    for (slot, fdef) in schema::FEATURES.iter().enumerate() {
+        if fdef.name.starts_with("mfcc.") {
+            continue;
+        }
+        let mut vals: Vec<f32> = span.iter().map(|f| f.as_slice()[slot]).collect();
+        vals.sort_by(f32::total_cmp);
+        // Nearest-rank on the sorted span; an empty span reports zeros, matching the
+        // descriptor means' guard.
+        let pick = |p: f64| {
+            if vals.is_empty() {
+                0.0
+            } else {
+                vals[((vals.len() - 1) as f64 * p).round() as usize]
+            }
+        };
+        out.insert(fdef.name.to_string(), [pick(0.10), pick(0.50), pick(0.90)]);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::AudioFeatures;
+
+    fn features_with(slot: usize, value: f32) -> AudioFeatures {
+        let mut f = AudioFeatures::default();
+        f.as_slice_mut()[slot] = value;
+        f
+    }
+
+    fn slot_of(name: &str) -> usize {
+        schema::FEATURES
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn percentiles_of_a_constant_span_are_that_constant() {
+        let rms = slot_of("rms");
+        let span: Vec<AudioFeatures> = (0..50).map(|_| features_with(rms, 0.4)).collect();
+        let p = span_percentiles(&span);
+        assert_eq!(p["rms"], [0.4, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn percentiles_of_a_ramp_are_ordered_and_span_the_ramp() {
+        let rms = slot_of("rms");
+        let span: Vec<AudioFeatures> = (0..101)
+            .map(|i| features_with(rms, i as f32 / 100.0))
+            .collect();
+        let p = p_of(&span, "rms");
+        assert!(p[0] <= p[1] && p[1] <= p[2], "unordered: {p:?}");
+        assert!(
+            (p[0] - 0.10).abs() < 0.02,
+            "p10 off a uniform ramp: {}",
+            p[0]
+        );
+        assert!(
+            (p[1] - 0.50).abs() < 0.02,
+            "p50 off a uniform ramp: {}",
+            p[1]
+        );
+        assert!(
+            (p[2] - 0.90).abs() < 0.02,
+            "p90 off a uniform ramp: {}",
+            p[2]
+        );
+    }
+
+    #[test]
+    fn mfcc_family_is_excluded_and_curated_features_are_present() {
+        let p = span_percentiles(&[AudioFeatures::default()]);
+        assert!(p.keys().all(|k| !k.starts_with("mfcc.")));
+        for key in ["rms", "sub_bass", "buildup", "stereo_width", "chroma.0"] {
+            assert!(p.contains_key(key), "missing {key}");
+        }
+    }
+
+    #[test]
+    fn empty_span_reports_zeros_not_a_panic() {
+        let p = span_percentiles(&[]);
+        assert_eq!(p["rms"], [0.0, 0.0, 0.0]);
+        assert!(!p.is_empty());
+    }
+
+    fn p_of(span: &[AudioFeatures], name: &str) -> [f32; 3] {
+        span_percentiles(span)[name]
     }
 }
