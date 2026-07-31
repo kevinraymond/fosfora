@@ -245,12 +245,22 @@ def motion_stats(clip: Path) -> dict:
 # ---------------------------------------------------------------- main
 
 def render_variant(scene_dir: Path, out_dir: Path) -> tuple[bool, str]:
+    """Success = the driver wrote run.json (its last act), not exit code 0 —
+    heavy effects can panic in wgpu device teardown after all outputs are
+    complete (seen once: 'timed out while waiting on the last successful
+    submission'). Wipe the out dir first so stale outputs can't fake it."""
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     r = subprocess.run(
         [str(BIN), "--render-scene", str(scene_dir), "--song", str(TRACK),
          "--out", str(out_dir), "--res", "640x360"],
         cwd=REPO, capture_output=True, text=True, timeout=600,
     )
-    return r.returncode == 0, (r.stderr or "")[-500:]
+    ok = (out_dir / "run.json").exists()
+    err = (r.stderr or "")[-500:]
+    if ok and r.returncode != 0:
+        err = f"outputs complete but exit={r.returncode} (teardown panic tolerated): {err[-200:]}"
+    return ok, err
 
 
 def main() -> None:
@@ -299,7 +309,9 @@ def main() -> None:
             var: dict = {"ok": ok, "secs": round(time.time() - t0, 1)}
             if not ok:
                 var["error"] = err
-            else:
+            elif "teardown panic tolerated" in err:
+                var["note"] = err
+            if ok:
                 run = json.loads((out_dir / "run.json").read_text())
                 var["warnings"] = run.get("warnings", [])
                 clips = sorted((out_dir / "clips").glob("*.mp4"))
