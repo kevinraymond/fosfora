@@ -227,6 +227,14 @@ impl OutputPipeline {
         if !self.is_running() {
             return;
         }
+        // Minimize on Windows arrives as a 0x0 resize; a zero-size capture
+        // texture is invalid and a zero-size staging buffer panics on map.
+        // Hold the last real size — the composite blit rescales into it, and
+        // the restore event brings the true size back. (Found on hardware:
+        // this crashed the app, board #2048.)
+        if width == 0 || height == 0 {
+            return;
+        }
         if width == self.output_width && height == self.output_height {
             return;
         }

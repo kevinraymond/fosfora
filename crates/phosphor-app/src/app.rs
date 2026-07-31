@@ -525,6 +525,12 @@ impl App {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
+        // Windows delivers minimize as a 0x0 resize; zero-size render targets
+        // are invalid (validation-error spam) and zero-size capture staging
+        // buffers panic on map. Skip entirely — restore sends the real size.
+        if width == 0 || height == 0 {
+            return;
+        }
         self.gpu.resize(width, height);
         for layer in &mut self.layer_stack.layers {
             layer.resize(
