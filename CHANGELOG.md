@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.31.0 — 2026-07-31
 
 ### Added
 - **Fosfora is now a virtual camera on Linux.** Enable it under Settings → Outputs and any
