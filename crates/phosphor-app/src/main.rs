@@ -15,7 +15,11 @@ mod midi;
 #[cfg(feature = "ndi")]
 mod ndi;
 mod osc;
-#[cfg(any(feature = "ndi", all(target_os = "linux", feature = "v4l2")))]
+#[cfg(any(
+    feature = "ndi",
+    all(target_os = "linux", feature = "v4l2"),
+    all(target_os = "windows", feature = "spout")
+))]
 mod output;
 mod params;
 mod preset;
@@ -23,6 +27,8 @@ mod recording;
 mod scene;
 mod settings;
 mod shader;
+#[cfg(all(target_os = "windows", feature = "spout"))]
+mod spout;
 mod ui;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
 mod v4l2;
@@ -709,6 +715,26 @@ impl ApplicationHandler for PhosphorApp {
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("v4l2_info"), v4l2_info);
                             d.insert_temp(egui::Id::new("v4l2_running"), app.v4l2.is_running());
+                        });
+                    }
+
+                    // Store Spout state in egui temp data for UI panels
+                    #[cfg(all(target_os = "windows", feature = "spout"))]
+                    {
+                        let spout_info = crate::ui::panels::spout_panel::SpoutInfo {
+                            enabled: app.spout.config.enabled,
+                            running: app.spout.is_running(),
+                            sender_name: app.spout.config.sender_name.clone(),
+                            resolution: app.spout.config.resolution,
+                            frames_sent: app.spout.frames_sent(),
+                            frames_dropped: app.spout.pipeline.frames_dropped(),
+                            output_width: app.spout.capture_dimensions().0,
+                            output_height: app.spout.capture_dimensions().1,
+                            error: app.spout.pipeline.last_error().map(String::from),
+                        };
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("spout_info"), spout_info);
+                            d.insert_temp(egui::Id::new("spout_running"), app.spout.is_running());
                         });
                     }
 
@@ -1452,6 +1478,58 @@ impl ApplicationHandler for PhosphorApp {
                         .data_mut(|d| d.remove_temp(egui::Id::new("v4l2_refresh_devices")));
                     if v4l2_refresh.is_some() {
                         app.v4l2.refresh_devices();
+                    }
+                }
+
+                // Handle Spout signals from UI
+                #[cfg(all(target_os = "windows", feature = "spout"))]
+                {
+                    let spout_enable: Option<bool> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("spout_set_enabled")));
+                    if let Some(enabled) = spout_enable {
+                        app.spout.set_enabled(
+                            enabled,
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let spout_name: Option<String> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("spout_sender_name")));
+                    if let Some(name) = spout_name {
+                        app.spout.config.sender_name = name;
+                        app.spout.config.save();
+                        app.spout.restart(
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
+                    }
+
+                    let spout_res: Option<u8> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("spout_resolution_change")));
+                    if let Some(res_u8) = spout_res {
+                        let res = crate::spout::types::OutputResolution::ALL
+                            .get(res_u8 as usize)
+                            .copied()
+                            .unwrap_or(crate::spout::types::OutputResolution::Match);
+                        app.spout.config.resolution = res;
+                        app.spout.config.save();
+                        app.spout.restart(
+                            &app.gpu.device,
+                            app.gpu.format,
+                            app.gpu.surface_config.width,
+                            app.gpu.surface_config.height,
+                        );
                     }
                 }
 

@@ -10,6 +10,10 @@
   V4L2 consumer — OBS, Zoom, browsers, ffmpeg — sees the live output as a webcam. Needs the
   `v4l2loopback` kernel module (the panel shows setup instructions when it's missing);
   defaults to browser-compatible YUYV, with a BGRX passthrough option.
+- **Spout output on Windows.** Enable it under Settings → Outputs and Spout-aware apps —
+  Resolume, OBS, TouchDesigner — see Fosfora as a live texture source named "Fosfora"
+  (configurable). No runtime to install; it follows window resizes, and failures show in
+  the panel instead of failing silently.
 
 ### Fixed
 - **A failed NDI sender no longer looks healthy.** If the sender died after startup, the

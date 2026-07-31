@@ -98,6 +98,9 @@ pub struct App {
     // v4l2 loopback output (Linux virtual camera, feature-gated)
     #[cfg(all(target_os = "linux", feature = "v4l2"))]
     pub v4l2: crate::v4l2::V4l2System,
+    // Spout output (Windows texture sharing, feature-gated)
+    #[cfg(all(target_os = "windows", feature = "spout"))]
+    pub spout: crate::spout::SpoutSystem,
     // Video recording (always available — ffmpeg is a subprocess)
     pub recording: crate::recording::RecordingSystem,
     // Scenes
@@ -430,6 +433,13 @@ impl App {
             gpu.surface_config.width,
             gpu.surface_config.height,
         );
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        let spout = crate::spout::SpoutSystem::new(
+            &gpu.device,
+            gpu.format,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
         let recording = crate::recording::RecordingSystem::new();
 
         #[cfg(feature = "profiling")]
@@ -483,6 +493,8 @@ impl App {
             ndi,
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             v4l2,
+            #[cfg(all(target_os = "windows", feature = "spout"))]
+            spout,
             recording,
             shader_editor: ShaderEditorState::default(),
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
@@ -534,6 +546,10 @@ impl App {
         }
         #[cfg(feature = "ndi")]
         self.ndi.resize(&self.gpu.device, width, height);
+        // v4l2 deliberately does not resize (readers can't tolerate mid-stream
+        // geometry changes); Spout receivers adapt, so it follows the window.
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        self.spout.resize(&self.gpu.device, width, height);
     }
 
     pub fn update(&mut self) {
@@ -543,6 +559,8 @@ impl App {
         self.ndi.pipeline.poll_health();
         #[cfg(all(target_os = "linux", feature = "v4l2"))]
         self.v4l2.pipeline.poll_health();
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        self.spout.pipeline.poll_health();
 
         let now = Instant::now();
         // Clamped: a frame hitch (mouse click stall, window drag, effect swap)
@@ -3228,6 +3246,17 @@ impl App {
                     .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
             }
 
+            // Spout capture
+            #[cfg(all(target_os = "windows", feature = "spout"))]
+            if self.spout.is_running() {
+                self.spout.capture_frame(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.post_process,
+                    source,
+                );
+            }
+
             // Recording capture
             if self.recording.is_recording() {
                 self.recording.capture_frame(
@@ -3278,6 +3307,11 @@ impl App {
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             if self.v4l2.is_running() {
                 self.v4l2.post_submit();
+            }
+
+            #[cfg(all(target_os = "windows", feature = "spout"))]
+            if self.spout.is_running() {
+                self.spout.post_submit();
             }
 
             if self.recording.is_recording() {
@@ -3353,6 +3387,13 @@ impl App {
                 .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
         }
 
+        // Spout capture
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        if self.spout.is_running() {
+            self.spout
+                .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
+        }
+
         // Recording capture
         if self.recording.is_recording() {
             self.recording.capture_frame(
@@ -3416,6 +3457,11 @@ impl App {
         #[cfg(all(target_os = "linux", feature = "v4l2"))]
         if self.v4l2.is_running() {
             self.v4l2.post_submit();
+        }
+
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        if self.spout.is_running() {
+            self.spout.post_submit();
         }
 
         if self.recording.is_recording() {

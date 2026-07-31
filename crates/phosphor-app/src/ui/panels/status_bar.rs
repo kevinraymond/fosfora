@@ -56,6 +56,7 @@ pub fn draw_status_bar(
     web_client_count: usize,
     ndi_running: bool,
     v4l2_running: bool,
+    spout_running: bool,
     scene_active: bool,
     scene_cue: Option<(usize, usize)>,
     status_error: &Option<(String, std::time::Instant)>,
@@ -149,6 +150,16 @@ pub fn draw_status_bar(
             }
             #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
             let _ = v4l2_running;
+
+            // Spout — only where the build can have one
+            #[cfg(all(target_os = "windows", feature = "spout"))]
+            {
+                dot(ui, spout_running, Color32::from_rgb(0xC0, 0x90, 0x40));
+                label(ui, "SPT");
+                ui.add_space(6.0);
+            }
+            #[cfg(not(all(target_os = "windows", feature = "spout")))]
+            let _ = spout_running;
 
             // Web — always show
             {

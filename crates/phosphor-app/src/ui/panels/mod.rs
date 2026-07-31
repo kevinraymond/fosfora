@@ -21,6 +21,8 @@ pub mod recording_panel;
 pub mod scene_panel;
 pub mod settings_panel;
 pub mod shader_editor;
+#[cfg(all(target_os = "windows", feature = "spout"))]
+pub mod spout_panel;
 pub mod status_bar;
 pub mod timeline_bar;
 pub mod triggers_panel;
@@ -102,6 +104,13 @@ pub fn draw_panels(
         });
         #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
         let v4l2_running = false;
+        #[cfg(all(target_os = "windows", feature = "spout"))]
+        let spout_running = ctx.data_mut(|d| {
+            d.get_temp::<bool>(egui::Id::new("spout_running"))
+                .unwrap_or(false)
+        });
+        #[cfg(not(all(target_os = "windows", feature = "spout")))]
+        let spout_running = false;
         let preset_loading: Option<String> = ctx.data_mut(|d| {
             d.get_temp::<crate::preset::loader::PresetLoadingState>(egui::Id::new(
                 "preset_loading_state",
@@ -135,6 +144,7 @@ pub fn draw_panels(
             web.client_count,
             ndi_running,
             v4l2_running,
+            spout_running,
             scene_active,
             scene_cue,
             status_error,
@@ -277,6 +287,13 @@ pub fn draw_panels(
                 #[cfg(all(target_os = "linux", feature = "v4l2"))]
                 let v4l2_on = v4l2_info.as_ref().map_or(false, |i| i.running);
 
+                #[cfg(all(target_os = "windows", feature = "spout"))]
+                let spout_info: Option<spout_panel::SpoutInfo> = ui
+                    .ctx()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("spout_info")));
+                #[cfg(all(target_os = "windows", feature = "spout"))]
+                let spout_on = spout_info.as_ref().map_or(false, |i| i.running);
+
                 let rec_info: Option<recording_panel::RecordingInfo> = ui
                     .ctx()
                     .data_mut(|d| d.remove_temp(egui::Id::new("recording_info")));
@@ -289,6 +306,8 @@ pub fn draw_panels(
                 let dot_active_ndi = egui::Color32::from_rgb(0x40, 0xC0, 0x40);
                 #[cfg(all(target_os = "linux", feature = "v4l2"))]
                 let dot_active_v4l2 = egui::Color32::from_rgb(0x40, 0xB0, 0xB0);
+                #[cfg(all(target_os = "windows", feature = "spout"))]
+                let dot_active_spout = egui::Color32::from_rgb(0xC0, 0x90, 0x40);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
                 let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
@@ -320,6 +339,8 @@ pub fn draw_panels(
                             };
                         // Drawn right-to-left, so reverse visual order
                         status_dot(ui, rec_on, dot_active_rec, "REC");
+                        #[cfg(all(target_os = "windows", feature = "spout"))]
+                        status_dot(ui, spout_on, dot_active_spout, "SPT");
                         #[cfg(all(target_os = "linux", feature = "v4l2"))]
                         status_dot(ui, v4l2_on, dot_active_v4l2, "V4L");
                         #[cfg(feature = "ndi")]
@@ -435,6 +456,16 @@ pub fn draw_panels(
                                     {
                                         false
                                     }
+                                }
+                                || {
+                                    #[cfg(all(target_os = "windows", feature = "spout"))]
+                                    {
+                                        spout_on
+                                    }
+                                    #[cfg(not(all(target_os = "windows", feature = "spout")))]
+                                    {
+                                        false
+                                    }
                                 };
                             let (out_badge, out_color) = if rec_on {
                                 ("REC", dot_active_rec)
@@ -477,6 +508,14 @@ pub fn draw_panels(
                                                 .strong(),
                                         );
                                         v4l2_panel::draw_v4l2_panel(ui, info);
+                                    }
+
+                                    // Spout (Windows, feature-gated)
+                                    #[cfg(all(target_os = "windows", feature = "spout"))]
+                                    if let Some(ref info) = spout_info {
+                                        ui.add_space(6.0);
+                                        ui.label(egui::RichText::new("Spout").size(10.0).strong());
+                                        spout_panel::draw_spout_panel(ui, info);
                                     }
                                 },
                             );

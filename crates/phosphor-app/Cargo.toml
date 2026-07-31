@@ -100,6 +100,11 @@ symphonia = { version = "0.6", default-features = false, features = [
 v4l = { version = "0.14", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Spout output (GH #5). BSD-2-Clause; vendors the Spout2 SDK + C shim, MSVC x64
+# only. Pinned exact: young crate, tiny API surface we depend on.
+spout2-rs = { version = "=0.1.1", default-features = false, features = [
+    "dx",
+], optional = true }
 windows = { version = "0.61", features = [
     "Win32_Media_Audio",
     "Win32_Media_Multimedia",
@@ -134,6 +139,10 @@ ndi = []
 # target-scoped and all code is #[cfg(target_os = "linux")]-gated, so one
 # flat feature string works on every CI matrix leg.
 v4l2 = ["dep:v4l"]
+# Spout texture sharing (GH #5). Inert off-Windows: the dep is target-scoped
+# (and itself a stub off-Windows) and all code is cfg-gated, so one flat
+# feature string works on every CI matrix leg.
+spout = ["dep:spout2-rs"]
 webcam = ["nokhwa"]
 depth = ["webcam", "ort", "flate2", "tar", "zip"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).

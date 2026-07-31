@@ -38,7 +38,12 @@ pub struct OutputFrame {
 }
 
 /// Per-sink frame writer; runs on the sender thread.
-pub trait FrameSink: Send + 'static {
+///
+/// Deliberately not `Send`: a sink is constructed *inside* its sender thread
+/// (by the `make_sink` factory, which is what actually crosses threads) and
+/// never leaves it, so sinks holding thread-confined handles (Spout's D3D11
+/// device, Syphon's ObjC objects) need no unsafe Send claims.
+pub trait FrameSink: 'static {
     fn write_frame(&mut self, frame: &OutputFrame) -> Result<(), String>;
 }
 
