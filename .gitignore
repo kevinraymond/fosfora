@@ -18,3 +18,4 @@ Thumbs.db
 /catalog/renders/
 /catalog/test_track.wav
 /catalog/capabilities.json
+__pycache__/
