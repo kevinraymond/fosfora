@@ -72,6 +72,7 @@ const LIB_FILENAMES: &[&str] = &[
     "shaders/lib/sdf.wgsl",
     "shaders/lib/tonemap.wgsl",
     "shaders/lib/chronoflow.wgsl",
+    "shaders/lib/overlay_lib.wgsl",
 ];
 
 /// The same libraries, embedded, for the offscreen compile/render probes — those
@@ -100,6 +101,10 @@ const LIB_SOURCES: &[(&str, &str)] = &[
     (
         "shaders/lib/chronoflow.wgsl",
         include_str!("../../../../assets/shaders/lib/chronoflow.wgsl"),
+    ),
+    (
+        "shaders/lib/overlay_lib.wgsl",
+        include_str!("../../../../assets/shaders/lib/overlay_lib.wgsl"),
     ),
 ];
 

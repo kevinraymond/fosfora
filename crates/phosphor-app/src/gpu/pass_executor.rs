@@ -2147,6 +2147,106 @@ mod tests {
     // libs, and param-index typos that reference beyond the uniform block —
     // without launching the app. (Compute sims are not covered: they bind
     // particle buffers this harness doesn't build.)
+    // Every overlay_lib.wgsl primitive drawn once over a transparent background,
+    // premultiplied, through the production preamble. Asserts variance in RGB AND
+    // alpha — a lib regression that flattens coverage (or a preamble change that
+    // breaks the prepend) fails here before any overlay effect does.
+    // Run: cargo test -p phosphor-app -- --ignored overlay_lib_primitives
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn overlay_lib_primitives_render_with_alpha() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (256u32, 256u32);
+
+        const SHADER: &str = r#"
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
+    let uv = frag_coord.xy / u.resolution;
+    // One of everything, phase-driven the way a real overlay is.
+    let phase = 0.6;
+    var cover = 0.0;
+    let cell = ovl_cell_id(uv, 8u, 8u);
+    let cuv = ovl_cell_uv(uv, 8u, 8u);
+    let ch = ovl_cell_hash(cell, 7.0);
+    cover = max(cover, ovl_reveal(ch, phase, 0.1) * ovl_rect_stroke(cuv, vec2f(0.5), vec2f(0.35), 0.1));
+    let trig = ovl_trigger(phase, ovl_stagger(cell, 7.0, 0.5), 0.05, 0.2, 0.3);
+    cover = max(cover, trig * ovl_bracket(uv, vec2f(0.3, 0.3), vec2f(0.2, 0.15), 0.06, 0.02));
+    cover = max(cover, ovl_cross(uv, vec2f(0.7, 0.6), 0.12, 0.02, 0.012));
+    var seeds = array<vec2f, 8>(
+        vec2f(0.1, 0.1), vec2f(0.9, 0.2), vec2f(0.5, 0.9), vec2f(0.0),
+        vec2f(0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0),
+    );
+    cover = max(cover, 0.25 * ovl_flood(uv, seeds, 3u, 0.3, 0.2, 7.0));
+    let rgb = phosphor_palette(ch, vec3f(0.5), vec3f(0.5), vec3f(1.0), vec3f(0.0, 0.33, 0.67));
+    let a = clamp(cover, 0.0, 1.0);
+    return vec4f(rgb * a, a); // premultiplied
+}
+"#;
+        let pipe = ShaderPipeline::new(
+            &device,
+            fmt,
+            &loader.prepend_library_with_inputs(SHADER, 0),
+            None,
+            0,
+        )
+        .expect("overlay lib probe pipeline");
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+        let executor = assemble(
+            &device,
+            &queue,
+            w,
+            h,
+            fmt,
+            &ubuf,
+            &placeholder,
+            &audio,
+            vec![("overlay", pipe, false, vec![], 1, 1.0)],
+        );
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        let mut u = crate::gpu::ShaderUniforms::zeroed();
+        u.resolution = [w as f32, h as f32];
+        let data = capture_pass_rgba(
+            &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, 0, w, h,
+        );
+
+        let (mut amin, mut amax) = (255u8, 0u8);
+        let (mut rgb_lit, mut solid) = (0usize, 0usize);
+        for px in data.chunks_exact(4) {
+            amin = amin.min(px[3]);
+            amax = amax.max(px[3]);
+            if px[0] > 8 || px[1] > 8 || px[2] > 8 {
+                rgb_lit += 1;
+            }
+            if px[3] > 200 {
+                solid += 1;
+            }
+        }
+        assert_eq!(amin, 0, "transparent background must reach readback");
+        assert!(
+            amax > 128,
+            "no primitive drew solid coverage (max alpha {amax})"
+        );
+        assert!(
+            rgb_lit as f64 / (w * h) as f64 > 0.01,
+            "RGB variance missing — primitives drew nothing"
+        );
+        // Strokes/brackets/crosses are thin: solid (near-opaque) coverage must be
+        // present but sparse. An opaque wash — the alpha-regression failure mode —
+        // trips the upper bound.
+        let solid_frac = solid as f64 / (w * h) as f64;
+        assert!(
+            (0.002..0.5).contains(&solid_frac),
+            "solid coverage {solid_frac:.3} out of range — no strokes drawn, or an opaque wash"
+        );
+    }
+
     #[test]
     #[ignore = "requires a wgpu adapter"]
     fn all_effect_pass_shaders_compile() {
