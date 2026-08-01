@@ -1036,8 +1036,7 @@ impl App {
             self.timeline.set_beat_period(
                 self.latest_audio
                     .as_ref()
-                    .map(|a| 60.0 / a.bpm)
-                    .filter(|p| p.is_finite() && *p > 0.0),
+                    .and_then(|a| a.beat_period_secs()),
             );
             // Feed beat signal for BeatSync mode:
             // prefer MIDI clock beat when playing, fall back to audio beat detector

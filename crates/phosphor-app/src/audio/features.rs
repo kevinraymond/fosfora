@@ -107,9 +107,27 @@ pub struct AudioFeatures {
 
 pub const NUM_FEATURES: usize = 81;
 
+/// The `bpm` feature ships as raw BPM divided by this. Every consumer doing
+/// time math MUST denormalize through [`AudioFeatures::raw_bpm`] or
+/// [`AudioFeatures::beat_period_secs`] — computing `60.0 / bpm` on the
+/// normalized value made timeline transitions 300× too slow (#2054).
+pub const BPM_NORM: f32 = 300.0;
+
 impl AudioFeatures {
     pub fn as_slice(&self) -> &[f32; NUM_FEATURES] {
         bytemuck::cast_ref(self)
+    }
+
+    /// Detected tempo in raw BPM (the `bpm` field is normalized to 0..1).
+    pub fn raw_bpm(&self) -> f32 {
+        self.bpm * BPM_NORM
+    }
+
+    /// Seconds per beat at the detected tempo, or `None` before tempo lock
+    /// (the detector reports `bpm == 0.0` until it locks).
+    pub fn beat_period_secs(&self) -> Option<f32> {
+        let period = 60.0 / self.raw_bpm();
+        (period.is_finite() && period > 0.0).then_some(period)
     }
 
     pub fn as_slice_mut(&mut self) -> &mut [f32; NUM_FEATURES] {
@@ -176,5 +194,22 @@ mod tests {
     fn size_is_324_bytes() {
         // 81 f32 features (296 bytes / 74 before the A13b per-band pan append)
         assert_eq!(std::mem::size_of::<AudioFeatures>(), 324);
+    }
+
+    /// #2054: `bpm` ships normalized; time math must go through the raw
+    /// accessors. At 120 BPM the beat period is 0.5 s — the bug computed
+    /// `60.0 / 0.4` = 150 s.
+    #[test]
+    fn beat_period_denormalizes_bpm() {
+        let f = AudioFeatures {
+            bpm: 120.0 / BPM_NORM,
+            ..Default::default()
+        };
+        assert!((f.raw_bpm() - 120.0).abs() < 1e-4);
+        let period = f.beat_period_secs().expect("tempo is locked");
+        assert!((period - 0.5).abs() < 1e-6, "got {period}");
+
+        // Before tempo lock the detector reports 0.0 — no period.
+        assert_eq!(AudioFeatures::default().beat_period_secs(), None);
     }
 }

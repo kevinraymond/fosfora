@@ -691,8 +691,7 @@ impl SceneRenderer {
 
         // Timeline: tempo, beat, tick — same order as App::update.
         if self.timeline.active {
-            self.timeline
-                .set_beat_period((features.bpm > 0.0).then(|| 60.0 / features.bpm));
+            self.timeline.set_beat_period(features.beat_period_secs());
             let beat_event = self.timeline.feed_beat(self.uniforms.beat > 0.5);
             self.process_event(beat_event);
             let tick_event = self.timeline.tick(dt);

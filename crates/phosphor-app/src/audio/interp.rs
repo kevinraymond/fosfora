@@ -252,7 +252,7 @@ impl FeatureInterpolator {
         bpm_norm: f32,
         frozen: bool,
     ) -> f32 {
-        let bpm = bpm_norm * 300.0; // `bpm` ships normalized to 0..1
+        let bpm = bpm_norm * crate::audio::features::BPM_NORM; // `bpm` ships normalized to 0..1
         if frozen || bpm < MIN_TRACK_BPM {
             // The detector pins its phase at 0 under silence and reports no tempo before
             // lock. Follow it rather than free-run over a silence.

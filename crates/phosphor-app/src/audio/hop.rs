@@ -238,7 +238,7 @@ impl HopAnalyzer {
         raw.onset = beat_result.onset_strength;
         raw.beat = beat_result.beat;
         raw.beat_phase = beat_result.beat_phase;
-        raw.bpm = beat_result.bpm / 300.0; // normalize to 0-1
+        raw.bpm = beat_result.bpm / crate::audio::features::BPM_NORM; // normalize to 0-1
         raw.beat_strength = beat_result.beat_strength;
 
         // A12 (#1463): bar/downbeat/meter tracking. Runs every frame (advances bar_phase

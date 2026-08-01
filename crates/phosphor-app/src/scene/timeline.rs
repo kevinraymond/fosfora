@@ -501,6 +501,46 @@ mod tests {
         }
     }
 
+    /// #2054 regression: the beat period must be fed from the *denormalized*
+    /// tempo. Both call sites (App::update, headless SceneRenderer::step) now
+    /// go through `AudioFeatures::beat_period_secs`; this drives the setter
+    /// exactly as they do and pins the end-to-end number — at 120 BPM,
+    /// `transition_beats = 4` is 2.000 s. The pre-fix `60.0 / bpm` on the
+    /// normalized value yielded 600 s here.
+    #[test]
+    fn transition_beats_uses_denormalized_tempo() {
+        use crate::audio::features::{AudioFeatures, BPM_NORM};
+
+        let feat = AudioFeatures {
+            bpm: 120.0 / BPM_NORM,
+            ..Default::default()
+        };
+        let mut tl = Timeline::new(
+            vec![
+                SceneCue::new("A"),
+                SceneCue {
+                    preset_name: "B".to_string(),
+                    transition: TransitionType::Dissolve,
+                    transition_secs: 7.0,
+                    hold_secs: None,
+                    label: None,
+                    param_overrides: Vec::new(),
+                    transition_beats: Some(4),
+                },
+            ],
+            false,
+            AdvanceMode::BeatSync { beats_per_cue: 4 },
+        );
+        tl.set_beat_period(feat.beat_period_secs());
+        tl.start(0);
+        match tl.go_next() {
+            TimelineEvent::BeginTransition { duration, .. } => {
+                assert!((duration - 2.0).abs() < 1e-6, "got {duration}");
+            }
+            other => panic!("expected BeginTransition, got {other:?}"),
+        }
+    }
+
     /// A zero, negative or non-finite period must not arm (division by the
     /// period's product happens in tick), so the setter filters it.
     #[test]

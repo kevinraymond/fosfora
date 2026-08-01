@@ -3,6 +3,14 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **Beat-length scene transitions now run at the right speed.** A cue with
+  `transition_beats` set resolved its length against a normalized tempo value, making
+  transitions 300× too slow — at 120 BPM a 4-beat dissolve took 10 minutes instead of
+  2 seconds, silently, live and in `--render-scene`.
+
 ## v1.31.0 — 2026-07-31
 
 ### Added
