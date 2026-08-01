@@ -24,7 +24,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let centre = ws * 0.5;
 
     let cycle = fract((u.bar_index + u.bar_phase) / bars);
-    let assemble = clamp(cycle * (1.0 + u.buildup * 0.5), 0.0, 1.0);
+    // Breathing assembly: rings build through the first half of the cycle and
+    // retract through the second — a triangle, not a sawtooth, so the cycle
+    // boundary (and any loop wrap) carries no reset snap.
+    let acc = clamp(cycle * (1.0 + u.buildup * 0.5), 0.0, 1.0);
+    let assemble = 1.0 - abs(1.0 - 2.0 * acc);
 
     // Beat-slammed center lock: hits on every beat, hardest on the "one".
     let beat_hit = exp(-u.beat_phase * 7.0);

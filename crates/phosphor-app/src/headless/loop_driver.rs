@@ -398,6 +398,38 @@ mod tests {
                 "{}: mid-cycle frame is empty",
                 effect.name
             );
+
+            // WRAP SMOOTHNESS (the jolt Kevin caught in a real player): bit-
+            // exact closure says nothing about the SIZE of the visual step
+            // across the wrap — a sawtooth cycle (reveal 0→1 then snap back)
+            // closes exactly and still jolts every cycle. Require the wrap
+            // step (frame N-1 → frame 0) to be comparable to ordinary frame
+            // steps sampled mid-loop.
+            let mad = |a: &[u8], b: &[u8]| -> f64 {
+                a.iter()
+                    .zip(b)
+                    .map(|(&x, &y)| (x as f64 - y as f64).abs())
+                    .sum::<f64>()
+                    / a.len() as f64
+            };
+            let last = session.render_frame_at(session.timing.frames - 1).unwrap();
+            let seam_step = mad(&last, &f0);
+            // Compare against the LARGEST ordinary step, sampled to include
+            // bar boundaries: effects may legitimately jump per bar (Reticle
+            // teleports targets on the "one"), and the wrap IS a bar boundary
+            // — it just must not be a bigger event than any other one.
+            let mut typical_max = 0.0f64;
+            for probe in [59u32, 119, 300] {
+                let a = session.render_frame_at(probe).unwrap();
+                let b = session.render_frame_at(probe + 1).unwrap();
+                typical_max = typical_max.max(mad(&a, &b));
+            }
+            assert!(
+                seam_step <= typical_max * 1.5 + 1.0,
+                "{}: wrap step {seam_step:.3} vs largest ordinary step {typical_max:.3} — \
+                 the cycle snaps at its boundary (sawtooth); make it breathe",
+                effect.name
+            );
             checked += 1;
         }
         assert!(

@@ -18,10 +18,15 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let bars = max(param(8u), 1.0);
     let tint = vec3f(param(9u), param(10u), param(11u));
 
-    // Master clock: one reveal per bars_per_cycle bars. A rising build
-    // accelerates the front — the reveal surges toward the drop.
+    // Master clock: one breath per bars_per_cycle bars. The reveal OPENS
+    // through the first half of the cycle and CLOSES through the second —
+    // a triangle, not a sawtooth, so there is no reset snap at the cycle
+    // boundary (live, every N bars) or at a loop wrap (the jolt Kevin caught:
+    // bit-exact closure is not visual smoothness). A rising build still
+    // accelerates the front.
     let cycle = fract((u.bar_index + u.bar_phase) / bars);
-    let cyc_eff = clamp(cycle * (1.0 + u.buildup * 0.6), 0.0, 1.0);
+    let cyc_acc = clamp(cycle * (1.0 + u.buildup * 0.6), 0.0, 1.0);
+    let cyc_eff = 1.0 - abs(1.0 - 2.0 * cyc_acc);
 
     let cell = ovl_cell_id(uv, cols, rows);
     let cuv = ovl_cell_uv(uv, cols, rows);
