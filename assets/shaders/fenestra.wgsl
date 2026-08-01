@@ -17,9 +17,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let bars = max(param(6u), 1.0);
     let tint = vec3f(param(7u), param(8u), param(9u));
 
-    let bar_clock = (u.bar_index + u.bar_phase) / bars;
-    let cycle = fract(bar_clock);
-    let cyc_idx = u32(floor(bar_clock));
+    // Loop contract (#2063): counters are consumed ONLY through cycle
+    // arithmetic — the constellation repeats every bars_per_cycle bars, so a
+    // loop of that length closes exactly. Variety comes from `seed`, not from
+    // a monotonic re-roll (which made the visual period infinite).
+    let cycle = fract((u.bar_index + u.bar_phase) / bars);
 
     // Aspect-corrected space so panels are true rectangles.
     let asp = u.resolution.x / max(u.resolution.y, 1.0);
@@ -38,8 +40,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         if f32(i) >= count {
             break;
         }
-        // Per-panel, per-cycle hashes: position, size, colour, entrance offset.
-        let key = i * 613u + cyc_idx * 2749u;
+        // Per-panel hashes: position, size, colour, entrance offset.
+        let key = i * 613u;
         let hx = ovl_cell_hash(key, seed);
         let hy = ovl_cell_hash(key + 97u, seed);
         let hw = ovl_cell_hash(key + 193u, seed);
@@ -49,7 +51,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
         // Snap in staggered across the first 60% of the cycle; release before the
         // wrap so the loop point is clean.
-        let at = ovl_stagger(i + cyc_idx * 31u, seed, 0.6);
+        let at = ovl_stagger(i, seed, 0.6);
         let attack = mix(0.1, 0.006, snap_eff);
         let env = ovl_trigger(cycle, at, attack, 0.28, 0.1);
 

@@ -78,6 +78,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Loop-export encode tests probe real ffmpeg (decision #2066); the
+      # renders themselves still need a GPU and stay dev-run.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
       - uses: dtolnay/rust-toolchain@1.97.0

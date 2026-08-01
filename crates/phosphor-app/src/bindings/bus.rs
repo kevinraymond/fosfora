@@ -89,7 +89,6 @@ impl BindingBus {
     /// bindings from the config dir. The headless renderer judges a scene on
     /// its own sidecars only — inheriting whatever global bindings happen to be
     /// on this machine would make the same scene render differently per host.
-    #[cfg(feature = "analyze")]
     pub(crate) fn new_isolated() -> Self {
         Self {
             bindings: Vec::new(),
@@ -109,7 +108,7 @@ impl BindingBus {
 
     /// Evaluate against audio-derived sources only — no MIDI enumeration, no
     /// UDP socket, no WebSocket state. The offline replay's per-hop entry.
-    #[cfg(feature = "analyze")]
+    #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub(crate) fn evaluate_offline(
         &mut self,
         audio: Option<&AudioFeatures>,
@@ -132,7 +131,7 @@ impl BindingBus {
     /// setting XDG_CONFIG_HOME process-wide would also redirect settings and
     /// caches. A missing file simply clears the preset scope, matching how a
     /// preset without a sidecar loads live.
-    #[cfg(feature = "analyze")]
+    #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub(crate) fn load_preset_bindings_from(&mut self, sidecar_path: &std::path::Path) {
         self.bindings.retain(|b| b.scope != BindingScope::Preset);
         self.merge_preset_bindings(persistence::load_from_path(&sidecar_path.to_path_buf()));

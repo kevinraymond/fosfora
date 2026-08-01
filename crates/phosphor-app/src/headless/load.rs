@@ -16,11 +16,13 @@ use anyhow::{Context, Result, bail};
 use crate::preset::Preset;
 use crate::scene::types::SceneSet;
 
+#[cfg_attr(not(feature = "analyze"), allow(dead_code))]
 pub struct LoadedScene {
     pub presets: Vec<(String, Preset)>,
     pub scene: SceneSet,
 }
 
+#[cfg_attr(not(feature = "analyze"), allow(dead_code))]
 pub fn load_scene_dir(dir: &Path) -> Result<LoadedScene> {
     if !dir.is_dir() {
         bail!("{} is not a directory", dir.display());

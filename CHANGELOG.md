@@ -3,6 +3,16 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Added
+- **Seamless beat-locked loop export.** `--render-loop <spec.loop.json>` renders any
+  phase-locked overlay to a mathematically seamless loop file — HAP, HAP Alpha (real
+  transparency for Resolume/VJ software), ProRes 4444, H.264/HEVC — with beat/bar motion
+  synthesized at an exact tempo (requested BPM snaps to the nearest frame-perfect one and
+  both are reported). One CLI call replaces the After Effects loop-compositing grind; needs
+  ffmpeg on PATH. See docs/loop-export.md.
+
 ## v1.32.0 — 2026-08-01
 
 ### Added

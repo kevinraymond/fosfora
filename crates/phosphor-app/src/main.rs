@@ -8,7 +8,6 @@ mod depth;
 mod download;
 mod effect;
 mod gpu;
-#[cfg(feature = "analyze")]
 mod headless;
 mod media;
 mod midi;
@@ -3993,6 +3992,68 @@ fn main() -> Result<()> {
         {
             eprintln!("--audio-test is only supported on Linux (PulseAudio backend)");
             std::process::exit(1);
+        }
+    }
+
+    // --render-loop <spec.loop.json>: seamless beat-locked loop export (#2063).
+    // Ships in release builds (decision #2066) — no cargo feature involved.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--render-loop") {
+            let Some(spec_path) = args.get(i + 1).filter(|a| !a.starts_with("--")) else {
+                eprintln!(
+                    "--render-loop needs a path: --render-loop <spec.loop.json> [--out <file>]"
+                );
+                std::process::exit(2);
+            };
+            let json = match std::fs::read_to_string(spec_path) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("cannot read {spec_path}: {e}");
+                    std::process::exit(2);
+                }
+            };
+            let spec = match headless::loop_spec::LoopSpec::from_json(&json) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            };
+            let out = args
+                .iter()
+                .position(|a| a == "--out")
+                .and_then(|j| args.get(j + 1))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(format!(
+                        "{}_{}bpm_{}bar.{}",
+                        spec.effect.to_lowercase().replace(' ', "_"),
+                        spec.bpm.round() as u32,
+                        spec.bars,
+                        spec.codec.extension()
+                    ))
+                });
+            match spec.snap() {
+                Ok(t) => eprintln!(
+                    "requested {:.2} -> effective {:.2} BPM ({} frames @ {}fps, {:.3}s)",
+                    spec.bpm, t.effective_bpm, t.frames, spec.fps, t.duration_secs
+                ),
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(2);
+                }
+            }
+            match headless::loop_encode::render_and_encode(&spec, &out) {
+                Ok(_) => {
+                    eprintln!("wrote {}", out.display());
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("loop render failed: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 

@@ -37,6 +37,7 @@ use crate::settings::{AlphaOutputMode, ParticleQuality};
 /// so the post-process output (not the HDR source) is what gets captured.
 pub const CAPTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+#[cfg_attr(not(feature = "analyze"), allow(dead_code))]
 pub struct SceneRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -69,6 +70,9 @@ pub struct SceneRenderer {
     pub warnings: Vec<String>,
 }
 
+// Much of this surface is driven only by the analyze-gated --render-scene
+// path; in default builds the loop driver uses a slice of it.
+#[cfg_attr(not(feature = "analyze"), allow(dead_code))]
 impl SceneRenderer {
     pub fn new(
         device: wgpu::Device,

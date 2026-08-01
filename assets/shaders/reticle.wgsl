@@ -27,9 +27,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let ws = vec2f(asp, 1.0);
     let p = uv * ws;
 
-    // bars_per_cycle re-seeds the whole constellation each cycle; within a cycle
-    // every reticle takes one target per bar.
-    let bar = u32(u.bar_index) + u32(floor((u.bar_index + u.bar_phase) / bars)) * 8191u;
+    // Loop contract (#2063): targets derive from the WITHIN-CYCLE bar number,
+    // never the raw monotonic counter — every reticle takes one target per bar
+    // and the rotation repeats each bars_per_cycle bars, so loops close
+    // exactly. `seed` re-rolls the whole rotation.
+    let bars_u = max(u32(bars), 1u);
+    let bar = u32(u.bar_index) % bars_u;
     let cycle = fract((u.bar_index + u.bar_phase) / bars);
 
     // Lock-on cadence doubles as a build rises (blended, so no threshold pop).
@@ -44,7 +47,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             break;
         }
         let cur = reticle_target(k, bar, seed, ws);
-        let nxt = reticle_target(k, bar + 1u, seed, ws);
+        let nxt = reticle_target(k, (bar + 1u) % bars_u, seed, ws);
         // Glide covers the last quarter of the bar; snap teleports on the "one".
         let glide = smoothstep(0.75, 1.0, u.bar_phase);
         let pos = select(mix(cur, nxt, glide), cur, snap_move > 0.5);
