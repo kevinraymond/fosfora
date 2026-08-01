@@ -665,10 +665,25 @@ mod tests {
     /// back. Rgba8Unorm rather than the production surface format: one row is
     /// exactly the 256-byte copy alignment and the readback needs no decode.
     fn probe_composite(device: &Device, queue: &Queue, params: PostParams) -> Vec<u8> {
+        // Flat opaque mid-grey — the historical probe scene.
+        let dim = PROBE_DIM;
+        let mut scene = vec![128u8; (dim * dim * 4) as usize];
+        for px in scene.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        probe_composite_scene(device, queue, params, &scene)
+    }
+
+    fn probe_composite_scene(
+        device: &Device,
+        queue: &Queue,
+        params: PostParams,
+        scene_px: &[u8],
+    ) -> Vec<u8> {
         let dim = PROBE_DIM;
         let format = TextureFormat::Rgba8Unorm;
 
-        let make_input = |label: &str, fill: u8| {
+        let make_input = |label: &str, px: &[u8]| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -683,12 +698,6 @@ mod tests {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let mut px = vec![fill; (dim * dim * 4) as usize];
-            for y in 0..dim {
-                for x in 0..dim {
-                    px[((y * dim + x) * 4 + 3) as usize] = 255;
-                }
-            }
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &tex,
@@ -696,7 +705,7 @@ mod tests {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &px,
+                px,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(dim * 4),
@@ -712,10 +721,9 @@ mod tests {
             (tex, view)
         };
 
-        // Mid-grey scene, black bloom: the only thing varying across pixels is
-        // the grain, so any difference between two renders is the grain moving.
-        let (_scene_tex, scene_view) = make_input("probe-scene", 128);
-        let (_bloom_tex, bloom_view) = make_input("probe-bloom", 0);
+        let (_scene_tex, scene_view) = make_input("probe-scene", scene_px);
+        let black = vec![0u8; (dim * dim * 4) as usize];
+        let (_bloom_tex, bloom_view) = make_input("probe-bloom", &black);
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("probe-sampler"),
@@ -839,6 +847,51 @@ mod tests {
     /// Grain only, no bloom/CA/vignette, linear tonemap so the noise is not
     /// compressed away. `grain_intensity` here is the final shader multiplier —
     /// the CPU side folds flatness and the 0.08 scale in before this point.
+    /// P0.2 acceptance (docs/alpha-audit.md): a known premultiplied pattern —
+    /// left half 50% grey `(64,64,64,128)`, right half fully transparent — through
+    /// the composite in Passthrough with every post effect off and linear tonemap
+    /// must read back within ±1/255 on every byte, ALPHA INCLUDED. This is the
+    /// surgical "where does alpha die" gate; the sRGB full-chain version lives in
+    /// headless::scene_renderer::tests::overlay_scene_alpha_reaches_readback.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn passthrough_preserves_known_premultiplied_pattern() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+
+        let dim = PROBE_DIM;
+        let mut scene = vec![0u8; (dim * dim * 4) as usize];
+        for y in 0..dim {
+            for x in 0..dim / 2 {
+                let i = ((y * dim + x) * 4) as usize;
+                scene[i] = 64;
+                scene[i + 1] = 64;
+                scene[i + 2] = 64;
+                scene[i + 3] = 128;
+            }
+        }
+        let params = PostParams {
+            bloom_intensity: 0.0,
+            ca_intensity: 0.0,
+            vignette_strength: 0.0,
+            grain_intensity: 0.0,
+            time: 0.0,
+            rms: 0.0,
+            alpha_mode: 2.0, // passthrough
+            tonemap_mode: 1.0,
+            grain_rate: 0.0,
+            _pad: [0.0; 3],
+        };
+        let out = probe_composite_scene(&device, &queue, params, &scene);
+        for (i, (&got, &want)) in out.iter().zip(scene.iter()).enumerate() {
+            assert!(
+                (got as i16 - want as i16).abs() <= 1,
+                "byte {i} ({}): got {got}, want {want} ±1",
+                ["r", "g", "b", "a"][i % 4]
+            );
+        }
+    }
+
     fn grain_only(time: f32, grain_rate: f32) -> PostParams {
         PostParams {
             bloom_intensity: 0.0,

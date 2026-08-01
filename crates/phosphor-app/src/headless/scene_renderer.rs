@@ -944,6 +944,121 @@ mod tests {
             mean > 1.0,
             "frame is (near) black — mean luma {mean:.3}; the chain rendered nothing"
         );
+        // Default-path alpha pin (overlay work, docs/alpha.md): these fixture
+        // effects are not `alpha: true`, so Auto must resolve Opaque and every
+        // readback texel must carry a = 255 — the regression the passthrough
+        // mode is most likely to cause is breaking THIS.
+        assert!(
+            rgba.chunks_exact(4).all(|px| px[3] == 255),
+            "non-overlay scene leaked non-opaque alpha into the capture"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    /// P0.3 acceptance (docs/alpha.md): a solo overlay layer over the transparent
+    /// clear, rendered through the FULL chain (compositor fast path → bloom-enabled
+    /// post composite → capture), with `output_alpha` left on Auto — which must
+    /// resolve to Passthrough because the layer's effect is tagged `alpha: true`.
+    /// Uncovered corners read back a = 0; the chrome carries solid alpha.
+    #[test]
+    #[ignore = "GPU"]
+    fn overlay_scene_alpha_reaches_readback() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let dir = std::env::temp_dir().join("phosphor_headless_overlay_alpha");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Overlay.json"),
+            r#"{"layers":[
+                 {"effect_name":"Bezel","blend_mode":"Normal","opacity":1.0,"params":{}}],
+               "active_layer":0}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("_scene.json"),
+            r#"{"version":1,"name":"OverlayAlpha","advance_mode":"Timer","cues":[
+                 {"preset_name":"Overlay","hold_secs":8.0}]}"#,
+        )
+        .unwrap();
+
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let (w, h) = (320u32, 180u32);
+        let mut sr = SceneRenderer::new(
+            (*device).clone(),
+            (*queue).clone(),
+            w,
+            h,
+            ParticleQuality::Medium,
+            dir.clone(),
+        )
+        .expect("renderer");
+        let loaded = crate::headless::load::load_scene_dir(&dir).expect("scene loads");
+        sr.install_scene(loaded);
+        sr.start();
+        assert!(sr.warnings.is_empty(), "warnings: {:?}", sr.warnings);
+
+        sr.uniforms.resolution = [w as f32, h as f32];
+        sr.uniforms.feedback_decay = 0.88;
+        // Mid-cycle bar clock so the reveal state is representative; no beat pulse.
+        let audio = crate::audio::AudioFeatures {
+            rms: 0.5,
+            centroid: 0.45,
+            bar_phase: 0.35,
+            bar_index: 5.0,
+            beat_index: 21.0,
+            beat_phase: 0.4,
+            ..Default::default()
+        };
+        for frame in 0..8u32 {
+            sr.uniforms.time = frame as f32 / 60.0;
+            sr.uniforms.delta_time = 1.0 / 60.0;
+            sr.uniforms.frame_index = frame as f32;
+            crate::gpu::uniforms::mirror_audio_features(&mut sr.uniforms, &audio);
+            crate::gpu::frame_prep::prepare_effect_layers(
+                &mut sr.layer_stack.layers,
+                &sr.uniforms,
+                &audio,
+                1.0 / 60.0,
+                &sr.device,
+                &sr.queue,
+                sr.layer_stack.active_layer,
+                sr.volumetric_enabled,
+                sr.volumetric_params,
+            );
+            sr.render_frame(frame == 7);
+        }
+        let rgba = sr.read_captured_frame().expect("readback");
+
+        // Uncovered regions (between the chrome and the scanlines) read back
+        // fully transparent — the P0.3 acceptance. A substantial share of the
+        // frame must be exactly a = 0: any opaque clear or alpha-stomping pass
+        // on the path collapses this to zero.
+        let transparent =
+            rgba.chunks_exact(4).filter(|px| px[3] == 0).count() as f64 / (w as f64 * h as f64);
+        assert!(
+            transparent > 0.2,
+            "only {:.1}% of the frame is a = 0 — something on the path is \
+             manufacturing alpha",
+            transparent * 100.0
+        );
+        // The chrome exists and is a sparse overlay, not a wash.
+        let covered =
+            rgba.chunks_exact(4).filter(|px| px[3] > 0).count() as f64 / (w as f64 * h as f64);
+        let amax = rgba.chunks_exact(4).map(|px| px[3]).max().unwrap();
+        assert!(amax > 100, "no solid chrome in the capture (max a {amax})");
+        assert!(
+            (0.001..0.8).contains(&covered),
+            "coverage {covered:.3} — overlay drew nothing or an opaque wash"
+        );
 
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");

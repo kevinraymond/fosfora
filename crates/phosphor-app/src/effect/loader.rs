@@ -2208,6 +2208,70 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     /// failed seven probes at once with "unknown identifier", because each carried
     /// its own hand-written `noise + palette` list. Pin the two together so the
     /// next library is a one-line change, not a scavenger hunt.
+    /// INV-B source lint, running in plain CI (no GPU): every effect declaring
+    /// `loop: "phase_locked"` must be a pure function of the uniform block —
+    /// no feedback passes, no previous-frame inputs, no particle system, and no
+    /// wall-clock uniforms in the (comment-stripped) shader source. The GPU
+    /// determinism probe (pass_executor.rs) proves bit-identity; this catches
+    /// violations without an adapter.
+    #[test]
+    fn phase_locked_effects_are_pure_functions_of_uniforms() {
+        use crate::effect::format::LoopMode;
+
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut checked = 0usize;
+        for effect in shipped_effects_for_test() {
+            if effect.loop_mode != LoopMode::PhaseLocked {
+                continue;
+            }
+            checked += 1;
+            let name = &effect.name;
+            assert!(
+                effect.particles.is_none(),
+                "{name}: phase_locked effects cannot carry a particle system (state)"
+            );
+            for pass in effect.normalized_passes() {
+                assert!(
+                    !pass.feedback,
+                    "{name}/{}: phase_locked forbids feedback passes",
+                    pass.name
+                );
+                assert!(
+                    pass.prev_inputs.is_empty(),
+                    "{name}/{}: phase_locked forbids previous-frame inputs",
+                    pass.name
+                );
+                let src_path = dir.join("shaders").join(&pass.shader);
+                let src = std::fs::read_to_string(&src_path)
+                    .unwrap_or_else(|e| panic!("{name}: cannot read {}: {e}", src_path.display()));
+                let code = strip_wgsl_comments(&src);
+                for token in [
+                    "feedback(",
+                    "u.time",
+                    "u.delta_time",
+                    "u.frame_index",
+                    "u.scroll_phase",
+                ] {
+                    assert!(
+                        !code.contains(token),
+                        "{name}/{}: phase_locked forbids `{token}` — all motion must derive \
+                         from beat/bar phases and counters",
+                        pass.shader
+                    );
+                }
+            }
+            assert!(
+                effect.alpha,
+                "{name}: the shipped phase_locked family is the overlay family — alpha: true"
+            );
+        }
+        assert!(
+            checked >= 4,
+            "expected the four overlay effects to be phase_locked, found {checked} — \
+             did the glob or the metadata rot?"
+        );
+    }
+
     #[test]
     fn probe_libs_match_production() {
         let embedded: Vec<&str> = LIB_SOURCES.iter().map(|(name, _)| *name).collect();

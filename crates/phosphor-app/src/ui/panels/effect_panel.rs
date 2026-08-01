@@ -141,7 +141,14 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String
     let builtin: Vec<(usize, &PfxEffect)> = builtin_all
         .iter()
         .copied()
-        .filter(|(_, e)| matches(e))
+        .filter(|(_, e)| e.category != "overlay" && matches(e))
+        .collect();
+    // The overlay family (category = "overlay") gets its own section: these are
+    // HUD layers meant to sit over other content, not scenes in themselves.
+    let overlay: Vec<(usize, &PfxEffect)> = builtin_all
+        .iter()
+        .copied()
+        .filter(|(_, e)| e.category == "overlay" && matches(e))
         .collect();
     let user: Vec<(usize, &PfxEffect)> = user_all
         .iter()
@@ -187,6 +194,19 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String
         });
     }
 
+    // ── Overlay section (built-in HUD family) ────────────────────────
+    if !overlay.is_empty() {
+        egui::CollapsingHeader::new(
+            RichText::new("Overlay")
+                .size(SMALL_SIZE)
+                .color(tc.text_secondary),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            draw_effect_grid(ui, &overlay, &ctx, pending_delete, &mut new_pending);
+        });
+    }
+
     // ── User section (hidden while a filter excludes everything in it)
     if !filtering || !user.is_empty() {
         let user_ctx = GridCtx {
@@ -212,7 +232,7 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String
         });
     }
 
-    if filtering && fav.is_empty() && builtin.is_empty() && user.is_empty() {
+    if filtering && fav.is_empty() && builtin.is_empty() && overlay.is_empty() && user.is_empty() {
         ui.label(
             RichText::new("No matches")
                 .size(SMALL_SIZE)

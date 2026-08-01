@@ -2147,6 +2147,132 @@ mod tests {
     // libs, and param-index typos that reference beyond the uniform block —
     // without launching the app. (Compute sims are not covered: they bind
     // particle buffers this harness doesn't build.)
+    // INV-B bit-identity gate, auto-covering every effect tagged `loop: "phase_locked"`
+    // (the plain-CI source lint lives in effect/loader.rs; this is the proof). Per
+    // effect: frame A and frame B share one uniform block and must read back
+    // byte-identically; frame C changes ONLY the wall-clock uniforms (time /
+    // delta_time / frame_index) and must equal A — any drift means motion is not
+    // purely phase-derived and exact loop export would be impossible. The same
+    // readback doubles as the per-effect alpha probe: transparent background must
+    // reach the bytes, with solid coverage present.
+    // Run: cargo test -p phosphor-app -- --ignored phase_locked_effects_render
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn phase_locked_effects_render_bit_identically() {
+        use crate::effect::format::LoopMode;
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (320u32, 180u32);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        let mut checked = 0usize;
+        for effect in crate::effect::loader::shipped_effects_for_test() {
+            if effect.loop_mode != LoopMode::PhaseLocked {
+                continue;
+            }
+            let name = effect.name.clone();
+            let passes = effect.normalized_passes();
+            assert_eq!(
+                passes.len(),
+                1,
+                "{name}: extend this probe's graph wiring for multi-pass phase-locked effects"
+            );
+            let src = std::fs::read_to_string(root.join("shaders").join(&passes[0].shader))
+                .expect("shader source");
+            let pipe = ShaderPipeline::new(
+                &device,
+                fmt,
+                &loader.prepend_library_with_inputs(&src, 0),
+                None,
+                0,
+            )
+            .unwrap_or_else(|e| panic!("{name}: pipeline: {e}"));
+            let executor = assemble(
+                &device,
+                &queue,
+                w,
+                h,
+                fmt,
+                &ubuf,
+                &placeholder,
+                &audio,
+                vec![("main", pipe, false, vec![], 1, 1.0)],
+            );
+
+            // One synthesized uniform block: .pfx param defaults through the
+            // production packing, mid-cycle phases, live counters, plausible audio.
+            let mut u = crate::gpu::ShaderUniforms::zeroed();
+            u.resolution = [w as f32, h as f32];
+            let mut store = crate::params::ParamStore::new();
+            store.load_from_defs(&effect.inputs);
+            u.params = store.pack_to_buffer();
+            u.time = 100.0;
+            u.delta_time = 1.0 / 60.0;
+            u.frame_index = 6000.0;
+            u.rms = 0.5;
+            u.bass = 0.4;
+            u.onset = 0.3;
+            u.centroid = 0.45;
+            u.flatness = 0.2;
+            u.bpm = 0.4;
+            u.beat_phase = 0.37;
+            u.bar_phase = 0.61;
+            u.beat_in_bar = 0.5;
+            u.key_class = 5.0 / 11.0;
+            u.key_is_minor = 1.0;
+            u.bar_index = 5.0;
+            u.beat_index = 23.0;
+            u.chroma = [0.5; 12];
+
+            let a = capture_pass_rgba(
+                &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, 0, w, h,
+            );
+            let b = capture_pass_rgba(
+                &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, 0, w, h,
+            );
+            assert_eq!(a, b, "{name}: two renders with identical uniforms differ");
+
+            let mut u2 = u;
+            u2.time = 427.3;
+            u2.delta_time = 0.004;
+            u2.frame_index = 12.0;
+            let c = capture_pass_rgba(
+                &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u2, 0, w, h,
+            );
+            assert_eq!(
+                a, c,
+                "{name}: wall-clock uniforms moved the picture — INV-B violation"
+            );
+
+            let (mut amin, mut amax) = (255u8, 0u8);
+            for px in a.chunks_exact(4) {
+                amin = amin.min(px[3]);
+                amax = amax.max(px[3]);
+            }
+            assert_eq!(
+                amin, 0,
+                "{name}: transparent background must reach readback"
+            );
+            assert!(
+                amax > 64,
+                "{name}: no solid coverage drawn (max alpha {amax})"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 4,
+            "expected the four overlay effects, probed {checked}"
+        );
+    }
+
     // Every overlay_lib.wgsl primitive drawn once over a transparent background,
     // premultiplied, through the production preamble. Asserts variance in RGB AND
     // alpha — a lib regression that flattens coverage (or a preamble change that

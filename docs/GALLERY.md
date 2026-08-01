@@ -8,7 +8,7 @@ Effects respond to what they hear, so what you see here is a starting point, not
 Change the music and they change with it; every parameter is also a slider, and can be driven
 by MIDI, OSC, a phone or a webcam.
 
-**48 effects.**
+**52 effects.**
 
 ## Shaders (15)
 
@@ -118,6 +118,24 @@ One engine, eight rules: a 3D cellular automaton evolving inside a volume and re
 
 
 ---
+
+## Overlay (4)
+
+HUD chrome with a real alpha channel — transparent backgrounds end to end, built to be layered
+*over* other content: another Fosfora layer, or someone else's visuals via Spout, Syphon or NDI
+with **Output alpha → Passthrough** (see [alpha.md](alpha.md)). Motion is locked to the beat and
+bar clock, not the wall clock, so every pattern lands on the music at any tempo.
+
+<table>
+<tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tessera.webp" width="100%" alt="Tessera"><br><b>Tessera</b><br><sub>A grid of tiles revealing in beat-locked waves — hash scatter, row sweep, or center-out. Punch mode knocks revealed tiles through a dark scrim, uncovering whatever sits beneath</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fenestra.webp" width="100%" alt="Fenestra"><br><b>Fenestra</b><br><sub>GUI panels snapping into place across the bar — staggered brackets and scrims arriving with a white flash, settling into palette color. Latin for "window"</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/reticle.webp" width="100%" alt="Reticle"><br><b>Reticle</b><br><sub>Crosshairs acquiring targets: each reticle re-positions every bar and locks on with a contracting bracket keyed to the beat</sub></td>
+</tr>
+<tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/bezel.webp" width="100%" alt="Bezel"><br><b>Bezel</b><br><sub>Border chrome: corner brackets, edge rules, tick marks and drifting scanlines with a subtle pulse on the beat — the always-on overlay</sub></td>
+</tr>
+</table>
 
 Clips were captured from the running app by [`scripts/capture/`](../scripts/capture), which
 drives real playback through the production render pipeline — post-processing and all — rather
