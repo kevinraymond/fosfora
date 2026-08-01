@@ -6,6 +6,12 @@
 ## Unreleased
 
 ### Added
+- **A new Overlay effect family: Tessera, Fenestra, Reticle and Bezel.** HUD-style
+  chrome — tile reveals, snapping panels, targeting crosshairs, border instrumentation —
+  rendered with real transparency and locked to the beat and bar clock rather than the
+  wall clock. Layer them over other Fosfora effects, or over anyone else's content in
+  Resolume/OBS via Spout, Syphon or NDI with Output alpha set to Passthrough. They live
+  in their own Overlay group in the effect browser.
 - **The output can carry real transparency.** Settings → Output alpha adds Auto /
   Opaque / Luma key / Passthrough: Passthrough sends the scene's actual (premultiplied)
   alpha to every sink — NDI, Spout and Syphon all transport it, so Fosfora can be keyed
