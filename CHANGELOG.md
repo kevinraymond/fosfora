@@ -10,8 +10,9 @@
   phase-locked overlay to a mathematically seamless loop file — HAP, HAP Alpha (real
   transparency for Resolume/VJ software), ProRes 4444, H.264/HEVC — with beat/bar motion
   synthesized at an exact tempo (requested BPM snaps to the nearest frame-perfect one and
-  both are reported). One CLI call replaces the After Effects loop-compositing grind; needs
-  ffmpeg on PATH. See docs/loop-export.md.
+  both are reported). Non-loopable effects get explicit best-effort escapes
+  (`--allow-non-loop`, `--crossfade-bars` with warmup). One CLI call replaces the After
+  Effects loop-compositing grind; needs ffmpeg on PATH. See docs/loop-export.md.
 
 ## v1.32.0 — 2026-08-01
 

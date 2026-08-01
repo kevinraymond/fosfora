@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use crate::headless::loop_spec::{LoopCodec, LoopSpec};
+use crate::headless::loop_spec::{BestEffort, LoopCodec, LoopSpec};
 
 /// Does the local ffmpeg have the encoder this codec needs? Returns the
 /// encoder name on success; an actionable error otherwise.
@@ -88,13 +88,14 @@ pub fn spawn(spec: &LoopSpec, fps_exact: u32, out: &Path) -> Result<Child, Strin
 /// timing for the CLI to report.
 pub fn render_and_encode(
     spec: &LoopSpec,
+    mode: BestEffort,
     out: &Path,
 ) -> Result<crate::headless::loop_spec::LoopTiming, String> {
     spec.snap()?; // fail fast before spawning ffmpeg
     let mut child = spawn(spec, spec.fps, out)?;
     let mut stdin = child.stdin.take().expect("piped stdin");
 
-    let result = crate::headless::loop_driver::render_loop(spec, |frame, rgba| {
+    let result = crate::headless::loop_driver::render_loop_with(spec, mode, |frame, rgba| {
         stdin
             .write_all(rgba)
             .map_err(|e| format!("ffmpeg stdin closed at frame {frame}: {e}"))

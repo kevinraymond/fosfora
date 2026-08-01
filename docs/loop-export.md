@@ -33,6 +33,22 @@ premult-vs-straight verdict per codec is established empirically in Resolume
 (P2.6, pending the rig session); any required conversion becomes a fixed,
 non-optional step of the encode path — there is deliberately no user toggle.
 
+## Best-effort modes (explicit flags, never implicit)
+
+For effects that are **not** `loop: "phase_locked"`, two second-class escapes
+exist — clearly labeled, with no closure guarantee:
+
+- `--allow-non-loop` — time-wrapped: drives the clock over the window and
+  hopes the effect's time usage is periodic.
+- `--crossfade-bars T [--warmup-bars W]` — renders `W` discarded warmup bars
+  (stateful effects settle), then the loop plus `T` extra bars, and crossfades
+  the tail into the head. The blend is a plain per-channel lerp, which is
+  correct *because* frames are premultiplied (premultiplied colors compose
+  linearly). Default output names carry a `~xfade` tag. Memory: one bar of
+  frames stays buffered.
+
+Phase-locked effects reject both flags — their loops already close exactly.
+
 ## Known limitations (v1)
 
 - Readback is 8-bit RGBA: ProRes 4444 masters are 8-bit-sourced; dark

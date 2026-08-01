@@ -12,7 +12,7 @@
 
 use crate::audio::features::{AudioFeatures, BPM_NORM};
 use crate::gpu::layer_builder::LayerBuildCtx;
-use crate::headless::loop_spec::{LoopAudio, LoopBackground, LoopSpec, LoopTiming};
+use crate::headless::loop_spec::{BestEffort, LoopAudio, LoopBackground, LoopSpec, LoopTiming};
 use crate::headless::scene_renderer::SceneRenderer;
 use crate::settings::{AlphaOutputMode, ParticleQuality};
 
@@ -88,36 +88,104 @@ pub struct LoopSession {
     height: u32,
 }
 
-/// Render every frame of `spec`, handing each frame's tightly-packed RGBA8
-/// bytes (sRGB-encoded, premultiplied when the background is transparent) to
-/// `on_frame` in order. Blocking readback per frame — export cares about
-/// determinism and simplicity, not pipelining.
-pub fn render_loop(
+/// Mode-aware render (P2.7). Exact and time-wrapped emit frames as rendered;
+/// crossfade renders warmup + loop + tail SEQUENTIALLY (stateful effects
+/// evolve across every call) and streams with bounded memory: the output loop
+/// starts at rendered frame W+T, so only the head window (T frames) is
+/// buffered, the middle streams as rendered, and the tail blends into the
+/// buffered head as it arrives. The blend is a plain per-channel lerp — legal
+/// precisely because frames are PREMULTIPLIED (premultiplied colors compose
+/// linearly; straight alpha would need unpremult/re-premult).
+pub fn render_loop_with(
     spec: &LoopSpec,
+    mode: BestEffort,
     mut on_frame: impl FnMut(u32, &[u8]) -> Result<(), String>,
 ) -> Result<LoopTiming, String> {
-    let mut session = LoopSession::create(spec)?;
-    for frame in 0..session.timing.frames {
-        let rgba = session.render_frame_at(frame)?;
-        on_frame(frame, &rgba)?;
+    let mut session = LoopSession::create(spec, mode)?;
+    let n = session.timing.frames;
+    match mode {
+        BestEffort::None | BestEffort::TimeWrapped => {
+            if matches!(mode, BestEffort::TimeWrapped) {
+                log::warn!(
+                    "[loop] time-wrapped best-effort render: '{}' has no closure guarantee",
+                    spec.effect
+                );
+            }
+            for frame in 0..n {
+                let rgba = session.render_frame_at(frame)?;
+                on_frame(frame, &rgba)?;
+            }
+        }
+        BestEffort::Crossfade {
+            tail_bars,
+            warmup_bars,
+        } => {
+            let bar_frames = (n / (spec.bars.max(1))).max(1);
+            let t = (tail_bars.max(1) * bar_frames).min(n / 2);
+            let w = warmup_bars * bar_frames;
+            log::warn!(
+                "[loop] crossfade best-effort render: {w} warmup frames discarded,                  {t}-frame seam blend — perceptual, not exact"
+            );
+            let mut head: Vec<Vec<u8>> = Vec::with_capacity(t as usize);
+            for frame in 0..(w + n + t) {
+                let rgba = session.render_frame_at(frame)?;
+                if frame < w {
+                    continue; // warmup: rendered to settle state, discarded
+                }
+                let k = frame - w;
+                if k < t {
+                    head.push(rgba); // head window: buffered, emitted blended at the end
+                } else if k < n {
+                    on_frame(k - t, &rgba)?; // middle: streams as rendered
+                } else {
+                    // Tail: blend toward the buffered head. Output frame
+                    // (n - t + i) fades rendered continuity into head[i], so
+                    // the file's wrap lands on head[t] == the first middle
+                    // frame — continuous by construction.
+                    let i = k - n;
+                    let weight = (i + 1) as f32 / (t + 1) as f32;
+                    let blended = blend_premultiplied(&rgba, &head[i as usize], weight);
+                    on_frame(n - t + i, &blended)?;
+                }
+            }
+        }
     }
     Ok(session.timing)
+}
+
+/// Per-channel lerp of two premultiplied RGBA8 frames: `w` = 0 → all `a`,
+/// 1 → all `b`.
+fn blend_premultiplied(a: &[u8], b: &[u8], w: f32) -> Vec<u8> {
+    debug_assert_eq!(a.len(), b.len());
+    a.iter()
+        .zip(b.iter())
+        .map(|(&x, &y)| (x as f32 + (y as f32 - x as f32) * w).round() as u8)
+        .collect()
 }
 
 impl LoopSession {
     /// Acquire a headless device and load the spec. One session per render —
     /// GPU state is not reused across specs.
-    pub fn create(spec: &LoopSpec) -> Result<Self, String> {
+    pub fn create(spec: &LoopSpec, mode: BestEffort) -> Result<Self, String> {
         let (device, queue, adapter) =
             crate::headless::gpu::create().map_err(|e| format!("headless GPU init: {e}"))?;
         log::info!("[loop] adapter: {adapter}");
-        Self::create_on(spec, device, queue)
+        Self::create_with(spec, mode, device, queue)
     }
 
-    /// Load the spec on an existing device/queue (the GPU probes share one
-    /// device process-wide; production goes through [`Self::create`]).
+    /// Exact-mode session on an existing device (the GPU probes' entry).
+    #[cfg(test)]
     pub fn create_on(
         spec: &LoopSpec,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) -> Result<Self, String> {
+        Self::create_with(spec, BestEffort::None, device, queue)
+    }
+
+    fn create_with(
+        spec: &LoopSpec,
+        mode: BestEffort,
         device: wgpu::Device,
         queue: wgpu::Queue,
     ) -> Result<Self, String> {
@@ -134,7 +202,7 @@ impl LoopSession {
         let _ = std::fs::create_dir_all(&scratch);
         let mut sr = SceneRenderer::new(device, queue, w, h, ParticleQuality::High, scratch)
             .map_err(|e| format!("renderer init: {e}"))?;
-        spec.validate(&sr.effect_loader.effects)?;
+        spec.validate_for(&sr.effect_loader.effects, mode)?;
 
         sr.output_alpha = match spec.background {
             LoopBackground::Transparent => AlphaOutputMode::Passthrough,
@@ -335,6 +403,114 @@ mod tests {
         assert!(
             checked >= 5,
             "expected the phase-locked family, got {checked}"
+        );
+    }
+
+    #[test]
+    fn blend_premultiplied_endpoints() {
+        let a = vec![10u8, 20, 30, 40];
+        let b = vec![110u8, 120, 130, 240];
+        assert_eq!(blend_premultiplied(&a, &b, 0.0), a);
+        assert_eq!(blend_premultiplied(&a, &b, 1.0), b);
+        assert_eq!(blend_premultiplied(&a, &b, 0.5), vec![60, 70, 80, 140]);
+    }
+
+    /// P2.7 acceptance: a crossfade render of a stateful effect completes with
+    /// the exact spec frame count, and its wrap seam is no worse than the
+    /// unblended (time-wrapped) seam of the same spec — a sanity check on the
+    /// mechanism, not a quality judgment.
+    /// Run: cargo test -p phosphor-app -- --ignored crossfade_reduces
+    #[test]
+    #[ignore = "GPU"]
+    fn crossfade_reduces_the_seam() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        let spec = LoopSpec::from_json(
+            r#"{"version":1,"effect":"Drift","bpm":120.0,"bars":1,"fps":30,
+                "resolution":[128,72],"codec":"h264","background":"opaque"}"#,
+        )
+        .unwrap();
+        let mad = |a: &[u8], b: &[u8]| -> f64 {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (x as f64 - y as f64).abs())
+                .sum::<f64>()
+                / a.len() as f64
+        };
+        // (first frame, last frame, emitted count) for a mode, using the same
+        // emission scheme render_loop_with implements.
+        let run = |mode: BestEffort| -> (Vec<u8>, Vec<u8>, u32) {
+            let mut session =
+                LoopSession::create_with(&spec, mode, (*device).clone(), (*queue).clone()).unwrap();
+            let n = session.timing.frames;
+            let (mut first, mut last, mut count) = (Vec::new(), Vec::new(), 0u32);
+            match mode {
+                BestEffort::None => unreachable!("exact mode not under test"),
+                BestEffort::TimeWrapped => {
+                    for k in 0..n {
+                        let rgba = session.render_frame_at(k).unwrap();
+                        if k == 0 {
+                            first = rgba.clone();
+                        }
+                        if k == n - 1 {
+                            last = rgba;
+                        }
+                        count += 1;
+                    }
+                }
+                BestEffort::Crossfade {
+                    tail_bars,
+                    warmup_bars,
+                } => {
+                    let bar_frames = (n / spec.bars.max(1)).max(1);
+                    let t = (tail_bars.max(1) * bar_frames).min(n / 2);
+                    let w = warmup_bars * bar_frames;
+                    let mut head: Vec<Vec<u8>> = Vec::new();
+                    for frame in 0..(w + n + t) {
+                        let rgba = session.render_frame_at(frame).unwrap();
+                        if frame < w {
+                            continue;
+                        }
+                        let k = frame - w;
+                        if k < t {
+                            head.push(rgba);
+                        } else if k < n {
+                            if k == t {
+                                first = rgba;
+                            }
+                            count += 1;
+                        } else {
+                            let i = k - n;
+                            let weight = (i + 1) as f32 / (t + 1) as f32;
+                            let blended = blend_premultiplied(&rgba, &head[i as usize], weight);
+                            if n - t + i == n - 1 {
+                                last = blended;
+                            }
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            (first, last, count)
+        };
+
+        let (tw_first, tw_last, tw_count) = run(BestEffort::TimeWrapped);
+        let (x_first, x_last, x_count) = run(BestEffort::Crossfade {
+            tail_bars: 1,
+            warmup_bars: 1,
+        });
+        assert_eq!(tw_count, 60);
+        assert_eq!(x_count, 60);
+        let seam_raw = mad(&tw_last, &tw_first);
+        let seam_x = mad(&x_last, &x_first);
+        eprintln!("seam raw {seam_raw:.3} vs crossfade {seam_x:.3}");
+        assert!(
+            seam_x <= seam_raw * 1.05 + 0.5,
+            "crossfade seam ({seam_x:.3}) worse than raw seam ({seam_raw:.3})"
         );
     }
 

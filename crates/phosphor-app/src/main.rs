@@ -4020,6 +4020,33 @@ fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             };
+            // Best-effort modes (P2.7): explicit flags only, second-class by design.
+            let crossfade_bars = args
+                .iter()
+                .position(|a| a == "--crossfade-bars")
+                .and_then(|j| args.get(j + 1))
+                .and_then(|v| v.parse::<u32>().ok());
+            let warmup_bars = args
+                .iter()
+                .position(|a| a == "--warmup-bars")
+                .and_then(|j| args.get(j + 1))
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(2);
+            let mode = if let Some(tail_bars) = crossfade_bars {
+                headless::loop_spec::BestEffort::Crossfade {
+                    tail_bars,
+                    warmup_bars,
+                }
+            } else if args.iter().any(|a| a == "--allow-non-loop") {
+                headless::loop_spec::BestEffort::TimeWrapped
+            } else {
+                headless::loop_spec::BestEffort::None
+            };
+            let xfade_tag = if crossfade_bars.is_some() {
+                "~xfade"
+            } else {
+                ""
+            };
             let out = args
                 .iter()
                 .position(|a| a == "--out")
@@ -4027,10 +4054,11 @@ fn main() -> Result<()> {
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
                     std::path::PathBuf::from(format!(
-                        "{}_{}bpm_{}bar.{}",
+                        "{}_{}bpm_{}bar{}.{}",
                         spec.effect.to_lowercase().replace(' ', "_"),
                         spec.bpm.round() as u32,
                         spec.bars,
+                        xfade_tag,
                         spec.codec.extension()
                     ))
                 });
@@ -4044,7 +4072,7 @@ fn main() -> Result<()> {
                     std::process::exit(2);
                 }
             }
-            match headless::loop_encode::render_and_encode(&spec, &out) {
+            match headless::loop_encode::render_and_encode(&spec, mode, &out) {
                 Ok(_) => {
                     eprintln!("wrote {}", out.display());
                     std::process::exit(0);

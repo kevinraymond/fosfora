@@ -65,6 +65,23 @@ pub enum LoopBackground {
     Opaque,
 }
 
+/// The best-effort render modes (P2.7): second-class by design, never applied
+/// implicitly, and never to phase-locked effects (whose loops already close
+/// exactly). CLI flags, not spec fields — a spec describes the loop, not the
+/// escape hatch used to approximate it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BestEffort {
+    /// Exact rendering only (the default; requires `loop: "phase_locked"`).
+    None,
+    /// `--allow-non-loop`: drive time over the window and hope the effect's
+    /// time usage happens to be periodic. No seam guarantee at all.
+    TimeWrapped,
+    /// `--crossfade-bars T` (+ `--warmup-bars W`): render W discarded warmup
+    /// bars, then loop + T extra bars, and crossfade the tail into the head.
+    /// Perceptual seaming — the ceiling for stateful effects, by design.
+    Crossfade { tail_bars: u32, warmup_bars: u32 },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopSpec {
     pub version: u32,
@@ -153,7 +170,17 @@ impl LoopSpec {
 
     /// Validate against the scanned effect library. Errors are user-facing and
     /// actionable — this is the wizard's error surface too (Phase 3).
+    /// Exact-mode rules; the best-effort modes route through
+    /// [`Self::validate_for`]. Unused internally today (the driver is
+    /// mode-aware); this is Phase 3's wizard-facing entry.
+    #[allow(dead_code)]
     pub fn validate(&self, effects: &[PfxEffect]) -> Result<(), String> {
+        self.validate_for(effects, BestEffort::None)
+    }
+
+    /// Mode-aware validation (P2.7). Best-effort modes waive the phase-locked
+    /// requirement — and only that; alpha/codec/backdrop rules always hold.
+    pub fn validate_for(&self, effects: &[PfxEffect], mode: BestEffort) -> Result<(), String> {
         let effect = effects
             .iter()
             .find(|e| e.name == self.effect)
@@ -202,12 +229,26 @@ impl LoopSpec {
             ));
         }
 
-        if effect.loop_mode != LoopMode::PhaseLocked {
-            return Err(format!(
-                "'{}' is not loop: \"phase_locked\" — its output is not guaranteed to close. \
-                 Render anyway with --allow-non-loop (time-wrapped) or --crossfade-bars N",
-                self.effect
-            ));
+        match mode {
+            BestEffort::None => {
+                if effect.loop_mode != LoopMode::PhaseLocked {
+                    return Err(format!(
+                        "'{}' is not loop: \"phase_locked\" — its output is not guaranteed to \
+                         close. Render anyway with --allow-non-loop (time-wrapped) or \
+                         --crossfade-bars N",
+                        self.effect
+                    ));
+                }
+            }
+            BestEffort::TimeWrapped | BestEffort::Crossfade { .. } => {
+                if effect.loop_mode == LoopMode::PhaseLocked {
+                    return Err(format!(
+                        "'{}' is phase-locked — its loops already close exactly; drop the \
+                         best-effort flag",
+                        self.effect
+                    ));
+                }
+            }
         }
 
         if self.audio == LoopAudio::File && self.audio_file.is_none() {
