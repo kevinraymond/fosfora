@@ -6,6 +6,12 @@
 ## Unreleased
 
 ### Added
+- **The output can carry real transparency.** Settings → Output alpha adds Auto /
+  Opaque / Luma key / Passthrough: Passthrough sends the scene's actual (premultiplied)
+  alpha to every sink — NDI, Spout and Syphon all transport it, so Fosfora can be keyed
+  over other content in Resolume or OBS without chroma tricks. Auto keeps existing
+  setups exactly as they were. See docs/alpha.md; the v4l2 virtual camera stays opaque
+  (the format has no alpha).
 - **Shaders can now count bars and beats.** The uniform block gains `bar_index` and
   `beat_index` — monotonic counters that step exactly when `bar_phase` / `beat_phase`
   wrap, so multi-bar patterns (`bar_index + bar_phase` as a running bar clock) are
