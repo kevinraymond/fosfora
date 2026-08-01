@@ -148,8 +148,16 @@ cap_wait_for_window() {
 # same reason.
 cap_detect_canvas() {
   local repo=$1 win=$2
-  local SX=999999 SY=999999 SR=0 SB=0 w
-  for w in $(xdotool search --name '^Fosfora$'); do
+  local SX=999999 SY=999999 SR=0 SB=0 w wins=
+  # xdotool's tree walk GetPropertys every window and dies with BadWindow if a
+  # transient (e.g. the desktop volume OSD that pops the moment playback starts)
+  # vanishes mid-walk — which the ERR trap turns into a dead run. Retry the race.
+  for _ in 1 2 3 4 5; do
+    wins=$(xdotool search --name '^Fosfora$' 2>/dev/null) && [[ -n $wins ]] && break
+    sleep 0.5
+  done
+  [[ -n $wins ]] || die "no Fosfora windows visible during canvas detection"
+  for w in $wins; do
     eval "$(xdotool getwindowgeometry --shell "$w" 2>/dev/null)" || continue
     (( X  < SX )) && SX=$X
     (( Y  < SY )) && SY=$Y
@@ -158,7 +166,8 @@ cap_detect_canvas() {
   done
   log "searching for canvas within ${SX},${SY} $((SR-SX))x$((SB-SY))"
 
-  eval "$(xdotool getwindowgeometry --shell "$win")"
+  eval "$(xdotool getwindowgeometry --shell "$win" 2>/dev/null)" \
+    || die "client window $win vanished during canvas detection"
   local cx cy cw ch
   read -r cx cy cw ch < <("$repo/scripts/capture/find_canvas.py" \
                             --region "$SX" "$SY" "$((SR-SX))" "$((SB-SY))" \
