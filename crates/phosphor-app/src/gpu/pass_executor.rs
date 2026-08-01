@@ -2306,6 +2306,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         vec2f(0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0),
     );
     cover = max(cover, 0.25 * ovl_flood(uv, seeds, 3u, 0.3, 0.2, 7.0));
+    // Instrumentation primitives (epic pass): segment, ring, arc, tick ring.
+    cover = max(cover, ovl_segment(uv, vec2f(0.1, 0.8), vec2f(0.45, 0.55), 0.006));
+    cover = max(cover, ovl_ring(uv, vec2f(0.5), 0.3, 0.005));
+    cover = max(cover, ovl_arc(uv, vec2f(0.5), 0.34, phase, 0.2, 0.01));
+    cover = max(cover, ovl_ticks_ring(uv, vec2f(0.5), 0.38, 24.0, 0.03, 0.008));
     let rgb = phosphor_palette(ch, vec3f(0.5), vec3f(0.5), vec3f(1.0), vec3f(0.0, 0.33, 0.67));
     let a = clamp(cover, 0.0, 1.0);
     return vec4f(rgb * a, a); // premultiplied

@@ -117,3 +117,46 @@ fn ovl_cross(uv: vec2f, center: vec2f, arm: f32, gap: f32, thickness: f32) -> f3
     let bar_v = (1.0 - smoothstep(half_t - e, half_t + e, q.x)) * in_reach_y;
     return max(bar_h, bar_v);
 }
+
+// Stroked line segment from `a` to `b`.
+fn ovl_segment(uv: vec2f, a: vec2f, b: vec2f, thickness: f32) -> f32 {
+    let e = max(thickness * 0.25, 1e-4);
+    let pa = uv - a;
+    let ba = b - a;
+    let t = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+    let d = length(pa - ba * t);
+    return 1.0 - smoothstep(thickness * 0.5 - e, thickness * 0.5 + e, d);
+}
+
+// Stroked circle of radius `radius`.
+fn ovl_ring(uv: vec2f, center: vec2f, radius: f32, thickness: f32) -> f32 {
+    let e = max(thickness * 0.25, 1e-4);
+    let d = abs(length(uv - center) - radius);
+    return 1.0 - smoothstep(thickness * 0.5 - e, thickness * 0.5 + e, d);
+}
+
+// Partial ring: `start` and `sweep` in turns (0..1), so rotations driven by a
+// cycle phase loop exactly. Sweep >= 1 is a full ring.
+fn ovl_arc(uv: vec2f, center: vec2f, radius: f32, start: f32, sweep: f32, thickness: f32) -> f32 {
+    let d = uv - center;
+    // atan2 -> turns in [0,1)
+    let ang = fract(atan2(d.y, d.x) * 0.15915494 - start);
+    let soft = 0.01;
+    let mask = smoothstep(0.0, soft, ang) * (1.0 - smoothstep(sweep - soft, sweep, ang));
+    return ovl_ring(uv, center, radius, thickness) * select(mask, 1.0, sweep >= 1.0);
+}
+
+// `count` radial tick marks on a ring: from `radius` outward by `len`.
+fn ovl_ticks_ring(uv: vec2f, center: vec2f, radius: f32, count: f32, len: f32, thickness: f32) -> f32 {
+    let d = uv - center;
+    let r = length(d);
+    let e = max(len * 0.2, 1e-4);
+    let radial = smoothstep(radius - e, radius, r) * (1.0 - smoothstep(radius + len, radius + len + e, r));
+    // Angular slot width from arc-length: thickness / circumference, in turns.
+    let ang = fract(atan2(d.y, d.x) * 0.15915494);
+    let slot = fract(ang * count);
+    let w = thickness * count * 0.15915494 / max(r, 1e-4);
+    let sw = max(w * 0.35, 1e-3);
+    let tick = 1.0 - smoothstep(w - sw, w + sw, min(slot, 1.0 - slot) * 2.0);
+    return radial * tick;
+}

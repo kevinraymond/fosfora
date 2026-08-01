@@ -8,7 +8,7 @@ Effects respond to what they hear, so what you see here is a starting point, not
 Change the music and they change with it; every parameter is also a slider, and can be driven
 by MIDI, OSC, a phone or a webcam.
 
-**52 effects.**
+**53 effects.**
 
 ## Shaders (15)
 
@@ -119,7 +119,7 @@ One engine, eight rules: a 3D cellular automaton evolving inside a volume and re
 
 ---
 
-## Overlay (4)
+## Overlay (5)
 
 HUD chrome with a real alpha channel — transparent backgrounds end to end, built to be layered
 *over* other content: another Fosfora layer, or someone else's visuals via Spout, Syphon or NDI
@@ -133,6 +133,7 @@ bar clock, not the wall clock, so every pattern lands on the music at any tempo.
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/reticle.webp" width="100%" alt="Reticle"><br><b>Reticle</b><br><sub>Crosshairs acquiring targets: each reticle re-positions every bar and locks on with a contracting bracket keyed to the beat</sub></td>
 </tr>
 <tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/astrolabe.webp" width="100%" alt="Astrolabe"><br><b>Astrolabe</b><br><sub>A full-frame targeting instrument assembling ring by ring across the cycle — degree ticks, counter-rotating sweep arms, orbiting target diamonds, a center lock slamming on every downbeat</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/bezel.webp" width="100%" alt="Bezel"><br><b>Bezel</b><br><sub>Border chrome: corner brackets, edge rules, tick marks and drifting scanlines with a subtle pulse on the beat — the always-on overlay</sub></td>
 </tr>
 </table>
