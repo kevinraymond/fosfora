@@ -3,14 +3,9 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.32.0 — 2026-08-01
 
 ### Added
-- **Overlays that see what's beneath them: Limn and Intarsia.** A new `@backdrop` input
-  hands an effect the live composite of every layer below it — Limn traces the content's
-  edges with dashes marching in time, Intarsia fills its color patches with beat-revealed
-  mosaic tiles that take their colors from what they cover. Layer them over any effect or
-  media layer; solo they draw nothing (there is nothing beneath to see).
 - **A new Overlay effect family: Tessera, Fenestra, Reticle, Bezel and Astrolabe.** HUD-style
   chrome — tile reveals, snapping panels, targeting crosshairs, border instrumentation, and
   a full-frame targeting-array set piece — builds accelerate them, drops strobe them —
@@ -18,6 +13,11 @@
   wall clock. Layer them over other Fosfora effects, or over anyone else's content in
   Resolume/OBS via Spout, Syphon or NDI with Output alpha set to Passthrough. They live
   in their own Overlay group in the effect browser.
+- **Overlays that see what's beneath them: Limn and Intarsia.** A new `@backdrop` input
+  hands an effect the live composite of every layer below it — Limn traces the content's
+  edges with dashes marching in time, Intarsia fills its color patches with beat-revealed
+  mosaic tiles that take their colors from what they cover. Layer them over any effect or
+  media layer; solo they draw nothing (there is nothing beneath to see).
 - **The output can carry real transparency.** Settings → Output alpha adds Auto /
   Opaque / Luma key / Passthrough: Passthrough sends the scene's actual (premultiplied)
   alpha to every sink — NDI, Spout and Syphon all transport it, so Fosfora can be keyed
