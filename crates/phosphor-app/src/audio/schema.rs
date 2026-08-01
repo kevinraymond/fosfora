@@ -106,7 +106,7 @@ pub struct FeatureDef {
     /// A8 (#1459). Orthogonal to `smooth.bypass`, which cannot stand in for it:
     /// `dominant_chroma` is an argmax index that must not be lerped yet is smoothed, and
     /// `bpm` Holds on decay yet lerps fine. Set via [`def_hold`]; [`def`] defaults to
-    /// `Lerp` since 65 of the 74 slots are continuous.
+    /// `Lerp` since 72 of the 83 slots are continuous.
     pub interp: InterpPolicy,
 }
 
@@ -445,6 +445,13 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.08, 0.08),
         Scale,
     ),
+    // ---- Overlay clock (v4) ----
+    // Monotonic raw counters: never normalize (a count is producer-owned), never smooth
+    // (an EMA between bar 4 and bar 5 is not a bar), never lerp (Hold — the render thread
+    // reconciles them against its local phases, see interp::reconcile_index), and Hold on
+    // a stalled device exactly like `bpm` — a counter must not decay toward zero.
+    def_hold("bar_index", Passthrough, SmoothParams::bypass(), Hold),
+    def_hold("beat_index", Passthrough, SmoothParams::bypass(), Hold),
 ];
 
 /// Terse constructor so the table above reads as one row per feature. Interpolates
@@ -568,6 +575,11 @@ mod tests {
         // A13b appended after the v3 tail, so every index above is unmoved.
         assert_eq!(FEATURES[74].name, "band_pan_sub_bass");
         assert_eq!(FEATURES[80].name, "band_pan_brilliance");
+        // v4 overlay clock appended last, so every index above is unmoved.
+        assert_eq!(f.bar_index, 81.0);
+        assert_eq!(f.beat_index, 82.0);
+        assert_eq!(FEATURES[81].name, "bar_index");
+        assert_eq!(FEATURES[82].name, "beat_index");
     }
 
     /// Every BIPOLAR feature — one centred at 0.5 encoding a position rather than an amount —
@@ -610,8 +622,10 @@ mod tests {
     ///   bar clock, which happen to be contiguous (33..=54); the A13 stereo block (55..=57,
     ///   producer-remapped to 0..1); the A18 structure block (58..=60); and most of the v3 (#1629)
     ///   reserved tail — `harmonic_ratio` (63, a level-invariant balance), A15 pitch (64..=65),
-    ///   A16 contrast (66..=72) — all producer-scaled to 0..1; and the A13b per-band pan block
-    ///   (74..=80), which the StereoAnalyzer remaps to 0..1 and holds at 0.5 for an empty band.
+    ///   A16 contrast (66..=72) — all producer-scaled to 0..1; the A13b per-band pan block
+    ///   (74..=80), which the StereoAnalyzer remaps to 0..1 and holds at 0.5 for an empty band;
+    ///   and the v4 overlay-clock counters (81..=82) — raw monotonic counts the normalizer
+    ///   must never touch.
     /// - **Adaptive** (gated percentile ranging): the energy-like features — the 7 bands, rms (7),
     ///   flux (10), the A14 HPSS energies `percussive_energy` / `harmonic_energy` (61, 62), and the
     ///   A16 `timbre_flux` (73) — raw levels of unknown absolute scale.
@@ -621,7 +635,7 @@ mod tests {
             let expected = match i {
                 9 | 11 | 12 | 13 | 14 => FixedRange,
                 20..=32 => ZScore,
-                8 | 15..=19 | 33..=60 | 63..=72 | 74..=80 => Passthrough,
+                8 | 15..=19 | 33..=60 | 63..=72 | 74..=82 => Passthrough,
                 _ => Adaptive,
             };
             assert_eq!(
@@ -640,6 +654,8 @@ mod tests {
         for (i, def) in FEATURES.iter().enumerate() {
             let expected = match def.name {
                 "bpm" | "key_class" | "key_is_minor" | "pitch" => Hold,
+                // v4 counters: a stalled device must not walk a monotonic count backward.
+                "bar_index" | "beat_index" => Hold,
                 "beat" | "downbeat" | "drop" => ForceZero,
                 _ => Scale,
             };
@@ -651,9 +667,10 @@ mod tests {
         }
     }
 
-    /// A8 (#1459) interp exemptions: 9 of 74 slots must never be blended between audio
-    /// frames — the 1-frame triggers, the two wrapping sawtooths, and the categorical
-    /// indices. Everything else is a continuous quantity and lerps.
+    /// A8 (#1459) interp exemptions: 11 of 83 slots must never be blended between audio
+    /// frames — the 1-frame triggers, the two wrapping sawtooths, the categorical
+    /// indices, and the v4 monotonic counters. Everything else is a continuous quantity
+    /// and lerps.
     ///
     /// Note this cannot be derived from `smooth.bypass`, and the two sets deliberately
     /// disagree in both directions: `dominant_chroma` is smoothed but must Hold (an argmax
@@ -675,6 +692,9 @@ mod tests {
                 "dominant_chroma" | "key_class" | "key_is_minor" | "beat_in_bar" => {
                     InterpPolicy::Hold
                 }
+                // v4 counters: a value between two bar indices is not a bar. The render
+                // thread reconciles the held value against its local phase (interp.rs).
+                "bar_index" | "beat_index" => InterpPolicy::Hold,
                 _ => InterpPolicy::Lerp,
             };
             assert_eq!(

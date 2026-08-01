@@ -67,6 +67,16 @@ pub struct DownbeatResult {
     /// of `bar_phase` at this exact rate rather than re-deriving one from `bpm` and `meter`;
     /// see `DownbeatTracker::bar_clock` and `interp::FeatureInterpolator::advance_bar_phase`.
     pub bar_duration: f64,
+    /// 0-based index of the current bar — the count of downbeats fired minus one, held
+    /// between downbeats. Steps by exactly 1 the frame `bar_phase` resets, so
+    /// `bar_index + bar_phase` is a continuous monotonic bar clock. After a meter/phase
+    /// re-lock this is deliberately NOT `beat_index / meter` — it counts "ones" actually
+    /// fired, which is what phase-locked visuals want. Exact in f32 to 2^24 bars.
+    pub bar_index: f32,
+    /// 0-based index of the current beat interval (count of fired beats minus one), held
+    /// between beats. Pairs with `beat_phase` the same way `bar_index` pairs with
+    /// `bar_phase`.
+    pub beat_index: f32,
 }
 
 pub struct DownbeatTracker {
@@ -79,6 +89,9 @@ pub struct DownbeatTracker {
     have_prev: bool,
     /// Monotonic beat counter (advances once per fired beat).
     beat_idx: u64,
+    /// Monotonic downbeat counter (advances once per fired "one"). See
+    /// `DownbeatResult::bar_index` for the emitted semantics.
+    bar_idx: u64,
     /// Locked meter (3 or 4) and which beat of the bar is the "one".
     meter: usize,
     phase: usize,
@@ -105,6 +118,7 @@ impl DownbeatTracker {
             prev_chroma: [0.0; 12],
             have_prev: false,
             beat_idx: 0,
+            bar_idx: 0,
             meter: 4,
             phase: 0,
             candidate: None,
@@ -161,6 +175,10 @@ impl DownbeatTracker {
             bar_phase,
             beat_in_bar: self.cur_beat_in_bar,
             bar_duration,
+            // saturating_sub: "no bar/beat yet" and "inside the first one" both read 0,
+            // matching the phases (both sit at 0 before their clock starts).
+            bar_index: self.bar_idx.saturating_sub(1) as f32,
+            beat_index: self.beat_idx.saturating_sub(1) as f32,
         }
     }
 
@@ -220,6 +238,7 @@ impl DownbeatTracker {
         let is_downbeat = pos == 0;
 
         if is_downbeat {
+            self.bar_idx += 1;
             self.last_downbeat_time = timestamp;
             if beat.bpm > 1.0 {
                 self.bar_duration = (60.0 / beat.bpm as f64) * self.meter as f64;
@@ -435,6 +454,94 @@ mod tests {
         assert!(!fired.is_empty(), "downbeats should fire");
         for w in fired.windows(2) {
             assert_eq!(w[1] - w[0], 4, "downbeats spaced one bar (4 beats) apart");
+        }
+    }
+
+    /// v4 overlay clock: `beat_index` steps by exactly 1 per fired beat, `bar_index`
+    /// steps by exactly 1 on the fired "one" (spaced `meter` beats apart) and holds
+    /// everywhere else — including on the between-beat frames where no beat fires.
+    #[test]
+    fn counters_step_on_fire_and_hold_between() {
+        let mut t = DownbeatTracker::new();
+        run_meter(&mut t, 4, 32, 120.0);
+        assert_eq!(t.meter(), 4, "should lock 4/4");
+
+        let period = 60.0 / 120.0f64;
+        let t0 = 32.0 * period;
+        let chroma = [0.5; 12];
+        let mut prev = t.process(
+            &beat_result(120.0),
+            [1.0, 0.2, 0.1],
+            0.9,
+            &chroma,
+            t0,
+            false,
+        );
+        let mut bar_steps = Vec::new();
+        for i in 1..16 {
+            let ts = t0 + i as f64 * period;
+            // A between-beat frame first: both counters must hold.
+            let held = t.process(
+                &silent_beat(120.0),
+                [0.1, 0.1, 0.1],
+                0.5,
+                &chroma,
+                ts - period / 2.0,
+                false,
+            );
+            assert_eq!(
+                held.beat_index, prev.beat_index,
+                "beat_index held between beats"
+            );
+            assert_eq!(
+                held.bar_index, prev.bar_index,
+                "bar_index held between beats"
+            );
+
+            let accent = i % 4 == 0;
+            let flux = if accent {
+                [1.0, 0.2, 0.1]
+            } else {
+                [0.15, 0.3, 0.2]
+            };
+            let r = t.process(
+                &beat_result(120.0),
+                flux,
+                if accent { 0.9 } else { 0.5 },
+                &chroma,
+                ts,
+                false,
+            );
+            assert_eq!(
+                r.beat_index,
+                prev.beat_index + 1.0,
+                "beat_index steps by exactly 1 per fired beat"
+            );
+            let bar_step = r.bar_index - prev.bar_index;
+            assert!(
+                bar_step == 0.0 || bar_step == 1.0,
+                "bar_index steps by 0 or 1, got {bar_step}"
+            );
+            assert_eq!(
+                bar_step == 1.0,
+                r.downbeat > 0.5,
+                "bar_index steps exactly when the downbeat fires"
+            );
+            if bar_step == 1.0 {
+                bar_steps.push(i);
+            }
+            prev = r;
+        }
+        assert!(
+            bar_steps.len() >= 3,
+            "expected several bars, got {bar_steps:?}"
+        );
+        for w in bar_steps.windows(2) {
+            assert_eq!(
+                w[1] - w[0],
+                4,
+                "bar_index steps spaced one bar (4 beats) apart"
+            );
         }
     }
 

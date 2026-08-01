@@ -204,6 +204,14 @@ struct PhosphorUniforms {
     // 0.5 = centred, 0 = hard left, 1 = hard right; a band with no energy holds 0.5.
     // Same band order as sub_bass..brilliance above. Read it with band_pan(i).
     band_pan: array<vec4f, 2>,
+
+    // Overlay clock (v4): monotonic 0-based counters, stepping by 1 exactly when the
+    // matching phase sawtooth wraps — `bar_index + bar_phase` is a continuous multi-bar
+    // clock (raw counts, exact to 2^24).
+    bar_index: f32,
+    beat_index: f32,
+    _pad_clock0: f32,
+    _pad_clock1: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;

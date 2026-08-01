@@ -69,6 +69,12 @@ struct PhosphorUniforms {
     timbre_flux: f32,
     // A13b (#1801) per-band pan, sub_bass..brilliance. 0.5 = centred.
     band_pan: array<vec4f, 2>,
+    // Overlay clock (v4): monotonic 0-based counters; bar_index + bar_phase is a
+    // continuous multi-bar clock.
+    bar_index: f32,
+    beat_index: f32,
+    _pad_clock0: f32,
+    _pad_clock1: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;

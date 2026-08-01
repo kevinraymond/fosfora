@@ -120,6 +120,16 @@ pub struct ShaderUniforms {
     // helper rather than by hand.
     pub band_pan: [f32; 8],
     // 32 bytes (432 total)
+
+    // ---- Overlay clock (v4 ABI bump) ----
+    // Monotonic 0-based counters from the DownbeatTracker (raw counts, exact in f32 to
+    // 2^24): each steps by 1 exactly when its phase sawtooth wraps, so
+    // `bar_index + bar_phase` is a continuous multi-bar clock — the primitive the overlay
+    // family's `bars_per_cycle` runs on. Appended so every offset above stays put.
+    pub bar_index: f32,
+    pub beat_index: f32,
+    pub _pad_clock: [f32; 2],
+    // 16 bytes (448 total)
 }
 
 pub struct UniformBuffer {
@@ -283,6 +293,9 @@ pub fn mirror_audio_features(u: &mut ShaderUniforms, f: &crate::audio::AudioFeat
     u.contrast_5 = f.contrast_5;
     u.contrast_mean = f.contrast_mean;
     u.timbre_flux = f.timbre_flux;
+    // Overlay clock (v4).
+    u.bar_index = f.bar_index;
+    u.beat_index = f.beat_index;
 }
 
 #[cfg(test)]
@@ -290,13 +303,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shader_uniforms_size_432() {
-        // 288 (through chroma) + 28 reserved audio scalars = 400, then the A13b per-band pan
-        // block (#1801) appends 8 slots = 432. The #1629 "v3" bump added 13 scalars
-        // (A14/A15/A16), absorbing the single pad the #1505 "v2" bump left at 352. Must stay a
-        // multiple of 16 for the array<vec4f> members and match the WGSL PhosphorUniforms
-        // struct byte-for-byte.
-        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 432);
+    fn shader_uniforms_size_448() {
+        // 288 (through chroma) + 28 reserved audio scalars = 400, the A13b per-band pan
+        // block (#1801) appends 8 slots = 432, then the v4 overlay clock appends
+        // bar_index/beat_index + 2 pads = 448. Must stay a multiple of 16 for the
+        // array<vec4f> members and match the WGSL PhosphorUniforms struct byte-for-byte
+        // (declared twice: effect/loader.rs UNIFORM_BLOCK and assets/shaders/default.wgsl).
+        assert_eq!(std::mem::size_of::<ShaderUniforms>(), 448);
     }
 
     #[test]

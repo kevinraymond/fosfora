@@ -171,10 +171,22 @@ impl FeatureInterpolator {
         // of samples. Advance our own copies every render frame instead, resynced to the
         // detector's — the sawtooth's *rate* is what must stay true, and `bpm` /
         // `bar_duration` give it exactly.
+        let audio_beat_phase = features.beat_phase;
+        let audio_bar_phase = features.bar_phase;
         features.beat_phase =
             self.advance_beat_phase(dt, features.beat_phase, features.bpm, phase_frozen);
         features.bar_phase =
             self.advance_bar_phase(dt, features.bar_phase, bar_duration, phase_frozen);
+        // The v4 counters Hold from the same older frame the phases came from, so
+        // (index, phase) was coherent — until the two lines above replaced the phases
+        // with locally-advanced copies that can wrap up to ~1.5 hops before/after the
+        // held counter steps. Re-pair each counter with the phase it now rides with,
+        // or `bar_index + bar_phase` pops by a whole bar-slot for a frame or two at
+        // every wrap on high-refresh displays.
+        features.bar_index =
+            reconcile_index(features.bar_index, audio_bar_phase, features.bar_phase);
+        features.beat_index =
+            reconcile_index(features.beat_index, audio_beat_phase, features.beat_phase);
         Some(features)
     }
 
@@ -374,6 +386,28 @@ fn interp_features(a: &AudioFeatures, b: &AudioFeatures, alpha: f32) -> AudioFea
     out
 }
 
+/// Re-pair a Hold-policy monotonic counter (v4 `bar_index`/`beat_index`) with the
+/// locally-advanced copy of its phase.
+///
+/// The counter and `audio_phase` come from the same older bracketing frame, so the pair is
+/// coherent at hop granularity — but the local PLL phase that replaces `audio_phase` in the
+/// sampled vector can wrap up to ~1.5 hops before or after that frame's counter step. A
+/// phase disagreement > 0.5 means the two sit on opposite sides of a wrap: the local phase
+/// already wrapped while the held counter hasn't stepped (counter one behind), or the
+/// audio phase wrapped — stepping the held counter — while the local phase hasn't
+/// (counter one ahead). Stateless by design: any other frame the two agree and `idx`
+/// passes through untouched.
+fn reconcile_index(idx: f32, audio_phase: f32, local_phase: f32) -> f32 {
+    let d = local_phase - audio_phase;
+    if d < -0.5 {
+        idx + 1.0
+    } else if d > 0.5 {
+        (idx - 1.0).max(0.0)
+    } else {
+        idx
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +467,64 @@ mod tests {
             clock += RENDER_DT as f64;
         }
         out
+    }
+
+    /// The wrap-skew cases `reconcile_index` exists for, plus the identity cases.
+    #[test]
+    fn reconcile_index_repairs_wrap_skew() {
+        // Local phase wrapped first: the held counter is one bar behind.
+        assert_eq!(reconcile_index(4.0, 0.97, 0.02), 5.0);
+        // Audio phase wrapped first (held counter already stepped), local hasn't.
+        assert_eq!(reconcile_index(5.0, 0.01, 0.96), 4.0);
+        // Agreement: counter passes through.
+        assert_eq!(reconcile_index(4.0, 0.50, 0.55), 4.0);
+        assert_eq!(reconcile_index(4.0, 0.0, 0.0), 4.0);
+        // Never below zero (startup: audio wrapped before the first bar exists).
+        assert_eq!(reconcile_index(0.0, 0.01, 0.96), 0.0);
+    }
+
+    /// End-to-end: a 2 s bar clock whose `bar_index` steps at every audio-side wrap must
+    /// come out of `sample()` as a continuous monotonic `bar_index + bar_phase` clock —
+    /// no ±1 bar-slot pops where the local PLL phase wraps ahead of/behind the held
+    /// counter. (Without `reconcile_index` in `sample()`, this fails with ~1.0-sized
+    /// discontinuities at bar boundaries.)
+    #[test]
+    fn bar_index_stays_paired_with_local_phase() {
+        let mut it = FeatureInterpolator::new(SR);
+        // ~6.25 s at 144 Hz ≈ 3 bars.
+        let samples = run(&mut it, 900, BAR_2S, |t| {
+            let mut f = bar_feats((t / BAR_2S).fract() as f32);
+            f.bar_index = (t / BAR_2S).floor() as f32;
+            f
+        });
+        assert!(samples.len() > 800, "harness produced {}", samples.len());
+        for w in samples.windows(2) {
+            let ca = w[0].bar_index + w[0].bar_phase;
+            let cb = w[1].bar_index + w[1].bar_phase;
+            // The PLL's soft resync may sweep the clock back by a bounded sliver; a
+            // counter/phase mispair is a full bar-slot. Split the difference at 0.1.
+            assert!(
+                cb > ca - 0.1,
+                "bar clock popped backwards: {ca} -> {cb} (bar_index {} -> {}, bar_phase {} -> {})",
+                w[0].bar_index,
+                w[1].bar_index,
+                w[0].bar_phase,
+                w[1].bar_phase
+            );
+            assert!(
+                (w[1].bar_index - w[0].bar_index).abs() <= 1.0,
+                "bar_index stepped by more than one bar"
+            );
+        }
+        let first = samples.first().unwrap();
+        let last = samples.last().unwrap();
+        let advanced = (last.bar_index + last.bar_phase) - (first.bar_index + first.bar_phase);
+        // 900 render frames = 6.25 s ≈ 3.1 bars; allow slack for the startup fallback
+        // and the playhead's target delay.
+        assert!(
+            (2.5..=3.5).contains(&advanced),
+            "bar clock advanced {advanced} bars over ~3.1 bars of audio"
+        );
     }
 
     #[test]

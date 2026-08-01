@@ -5,6 +5,14 @@
 
 ## Unreleased
 
+### Added
+- **Shaders can now count bars and beats.** The uniform block gains `bar_index` and
+  `beat_index` — monotonic counters that step exactly when `bar_phase` / `beat_phase`
+  wrap, so multi-bar patterns (`bar_index + bar_phase` as a running bar clock) are
+  expressible for the first time. ABI: `PhosphorUniforms` grows 432 → 448 bytes; shaders
+  using the auto-injected block need no changes, hand-declared copies must append the
+  two fields plus two pad slots.
+
 ### Fixed
 - **Beat-length scene transitions now run at the right speed.** A cue with
   `transition_beats` set resolved its length against a normalized tempo value, making

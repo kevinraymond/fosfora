@@ -254,6 +254,8 @@ impl HopAnalyzer {
         raw.downbeat = db.downbeat;
         raw.bar_phase = db.bar_phase;
         raw.beat_in_bar = db.beat_in_bar;
+        raw.bar_index = db.bar_index;
+        raw.beat_index = db.beat_index;
 
         // A18 (#1469): section novelty / build-up / drop. Reads the pre-normalization
         // snapshot + the beat result; heavy work is decimated to ~10 Hz internally.
