@@ -17,6 +17,37 @@ pub enum EffectType {
     Feedback,
 }
 
+/// Loop-export contract (overlay initiative): how an effect's motion relates to time.
+///
+/// `PhaseLocked` declares INV-B purity — the effect is a pure function of the uniform
+/// block and its params: no `feedback()`, no history, no `u.time`-driven motion; all
+/// animation derives from the beat/bar phases and counters. Two frames rendered with
+/// identical uniforms are bit-identical, which is what makes exact loop export possible.
+/// Enforced by the phase-locked source lint and the GPU determinism probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopMode {
+    /// Ordinary effect: free-running time, feedback and history allowed.
+    #[default]
+    Free,
+    /// Pure function of the uniform block; all motion phase-derived.
+    PhaseLocked,
+}
+
+impl LoopMode {
+    fn is_free(&self) -> bool {
+        *self == LoopMode::Free
+    }
+}
+
+fn default_category() -> String {
+    "effect".to_string()
+}
+
+fn is_default_category(c: &str) -> bool {
+    c == "effect"
+}
+
 /// A render pass definition within a multi-pass effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PassDef {
@@ -181,6 +212,21 @@ pub struct PfxEffect {
     /// If true, effect is hidden from UI (not shown in effects panel or next/prev cycling).
     #[serde(default)]
     pub hidden: bool,
+    /// Browser grouping bucket: `"effect"` (default) lists normally, `"overlay"` groups
+    /// under the Overlay section. Free-form so future families need no schema change.
+    #[serde(
+        default = "default_category",
+        skip_serializing_if = "is_default_category"
+    )]
+    pub category: String,
+    /// The effect emits a meaningful alpha channel (HUD/overlay content designed to be
+    /// layered over other sources). Drives the Auto output-alpha resolution and the
+    /// alpha-variance render probes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+    /// Spelled `loop` in the JSON (`loop` is a Rust keyword).
+    #[serde(rename = "loop", default, skip_serializing_if = "LoopMode::is_free")]
+    pub loop_mode: LoopMode,
     /// Explicit effect type override (shader/particle/feedback).
     /// If absent, auto-detected: no particles → Shader, particles → Particle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -231,7 +277,12 @@ impl PfxEffect {
                 || self.author != other.author
                 || self.description != other.description
                 || self.hidden != other.hidden
-                || self.audio_mappings != other.audio_mappings,
+                || self.audio_mappings != other.audio_mappings
+                // Overlay metadata: absent here, an edit diffs empty and hot reload
+                // skips the swap (app.rs early-returns on an empty diff).
+                || self.category != other.category
+                || self.alpha != other.alpha
+                || self.loop_mode != other.loop_mode,
             inputs_changed: self.inputs != other.inputs,
             postprocess_changed: self.postprocess != other.postprocess,
             passes_changed: self.normalized_passes() != other.normalized_passes(),
@@ -287,6 +338,9 @@ mod tests {
             particles: None,
             audio_mappings: vec![],
             hidden: false,
+            category: default_category(),
+            alpha: false,
+            loop_mode: LoopMode::Free,
             effect_type: None,
             source_path: None,
         };
@@ -311,6 +365,9 @@ mod tests {
             particles: None,
             audio_mappings: vec![],
             hidden: false,
+            category: default_category(),
+            alpha: false,
+            loop_mode: LoopMode::Free,
             effect_type: None,
             source_path: None,
         };
@@ -339,6 +396,9 @@ mod tests {
             particles: None,
             audio_mappings: vec![],
             hidden: false,
+            category: default_category(),
+            alpha: false,
+            loop_mode: LoopMode::Free,
             effect_type: None,
             source_path: None,
         };
@@ -346,6 +406,59 @@ mod tests {
         assert_eq!(passes.len(), 1);
         assert_eq!(passes[0].shader, "a.wgsl");
         assert!(!passes[0].feedback);
+    }
+
+    /// Overlay metadata (category / alpha / loop): absent fields default — every
+    /// pre-existing .pfx parses unchanged — and the wire spellings are exactly
+    /// "overlay" / true / "phase_locked".
+    #[test]
+    fn overlay_metadata_defaults_and_parses() {
+        let old: PfxEffect = serde_json::from_str(r#"{"name":"Old"}"#).unwrap();
+        assert_eq!(old.category, "effect");
+        assert!(!old.alpha);
+        assert_eq!(old.loop_mode, LoopMode::Free);
+
+        let ovl: PfxEffect = serde_json::from_str(
+            r#"{"name":"Ovl","category":"overlay","alpha":true,"loop":"phase_locked"}"#,
+        )
+        .unwrap();
+        assert_eq!(ovl.category, "overlay");
+        assert!(ovl.alpha);
+        assert_eq!(ovl.loop_mode, LoopMode::PhaseLocked);
+
+        // Round-trip: the wire spellings survive re-serialization…
+        let json = serde_json::to_string(&ovl).unwrap();
+        assert!(json.contains(r#""loop":"phase_locked""#), "{json}");
+        assert!(json.contains(r#""category":"overlay""#), "{json}");
+        // …and default values are skipped, so writing an old effect back out
+        // (Copy / shader-editor save) does not spray new keys into its file.
+        let old_json = serde_json::to_string(&old).unwrap();
+        assert!(!old_json.contains("category"), "{old_json}");
+        assert!(!old_json.contains("alpha"), "{old_json}");
+        assert!(!old_json.contains("loop"), "{old_json}");
+    }
+
+    /// A category/alpha/loop edit must register as a metadata diff — the hot-reload
+    /// path early-returns on an empty diff, so a field missing from `diff()` would
+    /// make its edits silently un-reloadable.
+    #[test]
+    fn overlay_metadata_changes_diff_as_metadata() {
+        let base = make_effect("Base", "a.wgsl");
+        for mutate in [
+            (|e: &mut PfxEffect| e.category = "overlay".into()) as fn(&mut PfxEffect),
+            |e| e.alpha = true,
+            |e| e.loop_mode = LoopMode::PhaseLocked,
+        ] {
+            let mut edited = base.clone();
+            mutate(&mut edited);
+            let d = base.diff(&edited);
+            assert!(d.metadata_changed, "edit must diff as metadata");
+            assert!(
+                !d.needs_rebuild(),
+                "metadata edits must not rebuild pipelines"
+            );
+        }
+        assert!(base.diff(&base.clone()).is_empty());
     }
 
     #[test]
@@ -475,6 +588,9 @@ mod tests {
             particles: None,
             audio_mappings: vec![],
             hidden: false,
+            category: default_category(),
+            alpha: false,
+            loop_mode: LoopMode::Free,
             effect_type: None,
             source_path: None,
         }

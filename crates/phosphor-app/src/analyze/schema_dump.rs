@@ -35,7 +35,9 @@ use crate::params::ParamDef;
 /// Bumped when the shape below changes in a way a pinned generator would care
 /// about. Separate from [`crate::analyze::report::ANALYSIS_VERSION`]: the two
 /// files move independently.
-pub const CAPABILITIES_VERSION: u32 = 1;
+///
+/// v2: per-effect overlay metadata — `category`, `alpha`, `loop`.
+pub const CAPABILITIES_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 pub struct Capabilities {
@@ -72,6 +74,14 @@ pub struct EffectCapability {
     pub audio_mappings: Vec<AudioMapping>,
     pub pass_count: usize,
     pub has_particles: bool,
+    /// Browser grouping bucket (`"effect"` default, `"overlay"` for the HUD family).
+    pub category: String,
+    /// Emits a meaningful alpha channel (overlay content, layerable over other sources).
+    pub alpha: bool,
+    /// `"free"` or `"phase_locked"` (pure function of the uniform block; exact-loop
+    /// exportable). Wire spelling of [`crate::effect::format::LoopMode`].
+    #[serde(rename = "loop")]
+    pub loop_mode: String,
 }
 
 #[derive(Serialize)]
@@ -161,6 +171,9 @@ fn effects(loader_effects: &[PfxEffect]) -> Vec<EffectCapability> {
             audio_mappings: e.audio_mappings.clone(),
             pass_count: e.passes.len(),
             has_particles: e.particles.is_some(),
+            category: e.category.clone(),
+            alpha: e.alpha,
+            loop_mode: wire_name(&e.loop_mode),
         })
         .collect()
 }
