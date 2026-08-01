@@ -1225,6 +1225,16 @@ impl ApplicationHandler for PhosphorApp {
                     app.settings.save();
                 }
 
+                // Handle output-alpha mode change from settings panel
+                let set_output_alpha: Option<crate::settings::AlphaOutputMode> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_output_alpha")));
+                if let Some(mode) = set_output_alpha {
+                    app.settings.output_alpha = mode;
+                    app.settings.save();
+                }
+
                 // Handle particle quality change from settings panel
                 let set_quality: Option<crate::settings::ParticleQuality> = app
                     .egui_overlay

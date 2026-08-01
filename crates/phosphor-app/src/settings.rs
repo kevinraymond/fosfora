@@ -66,6 +66,44 @@ impl ParticleQuality {
     }
 }
 
+/// What the alpha channel of the final composite carries — on screen, into every
+/// output sink (NDI/Spout/Syphon capture reuses the same composite pass), and in
+/// headless renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AlphaOutputMode {
+    /// Decide per frame: Passthrough when every enabled layer is an effect tagged
+    /// `alpha: true` (an overlay scene), else the NDI "Alpha from brightness"
+    /// checkbox picks Luma, else Opaque. Matches pre-overlay behavior exactly for
+    /// existing setups.
+    #[default]
+    Auto,
+    /// Alpha forced to 1.0 (the historical behavior).
+    Opaque,
+    /// Alpha derived from output brightness — the legacy NDI luma-key look.
+    Luma,
+    /// The scene's real coverage alpha survives to the output (premultiplied; see
+    /// docs/alpha.md).
+    Passthrough,
+}
+
+impl AlphaOutputMode {
+    pub const ALL: &'static [AlphaOutputMode] = &[
+        AlphaOutputMode::Auto,
+        AlphaOutputMode::Opaque,
+        AlphaOutputMode::Luma,
+        AlphaOutputMode::Passthrough,
+    ];
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            AlphaOutputMode::Auto => "Auto",
+            AlphaOutputMode::Opaque => "Opaque",
+            AlphaOutputMode::Luma => "Luma key",
+            AlphaOutputMode::Passthrough => "Passthrough",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsConfig {
     pub version: u32,
@@ -99,6 +137,10 @@ pub struct SettingsConfig {
     /// Names, not indices — the library re-scans and reorders; names survive it.
     #[serde(default)]
     pub favorite_effects: Vec<String>,
+    /// Output alpha mode (overlay initiative). `#[serde(default)]` = Auto, which
+    /// reproduces pre-overlay behavior byte-for-byte on old settings files.
+    #[serde(default)]
+    pub output_alpha: AlphaOutputMode,
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -120,6 +162,7 @@ impl Default for SettingsConfig {
             tempo: TempoConfig::default(),
             auto_reconnect: true,
             favorite_effects: Vec::new(),
+            output_alpha: AlphaOutputMode::default(),
         }
     }
 }

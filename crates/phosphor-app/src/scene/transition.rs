@@ -210,7 +210,10 @@ impl TransitionRenderer {
                 view: &snapshot.view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    // Dead store — the fullscreen triangle overwrites every texel
+                    // with blend: None — but TRANSPARENT keeps the invariant that no
+                    // clear on the frame path manufactures opaque alpha (docs/alpha.md).
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -275,7 +278,10 @@ impl TransitionRenderer {
                 view: &output.view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    // Dead store — the fullscreen triangle overwrites every texel
+                    // with blend: None — but TRANSPARENT keeps the invariant that no
+                    // clear on the frame path manufactures opaque alpha (docs/alpha.md).
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,

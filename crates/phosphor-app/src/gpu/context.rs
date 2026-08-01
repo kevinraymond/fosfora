@@ -153,7 +153,18 @@ impl GpuContext {
             height: size.height.max(1),
             present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: capabilities.alpha_modes[0],
+            // Pin Opaque when the platform offers it (it was only ever selected by
+            // accident of alpha_modes ordering before): with the passthrough output
+            // alpha mode the composite can carry a < 1, and a non-opaque swapchain
+            // would let the window itself turn transparent on some compositors.
+            alpha_mode: if capabilities
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::Opaque)
+            {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                capabilities.alpha_modes[0]
+            },
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);

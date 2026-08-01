@@ -1,6 +1,6 @@
 use egui::{RichText, Ui};
 
-use crate::settings::{BandScale, ParticleQuality};
+use crate::settings::{AlphaOutputMode, BandScale, ParticleQuality};
 use crate::ui::theme::ThemeMode;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets::rows;
@@ -12,6 +12,7 @@ pub fn draw_settings_panel(
     current_band_scale: BandScale,
     use_ffmpeg_webcam: bool,
     auto_reconnect: bool,
+    output_alpha: AlphaOutputMode,
 ) {
     rows::combo_row(
         ui,
@@ -49,6 +50,32 @@ pub fn draw_settings_panel(
                 if r.clicked() && q != current_quality {
                     ui.ctx().data_mut(|d| {
                         d.insert_temp(egui::Id::new("set_particle_quality"), q);
+                    });
+                }
+            }
+        },
+    );
+
+    rows::combo_row(
+        ui,
+        "output_alpha_selector",
+        "Output alpha",
+        Some(
+            "What the alpha channel of the output carries — on screen and into every \
+             sink (NDI/Spout/Syphon). Auto: passthrough when the scene is all overlay \
+             effects, else the NDI luma-key checkbox, else opaque. Passthrough sends \
+             the scene's real (premultiplied) transparency.",
+        ),
+        output_alpha.display_name(),
+        |ui| {
+            for &m in AlphaOutputMode::ALL {
+                let r = ui.selectable_label(
+                    m == output_alpha,
+                    RichText::new(m.display_name()).size(SMALL_SIZE),
+                );
+                if r.clicked() && m != output_alpha {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("set_output_alpha"), m);
                     });
                 }
             }

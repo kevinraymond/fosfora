@@ -31,7 +31,7 @@ use crate::gpu::volumetric::VolumetricParams;
 use crate::preset::PresetStore;
 use crate::scene::cueing::MorphSnapshot;
 use crate::scene::timeline::{Timeline, TimelineEvent};
-use crate::settings::ParticleQuality;
+use crate::settings::{AlphaOutputMode, ParticleQuality};
 
 /// The capture surface format. `FrameCapture` reads back 4-byte texels only,
 /// so the post-process output (not the HDR source) is what gets captured.
@@ -62,6 +62,9 @@ pub struct SceneRenderer {
     pub morph_to: Option<MorphSnapshot>,
     pub pending_cue_overrides: Option<usize>,
     pub frame_count: u32,
+    /// Output-alpha mode; Auto resolves per frame from the layer stack exactly as
+    /// the live path does (a solo `alpha: true` overlay renders with passthrough).
+    pub output_alpha: AlphaOutputMode,
     /// Everything this run could not reproduce from the live app, in order.
     pub warnings: Vec<String>,
 }
@@ -116,6 +119,7 @@ impl SceneRenderer {
             morph_to: None,
             pending_cue_overrides: None,
             frame_count: 0,
+            output_alpha: AlphaOutputMode::default(),
             warnings: Vec::new(),
         })
     }
@@ -600,7 +604,12 @@ impl SceneRenderer {
                 self.uniforms.onset,
                 self.uniforms.flatness,
                 &pp,
-                false,
+                crate::gpu::frame_graph::resolve_output_alpha(
+                    self.output_alpha,
+                    &self.layer_stack,
+                    &self.effect_loader.effects,
+                    false,
+                ),
             );
             self.capture.copy_to_staging(&mut encoder);
         }

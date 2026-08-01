@@ -3135,6 +3135,26 @@ impl App {
         }
     }
 
+    /// The frame's output-alpha mode; both render branches and the capture path
+    /// (shared post-params buffer) see this one resolution.
+    fn resolve_output_alpha(&self) -> crate::gpu::postprocess::AlphaMode {
+        crate::gpu::frame_graph::resolve_output_alpha(
+            self.settings.output_alpha,
+            &self.layer_stack,
+            &self.effect_loader.effects,
+            {
+                #[cfg(feature = "ndi")]
+                {
+                    self.ndi.config.alpha_from_luma
+                }
+                #[cfg(not(feature = "ndi"))]
+                {
+                    false
+                }
+            },
+        )
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         // Check for GPU device loss
         if self
@@ -3167,6 +3187,10 @@ impl App {
                 }
             }
         }
+
+        // Resolved before execute_and_composite: `source` borrows the compositor
+        // for the rest of the frame, and the resolver reads &self.
+        let alpha_mode = self.resolve_output_alpha();
 
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
@@ -3242,16 +3266,7 @@ impl App {
                 self.uniforms.onset,
                 self.uniforms.flatness,
                 &new_pp,
-                {
-                    #[cfg(feature = "ndi")]
-                    {
-                        self.ndi.config.alpha_from_luma
-                    }
-                    #[cfg(not(feature = "ndi"))]
-                    {
-                        false
-                    }
-                },
+                alpha_mode,
             );
 
             // NDI capture
@@ -3399,16 +3414,7 @@ impl App {
             self.uniforms.onset,
             self.uniforms.flatness,
             &postprocess,
-            {
-                #[cfg(feature = "ndi")]
-                {
-                    self.ndi.config.alpha_from_luma
-                }
-                #[cfg(not(feature = "ndi"))]
-                {
-                    false
-                }
-            },
+            alpha_mode,
         );
 
         // NDI capture: render composite to capture texture + copy to staging

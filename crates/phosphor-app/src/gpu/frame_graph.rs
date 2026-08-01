@@ -8,10 +8,52 @@
 
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::effect::format::PostProcessDef;
+use crate::effect::format::{PfxEffect, PostProcessDef};
 use crate::gpu::compositor::{Compositor, LayerComposite};
 use crate::gpu::layer::LayerStack;
+use crate::gpu::postprocess::AlphaMode;
 use crate::gpu::render_target::RenderTarget;
+use crate::settings::AlphaOutputMode;
+
+/// Resolve the frame's output-alpha mode (overlay initiative; docs/alpha.md).
+///
+/// Shared by the live path (both `App::render` branches) and the headless
+/// renderer so screen, capture and offline output can never disagree. Auto
+/// resolves to Passthrough exactly when the scene *is* an overlay — at least
+/// one enabled layer, and every enabled layer is an effect tagged
+/// `alpha: true` (a media layer or any ordinary effect means the content
+/// underneath is the picture, so the frame stays opaque). Otherwise the NDI
+/// "Alpha from brightness" checkbox keeps selecting the legacy luma key —
+/// existing setups see no change.
+pub(crate) fn resolve_output_alpha(
+    setting: AlphaOutputMode,
+    layer_stack: &LayerStack,
+    effects: &[PfxEffect],
+    ndi_alpha_from_luma: bool,
+) -> AlphaMode {
+    match setting {
+        AlphaOutputMode::Opaque => AlphaMode::Opaque,
+        AlphaOutputMode::Luma => AlphaMode::Luma,
+        AlphaOutputMode::Passthrough => AlphaMode::Passthrough,
+        AlphaOutputMode::Auto => {
+            let enabled: Vec<_> = layer_stack.layers.iter().filter(|l| l.enabled).collect();
+            let all_overlay = !enabled.is_empty()
+                && enabled.iter().all(|l| {
+                    l.as_effect()
+                        .and_then(|e| e.effect_index)
+                        .and_then(|i| effects.get(i))
+                        .is_some_and(|fx| fx.alpha)
+                });
+            if all_overlay {
+                AlphaMode::Passthrough
+            } else if ndi_alpha_from_luma {
+                AlphaMode::Luma
+            } else {
+                AlphaMode::Opaque
+            }
+        }
+    }
+}
 
 /// Execute every enabled layer and composite the stack; returns the HDR source
 /// for post-processing plus the active layer's postprocess settings.

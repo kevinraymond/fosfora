@@ -35,6 +35,31 @@ struct BlurParams {
     _pad: [f32; 2],
 }
 
+/// The per-frame resolved output-alpha mode the composite shader executes.
+///
+/// This is the *resolved* form of [`crate::settings::AlphaOutputMode`] — Auto has
+/// already been decided by `frame_graph::resolve_output_alpha` by the time it gets
+/// here. Values are the WGSL-side encoding in `PostParams::alpha_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlphaMode {
+    /// Alpha forced to 1.0 (historical behavior).
+    Opaque,
+    /// Alpha derived from output brightness (legacy NDI luma key).
+    Luma,
+    /// The scene's real coverage alpha survives to the output (premultiplied).
+    Passthrough,
+}
+
+impl AlphaMode {
+    fn as_f32(self) -> f32 {
+        match self {
+            AlphaMode::Opaque => 0.0,
+            AlphaMode::Luma => 1.0,
+            AlphaMode::Passthrough => 2.0,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 struct PostParams {
@@ -44,7 +69,8 @@ struct PostParams {
     grain_intensity: f32,
     time: f32,
     rms: f32,
-    alpha_from_luma: f32,
+    /// 0 = opaque, 1 = luma-derived, 2 = scene-alpha passthrough ([`AlphaMode`]).
+    alpha_mode: f32,
     tonemap_mode: f32, // 0 = ACES (house look), 1 = linear passthrough (SuperSplat-faithful)
     grain_rate: f32,   // grain updates per second; <= 0 = every frame (see #1983)
     _pad: [f32; 3],
@@ -202,7 +228,7 @@ impl PostProcessChain {
         onset: f32,
         flatness: f32,
         overrides: &PostProcessDef,
-        alpha_from_luma: bool,
+        alpha_mode: AlphaMode,
     ) {
         if !self.enabled {
             // Simple blit fallback
@@ -284,7 +310,7 @@ impl PostProcessChain {
             },
             time,
             rms,
-            alpha_from_luma: if alpha_from_luma { 1.0 } else { 0.0 },
+            alpha_mode: alpha_mode.as_f32(),
             tonemap_mode: if overrides.tonemap == "linear" {
                 1.0
             } else {
@@ -821,7 +847,7 @@ mod tests {
             grain_intensity: 0.5,
             time,
             rms: 0.0,
-            alpha_from_luma: 0.0,
+            alpha_mode: 0.0,
             tonemap_mode: 1.0,
             grain_rate,
             _pad: [0.0; 3],

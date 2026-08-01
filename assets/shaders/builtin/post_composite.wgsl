@@ -13,7 +13,7 @@ struct PostParams {
     grain_intensity: f32,  // film grain (flatness-driven)
     time: f32,
     rms: f32,
-    alpha_from_luma: f32,
+    alpha_mode: f32,       // 0 = opaque, 1 = luma-derived, 2 = scene-alpha passthrough
     tonemap_mode: f32,     // 0 = ACES, 1 = linear passthrough (SuperSplat-faithful)
     grain_rate: f32,       // grain updates per second; <= 0 = every frame
     // Scalar pads, not a vec3f: a vec3f would align to 16 and push the struct
@@ -45,15 +45,19 @@ fn hash_grain(p: vec2f) -> f32 {
 fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     let ca = post.ca_intensity;
 
+    // Center tap: RGB for the no-CA path / green channel, and the scene's coverage
+    // alpha — the one value the passthrough alpha mode exists to preserve.
+    let scene_px = textureSample(scene_texture, scene_sampler, uv);
+
     // Chromatic aberration: offset R and B channels
     var color: vec3f;
     if ca > 0.001 {
         let ca_offset = (uv - 0.5) * ca;
         color.r = textureSample(scene_texture, scene_sampler, uv + ca_offset).r;
-        color.g = textureSample(scene_texture, scene_sampler, uv).g;
+        color.g = scene_px.g;
         color.b = textureSample(scene_texture, scene_sampler, uv - ca_offset).b;
     } else {
-        color = textureSample(scene_texture, scene_sampler, uv).rgb;
+        color = scene_px.rgb;
     }
 
     // Bloom mix (RMS modulates intensity)
@@ -91,7 +95,16 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
     color += vec3f(grain);
 
     let final_color = clamp(color, vec3f(0.0), vec3f(1.0));
-    let brightness = max(final_color.r, max(final_color.g, final_color.b));
-    let alpha = select(1.0, clamp(brightness * 2.0, 0.0, 1.0), post.alpha_from_luma > 0.5);
+    // Output alpha (docs/alpha.md): opaque is the historical behavior, luma the legacy
+    // NDI key, passthrough the overlay path — the scene's premultiplied coverage
+    // survives to the surface/capture. RGB above is deliberately NOT masked by it:
+    // bloom/CA spill over a=0 regions is additive premultiplied light.
+    var alpha = 1.0;
+    if post.alpha_mode > 1.5 {
+        alpha = clamp(scene_px.a, 0.0, 1.0);
+    } else if post.alpha_mode > 0.5 {
+        let brightness = max(final_color.r, max(final_color.g, final_color.b));
+        alpha = clamp(brightness * 2.0, 0.0, 1.0);
+    }
     return vec4f(final_color, alpha);
 }
