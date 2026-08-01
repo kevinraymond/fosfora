@@ -8,7 +8,7 @@ Effects respond to what they hear, so what you see here is a starting point, not
 Change the music and they change with it; every parameter is also a slider, and can be driven
 by MIDI, OSC, a phone or a webcam.
 
-**53 effects.**
+**55 effects.**
 
 ## Shaders (15)
 
@@ -119,7 +119,7 @@ One engine, eight rules: a 3D cellular automaton evolving inside a volume and re
 
 ---
 
-## Overlay (5)
+## Overlay (7)
 
 HUD chrome with a real alpha channel — transparent backgrounds end to end, built to be layered
 *over* other content: another Fosfora layer, or someone else's visuals via Spout, Syphon or NDI
@@ -135,6 +135,10 @@ bar clock, not the wall clock, so every pattern lands on the music at any tempo.
 <tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/astrolabe.webp" width="100%" alt="Astrolabe"><br><b>Astrolabe</b><br><sub>A full-frame targeting instrument assembling ring by ring across the cycle — degree ticks, counter-rotating sweep arms, orbiting target diamonds, a center lock slamming on every downbeat</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/bezel.webp" width="100%" alt="Bezel"><br><b>Bezel</b><br><sub>Border chrome: corner brackets, edge rules, tick marks and drifting scanlines with a subtle pulse on the beat — the always-on overlay</sub></td>
+</tr>
+<tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/limn.webp" width="100%" alt="Limn"><br><b>Limn</b><br><sub>A living edge-tracer: outlines whatever plays on the layers beneath it, dashes marching along every contour in time with the bars. Solo it sees nothing — layer it</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/intarsia.webp" width="100%" alt="Intarsia"><br><b>Intarsia</b><br><sub>Inlay-work over the layers beneath: beat-revealed mosaic tiles fill in the color patches of the content they cover, taking its colors as their own</sub></td>
 </tr>
 </table>
 

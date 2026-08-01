@@ -264,6 +264,12 @@ impl Layer {
         }
     }
 
+    /// Does this layer's effect sample `@backdrop` (#2061)? Media layers never do.
+    pub fn wants_backdrop(&self) -> bool {
+        self.as_effect()
+            .is_some_and(|e| e.pass_executor.wants_backdrop())
+    }
+
     /// Get the media content, if this is a Media layer.
     pub fn as_media(&self) -> Option<&MediaLayer> {
         match &self.content {

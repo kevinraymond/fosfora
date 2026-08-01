@@ -15,6 +15,7 @@ use super::uniforms::UniformBuffer;
 /// without it (or without a particle system) the 1×1 placeholder is bound,
 /// which reads as zero velocity.
 const PARTICLE_VELOCITY_INPUT: &str = "@particles.velocity";
+const BACKDROP_INPUT: &str = "@backdrop";
 
 /// One resolved pass-graph input, in WGSL `input0..` numbering: current-frame
 /// inputs first (`PassDef.inputs`), then previous-frame inputs
@@ -28,6 +29,11 @@ enum InputSrc {
     /// #1482) — (vx, vy, coverage, 0) in NDC units/sec, resolved during
     /// `ParticleSystem::dispatch`, i.e. same-frame for the fragment passes.
     ParticleVelocity,
+    /// The composite of every layer BELOW this one (`@backdrop`, #2061) —
+    /// the compositor's stable backdrop target, snapshotted by `frame_graph`
+    /// right before this layer executes. Premultiplied RGBA; transparent when
+    /// nothing is beneath.
+    Backdrop,
 }
 
 /// A compiled pass: pipeline + render target + bind groups.
@@ -74,6 +80,11 @@ struct PreparedPass {
 pub struct PassExecutor {
     passes: Vec<CompiledPass>,
     pub particle_system: Option<ParticleSystem>,
+    /// Owned handle to the compositor's `@backdrop` target (TextureView/Sampler
+    /// are Arc'd wgpu handles, so this is a cheap clone, not a copy). None until
+    /// `layer_builder` wires it; refreshed on resize because the compositor
+    /// recreates the texture behind it.
+    backdrop: Option<(TextureView, Sampler)>,
     /// Global ping-pong parity. All feedback passes flip in lockstep, so each
     /// feedback pass's `target.current` equals this value; bind groups are indexed
     /// by it so cross-pass reads land on the correct target every frame (#1481).
@@ -113,9 +124,13 @@ impl PassExecutor {
                         input_srcs.push(InputSrc::ParticleVelocity);
                         continue;
                     }
+                    if name == BACKDROP_INPUT {
+                        input_srcs.push(InputSrc::Backdrop);
+                        continue;
+                    }
                     return Err(format!(
                         "Pass '{}' input '{name}' is not a known special input \
-                         (expected '{PARTICLE_VELOCITY_INPUT}')",
+                         (expected '{PARTICLE_VELOCITY_INPUT}' or '{BACKDROP_INPUT}')",
                         def.name
                     ));
                 }
@@ -211,7 +226,18 @@ impl PassExecutor {
         // The particle system attaches after construction (`set_particle_system`),
         // so any `@particles.velocity` slot starts on the placeholder.
         let bind_groups: Vec<[wgpu::BindGroup; 2]> = (0..views.len())
-            .map(|i| build_bind_groups(&views, i, device, uniform_buffer, placeholder, audio, None))
+            .map(|i| {
+                build_bind_groups(
+                    &views,
+                    i,
+                    device,
+                    uniform_buffer,
+                    placeholder,
+                    audio,
+                    None,
+                    None,
+                )
+            })
             .collect();
         drop(views);
 
@@ -232,6 +258,7 @@ impl PassExecutor {
         Ok(Self {
             passes,
             particle_system: None,
+            backdrop: None,
             flip_parity: 0,
         })
     }
@@ -252,7 +279,16 @@ impl PassExecutor {
                 has_feedback: true, // always enable feedback for single-pass mode
                 input_srcs: &[],
             }];
-            build_bind_groups(&views, 0, device, uniform_buffer, placeholder, audio, None)
+            build_bind_groups(
+                &views,
+                0,
+                device,
+                uniform_buffer,
+                placeholder,
+                audio,
+                None,
+                None,
+            )
         };
 
         Self {
@@ -266,7 +302,32 @@ impl PassExecutor {
                 iterations: 1,
             }],
             particle_system: None,
+            backdrop: None,
             flip_parity: 0,
+        }
+    }
+
+    /// Does any pass sample `@backdrop`? Drives frame_graph's snapshot step.
+    pub fn wants_backdrop(&self) -> bool {
+        self.passes
+            .iter()
+            .any(|p| p.input_srcs.iter().any(|s| matches!(s, InputSrc::Backdrop)))
+    }
+
+    /// Store the backdrop handle and rebind any `@backdrop` slots (construction
+    /// path — the compositor exists before effects load, so this runs once,
+    /// right after `new`/`single_pass`).
+    pub fn set_backdrop(
+        &mut self,
+        backdrop: Option<(TextureView, Sampler)>,
+        device: &Device,
+        uniform_buffer: &UniformBuffer,
+        placeholder: &PlaceholderTexture,
+        audio: &AudioTextures,
+    ) {
+        self.backdrop = backdrop;
+        if self.wants_backdrop() {
+            self.rebuild_all_bind_groups(device, uniform_buffer, placeholder, audio);
         }
     }
 
@@ -413,6 +474,7 @@ impl PassExecutor {
                 .particle_system
                 .as_ref()
                 .and_then(|ps| ps.particle_velocity());
+            let backdrop = self.backdrop.as_ref().map(|(v, sm)| (v, sm));
             let views: Vec<PassView> = self
                 .passes
                 .iter()
@@ -433,6 +495,7 @@ impl PassExecutor {
                         placeholder,
                         audio,
                         particle_velocity,
+                        backdrop,
                     )
                 })
                 .collect()
@@ -536,6 +599,7 @@ fn build_bind_groups(
     placeholder: &PlaceholderTexture,
     audio: &AudioTextures,
     particle_velocity: Option<(&TextureView, &Sampler)>,
+    backdrop: Option<(&TextureView, &Sampler)>,
 ) -> [wgpu::BindGroup; 2] {
     let view = &views[i];
     let layout = view.layout;
@@ -576,6 +640,7 @@ fn build_bind_groups(
                 InputSrc::ParticleVelocity => {
                     particle_velocity.unwrap_or((&placeholder.view, &placeholder.sampler))
                 }
+                InputSrc::Backdrop => backdrop.unwrap_or((&placeholder.view, &placeholder.sampler)),
             })
             .collect();
 
@@ -737,7 +802,7 @@ mod tests {
                 })
                 .collect();
             (0..views.len())
-                .map(|i| build_bind_groups(&views, i, device, ubuf, placeholder, audio, None))
+                .map(|i| build_bind_groups(&views, i, device, ubuf, placeholder, audio, None, None))
                 .collect()
         };
         let passes = prepared
@@ -756,6 +821,7 @@ mod tests {
         PassExecutor {
             passes,
             particle_system: None,
+            backdrop: None,
             flip_parity: 0,
         }
     }
@@ -2147,6 +2213,142 @@ mod tests {
     // libs, and param-index typos that reference beyond the uniform block —
     // without launching the app. (Compute sims are not covered: they bind
     // particle buffers this harness doesn't build.)
+    // The `@backdrop` special input (#2061): resolved by name, bound via
+    // set_backdrop, and actually delivering the layers-beneath composite to the
+    // shader. An edge-detect probe over a half-and-half backdrop must light up
+    // exactly at the boundary — and render nothing at all when no backdrop is
+    // wired (placeholder = uniform = no edges), which is the solo-layer contract.
+    // Run: cargo test -p phosphor-app -- --ignored backdrop_input_binds
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn backdrop_input_binds_and_delivers_content() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (64u32, 64u32);
+
+        // Half white / half transparent backdrop, uploaded to a bindable texture.
+        let bd_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("probe-backdrop"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w / 2 {
+                let i = ((y * w + x) * 4) as usize;
+                px[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &bd_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &px,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        let bd_view = bd_tex.create_view(&Default::default());
+        let bd_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
+
+        const SHADER: &str = r#"
+@fragment
+fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
+    let uv = frag_coord.xy / u.resolution;
+    let dx = vec2f(2.0 / u.resolution.x, 0.0);
+    let e = abs(input0(uv + dx).r - input0(uv - dx).r);
+    return vec4f(e, e, e, e);
+}
+"#;
+        let pipe = ShaderPipeline::new(
+            &device,
+            fmt,
+            &loader.prepend_library_with_inputs(SHADER, 1),
+            None,
+            1,
+        )
+        .expect("backdrop probe pipeline");
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+        let mut executor = assemble(
+            &device,
+            &queue,
+            w,
+            h,
+            fmt,
+            &ubuf,
+            &placeholder,
+            &audio,
+            vec![("main", pipe, false, vec![InputSrc::Backdrop], 1, 1.0)],
+        );
+        let (blit, blit_bgl) = blit_pipeline(&device);
+        let mut u = crate::gpu::ShaderUniforms::zeroed();
+        u.resolution = [w as f32, h as f32];
+
+        // Unwired: placeholder backdrop is uniform — no edges anywhere.
+        let dark = capture_pass_rgba(
+            &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, 0, w, h,
+        );
+        assert!(
+            dark.iter().all(|&b| b <= 2),
+            "no backdrop wired must render nothing"
+        );
+
+        executor.set_backdrop(
+            Some((bd_view, bd_sampler)),
+            &device,
+            &ubuf,
+            &placeholder,
+            &audio,
+        );
+        let lit = capture_pass_rgba(
+            &device, &queue, &ubuf, &blit, &blit_bgl, &executor, &u, 0, w, h,
+        );
+        let col_max = |x: u32| -> u8 {
+            (0..h)
+                .map(|y| lit[((y * w + x) * 4) as usize])
+                .max()
+                .unwrap()
+        };
+        assert!(
+            col_max(w / 2 - 1) > 128 || col_max(w / 2) > 128,
+            "edge column should light up at the backdrop boundary"
+        );
+        assert!(
+            col_max(4) <= 2 && col_max(w - 4) <= 2,
+            "flat regions must stay empty"
+        );
+    }
+
     // INV-B bit-identity gate, auto-covering every effect tagged `loop: "phase_locked"`
     // (the plain-CI source lint lives in effect/loader.rs; this is the proof). Per
     // effect: frame A and frame B share one uniform block and must read back

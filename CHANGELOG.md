@@ -6,6 +6,11 @@
 ## Unreleased
 
 ### Added
+- **Overlays that see what's beneath them: Limn and Intarsia.** A new `@backdrop` input
+  hands an effect the live composite of every layer below it — Limn traces the content's
+  edges with dashes marching in time, Intarsia fills its color patches with beat-revealed
+  mosaic tiles that take their colors from what they cover. Layer them over any effect or
+  media layer; solo they draw nothing (there is nothing beneath to see).
 - **A new Overlay effect family: Tessera, Fenestra, Reticle, Bezel and Astrolabe.** HUD-style
   chrome — tile reveals, snapping panels, targeting crosshairs, border instrumentation, and
   a full-frame targeting-array set piece — builds accelerate them, drops strobe them —

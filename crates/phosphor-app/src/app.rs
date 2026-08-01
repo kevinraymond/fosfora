@@ -556,6 +556,23 @@ impl App {
             layer.resize_media(&self.gpu.device, &self.gpu.queue, width, height);
         }
         self.compositor.resize(&self.gpu.device, width, height);
+        // The compositor just recreated the @backdrop texture; every executor
+        // holds a cloned handle to the OLD one. Refresh + rebind (set_backdrop
+        // rebuilds bind groups only for layers that actually sample it).
+        for layer in &mut self.layer_stack.layers {
+            if let Some(e) = layer.as_effect_mut() {
+                e.pass_executor.set_backdrop(
+                    Some((
+                        self.compositor.backdrop.view.clone(),
+                        self.compositor.backdrop.sampler.clone(),
+                    )),
+                    &self.gpu.device,
+                    &e.uniform_buffer,
+                    &self.placeholder,
+                    &self.audio_textures,
+                );
+            }
+        }
         self.post_process.resize(&self.gpu.device, width, height);
         self.egui_overlay
             .resize(width, height, self.window.scale_factor() as f32);
@@ -1634,6 +1651,10 @@ impl App {
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
+                backdrop: Some((
+                    &self.compositor.backdrop.view,
+                    &self.compositor.backdrop.sampler,
+                )),
             };
             crate::gpu::layer_builder::prepare_particles(&ctx, &mut self.effect_loader, &effect)
         };
@@ -1665,6 +1686,10 @@ impl App {
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
+                backdrop: Some((
+                    &self.compositor.backdrop.view,
+                    &self.compositor.backdrop.sampler,
+                )),
             };
             crate::gpu::layer_builder::load_effect_into_layer(
                 &ctx,
@@ -1750,6 +1775,10 @@ impl App {
                 placeholder: &self.placeholder,
                 audio_textures: &self.audio_textures,
                 particle_quality: self.settings.particle_quality,
+                backdrop: Some((
+                    &self.compositor.backdrop.view,
+                    &self.compositor.backdrop.sampler,
+                )),
             };
             crate::gpu::layer_builder::new_default_layer(&ctx, name)
         };

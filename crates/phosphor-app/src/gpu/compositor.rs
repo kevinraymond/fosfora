@@ -42,6 +42,12 @@ pub struct Compositor {
     uniform_buffers: Vec<wgpu::Buffer>,
     /// Ping-pong accumulator for sequential compositing.
     pub accumulator: PingPongTarget,
+    /// The `@backdrop` special input (#2061): a stable snapshot of the composite
+    /// of every layer BELOW the one currently executing, filled by `frame_graph`
+    /// via [`Self::snapshot_backdrop`] / [`Self::clear_backdrop`]. A dedicated
+    /// target rather than the accumulator itself because effect bind groups are
+    /// prebuilt and need one stable texture identity between resizes.
+    pub backdrop: RenderTarget,
 }
 
 impl Compositor {
@@ -86,6 +92,7 @@ impl Compositor {
             .collect();
 
         let accumulator = PingPongTarget::new(device, width, height, hdr_format, 1.0);
+        let backdrop = RenderTarget::new(device, width, height, hdr_format, 1.0, "backdrop");
 
         Self {
             composite_pipeline,
@@ -94,7 +101,60 @@ impl Compositor {
             blit_bgl,
             uniform_buffers,
             accumulator,
+            backdrop,
         }
+    }
+
+    /// Blit `src` (the composite of the layers below the about-to-execute one)
+    /// into the stable `@backdrop` target.
+    pub fn snapshot_backdrop(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        src: &RenderTarget,
+    ) {
+        let bg = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("backdrop-snapshot-bg"),
+            layout: &self.blit_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&src.view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&src.sampler),
+                },
+            ],
+        });
+        run_fullscreen_pass(
+            encoder,
+            "backdrop-snapshot",
+            &self.blit_pipeline,
+            &bg,
+            &self.backdrop.view,
+        );
+    }
+
+    /// Clear `@backdrop` to transparent — a backdrop consumer with nothing
+    /// beneath it (bottom layer, or the single-layer fast path) sees emptiness,
+    /// not last frame's stale composite.
+    pub fn clear_backdrop(&self, encoder: &mut CommandEncoder) {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("backdrop-clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.backdrop.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
     }
 
     /// Composite multiple layer outputs into a single HDR result.
@@ -287,6 +347,9 @@ impl Compositor {
 
     pub fn resize(&mut self, device: &Device, width: u32, height: u32) {
         self.accumulator.resize(device, width, height);
+        // Effect bind groups reference this texture; App/headless resize layers
+        // AFTER the compositor so their rebuild binds the new one.
+        self.backdrop.resize(device, width, height);
     }
 }
 

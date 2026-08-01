@@ -33,6 +33,9 @@ pub(crate) struct LayerBuildCtx<'a> {
     pub placeholder: &'a PlaceholderTexture,
     pub audio_textures: &'a AudioTextures,
     pub particle_quality: ParticleQuality,
+    /// The compositor's `@backdrop` target (view, sampler) — wired into every
+    /// executor at build so backdrop-reactive effects (#2061) resolve it.
+    pub backdrop: Option<(&'a wgpu::TextureView, &'a wgpu::Sampler)>,
 }
 
 /// Read default.wgsl from assets dir, falling back to embedded copy.
@@ -184,6 +187,13 @@ pub(crate) fn load_effect_into_layer(
             };
             executor.set_particle_system(
                 particle_system,
+                ctx.device,
+                &e.uniform_buffer,
+                ctx.placeholder,
+                ctx.audio_textures,
+            );
+            executor.set_backdrop(
+                ctx.backdrop.map(|(v, sm)| (v.clone(), sm.clone())),
                 ctx.device,
                 &e.uniform_buffer,
                 ctx.placeholder,

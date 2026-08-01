@@ -139,6 +139,10 @@ impl SceneRenderer {
             placeholder: &self.placeholder,
             audio_textures: &self.audio_textures,
             particle_quality: self.particle_quality,
+            backdrop: Some((
+                &self.compositor.backdrop.view,
+                &self.compositor.backdrop.sampler,
+            )),
         }
     }
 
@@ -242,6 +246,10 @@ impl SceneRenderer {
                             placeholder: &self.placeholder,
                             audio_textures: &self.audio_textures,
                             particle_quality: self.particle_quality,
+                            backdrop: Some((
+                                &self.compositor.backdrop.view,
+                                &self.compositor.backdrop.sampler,
+                            )),
                         };
                         crate::gpu::layer_builder::prepare_particles(
                             &ctx,
@@ -270,6 +278,10 @@ impl SceneRenderer {
                         placeholder: &self.placeholder,
                         audio_textures: &self.audio_textures,
                         particle_quality: self.particle_quality,
+                        backdrop: Some((
+                            &self.compositor.backdrop.view,
+                            &self.compositor.backdrop.sampler,
+                        )),
                     };
                     if let Err(e) = crate::gpu::layer_builder::load_effect_into_layer(
                         &ctx,

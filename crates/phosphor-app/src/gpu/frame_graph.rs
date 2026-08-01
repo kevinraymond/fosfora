@@ -91,13 +91,31 @@ pub(crate) fn execute_and_composite<'a>(
         )
     } else if enabled.len() == 1 && layer_stack.layers[enabled[0]].opacity >= 1.0 {
         // Single-layer fast path: skip compositing entirely (only when fully opaque)
+        if layer_stack.layers[enabled[0]].wants_backdrop() {
+            // Nothing beneath a solo layer — @backdrop reads transparent, not stale.
+            compositor.clear_backdrop(encoder);
+        }
         let target = layer_stack.layers[enabled[0]].execute(encoder, queue);
         (target, active_postprocess())
     } else {
-        // Multi-layer: render each layer, then composite
+        // Multi-layer: execute visually bottom-first (the UI list's top renders
+        // on top, so walk it in reverse), so a layer that samples `@backdrop`
+        // (#2061) can be handed the composite of everything beneath it BEFORE
+        // it executes. For those layers only, the layers below are composited
+        // an extra time into the backdrop snapshot — a few fullscreen draws,
+        // bounded by the 8-layer cap — which leaves `composite()`'s
+        // well-probed semantics untouched.
         let mut layer_outputs: Vec<LayerComposite<'_>> = Vec::with_capacity(enabled.len());
-        for &idx in &enabled {
+        for &idx in enabled.iter().rev() {
             let layer = &layer_stack.layers[idx];
+            if layer.wants_backdrop() {
+                if layer_outputs.is_empty() {
+                    compositor.clear_backdrop(encoder);
+                } else {
+                    let below = compositor.composite(device, queue, encoder, &layer_outputs);
+                    compositor.snapshot_backdrop(device, encoder, below);
+                }
+            }
             layer_outputs.push(LayerComposite {
                 target: layer.execute(encoder, queue),
                 blend_mode: layer.blend_mode,
@@ -105,8 +123,6 @@ pub(crate) fn execute_and_composite<'a>(
                 displace_amount: layer.displace_amount,
             });
         }
-        // Reverse so top-of-UI-list renders visually on top
-        layer_outputs.reverse();
 
         let composited = compositor.composite(device, queue, encoder, &layer_outputs);
         (composited, active_postprocess())
