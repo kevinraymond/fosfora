@@ -15,7 +15,7 @@ versions are rejected with a clear message. All fields except `version`,
   "fps": 60,                      // 24 | 25 | 30 | 50 | 60 | 120
   "resolution": [1920, 1080],
   "codec": "hap_alpha",           // hap | hap_alpha | prores4444 | h264 | hevc
-  "audio": "none",                // v1: "none" — the pinned neutral feature vector
+  "audio": "none",                // none | synthetic (see below)
   "background": "transparent"     // transparent | opaque
 }
 ```
@@ -34,10 +34,19 @@ Frames are driven by pure arithmetic — no audio device, no PCM, no wall clock:
 `beat_phase`/`bar_phase` are exact sawtooths at the effective BPM (no PLL
 smoothing, unlike live); `beat`/`downbeat` are one-frame pulses on the frame
 where the monotonic beat/bar index steps (frame 0 is the loop's "one");
-`beat_in_bar` steps through {0, ¼, ½, ¾}. Audio feature slots carry a pinned
-neutral vector (mid-scale energies, stable key) — the same vector the
-phase-locked determinism probe renders, so golden loops are golden against
-exactly what ships.
+`beat_in_bar` steps through {0, ¼, ½, ¾}.
+
+Audio modes:
+
+- `"none"` — feature slots carry a pinned neutral vector (mid-scale energies,
+  stable key), the same vector the phase-locked determinism probe renders.
+- `"synthetic"` — the accent features themselves are synthesized from phase
+  arithmetic: a kick-shaped energy envelope on every beat (`rms`, `bass`,
+  `kick`, `onset`, `percussive_energy`), a bar-periodic loudness swell, and a
+  `buildup` that breathes with the loop's cycle. Deliberately NOT a real
+  analyzer run — analyzer state is not exactly periodic, and would trade
+  bit-exact closure for noise. Every synthetic value is a pure, cycle-periodic
+  function of the frame index, so **the golden guarantee holds in both modes**.
 
 ## What can be rendered
 

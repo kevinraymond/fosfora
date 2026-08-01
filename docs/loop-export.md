@@ -53,6 +53,6 @@ Phase-locked effects reject both flags — their loops already close exactly.
 
 - Readback is 8-bit RGBA: ProRes 4444 masters are 8-bit-sourced; dark
   gradients may band.
-- `audio` modes `synthetic`/`file` are not wired yet; `none` is the golden path.
+- `audio: "file"` is not wired yet; `none` and `synthetic` are both golden.
 - 4/4 only; one effect per spec (no layer stacks — which also excludes the
   backdrop-reactive overlays).

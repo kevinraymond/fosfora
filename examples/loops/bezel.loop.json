@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "effect": "Bezel",
+    "params": {},
+    "bpm": 120.0,
+    "bars": 4,
+    "fps": 60,
+    "resolution": [1920, 1080],
+    "codec": "hap_alpha",
+    "audio": "synthetic",
+    "background": "transparent"
+}

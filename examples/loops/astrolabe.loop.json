@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "effect": "Astrolabe",
+    "params": {"detail": {"Float": 0.85}},
+    "bpm": 120.0,
+    "bars": 8,
+    "fps": 60,
+    "resolution": [1920, 1080],
+    "codec": "hap_alpha",
+    "audio": "synthetic",
+    "background": "transparent"
+}

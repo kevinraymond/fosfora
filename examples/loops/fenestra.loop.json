@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "effect": "Fenestra",
+    "params": {},
+    "bpm": 124.0,
+    "bars": 4,
+    "fps": 60,
+    "resolution": [1920, 1080],
+    "codec": "hap_alpha",
+    "audio": "synthetic",
+    "background": "transparent"
+}

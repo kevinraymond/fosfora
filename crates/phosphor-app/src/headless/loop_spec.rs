@@ -293,6 +293,36 @@ mod tests {
         }
     }
 
+    /// The repo's example specs must load, snap, and validate against the
+    /// shipped effect library — runs in plain CI, so a spec or an effect
+    /// rename can't silently rot the examples (P3.6 seed).
+    #[test]
+    fn example_specs_stay_valid() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/loops");
+        let effects = crate::effect::loader::shipped_effects_for_test();
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("examples/loops exists") {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            let json = std::fs::read_to_string(&path).unwrap();
+            let spec =
+                LoopSpec::from_json(&json).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let t = spec
+                .snap()
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            spec.validate(&effects)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert!(t.frames > 0);
+            checked += 1;
+        }
+        assert!(
+            checked >= 5,
+            "expected the five curated specs, got {checked}"
+        );
+    }
+
     #[test]
     fn round_trips() {
         let s = spec(174.0, 8, 60);

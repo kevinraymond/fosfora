@@ -76,6 +76,42 @@ pub fn synth_features(frame: u32, fps: u32, effective_bpm: f64) -> AudioFeatures
     f
 }
 
+/// `audio: "synthetic"` (P2.2): the accent features themselves, synthesized
+/// from phase arithmetic — a kick-shaped energy envelope on every beat, a
+/// sharper onset transient, a bar-periodic loudness swell, and a buildup that
+/// rises through each cycle. Deliberately NOT a real analyzer run: analyzer
+/// state (AGC windows, EMAs, trackers) is not exactly periodic, and routing it
+/// in would trade the bit-exact closure this pipeline is built on for noise.
+/// Every value below is a pure, cycle-periodic function of the frame index, so
+/// the golden guarantee extends to synthetic mode unchanged.
+pub fn synth_features_accented(
+    frame: u32,
+    fps: u32,
+    effective_bpm: f64,
+    loop_bars: u32,
+) -> AudioFeatures {
+    let mut f = synth_features(frame, fps, effective_bpm);
+    let beat_env = (-f.beat_phase * 5.0).exp();
+    let onset_env = (-f.beat_phase * 9.0).exp();
+    let bar_swell = 0.5 - 0.5 * (f.bar_phase * std::f32::consts::TAU).cos();
+    // Cycle phase over the whole loop: buildup rises through each half-cycle
+    // and falls through the second, mirroring the family's breathing cycles.
+    let bars_f = loop_bars.max(1) as f32;
+    let cyc = ((f.bar_index + f.bar_phase) / bars_f).fract();
+    let breath = 1.0 - (1.0 - 2.0 * cyc).abs();
+
+    f.rms = 0.35 + 0.45 * beat_env;
+    f.sub_bass = 0.3 + 0.55 * beat_env;
+    f.bass = 0.3 + 0.5 * beat_env;
+    f.kick = 0.85 * onset_env;
+    f.onset = 0.9 * onset_env;
+    f.percussive_energy = 0.2 + 0.6 * onset_env;
+    f.beat_strength = 0.9;
+    f.loudness_m = 0.35 + 0.3 * bar_swell;
+    f.buildup = 0.6 * breath;
+    f
+}
+
 /// A loaded, ready-to-render loop: the effect on layer 0 of a headless
 /// renderer with the spec's params applied. Frames are pure functions of the
 /// frame index for phase-locked effects, so callers may render any subset in
@@ -86,6 +122,8 @@ pub struct LoopSession {
     fps: u32,
     width: u32,
     height: u32,
+    audio: LoopAudio,
+    loop_bars: u32,
 }
 
 /// Mode-aware render (P2.7). Exact and time-wrapped emit frames as rendered;
@@ -190,11 +228,12 @@ impl LoopSession {
         queue: wgpu::Queue,
     ) -> Result<Self, String> {
         let timing = spec.snap()?;
-        if spec.audio != LoopAudio::None {
-            return Err(format!(
-                "audio '{:?}' is not wired yet — 'none' (the golden path) is the v1 mode",
-                spec.audio
-            ));
+        if spec.audio == LoopAudio::File {
+            return Err(
+                "audio 'file' is not wired yet — use 'none' (neutral) or 'synthetic' \
+                 (beat-locked accent envelopes)"
+                    .into(),
+            );
         }
 
         let [w, h] = spec.resolution;
@@ -296,6 +335,8 @@ impl LoopSession {
             fps: spec.fps,
             width: w,
             height: h,
+            audio: spec.audio,
+            loop_bars: spec.bars,
         })
     }
 
@@ -303,7 +344,12 @@ impl LoopSession {
     /// RGBA8 bytes.
     pub fn render_frame_at(&mut self, frame: u32) -> Result<Vec<u8>, String> {
         let dt = 1.0 / self.fps as f32;
-        let features = synth_features(frame, self.fps, self.timing.effective_bpm);
+        let features = match self.audio {
+            LoopAudio::Synthetic => {
+                synth_features_accented(frame, self.fps, self.timing.effective_bpm, self.loop_bars)
+            }
+            _ => synth_features(frame, self.fps, self.timing.effective_bpm),
+        };
         let sr = &mut self.sr;
         sr.uniforms.resolution = [self.width as f32, self.height as f32];
         sr.uniforms.feedback_decay = 0.88;
@@ -436,6 +482,28 @@ mod tests {
             checked >= 5,
             "expected the phase-locked family, got {checked}"
         );
+    }
+
+    /// Synthetic accents are cycle-periodic (the golden guarantee extends to
+    /// synthetic mode) and actually pulse on the beat.
+    #[test]
+    fn synthetic_accents_pulse_and_close() {
+        let (fps, bpm, bars) = (60u32, 120.0f64, 8u32);
+        let frames = 960u32; // 8 bars @ 120/60, lossless
+        let f0 = synth_features_accented(0, fps, bpm, bars);
+        let fn_ = synth_features_accented(frames, fps, bpm, bars);
+        assert!((f0.rms - fn_.rms).abs() < 1e-5);
+        assert!((f0.buildup - fn_.buildup).abs() < 1e-4);
+        assert!((f0.loudness_m - fn_.loudness_m).abs() < 1e-5);
+        // On-beat energy beats mid-beat energy.
+        let on_beat = synth_features_accented(0, fps, bpm, bars);
+        let mid_beat = synth_features_accented(15, fps, bpm, bars);
+        assert!(on_beat.rms > mid_beat.rms + 0.2);
+        assert!(on_beat.onset > mid_beat.onset + 0.4);
+        // Buildup peaks mid-cycle (bar 4 of 8) and rests at the wrap.
+        let mid_cycle = synth_features_accented(480, fps, bpm, bars);
+        assert!(mid_cycle.buildup > 0.55);
+        assert!(f0.buildup < 0.05);
     }
 
     #[test]
