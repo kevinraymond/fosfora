@@ -58,7 +58,7 @@ pub(crate) fn load_from_path(path: &PathBuf) -> Vec<Binding> {
                     file.bindings.len(),
                     path.display()
                 );
-                file.bindings
+                migrate_legacy_osc_sources(file.bindings)
             }
             Err(e) => {
                 log::warn!("Failed to parse bindings file {}: {e}", path.display());
@@ -69,9 +69,78 @@ pub(crate) fn load_from_path(path: &PathBuf) -> Vec<Binding> {
     }
 }
 
+/// Bus keys for structured OSC messages come from the canonical `/fosfora/...`
+/// address, so bindings saved before the rename (`osc./phosphor/...`) would never
+/// match again. Rewrite them on load; the file is rewritten on the next save.
+fn migrate_legacy_osc_sources(mut bindings: Vec<Binding>) -> Vec<Binding> {
+    const OLD: &str = "osc./phosphor/";
+    const NEW: &str = "osc./fosfora/";
+    let mut rewritten = 0usize;
+    for b in &mut bindings {
+        if let Some(rest) = b.source.strip_prefix(OLD) {
+            b.source = format!("{NEW}{rest}");
+            rewritten += 1;
+        }
+    }
+    if rewritten > 0 {
+        log::info!("Migrated {rewritten} binding source(s) from osc./phosphor/ to osc./fosfora/");
+    }
+    bindings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bindings::types::{BindingScope, BindingTarget};
+
+    fn binding_with_source(source: &str) -> Binding {
+        Binding {
+            id: "b1".to_string(),
+            name: "test".to_string(),
+            enabled: true,
+            scope: BindingScope::Global,
+            source: source.to_string(),
+            target: BindingTarget::Unset,
+            transforms: Vec::new(),
+        }
+    }
+
+    /// A file saved before the rename round-trips with its OSC sources rewritten to
+    /// the canonical namespace; everything else is untouched.
+    #[test]
+    fn load_rewrites_legacy_osc_sources() {
+        let dir = std::env::temp_dir().join("fosfora_bindings_migrate_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("global-bindings.json");
+
+        let file = BindingsFile {
+            version: 1,
+            bindings: vec![
+                binding_with_source("osc./phosphor/param/speed"),
+                binding_with_source("audio.kick"),
+                binding_with_source("osc./custom/fader"),
+            ],
+        };
+        std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
+
+        let loaded = load_from_path(&path);
+        let sources: Vec<&str> = loaded.iter().map(|b| b.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            [
+                "osc./fosfora/param/speed",
+                "audio.kick",
+                "osc./custom/fader"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// Unit tests must never touch the real config dir: `remove_binding` saves
 /// immediately, and a test bus starts empty — so a plain `cargo test` used
-/// to overwrite ~/.config/phosphor/global-bindings.json with an empty list.
+/// to overwrite ~/.config/fosfora/global-bindings.json with an empty list.
 #[cfg(test)]
 fn save_to_path(_path: &PathBuf, _bindings: &[Binding]) {}
 

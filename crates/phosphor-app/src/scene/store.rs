@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use super::types::SceneSet;
 
-/// Manages scene files on disk (~/.config/phosphor/scenes/*.json).
+/// Manages scene files on disk (~/.config/fosfora/scenes/*.json).
 pub struct SceneStore {
     pub scenes: Vec<(String, SceneSet)>,
     pub current_scene: Option<usize>,

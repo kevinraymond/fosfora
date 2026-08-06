@@ -279,7 +279,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
             ui.label(
                 RichText::new(
                     "No demo published yet — use Load Scene… or drop a file at \
-                     ~/.config/phosphor/splats/phosphor_demo.splat",
+                     ~/.config/fosfora/splats/phosphor_demo.splat",
                 )
                 .size(SMALL_SIZE)
                 .color(tc.text_secondary),

@@ -21,7 +21,7 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
     // RX port
     let mut port = osc.config.rx_port;
     if rows::ParamRow::new("RX port")
-        .tooltip("UDP port Phosphor listens on")
+        .tooltip("UDP port Fosfora listens on")
         .show_drag(ui, &mut port, 1024..=65535, 1.0)
         .changed
     {
@@ -100,6 +100,31 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
                 osc.config.tx_rate_hz = rate;
                 osc.config.save();
             }
+        });
+
+        // TX namespace — the legacy option keeps pre-rename rigs fed without re-patching.
+        rows::custom_row(ui, "TX namespace", None, |ui| {
+            let current = osc.config.tx_prefix.clone();
+            let label = if current == "phosphor" {
+                "phosphor (legacy)"
+            } else {
+                "fosfora"
+            };
+            egui::ComboBox::from_id_salt("osc_tx_prefix")
+                .selected_text(RichText::new(label).size(SMALL_SIZE))
+                .show_ui(ui, |ui| {
+                    for (value, item) in [("fosfora", "fosfora"), ("phosphor", "phosphor (legacy)")]
+                    {
+                        if ui
+                            .selectable_label(current == value, item)
+                            .on_hover_text(format!("Emit under /{value}/..."))
+                            .clicked()
+                            && current != value
+                        {
+                            osc.set_tx_prefix(value);
+                        }
+                    }
+                });
         });
     });
 

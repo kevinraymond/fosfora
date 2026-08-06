@@ -162,7 +162,7 @@ impl Default for VolumetricParams {
 }
 
 impl VolumetricParams {
-    /// Set a named parameter (from OSC `/phosphor/volumetric/{name}` or UI).
+    /// Set a named parameter (from OSC `/fosfora/volumetric/{name}` or UI).
     pub fn set_param(&mut self, name: &str, value: f32) {
         match name {
             "march_steps" => self.march_steps = (value.max(1.0)) as u32,

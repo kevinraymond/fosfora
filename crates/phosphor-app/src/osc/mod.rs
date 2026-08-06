@@ -103,6 +103,7 @@ impl OscSystem {
         }
 
         // Configure sender if TX enabled
+        sys.sender.set_prefix(&sys.config.tx_prefix);
         if sys.config.tx_enabled {
             sys.sender
                 .configure(&sys.config.tx_host, sys.config.tx_port);
@@ -200,6 +201,13 @@ impl OscSystem {
         } else {
             self.sender.disable();
         }
+        self.config.save();
+    }
+
+    /// Switch the TX namespace (`"fosfora"` / `"phosphor"`) and persist the choice.
+    pub fn set_tx_prefix(&mut self, prefix: &str) {
+        self.config.tx_prefix = prefix.to_string();
+        self.sender.set_prefix(prefix);
         self.config.save();
     }
 
@@ -521,35 +529,35 @@ fn msg_value(msg: &OscInMessage) -> Option<f32> {
 
 fn msg_address(msg: &OscInMessage) -> String {
     match msg {
-        OscInMessage::Param { name, .. } => format!("/phosphor/param/{name}"),
+        OscInMessage::Param { name, .. } => format!("/fosfora/param/{name}"),
         OscInMessage::LayerParam { layer, name, .. } => {
-            format!("/phosphor/layer/{layer}/param/{name}")
+            format!("/fosfora/layer/{layer}/param/{name}")
         }
-        OscInMessage::Trigger(action) => format!("/phosphor/trigger/{}", trigger_slug(action)),
-        OscInMessage::LayerOpacity { layer, .. } => format!("/phosphor/layer/{layer}/opacity"),
-        OscInMessage::LayerBlend { layer, .. } => format!("/phosphor/layer/{layer}/blend"),
-        OscInMessage::LayerDisplace { layer, .. } => format!("/phosphor/layer/{layer}/displace"),
-        OscInMessage::LayerEnabled { layer, .. } => format!("/phosphor/layer/{layer}/enabled"),
+        OscInMessage::Trigger(action) => format!("/fosfora/trigger/{}", trigger_slug(action)),
+        OscInMessage::LayerOpacity { layer, .. } => format!("/fosfora/layer/{layer}/opacity"),
+        OscInMessage::LayerBlend { layer, .. } => format!("/fosfora/layer/{layer}/blend"),
+        OscInMessage::LayerDisplace { layer, .. } => format!("/fosfora/layer/{layer}/displace"),
+        OscInMessage::LayerEnabled { layer, .. } => format!("/fosfora/layer/{layer}/enabled"),
         OscInMessage::LayerObstacleEnabled { layer, .. } => {
-            format!("/phosphor/layer/{layer}/obstacle/enabled")
+            format!("/fosfora/layer/{layer}/obstacle/enabled")
         }
         OscInMessage::LayerObstacleMode { layer, .. } => {
-            format!("/phosphor/layer/{layer}/obstacle/mode")
+            format!("/fosfora/layer/{layer}/obstacle/mode")
         }
         OscInMessage::LayerObstacleThreshold { layer, .. } => {
-            format!("/phosphor/layer/{layer}/obstacle/threshold")
+            format!("/fosfora/layer/{layer}/obstacle/threshold")
         }
         OscInMessage::LayerObstacleElasticity { layer, .. } => {
-            format!("/phosphor/layer/{layer}/obstacle/elasticity")
+            format!("/fosfora/layer/{layer}/obstacle/elasticity")
         }
-        OscInMessage::PostProcessEnabled(_) => "/phosphor/postprocess/enabled".to_string(),
-        OscInMessage::VolumetricEnabled(_) => "/phosphor/volumetric/enabled".to_string(),
-        OscInMessage::VolumetricParam { name, .. } => format!("/phosphor/volumetric/{name}"),
-        OscInMessage::SceneGotoCue(_) => "/phosphor/scene/goto_cue".to_string(),
-        OscInMessage::SceneLoadIndex(_) => "/phosphor/scene/load".to_string(),
-        OscInMessage::SceneLoadName(_) => "/phosphor/scene/load".to_string(),
-        OscInMessage::SceneLoopMode(_) => "/phosphor/scene/loop_mode".to_string(),
-        OscInMessage::SceneAdvanceMode(_) => "/phosphor/scene/advance_mode".to_string(),
+        OscInMessage::PostProcessEnabled(_) => "/fosfora/postprocess/enabled".to_string(),
+        OscInMessage::VolumetricEnabled(_) => "/fosfora/volumetric/enabled".to_string(),
+        OscInMessage::VolumetricParam { name, .. } => format!("/fosfora/volumetric/{name}"),
+        OscInMessage::SceneGotoCue(_) => "/fosfora/scene/goto_cue".to_string(),
+        OscInMessage::SceneLoadIndex(_) => "/fosfora/scene/load".to_string(),
+        OscInMessage::SceneLoadName(_) => "/fosfora/scene/load".to_string(),
+        OscInMessage::SceneLoopMode(_) => "/fosfora/scene/loop_mode".to_string(),
+        OscInMessage::SceneAdvanceMode(_) => "/fosfora/scene/advance_mode".to_string(),
         OscInMessage::Raw { address, .. } => address.clone(),
     }
 }
@@ -630,7 +638,7 @@ mod tests {
             name: "speed".into(),
             value: 0.5,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/param/speed");
+        assert_eq!(msg_address(&msg), "/fosfora/param/speed");
     }
 
     #[test]
@@ -640,13 +648,13 @@ mod tests {
             name: "intensity".into(),
             value: 0.5,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/2/param/intensity");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/2/param/intensity");
     }
 
     #[test]
     fn msg_address_trigger() {
         let msg = OscInMessage::Trigger(TriggerAction::NextEffect);
-        assert_eq!(msg_address(&msg), "/phosphor/trigger/next_effect");
+        assert_eq!(msg_address(&msg), "/fosfora/trigger/next_effect");
     }
 
     // ---- Additional msg_address tests ----
@@ -657,13 +665,13 @@ mod tests {
             layer: 3,
             value: 0.5,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/3/opacity");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/3/opacity");
     }
 
     #[test]
     fn msg_address_layer_blend() {
         let msg = OscInMessage::LayerBlend { layer: 1, value: 2 };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/1/blend");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/1/blend");
     }
 
     #[test]
@@ -672,7 +680,7 @@ mod tests {
             layer: 0,
             value: true,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/0/enabled");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/0/enabled");
     }
 
     #[test]
@@ -681,13 +689,13 @@ mod tests {
             layer: 0,
             value: true,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/0/obstacle/enabled");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/0/obstacle/enabled");
     }
 
     #[test]
     fn msg_address_layer_obstacle_mode() {
         let msg = OscInMessage::LayerObstacleMode { layer: 1, value: 2 };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/1/obstacle/mode");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/1/obstacle/mode");
     }
 
     #[test]
@@ -696,7 +704,7 @@ mod tests {
             layer: 0,
             value: 0.5,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/0/obstacle/threshold");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/0/obstacle/threshold");
     }
 
     #[test]
@@ -705,13 +713,13 @@ mod tests {
             layer: 2,
             value: 0.7,
         };
-        assert_eq!(msg_address(&msg), "/phosphor/layer/2/obstacle/elasticity");
+        assert_eq!(msg_address(&msg), "/fosfora/layer/2/obstacle/elasticity");
     }
 
     #[test]
     fn msg_address_postprocess_enabled() {
         let msg = OscInMessage::PostProcessEnabled(true);
-        assert_eq!(msg_address(&msg), "/phosphor/postprocess/enabled");
+        assert_eq!(msg_address(&msg), "/fosfora/postprocess/enabled");
     }
 
     #[test]
@@ -748,30 +756,30 @@ mod tests {
     #[test]
     fn msg_address_scene_goto_cue() {
         let msg = OscInMessage::SceneGotoCue(3);
-        assert_eq!(msg_address(&msg), "/phosphor/scene/goto_cue");
+        assert_eq!(msg_address(&msg), "/fosfora/scene/goto_cue");
     }
 
     #[test]
     fn msg_address_scene_load_index() {
         let msg = OscInMessage::SceneLoadIndex(0);
-        assert_eq!(msg_address(&msg), "/phosphor/scene/load");
+        assert_eq!(msg_address(&msg), "/fosfora/scene/load");
     }
 
     #[test]
     fn msg_address_scene_load_name() {
         let msg = OscInMessage::SceneLoadName("Test".into());
-        assert_eq!(msg_address(&msg), "/phosphor/scene/load");
+        assert_eq!(msg_address(&msg), "/fosfora/scene/load");
     }
 
     #[test]
     fn msg_address_scene_loop_mode() {
         let msg = OscInMessage::SceneLoopMode(true);
-        assert_eq!(msg_address(&msg), "/phosphor/scene/loop_mode");
+        assert_eq!(msg_address(&msg), "/fosfora/scene/loop_mode");
     }
 
     #[test]
     fn msg_address_scene_advance_mode() {
         let msg = OscInMessage::SceneAdvanceMode(1);
-        assert_eq!(msg_address(&msg), "/phosphor/scene/advance_mode");
+        assert_eq!(msg_address(&msg), "/fosfora/scene/advance_mode");
     }
 }

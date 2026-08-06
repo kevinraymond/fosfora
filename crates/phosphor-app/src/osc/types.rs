@@ -8,48 +8,48 @@ use crate::midi::types::TriggerAction;
 /// Parsed inbound OSC message.
 #[derive(Debug, Clone)]
 pub enum OscInMessage {
-    /// Set param on active layer: /phosphor/param/{name}
+    /// Set param on active layer: /fosfora/param/{name}
     Param { name: String, value: f32 },
-    /// Set param on specific layer: /phosphor/layer/{n}/param/{name}
+    /// Set param on specific layer: /fosfora/layer/{n}/param/{name}
     LayerParam {
         layer: usize,
         name: String,
         value: f32,
     },
-    /// Fire a trigger: /phosphor/trigger/{action_name}
+    /// Fire a trigger: /fosfora/trigger/{action_name}
     Trigger(TriggerAction),
-    /// Set layer opacity: /phosphor/layer/{n}/opacity
+    /// Set layer opacity: /fosfora/layer/{n}/opacity
     LayerOpacity { layer: usize, value: f32 },
-    /// Set layer blend mode: /phosphor/layer/{n}/blend
+    /// Set layer blend mode: /fosfora/layer/{n}/blend
     LayerBlend { layer: usize, value: u32 },
     /// Set layer warp strength for the displacement blend modes (#1478):
-    /// /phosphor/layer/{n}/displace
+    /// /fosfora/layer/{n}/displace
     LayerDisplace { layer: usize, value: f32 },
-    /// Set layer enabled: /phosphor/layer/{n}/enabled
+    /// Set layer enabled: /fosfora/layer/{n}/enabled
     LayerEnabled { layer: usize, value: bool },
-    /// Set obstacle enabled: /phosphor/layer/{n}/obstacle/enabled
+    /// Set obstacle enabled: /fosfora/layer/{n}/obstacle/enabled
     LayerObstacleEnabled { layer: usize, value: bool },
-    /// Set obstacle mode: /phosphor/layer/{n}/obstacle/mode (0=Bounce, 1=Stick, 2=Flow, 3=Contain)
+    /// Set obstacle mode: /fosfora/layer/{n}/obstacle/mode (0=Bounce, 1=Stick, 2=Flow, 3=Contain)
     LayerObstacleMode { layer: usize, value: u32 },
-    /// Set obstacle alpha threshold: /phosphor/layer/{n}/obstacle/threshold
+    /// Set obstacle alpha threshold: /fosfora/layer/{n}/obstacle/threshold
     LayerObstacleThreshold { layer: usize, value: f32 },
-    /// Set obstacle elasticity: /phosphor/layer/{n}/obstacle/elasticity
+    /// Set obstacle elasticity: /fosfora/layer/{n}/obstacle/elasticity
     LayerObstacleElasticity { layer: usize, value: f32 },
-    /// Toggle post-processing: /phosphor/postprocess/enabled
+    /// Toggle post-processing: /fosfora/postprocess/enabled
     PostProcessEnabled(bool),
-    /// Toggle volumetric mode: /phosphor/volumetric/enabled
+    /// Toggle volumetric mode: /fosfora/volumetric/enabled
     VolumetricEnabled(bool),
-    /// Set a volumetric param: /phosphor/volumetric/{name}
+    /// Set a volumetric param: /fosfora/volumetric/{name}
     VolumetricParam { name: String, value: f32 },
-    /// Jump to a specific cue: /phosphor/scene/goto_cue
+    /// Jump to a specific cue: /fosfora/scene/goto_cue
     SceneGotoCue(usize),
-    /// Load scene by index: /phosphor/scene/load (int arg)
+    /// Load scene by index: /fosfora/scene/load (int arg)
     SceneLoadIndex(usize),
-    /// Load scene by name: /phosphor/scene/load (string arg)
+    /// Load scene by name: /fosfora/scene/load (string arg)
     SceneLoadName(String),
-    /// Set loop mode: /phosphor/scene/loop_mode
+    /// Set loop mode: /fosfora/scene/loop_mode
     SceneLoopMode(bool),
-    /// Set advance mode: /phosphor/scene/advance_mode (0=Manual, 1=Timer, 2=BeatSync)
+    /// Set advance mode: /fosfora/scene/advance_mode (0=Manual, 1=Timer, 2=BeatSync)
     SceneAdvanceMode(u8),
     /// Unrecognized address (captured for learn mode)
     Raw { address: String, value: f32 },
@@ -85,6 +85,10 @@ pub struct OscConfig {
     pub tx_enabled: bool,
     #[serde(default = "default_tx_rate")]
     pub tx_rate_hz: u32,
+    /// TX namespace: `"fosfora"` (default) or `"phosphor"` for rigs patched against
+    /// the pre-rename addresses. RX accepts both regardless.
+    #[serde(default = "default_tx_prefix")]
+    pub tx_prefix: String,
     #[serde(default)]
     pub params: HashMap<String, OscMapping>,
     #[serde(default)]
@@ -109,6 +113,9 @@ fn default_tx_host() -> String {
 fn default_tx_rate() -> u32 {
     30
 }
+fn default_tx_prefix() -> String {
+    super::sender::DEFAULT_TX_PREFIX.to_string()
+}
 
 impl Default for OscConfig {
     fn default() -> Self {
@@ -120,6 +127,7 @@ impl Default for OscConfig {
             tx_host: "127.0.0.1".to_string(),
             tx_enabled: false,
             tx_rate_hz: 30,
+            tx_prefix: default_tx_prefix(),
             params: HashMap::new(),
             triggers: HashMap::new(),
         }
@@ -204,6 +212,15 @@ mod tests {
         assert!(!c.tx_enabled);
         assert!(c.enabled);
         assert_eq!(c.tx_rate_hz, 30);
+        assert_eq!(c.tx_prefix, "fosfora");
+    }
+
+    /// A pre-rename osc.json has no `tx_prefix` field; it must default to the new
+    /// namespace, not fail or come up empty.
+    #[test]
+    fn osc_config_without_tx_prefix_defaults_to_fosfora() {
+        let c: OscConfig = serde_json::from_str(r#"{"version":1,"rx_port":9000}"#).unwrap();
+        assert_eq!(c.tx_prefix, "fosfora");
     }
 
     #[test]
