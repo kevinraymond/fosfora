@@ -91,7 +91,7 @@ cap_start_monitor() {
 # empty scene with no error. Cached outside the run so this is a one-time ~42 MB cost.
 cap_fetch_splat_demo() {
   local cfg=$1
-  local ply=$cfg/phosphor/splats/phosphor_demo.ply
+  local ply=$cfg/fosfora/splats/phosphor_demo.ply
   local url=https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trooper.ply
   local cache=${XDG_CACHE_HOME:-$HOME/.cache}/fosfora-capture/phosphor_demo.ply
   mkdir -p "$(dirname "$ply")"

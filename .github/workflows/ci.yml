@@ -129,7 +129,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.target }}-v2
+          key: ${{ matrix.os }}-${{ matrix.target }}-v3
       # Clippy per native target so cfg-gated Windows/macOS code is actually linted
       # (the host-only lint job and pre-commit hook never see it). See board #1500.
       - name: Clippy (cross-target)
@@ -151,19 +151,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/debug/phosphor-app staging/
+          cp target/${{ matrix.target }}/debug/fosfora staging/
           cp -r assets staging/
       - name: Stage artifact (macOS)
         if: runner.os == 'macOS'
         run: |
           mkdir -p staging
-          cp target/${{ matrix.target }}/debug/phosphor-app staging/
+          cp target/${{ matrix.target }}/debug/fosfora staging/
           cp -r assets staging/
       - name: Stage artifact (Windows)
         if: runner.os == 'Windows'
         run: |
           mkdir staging
-          copy target\${{ matrix.target }}\debug\phosphor-app.exe staging\
+          copy target\${{ matrix.target }}\debug\fosfora.exe staging\
           xcopy assets staging\assets\ /E /I /Q
       - name: Upload artifact
         uses: actions/upload-artifact@v4

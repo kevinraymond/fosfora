@@ -28,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 DEMOS = REPO / "scripts" / "capture" / "demos"
 EFFECTS = REPO / "assets" / "effects"
-SOURCES_RS = REPO / "crates" / "phosphor-app" / "src" / "bindings" / "sources.rs"
+SOURCES_RS = REPO / "crates" / "fosfora-app" / "src" / "bindings" / "sources.rs"
 
 # Mirrors apply_preset_immediately's cap (app.rs).
 MAX_LAYERS = 8

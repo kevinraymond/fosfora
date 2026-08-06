@@ -5,7 +5,7 @@
 # ///
 """Stage A of the screenplay pipeline (#2040): song analysis -> markdown screenplay.
 
-    ./target/release/phosphor-app --analyze song.mp3 --out song.analysis.json
+    ./target/release/fosfora --analyze song.mp3 --out song.analysis.json
     uv run scripts/write_screenplay.py --analysis song.analysis.json \
         [--style "cold, restrained, brutalist"]
 

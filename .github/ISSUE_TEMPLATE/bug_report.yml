@@ -102,7 +102,7 @@ body:
     id: logs
     attributes:
       label: Log Output
-      description: "Run with `RUST_LOG=phosphor_app=debug cargo run` and paste relevant output."
+      description: "Run with `RUST_LOG=fosfora=debug cargo run` and paste relevant output."
       render: text
 
   - type: textarea

@@ -912,7 +912,7 @@ mod tests {
     /// display that repeats a frame can then only repeat a pattern the grain
     /// was already going to hold, instead of freezing a boiling field.
     ///
-    /// Run: cargo test -p phosphor-app -- --ignored grain_holds_within_a_tick
+    /// Run: cargo test -p fosfora-app -- --ignored grain_holds_within_a_tick
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn grain_holds_within_a_tick() {
@@ -945,7 +945,7 @@ mod tests {
     /// grain this field was added to slow down, so a preset that sets it gets
     /// the pre-#1983 look and not an approximation of it.
     ///
-    /// Run: cargo test -p phosphor-app -- --ignored grain_rate_zero_updates_every_frame
+    /// Run: cargo test -p fosfora-app -- --ignored grain_rate_zero_updates_every_frame
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn grain_rate_zero_updates_every_frame() {

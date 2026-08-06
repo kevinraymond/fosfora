@@ -1895,7 +1895,7 @@ mod tests {
     /// count each second and every reseed, so the steady-state fill can be compared
     /// against the saturate threshold. Ignored; run with:
     ///   LATTICE_TRACE_RULE=builder LATTICE_PREVIEW_GRID=128 LATTICE_TRACE_FRAMES=2400 \
-    ///     cargo test -p phosphor-app --release -- --ignored --nocapture lattice_silence_trace
+    ///     cargo test -p fosfora-app --release -- --ignored --nocapture lattice_silence_trace
     #[test]
     #[ignore = "requires a GPU/software adapter; diagnostic trace"]
     fn lattice_silence_trace() {

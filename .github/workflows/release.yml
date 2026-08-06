@@ -42,7 +42,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.target }}-v2
+          key: ${{ matrix.os }}-${{ matrix.target }}-v3
 
       - name: Build release
         # v4l2, spout and syphon are inert off their OS (target-scoped deps + cfg-gated code)
@@ -54,7 +54,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           STAGING="fosfora-${TAG}-${{ matrix.target }}"
           mkdir -p "$STAGING"
-          cp "target/${{ matrix.target }}/release/phosphor-app" "$STAGING/fosfora"
+          cp "target/${{ matrix.target }}/release/fosfora" "$STAGING/fosfora"
           cp -r assets "$STAGING/assets"
           [ -f README.md ] && cp README.md "$STAGING/"
           [ -f LICENSE-MIT ] && cp LICENSE-MIT "$STAGING/"
@@ -70,7 +70,7 @@ jobs:
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
           $staging = "fosfora-${tag}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path $staging
-          Copy-Item "target/${{ matrix.target }}/release/phosphor-app.exe" "$staging/fosfora.exe"
+          Copy-Item "target/${{ matrix.target }}/release/fosfora.exe" "$staging/fosfora.exe"
           Copy-Item -Recurse "assets" "$staging/assets"
           if (Test-Path "README.md") { Copy-Item "README.md" "$staging/" }
           if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" "$staging/" }
@@ -84,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fosfora-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/phosphor-app
+          path: target/${{ matrix.target }}/release/fosfora
 
       - name: Upload artifact
         if: runner.os != 'macOS'
@@ -161,7 +161,7 @@ jobs:
           APP="Fosfora.app"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
-          lipo -create artifacts/arm64/phosphor-app artifacts/x86_64/phosphor-app -output "$APP/Contents/MacOS/Fosfora"
+          lipo -create artifacts/arm64/fosfora artifacts/x86_64/fosfora -output "$APP/Contents/MacOS/Fosfora"
           chmod +x "$APP/Contents/MacOS/Fosfora"
           cp -r assets "$APP/Contents/Resources/assets"
           sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"

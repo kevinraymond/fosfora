@@ -1577,6 +1577,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "fosfora-app"
+version = "1.32.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cpal",
+ "crossbeam-channel",
+ "dark-light",
+ "dirs",
+ "egui",
+ "egui-wgpu",
+ "egui-winit",
+ "egui_code_editor",
+ "env_logger",
+ "flate2",
+ "fontdue",
+ "gif 0.13.3",
+ "glam",
+ "gltf",
+ "image",
+ "image-webp",
+ "libloading 0.8.9",
+ "log",
+ "midir",
+ "nokhwa",
+ "notify",
+ "notify-debouncer-mini",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "ort",
+ "pollster",
+ "rfd",
+ "rosc",
+ "rustc-hash 2.1.1",
+ "rustfft",
+ "serde",
+ "serde_json",
+ "spout2-rs",
+ "symphonia",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tungstenite",
+ "ureq",
+ "v4l",
+ "wgpu",
+ "wgpu-profiler",
+ "windows 0.61.3",
+ "winit",
+ "zip",
+]
+
+[[package]]
 name = "fsevent-sys"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3314,61 +3369,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "phosphor-app"
-version = "1.32.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "cpal",
- "crossbeam-channel",
- "dark-light",
- "dirs",
- "egui",
- "egui-wgpu",
- "egui-winit",
- "egui_code_editor",
- "env_logger",
- "flate2",
- "fontdue",
- "gif 0.13.3",
- "glam",
- "gltf",
- "image",
- "image-webp",
- "libloading 0.8.9",
- "log",
- "midir",
- "nokhwa",
- "notify",
- "notify-debouncer-mini",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "objc2-metal 0.3.2",
- "ort",
- "pollster",
- "rfd",
- "rosc",
- "rustc-hash 2.1.1",
- "rustfft",
- "serde",
- "serde_json",
- "spout2-rs",
- "symphonia",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tungstenite",
- "ureq",
- "v4l",
- "wgpu",
- "wgpu-profiler",
- "windows 0.61.3",
- "winit",
- "zip",
-]
 
 [[package]]
 name = "pin-project"

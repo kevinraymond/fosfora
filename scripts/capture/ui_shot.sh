@@ -29,7 +29,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 REPO=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
-BIN=$REPO/target/release/phosphor-app
+BIN=$REPO/target/release/fosfora
 WORK=$(mktemp -d -t fosfora-uishot-XXXXXX)
 CFG=$WORK/cfg
 SINK=fosfora_uishot
@@ -49,7 +49,7 @@ trap cleanup EXIT INT TERM
 
 [[ -x $BIN ]] || die "release binary not found — cargo build --release"
 DEFAULT_SINK=$(pactl get-default-sink)
-mkdir -p "$CFG/phosphor/splats" "$(dirname "$OUT")"
+mkdir -p "$CFG/fosfora/splats" "$(dirname "$OUT")"
 
 # Effect cycle order, as the app will scan it.
 mapfile -t SLUGS < <(python3 - "$REPO/assets/effects" <<'PY'
@@ -65,7 +65,7 @@ for i in "${!SLUGS[@]}"; do [[ ${SLUGS[i]} == "$EFFECT" ]] && TARGET=$i; done
 
 "$REPO/scripts/capture/make_loop.py" -o "$WORK/loop.wav" >&2
 SINK_MOD=$(pactl load-module module-null-sink sink_name=$SINK)
-XDG_CONFIG_HOME=$CFG RUST_LOG=phosphor_app=info "$BIN" >"$WORK/app.log" 2>&1 &
+XDG_CONFIG_HOME=$CFG RUST_LOG=fosfora=info "$BIN" >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 
 find_client_window() {
@@ -107,7 +107,7 @@ xdotool windowactivate --sync "$WIN"; sleep 0.5
 # takes i steps. The overlay stays VISIBLE here — it is the subject of the shot.
 steps=$(( TARGET == 0 ? ${#SLUGS[@]} : TARGET ))
 for ((i=0;i<steps;i++)); do
-  oscsend localhost 9000 /phosphor/trigger/next_effect f 1.0; sleep 0.35
+  oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0; sleep 0.35
 done
 log "on $EFFECT; settling ${SETTLE}s so the meters have real history"
 sleep "$SETTLE"

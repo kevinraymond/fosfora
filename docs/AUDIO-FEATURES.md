@@ -77,7 +77,7 @@ Fosfora listens to your audio and turns it into 74 numbers, updated 86 times a s
 | `presence` | 4000–6000 Hz | Hi-hats, cymbal shimmer |
 | `brilliance` | 6000+ Hz | Air, sparkle |
 
-Source: Fosfora-specific — the band edges are a conventional seven-way split, but the measurement is ours: each band is read from whichever of three FFT sizes best resolves it, and the top three get a gentle tilt so cymbals are not permanently dwarfed by bass. See [`audio/analyzer.rs`](../crates/phosphor-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — the band edges are a conventional seven-way split, but the measurement is ours: each band is read from whichever of three FFT sizes best resolves it, and the top three get a gentle tilt so cymbals are not permanently dwarfed by bass. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
 
 **`rms`** — the plain, unweighted loudness of the signal. It is the simplest possible "how much sound is there" number, and it responds instantly. Reach for `loudness_m` instead when you want something that matches how loud the music *feels*; use `rms` when you want raw and fast.
 
@@ -93,7 +93,7 @@ Source: [ITU-R BS.1770](https://www.itu.int/rec/R-REC-BS.1770/en) — the short-
 
 **`loudness_trend`** — is the track getting louder? It rises when the recent level pulls ahead of the longer average, which is exactly what happens through a build-up, and sits at 0 the rest of the time. It is the cleanest single "something is coming" signal Fosfora produces.
 
-Source: Fosfora-specific — the rising difference between the momentary and short-term loudness, in [`audio/loudness.rs`](../crates/phosphor-app/src/audio/loudness.rs). It also feeds `buildup`.
+Source: Fosfora-specific — the rising difference between the momentary and short-term loudness, in [`audio/loudness.rs`](../crates/fosfora-app/src/audio/loudness.rs). It also feeds `buildup`.
 
 ---
 
@@ -133,7 +133,7 @@ Source: Standard descriptor — [librosa's `zero_crossing_rate`](https://librosa
 
 **`kick`** — the kick drum, and nothing else. It listens only between 30 and 120 Hz and reports the moment energy arrives there, so a hi-hat or vocal cannot trigger it. When you want a visual that thumps with the kick specifically rather than with any drum, this is the one.
 
-Source: Fosfora-specific — a narrow-band version of the same level-independent measure `onset` uses, with its own automatic gain so it stays usable across tracks. See [`audio/analyzer.rs`](../crates/phosphor-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — a narrow-band version of the same level-independent measure `onset` uses, with its own automatic gain so it stays usable across tracks. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
 
 **`onset`** — something just got hit. It spikes the instant a new sound starts — a kick, a snare, a plucked string, a vocal entry — and falls back toward 0 between hits. Unlike `beat`, it does not care about tempo, so it fires on every attack including the off-beat ones.
 
@@ -157,15 +157,15 @@ Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) �
 
 **`downbeat`** — the "one" of the bar. Like `beat`, it is 1 for a single frame, but only on the first beat of each bar, so you can save your biggest visual moves for it. Fosfora works out whether the music is in 3 or 4 and where the bar starts by noticing which beats are consistently more emphatic.
 
-Source: Fosfora-specific — no published algorithm; it scores candidate meters and bar positions by accent contrast over the last 16 beats, in [`audio/downbeat.rs`](../crates/phosphor-app/src/audio/downbeat.rs). Expect roughly 70–80% accuracy on straightforward 4/4 electronic music and less elsewhere.
+Source: Fosfora-specific — no published algorithm; it scores candidate meters and bar positions by accent contrast over the last 16 beats, in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs). Expect roughly 70–80% accuracy on straightforward 4/4 electronic music and less elsewhere.
 
 **`bar_phase`** — where you are in the bar, as a smooth 0 to 1 ramp. It is `beat_phase` one level up: a slow sweep that completes once per bar rather than once per beat, ideal for camera moves or color cycles that should breathe with the music's larger pulse.
 
-Source: Fosfora-specific — the bar-level clock in [`audio/downbeat.rs`](../crates/phosphor-app/src/audio/downbeat.rs).
+Source: Fosfora-specific — the bar-level clock in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs).
 
 **`beat_in_bar`** — which beat of the bar you are on, as a number from 0 to 1. In 4/4 it steps through 0, 0.25, 0.5, 0.75. Use it to do something different on beat 3 than on beat 1. It steps rather than slides, so do not expect smooth motion from it.
 
-Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates/phosphor-app/src/audio/downbeat.rs).
+Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs).
 
 ---
 
@@ -177,7 +177,7 @@ Source: [Brown, *Calculation of a Constant Q Spectral Transform*, JASA 1991](htt
 
 **`dominant_chroma`** — which single note is loudest right now, as an index from 0 to 1. Multiply by 11 to get a pitch class. It jumps rather than slides, which makes it perfect for picking a palette entry and useless for driving smooth motion.
 
-Source: Fosfora-specific — the strongest entry of `chroma`, in [`audio/analyzer.rs`](../crates/phosphor-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — the strongest entry of `chroma`, in [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
 
 **`key_class`** — what key the track is in, as a note index from 0 to 1. Multiply by 11 to get the root (0 is C). Unlike `dominant_chroma`, this looks at roughly the last twelve seconds, so it stays put through individual chord changes and typically holds steady for a whole track.
 
@@ -201,7 +201,7 @@ Source: [de Cheveigné & Kawahara (2002)](https://doi.org/10.1121/1.1458024) ([f
 
 **`pitch_hz`** *(OSC only)* — the same pitch as a real frequency in hertz, for clients that would rather have 440 than 0.6. It is not a shader uniform; it is derived on the way out.
 
-Source: Fosfora-specific — derived from `pitch` in [`osc/sender.rs`](../crates/phosphor-app/src/osc/sender.rs).
+Source: Fosfora-specific — derived from `pitch` in [`osc/sender.rs`](../crates/fosfora-app/src/osc/sender.rs).
 
 ---
 
@@ -221,7 +221,7 @@ Source: [Jiang et al. (2002)](https://doi.org/10.1109/ICME.2002.1035731) — ave
 
 **`timbre_flux`** — how fast the tone color is changing. A filter sweep, a vocal entering, or a pad morphing all push it up, while a steady sound sits near 0. Crucially it ignores volume changes, so unlike `flux` it will not fire just because someone rode the fader.
 
-Source: Fosfora-specific — the rate of change of the MFCCs, following the standard delta approach documented at [librosa's `delta`](https://librosa.org/doc/latest/generated/librosa.feature.delta.html). See [`audio/timbre.rs`](../crates/phosphor-app/src/audio/timbre.rs).
+Source: Fosfora-specific — the rate of change of the MFCCs, following the standard delta approach documented at [librosa's `delta`](https://librosa.org/doc/latest/generated/librosa.feature.delta.html). See [`audio/timbre.rs`](../crates/fosfora-app/src/audio/timbre.rs).
 
 ---
 
@@ -229,15 +229,15 @@ Source: Fosfora-specific — the rate of change of the MFCCs, following the stan
 
 **`pan`** — where the sound sits between the speakers. 0 is hard left, 0.5 is centered, 1 is hard right. OSC clients receive this as −1 to 1 instead. Wire it to horizontal position and the visual follows the mix.
 
-Source: Fosfora-specific — a left/right energy balance over roughly the last 46 milliseconds, in [`audio/stereo.rs`](../crates/phosphor-app/src/audio/stereo.rs).
+Source: Fosfora-specific — a left/right energy balance over roughly the last 46 milliseconds, in [`audio/stereo.rs`](../crates/fosfora-app/src/audio/stereo.rs).
 
 **`stereo_width`** — how wide the mix is. A mono recording reads 0, a normal stereo mix sits in the middle, and heavily spread or phase-tricked material approaches 1. Good for driving how far apart elements sit on screen.
 
-Source: Fosfora-specific — a mid/side energy ratio in [`audio/stereo.rs`](../crates/phosphor-app/src/audio/stereo.rs).
+Source: Fosfora-specific — a mid/side energy ratio in [`audio/stereo.rs`](../crates/fosfora-app/src/audio/stereo.rs).
 
 **`stereo_corr`** — how similar the left and right channels are. 1 means identical, 0.5 means unrelated, and 0 means they actively cancel each other. OSC clients receive this as −1 to 1. It is the more technical cousin of `stereo_width`, and it is the one that catches deliberately out-of-phase production tricks.
 
-Source: Fosfora-specific — a Pearson correlation between the channels, in [`audio/stereo.rs`](../crates/phosphor-app/src/audio/stereo.rs).
+Source: Fosfora-specific — a Pearson correlation between the channels, in [`audio/stereo.rs`](../crates/fosfora-app/src/audio/stereo.rs).
 
 ---
 
@@ -269,11 +269,11 @@ Source: [Foote, *Automatic Audio Segmentation Using a Measure of Audio Novelty*,
 
 **`buildup`** — tension is rising. It climbs through a riser by combining four things producers actually do before a drop: get louder, get brighter, add more hits, and pull the bass out. It is the single best driver for a slow global intensity ramp — a camera push-in, a widening glow, a rising blur.
 
-Source: Fosfora-specific — no published algorithm; a weighted combination of four cues in [`audio/structure.rs`](../crates/phosphor-app/src/audio/structure.rs), tuned for electronic music. The weights are adjustable live in the audio panel.
+Source: Fosfora-specific — no published algorithm; a weighted combination of four cues in [`audio/structure.rs`](../crates/fosfora-app/src/audio/structure.rs), tuned for electronic music. The weights are adjustable live in the audio panel.
 
 **`drop`** — the moment the track lands. Fires once, for a single frame, when a long build-up is suddenly answered by a jump in loudness and the bass coming back in. It then refuses to fire again for 16 seconds, so a busy chorus cannot machine-gun it.
 
-Source: Fosfora-specific — no published algorithm; a hand-tuned state machine in [`audio/structure.rs`](../crates/phosphor-app/src/audio/structure.rs), with thresholds exposed in the audio panel.
+Source: Fosfora-specific — no published algorithm; a hand-tuned state machine in [`audio/structure.rs`](../crates/fosfora-app/src/audio/structure.rs), with thresholds exposed in the audio panel.
 
 ---
 
@@ -283,15 +283,15 @@ The features above are single numbers. These are whole pictures of the sound, av
 
 **`waveform(x)`** — the actual shape of the sound wave, for an oscilloscope trace. Give it a horizontal position from 0 to 1 and it returns the lowest and highest the wave reached there. Fosfora aligns the trace to the wave itself, so it sits still on screen instead of skating sideways.
 
-Source: Fosfora-specific — zero-crossing-triggered min/max decimation in [`gpu/audio_textures.rs`](../crates/phosphor-app/src/gpu/audio_textures.rs).
+Source: Fosfora-specific — zero-crossing-triggered min/max decimation in [`gpu/audio_textures.rs`](../crates/fosfora-app/src/gpu/audio_textures.rs).
 
 **`spectrum(x)`** — how loud each frequency is right now, for drawing spectrum bars. Position 0 is the lowest frequency and 1 the highest, spaced musically so each octave gets equal width rather than the bass being crushed into the far left.
 
-Source: Fosfora-specific — a log-frequency magnitude texture in [`gpu/audio_textures.rs`](../crates/phosphor-app/src/gpu/audio_textures.rs).
+Source: Fosfora-specific — a log-frequency magnitude texture in [`gpu/audio_textures.rs`](../crates/fosfora-app/src/gpu/audio_textures.rs).
 
 **`spectrogram(uv)`** — the last several seconds of sound as a scrolling image, for waterfall displays. Across is time, with 0 the oldest and 1 the newest; up is frequency. Sample it anywhere to get how loud that frequency was at that moment.
 
-Source: Fosfora-specific — a scrolling [mel-band](https://en.wikipedia.org/wiki/Mel_scale) history in [`gpu/audio_textures.rs`](../crates/phosphor-app/src/gpu/audio_textures.rs).
+Source: Fosfora-specific — a scrolling [mel-band](https://en.wikipedia.org/wiki/Mel_scale) history in [`gpu/audio_textures.rs`](../crates/fosfora-app/src/gpu/audio_textures.rs).
 
 ### Binding-only sources
 
@@ -300,7 +300,7 @@ Two extra sets are available in the binding matrix but not as shader uniforms, t
 - **`audio.mel.0` … `audio.mel.63`** — the 64 individual frequency slices behind `spectrogram`. Use them when seven bands are not enough resolution.
 - **`audio.dmfcc.0` … `audio.dmfcc.12`** — the individual rates of change behind `timbre_flux`, as raw plus-or-minus values the binding graph maps for you.
 
-Source: Fosfora-specific — exposed in [`bindings/sources.rs`](../crates/phosphor-app/src/bindings/sources.rs).
+Source: Fosfora-specific — exposed in [`bindings/sources.rs`](../crates/fosfora-app/src/bindings/sources.rs).
 
 ---
 
@@ -317,21 +317,21 @@ Each feature is scaled by one of four policies, chosen per feature:
 - **Centered** — expressed relative to its own recent average, so 0.5 means "typical" and swings read symmetrically in both directions. Used for the 13 MFCCs.
 - **Untouched** — the detector already produced a meaningful 0–1 number and rescaling would only distort it. Used for everything else, including the beat group, key, pitch, stereo and structure features.
 
-The policy for every feature lives in one table in [`audio/schema.rs`](../crates/phosphor-app/src/audio/schema.rs).
+The policy for every feature lives in one table in [`audio/schema.rs`](../crates/fosfora-app/src/audio/schema.rs).
 
-Source: Fosfora-specific — percentile ranging in [`audio/ranging.rs`](../crates/phosphor-app/src/audio/ranging.rs) and [`audio/normalizer.rs`](../crates/phosphor-app/src/audio/normalizer.rs).
+Source: Fosfora-specific — percentile ranging in [`audio/ranging.rs`](../crates/fosfora-app/src/audio/ranging.rs) and [`audio/normalizer.rs`](../crates/fosfora-app/src/audio/normalizer.rs).
 
 ### Smoothing
 
 Every feature then gets a fast rise and a slow fall, tuned individually. That is why a kick snaps up instantly but eases back down: instant response in both directions would look like flickering. Triggers such as `beat`, `downbeat` and `drop` skip this entirely, and so do the ramps like `beat_phase`, because smoothing a value that wraps from 1 back to 0 would sweep it backwards through the middle.
 
-Source: Fosfora-specific — per-feature attack and release constants in [`audio/smoother.rs`](../crates/phosphor-app/src/audio/smoother.rs).
+Source: Fosfora-specific — per-feature attack and release constants in [`audio/smoother.rs`](../crates/fosfora-app/src/audio/smoother.rs).
 
 ### The silence gate
 
 One shared test decides whether there is any music at all: perceptual loudness below −55 LUFS counts as silence. When it trips, energy features fall to 0, the auto-leveling windows freeze so silence cannot rescale them, and values that should persist — tempo, key, pitch — hold their last reading instead of collapsing.
 
-Source: Fosfora-specific — the gate lives in [`audio/loudness.rs`](../crates/phosphor-app/src/audio/loudness.rs) and is shared by every detector.
+Source: Fosfora-specific — the gate lives in [`audio/loudness.rs`](../crates/fosfora-app/src/audio/loudness.rs) and is shared by every detector.
 
 ---
 

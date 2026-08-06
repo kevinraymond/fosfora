@@ -12,7 +12,7 @@
 # Demos are driven by a SCENE CUE LIST, not by next_preset. From a cold boot
 # `current_preset` is None, so the first next_preset lands on index 1, and any
 # advance-by-count choreography is hostage to how many built-in presets ship.
-# `/phosphor/scene/goto_cue` resolves the preset BY NAME through our own scene file, so
+# `/fosfora/scene/goto_cue` resolves the preset BY NAME through our own scene file, so
 # the mapping is ours. It also gives the dissolve demo for free.
 #
 # Presets, the bindings sidecar and the scene are written into the isolated config
@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-BIN=$REPO/target/release/phosphor-app
+BIN=$REPO/target/release/fosfora
 WORK=$(mktemp -d -t fosfora-adv-XXXXXX)
 CFG=$WORK/cfg
 SINK=fosfora_adv
@@ -97,20 +97,20 @@ N=${#ROWS[@]}
 
 DEFAULT_SINK=$(pactl get-default-sink)
 log "default sink is '$DEFAULT_SINK' — it will NOT be modified"
-mkdir -p "$OUT" "$CFG/phosphor/presets" "$CFG/phosphor/scenes"
+mkdir -p "$OUT" "$CFG/fosfora/presets" "$CFG/fosfora/scenes"
 
 # --------------------------------------------------------------------- demo state
 # @REPO@ / @WORK@ are substituted here rather than baked in, so the committed demo files
-# stay portable — a user can copy them into ~/.config/phosphor/presets/ and get the same
+# stay portable — a user can copy them into ~/.config/fosfora/presets/ and get the same
 # looks, which is half the point of shipping them as files.
 log "installing demo presets into the isolated config"
 for f in "$DEMOS"/*.json; do
   b=$(basename "$f")
   [[ $b == _* ]] && continue
-  sed "s|@REPO@|$REPO|g; s|@WORK@|$WORK|g" "$f" > "$CFG/phosphor/presets/$b"
+  sed "s|@REPO@|$REPO|g; s|@WORK@|$WORK|g" "$f" > "$CFG/fosfora/presets/$b"
 done
 sed "s|@REPO@|$REPO|g; s|@WORK@|$WORK|g" "$DEMOS/_scene.json" \
-  > "$CFG/phosphor/scenes/$SCENE_NAME.json"
+  > "$CFG/fosfora/scenes/$SCENE_NAME.json"
 
 cap_fetch_splat_demo "$CFG"
 
@@ -132,7 +132,7 @@ log "creating private null sink '$SINK'"
 SINK_MOD=$(cap_make_sink "$SINK")
 
 log "launching app with isolated config ($CFG)"
-XDG_CONFIG_HOME=$CFG RUST_LOG=phosphor_app=info "$BIN" >"$WORK/app.log" 2>&1 &
+XDG_CONFIG_HOME=$CFG RUST_LOG=fosfora=info "$BIN" >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 
 WIN=$(cap_wait_for_window "$APP_PID" "$WORK/app.log")
@@ -161,13 +161,13 @@ osc() { oscsend localhost 9000 "$@"; }
 
 # Hide the UI via OSC rather than the `d` key: xdotool key events do not reliably reach
 # this window, whereas the OSC trigger goes straight into the same handler.
-osc /phosphor/trigger/toggle_overlay f 1.0; sleep 1.5
+osc /fosfora/trigger/toggle_overlay f 1.0; sleep 1.5
 
 # Canvas detection needs something animating edge to edge, and boot lands on Phosphor
 # (hidden) -> Array (a dark centre column on black, which under-reports the canvas by a
 # third) -> Aurora, whose curtain bands fill the frame.
-osc /phosphor/trigger/next_effect f 1.0; sleep 0.8
-osc /phosphor/trigger/next_effect f 1.0; sleep 3.0
+osc /fosfora/trigger/next_effect f 1.0; sleep 0.8
+osc /fosfora/trigger/next_effect f 1.0; sleep 3.0
 
 read -r X Y W H < <(cap_detect_canvas "$REPO" "$WIN")
 log "capture geometry ${W}x${H}+${X}+${Y}  (origin by motion, size from client window)"
@@ -208,13 +208,13 @@ for row in "${ROWS[@]}"; do
   # the first slot ACTUALLY FILMED, not on k == 0, or `--only` on anything but the first
   # slug would film whatever happened to be on screen.
   if (( ! SCENE_LOADED )); then
-    osc /phosphor/scene/load s "$SCENE_NAME"
+    osc /fosfora/scene/load s "$SCENE_NAME"
     SCENE_LOADED=1
     # load_scene starts at cue 0; step on if this slot wants a different one.
-    if (( cue != 0 )); then sleep 0.4; osc /phosphor/scene/goto_cue i "$cue"; fi
+    if (( cue != 0 )); then sleep 0.4; osc /fosfora/scene/goto_cue i "$cue"; fi
   else
     # go_to_cue returns None when already on that index, so never re-issue one.
-    osc /phosphor/scene/goto_cue i "$cue"
+    osc /fosfora/scene/goto_cue i "$cue"
   fi
 
   # Belt and braces against the morph-safe skip carrying obstacle state across a cut:
@@ -222,7 +222,7 @@ for row in "${ROWS[@]}"; do
   # but the obstacle lives on the particle system rather than in the preset diff.
   cap_wait_until "$PLAY_T0" "$(python3 -c "print($S + 0.5)")"
   if [[ $slug != adv_obstacle ]]; then
-    for n in 0 1 2 3; do osc /phosphor/layer/$n/obstacle/enabled f 0.0; done
+    for n in 0 1 2 3; do osc /fosfora/layer/$n/obstacle/enabled f 0.0; done
   fi
 
   # --- settle gate -------------------------------------------------------------
@@ -276,7 +276,7 @@ for row in "${ROWS[@]}"; do
   if [[ $slug == adv_cue ]]; then
     cap_wait_until "$PLAY_T0" \
       "$(python3 -c "print($S + $LOOP_SECS*$SETTLE_FRAC + $TILE_AT + $TILE_DUR/2 - 1.5)")"
-    osc /phosphor/scene/goto_cue i 6
+    osc /fosfora/scene/goto_cue i 6
   fi
 
   wait "$REC_PID"

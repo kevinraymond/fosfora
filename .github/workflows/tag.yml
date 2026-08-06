@@ -1,7 +1,7 @@
 name: Tag Release
 
 # Creates the vX.Y.Z tag (which release.yml then builds and publishes) once the
-# version in crates/phosphor-app/Cargo.toml has a matching CHANGELOG header and the
+# version in crates/fosfora-app/Cargo.toml has a matching CHANGELOG header and the
 # docs are in sync.
 #
 # This lives apart from ci.yml on purpose. ci.yml uses `paths-ignore: '**.md'` so the
@@ -20,7 +20,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/phosphor-app/Cargo.toml" # the version bump that names the tag
+      - "crates/fosfora-app/Cargo.toml" # the version bump that names the tag
       - "CHANGELOG.md" # the release body release.yml awk-extracts
       - "README.md" # carries the effect count the docs guard checks
       - "docs/**" # GALLERY.md / TUTORIALS.md counts + relative links
@@ -63,7 +63,7 @@ jobs:
       - name: Check version and tag
         run: |
           # Read version from Cargo.toml
-          VERSION=$(grep '^version' crates/phosphor-app/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep '^version' crates/fosfora-app/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG="v${VERSION}"
           echo "Cargo.toml version: ${VERSION} (tag: ${TAG})"
 

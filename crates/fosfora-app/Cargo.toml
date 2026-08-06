@@ -1,5 +1,5 @@
 [package]
-name = "phosphor-app"
+name = "fosfora-app"
 version = "1.32.0"
 edition = "2024"
 rust-version = "1.90"
@@ -8,6 +8,10 @@ description = "Real-time audio-reactive particle and shader engine for live perf
 repository = "https://github.com/kevinraymond/fosfora"
 readme = "../../README.md"
 publish = false
+
+[[bin]]
+name = "fosfora"
+path = "src/main.rs"
 
 [dependencies]
 # GPU

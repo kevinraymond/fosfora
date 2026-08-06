@@ -36,7 +36,7 @@ ABI and layout changes are the exception: state the byte sizes plainly, because 
 a user whether their own shaders need recompiling.
 
 Keep the `## vX.Y.Z — date` header format and re-header `## Unreleased` at each release
-(CI reads the version from `crates/phosphor-app/Cargo.toml`), or notes bleed between
+(CI reads the version from `crates/fosfora-app/Cargo.toml`), or notes bleed between
 sections.
 
 **Calibration:** the v1.8.0 section is the target shape (~250 chars per entry). The
@@ -45,5 +45,5 @@ averaging six times the prose per unit of work.
 
 ## Releasing
 
-Bump the version in `crates/phosphor-app/Cargo.toml`, update `CHANGELOG.md`, push to main.
+Bump the version in `crates/fosfora-app/Cargo.toml`, update `CHANGELOG.md`, push to main.
 CI auto-tags and releases. Never `git tag` by hand.

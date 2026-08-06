@@ -24,7 +24,7 @@ Please include as much of the following as you can:
   surface, media/webcam decoding)
 - Steps to reproduce, or a proof-of-concept
 - The version and platform (OS + GPU) you observed it on
-- Any relevant log output (`RUST_LOG=phosphor_app=debug`)
+- Any relevant log output (`RUST_LOG=fosfora=debug`)
 
 You can expect an initial response within about a week. We'll keep you updated
 as we investigate and, if a fix is warranted, coordinate a release.

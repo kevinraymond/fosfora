@@ -628,7 +628,7 @@ mod target_tests {
 
     /// Round-trips every binding file in the user's real config through the
     /// parser, asserting the serialized form comes back byte-identical.
-    /// Run: cargo test -p phosphor-app -- --ignored real_binding_files_round_trip --nocapture
+    /// Run: cargo test -p fosfora-app -- --ignored real_binding_files_round_trip --nocapture
     #[test]
     #[ignore = "reads the operator's ~/.config/fosfora; not hermetic"]
     fn real_binding_files_round_trip() {

@@ -54,7 +54,7 @@ egui Overlay → Surface → Present
 ## Source Layout
 
 ```
-crates/phosphor-app/src/
+crates/fosfora-app/src/
 ├── main.rs              Entry point, wgpu/winit init
 ├── app.rs               Main App struct, event loop, channel draining
 ├── audio/               cpal capture, multi-res FFT, beat detection, smoothing

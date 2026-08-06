@@ -473,7 +473,7 @@ mod tests {
     /// Building a real Compositor validates both, including the displacement
     /// branch added for #1478.
     ///
-    /// Run: cargo test -p phosphor-app -- --ignored compositor_builtin_shaders_compile
+    /// Run: cargo test -p fosfora-app -- --ignored compositor_builtin_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn compositor_builtin_shaders_compile() {

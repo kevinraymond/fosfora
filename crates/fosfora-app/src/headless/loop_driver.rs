@@ -384,7 +384,7 @@ mod tests {
     /// construction, at the pixel level. Also re-renders frame 0 to pin
     /// intra-session determinism. Any edit that sneaks wall-clock or stateful
     /// behavior into a phase-locked effect fails here.
-    /// Run: cargo test -p phosphor-app -- --ignored golden_loop
+    /// Run: cargo test -p fosfora-app -- --ignored golden_loop
     #[test]
     #[ignore = "GPU"]
     fn golden_loop_frame_zero_equals_frame_n() {
@@ -519,7 +519,7 @@ mod tests {
     /// the exact spec frame count, and its wrap seam is no worse than the
     /// unblended (time-wrapped) seam of the same spec — a sanity check on the
     /// mechanism, not a quality judgment.
-    /// Run: cargo test -p phosphor-app -- --ignored crossfade_reduces
+    /// Run: cargo test -p fosfora-app -- --ignored crossfade_reduces
     #[test]
     #[ignore = "GPU"]
     fn crossfade_reduces_the_seam() {

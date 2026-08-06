@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Author a Fosfora scene from an offline song analysis (#2027, dev-side tool).
 
-    ./target/release/phosphor-app --analyze song.mp3 --out song.analysis.json
-    ./target/release/phosphor-app --dump-schema --out capabilities.json
+    ./target/release/fosfora --analyze song.mp3 --out song.analysis.json
+    ./target/release/fosfora --dump-schema --out capabilities.json
     uv run --with anthropic scripts/generate_scene.py \
         --analysis song.analysis.json --capabilities capabilities.json --out gen/
-    ./target/release/phosphor-app --validate gen/
+    ./target/release/fosfora --validate gen/
 
 This is the one-stage generator: analysis in, scene out, no human checkpoint.
 The two-stage screenplay pipeline (write_screenplay.py + realize_screenplay.py,
@@ -246,8 +246,8 @@ def main() -> int:
     ap.add_argument(
         "--binary",
         type=Path,
-        default=Path("target/release/phosphor-app"),
-        help="phosphor-app built with --features analyze, for --validate",
+        default=Path("target/release/fosfora"),
+        help="fosfora built with --features analyze, for --validate",
     )
     ap.add_argument(
         "--attempts",

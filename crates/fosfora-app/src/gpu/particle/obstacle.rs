@@ -268,7 +268,7 @@ mod tests {
     // fit mode, that the alpha region and collision normals are correct in
     // SCREEN space. Fails under any of the four legacy defects (stretched
     // UVs, anisotropic gradients, y-inverted normals, squashed fit).
-    // Run: cargo test -p phosphor-app -- --ignored obstacle_gpu_probe
+    // Run: cargo test -p fosfora-app -- --ignored obstacle_gpu_probe
     // (lavapipe works: it validates + executes the edited lib headlessly).
 
     const PROBE_W: f32 = 1000.0;

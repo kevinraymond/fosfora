@@ -56,7 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 REPO=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
-BIN=$REPO/target/release/phosphor-app
+BIN=$REPO/target/release/fosfora
 WORK=$(mktemp -d -t fosfora-capture-XXXXXX)
 CFG=$WORK/cfg
 SINK=fosfora_cap
@@ -99,7 +99,7 @@ fi
 DEFAULT_SINK=$(pactl get-default-sink)
 log "default sink is '$DEFAULT_SINK' — it will NOT be modified"
 
-mkdir -p "$OUT" "$CFG/phosphor/splats"
+mkdir -p "$OUT" "$CFG/fosfora/splats"
 
 # Effect cycle order, straight from the .pfx files the app will scan.
 mapfile -t NAMES < <(python3 - "$REPO/assets/effects" <<'PY'
@@ -145,7 +145,7 @@ log "synthesizing demo loop…"
 
 # Splat ships "source": "demo:default", which resolves to phosphor_demo.ply under the config
 # dir. Isolating the config means it is not there — fetch it so Splat renders a scene.
-DEMO_PLY=$CFG/phosphor/splats/phosphor_demo.ply
+DEMO_PLY=$CFG/fosfora/splats/phosphor_demo.ply
 DEMO_URL=https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trooper.ply
 if [[ ! -f $DEMO_PLY ]]; then
   CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/fosfora-capture/phosphor_demo.ply
@@ -177,7 +177,7 @@ SINK_MOD=$(pactl load-module module-null-sink sink_name=$SINK \
              sink_properties=device.description=FosforaCapture)
 
 log "launching app with isolated config ($CFG)"
-XDG_CONFIG_HOME=$CFG RUST_LOG=phosphor_app=info "$BIN" >"$WORK/app.log" 2>&1 &
+XDG_CONFIG_HOME=$CFG RUST_LOG=fosfora=info "$BIN" >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 
 # Under a reparenting WM, `xdotool search` matches BOTH the WM frame and the client window.
@@ -245,9 +245,9 @@ xdotool windowactivate --sync "$WIN"; sleep 0.6
 # Hide the UI overlay via OSC rather than the `d` key: xdotool key events do not reliably reach
 # this window (the first smoke run captured a full set of panels), whereas the OSC trigger goes
 # straight into the same handler the keyboard would have.
-oscsend localhost 9000 /phosphor/trigger/toggle_overlay f 1.0; sleep 1.5
+oscsend localhost 9000 /fosfora/trigger/toggle_overlay f 1.0; sleep 1.5
 
-step() { oscsend localhost 9000 /phosphor/trigger/next_effect f 1.0; }
+step() { oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0; }
 
 # Step to Aurora before measuring. Motion detection needs something that animates edge to edge:
 # measuring against Array (a dark centre column on black) found only the lit middle and

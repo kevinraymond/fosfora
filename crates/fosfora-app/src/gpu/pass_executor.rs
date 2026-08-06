@@ -1386,7 +1386,7 @@ mod tests {
     // with buoyancy for ~140 more. Captures the dye pass early (just after injection) and
     // late, and asserts the ink is present, not blown out, and actually MOVED — a dead
     // sim (static splat) would leave the two frames identical.
-    // Run: SUMI_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored sumi_render_previews
+    // Run: SUMI_PNG_DIR=/tmp cargo test -p fosfora-app --release -- --ignored sumi_render_previews
     #[test]
     #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
     fn sumi_render_previews() {
@@ -1627,7 +1627,7 @@ mod tests {
     // a cleared field; phase 2 goes silent so starvation must shrink it. Asserts the
     // creatures exist, are localized bodies (not a wash, not a uniform field), keep
     // moving, and that silence starves the mass the music grew.
-    // Run: PROTEA_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored protea_render_previews
+    // Run: PROTEA_PNG_DIR=/tmp cargo test -p fosfora-app --release -- --ignored protea_render_previews
     #[test]
     #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
     fn protea_render_previews() {
@@ -1903,7 +1903,7 @@ mod tests {
     // light-and-shadow STRUCTURE (an occluder casts darkness — not a flat wash),
     // brightens on a kick, is coloured by chroma, and keeps moving. Silent low-res
     // proxy — real penumbra/god-ray feel needs a live review.
-    // Run: LUMEN_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored lumen_render_previews
+    // Run: LUMEN_PNG_DIR=/tmp cargo test -p fosfora-app --release -- --ignored lumen_render_previews
     #[test]
     #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
     fn lumen_render_previews() {
@@ -2218,7 +2218,7 @@ mod tests {
     // shader. An edge-detect probe over a half-and-half backdrop must light up
     // exactly at the boundary — and render nothing at all when no backdrop is
     // wired (placeholder = uniform = no edges), which is the solo-layer contract.
-    // Run: cargo test -p phosphor-app -- --ignored backdrop_input_binds
+    // Run: cargo test -p fosfora-app -- --ignored backdrop_input_binds
     #[test]
     #[ignore = "requires a wgpu adapter"]
     fn backdrop_input_binds_and_delivers_content() {
@@ -2357,7 +2357,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // purely phase-derived and exact loop export would be impossible. The same
     // readback doubles as the per-effect alpha probe: transparent background must
     // reach the bytes, with solid coverage present.
-    // Run: cargo test -p phosphor-app -- --ignored phase_locked_effects_render
+    // Run: cargo test -p fosfora-app -- --ignored phase_locked_effects_render
     #[test]
     #[ignore = "requires a wgpu adapter"]
     fn phase_locked_effects_render_bit_identically() {
@@ -2479,7 +2479,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // premultiplied, through the production preamble. Asserts variance in RGB AND
     // alpha — a lib regression that flattens coverage (or a preamble change that
     // breaks the prepend) fails here before any overlay effect does.
-    // Run: cargo test -p phosphor-app -- --ignored overlay_lib_primitives
+    // Run: cargo test -p fosfora-app -- --ignored overlay_lib_primitives
     #[test]
     #[ignore = "requires a wgpu adapter"]
     fn overlay_lib_primitives_render_with_alpha() {
@@ -2666,7 +2666,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     //   2. a beat frame collapses history (shutter snap → coverage drops),
     //   3. the lit mass skews rightward (velocity field points the right way),
     //   4. nothing blows out (HDR clamp holds in the feedback loop).
-    // Run: CHRONO_PNG_DIR=/tmp cargo test -p phosphor-app --release -- --ignored chronoflow_render_previews
+    // Run: CHRONO_PNG_DIR=/tmp cargo test -p fosfora-app --release -- --ignored chronoflow_render_previews
     #[test]
     #[ignore = "requires a wgpu adapter; renders offscreen, writes PNGs"]
     fn chronoflow_render_previews() {

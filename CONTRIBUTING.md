@@ -18,7 +18,7 @@ git config core.hooksPath .githooks   # enable pre-commit checks (fmt + clippy)
 ```bash
 cargo run --release              # release build (recommended)
 cargo run                        # debug build (slower shaders)
-RUST_LOG=phosphor_app=debug cargo run  # verbose logging
+RUST_LOG=fosfora=debug cargo run  # verbose logging
 ```
 
 ## Adding an Effect
@@ -50,7 +50,7 @@ Please include:
 - OS and GPU (e.g., "Linux, NVIDIA RTX 4090")
 - Steps to reproduce
 - Expected vs. actual behavior
-- Log output if relevant (`RUST_LOG=phosphor_app=debug cargo run`)
+- Log output if relevant (`RUST_LOG=fosfora=debug cargo run`)
 
 ## Code Style
 

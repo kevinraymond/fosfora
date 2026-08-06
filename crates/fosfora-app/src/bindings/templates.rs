@@ -579,7 +579,7 @@ mod tests {
 
     /// Param names of the given effect, straight from the shipped `.pfx` files.
     /// CARGO_MANIFEST_DIR, not assets_dir(): the latter resolves CWD-relative, and
-    /// `cargo test` runs with CWD = crates/phosphor-app, which has no assets/.
+    /// `cargo test` runs with CWD = crates/fosfora-app, which has no assets/.
     fn shipped_effects() -> Vec<(String, Vec<String>)> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
         let mut out: Vec<(String, Vec<String>)> = std::fs::read_dir(&dir)
@@ -1045,7 +1045,7 @@ mod tests {
 
     /// Not an assertion — prints what each template actually produces on every
     /// shipped effect, so the mapping can be reviewed rather than assumed.
-    /// Run: cargo test -p phosphor-app -- --ignored template_coverage_report --nocapture
+    /// Run: cargo test -p fosfora-app -- --ignored template_coverage_report --nocapture
     #[test]
     #[ignore = "reporting probe, not an assertion"]
     fn template_coverage_report() {

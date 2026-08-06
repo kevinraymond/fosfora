@@ -7,7 +7,7 @@
 
     uv run scripts/realize_screenplay.py --screenplay song.screenplay.md \
         --analysis song.analysis.json --out gen/
-    ./target/release/phosphor-app --render-scene gen/ --song song.mp3
+    ./target/release/fosfora --render-scene gen/ --song song.mp3
 
 Casts the screenplay's imagery from the effect catalog (catalog/effects/, the
 measured casting sheets — board #2041) into presets, bindings and a cue list,
@@ -384,8 +384,8 @@ def main() -> int:
     ap.add_argument(
         "--binary",
         type=Path,
-        default=Path("target/release/phosphor-app"),
-        help="phosphor-app built with --features analyze, for --validate",
+        default=Path("target/release/fosfora"),
+        help="fosfora built with --features analyze, for --validate",
     )
     ap.add_argument("--attempts", type=int, default=3)
     ap.add_argument("--all-sources", action="store_true")
@@ -494,7 +494,7 @@ def main() -> int:
             )
             print(
                 "\nRender it:\n"
-                f"  ./target/release/phosphor-app --render-scene {args.out} "
+                f"  ./target/release/fosfora --render-scene {args.out} "
                 f"--song <the song file>",
                 file=sys.stderr,
             )

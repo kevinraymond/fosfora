@@ -9,7 +9,7 @@ use super::format::PfxEffect;
 /// The shipped `.pfx` effects, for tests that need the real effect table.
 ///
 /// `CARGO_MANIFEST_DIR`, not [`assets_dir`]: that resolves CWD-relative and
-/// `cargo test` runs with CWD = `crates/phosphor-app`, which has no `assets/`.
+/// `cargo test` runs with CWD = `crates/fosfora-app`, which has no `assets/`.
 /// `preset/store.rs`, `bindings/templates.rs` and `gpu/pass_executor.rs` each
 /// grew their own copy of this walk before it lived here.
 #[cfg(test)]
@@ -960,7 +960,7 @@ mod tests {
     //
     // PARTICLE_PFX=vessel,tesla  selects effects (default: every particle .pfx)
     // PARTICLE_PNG_DIR=/path     where PNGs land (default /tmp)
-    // Run: cargo test -p phosphor-app -- --ignored particle_effect_previews --nocapture
+    // Run: cargo test -p fosfora-app -- --ignored particle_effect_previews --nocapture
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
     fn particle_effect_previews() {
@@ -1237,7 +1237,7 @@ mod tests {
     // dark ink on light powder, and against the particle probe's near-black clear it would
     // be invisible even once the particles worked.
     //
-    // Run: cargo test -p phosphor-app -- --ignored media_effect_previews --nocapture
+    // Run: cargo test -p fosfora-app -- --ignored media_effect_previews --nocapture
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
     fn media_effect_previews() {
@@ -1719,7 +1719,7 @@ mod tests {
     // sin() accuracy is a driver/hardware property (lavapipe's is accurate,
     // the RTX fast path is not), so demanding the bug reproduce would be flaky.
     // The fract-sin numbers are printed for the record instead.
-    // Run: cargo test -p phosphor-app -- --ignored integer_hash_is_uniform_at_particle_scale
+    // Run: cargo test -p fosfora-app -- --ignored integer_hash_is_uniform_at_particle_scale
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn integer_hash_is_uniform_at_particle_scale() {
@@ -1915,7 +1915,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Auto-layout (`layout: None`) is what makes this cheap: pipeline creation
     // still forces full validation of bindings and the entry point without the
     // harness having to build any particle buffers.
-    // Run: cargo test -p phosphor-app -- --ignored all_particle_sim_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored all_particle_sim_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn all_particle_sim_shaders_compile() {
@@ -1991,7 +1991,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Compile probe for the Tide sim + bg shaders through the production
     // concatenation (lib_source = noise + palette, then particle_lib for
     // compute). Catches WGSL errors without launching the app.
-    // Run: cargo test -p phosphor-app -- --ignored tide_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored tide_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn tide_shaders_compile() {
@@ -2051,7 +2051,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // noise + palette + sdf + tonemap, see LIBRARY_FILES). Also a
     // pre-launch check that the WGSL ParticleUniforms mirror matches the
     // Rust layout (896 bytes since the #1800 ABI bump).
-    // Run: cargo test -p phosphor-app -- --ignored vessel_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored vessel_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn vessel_shaders_compile() {
@@ -2109,7 +2109,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // no SDF helpers). Also validates the two-cohort sim's atomicAdd on
     // counters[3] (the shard emission sub-budget) against the particle_lib
     // binding layout.
-    // Run: cargo test -p phosphor-app -- --ignored cleave_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored cleave_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn cleave_shaders_compile() {
@@ -2183,7 +2183,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // concatenation. `helix_bg.wgsl` reads `u.resolution`, so it only compiles if
     // the uniform block is actually injected — this is what would catch the #1855
     // trap turning the backdrop into a load error at runtime.
-    // Run: cargo test -p phosphor-app -- --ignored helix_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored helix_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn helix_shaders_compile() {
@@ -2338,7 +2338,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Compile probe for the Frost fragment shader through the production
     // concatenation (UNIFORM_BLOCK + noise + palette). Fragment-only effect,
     // so no compute-pipeline step.
-    // Run: cargo test -p phosphor-app -- --ignored frost_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored frost_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn frost_shaders_compile() {
@@ -2361,7 +2361,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // fragment pipeline with synthetic audio uniforms (tonal vs noisy) through
     // 90 feedback frames and capture PNGs. Guards against a black screen or a
     // feedback blowout and asserts the crystal and sand states actually differ.
-    // Run: FROST_PNG_DIR=/path cargo test -p phosphor-app -- --ignored frost_render_previews
+    // Run: FROST_PNG_DIR=/path cargo test -p fosfora-app -- --ignored frost_render_previews
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
     fn frost_render_previews() {
@@ -2627,7 +2627,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Compile probe for the Chromatica fragment shader through the production
     // concatenation. It uses fosfora_sd_segment2, so sdf.wgsl must be in the
     // concat (production prepends it via LIB_FILENAMES; the compile probe must too).
-    // Run: cargo test -p phosphor-app -- --ignored chromatica_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored chromatica_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn chromatica_shaders_compile() {
@@ -2694,7 +2694,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Compile probe for all four Sumi pass shaders through the real pipeline path
     // (ShaderPipeline::new = reflection layout + render-pipeline creation), each with
     // its production input_count so the injected input0/input1 bindings validate.
-    // Run: cargo test -p phosphor-app -- --ignored sumi_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored sumi_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn sumi_shaders_compile() {
@@ -2741,7 +2741,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // chroma/key uniforms (C major, A minor, silence, edges-off) through feedback
     // frames and capture PNGs. Guards against a black screen or a feedback blowout,
     // and asserts a lit chord is brighter than silence and the consonance edges add light.
-    // Run: CHROMATICA_PNG_DIR=/path cargo test -p phosphor-app --release -- --ignored chromatica_render_previews
+    // Run: CHROMATICA_PNG_DIR=/path cargo test -p fosfora-app --release -- --ignored chromatica_render_previews
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
     fn chromatica_render_previews() {
@@ -3045,7 +3045,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // trail declaration — this probe is the pre-launch check that naga
     // accepts that coexistence (auto layout only materializes statically
     // used bindings) and that the 896-byte uniform mirror still matches.
-    // Run: cargo test -p phosphor-app -- --ignored splat_shaders_compile
+    // Run: cargo test -p fosfora-app -- --ignored splat_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn splat_shaders_compile() {
@@ -3104,7 +3104,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // for four synthetic audio states, PNGs captured and sanity-asserted.
     // A wrapped i32 accumulator (overflow) shows up as garbage colors and
     // fails the mean bound; a broken projection/OIT renders black.
-    // Run: cargo test -p phosphor-app -- --ignored splat_render_previews
+    // Run: cargo test -p fosfora-app -- --ignored splat_render_previews
     // PNGs land in $SPLAT_PNG_DIR (default /tmp).
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
@@ -3444,7 +3444,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // 1–3M splats): 600 frames of the production dispatch+raster+resolve at
     // 1080p, GPU-bound via a blocking poll per frame. Reports mean / p99
     // frame time. Splat count via SPLAT_PERF_COUNT (default 1_000_000).
-    // Run: SPLAT_PERF_COUNT=3000000 cargo test -p phosphor-app --release -- --ignored --nocapture splat_perf_600_frames
+    // Run: SPLAT_PERF_COUNT=3000000 cargo test -p fosfora-app --release -- --ignored --nocapture splat_perf_600_frames
     #[test]
     #[ignore = "requires a GPU; perf measurement, run --release"]
     fn splat_perf_600_frames() {
@@ -3611,7 +3611,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     /// Compile probe for both #1801 effects through the production concatenation.
-    /// Run: cargo test -p phosphor-app -- --ignored mir_pack_shaders_compile
+    /// Run: cargo test -p fosfora-app -- --ignored mir_pack_shaders_compile
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn mir_pack_shaders_compile() {
@@ -3675,7 +3675,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     /// Renders only the particle pass (no bg feedback / bloom) — enough to read
     /// the ridge silhouette and confirm the bands sculpt it. Writes PNGs to
     /// ASCEND_PNG_DIR (default /tmp); the asserts only guard not-black / not-blown.
-    /// Run: ASCEND_PNG_DIR=/some/dir cargo test -p phosphor-app --release -- --ignored ascend_render_previews
+    /// Run: ASCEND_PNG_DIR=/some/dir cargo test -p fosfora-app --release -- --ignored ascend_render_previews
     #[test]
     #[ignore = "requires a GPU/software adapter; writes PNGs"]
     fn ascend_render_previews() {
@@ -3857,7 +3857,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     /// is asserted alongside the new fields specifically to pin the "append, never insert"
     /// invariant (#1505): if the new tail had been spliced in mid-struct, it would move.
     ///
-    /// Run: cargo test -p phosphor-app -- --ignored particle_uniforms_wgsl_layout_matches_rust
+    /// Run: cargo test -p fosfora-app -- --ignored particle_uniforms_wgsl_layout_matches_rust
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn particle_uniforms_wgsl_layout_matches_rust() {

@@ -9,7 +9,7 @@ v1.13.0, where the already-published header had been reverted to `## Unreleased`
 entries stacked on top of it.
 
 Checks:
-  * the version in crates/phosphor-app/Cargo.toml has a `## vX.Y.Z — date` header with a
+  * the version in crates/fosfora-app/Cargo.toml has a `## vX.Y.Z — date` header with a
     non-empty body, unless that version is already tagged (i.e. already released)
   * every released version still has its header, and still has a body
   * `## Unreleased` appears at most once, and above every released section
@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 CHANGELOG = REPO / "CHANGELOG.md"
-CARGO = REPO / "crates" / "phosphor-app" / "Cargo.toml"
+CARGO = REPO / "crates" / "fosfora-app" / "Cargo.toml"
 
 # Versions below this are not checked: the 0.3.x sections were pruned from the changelog
 # on purpose and are not coming back, so their tags would report a missing header forever.
