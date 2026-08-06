@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — Leap Motion Hand Tracker (Placeholder)
+Fosfora Bridge — Leap Motion Hand Tracker (Placeholder)
 
 This bridge defines the full schema for Leap Motion hand tracking data
 but currently pushes zeros. It will produce live data once the Leap SDK
@@ -32,7 +32,7 @@ Fields produced (per hand h1/h2):
 
 import time
 import sys
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 HANDS = ["h1", "h2"]
@@ -82,8 +82,8 @@ def build_schema():
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — Leap Motion Hand Tracker")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — Leap Motion Hand Tracker")
     args = parser.parse_args()
 
     if not _HAS_LEAP:
@@ -93,7 +93,7 @@ def main():
         print("  Install the Leap SDK from ultraleap.com for live data.")
         print("=" * 60)
 
-    bridge = PhosphorBridge("leap-motion", args.host, args.port)
+    bridge = FosforaBridge("leap-motion", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[leap-motion] Fields: {len(schema)}")

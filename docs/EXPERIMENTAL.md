@@ -44,7 +44,7 @@ editing it is the intended way to steer the result.
 SONG="/path/to/song.mp3"
 
 # 1. Analyze (offline, no API, ~7x realtime)
-./target/release/phosphor-app --analyze "$SONG"
+./target/release/fosfora --analyze "$SONG"
 # -> /path/to/song.analysis.json
 
 # 2. Write the screenplay (Claude; --style is an optional vibe prompt)
@@ -65,7 +65,7 @@ uv run scripts/realize_screenplay.py \
 # -> gen/*.json (presets, bindings, _scene.json), gen/gaps.md
 
 # 5. Render it headless (no API; ~3x realtime at the default 640x360)
-./target/release/phosphor-app --render-scene gen/ --song "$SONG"
+./target/release/fosfora --render-scene gen/ --song "$SONG"
 # -> gen/_render/clips/*.mp4, frames/*.png, run.json
 ```
 
@@ -132,7 +132,7 @@ landed where the screenplay promised.
 than the song; all windows merge into one:
 
 ```bash
-./target/release/phosphor-app --render-scene gen/ --song "$SONG" \
+./target/release/fosfora --render-scene gen/ --song "$SONG" \
     --res 1280x720 --quality high --window-secs 600 \
     --out full_render/
 # -> full_render/clips/s00_*.mp4  (the entire song, audio-muxed)

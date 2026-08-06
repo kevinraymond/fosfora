@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — iPhone ARKit Face Blend Shapes
+Fosfora Bridge — iPhone ARKit Face Blend Shapes
 
 Receives 52 ARKit blend shape values via UDP from an iPhone companion app
 (e.g., Face Cap, Live Link Face, or a custom Swift app) and forwards them
-to Phosphor's binding bus.
+to Fosfora's binding bus.
 
 The iPhone app should send JSON packets over UDP to this script's port:
     {"blendShapes": {"eyeBlinkLeft": 0.8, "jawOpen": 0.3, ...}}
@@ -25,11 +25,11 @@ import json
 import socket
 import time
 import sys
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
-# ── ARKit Blend Shape names → Phosphor field IDs ─────────────────────
-# ARKit uses camelCase; we convert to snake_case for Phosphor conventions
+# ── ARKit Blend Shape names → Fosfora field IDs ─────────────────────
+# ARKit uses camelCase; we convert to snake_case for Fosfora conventions
 
 ARKIT_BLENDSHAPES = [
     "eyeBlinkLeft",
@@ -97,7 +97,7 @@ def camel_to_snake(name):
     return "".join(result)
 
 
-# Build mapping: ARKit name -> Phosphor field ID
+# Build mapping: ARKit name -> Fosfora field ID
 ARKIT_TO_FIELD = {
     name: camel_to_snake(name) for name in ARKIT_BLENDSHAPES
 }
@@ -123,8 +123,8 @@ def build_schema():
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — iPhone ARKit Face Blend Shapes")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — iPhone ARKit Face Blend Shapes")
     parser.add_argument("--udp-port", type=int, default=5555,
                         help="UDP port to listen for iPhone data")
     parser.add_argument("--udp-bind", default="0.0.0.0",
@@ -132,7 +132,7 @@ def main():
     args = parser.parse_args()
 
     # Bridge
-    bridge = PhosphorBridge("iphone-arkit", args.host, args.port)
+    bridge = FosforaBridge("iphone-arkit", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[iphone-arkit] Fields: {len(schema)}")

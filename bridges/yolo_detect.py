@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — YOLO Object Detection
+Fosfora Bridge — YOLO Object Detection
 
 Detects objects via webcam and streams bounding box data + counts
-to Phosphor's binding bus. Uses ultralytics YOLOv8.
+to Fosfora's binding bus. Uses ultralytics YOLOv8.
 
 Install:
     pip install ultralytics opencv-python websocket-client
@@ -14,8 +14,8 @@ Run:
     python yolo_detect.py --show
 
 Fields are produced dynamically — only classes actually detected are
-sent to Phosphor. When a new class appears, the schema is re-sent.
-Phosphor expires individual fields after 5s of no updates, so classes
+sent to Fosfora. When a new class appears, the schema is re-sent.
+Fosfora expires individual fields after 5s of no updates, so classes
 that leave the frame are automatically cleaned up.
 
 Per class, up to 3 instances are tracked:
@@ -42,7 +42,7 @@ except ImportError:
     print("Install: pip install ultralytics")
     sys.exit(1)
 
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 MAX_INSTANCES = 3  # track up to N instances per class
 
@@ -91,7 +91,7 @@ def build_schema(seen_classes, coco_names):
 
 
 def main():
-    parser = PhosphorBridge.common_args("Phosphor Bridge — YOLO Detection")
+    parser = FosforaBridge.common_args("Fosfora Bridge — YOLO Detection")
     parser.add_argument("--device", type=int, default=0,
                         help="Camera device index")
     parser.add_argument("--model", default="yolov8n.pt",
@@ -117,7 +117,7 @@ def main():
     print(f"[yolo-detect] Camera {args.device}: {w}x{h}")
 
     # Init bridge (no schema yet — will be sent on first detection)
-    bridge = PhosphorBridge("yolo-detect", args.host, args.port)
+    bridge = FosforaBridge("yolo-detect", args.host, args.port)
 
     if not bridge.connect():
         return
@@ -167,7 +167,7 @@ def main():
                 bridge.send_schema()
 
             # Only send data for classes detected this frame.
-            # Phosphor expires individual fields after 5s of no updates,
+            # Fosfora expires individual fields after 5s of no updates,
             # so absent classes are automatically cleaned up.
             data = {}
             for cls_id, instances in frame_classes.items():
@@ -195,7 +195,7 @@ def main():
 
             if args.show:
                 show_frame = annotated if bridge._preview_enabled else results.plot()
-                cv2.imshow("Phosphor — YOLO Detect", show_frame)
+                cv2.imshow("Fosfora — YOLO Detect", show_frame)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
 

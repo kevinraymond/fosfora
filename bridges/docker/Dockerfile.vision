@@ -1,6 +1,6 @@
-FROM phosphor/bridge-base
+FROM fosfora/bridge-base
 
-LABEL org.opencontainers.image.description="Phosphor Vision Bridges (MediaPipe + YOLO)"
+LABEL org.opencontainers.image.description="Fosfora Vision Bridges (MediaPipe + YOLO)"
 
 # Vision dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

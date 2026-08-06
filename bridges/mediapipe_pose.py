@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — MediaPipe Pose (Full Body)
+Fosfora Bridge — MediaPipe Pose (Full Body)
 
 Tracks 33 body landmarks via webcam and streams positions plus
-derived body metrics to Phosphor's binding bus.
+derived body metrics to Fosfora's binding bus.
 
 Install:
     pip install mediapipe opencv-python websocket-client
@@ -40,7 +40,7 @@ except ImportError:
     print("Install: pip install mediapipe")
     sys.exit(1)
 
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 # ── MediaPipe Pose landmark names (33 total) ─────────────────────────
@@ -162,8 +162,8 @@ def compute_derived(lm):
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — MediaPipe Pose")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — MediaPipe Pose")
     parser.add_argument("--device", type=int, default=0,
                         help="Camera device index")
     parser.add_argument("--show", action="store_true",
@@ -189,7 +189,7 @@ def main():
     print(f"[mediapipe-pose] Camera {args.device}: {w}x{h}")
 
     # Bridge
-    bridge = PhosphorBridge("mediapipe-pose", args.host, args.port)
+    bridge = FosforaBridge("mediapipe-pose", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[mediapipe-pose] Fields: {len(schema)}")
@@ -246,7 +246,7 @@ def main():
                 bridge.push_preview(annotated)
 
             if args.show:
-                cv2.imshow("Phosphor — MediaPipe Pose", annotated)
+                cv2.imshow("Fosfora — MediaPipe Pose", annotated)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
 

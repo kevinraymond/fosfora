@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — MediaPipe Hand Tracking
+Fosfora Bridge — MediaPipe Hand Tracking
 
 Tracks up to 2 hands via webcam and streams landmark positions plus
-derived gesture floats (pinch, grab, spread, palm height) to Phosphor.
+derived gesture floats (pinch, grab, spread, palm height) to Fosfora.
 
 Install:
     pip install mediapipe opencv-python websocket-client
@@ -11,7 +11,7 @@ Install:
 Run:
     python mediapipe_hands.py
     python mediapipe_hands.py --device 1 --fps 60 --show
-    python mediapipe_hands.py --host 192.168.1.100    # remote Phosphor
+    python mediapipe_hands.py --host 192.168.1.100    # remote Fosfora
 
 Fields produced (per hand h1/h2):
     h1_detected             — 0/1 hand presence
@@ -41,7 +41,7 @@ except ImportError:
     print("Install: pip install mediapipe")
     sys.exit(1)
 
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 # ── MediaPipe landmark names (21 per hand) ────────────────────────────
@@ -131,8 +131,8 @@ def build_schema():
 # ── Main ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — MediaPipe Hand Tracking")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — MediaPipe Hand Tracking")
     parser.add_argument("--device", type=int, default=0,
                         help="Camera device index")
     parser.add_argument("--max-hands", type=int, default=2,
@@ -160,7 +160,7 @@ def main():
     print(f"[mediapipe-hands] Camera {args.device}: {w}x{h}")
 
     # Bridge
-    bridge = PhosphorBridge("mediapipe-hands", args.host, args.port)
+    bridge = FosforaBridge("mediapipe-hands", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[mediapipe-hands] Fields: {len(schema)}")
@@ -239,7 +239,7 @@ def main():
                 bridge.push_preview(annotated)
 
             if args.show:
-                cv2.imshow("Phosphor — MediaPipe Hands", annotated)
+                cv2.imshow("Fosfora — MediaPipe Hands", annotated)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
 

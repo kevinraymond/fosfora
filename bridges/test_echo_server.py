@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge Test Server — validates bridge output without Phosphor.
+Fosfora Bridge Test Server — validates bridge output without Fosfora.
 
 Listens on ws://localhost:9002/bind and prints incoming schema + data frames.
-Use this to verify a bridge script is working before connecting to Phosphor.
+Use this to verify a bridge script is working before connecting to Fosfora.
 
 Install:  pip install websockets
 Run:      python test_echo_server.py
@@ -100,13 +100,13 @@ async def handler(ws):
 
 async def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Phosphor Bridge Test Server")
+    parser = argparse.ArgumentParser(description="Fosfora Bridge Test Server")
     parser.add_argument("--port", type=int, default=9002,
                         help="Port to listen on (default: 9002)")
     args = parser.parse_args()
 
     port = args.port
-    print(f"Phosphor Bridge Test Server")
+    print(f"Fosfora Bridge Test Server")
     print(f"Listening on ws://localhost:{port}/bind")
     print(f"Waiting for bridge connections ...\n")
 

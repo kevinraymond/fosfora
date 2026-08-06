@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — Intel RealSense Depth Camera
+Fosfora Bridge — Intel RealSense Depth Camera
 
 Streams depth-derived floats: closest object distance, center of mass,
 depth histogram zones, motion amount, and presence detection.
@@ -36,7 +36,7 @@ except ImportError:
     print("Install: pip install pyrealsense2")
     sys.exit(1)
 
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 # Depth zones (meters)
 ZONE_NEAR = 0.5    # 0 - 0.5m
@@ -95,8 +95,8 @@ def build_schema():
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — RealSense Depth Camera")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — RealSense Depth Camera")
     parser.add_argument("--width", type=int, default=640,
                         help="Depth stream width")
     parser.add_argument("--height", type=int, default=480,
@@ -117,7 +117,7 @@ def main():
           f"@ {args.fps}fps")
 
     # Init bridge
-    bridge = PhosphorBridge("realsense-depth", args.host, args.port)
+    bridge = FosforaBridge("realsense-depth", args.host, args.port)
     bridge.declare_fields(build_schema())
 
     if not bridge.connect():

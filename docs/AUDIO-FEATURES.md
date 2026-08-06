@@ -2,7 +2,7 @@
 
 What Fosfora hears in your music, in plain English — and the research behind each measurement.
 
-Fosfora listens to your audio and turns it into 74 numbers, updated 86 times a second. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
+Fosfora listens to your audio and turns it into 83 numbers, updated 86 times a second. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
 
 ---
 

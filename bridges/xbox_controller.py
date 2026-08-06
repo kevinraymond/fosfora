@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — Xbox Controller
+Fosfora Bridge — Xbox Controller
 
 Streams gamepad inputs (sticks, triggers, buttons, d-pad) as bindable
-parameters into Phosphor's binding bus. Works with Xbox One S/X, Xbox
+parameters into Fosfora's binding bus. Works with Xbox One S/X, Xbox
 Series, and compatible controllers via the Linux xpad/xone driver.
 
 Install:
@@ -31,7 +31,7 @@ import math
 import os
 import sys
 import time
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 try:
     import evdev
@@ -171,8 +171,8 @@ def apply_deadzone(x, y, deadzone):
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — Gamepad Controller")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — Gamepad Controller")
     parser.add_argument("--device", default=None,
                         help="evdev device path (e.g. /dev/input/event24)")
     parser.add_argument("--deadzone", type=float, default=0.12,
@@ -180,7 +180,7 @@ def main():
     args = parser.parse_args()
     args.fps = args.fps if args.fps != 30 else 60  # default 60 for gamepad
 
-    bridge = PhosphorBridge("gamepad", args.host, args.port)
+    bridge = FosforaBridge("gamepad", args.host, args.port)
     bridge.declare_fields(build_schema())
 
     if not bridge.connect():

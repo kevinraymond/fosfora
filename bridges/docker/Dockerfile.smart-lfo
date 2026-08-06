@@ -1,6 +1,6 @@
-FROM phosphor/bridge-base
+FROM fosfora/bridge-base
 
-LABEL org.opencontainers.image.description="Phosphor Smart LFO Bridge"
+LABEL org.opencontainers.image.description="Fosfora Smart LFO Bridge"
 
 COPY bridges/smart_lfo.py .
 

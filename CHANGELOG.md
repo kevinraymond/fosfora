@@ -5,6 +5,15 @@
 
 ## Unreleased
 
+### Changed
+- **Phosphor is now Fosfora, everywhere.** Your config directory moves over automatically
+  on first launch (settings, presets, scenes and mappings all come along), OSC output now
+  uses `/fosfora/...` — incoming `/phosphor/...` is still accepted, and a legacy TX
+  namespace option in the OSC panel keeps old rigs fed — and the from-source binary is
+  `fosfora` (downloads were already named that). macOS asks for microphone permission once
+  more (new bundle id); debug env vars are now `FOSFORA_*`. Custom shaders calling
+  `phosphor_*` helpers keep working via deprecated aliases.
+
 ### Added
 - **Seamless beat-locked loop export.** `--render-loop <spec.loop.json>` renders any
   phase-locked overlay to a mathematically seamless loop file — HAP, HAP Alpha (real

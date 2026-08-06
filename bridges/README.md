@@ -113,18 +113,18 @@ This is useful for offloading ML inference to a dedicated GPU machine.
 
 ```bash
 # Zero-hardware generative source
-docker run phosphor/bridge-smart-lfo
+docker run fosfora/bridge-smart-lfo
 
 # Xbox controller (needs /dev/input access)
-docker run --privileged -v /dev/input:/dev/input:ro phosphor/bridge-gamepad
+docker run --privileged -v /dev/input:/dev/input:ro fosfora/bridge-gamepad
 
 # Webcam hand tracking
-docker run --device /dev/video0 phosphor/bridge-vision hands
+docker run --device /dev/video0 fosfora/bridge-vision hands
 
 # Other vision bridges (pose, face, yolo)
-docker run --device /dev/video0 phosphor/bridge-vision pose
-docker run --device /dev/video0 phosphor/bridge-vision face
-docker run --device /dev/video0 phosphor/bridge-vision yolo
+docker run --device /dev/video0 fosfora/bridge-vision pose
+docker run --device /dev/video0 fosfora/bridge-vision face
+docker run --device /dev/video0 fosfora/bridge-vision yolo
 ```
 
 ### Docker Compose
@@ -147,11 +147,11 @@ PHOSPHOR_HOST=192.168.1.100 docker compose -f bridges/docker-compose.yml up hand
 
 ```bash
 # Build from repo root
-docker build -t phosphor/bridge-base -f bridges/docker/Dockerfile.base .
-docker build -t phosphor/bridge-smart-lfo -f bridges/docker/Dockerfile.smart-lfo .
-docker build -t phosphor/bridge-vision -f bridges/docker/Dockerfile.vision .
-docker build -t phosphor/bridge-gamepad -f bridges/docker/Dockerfile.gamepad .
-docker build -t phosphor/bridge-realsense -f bridges/docker/Dockerfile.realsense .
+docker build -t fosfora/bridge-base -f bridges/docker/Dockerfile.base .
+docker build -t fosfora/bridge-smart-lfo -f bridges/docker/Dockerfile.smart-lfo .
+docker build -t fosfora/bridge-vision -f bridges/docker/Dockerfile.vision .
+docker build -t fosfora/bridge-gamepad -f bridges/docker/Dockerfile.gamepad .
+docker build -t fosfora/bridge-realsense -f bridges/docker/Dockerfile.realsense .
 ```
 
 ### Platform notes
@@ -163,10 +163,10 @@ docker build -t phosphor/bridge-realsense -f bridges/docker/Dockerfile.realsense
 ## Writing Your Own Bridge
 
 ```python
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 import time
 
-bridge = PhosphorBridge("my-source")
+bridge = FosforaBridge("my-source")
 bridge.declare_field("value_a", min=0, max=1, label="Value A")
 bridge.declare_field("value_b", min=0, max=1, label="Value B")
 bridge.connect()

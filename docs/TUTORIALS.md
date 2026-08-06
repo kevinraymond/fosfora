@@ -248,22 +248,22 @@ The editor supports syntax highlighting and shows compilation errors inline.
 Fosfora auto-prepends a WGSL shader library to every effect. You can use these functions without any imports:
 
 **Noise:**
-- `phosphor_noise2(p)` / `phosphor_noise3(p)` — Perlin gradient noise (0–1)
-- `phosphor_hash2(p)` / `phosphor_hash3(p)` — Fast hash without sin (0–1)
+- `fosfora_noise2(p)` / `fosfora_noise3(p)` — Perlin gradient noise (0–1)
+- `fosfora_hash2(p)` / `fosfora_hash3(p)` — Fast hash without sin (0–1)
 
 **Color:**
-- `phosphor_palette(t, a, b, c, d)` — IQ cosine palette
-- `phosphor_audio_palette(t, centroid, phase)` — Warm-to-cool audio palette
-- `phosphor_hue_shift(color, amount)` — Hue rotation
+- `fosfora_palette(t, a, b, c, d)` — IQ cosine palette
+- `fosfora_audio_palette(t, centroid, phase)` — Warm-to-cool audio palette
+- `fosfora_hue_shift(color, amount)` — Hue rotation
 
 **SDF (Signed Distance Functions):**
-- `phosphor_sd_sphere(p, r)`, `phosphor_sd_box(p, b)`, `phosphor_sd_torus(p, t)`, `phosphor_sd_cylinder(p, h, r)`
-- `phosphor_op_union`, `phosphor_op_subtract`, `phosphor_op_intersect` — Boolean operations
-- `phosphor_smin(a, b, k)`, `phosphor_smax(a, b, k)` — Smooth min/max
+- `fosfora_sd_sphere(p, r)`, `fosfora_sd_box(p, b)`, `fosfora_sd_torus(p, t)`, `fosfora_sd_cylinder(p, h, r)`
+- `fosfora_op_union`, `fosfora_op_subtract`, `fosfora_op_intersect` — Boolean operations
+- `fosfora_smin(a, b, k)`, `fosfora_smax(a, b, k)` — Smooth min/max
 
 **Tonemapping:**
-- `phosphor_aces_tonemap(color)` — ACES filmic HDR→SDR
-- `phosphor_linear_to_srgb(color)` — Linear to sRGB gamma
+- `fosfora_aces_tonemap(color)` — ACES filmic HDR→SDR
+- `fosfora_linear_to_srgb(color)` — Linear to sRGB gamma
 
 **Parameter access in shaders:**
 - Use `param(0u)` through `param(15u)` to read your effect's parameters
@@ -297,7 +297,7 @@ To change the audio input device:
 1. Open the **Audio** panel in the UI (right sidebar)
 2. Select a different device from the dropdown
 3. The change takes effect immediately
-4. Your selection is saved to `~/.config/phosphor/settings.json`
+4. Your selection is saved to `~/.config/fosfora/settings.json`
 
 On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of system audio). Run `cargo run -- --audio-test` for standalone audio diagnostics.
 
@@ -449,7 +449,7 @@ let offset = sin(time * 2.0) * bass * 0.3;
 
 **Color from spectral centroid:**
 ```wgsl
-let color = phosphor_audio_palette(time * 0.1, centroid, beat_phase);
+let color = fosfora_audio_palette(time * 0.1, centroid, beat_phase);
 ```
 
 **Size from RMS energy:**
@@ -639,7 +639,7 @@ Locked layers (🔒) are skipped during preset loading. This lets you "freeze" a
 
 ### Storage
 
-Presets are stored as JSON files in `~/.config/phosphor/presets/`. You can share presets by copying these files.
+Presets are stored as JSON files in `~/.config/fosfora/presets/`. You can share presets by copying these files.
 
 ---
 
@@ -706,13 +706,13 @@ Scenes can be controlled via OSC (default RX port 9000):
 
 | Address | Arg | Description |
 |---------|-----|-------------|
-| `/phosphor/scene/goto_cue` | int | Jump directly to a cue by index (0-based) |
-| `/phosphor/scene/load` | string | Load a scene by name |
-| `/phosphor/scene/load` | int | Load a scene by index (0-based) |
-| `/phosphor/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
-| `/phosphor/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
+| `/fosfora/scene/goto_cue` | int | Jump directly to a cue by index (0-based) |
+| `/fosfora/scene/load` | string | Load a scene by name |
+| `/fosfora/scene/load` | int | Load a scene by index (0-based) |
+| `/fosfora/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
+| `/fosfora/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
 
-**Trigger actions** (via `/phosphor/trigger/{action}`):
+**Trigger actions** (via `/fosfora/trigger/{action}`):
 - `scene_go_next` — advance to the next cue
 - `scene_go_prev` — go to the previous cue
 - `toggle_timeline` — start/stop the timeline
@@ -721,10 +721,10 @@ Scenes can be controlled via OSC (default RX port 9000):
 
 | Address | Type | Description |
 |---------|------|-------------|
-| `/phosphor/state/timeline/active` | int (0/1) | Whether the timeline is playing |
-| `/phosphor/state/timeline/cue_index` | int | Current cue index (0-based) |
-| `/phosphor/state/timeline/cue_count` | int | Total number of cues |
-| `/phosphor/state/timeline/transition_progress` | float (0–1) | Transition progress (0.0 when idle) |
+| `/fosfora/state/timeline/active` | int (0/1) | Whether the timeline is playing |
+| `/fosfora/state/timeline/cue_index` | int | Current cue index (0-based) |
+| `/fosfora/state/timeline/cue_count` | int | Total number of cues |
+| `/fosfora/state/timeline/transition_progress` | float (0–1) | Transition progress (0.0 when idle) |
 
 ### Timeline Bar
 
@@ -739,7 +739,7 @@ When the timeline is active, a visual timeline bar appears showing all cues as e
 
 ### Storage
 
-Scenes are stored as JSON files in `~/.config/phosphor/scenes/`. You can share scenes by copying these files. Scene names follow the same sanitization rules as presets (no `/\\.`, max 64 chars).
+Scenes are stored as JSON files in `~/.config/fosfora/scenes/`. You can share scenes by copying these files. Scene names follow the same sanitization rules as presets (no `/\\.`, max 64 chars).
 
 ---
 
@@ -790,10 +790,10 @@ Per-layer OSC:
 
 | Address | Type | Description |
 |---------|------|-------------|
-| `/phosphor/layer/{n}/obstacle/enabled` | float | > 0.5 turns it on |
-| `/phosphor/layer/{n}/obstacle/mode` | float | 0 = Bounce, 1 = Stick, 2 = Flow, 3 = Contain |
-| `/phosphor/layer/{n}/obstacle/threshold` | float (0–1) | |
-| `/phosphor/layer/{n}/obstacle/elasticity` | float (0–1) | |
+| `/fosfora/layer/{n}/obstacle/enabled` | float | > 0.5 turns it on |
+| `/fosfora/layer/{n}/obstacle/mode` | float | 0 = Bounce, 1 = Stick, 2 = Flow, 3 = Contain |
+| `/fosfora/layer/{n}/obstacle/threshold` | float (0–1) | |
+| `/fosfora/layer/{n}/obstacle/elasticity` | float (0–1) | |
 
 In the [binding matrix](#binding-matrix) the targets are `particle.obstacle_enabled`, `_mode`, `_threshold` and `_elasticity` — note these apply to **all** layers at once, and take a normalized 0–1 value. Breathing the threshold on `audio.rms` makes the silhouette seem to inhale.
 
@@ -827,13 +827,13 @@ Particles are deposited into a 3D voxel grid, which is then ray-marched with a c
 Every control has an OSC address, so a camera move is one message:
 
 ```bash
-oscsend localhost 9000 /phosphor/volumetric/enabled f 1.0
-oscsend localhost 9000 /phosphor/volumetric/cam_yaw f 2.4
-oscsend localhost 9000 /phosphor/volumetric/cam_orbit_speed f 0.3
-oscsend localhost 9000 /phosphor/volumetric/density_gain f 0.09
+oscsend localhost 9000 /fosfora/volumetric/enabled f 1.0
+oscsend localhost 9000 /fosfora/volumetric/cam_yaw f 2.4
+oscsend localhost 9000 /fosfora/volumetric/cam_orbit_speed f 0.3
+oscsend localhost 9000 /fosfora/volumetric/density_gain f 0.09
 ```
 
-Unlike `/phosphor/param/*`, these take **raw** values in the control's own range, not 0–1. The full set: `march_steps`, `absorption`, `detail_scale`, `detail_strength`, `density_threshold`, `volume_depth`, `density_scale`, `density_gain`, `cam_yaw`, `cam_pitch`, `cam_distance`, `cam_orbit_speed`, `fov`, `palette_hue`, `emission_gain`, `env_shape`, `jitter`, `age_influence`.
+Unlike `/fosfora/param/*`, these take **raw** values in the control's own range, not 0–1. The full set: `march_steps`, `absorption`, `detail_scale`, `detail_strength`, `density_threshold`, `volume_depth`, `density_scale`, `density_gain`, `cam_yaw`, `cam_pitch`, `cam_distance`, `cam_orbit_speed`, `fov`, `palette_hue`, `emission_gain`, `env_shape`, `jitter`, `age_influence`.
 
 Volumetric state is saved with the preset.
 
@@ -881,8 +881,8 @@ Order matters. A one-frame trigger like `audio.drop` is invisible bound raw — 
 
 ### Scope and storage
 
-- **Effect** scope saves beside the preset, in `~/.config/phosphor/presets/{name}.bindings.json`, and loads and unloads with it.
-- **Global** scope lives in `~/.config/phosphor/global-bindings.json` and is always active.
+- **Effect** scope saves beside the preset, in `~/.config/fosfora/presets/{name}.bindings.json`, and loads and unloads with it.
+- **Global** scope lives in `~/.config/fosfora/global-bindings.json` and is always active.
 
 Both are plain JSON you can edit or share.
 
@@ -953,7 +953,7 @@ To map a MIDI control to a parameter:
 2. The button highlights, showing "learning..."
 3. Move a knob or press a button on your MIDI controller
 4. The binding is created — a badge shows the CC number (e.g., "CC 14")
-5. Your MIDI mappings are saved to `~/.config/phosphor/midi.json`
+5. Your MIDI mappings are saved to `~/.config/fosfora/midi.json`
 
 To remove a binding, click the badge.
 
@@ -1011,14 +1011,14 @@ Default: **port 9000** on all interfaces (0.0.0.0)
 
 | Address | Type | Description |
 |---------|------|-------------|
-| `/phosphor/param/{name}` | float | Set parameter on active layer |
-| `/phosphor/layer/{n}/param/{name}` | float | Set parameter on layer N |
-| `/phosphor/layer/{n}/opacity` | float | Layer opacity (0–1) |
-| `/phosphor/layer/{n}/blend` | int | Blend mode (0–12) |
-| `/phosphor/layer/{n}/displace` | float | Warp strength for modes 10–12 |
-| `/phosphor/layer/{n}/enabled` | int | Layer on/off (0 or 1) |
-| `/phosphor/postprocess/enabled` | int | Post-processing toggle |
-| `/phosphor/trigger/{action}` | float | Fire a trigger action |
+| `/fosfora/param/{name}` | float | Set parameter on active layer |
+| `/fosfora/layer/{n}/param/{name}` | float | Set parameter on layer N |
+| `/fosfora/layer/{n}/opacity` | float | Layer opacity (0–1) |
+| `/fosfora/layer/{n}/blend` | int | Blend mode (0–12) |
+| `/fosfora/layer/{n}/displace` | float | Warp strength for modes 10–12 |
+| `/fosfora/layer/{n}/enabled` | int | Layer on/off (0 or 1) |
+| `/fosfora/postprocess/enabled` | int | Post-processing toggle |
+| `/fosfora/trigger/{action}` | float | Fire a trigger action |
 
 Trigger action names: `next_effect`, `prev_effect`, `toggle_postprocess`, `toggle_overlay`, `next_preset`, `prev_preset`, `next_layer`, `prev_layer`, `scene_go_next`, `scene_go_prev`, `toggle_timeline`
 
@@ -1026,10 +1026,10 @@ Trigger action names: `next_effect`, `prev_effect`, `toggle_postprocess`, `toggl
 
 | Address | Arg | Description |
 |---------|-----|-------------|
-| `/phosphor/scene/goto_cue` | int | Jump to cue by index (0-based) |
-| `/phosphor/scene/load` | string/int | Load scene by name or index |
-| `/phosphor/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
-| `/phosphor/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
+| `/fosfora/scene/goto_cue` | int | Jump to cue by index (0-based) |
+| `/fosfora/scene/load` | string/int | Load scene by name or index |
+| `/fosfora/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
+| `/fosfora/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
 
 ### OSC Learn
 
@@ -1037,7 +1037,7 @@ Similar to MIDI learn:
 1. Click the **O** button next to any parameter or trigger
 2. Send any OSC message from your controller
 3. Fosfora binds that address to the parameter
-4. Mappings are saved to `~/.config/phosphor/osc.json`
+4. Mappings are saved to `~/.config/fosfora/osc.json`
 
 ### Sending OSC (TX)
 
@@ -1048,10 +1048,10 @@ When TX is enabled, Fosfora broadcasts at 30 Hz (configurable):
 
 | Address | Type | Description |
 |---------|------|-------------|
-| `/phosphor/state/timeline/active` | int (0/1) | Whether the timeline is playing |
-| `/phosphor/state/timeline/cue_index` | int | Current cue index (0-based) |
-| `/phosphor/state/timeline/cue_count` | int | Total number of cues |
-| `/phosphor/state/timeline/transition_progress` | float (0–1) | Transition progress (0.0 when idle) |
+| `/fosfora/state/timeline/active` | int (0/1) | Whether the timeline is playing |
+| `/fosfora/state/timeline/cue_index` | int | Current cue index (0-based) |
+| `/fosfora/state/timeline/cue_count` | int | Total number of cues |
+| `/fosfora/state/timeline/transition_progress` | float (0–1) | Transition progress (0.0 when idle) |
 
 This is useful for driving other software (lighting, video) from Fosfora's audio analysis and timeline state.
 
@@ -1061,13 +1061,13 @@ Install `liblo-tools` (Linux: `apt install liblo-tools`) for quick testing:
 
 ```bash
 # Set a parameter
-oscsend localhost 9000 /phosphor/param/warp_intensity f 0.8
+oscsend localhost 9000 /fosfora/param/warp_intensity f 0.8
 
 # Fire a trigger
-oscsend localhost 9000 /phosphor/trigger/next_effect f 1.0
+oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0
 
 # Set layer opacity
-oscsend localhost 9000 /phosphor/layer/0/opacity f 0.5
+oscsend localhost 9000 /fosfora/layer/0/opacity f 0.5
 
 # Monitor Fosfora's outbound OSC
 oscdump 9001
@@ -1109,7 +1109,7 @@ Multiple devices can connect simultaneously. All clients receive real-time state
 - Mobile-first touch UI with 48px min touch targets
 - Auto-reconnect with exponential backoff (1/2/4/8s)
 - Audio features broadcast at 10 Hz to all clients
-- Configuration saved to `~/.config/phosphor/web.json`
+- Configuration saved to `~/.config/fosfora/web.json`
 
 ---
 
@@ -1158,7 +1158,7 @@ Fosfora supports multiple UI themes. Change the theme in the settings area of th
 
 ### Configuration Files
 
-All configuration is stored in `~/.config/phosphor/`:
+All configuration is stored in `~/.config/fosfora/`:
 
 | File | Contents |
 |------|----------|

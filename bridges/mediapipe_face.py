@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — MediaPipe Face Mesh (Curated Expressions)
+Fosfora Bridge — MediaPipe Face Mesh (Curated Expressions)
 
 Extracts ~16 expression floats from face landmark geometry rather than
 streaming all 468 landmarks. This gives musically useful control signals
@@ -47,7 +47,7 @@ except ImportError:
     print("Install: pip install mediapipe")
     sys.exit(1)
 
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 # ── Key landmark indices for expression computation ───────────────────
@@ -227,8 +227,8 @@ def build_schema():
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — MediaPipe Face Mesh")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — MediaPipe Face Mesh")
     parser.add_argument("--device", type=int, default=0,
                         help="Camera device index")
     parser.add_argument("--show", action="store_true",
@@ -256,7 +256,7 @@ def main():
     print(f"[mediapipe-face] Camera {args.device}: {w}x{h}")
 
     # Bridge
-    bridge = PhosphorBridge("mediapipe-face", args.host, args.port)
+    bridge = FosforaBridge("mediapipe-face", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[mediapipe-face] Fields: {len(schema)}")
@@ -309,7 +309,7 @@ def main():
                 bridge.push_preview(annotated)
 
             if args.show:
-                cv2.imshow("Phosphor — MediaPipe Face", annotated)
+                cv2.imshow("Fosfora — MediaPipe Face", annotated)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
 

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Phosphor vision bridge entrypoint — selects bridge by name.
+# Fosfora vision bridge entrypoint — selects bridge by name.
 
 BRIDGE=${1:-hands}
-HOST=${PHOSPHOR_HOST:-host.docker.internal}
-PORT=${PHOSPHOR_PORT:-9002}
-FPS=${PHOSPHOR_FPS:-30}
-DEVICE=${PHOSPHOR_DEVICE:-0}
+HOST=${FOSFORA_HOST:-${PHOSPHOR_HOST:-host.docker.internal}}
+PORT=${FOSFORA_PORT:-${PHOSPHOR_PORT:-9002}}
+FPS=${FOSFORA_FPS:-${PHOSPHOR_FPS:-30}}
+DEVICE=${FOSFORA_DEVICE:-${PHOSPHOR_DEVICE:-0}}
 
 # Shift past the bridge name so remaining args pass through
 shift 2>/dev/null || true

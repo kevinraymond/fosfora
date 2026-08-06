@@ -1,6 +1,6 @@
-FROM phosphor/bridge-base
+FROM fosfora/bridge-base
 
-LABEL org.opencontainers.image.description="Phosphor Leap Motion Bridge (Placeholder)"
+LABEL org.opencontainers.image.description="Fosfora Leap Motion Bridge (Placeholder)"
 
 # Leap Motion SDK must be installed manually — no pip package available.
 # This image is a placeholder for future SDK integration.

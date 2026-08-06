@@ -1,6 +1,6 @@
-FROM phosphor/bridge-base
+FROM fosfora/bridge-base
 
-LABEL org.opencontainers.image.description="Phosphor RealSense Depth Bridge"
+LABEL org.opencontainers.image.description="Fosfora RealSense Depth Bridge"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libusb-1.0-0 \

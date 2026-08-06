@@ -121,7 +121,7 @@ Four toggleable effects (per-effect overridable):
 
 Modes 10–12 are the **displacement family**: the layer is read as a warp field
 rather than an image, so it draws none of its own color. A **Displace** slider
-appears beside Opacity to set the strength (OSC `/phosphor/layer/{n}/displace`,
+appears beside Opacity to set the strength (OSC `/fosfora/layer/{n}/displace`,
 bindable as `layer.{n}.displace`). They need something below them to warp — on
 the bottom layer they do nothing.
 
@@ -178,35 +178,35 @@ Default ports: **RX 9000**, **TX 9001**
 
 | Address                             | Type  | Description                  |
 |-------------------------------------|-------|------------------------------|
-| `/phosphor/param/{name}`            | float | Set param on active layer    |
-| `/phosphor/layer/{n}/param/{name}`  | float | Set param on layer n         |
-| `/phosphor/layer/{n}/opacity`       | float | Layer opacity (0-1)          |
-| `/phosphor/layer/{n}/blend`         | int   | Blend mode (0-12)            |
-| `/phosphor/layer/{n}/displace`      | float | Warp strength, modes 10-12   |
-| `/phosphor/layer/{n}/enabled`       | bool  | Layer enabled state          |
-| `/phosphor/trigger/{action}`        | float | Fire trigger action          |
-| `/phosphor/postprocess/enabled`     | bool  | Toggle post-processing       |
-| `/phosphor/scene/goto_cue`          | int   | Jump to cue index            |
-| `/phosphor/scene/load`              | int/s | Load scene by index or name  |
-| `/phosphor/scene/loop_mode`         | bool  | Set loop mode                |
-| `/phosphor/scene/advance_mode`      | int   | Manual(0)/Timer(1)/Beat(2)   |
+| `/fosfora/param/{name}`            | float | Set param on active layer    |
+| `/fosfora/layer/{n}/param/{name}`  | float | Set param on layer n         |
+| `/fosfora/layer/{n}/opacity`       | float | Layer opacity (0-1)          |
+| `/fosfora/layer/{n}/blend`         | int   | Blend mode (0-12)            |
+| `/fosfora/layer/{n}/displace`      | float | Warp strength, modes 10-12   |
+| `/fosfora/layer/{n}/enabled`       | bool  | Layer enabled state          |
+| `/fosfora/trigger/{action}`        | float | Fire trigger action          |
+| `/fosfora/postprocess/enabled`     | bool  | Toggle post-processing       |
+| `/fosfora/scene/goto_cue`          | int   | Jump to cue index            |
+| `/fosfora/scene/load`              | int/s | Load scene by index or name  |
+| `/fosfora/scene/loop_mode`         | bool  | Set loop mode                |
+| `/fosfora/scene/advance_mode`      | int   | Manual(0)/Timer(1)/Beat(2)   |
 
 ### Transmit (audio data at 30 Hz)
 
-`/phosphor/audio/bands/{sub_bass,bass,low_mid,mid,upper_mid,presence,brilliance}`
+`/fosfora/audio/bands/{sub_bass,bass,low_mid,mid,upper_mid,presence,brilliance}`
 
-Everything under `/phosphor/audio/` is a float.
+Everything under `/fosfora/audio/` is a float.
 
 **Beats, downbeats and drops.** Each fires as a 1-frame pulse *and* as a running total:
 
 | Address                          | Description                                |
 |----------------------------------|--------------------------------------------|
-| `/phosphor/audio/beat`           | 1.0 on the frame a beat fires, else 0.0    |
-| `/phosphor/audio/beat_count`     | Beats since startup                        |
-| `/phosphor/audio/downbeat`       | 1.0 on the bar's "one"                     |
-| `/phosphor/audio/downbeat_count` | Downbeats since startup                    |
-| `/phosphor/audio/drop`           | 1.0 on a detected drop                     |
-| `/phosphor/audio/drop_count`     | Drops since startup                        |
+| `/fosfora/audio/beat`           | 1.0 on the frame a beat fires, else 0.0    |
+| `/fosfora/audio/beat_count`     | Beats since startup                        |
+| `/fosfora/audio/downbeat`       | 1.0 on the bar's "one"                     |
+| `/fosfora/audio/downbeat_count` | Downbeats since startup                    |
+| `/fosfora/audio/drop`           | 1.0 on a detected drop                     |
+| `/fosfora/audio/drop_count`     | Drops since startup                        |
 
 **Bind the `_count` addresses, not the pulses.** A pulse lasts one render frame (60+ fps)
 while transmission is rate-limited to 30 Hz, so most pulses never reach the wire — trigger
@@ -239,7 +239,7 @@ increase: the count restarts at 0 when you switch audio device.
 
 ## Config Files
 
-All under `~/.config/phosphor/`:
+All under `~/.config/fosfora/`:
 
 | File/Dir       | Contents                              |
 |----------------|---------------------------------------|

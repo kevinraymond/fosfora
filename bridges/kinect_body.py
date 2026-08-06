@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — Azure Kinect Body Tracking (Placeholder)
+Fosfora Bridge — Azure Kinect Body Tracking (Placeholder)
 
 This bridge defines the full schema for Azure Kinect skeleton tracking
 (32 joints) but currently pushes zeros. It will produce live data once
@@ -27,7 +27,7 @@ Fields produced:
 
 import time
 import sys
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 # Azure Kinect Body Tracking joint names (32 joints)
@@ -97,8 +97,8 @@ def build_schema():
 
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — Azure Kinect Body Tracking")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — Azure Kinect Body Tracking")
     args = parser.parse_args()
 
     if not _HAS_KINECT:
@@ -108,7 +108,7 @@ def main():
         print("  Install Azure Kinect SDK + pykinect-azure for live data.")
         print("=" * 60)
 
-    bridge = PhosphorBridge("kinect-body", args.host, args.port)
+    bridge = FosforaBridge("kinect-body", args.host, args.port)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[kinect-body] Fields: {len(schema)}")

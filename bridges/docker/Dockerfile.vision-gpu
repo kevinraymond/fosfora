@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
 
-LABEL org.opencontainers.image.source="https://github.com/phosphor-live/phosphor"
-LABEL org.opencontainers.image.description="Phosphor Vision Bridges (GPU-accelerated)"
+LABEL org.opencontainers.image.source="https://github.com/kevinraymond/fosfora"
+LABEL org.opencontainers.image.description="Fosfora Vision Bridges (GPU-accelerated)"
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements-vision.txt
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
 # Bridge base class + all vision scripts
-COPY bridges/phosphor_bridge.py .
+COPY bridges/fosfora_bridge.py .
 COPY bridges/mediapipe_hands.py .
 COPY bridges/mediapipe_pose.py .
 COPY bridges/mediapipe_face.py .
@@ -31,8 +31,8 @@ COPY bridges/yolo_detect.py .
 COPY bridges/docker/vision_entrypoint.sh .
 RUN chmod +x vision_entrypoint.sh
 
-ENV PHOSPHOR_HOST=host.docker.internal
-ENV PHOSPHOR_PORT=9002
+ENV FOSFORA_HOST=host.docker.internal
+ENV FOSFORA_PORT=9002
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
     CMD pgrep -f "python" || exit 1

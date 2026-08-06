@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Phosphor Bridge — Smart LFO Generator
+Fosfora Bridge — Smart LFO Generator
 
 Generates evolving oscillator control signals that create organic
 movement without any hardware. Each LFO runs a different waveform
@@ -27,7 +27,7 @@ Fields produced:
 import time
 import math
 import sys
-from phosphor_bridge import PhosphorBridge
+from fosfora_bridge import FosforaBridge
 
 
 # ── Waveforms ─────────────────────────────────────────────────────────
@@ -105,8 +105,8 @@ def build_schema(count):
 # ── Main ──────────────────────────────────────────────────────────────
 
 def main():
-    parser = PhosphorBridge.common_args(
-        "Phosphor Bridge — Smart LFO Generator")
+    parser = FosforaBridge.common_args(
+        "Fosfora Bridge — Smart LFO Generator")
     parser.add_argument("--lfo-count", type=int, default=6,
                         help="Number of LFO channels")
     parser.add_argument("--base-rate", type=float, default=0.3,
@@ -115,7 +115,7 @@ def main():
                         help="Slow rate drift amount")
     args = parser.parse_args()
 
-    bridge = PhosphorBridge("smart-lfo", args.host, args.port)
+    bridge = FosforaBridge("smart-lfo", args.host, args.port)
     bridge.declare_fields(build_schema(args.lfo_count))
 
     if not bridge.connect():

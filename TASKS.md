@@ -10,8 +10,8 @@ Update this file at the end of every session (status board + session log).
 | Workstream | State |
 |---|---|
 | Phase 0 recon + docs | **done** (2026-08-06) |
-| R — phosphor→fosfora rename | **in progress** — branch `fosfora-rename` |
-| A — Signal v1 (headless broadcast) | next — branch `signal-v1`, after R |
+| R — phosphor→fosfora rename | **done** (2026-08-06) — branch `fosfora-rename`, ready to merge |
+| A — Signal v1 (headless broadcast) | **next** — branch `signal-v1`, based on `fosfora-rename` |
 | B — Ableton Link | later (small; slot in after A) |
 | C — Benchmark harness | later (validates A's detectors; JSONL contract already fixed by A) |
 | D — Perf tiers + governor | later (needs C's cost data; no bench infra exists yet) |
@@ -25,16 +25,26 @@ HPSS/band proxies; Signal schema is `/fosfora/v1/`, additive-only once shipped.
 
 ## R — Rename (branch `fosfora-rename`)
 
-- [ ] R1 `paths.rs`: shared config root + auto-move migration from `~/.config/phosphor/`
-- [ ] R2 OSC: dual-prefix RX, canonical `/fosfora` addresses, `tx_prefix` toggle,
+- [x] R1 `paths.rs`: shared config root + auto-move migration from `~/.config/phosphor/`
+- [x] R2 OSC: dual-prefix RX, canonical `/fosfora` addresses, `tx_prefix` toggle,
       saved-bindings source-id rewrite
-- [ ] R3 Internal identifiers: thread names, wgpu labels, MIDI/Pulse client names,
+- [x] R3 Internal identifiers: thread names, wgpu labels, MIDI/Pulse client names,
       `FOSFORA_*` env vars, recording filename prefix
-- [ ] R4 WGSL lib: `fosfora_*` functions + deprecated `phosphor_*` aliases (31 fns)
-- [ ] R5 Crate rename `crates/phosphor-app` → `crates/fosfora-app`, binary `fosfora`,
-      CI workflows + scripts + doc paths
-- [ ] R6 Docs/bridges/packaging: bundle id, bridge rename + shim, README stale-claim
+- [x] R4 WGSL lib: `fosfora_*` functions + deprecated `phosphor_*` aliases (31 fns);
+      GPU probe tests can now pick Metal, so the shader gates run on macOS too
+- [x] R5 Crate rename `crates/phosphor-app` → `crates/fosfora-app`, binary `fosfora`,
+      CI workflows + scripts + doc paths; `RUST_LOG` target is now `fosfora`
+- [x] R6 Docs/bridges/packaging: bundle id, bridge rename + shim, README stale-claim
       fixes (74→83, no chord, HPSS not stems), CHANGELOG entry
+
+Deliberately kept as "phosphor" (allowlist): the **Phosphor** CRT effect (+ its
+`phosphor.pfx`/`phosphor_sim.wgsl`/`phosphor_history.wgsl` assets and preset refs),
+`phosphor_demo.ply` (cached release asset), **`PhosphorUniforms`** (the shader ABI v3
+struct name user custom effects compile against — rename only with a future ABI bump),
+WGSL `phosphor_*` alias wrappers, OSC `/phosphor/` RX compat + TX legacy option,
+`osc./phosphor/` and config-dir migration literals, bridges `phosphor_bridge.py` shim +
+`PHOSPHOR_*` env fallbacks, CRT-phosphor prose in GALLERY/catalog, historical CHANGELOG
+entries.
 
 ## A — Signal v1 (branch `signal-v1`)
 
