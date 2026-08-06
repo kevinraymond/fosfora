@@ -115,7 +115,7 @@ pub fn download_model() -> Arc<DownloadProgress> {
     let progress_clone = progress.clone();
 
     std::thread::Builder::new()
-        .name("phosphor-model-dl".into())
+        .name("fosfora-model-dl".into())
         .spawn(move || {
             if let Err(e) = download_all(&progress_clone) {
                 log::error!("Depth download failed: {e}");

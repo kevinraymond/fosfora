@@ -46,7 +46,7 @@ impl DepthThread {
         let (result_tx, result_rx) = crossbeam_channel::bounded::<DepthFrame>(1);
 
         let handle = std::thread::Builder::new()
-            .name("phosphor-depth".into())
+            .name("fosfora-depth".into())
             .spawn(move || {
                 let mut estimator = match DepthEstimator::new(&model_path) {
                     Ok(e) => e,

@@ -41,7 +41,7 @@ pub fn spawn_accept_loop(
     let client_counter = Arc::new(AtomicUsize::new(0));
 
     let handle = thread::Builder::new()
-        .name("phosphor-web-accept".into())
+        .name("fosfora-web-accept".into())
         .spawn(move || {
             // Set the listener to have a timeout for accept
             let _ = listener.set_nonblocking(true);
@@ -124,7 +124,7 @@ fn handle_connection(
                 let flag = shutdown.clone();
 
                 thread::Builder::new()
-                    .name(format!("phosphor-web-client-{client_id}"))
+                    .name(format!("fosfora-web-client-{client_id}"))
                     .spawn(move || {
                         client::run_client(ws, tx, outbound_rx, state, flag, client_id);
                     })

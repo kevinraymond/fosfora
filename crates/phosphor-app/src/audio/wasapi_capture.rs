@@ -159,19 +159,20 @@ impl WasapiCapture {
         let capture_failed = Arc::new(AtomicBool::new(false));
         let capture_failed_clone = capture_failed.clone();
 
-        let thread_handle = thread::Builder::new()
-            .name("phosphor-wasapi".into())
-            .spawn(move || {
-                wasapi_capture_thread(
-                    ring_clone,
-                    callback_count_clone,
-                    shutdown_clone,
-                    capture_failed_clone,
-                    channels as usize,
-                    bits_per_sample,
-                    block_align as usize,
-                );
-            })?;
+        let thread_handle =
+            thread::Builder::new()
+                .name("fosfora-wasapi".into())
+                .spawn(move || {
+                    wasapi_capture_thread(
+                        ring_clone,
+                        callback_count_clone,
+                        shutdown_clone,
+                        capture_failed_clone,
+                        channels as usize,
+                        bits_per_sample,
+                        block_align as usize,
+                    );
+                })?;
 
         Ok(Self {
             ring,

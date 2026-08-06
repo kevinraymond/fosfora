@@ -169,7 +169,7 @@ impl ThemeColors {
     }
 }
 
-const THEME_COLORS_ID: &str = "phosphor_theme_colors";
+const THEME_COLORS_ID: &str = "fosfora_theme_colors";
 
 /// Store theme colors in egui temp data.
 pub fn set_theme_colors(ctx: &egui::Context, colors: ThemeColors) {

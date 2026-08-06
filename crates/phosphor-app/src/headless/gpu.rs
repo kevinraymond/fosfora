@@ -43,7 +43,7 @@ pub fn create() -> Result<(wgpu::Device, wgpu::Queue, String)> {
     // Mirror GpuContext::new's request (gpu/context.rs) — the whole point of a
     // headless render is that its success predicts the app's.
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("phosphor-headless-device"),
+        label: Some("fosfora-headless-device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits {
             max_storage_buffers_per_shader_stage: 16,

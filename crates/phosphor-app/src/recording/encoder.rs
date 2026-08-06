@@ -173,7 +173,7 @@ pub fn build_output_path(config: &RecordingConfig) -> PathBuf {
         .unwrap_or_default()
         .as_secs();
     let timestamp = format_local_time(secs);
-    let filename = format!("phosphor_{}.{}", timestamp, config.container.extension());
+    let filename = format!("fosfora_{}.{}", timestamp, config.container.extension());
     config.output_dir.join(filename)
 }
 
@@ -195,7 +195,7 @@ fn format_local_time(unix_secs: u64) -> String {
 /// Create a named FIFO (pipe) at the given path. Returns the path.
 /// On Linux/macOS this uses mkfifo. The FIFO is cleaned up by the caller.
 pub fn create_audio_fifo() -> Result<PathBuf, String> {
-    let path = std::env::temp_dir().join(format!("phosphor_audio_{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("fosfora_audio_{}", std::process::id()));
     // Remove stale FIFO if it exists
     let _ = std::fs::remove_file(&path);
 

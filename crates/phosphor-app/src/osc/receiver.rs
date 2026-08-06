@@ -24,7 +24,7 @@ pub fn spawn_receiver(
     let shutdown_flag = shutdown.clone();
 
     let handle = thread::Builder::new()
-        .name("phosphor-osc-rx".into())
+        .name("fosfora-osc-rx".into())
         .spawn(move || {
             let mut buf = [0u8; 4096];
             while !shutdown_flag.load(Ordering::Relaxed) {

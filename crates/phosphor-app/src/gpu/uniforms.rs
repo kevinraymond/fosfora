@@ -139,7 +139,7 @@ pub struct UniformBuffer {
 impl UniformBuffer {
     pub fn new(device: &Device) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("phosphor-uniforms"),
+            label: Some("fosfora-uniforms"),
             size: std::mem::size_of::<ShaderUniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -217,7 +217,7 @@ impl UniformBuffer {
             });
         }
         device.create_bind_group(&BindGroupDescriptor {
-            label: Some("phosphor-bind-group"),
+            label: Some("fosfora-bind-group"),
             layout,
             entries: &entries,
         })

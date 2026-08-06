@@ -52,7 +52,7 @@ impl MidiPort {
     /// Open a MIDI port by name. Returns the port handle, a receiver for parsed messages,
     /// and a receiver for MIDI clock bytes (0xF8/0xFA/0xFB/0xFC system realtime).
     pub fn open(port_name: &str) -> anyhow::Result<(Self, Receiver<MidiMessage>, Receiver<u8>)> {
-        let midi_in = midir::MidiInput::new("phosphor")?;
+        let midi_in = midir::MidiInput::new("fosfora")?;
         let ports = midi_in.ports();
 
         let port = ports
@@ -72,7 +72,7 @@ impl MidiPort {
         let connection = midi_in
             .connect(
                 port,
-                "phosphor-midi",
+                "fosfora-midi",
                 move |_timestamp, data, _| {
                     // System realtime messages (1-byte, 0xF8..0xFF)
                     if !data.is_empty() && data[0] >= 0xF8 {
@@ -99,7 +99,7 @@ impl MidiPort {
 
     /// List all available MIDI input port names.
     pub fn list_ports() -> Vec<String> {
-        let Ok(midi_in) = midir::MidiInput::new("phosphor-enumerate") else {
+        let Ok(midi_in) = midir::MidiInput::new("fosfora-enumerate") else {
             return Vec::new();
         };
         midi_in

@@ -406,7 +406,7 @@ impl AudioSystem {
                 let tempo_thread = tempo.clone();
 
                 let thread_handle = thread::Builder::new()
-                    .name("phosphor-audio".into())
+                    .name("fosfora-audio".into())
                     .spawn(move || {
                         audio_thread(
                             ring,
@@ -578,7 +578,7 @@ impl AudioSystem {
         let old_capture = self._capture.take();
         match teardown {
             Teardown::Blocking => drop(old_capture),
-            Teardown::Reap => reconnect::reap("phosphor-audio-reaper", old_capture),
+            Teardown::Reap => reconnect::reap("fosfora-audio-reaper", old_capture),
         }
 
         // Create new system and swap all fields (mem::replace avoids move-out-of-Drop).
@@ -728,7 +728,7 @@ impl AudioSystem {
             let cache = self.cached_devices.clone();
             let flag = self.scan_in_flight.clone();
             thread::Builder::new()
-                .name("phosphor-devscan".into())
+                .name("fosfora-devscan".into())
                 .spawn(move || {
                     // Pre-load libjack and install null error handlers before cpal touches ALSA
                     capture::suppress_jack_errors();
@@ -938,7 +938,7 @@ impl AudioSystem {
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.pending_open = Some(rx);
         thread::Builder::new()
-            .name("phosphor-audio-reopen".into())
+            .name("fosfora-audio-reopen".into())
             .spawn(move || {
                 let _ = tx.send(open_backend(target.as_deref()));
             })
@@ -985,7 +985,7 @@ impl AudioSystem {
             let cell = self.default_sink.clone();
             let flag = self.sink_poll_in_flight.clone();
             thread::Builder::new()
-                .name("phosphor-sinkpoll".into())
+                .name("fosfora-sinkpoll".into())
                 .spawn(move || {
                     let found = pulse_capture::find_monitor_source();
                     // Recover from a poisoned mutex like `list_devices` does — a sink name is
@@ -1153,7 +1153,7 @@ impl Drop for AudioSystem {
         // hang the whole process on quit. The reaper is detached, so the process exits and the
         // OS reclaims the thread.
         if let Some(capture) = self._capture.take() {
-            reconnect::reap("phosphor-audio-reaper", capture);
+            reconnect::reap("fosfora-audio-reaper", capture);
         }
     }
 }

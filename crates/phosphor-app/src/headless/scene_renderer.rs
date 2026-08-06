@@ -821,7 +821,7 @@ mod tests {
     fn parity_and_first_frame() {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
-        let dir = std::env::temp_dir().join("phosphor_headless_parity");
+        let dir = std::env::temp_dir().join("fosfora_headless_parity");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         write_fixture(&dir);
@@ -983,7 +983,7 @@ mod tests {
     fn overlay_scene_alpha_reaches_readback() {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
-        let dir = std::env::temp_dir().join("phosphor_headless_overlay_alpha");
+        let dir = std::env::temp_dir().join("fosfora_headless_overlay_alpha");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(

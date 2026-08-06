@@ -57,7 +57,7 @@ impl PresetLoader {
         let (result_tx, result_rx) = bounded::<PresetDecodeResult>(1);
 
         let handle = thread::Builder::new()
-            .name("phosphor-preset-loader".into())
+            .name("fosfora-preset-loader".into())
             .spawn(move || {
                 Self::decode_thread(request_rx, result_tx);
             })

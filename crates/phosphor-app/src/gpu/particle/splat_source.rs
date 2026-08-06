@@ -1653,7 +1653,7 @@ mod tests {
         // A "ply"-magic payload with a .bin extension routes to the PLY
         // parser (clear header error beats a silent 32-byte misparse).
         let bytes = make_test_ply(CANONICAL_PROPS, &[visible_splat()]);
-        let dir = std::env::temp_dir().join("phosphor_splat_test");
+        let dir = std::env::temp_dir().join("fosfora_splat_test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sniff_test.bin");
         std::fs::write(&path, &bytes).unwrap();

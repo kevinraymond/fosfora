@@ -34,7 +34,7 @@ impl ShaderPipeline {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("phosphor-shader"),
+            label: Some("fosfora-shader"),
             source: wgpu::ShaderSource::Wgsl(full_source.into()),
         });
 
@@ -66,7 +66,7 @@ impl ShaderPipeline {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("phosphor-shader"),
+            label: Some("fosfora-shader"),
             source: wgpu::ShaderSource::Wgsl(full_source.into()),
         });
 
@@ -187,7 +187,7 @@ impl ShaderPipeline {
         }
 
         device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("phosphor-bind-group-layout"),
+            label: Some("fosfora-bind-group-layout"),
             entries: &entries,
         })
     }
@@ -200,13 +200,13 @@ impl ShaderPipeline {
         cache: Option<&wgpu::PipelineCache>,
     ) -> RenderPipeline {
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some("phosphor-pipeline-layout"),
+            label: Some("fosfora-pipeline-layout"),
             bind_group_layouts: &[bind_group_layout],
             push_constant_ranges: &[],
         });
 
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("phosphor-render-pipeline"),
+            label: Some("fosfora-render-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: VertexState {
                 module: shader_module,

@@ -52,7 +52,7 @@ use app::App;
 use effect::loader::EffectLoader;
 use gpu::layer::BlendMode;
 
-struct PhosphorApp {
+struct FosforaApp {
     app: Option<App>,
     window: Option<Arc<Window>>,
     file_dialog_rx: Option<Receiver<PathBuf>>,
@@ -61,7 +61,7 @@ struct PhosphorApp {
     param_save_pending: Option<(usize, std::time::Instant)>,
 }
 
-impl PhosphorApp {
+impl FosforaApp {
     fn new() -> Self {
         Self {
             app: None,
@@ -73,7 +73,7 @@ impl PhosphorApp {
     }
 }
 
-impl ApplicationHandler for PhosphorApp {
+impl ApplicationHandler for FosforaApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -140,7 +140,7 @@ impl ApplicationHandler for PhosphorApp {
         // Let egui handle events first
         let egui_consumed = app.egui_overlay.handle_event(&app.window, &event);
 
-        // Diagnostic (PHOSPHOR_FRAME_LOG=1): what the window system actually
+        // Diagnostic (FOSFORA_FRAME_LOG=1): what the window system actually
         // delivers. The per-frame FRAMELOG shows the clocks and the audio, but if
         // the picture reacts to a click, the cause may be an event we do not even
         // handle — and guessing at that from the outside has already been wrong
@@ -4218,7 +4218,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
 
-    let mut app = PhosphorApp::new();
+    let mut app = FosforaApp::new();
     event_loop.run_app(&mut app)?;
 
     Ok(())

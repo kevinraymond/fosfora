@@ -46,7 +46,7 @@ pub struct App {
     pub start_time: Instant,
     pub last_frame: Instant,
     pub frame_count: u32,
-    /// PHOSPHOR_FRAME_LOG=1 — per-frame CSV of both clocks + brightness drivers.
+    /// FOSFORA_FRAME_LOG=1 — per-frame CSV of both clocks + brightness drivers.
     pub frame_log: bool,
     pub shader_watcher: ShaderWatcher,
     pub shader_compiler: ShaderCompiler,
@@ -464,7 +464,7 @@ impl App {
             start_time: now,
             last_frame: now,
             frame_count: 0,
-            frame_log: std::env::var("PHOSPHOR_FRAME_LOG").is_ok(),
+            frame_log: std::env::var("FOSFORA_FRAME_LOG").is_ok(),
             shader_watcher,
             shader_compiler,
             audio,
@@ -637,7 +637,7 @@ impl App {
             crate::gpu::uniforms::mirror_audio_features(&mut self.uniforms, &features);
         }
 
-        // Diagnostic (PHOSPHOR_FRAME_LOG=1): one CSV line per frame covering both
+        // Diagnostic (FOSFORA_FRAME_LOG=1): one CSV line per frame covering both
         // clocks plus every uniform that can move overall brightness. Used to find
         // which value actually jumps when the picture reacts to something that is
         // not the music — reasoning from stills cannot see a temporal artefact.
@@ -3204,7 +3204,7 @@ impl App {
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("phosphor-encoder"),
+                label: Some("fosfora-encoder"),
             });
 
         // Poll particle counter readback from previous frame (non-blocking)
@@ -3250,7 +3250,7 @@ impl App {
                 .gpu
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("phosphor-encoder-dissolve"),
+                    label: Some("fosfora-encoder-dissolve"),
                 });
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,

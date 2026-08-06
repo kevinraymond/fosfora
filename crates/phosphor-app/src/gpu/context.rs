@@ -64,7 +64,7 @@ impl GpuContext {
 
         let adapter_limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
-            label: Some("phosphor-device"),
+            label: Some("fosfora-device"),
             required_features,
             required_limits: wgpu::Limits {
                 max_storage_buffers_per_shader_stage: 16,
@@ -107,7 +107,7 @@ impl GpuContext {
             // and guard the load with the validation error scope below.
             let make_cache = |data: Option<&[u8]>| unsafe {
                 device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
-                    label: Some("phosphor-pipeline-cache"),
+                    label: Some("fosfora-pipeline-cache"),
                     data,
                     fallback: true,
                 })

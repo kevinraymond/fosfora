@@ -385,8 +385,7 @@ impl PulseCapture {
     pub fn new() -> Result<Self> {
         let lib = PulseLib::load()?;
         let sample_rate = 44100u32;
-        let (handle, device_name) =
-            open_connection(&lib, "phosphor", "audio capture", sample_rate)?;
+        let (handle, device_name) = open_connection(&lib, "fosfora", "audio capture", sample_rate)?;
 
         let ring = Arc::new(RingBuffer::new());
         let ring_clone = ring.clone();
@@ -397,7 +396,7 @@ impl PulseCapture {
         let capture_failed = Arc::new(AtomicBool::new(false));
         let capture_failed_clone = capture_failed.clone();
 
-        let verbose = std::env::var("PHOSPHOR_AUDIO_DEBUG").map_or(false, |v| v == "1");
+        let verbose = std::env::var("FOSFORA_AUDIO_DEBUG").map_or(false, |v| v == "1");
 
         // Move the handle + needed function pointers into the thread
         let simple = SimpleHandle::new(handle, lib.pa_simple_free);
@@ -408,7 +407,7 @@ impl PulseCapture {
 
         let thread_handle =
             thread::Builder::new()
-                .name("phosphor-pulse".into())
+                .name("fosfora-pulse".into())
                 .spawn(move || {
                     let _lib = _lib; // ensure library stays loaded
                     let mut buf = vec![0u8; FRAG_BYTES as usize];
@@ -526,7 +525,7 @@ impl PulseCapture {
         };
 
         let (handle, device_name) =
-            match open_connection(&lib, "phosphor-diag", "audio test", sample_rate) {
+            match open_connection(&lib, "fosfora-diag", "audio test", sample_rate) {
                 Ok(v) => v,
                 Err(e) => {
                     println!("FAIL: Could not open PulseAudio: {e}");
@@ -695,7 +694,7 @@ impl DiagnosticStats {
                 reads_per_sec, expected_rps,
             );
             println!("  - fragsize may not be taking effect");
-            println!("  - Try: PHOSPHOR_AUDIO_DEBUG=1 cargo run");
+            println!("  - Try: FOSFORA_AUDIO_DEBUG=1 cargo run");
         } else if self.peak_abs < 0.0001 {
             println!(
                 "WARN: Audio capture working ({:.1} reads/s) but signal is silent.",
