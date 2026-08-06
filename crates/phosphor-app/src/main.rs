@@ -22,6 +22,7 @@ mod osc;
 ))]
 mod output;
 mod params;
+mod paths;
 mod preset;
 mod recording;
 mod scene;
@@ -3977,6 +3978,9 @@ fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
+
+    // Before any config file is read: move a pre-rename ~/.config/phosphor/ to fosfora.
+    crate::paths::migrate_legacy_config_dir();
 
     // Suppress noisy ALSA/JACK C library messages on Linux (missing JACK server, OSS, dsnoop)
     crate::audio::capture::suppress_audio_library_noise();

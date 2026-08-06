@@ -81,8 +81,7 @@ pub fn ort_available() -> bool {
 
 /// Returns the directory where models and runtime are stored.
 pub fn model_dir() -> PathBuf {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    config_dir.join("phosphor").join("models")
+    crate::paths::config_root().join("models")
 }
 
 /// Returns the full path to the MiDaS model file.
@@ -252,9 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn model_dir_is_under_phosphor() {
+    fn model_dir_is_under_fosfora() {
         let d = model_dir();
-        assert!(d.to_string_lossy().contains("phosphor"));
+        assert!(d.to_string_lossy().contains("fosfora"));
     }
 
     #[test]

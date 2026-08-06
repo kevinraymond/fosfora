@@ -35,8 +35,7 @@ impl Default for NdiConfig {
 
 impl NdiConfig {
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("ndi.json")
+        crate::paths::config_root().join("ndi.json")
     }
 
     pub fn load() -> Self {

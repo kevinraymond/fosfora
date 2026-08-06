@@ -11,9 +11,7 @@ pub struct BindingsFile {
 }
 
 fn config_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("phosphor")
+    crate::paths::config_root()
 }
 
 fn global_path() -> PathBuf {

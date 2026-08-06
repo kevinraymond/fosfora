@@ -94,10 +94,9 @@ impl Default for MidiConfig {
 }
 
 impl MidiConfig {
-    /// Path to the MIDI config file (~/.config/phosphor/midi.json).
+    /// Path to the MIDI config file (~/.config/fosfora/midi.json).
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("midi.json")
+        crate::paths::config_root().join("midi.json")
     }
 
     /// Load config from disk, falling back to default on any error.

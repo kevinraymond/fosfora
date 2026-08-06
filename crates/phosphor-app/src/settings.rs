@@ -169,10 +169,7 @@ impl Default for SettingsConfig {
 
 impl SettingsConfig {
     pub fn load() -> Self {
-        let Some(config_dir) = dirs::config_dir() else {
-            return Self::default();
-        };
-        let path = config_dir.join("phosphor").join("settings.json");
+        let path = crate::paths::config_root().join("settings.json");
         match std::fs::read_to_string(&path) {
             Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
             Err(_) => Self::default(),
@@ -180,10 +177,7 @@ impl SettingsConfig {
     }
 
     pub fn save(&self) {
-        let Some(config_dir) = dirs::config_dir() else {
-            return;
-        };
-        let dir = config_dir.join("phosphor");
+        let dir = crate::paths::config_root();
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("settings.json");
         if let Ok(json) = serde_json::to_string_pretty(self) {

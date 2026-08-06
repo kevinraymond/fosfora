@@ -630,9 +630,9 @@ mod target_tests {
     /// parser, asserting the serialized form comes back byte-identical.
     /// Run: cargo test -p phosphor-app -- --ignored real_binding_files_round_trip --nocapture
     #[test]
-    #[ignore = "reads the operator's ~/.config/phosphor; not hermetic"]
+    #[ignore = "reads the operator's ~/.config/fosfora; not hermetic"]
     fn real_binding_files_round_trip() {
-        let dir = dirs::config_dir().expect("config dir").join("phosphor");
+        let dir = crate::paths::config_root();
         let mut files: Vec<std::path::PathBuf> = vec![dir.join("global-bindings.json")];
         if let Ok(rd) = std::fs::read_dir(dir.join("presets")) {
             for e in rd.flatten() {

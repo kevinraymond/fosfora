@@ -128,8 +128,7 @@ impl Default for OscConfig {
 
 impl OscConfig {
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("osc.json")
+        crate::paths::config_root().join("osc.json")
     }
 
     pub fn load() -> Self {

@@ -230,8 +230,7 @@ impl PresetStore {
     }
 
     pub fn presets_dir() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("presets")
+        crate::paths::config_root().join("presets")
     }
 
     /// Returns the set of built-in preset names (lowercase) for shadow detection.

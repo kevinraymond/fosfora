@@ -44,8 +44,7 @@ impl SpoutConfig {
     }
 
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("spout.json")
+        crate::paths::config_root().join("spout.json")
     }
 
     pub fn load() -> Self {

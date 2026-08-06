@@ -8,8 +8,8 @@ use wgpu::{
 use winit::window::Window;
 
 /// Path for persisted pipeline cache data.
-fn pipeline_cache_path() -> Option<std::path::PathBuf> {
-    dirs::config_dir().map(|d| d.join("phosphor").join("pipeline_cache.bin"))
+fn pipeline_cache_path() -> std::path::PathBuf {
+    crate::paths::config_root().join("pipeline_cache.bin")
 }
 
 pub struct GpuContext {
@@ -99,7 +99,7 @@ impl GpuContext {
         // under an error scope and, if wgpu rejects it, discard the stale file and rebuild
         // an empty (valid) cache; the next `save_pipeline_cache()` writes a fresh blob.
         let pipeline_cache = if device.features().contains(wgpu::Features::PIPELINE_CACHE) {
-            let cached_data = pipeline_cache_path().and_then(|p| std::fs::read(p).ok());
+            let cached_data = std::fs::read(pipeline_cache_path()).ok();
             let loaded_len = cached_data.as_ref().map_or(0, |d| d.len());
 
             // SAFETY: create_pipeline_cache is unsafe because malformed cached data could
@@ -121,9 +121,7 @@ impl GpuContext {
                 log::warn!(
                     "Pipeline cache data invalid ({err}); discarding stale cache and starting empty"
                 );
-                if let Some(path) = pipeline_cache_path() {
-                    let _ = std::fs::remove_file(path);
-                }
+                let _ = std::fs::remove_file(pipeline_cache_path());
                 make_cache(None)
             } else {
                 log::info!("Pipeline cache created (loaded {loaded_len} bytes from disk)");
@@ -207,18 +205,17 @@ impl GpuContext {
     pub fn save_pipeline_cache(&self) {
         if let Some(ref cache) = self.pipeline_cache {
             if let Some(data) = cache.get_data() {
-                if let Some(path) = pipeline_cache_path() {
-                    if let Some(parent) = path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    match std::fs::write(&path, &data) {
-                        Ok(()) => log::info!(
-                            "Pipeline cache saved ({} bytes) to {}",
-                            data.len(),
-                            path.display()
-                        ),
-                        Err(e) => log::warn!("Failed to save pipeline cache: {e}"),
-                    }
+                let path = pipeline_cache_path();
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(&path, &data) {
+                    Ok(()) => log::info!(
+                        "Pipeline cache saved ({} bytes) to {}",
+                        data.len(),
+                        path.display()
+                    ),
+                    Err(e) => log::warn!("Failed to save pipeline cache: {e}"),
                 }
             }
         }

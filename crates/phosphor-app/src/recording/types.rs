@@ -123,8 +123,7 @@ impl Default for RecordingConfig {
 
 impl RecordingConfig {
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("recording.json")
+        crate::paths::config_root().join("recording.json")
     }
 
     pub fn load() -> Self {

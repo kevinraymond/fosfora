@@ -19,8 +19,7 @@ impl SceneStore {
     }
 
     pub fn scenes_dir() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("scenes")
+        crate::paths::config_root().join("scenes")
     }
 
     fn sanitize_name(name: &str) -> String {

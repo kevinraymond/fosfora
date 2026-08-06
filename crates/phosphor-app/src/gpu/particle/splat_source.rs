@@ -183,13 +183,10 @@ pub fn download_demo_scene(name: &str) -> Arc<crate::download::DownloadProgress>
     progress
 }
 
-/// Where downloaded demo scenes live: `~/.config/phosphor/splats/`
+/// Where downloaded demo scenes live: `~/.config/fosfora/splats/`
 /// (mirrors `depth::model::model_dir`).
 pub fn splat_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("phosphor")
-        .join("splats")
+    crate::paths::config_root().join("splats")
 }
 
 /// Map a .pfx `splat.source` string to a filesystem path (no existence check):

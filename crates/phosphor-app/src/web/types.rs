@@ -117,8 +117,7 @@ impl Default for WebConfig {
 
 impl WebConfig {
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("web.json")
+        crate::paths::config_root().join("web.json")
     }
 
     pub fn load() -> Self {

@@ -51,8 +51,7 @@ pub struct V4l2Config {
 
 impl V4l2Config {
     pub fn config_path() -> PathBuf {
-        let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-        config_dir.join("phosphor").join("v4l2.json")
+        crate::paths::config_root().join("v4l2.json")
     }
 
     pub fn load() -> Self {
