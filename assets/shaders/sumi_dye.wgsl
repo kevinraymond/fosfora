@@ -61,7 +61,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // central drop tinted by the detected key (dominant_chroma = pitch class / 11)
     let dc = (uv - center) * vec2f(aspect, 1.0);
     let gd = exp(-dot(dc, dc) / (splat_rad * splat_rad * 2.5));
-    let key_hue = phosphor_key_hue(u.dominant_chroma, 0.0);
+    let key_hue = fosfora_key_hue(u.dominant_chroma, 0.0);
     col += sumi_hsv2rgb(key_hue, sat, bright) * gd * u.onset * inject * 0.6;
 
     col = min(col, vec3f(4.0)); // clamp to keep the feedback loop from blowing out

@@ -33,8 +33,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             let cell_id = ip + neighbor;
 
             // Animated cell center
-            let h = phosphor_hash2(cell_id) * 6.283 + t * 0.3;
-            let h2 = phosphor_hash2(cell_id + vec2f(7.13, 3.71));
+            let h = fosfora_hash2(cell_id) * 6.283 + t * 0.3;
+            let h2 = fosfora_hash2(cell_id + vec2f(7.13, 3.71));
             var center = neighbor + 0.5 + 0.4 * vec2f(sin(h), cos(h * 1.3 + h2));
 
             // Shatter displacement
@@ -61,9 +61,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let edge_line = exp(-edge * edge * 40.0 * edge_glow) * (1.0 + u.bass * 2.0 + u.kick * 3.0);
 
     // Cell fill with audio color
-    let cell_hash = phosphor_hash2(closest_id);
+    let cell_hash = fosfora_hash2(closest_id);
     let pal_t = cell_hash + t * 0.1 + u.beat_phase * 0.5;
-    let cell_col = phosphor_audio_palette(pal_t, u.centroid, 0.0);
+    let cell_col = fosfora_audio_palette(pal_t, u.centroid, 0.0);
 
     // Fill: stained-glass style — flat color across entire cell, modulated by fill_amount
     let fill_bright = fill_amount * (0.6 + u.rms * 0.3 + u.kick * 0.3);

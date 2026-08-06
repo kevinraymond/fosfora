@@ -45,7 +45,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let zp = kp * zoom * bass_pulse;
 
     // Source pattern: FBM + geometric elements
-    let fbm_val = phosphor_fbm2(zp * (complexity + mid_complex) + vec2f(t * 0.1, 0.0), 5, 0.55);
+    let fbm_val = fosfora_fbm2(zp * (complexity + mid_complex) + vec2f(t * 0.1, 0.0), 5, 0.55);
 
     // Geometric overlay: concentric hexagons
     let hex_r = length(zp);
@@ -57,7 +57,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Color
     let pal_t = pattern * 2.0 + t * 0.05 + hex_r * 0.3;
-    var col = phosphor_audio_palette(pal_t, u.centroid, 0.0);
+    var col = fosfora_audio_palette(pal_t, u.centroid, 0.0);
     col *= pattern * 1.5;
 
     // param(4) = sparkle toggle, param(5) = bass_pulse toggle, param(6) = beat_flash toggle
@@ -65,13 +65,13 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Presence sparkle: high-frequency detail
     let sparkle_on = param(4u);
     let sparkle_p = zp * 20.0 + vec2f(t * 2.0, t * 1.7);
-    let sparkle = pow(phosphor_noise2(sparkle_p), 8.0) * u.presence * 3.0 * sparkle_on;
+    let sparkle = pow(fosfora_noise2(sparkle_p), 8.0) * u.presence * 3.0 * sparkle_on;
     col += vec3f(sparkle);
 
     // Bass radial pulse
     let pulse_on = param(5u);
     let radial_pulse = exp(-abs(hex_r - 0.5 - u.bass * 0.3) * 10.0) * u.bass * 0.5 * pulse_on;
-    col += phosphor_audio_palette(t * 0.2, u.centroid, 0.3) * radial_pulse;
+    col += fosfora_audio_palette(t * 0.2, u.centroid, 0.3) * radial_pulse;
 
     // Beat flash at center
     let flash_on = param(6u);

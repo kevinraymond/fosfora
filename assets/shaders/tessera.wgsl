@@ -69,8 +69,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let energy = 1.0 + 0.5 * beat_hit + 0.4 * bar_hit + 1.6 * u.drop;
     // Narrow per-cell hue spread around the song's key: variation without the
     // full-spectrum confetti the raw hash produced.
-    let hue = phosphor_key_hue(u.key_class, u.key_is_minor) + (ch - 0.5) * 0.22;
-    let colour = phosphor_audio_palette(hue, u.centroid, u.bar_phase) * tint * energy;
+    let hue = fosfora_key_hue(u.key_class, u.key_is_minor) + (ch - 0.5) * 0.22;
+    let colour = fosfora_audio_palette(hue, u.centroid, u.bar_phase) * tint * energy;
 
     var rgb: vec3f;
     var a: f32;

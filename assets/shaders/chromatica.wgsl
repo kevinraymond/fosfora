@@ -2,7 +2,7 @@
 // Twelve concentric rings, one per pitch class, spaced around the circle of fifths so
 // consonant notes sit radially adjacent. Each ring blooms with its chroma[pc] energy, so
 // the mandala visibly swells with the chord being played. The song's detected key rotates
-// the whole palette (via phosphor_key_hue) and a minor key droops + cools the geometry.
+// the whole palette (via fosfora_key_hue) and a minor key droops + cools the geometry.
 // An interval_edges toggle overlays a consonance graph: lines between simultaneously
 // sounding pitch classes, warm-gold for consonant intervals, tense-violet for dissonant.
 // A max-decay feedback trail gives cathedral-glass persistence.
@@ -11,7 +11,7 @@ const TAU: f32 = 6.28318530718;
 
 // Full-wheel colour from a hue in 0..1 (iq cosine palette, rainbow variant).
 fn chroma_wheel(h: f32) -> vec3f {
-    return phosphor_palette(fract(h), vec3f(0.5), vec3f(0.5), vec3f(1.0), vec3f(0.0, 0.33, 0.67));
+    return fosfora_palette(fract(h), vec3f(0.5), vec3f(0.5), vec3f(1.0), vec3f(0.0, 0.33, 0.67));
 }
 
 // Consonance weight for an interval in semitones, folded to interval class 0..6.
@@ -48,7 +48,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let edge_breath = param(11u);             // expand/contract amount
 
     // Key-locked global hue + major/minor geometry warp.
-    let key_hue = phosphor_key_hue(u.key_class, u.key_is_minor);
+    let key_hue = fosfora_key_hue(u.key_class, u.key_is_minor);
     let minor = clamp(u.key_is_minor, 0.0, 1.0);
     let droop = minor * minor_droop;
     p.y = p.y - droop * 0.05 * (1.0 - p.y * p.y); // sag the lower half

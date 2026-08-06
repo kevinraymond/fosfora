@@ -102,8 +102,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Colour: key-locked palette; arms/lock/diamonds run hotter; a drop flashes
     // the whole instrument toward white.
-    let base = phosphor_audio_palette(
-        phosphor_key_hue(u.key_class, u.key_is_minor),
+    let base = fosfora_audio_palette(
+        fosfora_key_hue(u.key_class, u.key_is_minor),
         u.centroid,
         u.bar_phase,
     ) * tint;

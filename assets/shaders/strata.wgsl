@@ -118,10 +118,10 @@ fn strata_h_shade(xz: vec2f, hs: f32, detail: f32, fp: f32) -> f32 {
     // domain warp gives organic flow without the earlier oily folding.
     let fp_fade = 1.0 - smoothstep(0.05, 0.30, fp);
     let warp = vec2f(
-        phosphor_fbm2(xz * 0.6, 2, 0.5),
-        phosphor_fbm2(xz * 0.6 + vec2f(3.7, 1.3), 2, 0.5)
+        fosfora_fbm2(xz * 0.6, 2, 0.5),
+        fosfora_fbm2(xz * 0.6 + vec2f(3.7, 1.3), 2, 0.5)
     );
-    let rock = phosphor_fbm2(xz * 1.4 + (warp - 0.5) * 0.5, 4, 0.5);
+    let rock = fosfora_fbm2(xz * 1.4 + (warp - 0.5) * 0.5, 4, 0.5);
     h += (rock - 0.5) * detail * 0.16 * fp_fade;
     return h * strata_edge_fade(xz.y);
 }
@@ -279,7 +279,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         // Loud strata GLOW with their frequency colour (the "spectral" accent —
         // audio colour appears as emissive on ridges, not as a whole-scene cycle).
         // Kick brightens the glow locally (not the whole frame -> no bloom pop).
-        let glow_col = phosphor_audio_palette(band_t * 0.9 + 0.05, u.centroid, 0.1);
+        let glow_col = fosfora_audio_palette(band_t * 0.9 + 0.05, u.centroid, 0.1);
         lit += glow_col * smoothstep(0.55, 0.95, m) * (0.35 + beat_env * 0.3)
             * (1.0 + u.kick * 0.5) * face;
         // Wet specular on beat — modest gloss, smooth envelope, gated to up-facing ground.

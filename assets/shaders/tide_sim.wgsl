@@ -68,7 +68,7 @@ fn tide_color(pos: vec2f, vel: vec2f, foamy: f32) -> vec3f {
     // Deep water anchored to the musical key, pulled hard toward blue-cyan;
     // centroid tilts the palette warm/cool.
     let hue_t = fract(u.dominant_chroma * 0.15 + param(5u) * 0.25 + 0.52 + pos.y * 0.05);
-    var col = phosphor_audio_palette(hue_t, 0.6 + 0.4 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
+    var col = fosfora_audio_palette(hue_t, 0.6 + 0.4 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
     col = mix(col, vec3f(0.10, 0.35, 0.60), 0.45);
     // Compressive, not clamped: the linear clamp(x*1.6) saturated at exactly
     // the fall speeds loud music produces (rms-driven flow ~1.07 -> 1.71,

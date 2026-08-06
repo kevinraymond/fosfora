@@ -323,9 +323,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let spread_str = param(4u) * 0.001;
     if spread_str > 0.0 {
         let noise_seed = vec2f(seed_rand * 100.0 + u.time * 0.3, f32(idx) * 0.017);
-        let nx = phosphor_noise2(noise_seed) - 0.5;
-        let ny = phosphor_noise2(noise_seed + vec2f(31.7, 0.0)) - 0.5;
-        let nz = phosphor_noise2(noise_seed + vec2f(0.0, 47.3)) - 0.5;
+        let nx = fosfora_noise2(noise_seed) - 0.5;
+        let ny = fosfora_noise2(noise_seed + vec2f(31.7, 0.0)) - 0.5;
+        let nz = fosfora_noise2(noise_seed + vec2f(0.0, 47.3)) - 0.5;
         att_pos += vec3f(nx, ny, nz) * spread_str;
     }
 

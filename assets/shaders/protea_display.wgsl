@@ -44,8 +44,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     col += rim * (col * 0.6 + vec3f(0.14, 0.18, 0.22)) * 0.7;
 
     // Detected key tilts the whole palette, gently and only when confident.
-    let key_shift = (phosphor_key_hue(u.key_class, u.key_is_minor) - 0.5) * 0.25 * u.key_confidence;
-    col = phosphor_hue_shift(col, key_shift);
+    let key_shift = (fosfora_key_hue(u.key_class, u.key_is_minor) - 0.5) * 0.25 * u.key_confidence;
+    col = fosfora_hue_shift(col, key_shift);
 
     // Deep-water background where nothing lives.
     col += vec3f(0.010, 0.014, 0.026) * (1.0 - smoothstep(0.0, 0.4, total));

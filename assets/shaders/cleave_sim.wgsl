@@ -111,7 +111,7 @@ fn ribbon_field(pos: vec2f, phase: f32) -> vec2f {
 fn ribbon_color(vel: vec2f) -> vec3f {
     // Warm key-locked anchor; centroid tilts warm/cool (tide_color idiom).
     let hue_t = fract(u.dominant_chroma * 0.15 + param(5u) * 0.3 + 0.05);
-    var col = phosphor_audio_palette(hue_t, 0.55 + 0.35 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
+    var col = fosfora_audio_palette(hue_t, 0.55 + 0.35 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
     col = mix(col, vec3f(0.95, 0.75, 0.45), 0.25);
     let speed_glow = clamp(length(vel) * 2.0, 0.0, 1.0);
     // rms term kept small: the additive stack + bloom amplify from here
@@ -123,7 +123,7 @@ fn shard_color(sw: f32) -> vec3f {
     // Cold ice: key-anchored but pulled hard toward blue-white; brightness
     // spends the strike strength captured at birth.
     let hue_t = fract(u.dominant_chroma * 0.15 + param(5u) * 0.3 + 0.45);
-    var col = phosphor_audio_palette(hue_t, 0.35, u.time * 0.02);
+    var col = fosfora_audio_palette(hue_t, 0.35, u.time * 0.02);
     col = mix(col, vec3f(0.85, 0.93, 1.0), 0.65);
     return col * (0.5 + 1.1 * sw);
 }
@@ -299,8 +299,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let e = 0.02;
         let np = pos * 1.3 + vec2f(phase * 3.7, u.time * 0.03);
         let g = vec2f(
-            phosphor_noise2(np + vec2f(e, 0.0)) - phosphor_noise2(np - vec2f(e, 0.0)),
-            phosphor_noise2(np + vec2f(0.0, e)) - phosphor_noise2(np - vec2f(0.0, e)));
+            fosfora_noise2(np + vec2f(e, 0.0)) - fosfora_noise2(np - vec2f(e, 0.0)),
+            fosfora_noise2(np + vec2f(0.0, e)) - fosfora_noise2(np - vec2f(0.0, e)));
         vel += g * (8.0 + 10.0 * u.harmonic_energy) * dt;
         vel *= pow(u.drag, dt * 60.0);
         let prev_pos = pos;

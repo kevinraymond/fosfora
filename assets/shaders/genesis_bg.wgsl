@@ -13,8 +13,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Subtle UV distortion on feedback — organic smearing of creature trails
     let warp_str = 0.0015 + u.rms * 0.001;
-    let warp_x = phosphor_noise2(p * 2.5 + vec2f(u.time * 0.03, 0.0)) - 0.5;
-    let warp_y = phosphor_noise2(p * 2.5 + vec2f(0.0, u.time * 0.025)) - 0.5;
+    let warp_x = fosfora_noise2(p * 2.5 + vec2f(u.time * 0.03, 0.0)) - 0.5;
+    let warp_y = fosfora_noise2(p * 2.5 + vec2f(0.0, u.time * 0.025)) - 0.5;
     let warped_uv = uv + vec2f(warp_x, warp_y) * warp_str;
     let warped_prev = feedback(clamp(warped_uv, vec2f(0.001), vec2f(0.999)));
 

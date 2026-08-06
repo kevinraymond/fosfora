@@ -123,8 +123,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         let drop_r = 0.030 * min_dim;
         for (var k = 0u; k < 4u; k = k + 1u) {
             let site = vec2f(
-                0.10 + 0.80 * phosphor_hash2(vec2f(f32(k) * 13.7 + 1.0, cell)),
-                0.10 + 0.80 * phosphor_hash2(vec2f(cell, f32(k) * 7.3 + 41.0)),
+                0.10 + 0.80 * fosfora_hash2(vec2f(f32(k) * 13.7 + 1.0, cell)),
+                0.10 + 0.80 * fosfora_hash2(vec2f(cell, f32(k) * 7.3 + 41.0)),
             ) * vec2f(dims);
             let d = px - site;
             m[k % 3u] += u.onset * injection * exp(-dot(d, d) / (drop_r * drop_r));
@@ -140,13 +140,13 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let cell_sz = 0.06 * f32(min(dims.x, dims.y));
     let gcell = floor(vec2f(frag_coord.xy) / cell_sz);
     let tick = floor(u.time * 0.7);
-    let fire = phosphor_hash2(gcell * 1.7 + vec2f(tick * 2.3 + 0.5, tick * 5.1 + 0.5));
+    let fire = fosfora_hash2(gcell * 1.7 + vec2f(tick * 2.3 + 0.5, tick * 5.1 + 0.5));
     if (fire > 0.972 && total < 0.05) {
         let center = (gcell + vec2f(0.5)) * cell_sz;
         let d = vec2f(frag_coord.xy) - center;
         let nr = cell_sz * 0.44;
         let g = exp(-dot(d, d) / (nr * nr));
-        let pick = phosphor_hash2(gcell + vec2f(9.1, 3.7));
+        let pick = fosfora_hash2(gcell + vec2f(9.1, 3.7));
         var mask = vec3f(0.0);
         if (pick < 0.34) { mask.x = 1.0; } else if (pick < 0.67) { mask.y = 1.0; } else { mask.z = 1.0; }
         m += mask * g * (0.4 + 0.6 * food_env) * 0.4;

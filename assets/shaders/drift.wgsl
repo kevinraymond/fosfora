@@ -21,25 +21,25 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Triple domain warping for fluid look
     let q = vec2f(
-        phosphor_fbm2(p * 2.0 + vec2f(0.0, flow_t * 0.3), 5, 0.5),
-        phosphor_fbm2(p * 2.0 + vec2f(5.2, flow_t * 0.4 + 1.3), 5, 0.5)
+        fosfora_fbm2(p * 2.0 + vec2f(0.0, flow_t * 0.3), 5, 0.5),
+        fosfora_fbm2(p * 2.0 + vec2f(5.2, flow_t * 0.4 + 1.3), 5, 0.5)
     );
 
     let r = vec2f(
-        phosphor_fbm2((p + q * (1.0 + bass_warp)) * 2.0 + vec2f(1.7, flow_t * 0.2 + 9.2), 5, 0.5),
-        phosphor_fbm2((p + q * (1.0 + bass_warp)) * 2.0 + vec2f(8.3, flow_t * 0.25 + 2.8), 5, 0.5)
+        fosfora_fbm2((p + q * (1.0 + bass_warp)) * 2.0 + vec2f(1.7, flow_t * 0.2 + 9.2), 5, 0.5),
+        fosfora_fbm2((p + q * (1.0 + bass_warp)) * 2.0 + vec2f(8.3, flow_t * 0.25 + 2.8), 5, 0.5)
     );
 
     let s = vec2f(
-        phosphor_fbm2((p + r * 1.5) * 1.5 + vec2f(flow_t * 0.15, 3.1), 4, 0.5),
-        phosphor_fbm2((p + r * 1.5) * 1.5 + vec2f(2.7, flow_t * 0.18), 4, 0.5)
+        fosfora_fbm2((p + r * 1.5) * 1.5 + vec2f(flow_t * 0.15, 3.1), 4, 0.5),
+        fosfora_fbm2((p + r * 1.5) * 1.5 + vec2f(2.7, flow_t * 0.18), 4, 0.5)
     );
 
-    let f = phosphor_fbm2((p + s * (1.2 + bass_warp * 0.5)) * density, 6, 0.5);
+    let f = fosfora_fbm2((p + s * (1.2 + bass_warp * 0.5)) * density, 6, 0.5);
 
     // Color from centroid-driven palette — use f² to keep darks dark
     let pal_t = f * 2.0 + t * 0.05;
-    var col = phosphor_audio_palette(pal_t, u.centroid, color_mode * 0.5);
+    var col = fosfora_audio_palette(pal_t, u.centroid, color_mode * 0.5);
     col *= f * f * 1.8;
 
     // Read feedback with advection

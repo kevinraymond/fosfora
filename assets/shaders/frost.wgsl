@@ -49,8 +49,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             let neighbor = vec2f(f32(x), f32(y));
             let cell_id = ip + neighbor;
 
-            let h = phosphor_hash2(cell_id);
-            let h2 = phosphor_hash2(cell_id + vec2f(7.13, 3.71));
+            let h = fosfora_hash2(cell_id);
+            let h2 = fosfora_hash2(cell_id + vec2f(7.13, 3.71));
             let ang = h * 6.2831 + t * agitation;
             var center = neighbor + 0.5 + amp * vec2f(sin(ang), cos(ang * 1.31 + h2 * 6.2831));
 
@@ -78,13 +78,13 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let gloss = mix(22.0, 4.0, m);
     let glint = pow(max(dot(fn_, normalize(vec3f(0.4, -0.5, 0.75))), 0.0), gloss);
 
-    let facet_hash = phosphor_hash2(closest_id);
+    let facet_hash = fosfora_hash2(closest_id);
     // Beat-locked glint sweep walking across facets in hash order (crystal only)
     let sweep_d = fract(facet_hash + u.beat_phase) - 0.5;
     let sweep = exp(-sweep_d * sweep_d * 40.0) * 0.3 * (1.0 - m);
 
     // Cold steel-blue range only — small b amplitudes keep every facet icy
-    let ice = phosphor_palette(
+    let ice = fosfora_palette(
         facet_hash * 0.35 + ice_hue,
         vec3f(0.30, 0.42, 0.58), vec3f(0.12, 0.16, 0.28),
         vec3f(1.0, 1.0, 1.0), vec3f(0.62, 0.55, 0.48)
@@ -95,33 +95,33 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let facet_lum = dot(facet_body, vec3f(0.2126, 0.7152, 0.0722));
 
     // Erosion field, shared by the dissolve mask and the sand dunes
-    let er = phosphor_fbm2(p * cell_scale * 0.9 + vec2f(t * 0.05, -t * 0.03), 3, 0.5);
+    let er = fosfora_fbm2(p * cell_scale * 0.9 + vec2f(t * 0.05, -t * 0.03), 3, 0.5);
 
     // === GRAIN LAYER (sand) ===
     // bandwidth widens the grain: broad spectrum = coarser, more scattered
     let grain_scale = mix(220.0, 60.0, grain_size) * mix(1.35, 0.65, u.bandwidth);
     let gp = floor(p * grain_scale);
-    let g_static = phosphor_hash2(gp);
+    let g_static = fosfora_hash2(gp);
     // Per-frame shimmer: integer hash is safe for frame-varying identity
     let gu = u32(i32(gp.x) + 4096) * 8192u + u32(i32(gp.y) + 4096);
-    let sparkle = f32(phosphor_ihash(gu + phosphor_ihash(u32(u.frame_index)))) / 4294967295.0;
+    let sparkle = f32(fosfora_ihash(gu + fosfora_ihash(u32(u.frame_index)))) / 4294967295.0;
     let gval = mix(g_static, sparkle, 0.15 + 0.55 * zcr_x);
     let dust = vec3f(0.55, 0.47, 0.36) * (0.25 + 0.75 * gval);
     // Sand inherits the crystal's light; a low-frequency field scrolling along
     // the wind direction shades dunes into the grain carpet
-    let dune = phosphor_fbm2(p * 2.2 + drift_dir * (t * 0.15), 3, 0.5);
+    let dune = fosfora_fbm2(p * 2.2 + drift_dir * (t * 0.15), 3, 0.5);
     let dune_shade = mix(0.30, 1.25, smoothstep(0.22, 0.68, dune));
     let dust_col = dust * (0.4 + 0.6 * facet_lum) * dune_shade;
 
     // === EROSION MASK: patches crumble before centers ===
     let dissolve = smoothstep(er - 0.18, er + 0.18, m * 1.15 - 0.05);
     var col = mix(facet_col, dust_col, dissolve);
-    col = phosphor_hue_shift(col, (u.centroid - 0.5) * 0.15);
+    col = fosfora_hue_shift(col, (u.centroid - 0.5) * 0.15);
 
     // === FEEDBACK: crystal redraws crisp, sand smears along the wind ===
     let turb = vec2f(
-        phosphor_noise2(p * 3.0 + vec2f(t * 0.2, 0.0)),
-        phosphor_noise2(p * 3.0 + vec2f(4.7, -t * 0.17))
+        fosfora_noise2(p * 3.0 + vec2f(t * 0.2, 0.0)),
+        fosfora_noise2(p * 3.0 + vec2f(4.7, -t * 0.17))
     ) - 0.5;
     let d_off = (drift_dir * (0.0006 + 0.0035 * m) + turb * 0.0015 * m)
         * (drift_speed * 2.0) * (1.0 + u.bass * 0.6);

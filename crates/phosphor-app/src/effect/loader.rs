@@ -2047,7 +2047,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
     // Compile probe for the Vessel sim + bg shaders. Unlike Tide's probe this
     // includes the sdf lib in the sim concatenation — Vessel's fallback
-    // amphora uses phosphor_sd_segment2 (production lib_source is
+    // amphora uses fosfora_sd_segment2 (production lib_source is
     // noise + palette + sdf + tonemap, see LIBRARY_FILES). Also a
     // pre-launch check that the WGSL ParticleUniforms mirror matches the
     // Rust layout (896 bytes since the #1800 ABI bump).
@@ -2625,7 +2625,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Compile probe for the Chromatica fragment shader through the production
-    // concatenation. It uses phosphor_sd_segment2, so sdf.wgsl must be in the
+    // concatenation. It uses fosfora_sd_segment2, so sdf.wgsl must be in the
     // concat (production prepends it via LIB_FILENAMES; the compile probe must too).
     // Run: cargo test -p phosphor-app -- --ignored chromatica_shaders_compile
     #[test]

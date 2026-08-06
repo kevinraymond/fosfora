@@ -32,3 +32,7 @@ struct LatticeUniforms {
     domain_radius: f32,
     max_age: u32,
 }
+
+// ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
+// compiling). Do not use in new code; may be removed in a future major release. ----
+

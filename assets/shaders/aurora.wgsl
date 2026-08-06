@@ -53,7 +53,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
         // Noise-based curtain ripple
         let noise_p = vec2f(p.x * 3.0 + wave_phase * 0.5, fi * 2.0 + t * 0.1);
-        let ripple = (phosphor_noise2(noise_p) - 0.5) * 0.08;
+        let ripple = (fosfora_noise2(noise_p) - 0.5) * 0.08;
 
         // Distance from this band's center line
         let dy = p.y - band_y - wave - ripple;
@@ -71,7 +71,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     }
 
     // Subtle vertical shimmer
-    let shimmer = phosphor_noise2(vec2f(p.x * 10.0 + t, p.y * 30.0)) * 0.05 * u.presence;
+    let shimmer = fosfora_noise2(vec2f(p.x * 10.0 + t, p.y * 30.0)) * 0.05 * u.presence;
     col += vec3f(shimmer);
 
     // Onset brightens everything

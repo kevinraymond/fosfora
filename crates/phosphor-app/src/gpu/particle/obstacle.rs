@@ -375,7 +375,7 @@ mod tests {
 
         // Probe kernel appended to the real libs, concatenated in the same
         // order as prepend_compute_libraries (noise first — particle_lib's
-        // curl helpers call phosphor_noise2). Writes (alpha, normal.xy).
+        // curl helpers call fosfora_noise2). Writes (alpha, normal.xy).
         let noise = include_str!("../../../../../assets/shaders/lib/noise.wgsl");
         let lib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
         let src = format!(

@@ -23,7 +23,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Percussive pole: sample toward center -> echoes expand radially.
     let radial = -d * (0.0006 + 0.004 * u.percussive_energy * param(6u));
     // Harmonic pole: slow lateral weave (x-only, Tide shimmer idiom).
-    let weave = vec2f(phosphor_noise2(vec2f(uv.y * 6.0, u.time * 0.2)) - 0.5, 0.0)
+    let weave = vec2f(fosfora_noise2(vec2f(uv.y * 6.0, u.time * 0.2)) - 0.5, 0.0)
         * 0.002 * u.harmonic_energy;
     let offset = mix(radial, weave, smoothstep(0.2, 0.8, u.harmonic_ratio));
     let prev = feedback(clamp(uv + offset, vec2f(0.001), vec2f(0.999)));
@@ -33,7 +33,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Faint key-locked aurora floor swelling with sustained content — barely
     // visible alone, it keeps a pad bridge from going pitch black.
-    let aurora_n = phosphor_noise2(vec2f(uv.x * 3.0 + u.time * 0.05, uv.y * 5.0));
+    let aurora_n = fosfora_noise2(vec2f(uv.x * 3.0 + u.time * 0.05, uv.y * 5.0));
     let hue = fract(u.dominant_chroma * 0.15 + param(5u) * 0.3 + 0.05);
     let r = clamp(abs(hue * 6.0 - 3.0) - 1.0, 0.0, 1.0);
     let g = clamp(2.0 - abs(hue * 6.0 - 2.0), 0.0, 1.0);

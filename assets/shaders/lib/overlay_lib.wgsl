@@ -9,17 +9,17 @@
 //     particle_lib.wgsl in compute shaders).
 //   - pure functions only: no textures, no state, no derivatives (fwidth is
 //     fragment-only and this lib must compile in compute modules).
-// Hashing builds on `phosphor_ihash` from noise.wgsl.
+// Hashing builds on `fosfora_ihash` from noise.wgsl.
 
 // u32 hash → [0, 1).
 fn ovl_hash01(x: u32) -> f32 {
-    return f32(phosphor_ihash(x)) * (1.0 / 4294967296.0);
+    return f32(fosfora_ihash(x)) * (1.0 / 4294967296.0);
 }
 
 // Combine an element index with a float seed (the effect's `seed` param) into
 // a stable hash in [0, 1). bitcast, not truncation: fractional seeds count.
 fn ovl_cell_hash(cell: u32, seed: f32) -> f32 {
-    return ovl_hash01(cell ^ phosphor_ihash(bitcast<u32>(seed)));
+    return ovl_hash01(cell ^ fosfora_ihash(bitcast<u32>(seed)));
 }
 
 // Per-element deterministic stagger: stable phase offset in [0, max_offset).
@@ -74,7 +74,7 @@ fn ovl_flood(uv: vec2f, seeds: array<vec2f, 8>, n: u32, phase: f32, jitter: f32,
     for (var i = 0u; i < min(n, 8u); i++) {
         dmin = min(dmin, distance(uv, seeds[i]));
     }
-    let j = (phosphor_hash2(uv * 41.0 + vec2f(seed * 0.013, seed * 0.007)) - 0.5) * jitter;
+    let j = (fosfora_hash2(uv * 41.0 + vec2f(seed * 0.013, seed * 0.007)) - 0.5) * jitter;
     // 1.6 ≳ the farthest a corner can sit from any seed in unit uv space.
     let front = phase * 1.6;
     return smoothstep(-0.02, 0.02, front - (dmin + j));
@@ -160,3 +160,7 @@ fn ovl_ticks_ring(uv: vec2f, center: vec2f, radius: f32, count: f32, len: f32, t
     let tick = 1.0 - smoothstep(w - sw, w + sw, min(slot, 1.0 - slot) * 2.0);
     return radial * tick;
 }
+
+// ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
+// compiling). Do not use in new code; may be removed in a future major release. ----
+

@@ -58,11 +58,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Color by radius + time (no angle — avoids atan2 seam)
     let pal_t = r * 2.0 + t * 0.08 + phase * 0.5;
-    var col = phosphor_audio_palette(pal_t, u.centroid, 0.0) * ring_sum * 0.7;
+    var col = fosfora_audio_palette(pal_t, u.centroid, 0.0) * ring_sum * 0.7;
 
     // Beat flash — small bright dot at center
     let center_flash = exp(-r * r * 80.0) * u.beat * 2.0;
-    col += phosphor_audio_palette(t * 0.1, u.centroid, 0.2) * center_flash;
+    col += fosfora_audio_palette(t * 0.1, u.centroid, 0.2) * center_flash;
 
     // Feedback blend: new frame on top, old trails fade
     let result = max(col, prev.rgb * decay);

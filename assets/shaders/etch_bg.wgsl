@@ -49,10 +49,10 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         // rather than cutting to grey.
         let tick = floor(u.time * 70.0);
         let jitter = vec2f(
-            phosphor_hash2(vec2f(tick, 1.0)) - 0.5,
-            phosphor_hash2(vec2f(tick, 7.0)) - 0.5,
+            fosfora_hash2(vec2f(tick, 1.0)) - 0.5,
+            fosfora_hash2(vec2f(tick, 7.0)) - 0.5,
         ) * 8.0;
-        let speckle = (phosphor_hash2(uv * 1400.0 + jitter) - 0.5) * 0.055;
+        let speckle = (fosfora_hash2(uv * 1400.0 + jitter) - 0.5) * 0.055;
         let sheen = (1.0 - uv.y) * 0.045;
         let powder = vec3f(0.615, 0.625, 0.600) + speckle + sheen;
         return vec4f(powder, 1.0);

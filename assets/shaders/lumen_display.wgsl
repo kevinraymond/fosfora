@@ -60,8 +60,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Palette: warmth tilt + a gentle key-locked hue when the key is confident.
     col *= mix(vec3f(0.82, 0.94, 1.18), vec3f(1.20, 1.0, 0.78), warmth);
-    let key_shift = (phosphor_key_hue(u.key_class, u.key_is_minor) - 0.5) * 0.2 * u.key_confidence;
-    col = phosphor_hue_shift(col, key_shift);
+    let key_shift = (fosfora_key_hue(u.key_class, u.key_is_minor) - 0.5) * 0.2 * u.key_confidence;
+    col = fosfora_hue_shift(col, key_shift);
 
     let luma = dot(col, vec3f(0.299, 0.587, 0.114));
     col = mix(vec3f(luma), col, 0.4 + 1.2 * saturation);

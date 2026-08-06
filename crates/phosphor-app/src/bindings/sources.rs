@@ -12,7 +12,7 @@ pub type SourceSnapshot = HashMap<String, (f32, SourceRaw)>;
 
 /// Circle-of-fifths key hue for the `audio.key_hue` derived source (Chromatica #1477).
 ///
-/// Mirrors `phosphor_key_hue()` in `assets/shaders/lib/palette.wgsl`: recover the integer
+/// Mirrors `fosfora_key_hue()` in `assets/shaders/lib/palette.wgsl`: recover the integer
 /// pitch class from `key_class` (= tonic/11), map it through the circle of fifths so adjacent
 /// keys sit a perfect fifth apart, nudge minor keys cooler. The scalar is then eased toward a
 /// neutral 0.5 as `key_confidence` falls, so an unsure key doesn't swing every bound layer's
@@ -85,7 +85,7 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
     );
 
     // Derived: key-locked hue on the circle of fifths (Chromatica #1477). Lets any layer's
-    // color param bind to the song's key. Mirrors phosphor_key_hue() in lib/palette.wgsl.
+    // color param bind to the song's key. Mirrors fosfora_key_hue() in lib/palette.wgsl.
     let kh = key_hue(
         features.key_class,
         features.key_is_minor,

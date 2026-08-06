@@ -50,8 +50,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev = feedback(uv);
 
     let shimmer_str = 0.001 + u.onset * 0.003;
-    let shimmer_x = phosphor_noise2(p * 8.0 + vec2f(u.time * 0.8, 0.0)) - 0.5;
-    let shimmer_y = phosphor_noise2(p * 8.0 + vec2f(0.0, u.time * 0.7)) - 0.5;
+    let shimmer_x = fosfora_noise2(p * 8.0 + vec2f(u.time * 0.8, 0.0)) - 0.5;
+    let shimmer_y = fosfora_noise2(p * 8.0 + vec2f(0.0, u.time * 0.7)) - 0.5;
     let shimmer_uv = uv + vec2f(shimmer_x, shimmer_y) * shimmer_str;
     let shimmer_prev = feedback(clamp(shimmer_uv, vec2f(0.001), vec2f(0.999)));
 

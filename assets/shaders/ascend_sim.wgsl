@@ -95,7 +95,7 @@ fn ascend_color(height_t: f32, energy: f32) -> vec3f {
     // Hue rises with altitude: the range warms low on the floor and cools as it
     // climbs, so height is readable even in a still frame.
     let hue_t = fract(param(4u) * 0.5 + 0.55 + height_t * 0.30);
-    var col = phosphor_audio_palette(hue_t, 0.5 + 0.5 * clamp(u.centroid, 0.0, 1.0), u.time * 0.015);
+    var col = fosfora_audio_palette(hue_t, 0.5 + 0.5 * clamp(u.centroid, 0.0, 1.0), u.time * 0.015);
     col = mix(col, vec3f(0.85, 0.93, 1.0), clamp(height_t, 0.0, 1.0) * 0.35);
     return col * (0.15 + 1.0 * param(5u) * (0.25 + 0.75 * clamp(energy, 0.0, 1.0)));
 }

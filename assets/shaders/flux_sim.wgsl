@@ -105,7 +105,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Gentle turbulence on top of flow
     // Spectral flux drives turbulence speed — more timbral change = more spatial agitation
     let flux_turb = 1.0 + u.flux * 2.0;
-    let turb = phosphor_noise2(p.pos_life.xy * 5.0 + vec2f(u.time * 0.3 * flux_turb, u.time * 0.25 * flux_turb));
+    let turb = fosfora_noise2(p.pos_life.xy * 5.0 + vec2f(u.time * 0.3 * flux_turb, u.time * 0.25 * flux_turb));
     let turb_angle = turb * 6.28318;
     vel += vec2f(cos(turb_angle), sin(turb_angle)) * 0.003 * flux_turb * dt;
 

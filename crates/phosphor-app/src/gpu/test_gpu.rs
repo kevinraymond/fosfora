@@ -18,8 +18,10 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// adapter's full limits, which is what every probe asked for individually.
 pub fn test_gpu() -> (Arc<Device>, Arc<Queue>) {
     GPU.get_or_init(|| {
+        // Vulkan-first (the #1922 shared-device fix targeted the NVIDIA/Vulkan dev box),
+        // plus Metal so the probes also run on macOS. Never both on one platform.
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: wgpu::Backends::VULKAN | wgpu::Backends::METAL,
             ..Default::default()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

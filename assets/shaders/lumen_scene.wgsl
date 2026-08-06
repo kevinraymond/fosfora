@@ -37,10 +37,10 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     for (var i = 0; i < MAX_FIRE; i = i + 1) {
         if (i >= n) { break; }
         let fi = f32(i);
-        let h1 = phosphor_hash2(vec2f(fi + 1.0, 1.3));
-        let h2 = phosphor_hash2(vec2f(fi + 3.0, 7.1));
-        let h3 = phosphor_hash2(vec2f(fi + 5.0, 3.7));
-        let h4 = phosphor_hash2(vec2f(fi + 9.0, 5.9));
+        let h1 = fosfora_hash2(vec2f(fi + 1.0, 1.3));
+        let h2 = fosfora_hash2(vec2f(fi + 3.0, 7.1));
+        let h3 = fosfora_hash2(vec2f(fi + 5.0, 3.7));
+        let h4 = fosfora_hash2(vec2f(fi + 9.0, 5.9));
 
         // Scattered orbit centre + a slow elliptical orbit; half the swarm counter-rotates.
         let center = vec2f((h1 - 0.5) * 0.85 * aspect, (h2 - 0.5) * 0.85);
@@ -52,7 +52,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         // Colour + brightness from the firefly's pitch class.
         let pc = u32(i) % 12u;
         let hue = f32(pc) / 12.0;
-        let col = phosphor_hue_shift(vec3f(1.0, 0.32, 0.12), hue);
+        let col = fosfora_hue_shift(vec3f(1.0, 0.32, 0.12), hue);
         let energy = 0.30 + 1.5 * chroma_val(pc);
 
         let d = p - pos;

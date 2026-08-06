@@ -16,8 +16,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Flux's signature smoke warp, now applied to the advection lookup.
     let warp_str = 0.002 + param(1u) * 0.003 + u.bass * 0.002;
-    let warp_x = phosphor_noise2(p * 3.0 + vec2f(u.time * 0.1, 0.0)) - 0.5;
-    let warp_y = phosphor_noise2(p * 3.0 + vec2f(0.0, u.time * 0.08)) - 0.5;
+    let warp_x = fosfora_noise2(p * 3.0 + vec2f(u.time * 0.1, 0.0)) - 0.5;
+    let warp_y = fosfora_noise2(p * 3.0 + vec2f(0.0, u.time * 0.08)) - 0.5;
     let warp = vec2f(warp_x, warp_y) * warp_str;
 
     // flow_stretch is a dry/wet for the whole Chronoflow transport: 0 = the

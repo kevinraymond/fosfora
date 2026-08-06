@@ -36,7 +36,7 @@ const AMPHORA_R: f32 = 0.22;
 // Fallback vessel: rounded capsule in aspect-corrected screen space.
 fn amphora_sd(pos: vec2f) -> f32 {
     let ps = pos * obstacle_aspect();
-    return phosphor_sd_segment2(ps, AMPHORA_A, AMPHORA_B) - AMPHORA_R;
+    return fosfora_sd_segment2(ps, AMPHORA_A, AMPHORA_B) - AMPHORA_R;
 }
 
 // Unified containment field: obstacle alpha when armed, else the amphora as a
@@ -70,7 +70,7 @@ fn vessel_inward(pos: vec2f) -> vec2f {
 fn vessel_color(heat: f32, released: f32) -> vec3f {
     // Key-locked anchor; centroid tilts warm/cool (tide_color idiom).
     let hue_t = fract(u.dominant_chroma * 0.15 + param(5u) * 0.4 + 0.08);
-    var col = phosphor_audio_palette(hue_t, 0.55 + 0.35 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
+    var col = fosfora_audio_palette(hue_t, 0.55 + 0.35 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
     if released > 0.5 {
         // Burst flash spending the stored charge: near-white at full heat,
         // cooling to a key-colored ember as heat decays in flight.

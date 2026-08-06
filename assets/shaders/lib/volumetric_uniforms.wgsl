@@ -49,3 +49,7 @@ struct VolUniforms {
     cam_y: f32,
     _pad0: f32,
 }
+
+// ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
+// compiling). Do not use in new code; may be removed in a future major release. ----
+

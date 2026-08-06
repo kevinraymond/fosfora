@@ -14,8 +14,8 @@ fn storm_worley(p: vec2f) -> f32 {
             let neighbor = vec2f(f32(x), f32(y));
             let cell = i + neighbor;
             let point = vec2f(
-                phosphor_hash2(cell),
-                phosphor_hash2(cell + vec2f(57.0, 113.0))
+                fosfora_hash2(cell),
+                fosfora_hash2(cell + vec2f(57.0, 113.0))
             );
             let diff = neighbor + point - f;
             res += exp(-k * dot(diff, diff));
@@ -44,20 +44,20 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // === DOMAIN WARP (organic billowing) ===
     let warp_str = turb_param * (1.0 + bass * 0.3);
     let wq = vec2f(
-        phosphor_fbm2(p * 2.0 + vec2f(0.0, flow_t * 0.25), 4, 0.5),
-        phosphor_fbm2(p * 2.0 + vec2f(5.2, flow_t * 0.3), 4, 0.5)
+        fosfora_fbm2(p * 2.0 + vec2f(0.0, flow_t * 0.25), 4, 0.5),
+        fosfora_fbm2(p * 2.0 + vec2f(5.2, flow_t * 0.3), 4, 0.5)
     );
     let qw = p + (wq - 0.5) * 0.3 * warp_str;
     let wr = vec2f(
-        phosphor_fbm2(qw * 2.0 + vec2f(1.7, flow_t * 0.15), 3, 0.5),
-        phosphor_fbm2(qw * 2.0 + vec2f(8.3, flow_t * 0.2), 3, 0.5)
+        fosfora_fbm2(qw * 2.0 + vec2f(1.7, flow_t * 0.15), 3, 0.5),
+        fosfora_fbm2(qw * 2.0 + vec2f(8.3, flow_t * 0.2), 3, 0.5)
     );
     let wp = p + (wr - 0.5) * 0.25 * warp_str;
 
     // === CLOUD DENSITY (FBM - Worley for puffy billow shapes) ===
     // Worley carves rounded voids at cell boundaries → clouds form as round blobs
     let time_off = vec2f(flow_t * 0.08);
-    let fbm_val = phosphor_fbm2(wp * 2.5 + time_off, 5, 0.55);
+    let fbm_val = fosfora_fbm2(wp * 2.5 + time_off, 5, 0.55);
     let worley_val = storm_worley(wp * 2.0 + time_off * 0.3);
     let density = fbm_val - worley_val * 0.22;
     let cloud_shape = smoothstep(0.18, 0.48, density);
@@ -72,7 +72,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     for (var i = 1; i <= 4; i++) {
         let sp = wp + light_dir * march_step * f32(i);
         // LOD: 3 octaves, no Worley (cheaper shadow approximation)
-        let sd = phosphor_fbm2(sp * 2.5 + time_off, 3, 0.55);
+        let sd = fosfora_fbm2(sp * 2.5 + time_off, 3, 0.55);
         let sample_shape = smoothstep(0.2, 0.5, sd);
         transmittance *= exp(-sample_shape * extinction_coeff * march_step);
     }
@@ -87,8 +87,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let flash_env = pow(1.0 - smoothstep(0.0, 0.3, u.beat_phase), 2.0);
     let bpm_hz = max(u.bpm * 300.0, 60.0) / 60.0;
     let beat_idx = floor(t * bpm_hz);
-    let flash_x = phosphor_hash2(vec2f(beat_idx, 0.0));
-    let flash_y = phosphor_hash2(vec2f(beat_idx, 1.0));
+    let flash_x = fosfora_hash2(vec2f(beat_idx, 0.0));
+    let flash_y = fosfora_hash2(vec2f(beat_idx, 1.0));
     let flash_center = (vec2f(flash_x, flash_y) - 0.5) * vec2f(aspect * 0.6, 0.4);
     let fd = length(p - flash_center);
     let flash_local = exp(-fd * fd / (flash_spread * 0.15)) * flash_env;

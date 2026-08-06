@@ -105,7 +105,7 @@ fn panorama_color(band_t: f32, energy: f32) -> vec3f {
     // Hue walks the spectrum, so the vertical axis is also a colour axis: bass
     // reads warm, air reads cool.
     let hue_t = fract(param(4u) * 0.5 + 0.58 + band_t * 0.42);
-    var col = phosphor_audio_palette(hue_t, 0.55 + 0.45 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
+    var col = fosfora_audio_palette(hue_t, 0.55 + 0.45 * clamp(u.centroid, 0.0, 1.0), u.time * 0.02);
     // Loud bands read hot and slightly desaturated toward white, so a bright
     // band is legible against a busy field without relying on bloom alone.
     col = mix(col, vec3f(1.0), clamp(energy, 0.0, 1.0) * 0.35);

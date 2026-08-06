@@ -31,3 +31,7 @@ fn chrono_keep_direct(keep60: f32, snap_p: f32) -> f32 {
 fn chrono_uv_vel(ndc_vel: vec2f) -> vec2f {
     return vec2f(ndc_vel.x, -ndc_vel.y) * 0.5;
 }
+
+// ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
+// compiling). Do not use in new code; may be removed in a future major release. ----
+

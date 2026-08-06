@@ -79,7 +79,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         let age = fract(cycle - at);
         let flash_w = clamp(flash * exp(-age * 24.0) + u.drop, 0.0, 1.0);
         let colour = mix(
-            phosphor_audio_palette(ovl_cell_hash(key + 577u, seed), u.centroid, u.bar_phase) * tint,
+            fosfora_audio_palette(ovl_cell_hash(key + 577u, seed), u.centroid, u.bar_phase) * tint,
             vec3f(1.0),
             flash_w,
         );

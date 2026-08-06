@@ -34,7 +34,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let ay = sin(ta);
 
     // Large-scale wall texture (trackable detail)
-    let wall_tex = phosphor_fbm2(vec2f(z * 0.8, ax * 1.5 + ay * 1.5), 4, 0.5);
+    let wall_tex = fosfora_fbm2(vec2f(z * 0.8, ax * 1.5 + ay * 1.5), 4, 0.5);
 
     // Wall panel edges (angular segments) — wrap angle to 0-1 first to avoid atan2 seam
     let angle_01 = fract(ta / 6.28318); // 0-1, seamless
@@ -53,9 +53,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let checker = fract((panel_id + ring_id) * 0.5) * 2.0; // 0 or 1
 
     // Panel base color — varies per panel for trackable asymmetry
-    let panel_hash = phosphor_hash2(vec2f(panel_id, ring_id));
+    let panel_hash = fosfora_hash2(vec2f(panel_id, ring_id));
     let pal_t = panel_hash * 0.5 + z * 0.04;
-    let panel_col = phosphor_audio_palette(pal_t, u.centroid, 0.0);
+    let panel_col = fosfora_audio_palette(pal_t, u.centroid, 0.0);
 
     // Depth shading: closer (edge) = brighter, farther (center) = darker
     let depth_shade = smoothstep(0.0, 0.6, r);
@@ -74,7 +74,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Vanishing point: subtle glow
     let vp_glow = exp(-r * r * 25.0) * 0.08;
-    col += phosphor_audio_palette(t * 0.05, u.centroid, 0.1) * vp_glow;
+    col += fosfora_audio_palette(t * 0.05, u.centroid, 0.1) * vp_glow;
 
     // Kick flash
     col += vec3f(exp(-r * r * 35.0) * u.kick * 0.4);

@@ -51,8 +51,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Colour: the backdrop's own (un-premultiplied) local colour, or the palette.
     let centre = input0(uv);
     let local_rgb = centre.rgb / max(centre.a, 1e-3);
-    let pal = phosphor_audio_palette(
-        phosphor_key_hue(u.key_class, u.key_is_minor),
+    let pal = fosfora_audio_palette(
+        fosfora_key_hue(u.key_class, u.key_is_minor),
         u.centroid,
         u.bar_phase,
     );

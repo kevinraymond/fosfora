@@ -86,8 +86,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let sl = clamp(sl_base + sl_build, 0.0, 0.6);
 
     // Alert tint on the drop: the chrome flips toward hot white-red.
-    let base_colour = phosphor_audio_palette(
-        phosphor_key_hue(u.key_class, u.key_is_minor),
+    let base_colour = fosfora_audio_palette(
+        fosfora_key_hue(u.key_class, u.key_is_minor),
         u.centroid,
         u.bar_phase,
     ) * tint;

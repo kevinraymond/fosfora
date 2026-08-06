@@ -581,11 +581,11 @@ fn mark_alive(idx: u32) {
 // --- FBM noise + curl noise ---
 
 // 2D curl noise: rotated gradient of scalar noise field.
-// Returns divergence-free velocity from phosphor_noise2 (auto-prepended).
+// Returns divergence-free velocity from fosfora_noise2 (auto-prepended).
 fn curl_noise_2d(p: vec2f) -> vec2f {
     let eps = 0.01;
-    let dx = phosphor_noise2(p + vec2f(eps, 0.0)) - phosphor_noise2(p - vec2f(eps, 0.0));
-    let dy = phosphor_noise2(p + vec2f(0.0, eps)) - phosphor_noise2(p - vec2f(0.0, eps));
+    let dx = fosfora_noise2(p + vec2f(eps, 0.0)) - fosfora_noise2(p - vec2f(eps, 0.0));
+    let dy = fosfora_noise2(p + vec2f(0.0, eps)) - fosfora_noise2(p - vec2f(0.0, eps));
     return vec2f(dy, -dx) / (2.0 * eps);
 }
 
@@ -611,8 +611,8 @@ fn fbm_turbulence_2d(p: vec2f, octaves: u32, lacunarity: f32, persistence: f32) 
     var amp = 1.0;
     var total_amp = 0.0;
     for (var i = 0u; i < octaves; i++) {
-        let n1 = abs(phosphor_noise2(p * freq)) * 2.0 - 1.0;
-        let n2 = abs(phosphor_noise2(p * freq + vec2f(31.7, 47.3))) * 2.0 - 1.0;
+        let n1 = abs(fosfora_noise2(p * freq)) * 2.0 - 1.0;
+        let n2 = abs(fosfora_noise2(p * freq + vec2f(31.7, 47.3))) * 2.0 - 1.0;
         result += vec2f(n1, n2) * amp;
         total_amp += amp;
         freq *= lacunarity;
@@ -768,3 +768,7 @@ fn read_gradient(idx: u32) -> u32 {
         default: { return v.w; }
     }
 }
+
+// ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
+// compiling). Do not use in new code; may be removed in a future major release. ----
+

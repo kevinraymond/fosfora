@@ -7,7 +7,7 @@
 // #1464) and is deferred.
 //
 // Technique (board #1476): integrate Gaussian beam energy along the waveform
-// polyline using the 2D segment SDF (phosphor_sd_segment2), weighting each
+// polyline using the 2D segment SDF (fosfora_sd_segment2), weighting each
 // segment by dwell time (inverse of its screen length) for the signature
 // bright-slow / dim-fast CRT look, rendered into a feedback pass whose slow
 // decay is the phosphor persistence.
@@ -82,8 +82,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
         // Trace both envelopes as glowing polylines, dwell-weighted by length.
         for (var i = 0; i < SAMPLES - 1; i++) {
-            let dt = phosphor_sd_segment2(p, top[i], top[i + 1]);
-            let db = phosphor_sd_segment2(p, bot[i], bot[i + 1]);
+            let dt = fosfora_sd_segment2(p, top[i], top[i + 1]);
+            let db = fosfora_sd_segment2(p, bot[i], bot[i + 1]);
             let lt = length(top[i + 1] - top[i]) + 1e-4;
             let lb = length(bot[i + 1] - bot[i]) + 1e-4;
             let dwell_t = 0.25 + 0.75 * spacing / lt;
@@ -118,7 +118,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Color: house warm->cool audio palette (centroid = colour temperature),
     // with a slow drift so persistence trails shade coherently.
     let col_t = 0.5 + 0.12 * sin(u.time * 0.15) + p.x * 0.05;
-    let beam_col = phosphor_audio_palette(col_t, u.centroid, 0.0);
+    let beam_col = fosfora_audio_palette(col_t, u.centroid, 0.0);
     let col = beam_col * energy * gain;
 
     // Feedback blend: fresh beam over decaying trails, clamped to avoid blowout.

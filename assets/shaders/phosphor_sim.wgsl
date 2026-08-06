@@ -166,7 +166,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     vel += vec2f(0.0, -0.004) * dt;
 
     // Turbulence
-    let turb = phosphor_noise2(p.pos_life.xy * 4.0 + vec2f(u.time * 0.4, u.time * 0.3));
+    let turb = fosfora_noise2(p.pos_life.xy * 4.0 + vec2f(u.time * 0.4, u.time * 0.3));
     let turb_angle = turb * 6.28318;
     vel += vec2f(cos(turb_angle), sin(turb_angle)) * u.turbulence * 0.001 * dt;
 

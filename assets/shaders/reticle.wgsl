@@ -71,7 +71,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         }
 
         let hue = ovl_cell_hash(k * 577u, seed);
-        let colour = phosphor_audio_palette(hue, u.centroid, u.bar_phase) * tint
+        let colour = fosfora_audio_palette(hue, u.centroid, u.bar_phase) * tint
             * (1.0 + lock_flash * u.beat + 0.5 * lock + 1.4 * u.drop);
 
         rgb = max(rgb, colour * chrome);
