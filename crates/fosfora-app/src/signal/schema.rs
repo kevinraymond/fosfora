@@ -40,8 +40,20 @@ pub const STATUS_DEVICE: &str = "/fosfora/v1/status/device"; // s
 pub const STATUS_HOP_HZ: &str = "/fosfora/v1/status/hop_hz"; // f
 pub const STATUS_TIER: &str = "/fosfora/v1/status/tier"; // s e.g. "heuristic-v1"
 
-// Reserved, documented, not emitted in v1: /fosfora/v1/chord, /fosfora/v1/link/*,
-// /fosfora/v1/stem/bass/onset, /fosfora/v1/stem/melody/onset.
+// Link session telemetry (cargo feature `link`; live loop only — never in
+// offline dumps, which must stay deterministic). On change + 1 Hz status tick.
+#[cfg(feature = "link")]
+pub const LINK_ENABLED: &str = "/fosfora/v1/link/enabled"; // i 0|1
+#[cfg(feature = "link")]
+pub const LINK_PEERS: &str = "/fosfora/v1/link/peers"; // i
+#[cfg(feature = "link")]
+pub const LINK_TEMPO: &str = "/fosfora/v1/link/tempo"; // f session BPM
+#[cfg(feature = "link")]
+pub const LINK_PLAYING: &str = "/fosfora/v1/link/playing"; // i 0|1 (start/stop sync)
+
+// Reserved, documented, not emitted in v1: /fosfora/v1/chord,
+// /fosfora/v1/stem/bass/onset, /fosfora/v1/stem/melody/onset. Further
+// /fosfora/v1/link/* additions stay additive-only.
 
 /// The opt-in raw feature bus: one address per `AudioFeatures` slot, named from
 /// the canonical table in `audio::schema` — zero mapping logic, stable by
@@ -90,6 +102,13 @@ mod tests {
         }
         assert_eq!(STATUS_DEVICE, "/fosfora/v1/status/device");
         assert_eq!(STATUS_HOP_HZ, "/fosfora/v1/status/hop_hz");
+        #[cfg(feature = "link")]
+        {
+            assert_eq!(LINK_ENABLED, "/fosfora/v1/link/enabled");
+            assert_eq!(LINK_PEERS, "/fosfora/v1/link/peers");
+            assert_eq!(LINK_TEMPO, "/fosfora/v1/link/tempo");
+            assert_eq!(LINK_PLAYING, "/fosfora/v1/link/playing");
+        }
     }
 
     /// The feat bus derives from the canonical feature table; its size and shape

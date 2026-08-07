@@ -108,6 +108,27 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
     let mut sink = UdpSink::new(&cfg.host, cfg.port);
     let mut em = SignalEmitter::new(emit_cfg(&cfg));
 
+    #[cfg(feature = "link")]
+    let mut link_sys = {
+        let lc = crate::link::LinkConfig::load();
+        if lc.enabled {
+            log::info!(
+                "signal: Ableton Link on — {:?} mode, quantum {}, start/stop sync {}",
+                lc.mode,
+                lc.quantum_clamped(),
+                if lc.start_stop_sync { "on" } else { "off" },
+            );
+        }
+        crate::link::LinkSystem::new(lc)
+    };
+    // Last emitted (peers, centi-BPM, playing) — the on-change dedup key.
+    #[cfg(feature = "link")]
+    let mut link_prev: Option<Option<(u64, i64, bool)>> = None;
+    #[cfg(feature = "link")]
+    let mut link_last_drive = Instant::now();
+    #[cfg(feature = "link")]
+    let mut link_last_bpm = 0.0f32;
+
     let running = Arc::new(AtomicBool::new(true));
     {
         let running = running.clone();
@@ -123,6 +144,10 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
             Ok(frame) => {
                 last_ts = frame.timestamp;
                 em.process_frame(&frame, &mut sink);
+                #[cfg(feature = "link")]
+                {
+                    link_last_bpm = frame.features.raw_bpm();
+                }
                 // Drain any backlog before blocking again: the bounded(4) channel
                 // gives ~43 ms of slack at 93.75 Hz, and the 1 Hz status/log tick
                 // below can eat most of that (measured: 2 dropped frames in a 58 s
@@ -130,6 +155,10 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
                 while let Ok(frame) = rx.try_recv() {
                     last_ts = frame.timestamp;
                     em.process_frame(&frame, &mut sink);
+                    #[cfg(feature = "link")]
+                    {
+                        link_last_bpm = frame.features.raw_bpm();
+                    }
                 }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
@@ -137,8 +166,23 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
                 return Err(anyhow!("audio thread exited unexpectedly"));
             }
         }
+        #[cfg(feature = "link")]
+        {
+            let dt = link_last_drive.elapsed().as_secs_f32();
+            link_last_drive = Instant::now();
+            let tick = link_sys.drive(audio.tempo(), link_last_bpm, dt);
+            // Emit on change; the 1 Hz status tick below re-broadcasts for
+            // late joiners (same policy as the on-change addresses).
+            let snap = tick.map(|t| (t.peers, (t.tempo * 100.0).round() as i64, t.playing));
+            if link_prev != Some(snap) {
+                emit_link(&mut sink, last_ts, link_sys.config.enabled, tick);
+                link_prev = Some(snap);
+            }
+        }
         if last_status.elapsed() >= Duration::from_secs(1) {
             last_status = Instant::now();
+            #[cfg(feature = "link")]
+            emit_link(&mut sink, last_ts, link_sys.config.enabled, link_sys.last_tick());
             em.emit_status(
                 last_ts,
                 started.elapsed().as_secs_f64(),
@@ -169,6 +213,31 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
     em.emit_offline(last_ts, &mut sink);
     log::info!("signal: clean shutdown ({} beats total)", em.totals().0);
     Ok(())
+}
+
+/// `/fosfora/v1/link/*` — live-loop telemetry only (SIGNAL.md). Deliberately
+/// not part of [`SignalEmitter`]: Link state is wall-clock network state, and
+/// the emitter's offline byte-determinism guarantee must hold, so
+/// `--signal-dump` never sees these addresses.
+#[cfg(feature = "link")]
+fn emit_link(
+    sink: &mut dyn sink::SignalSink,
+    ts: f64,
+    enabled: bool,
+    tick: Option<crate::link::LinkTick>,
+) {
+    use rosc::OscType;
+    use schema::{LINK_ENABLED, LINK_PEERS, LINK_PLAYING, LINK_TEMPO};
+    sink.emit(ts, LINK_ENABLED, &[OscType::Int(i32::from(enabled))]);
+    if let Some(t) = tick {
+        sink.emit(
+            ts,
+            LINK_PEERS,
+            &[OscType::Int(t.peers.min(i32::MAX as u64) as i32)],
+        );
+        sink.emit(ts, LINK_TEMPO, &[OscType::Float(t.tempo as f32)]);
+        sink.emit(ts, LINK_PLAYING, &[OscType::Int(i32::from(t.playing))]);
+    }
 }
 
 /// `--signal-dump <audio>`: the same emitter driven by the offline decoder,

@@ -275,7 +275,7 @@ impl LinkSystem {
         if !first && (session_tempo - self.last_follow_tempo).abs() < FOLLOW_MIN_DELTA_BPM {
             return; // Unchanged — leave any operator tweaks alone.
         }
-        let mut ctl = tempo_ctl.lock().unwrap();
+        let mut ctl = tempo_ctl.lock().unwrap_or_else(|e| e.into_inner());
         if first {
             self.saved_prior = Some(ctl.config);
         }
@@ -285,7 +285,7 @@ impl LinkSystem {
 
     fn restore_prior(&mut self, tempo_ctl: &Mutex<TempoControl>) {
         if let Some(saved) = self.saved_prior.take() {
-            tempo_ctl.lock().unwrap().config = saved;
+            tempo_ctl.lock().unwrap_or_else(|e| e.into_inner()).config = saved;
             self.last_follow_tempo = 0.0;
         }
     }
