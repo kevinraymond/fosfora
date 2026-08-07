@@ -10,8 +10,8 @@ Update this file at the end of every session (status board + session log).
 | Workstream | State |
 |---|---|
 | Phase 0 recon + docs | **done** (2026-08-06) |
-| R — phosphor→fosfora rename | **done** (2026-08-06) — branch `fosfora-rename`, ready to merge |
-| A — Signal v1 (headless broadcast) | **done** (2026-08-06) — branch `signal-v1` (based on `fosfora-rename`), ready to merge; live rig smoke test still to run |
+| R — phosphor→fosfora rename | **done + merged to main** (2026-08-06) |
+| A — Signal v1 (headless broadcast) | **done + merged to main** (2026-08-06), incl. live smoke test (A10) |
 | B — Ableton Link | later (small; slot in after A) |
 | C — Benchmark harness | later (validates A's detectors; JSONL contract already fixed by A) |
 | D — Perf tiers + governor | later (needs C's cost data; no bench infra exists yet) |
@@ -117,6 +117,7 @@ the performance."
   this machine, dual-prefix OSC, identifiers, 31 WGSL fns + aliases, crate/binary/CI,
   docs/bridges/packaging + stale-claim fixes; GPU shader gates now run on macOS via
   Metal). **A complete** on branch `signal-v1` (schema/sinks/section/phrase core +
-  emitter/config/CLI/dump/docs; `--signal-dump` verified deterministic). Remaining
-  before merge: A10 live smoke test; then merge `fosfora-rename` → main, `signal-v1`
-  → main. Next sessions: B (Link) and C (harness scores A8's JSONL).
+  emitter/config/CLI/dump/docs; `--signal-dump` verified deterministic). A10 live
+  smoke test passed (48 kHz mic, BPM locked ~119 vs true 120, 18,483 valid messages,
+  clean-shutdown goodbye on the wire) and caught a frame-drop issue → backlog drain
+  fix. Both branches merged to main. Next: B (Link), C (harness scores A8's JSONL).
