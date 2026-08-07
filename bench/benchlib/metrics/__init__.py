@@ -69,3 +69,7 @@ def score_all(dump: SignalDump, ann: Annotations) -> dict:
             continue
         out[name] = fn(dump, ann)
     return out
+
+
+# Imported for their @register side effects — order fixes REGISTRY order.
+from . import beats, tempo, key  # noqa: E402, F401

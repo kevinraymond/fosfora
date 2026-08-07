@@ -25,6 +25,9 @@ import numpy as np
 from benchlib import results
 from benchlib.annotations import Annotations, key_to_mir_eval, load_index
 from benchlib.dump import DumpError, SignalDump
+from benchlib.metrics import beats as m_beats
+from benchlib.metrics import key as m_key
+from benchlib.metrics import tempo as m_tempo
 from benchlib.runner import flags_digest, dump_args
 
 META = (
@@ -44,6 +47,29 @@ def write_dump(lines: list[str]) -> Path:
 
 def rec(ts: float, addr: str, args: list) -> str:
     return json.dumps({"ts": ts, "addr": addr, "args": args}, sort_keys=True)
+
+
+def counted(addr: str, times) -> list[str]:
+    """Event lines with the running-count arg the wire requires."""
+    return [rec(float(t), addr, [{"i": i + 1}]) for i, t in enumerate(times)]
+
+
+def series(addr: str, pairs) -> list[str]:
+    return [rec(float(t), addr, [{"f": float(v)}]) for t, v in pairs]
+
+
+def make_ann(**fields) -> Annotations:
+    raw = {
+        "schema": "fosfora-bench-annotation/v1",
+        "dataset": "test",
+        "track_id": "t1",
+        "audio": {"path": "t1.wav", "duration_s": fields.pop("duration_s", 60.0)},
+        **fields,
+    }
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "t1.json"
+        p.write_text(json.dumps(raw), encoding="utf-8")
+        return Annotations.load(p)
 
 
 class TestDumpParser(unittest.TestCase):
@@ -246,6 +272,107 @@ class TestResults(unittest.TestCase):
         self.assertEqual(summary["metrics"]["beat"]["n_tracks"], 2)
         self.assertAlmostEqual(summary["metrics"]["beat"]["f_measure"]["mean"], 0.8)
         self.assertNotIn("key", summary["metrics"])
+
+
+class TestBeatMetric(unittest.TestCase):
+    def test_identical_beats_score_one(self):
+        times = np.arange(0.5, 40.0, 0.5)
+        dump = SignalDump.load(write_dump([META, *counted("/fosfora/v1/beat", times)]))
+        ann = make_ann(beats=list(times))
+        block = m_beats.beat(dump, ann)
+        self.assertAlmostEqual(block["f_measure"], 1.0)
+        self.assertAlmostEqual(block["cmlt"], 1.0)
+        self.assertAlmostEqual(block["amlt"], 1.0)
+        self.assertAlmostEqual(block["f_measure_untrimmed"], 1.0)
+
+    def test_offset_beyond_window_scores_zero(self):
+        ref = np.arange(0.5, 40.0, 0.5)
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/beat", ref + 0.1)])
+        )
+        block = m_beats.beat(dump, make_ann(beats=list(ref)))
+        self.assertAlmostEqual(block["f_measure"], 0.0)
+
+    def test_offset_within_window_still_hits(self):
+        ref = np.arange(0.5, 40.0, 0.5)
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/beat", ref + 0.03)])
+        )
+        block = m_beats.beat(dump, make_ann(beats=list(ref)))
+        self.assertAlmostEqual(block["f_measure"], 1.0)
+
+    def test_trim_hides_coldstart_untrimmed_does_not(self):
+        ref = np.arange(0.5, 40.0, 0.5)
+        est = ref[ref >= 6.0]  # detector silent for the first 6 s
+        dump = SignalDump.load(write_dump([META, *counted("/fosfora/v1/beat", est)]))
+        block = m_beats.beat(dump, make_ann(beats=list(ref)))
+        self.assertGreater(block["f_measure"], 0.98)  # 5 s trim forgives most
+        self.assertLess(block["f_measure_untrimmed"], block["f_measure"])
+
+
+class TestTempoMetric(unittest.TestCase):
+    def dump_with_bpm(self, pairs):
+        return SignalDump.load(write_dump([META, *series("/fosfora/v1/bpm", pairs)]))
+
+    def test_converged_estimate_and_lock_time(self):
+        pairs = [(t, 100.0) for t in np.arange(0.0, 5.0, 0.5)] + [
+            (t, 120.0) for t in np.arange(5.0, 10.0, 0.5)
+        ]
+        block = m_tempo.tempo(self.dump_with_bpm(pairs), make_ann(tempo_bpm=120.0))
+        self.assertAlmostEqual(block["bpm_estimate"], 120.0)
+        self.assertTrue(block["acc1"])
+        self.assertAlmostEqual(block["lock_time_secs"], 5.0)
+        self.assertAlmostEqual(block["locked_fraction"], 0.5)
+
+    def test_octave_error_fails_acc1_passes_acc2(self):
+        pairs = [(t, 120.0) for t in np.arange(0.0, 10.0, 0.5)]
+        block = m_tempo.tempo(self.dump_with_bpm(pairs), make_ann(tempo_bpm=60.0))
+        self.assertFalse(block["acc1"])
+        self.assertTrue(block["acc2"])
+        self.assertIsNone(block["lock_time_secs"])
+        self.assertAlmostEqual(block["lock_time_acc2_secs"], 0.0)
+
+    def test_zero_samples_is_no_estimate(self):
+        block = m_tempo.tempo(
+            self.dump_with_bpm([(1.0, 0.0)]), make_ann(tempo_bpm=120.0)
+        )
+        self.assertTrue(block["no_estimate"])
+
+
+class TestKeyMetric(unittest.TestCase):
+    def test_duration_weighted_majority(self):
+        lines = [
+            META,
+            rec(1.0, "/fosfora/v1/key", [{"s": "Am"}, {"f": 0.4}]),
+            rec(3.0, "/fosfora/v1/key", [{"s": "C"}, {"f": 0.8}]),
+            # 1 Hz re-broadcast of the same key must not double-count duration
+            rec(4.0, "/fosfora/v1/key", [{"s": "C"}, {"f": 0.8}]),
+            rec(30.0, "/fosfora/v1/bpm", [{"f": 120.0}]),  # extends track end
+        ]
+        block = m_key.key(SignalDump.load(write_dump(lines)), make_ann(key="C major"))
+        self.assertEqual(block["estimated_key"], "C major")  # held 27 s vs Am 2 s
+        self.assertAlmostEqual(block["score"], 1.0)
+        self.assertAlmostEqual(block["first_emit_ts"], 1.0)
+        self.assertEqual(block["n_changes"], 2)
+
+    def test_relative_minor_scores_mirex_weight(self):
+        lines = [META, rec(1.0, "/fosfora/v1/key", [{"s": "Am"}, {"f": 0.5}])]
+        block = m_key.key(SignalDump.load(write_dump(lines)), make_ann(key="C major"))
+        self.assertAlmostEqual(block["score"], 0.3)
+
+    def test_silent_detector_is_no_estimate(self):
+        block = m_key.key(SignalDump.load(write_dump([META])), make_ann(key="C major"))
+        self.assertTrue(block["no_estimate"])
+
+    def test_aggregator_counts_silence_as_zero(self):
+        agg = m_key._aggregate(
+            [
+                {"score": 1.0, "first_emit_ts": 2.0},
+                {"no_estimate": True},
+            ]
+        )
+        self.assertAlmostEqual(agg["score"]["mean"], 0.5)
+        self.assertAlmostEqual(agg["no_estimate_rate"], 0.5)
 
 
 if __name__ == "__main__":
