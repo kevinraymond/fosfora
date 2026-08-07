@@ -134,6 +134,8 @@ pub struct App {
     pub morph_to: Option<crate::scene::cueing::MorphSnapshot>,
     // Shader editor
     pub shader_editor: ShaderEditorState,
+    // Trama node-graph system (M0) — graph, registry, executor, canvas state
+    pub trama: crate::trama::TramaSystem,
     // Binding matrix modal
     pub binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState,
     // Quit confirmation
@@ -455,6 +457,16 @@ impl App {
         );
         let recording = crate::recording::RecordingSystem::new();
 
+        let trama = crate::trama::TramaSystem::new(
+            &gpu.device,
+            gpu.pipeline_cache.as_ref(),
+            &effect_loader,
+            &placeholder,
+            &audio_textures,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
+
         #[cfg(feature = "profiling")]
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
@@ -514,6 +526,7 @@ impl App {
             link: crate::link::LinkSystem::new(crate::link::LinkConfig::load()),
             recording,
             shader_editor: ShaderEditorState::default(),
+            trama,
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
             quit_requested: false,
             status_error: None,
@@ -579,6 +592,7 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
+        self.trama.resize(&self.gpu.device, width, height);
         self.egui_overlay
             .resize(width, height, self.window.scale_factor() as f32);
         if let Some(ref mut tr) = self.transition_renderer {
@@ -1301,6 +1315,10 @@ impl App {
                 }
             }
         }
+
+        // The trama executor copies this frame's fully-mirrored template per
+        // node, the same shape as the per-layer preparation below.
+        self.trama.set_frame_uniforms(&self.uniforms);
 
         // Update each layer's uniforms from global template + per-layer params.
         // The body lives in gpu/frame_prep.rs so the headless renderer runs the
@@ -3263,6 +3281,7 @@ impl App {
         let (source, postprocess) = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
+            Some(&mut self.trama),
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -3292,6 +3311,7 @@ impl App {
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
+                Some(&mut self.trama),
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,

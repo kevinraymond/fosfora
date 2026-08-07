@@ -604,6 +604,9 @@ impl SceneRenderer {
         let (source, pp) = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
+            // Headless is Layers-only in M0; M3 (graph persistence) upgrades
+            // this to construct a TramaSystem for scene files that carry one.
+            None,
             &self.device,
             &self.queue,
             &mut encoder,

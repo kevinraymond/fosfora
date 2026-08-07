@@ -65,10 +65,21 @@ pub(crate) fn resolve_output_alpha(
 pub(crate) fn execute_and_composite<'a>(
     layer_stack: &'a LayerStack,
     compositor: &'a mut Compositor,
+    trama: Option<&'a mut crate::trama::TramaSystem>,
     device: &Device,
     queue: &Queue,
     encoder: &mut CommandEncoder,
 ) -> (&'a RenderTarget, PostProcessDef) {
+    // Trama replaces layer execution for the frame; postprocess keeps
+    // ownership of tonemapping downstream, and default postprocess is the
+    // correct "no layer is active" story (mirrors the enabled.is_empty() arm).
+    // Headless passes `None` in M0 and stays Layers-only.
+    if let Some(t) = trama {
+        if t.mode == crate::trama::RenderMode::Trama {
+            return (t.execute(device, queue, encoder), PostProcessDef::default());
+        }
+    }
+
     let enabled: Vec<usize> = layer_stack
         .layers
         .iter()
