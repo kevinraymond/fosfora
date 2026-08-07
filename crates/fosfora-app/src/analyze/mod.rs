@@ -325,4 +325,108 @@ mod tests {
         let seg = structure_offline::segment(&stream);
         assert!(seg.sections.is_empty());
     }
+
+    /// Q1 Stage 4 acceptance gate: a beat's emitted time must sit ON the hit
+    /// that caused it. Drives the REAL windowed analysis chain with a
+    /// synthesized kick track and requires the median beat-to-hit offset
+    /// inside ±25 ms.
+    ///
+    /// Pre-registered before the PLL scheduler lands, and ignored until then:
+    /// today it fails at +156 ms — NOT window latency (measured onset-detection
+    /// lag on these hits is +14 ms, and matched beats on the real-music dev
+    /// subset sit at −6.6 ms median), but the current scheduler re-anchoring
+    /// its grid onto late tail onsets of each hit, which is exactly what the
+    /// Stage 4 rewrite removes. A window-latency constant was measured
+    /// unnecessary and deliberately NOT added; this test would catch anyone
+    /// re-adding one (median would go ≈ −46 ms).
+    #[test]
+    #[ignore = "Q1 Stage 4 gate: enable with the PLL scheduler rewrite"]
+    fn beat_times_land_on_the_click() {
+        const SR: f32 = 44100.0;
+        const SECS: f64 = 30.0;
+        const PERIOD: f64 = 0.5; // 120 BPM
+
+        let frames = (SECS * SR as f64) as usize;
+        let mut interleaved = vec![0.0f32; frames * 2];
+        // Bed: quiet tone (keeps momentary loudness above the −55 LUFS silence
+        // gate) plus a deterministic noise floor. The floor matters: without it
+        // the flux MAD between hits collapses, the adaptive onset threshold
+        // bottoms out, and spurious tail onsets gate through continuously —
+        // a regime real music never presents.
+        let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+        for i in 0..frames {
+            let t = i as f64 / f64::from(SR);
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let noise = f64::from((rng >> 32) as u32) / (1u64 << 31) as f64 - 1.0;
+            let bed = (0.04 * (2.0 * std::f64::consts::PI * 110.0 * t).sin() + 0.02 * noise) as f32;
+            interleaved[i * 2] = bed;
+            interleaved[i * 2 + 1] = bed;
+        }
+        // Hits: kick-shaped — a 60 Hz decaying sine with a 5 ms attack ramp plus
+        // a short broadband transient, ~80 ms total. Sharp enough to have a
+        // definite instant, shaped enough to exercise the real flux dynamics.
+        let mut clicks = Vec::new();
+        let mut tc = 1.0f64;
+        while tc < SECS - 0.5 {
+            clicks.push(tc);
+            let c0 = (tc * f64::from(SR)) as usize;
+            let n_hit = (0.080 * f64::from(SR)) as usize;
+            let mut hrng: u64 = 0xDEAD_BEEF_CAFE_F00D;
+            for j in 0..n_hit {
+                let tj = j as f64 / f64::from(SR);
+                let attack = (tj / 0.005).min(1.0);
+                let body = (2.0 * std::f64::consts::PI * 60.0 * tj).sin() * (-tj / 0.030).exp();
+                hrng = hrng
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let tnoise = (f64::from((hrng >> 32) as u32) / (1u64 << 31) as f64 - 1.0)
+                    * (-tj / 0.008).exp();
+                let s = (attack * (0.8 * body + 0.5 * tnoise)) as f32;
+                interleaved[(c0 + j) * 2] += s;
+                interleaved[(c0 + j) * 2 + 1] += s;
+            }
+            tc += PERIOD;
+        }
+        let audio = decode::DecodedAudio {
+            interleaved,
+            sample_rate: SR,
+            source_channels: 2,
+        };
+
+        let mut beat_times = Vec::new();
+        drive_with(&audio, |_h, _ts, o| {
+            if o.beat_fired {
+                beat_times.push(o.frame.beat_time.expect("fired beat must carry beat_time"));
+            }
+        });
+
+        // Same convention as the bench: skip the acquisition head.
+        let mut offsets: Vec<f64> = beat_times
+            .iter()
+            .filter(|&&b| b > 5.0)
+            .map(|&b| {
+                clicks
+                    .iter()
+                    .map(|&c| b - c)
+                    .min_by(|a, b| a.abs().partial_cmp(&b.abs()).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        assert!(
+            offsets.len() >= 20,
+            "scheduler failed to fire on a clean click track: {} beats after 5 s",
+            offsets.len()
+        );
+        offsets.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = offsets[offsets.len() / 2];
+        assert!(
+            median.abs() <= 0.025,
+            "median beat-to-click offset {:+.1} ms over {} beats — beats must land \
+             on the click (|median| ≤ 25 ms)",
+            median * 1000.0,
+            offsets.len(),
+        );
+    }
 }
