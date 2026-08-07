@@ -11,7 +11,7 @@ Update this file at the end of every session (status board + session log).
 |---|---|
 | Phase 0 recon + docs | **done** (2026-08-06) |
 | R — phosphor→fosfora rename | **done** (2026-08-06) — branch `fosfora-rename`, ready to merge |
-| A — Signal v1 (headless broadcast) | **next** — branch `signal-v1`, based on `fosfora-rename` |
+| A — Signal v1 (headless broadcast) | **done** (2026-08-06) — branch `signal-v1` (based on `fosfora-rename`), ready to merge; live rig smoke test still to run |
 | B — Ableton Link | later (small; slot in after A) |
 | C — Benchmark harness | later (validates A's detectors; JSONL contract already fixed by A) |
 | D — Perf tiers + governor | later (needs C's cost data; no bench infra exists yet) |
@@ -48,16 +48,20 @@ entries.
 
 ## A — Signal v1 (branch `signal-v1`)
 
-- [ ] A1 `signal/schema.rs` — `/fosfora/v1/` pinned address table + `docs/SIGNAL.md` skeleton
-- [ ] A2 `signal/sink.rs` — `SignalSink` + Udp/Jsonl/Vec sinks + `OscSender::send_message`
-- [ ] A3 `signal/section.rs` — `SectionEstimator` trait + heuristic v1 (bars-dwell,
-      hysteresis, confidence; live path never emits `outro`)
-- [ ] A4 `signal/phrase.rs` — PhraseTracker (8/16/32 inference) + `/predict/drop`
-- [ ] A5 `signal/emitter.rs` — events per hop, sample-clock decimation, 1 Hz re-broadcast
-- [ ] A6 `signal/types.rs` — `SignalConfig` → `signal.json` (port 9010)
-- [ ] A7 `--signal` live loop (`frame_receiver`, `ctrlc`, status + pulse reconciliation)
-- [ ] A8 `--signal-dump` JSONL (feature `analyze`; deterministic; harness contract)
-- [ ] A9 `docs/SIGNAL.md` complete + CHANGELOG
+- [x] A1 `signal/schema.rs` — `/fosfora/v1/` pinned address table
+- [x] A2 `signal/sink.rs` — `SignalSink` + Udp/Jsonl/Vec sinks + `OscSender::send_message`
+- [x] A3 `signal/section.rs` — `SectionEstimator` trait + heuristic v1 (bars-dwell,
+      hysteresis, confidence; live path never emits `outro`) + `signal/clock.rs` BarClock
+- [x] A4 `signal/phrase.rs` — PhraseTracker (8/16/32 inference) + `/predict/drop`
+      (slope term tried and cut — decays mid-build; harness may earn it back in)
+- [x] A5 `signal/emitter.rs` — events per hop, sample-clock decimation, 1 Hz re-broadcast;
+      golden-signal test reconciles emitted counts against engine pulse counters
+- [x] A6 `signal/types.rs` — `SignalConfig` → `signal.json` (port 9010)
+- [x] A7 `--signal` live loop (`frame_receiver`, `ctrlc`, status + pulse reconciliation)
+- [x] A8 `--signal-dump` JSONL (feature `analyze`; verified byte-identical across runs)
+- [x] A9 `docs/SIGNAL.md` complete + CHANGELOG + README pointers
+- [ ] A10 live rig smoke test: `fosfora --signal` + `oscdump 9010` (or TouchDesigner)
+      with real music — verify beats/section/phrase/predict look right on the wire
 - Phase A2 (deferred): MIDI clock out + note/CC emit (`midi/output.rs` greenfield),
   windowed-mode Signal TX sharing, multiple OSC destinations.
 
@@ -101,4 +105,11 @@ the performance."
 
 - **2026-08-06** — Phase 0 recon (3 parallel explorations); corrections found: 83
   features not 74, no chord detection, no stem separation (HPSS only), OSC TX on render
-  thread loses pulses. Decisions locked (see above). Plans written for R + A. Started R.
+  thread loses pulses. Decisions locked (see above). Plans written for R + A.
+  **R complete** on branch `fosfora-rename` (6 commits: config auto-move ran live on
+  this machine, dual-prefix OSC, identifiers, 31 WGSL fns + aliases, crate/binary/CI,
+  docs/bridges/packaging + stale-claim fixes; GPU shader gates now run on macOS via
+  Metal). **A complete** on branch `signal-v1` (schema/sinks/section/phrase core +
+  emitter/config/CLI/dump/docs; `--signal-dump` verified deterministic). Remaining
+  before merge: A10 live smoke test; then merge `fosfora-rename` → main, `signal-v1`
+  → main. Next sessions: B (Link) and C (harness scores A8's JSONL).

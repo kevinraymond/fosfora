@@ -150,6 +150,10 @@ message to bind it, or address things directly:
 `oscsend localhost 9000 /fosfora/param/warp_intensity f 0.8`.
 [Full address list →](docs/QUICK-REFERENCE.md)
 
+**Signal** — run `fosfora --signal` and the analysis engine broadcasts beats, bars, sections,
+key, phrase position and drop prediction over OSC with no window at all — Fosfora as the
+analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md)
+
 **Your phone** — enable the web surface and open `http://<this-machine>:9002` on any phone or
 tablet on the same network. Multiple people can connect at once.
 
@@ -160,6 +164,7 @@ tablet on the same network. Multiple people can connect at once.
 | [**Gallery**](docs/GALLERY.md) | Every effect, in motion |
 | [**Tutorials**](docs/TUTORIALS.md) | The full guide — effects, audio, layers, scenes, MIDI, OSC |
 | [**Quick reference**](docs/QUICK-REFERENCE.md) | Shortcuts, blend modes, OSC addresses, config files |
+| [**Signal**](docs/SIGNAL.md) | The headless analysis broadcast — `--signal` and the `/fosfora/v1/` OSC schema |
 | [**Audio features**](docs/AUDIO-FEATURES.md) | All 83 features in plain English, and the research behind them |
 | [**Technical**](docs/TECHNICAL.md) | Architecture, shader authoring, the `.pfx` format |
 | [**Credits**](docs/CREDITS.md) | The libraries and papers this is built on |

@@ -15,6 +15,14 @@
   `phosphor_*` helpers keep working via deprecated aliases.
 
 ### Added
+- **Signal: headless analysis broadcast.** `fosfora --signal` runs the analysis engine
+  with no window or GPU and broadcasts what it hears over versioned OSC
+  (`/fosfora/v1/...`): beats and bars the hop they fire, BPM, key, build level,
+  section labels (intro/build/drop/break/steady), phrase position on an inferred
+  8/16/32-bar grid, and a `predict/drop` confidence that rises *before* the likely
+  drop — lead time for the operator, with a confidence value on every stateful
+  address. `--signal-dump song.flac` writes the same stream to a JSONL file,
+  deterministically. See docs/SIGNAL.md.
 - **Seamless beat-locked loop export.** `--render-loop <spec.loop.json>` renders any
   phase-locked overlay to a mathematically seamless loop file — HAP, HAP Alpha (real
   transparency for Resolume/VJ software), ProRes 4444, H.264/HEVC — with beat/bar motion
