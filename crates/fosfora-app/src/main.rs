@@ -3968,6 +3968,45 @@ impl ApplicationHandler for FosforaApp {
     }
 }
 
+/// Shared flag parsing for `--signal` / `--signal-dump` (house pattern: positional
+/// scans, exit 2 on usage errors at the call site).
+fn parse_signal_flags(args: &[String]) -> Result<signal::SignalCliArgs, String> {
+    let mut cli = signal::SignalCliArgs::default();
+    if let Some(i) = args.iter().position(|a| a == "--host") {
+        cli.host = Some(
+            args.get(i + 1)
+                .filter(|a| !a.starts_with("--"))
+                .ok_or("--host needs a value")?
+                .clone(),
+        );
+    }
+    if let Some(i) = args.iter().position(|a| a == "--port") {
+        cli.port = Some(
+            args.get(i + 1)
+                .and_then(|a| a.parse().ok())
+                .ok_or("--port needs a number (1-65535)")?,
+        );
+    }
+    if let Some(i) = args.iter().position(|a| a == "--rate") {
+        cli.rate = Some(
+            args.get(i + 1)
+                .and_then(|a| a.parse().ok())
+                .ok_or("--rate needs a number (Hz)")?,
+        );
+    }
+    cli.feat_bus = args.iter().any(|a| a == "--feat-bus");
+    cli.no_stems = args.iter().any(|a| a == "--no-stems");
+    if let Some(i) = args.iter().position(|a| a == "--device") {
+        cli.device = Some(
+            args.get(i + 1)
+                .filter(|a| !a.starts_with("--"))
+                .ok_or("--device needs a device name")?
+                .clone(),
+        );
+    }
+    Ok(cli)
+}
+
 fn load_window_icon() -> Option<Icon> {
     let png_bytes = include_bytes!("../../../assets/icon/icon_256x256.png");
     let img = image::load_from_memory(png_bytes).ok()?.into_rgba8();
@@ -3997,6 +4036,65 @@ fn main() -> Result<()> {
         {
             eprintln!("--audio-test is only supported on Linux (PulseAudio backend)");
             std::process::exit(1);
+        }
+    }
+
+    // --signal: headless analysis broadcast over /fosfora/v1 (no window, no GPU).
+    // Ships in release builds — the audio engine and OSC are unconditional deps.
+    // See docs/SIGNAL.md for the wire contract.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--signal") {
+            let cli = match parse_signal_flags(&args) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!(
+                        "--signal: {e}\nusage: --signal [--host H] [--port N] [--rate HZ] \
+                         [--feat-bus] [--no-stems] [--device NAME]"
+                    );
+                    std::process::exit(2);
+                }
+            };
+            match signal::run(&cli) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    eprintln!("--signal failed: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // --signal-dump <audio>: the same Signal emitter driven offline, JSONL out.
+    #[cfg(feature = "analyze")]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--signal-dump") {
+            let usage = "--signal-dump <audio> [--out <file.jsonl>|-] [--rate HZ] \
+                         [--feat-bus] [--no-stems]";
+            let Some(input) = args.get(i + 1).filter(|a| !a.starts_with("--")) else {
+                eprintln!("--signal-dump needs a path: {usage}");
+                std::process::exit(2);
+            };
+            let cli = match parse_signal_flags(&args) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("--signal-dump: {e}\nusage: {usage}");
+                    std::process::exit(2);
+                }
+            };
+            let out = args
+                .iter()
+                .position(|a| a == "--out")
+                .and_then(|j| args.get(j + 1))
+                .map(PathBuf::from);
+            match signal::run_dump(std::path::Path::new(input), out.as_deref(), &cli) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    eprintln!("--signal-dump failed: {e:#}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 

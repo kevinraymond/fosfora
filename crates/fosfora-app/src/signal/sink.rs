@@ -63,6 +63,7 @@ impl<W: std::io::Write> JsonlSink<W> {
         let _ = writeln!(self.w, "{line}");
     }
 
+    #[cfg(test)]
     pub fn into_inner(self) -> W {
         self.w
     }

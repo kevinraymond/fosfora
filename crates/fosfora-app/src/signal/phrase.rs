@@ -124,8 +124,9 @@ impl PhraseTracker {
             per_len.push((*len, best_a, s1, s2));
         }
         let global_best = per_len.iter().map(|t| t.2).fold(0.0, f64::max);
-        if global_best <= 0.0 {
-            // No evidence yet: EDM default, honest zero confidence.
+        if global_best < EVIDENCE_FLOOR {
+            // Not enough evidence to beat the prior: hold the EDM default at zero
+            // confidence rather than flapping the announced length on scraps.
             return (16, 0, 0.0);
         }
         // Longest length still carrying most of the best score wins the tie.

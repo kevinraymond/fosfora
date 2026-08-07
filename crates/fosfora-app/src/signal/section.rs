@@ -22,6 +22,9 @@ pub enum SectionLabel {
     Build,
     Drop,
     Break,
+    /// In the frozen schema string set, but never constructed by the live
+    /// heuristic (see module docs); offline labelers may use it.
+    #[allow(dead_code)]
     Outro,
     Steady,
 }

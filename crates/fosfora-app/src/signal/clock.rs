@@ -55,6 +55,7 @@ impl BarClock {
         self.bars
     }
 
+    #[cfg(test)]
     pub fn bars(&self) -> f64 {
         self.bars
     }

@@ -88,6 +88,38 @@ fn migrate_legacy_osc_sources(mut bindings: Vec<Binding>) -> Vec<Binding> {
     bindings
 }
 
+/// Unit tests must never touch the real config dir: `remove_binding` saves
+/// immediately, and a test bus starts empty — so a plain `cargo test` used
+/// to overwrite ~/.config/fosfora/global-bindings.json with an empty list.
+#[cfg(test)]
+fn save_to_path(_path: &PathBuf, _bindings: &[Binding]) {}
+
+#[cfg(not(test))]
+fn save_to_path(path: &PathBuf, bindings: &[Binding]) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::error!("Failed to create bindings dir: {e}");
+            return;
+        }
+    }
+
+    let file = BindingsFile {
+        version: 1,
+        bindings: bindings.to_vec(),
+    };
+
+    match serde_json::to_string_pretty(&file) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                log::error!("Failed to write bindings: {e}");
+            } else {
+                log::debug!("Saved {} bindings to {}", bindings.len(), path.display());
+            }
+        }
+        Err(e) => log::error!("Failed to serialize bindings: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,37 +167,5 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-/// Unit tests must never touch the real config dir: `remove_binding` saves
-/// immediately, and a test bus starts empty — so a plain `cargo test` used
-/// to overwrite ~/.config/fosfora/global-bindings.json with an empty list.
-#[cfg(test)]
-fn save_to_path(_path: &PathBuf, _bindings: &[Binding]) {}
-
-#[cfg(not(test))]
-fn save_to_path(path: &PathBuf, bindings: &[Binding]) {
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            log::error!("Failed to create bindings dir: {e}");
-            return;
-        }
-    }
-
-    let file = BindingsFile {
-        version: 1,
-        bindings: bindings.to_vec(),
-    };
-
-    match serde_json::to_string_pretty(&file) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(path, json) {
-                log::error!("Failed to write bindings: {e}");
-            } else {
-                log::debug!("Saved {} bindings to {}", bindings.len(), path.display());
-            }
-        }
-        Err(e) => log::error!("Failed to serialize bindings: {e}"),
     }
 }

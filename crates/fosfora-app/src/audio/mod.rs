@@ -880,6 +880,14 @@ impl AudioSystem {
         }
     }
 
+    /// The raw analysis-rate frame stream, for the headless Signal loop — which
+    /// must be the SOLE consumer: crossbeam receivers share one queue, so cloning
+    /// this while the render thread drains `latest_features` would split the
+    /// stream between them, each seeing only some frames.
+    pub fn frame_receiver(&self) -> Receiver<AudioFrame> {
+        self.receiver.clone()
+    }
+
     /// Newest delta-MFCC slopes (A16 `audio.dmfcc.N` binding sources, #1467), 13 coefficients.
     /// Call after `latest_features` each frame; zeros until the first frame arrives. Bindings-only
     /// (not part of the `AudioFeatures` ABI).
@@ -1334,6 +1342,19 @@ pub(crate) mod tests {
     /// are independent of read chunking (the FFT window is a shift register and the timestamp
     /// comes from a pure sample counter), so the result is deterministic.
     fn run_audio_thread_over(signal: &[f32], sample_rate: f32) -> Vec<AudioFeatures> {
+        run_audio_thread_collecting(signal, sample_rate)
+            .0
+            .into_iter()
+            .map(|f| f.features)
+            .collect()
+    }
+
+    /// The same harness, returning whole frames plus the final pulse counters — the
+    /// Signal emitter's end-to-end test reconciles its event totals against them.
+    pub(crate) fn run_audio_thread_collecting(
+        signal: &[f32],
+        sample_rate: f32,
+    ) -> (Vec<AudioFrame>, PulseCounts) {
         let ring = Arc::new(RingBuffer::new());
         let rec_ring = Arc::new(RingBuffer::new());
         let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::unbounded();
@@ -1389,7 +1410,12 @@ pub(crate) mod tests {
         shutdown.store(true, Ordering::Release);
         handle.join().expect("join golden audio thread");
 
-        rx.try_iter().map(|f| f.features).collect()
+        let counts = PulseCounts {
+            beat: beat_counter.load(Ordering::Relaxed),
+            downbeat: downbeat_counter.load(Ordering::Relaxed),
+            drop: drop_counter.load(Ordering::Relaxed),
+        };
+        (rx.try_iter().collect(), counts)
     }
 
     /// GOLDEN VECTOR — pins the exact output of the production per-hop analysis chain.
