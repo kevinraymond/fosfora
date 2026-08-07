@@ -142,8 +142,11 @@ fosfora --signal-dump song.flac --out - --rate 10
 
 Streams the file through the **same** emitter (same code path as live, proven
 bit-identical by the golden-vector test) and writes one JSON object per line instead
-of UDP. Deterministic: identical input produces byte-identical output. The record
-shapes are frozen — this is also the input format for the benchmark harness:
+of UDP. Deterministic: identical input produces byte-identical output. Dumps use
+built-in defaults plus the CLI flags and never read `signal.json` — a measurement
+must not depend on the operator's saved rig config (live `--signal` still honors
+it). The record shapes are frozen — this is also the input format for the benchmark
+harness:
 
 ```json
 {"meta":1,"schema":"/fosfora/v1","source":"song.flac","sample_rate":44100,"hop_hz":86.13,"tx_rate_hz":30}

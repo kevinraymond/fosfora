@@ -245,9 +245,60 @@ fn emit_link(
     }
 }
 
+/// Dump-mode config: built-in defaults plus CLI flags, never the operator's
+/// `signal.json`. Same policy as `--analyze` (a measurement tool must not
+/// inherit whatever tx_rate/feat_bus/stems the rig config happens to hold) —
+/// the benchmark harness scores these dumps, so two machines given the same
+/// file and flags must produce the same bytes.
+#[cfg(feature = "analyze")]
+fn dump_config(args: &SignalCliArgs) -> SignalConfig {
+    let mut cfg = SignalConfig::default();
+    if let Some(r) = args.rate {
+        cfg.tx_rate_hz = r;
+    }
+    if args.feat_bus {
+        cfg.feat_bus = true;
+    }
+    if args.no_stems {
+        cfg.stems = false;
+    }
+    cfg
+}
+
+/// Everything after decode: meta line, emitter loop, sample-clock status
+/// heartbeat. Split from [`run_dump`] so byte determinism is testable against
+/// an in-memory writer with no file I/O. Returns the emitter totals.
+#[cfg(feature = "analyze")]
+fn dump_stream<W: std::io::Write>(
+    audio: &crate::analyze::decode::DecodedAudio,
+    source: &str,
+    cfg: &SignalConfig,
+    jsonl: &mut sink::JsonlSink<W>,
+) -> (u32, u32, u32) {
+    let hop_hz = f64::from(audio.sample_rate) / ANALYSIS_HOP as f64;
+    jsonl.write_meta(
+        source,
+        audio.sample_rate as u32,
+        hop_hz,
+        cfg.tx_rate_hz.clamp(1, 86),
+    );
+
+    let mut em = SignalEmitter::new(emit_cfg(cfg));
+    let mut next_status = 0.0f64;
+    crate::analyze::drive_with(audio, |_hop, ts, out| {
+        em.process_frame(&out.frame, jsonl);
+        if ts >= next_status {
+            next_status = ts + 1.0;
+            em.emit_status(ts, ts, source, hop_hz, jsonl);
+        }
+    });
+    em.totals()
+}
+
 /// `--signal-dump <audio>`: the same emitter driven by the offline decoder,
 /// writing the JSONL event log instead of UDP. Deterministic — decimation and
-/// the status heartbeat both ride the sample clock.
+/// the status heartbeat both ride the sample clock, and the config is pinned
+/// to defaults + flags (see [`dump_config`]).
 #[cfg(feature = "analyze")]
 pub fn run_dump(
     input: &std::path::Path,
@@ -256,10 +307,9 @@ pub fn run_dump(
 ) -> Result<()> {
     use std::io::Write;
 
-    let cfg = merged_config(args);
+    let cfg = dump_config(args);
     let audio = crate::analyze::decode::decode_file(input)
         .with_context(|| format!("decode {}", input.display()))?;
-    let hop_hz = f64::from(audio.sample_rate) / ANALYSIS_HOP as f64;
     let source = input
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -281,26 +331,74 @@ pub fn run_dump(
             )
         }
     };
-    jsonl.write_meta(
-        &source,
-        audio.sample_rate as u32,
-        hop_hz,
-        cfg.tx_rate_hz.clamp(1, 86),
-    );
-
-    let mut em = SignalEmitter::new(emit_cfg(&cfg));
-    let mut next_status = 0.0f64;
-    crate::analyze::drive_with(&audio, |_hop, ts, out| {
-        em.process_frame(&out.frame, &mut jsonl);
-        if ts >= next_status {
-            next_status = ts + 1.0;
-            em.emit_status(ts, ts, &source, hop_hz, &mut jsonl);
-        }
-    });
-    let (beats, bars, drops) = em.totals();
+    let (beats, bars, drops) = dump_stream(&audio, &source, &cfg, &mut jsonl);
     eprintln!(
         "signal-dump: {} — {beats} beats, {bars} bars, {drops} drops -> {out_desc}",
         input.display()
     );
     Ok(())
+}
+
+#[cfg(all(test, feature = "analyze"))]
+mod tests {
+    use super::*;
+
+    fn golden_audio() -> crate::analyze::decode::DecodedAudio {
+        crate::analyze::decode::DecodedAudio {
+            interleaved: crate::audio::tests::golden_signal(44100.0, 8.0),
+            sample_rate: 44100.0,
+            source_channels: 2,
+        }
+    }
+
+    /// The harness contract: identical input + config → byte-identical JSONL.
+    /// 8 s crosses multiple status ticks, decimation boundaries and the 1 Hz
+    /// re-broadcast, so every timing mechanism in the emitter is exercised.
+    #[test]
+    fn dump_bytes_are_deterministic() {
+        let audio = golden_audio();
+        let cfg = SignalConfig::default();
+
+        let run = || {
+            let mut jsonl = sink::JsonlSink::new(Vec::new());
+            let totals = dump_stream(&audio, "golden.wav", &cfg, &mut jsonl);
+            (jsonl.into_inner(), totals)
+        };
+        let (a, totals_a) = run();
+        let (b, totals_b) = run();
+
+        assert_eq!(totals_a, totals_b);
+        assert!(totals_a.0 > 0, "golden signal must produce beats");
+        let text = String::from_utf8(a.clone()).unwrap();
+        let first = text.lines().next().unwrap();
+        assert!(
+            first.contains(r#""meta":1"#),
+            "first line is the meta record"
+        );
+        assert!(
+            text.contains("/fosfora/v1/beat"),
+            "dump must contain beat events"
+        );
+        assert_eq!(a, b, "dump bytes must be identical across runs");
+    }
+
+    /// Dump mode never reads signal.json: defaults + CLI flags only.
+    #[test]
+    fn dump_config_is_defaults_plus_flags() {
+        let d = dump_config(&SignalCliArgs::default());
+        let def = SignalConfig::default();
+        assert_eq!(d.tx_rate_hz, def.tx_rate_hz);
+        assert_eq!(d.feat_bus, def.feat_bus);
+        assert_eq!(d.stems, def.stems);
+
+        let d = dump_config(&SignalCliArgs {
+            rate: Some(10),
+            feat_bus: true,
+            no_stems: true,
+            ..Default::default()
+        });
+        assert_eq!(d.tx_rate_hz, 10);
+        assert!(d.feat_bus);
+        assert!(!d.stems);
+    }
 }
