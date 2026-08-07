@@ -60,8 +60,15 @@ entries.
 - [x] A7 `--signal` live loop (`frame_receiver`, `ctrlc`, status + pulse reconciliation)
 - [x] A8 `--signal-dump` JSONL (feature `analyze`; verified byte-identical across runs)
 - [x] A9 `docs/SIGNAL.md` complete + CHANGELOG + README pointers
-- [ ] A10 live rig smoke test: `fosfora --signal` + `oscdump 9010` (or TouchDesigner)
-      with real music — verify beats/section/phrase/predict look right on the wire
+- [x] A10 live rig smoke test (2026-08-06): `--signal` on the MacBook mic at 48 kHz
+      (93.75 Hz hop path), 120 BPM track through speakers → 18,483 valid OSC messages,
+      BPM locked 119.0-119.5, 189 contiguous beat counts, kick onsets detected
+      acoustically, continuous groups at exactly 30 Hz, clean-shutdown
+      `/status/online 0` observed. Reconciliation caught 2 engine-side frame drops
+      during status ticks → live loop now drains the channel backlog per wake.
+- Follow-up (minor): phrase/len announcements can flap between hypotheses while
+  confidence ≈ 0 (consumers should gate on it, but consider holding announcements
+  under a confidence floor); consider widening the frame channel from bounded(4).
 - Phase A2 (deferred): MIDI clock out + note/CC emit (`midi/output.rs` greenfield),
   windowed-mode Signal TX sharing, multiple OSC destinations.
 

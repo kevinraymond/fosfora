@@ -123,6 +123,14 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
             Ok(frame) => {
                 last_ts = frame.timestamp;
                 em.process_frame(&frame, &mut sink);
+                // Drain any backlog before blocking again: the bounded(4) channel
+                // gives ~43 ms of slack at 93.75 Hz, and the 1 Hz status/log tick
+                // below can eat most of that (measured: 2 dropped frames in a 58 s
+                // live run without this).
+                while let Ok(frame) = rx.try_recv() {
+                    last_ts = frame.timestamp;
+                    em.process_frame(&frame, &mut sink);
+                }
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
