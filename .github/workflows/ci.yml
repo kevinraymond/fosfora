@@ -103,6 +103,28 @@ jobs:
       - name: Test (output sinks)
         run: cargo test --features "ndi,v4l2,spout,syphon"
 
+  bench-fixture:
+    name: Bench fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      # Debug build on purpose: the dev profile runs deps at opt-level 2, so the
+      # DSP chain is near release speed without populating a separate lto=fat
+      # release cache. Same profile the test job already exercises.
+      - name: Build (analyze feature)
+        run: cargo build --features analyze
+      - name: Benchlib unit tests
+        run: bench/test_benchlib.py
+      - name: Fixture end-to-end (generate -> dump -> score -> assert floors)
+        run: |
+          bench/make_fixture.py -o bench/out/fixture
+          FOSFORA_BIN=target/debug/fosfora bench/check_fixture.py bench/out/fixture
+
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
