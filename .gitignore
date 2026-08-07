@@ -24,6 +24,7 @@ __pycache__/
 /TASKS.md
 /2026-08-06_SESSION_STARTER.md
 /2026-08-06_SESSION_STARTER_ADDENDUM.md
+/fosfora-trama-handoff.md
 
 # Benchmark harness (workstream C): datasets/ is fetched audio + annotations
 # (tens of GB, audio never enters the repo); out/ is regenerable dumps + scores.
