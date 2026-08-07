@@ -50,6 +50,9 @@ dark-light = "2"
 midir = "0.10"
 # OSC input/output
 rosc = "0.11"
+# Ableton Link session sync. Vendors Link (GPL-2.0-or-later) — see the `link`
+# feature comment and the deny.toml exception before adding it anywhere.
+rusty_link = { version = "0.4.9", optional = true }
 # Clean shutdown for the headless --signal loop (no SIGINT handling exists elsewhere)
 ctrlc = "3"
 # XDG config paths
@@ -174,6 +177,12 @@ spout = ["dep:spout2-rs"]
 syphon = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
 webcam = ["nokhwa"]
 depth = ["webcam", "ort", "flate2", "tar", "zip"]
+# Ableton Link tempo/phase sync (workstream B). rusty_link vendors Ableton
+# Link, which is GPL-2.0-or-later (proprietary licensing available from
+# Ableton) — a binary built with this feature is distributed under GPL terms.
+# Deliberately absent from default and from release.yml's feature list so
+# shipped binaries stay MIT/Apache; building with it yourself is fine.
+link = ["dep:rusty_link"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).
 analyze = ["symphonia"]
 profiling = ["wgpu-profiler"]

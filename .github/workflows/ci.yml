@@ -70,6 +70,8 @@ jobs:
         run: cargo clippy --all-targets --features depth -- -D warnings
       - name: Clippy (analyze feature)
         run: cargo clippy --all-targets --features analyze -- -D warnings
+      - name: Clippy (link feature)
+        run: cargo clippy --all-targets --features link -- -D warnings
       - name: Clippy (output sinks)
         run: cargo clippy --all-targets --features "ndi,v4l2,spout,syphon" -- -D warnings
 
@@ -96,6 +98,8 @@ jobs:
         run: cargo test --features depth
       - name: Test (analyze feature)
         run: cargo test --features analyze
+      - name: Test (link feature)
+        run: cargo test --features link
       - name: Test (output sinks)
         run: cargo test --features "ndi,v4l2,spout,syphon"
 

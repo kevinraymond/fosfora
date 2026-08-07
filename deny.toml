@@ -36,6 +36,14 @@ allow = [
     "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
+exceptions = [
+    # Ableton Link (vendored by rusty_link) is GPL-2.0-or-later, dual-licensed
+    # proprietary by Ableton. Only opt-in `--features link` builds link it —
+    # default and release builds don't (release.yml's feature list excludes
+    # it), so shipped binaries stay MIT/Apache. The all-features graph scan
+    # still walks the optional dep, hence this crate-scoped exception.
+    { name = "rusty_link", allow = ["GPL-2.0-or-later"] },
+]
 
 [[licenses.clarify]]
 name = "ring"

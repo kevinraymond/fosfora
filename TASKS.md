@@ -73,10 +73,34 @@ entries.
 - Phase A2 (deferred): MIDI clock out + note/CC emit (`midi/output.rs` greenfield),
   windowed-mode Signal TX sharing, multiple OSC destinations.
 
-## Backlog (one-liners; plan before starting)
+## B — Ableton Link (branch `ableton-link`)
 
-- **B Link**: evaluate `rusty_link`; input+output; feed beat-driven scene advance;
-  `/fosfora/v1/link/*` (address space reserved in SIGNAL.md). No Link dep exists today.
+Evaluation done (2026-08-06): `rusty_link` 0.4.9 (official abl_link C wrapper; cmake +
+bindgen build; macOS/Win/Pi tested). It is **GPL-2.0-or-later** (vendors Link) vs our
+MIT/Apache — so: non-default cargo feature `link`, deny.toml exception scoped to the
+crate, release binaries unchanged (release.yml lists features explicitly). Design:
+Follow mode pins the tempo prior (`TempoConfig{prior_center=session_tempo, narrow
+sigma, auto_prior=false}`, saved/restored) — soft lock, phase still from audio; Link
+beat crossings drive `Timeline::feed_beat` (extends the `app.rs:1060` ternary: Link >
+MIDI clock > internal); Lead mode commits detected BPM to the session (delta + rate +
+confidence gated). `link/*` OSC is status-tier from the live loop only — the emitter
+stays deterministic; `--signal-dump` never constructs Link.
+
+- [ ] B1 dep + feature `link` + deny.toml GPL exception + CI leg (clippy/test)
+- [ ] B2 `src/link/` — `LinkConfig` (`link.json`: enabled=false, mode follow|lead,
+      quantum 4.0, start_stop_sync=false) + `LinkSystem` (poll → LinkTick; follow =
+      prior pin w/ save/restore; lead = gated commit; pure helpers unit-tested)
+- [ ] B3 GUI: `App.link` cfg-gated; poll in `update()` beside MIDI clock; beat-source
+      ternary + transport follow edges; follow/lead wiring to `audio.tempo()`
+- [ ] B4 settings panel: `link_panel.rs` (NDI info/temp-id pattern): enable, mode,
+      quantum, start-stop sync, peers/session-BPM readout + drain block in main.rs
+- [ ] B5 headless `--signal`: LinkSystem in live loop; follow feeds TempoControl;
+      schema.rs `/fosfora/v1/link/{enabled,peers,tempo,playing}` + pin tests; emit
+      on-change + 1 Hz status tick
+- [ ] B6 docs: SIGNAL.md link section (un-reserve `link/*`), README build-flag note,
+      CHANGELOG entry, TASKS.md close-out
+
+## Backlog (one-liners; plan before starting)
 - **C harness**: extend `src/analyze/` (it's ~90% of the runner — `drive_with` +
   `HopStream`). Score A8's JSONL vs annotations: beat F/CMLt/AMLt, downbeat F, tempo
   Acc1/2, key MIREX, structure boundary F1 + pairwise, drop hit rate ±1 bar +
