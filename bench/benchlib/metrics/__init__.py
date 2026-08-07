@@ -44,17 +44,21 @@ CONVENTIONS = {
     },
 }
 
-# (name, tuple of Annotations attributes that must be non-None, scorer)
-REGISTRY: list[tuple[str, tuple[str, ...], object]] = []
+# (name, tuple of Annotations attributes that must be non-None, allow_empty, scorer)
+REGISTRY: list[tuple[str, tuple[str, ...], bool, object]] = []
 
 # {metric name: aggregator(list of per-track blocks) -> dict} — metrics whose
 # summary is not a plain mean (distributions, rates over pooled events).
 AGGREGATORS: dict[str, object] = {}
 
 
-def register(name: str, requires: tuple[str, ...]):
+def register(name: str, requires: tuple[str, ...], allow_empty: bool = False):
+    """allow_empty: run even when a required field is present but empty — the
+    drop metrics need zero-drop tracks as the negative class for false-alarm
+    rates; absence (None) always skips."""
+
     def deco(fn):
-        REGISTRY.append((name, requires, fn))
+        REGISTRY.append((name, requires, allow_empty, fn))
         return fn
 
     return deco
@@ -63,13 +67,17 @@ def register(name: str, requires: tuple[str, ...]):
 def score_all(dump: SignalDump, ann: Annotations) -> dict:
     """Run every metric whose annotation fields are present."""
     out = {}
-    for name, requires, fn in REGISTRY:
+    for name, requires, allow_empty, fn in REGISTRY:
         values = [getattr(ann, field, None) for field in requires]
-        if any(v is None or (hasattr(v, "__len__") and len(v) == 0) for v in values):
+        if any(v is None for v in values):
+            continue
+        if not allow_empty and any(
+            hasattr(v, "__len__") and len(v) == 0 for v in values
+        ):
             continue
         out[name] = fn(dump, ann)
     return out
 
 
 # Imported for their @register side effects — order fixes REGISTRY order.
-from . import beats, tempo, key  # noqa: E402, F401
+from . import beats, tempo, key, structure, drops, stems  # noqa: E402, F401

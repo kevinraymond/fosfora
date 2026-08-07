@@ -63,6 +63,7 @@ class Annotations:
         if raw.get("schema") != SCHEMA:
             raise AnnotationError(f"schema is {raw.get('schema')!r}, want {SCHEMA!r}")
         self.raw = raw
+        self.base_dir = Path(base_dir)
         self.dataset: str = raw.get("dataset", "?")
         self.track_id: str = raw["track_id"]
 

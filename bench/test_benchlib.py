@@ -26,7 +26,10 @@ from benchlib import results
 from benchlib.annotations import Annotations, key_to_mir_eval, load_index
 from benchlib.dump import DumpError, SignalDump
 from benchlib.metrics import beats as m_beats
+from benchlib.metrics import drops as m_drops
 from benchlib.metrics import key as m_key
+from benchlib.metrics import stems as m_stems
+from benchlib.metrics import structure as m_structure
 from benchlib.metrics import tempo as m_tempo
 from benchlib.runner import flags_digest, dump_args
 
@@ -373,6 +376,231 @@ class TestKeyMetric(unittest.TestCase):
         )
         self.assertAlmostEqual(agg["score"]["mean"], 0.5)
         self.assertAlmostEqual(agg["no_estimate_rate"], 0.5)
+
+
+def section_lines(changes: list[tuple[float, str]]) -> list[str]:
+    return [
+        rec(ts, "/fosfora/v1/section", [{"s": label}, {"f": 0.7}])
+        for ts, label in changes
+    ]
+
+
+class TestStructureMetric(unittest.TestCase):
+    REF = {"segments": [[0.0, 10.0, "A"], [10.0, 20.0, "B"], [20.0, 30.0, "C"]],
+           "duration_s": 30.0}
+
+    def test_matching_partition_different_vocabulary(self):
+        dump = SignalDump.load(
+            write_dump(
+                [META, *section_lines([(0.0116, "intro"), (10.0, "build"), (20.0, "steady")])]
+            )
+        )
+        block = m_structure.structure(dump, make_ann(**self.REF))
+        self.assertAlmostEqual(block["boundary_0_5s"]["f"], 1.0)
+        self.assertAlmostEqual(block["pairwise"]["f"], 1.0)
+
+    def test_lag_compensation_is_quarantined(self):
+        dump = SignalDump.load(
+            write_dump(
+                [META, *section_lines([(0.0116, "intro"), (13.0, "build"), (23.0, "steady")])]
+            )
+        )
+        block = m_structure.structure(dump, make_ann(**self.REF))
+        self.assertAlmostEqual(block["boundary_0_5s"]["f"], 0.0)
+        self.assertAlmostEqual(block["lag_compensated"]["boundary_0_5s"]["f"], 1.0)
+        self.assertEqual(block["lag_compensated"]["lag_secs"], 3.0)
+
+    def test_no_section_emissions(self):
+        block = m_structure.structure(
+            SignalDump.load(write_dump([META])), make_ann(**self.REF)
+        )
+        self.assertTrue(block["no_estimate"])
+
+
+def drop_ann(times: list[float], duration_s: float = 60.0) -> Annotations:
+    return make_ann(
+        duration_s=duration_s,
+        downbeats=list(np.arange(0.0, duration_s, 2.0)),
+        beats=list(np.arange(0.0, duration_s, 0.5)),
+        drops=[{"time": t, "source": "test", "kind": "direct"} for t in times],
+    )
+
+
+class TestDropMetric(unittest.TestCase):
+    def test_hit_within_one_bar(self):
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [20.5])])
+        )
+        block = m_drops.drop(dump, drop_ann([20.0]))
+        self.assertAlmostEqual(block["hit_rate"], 1.0)
+        self.assertEqual(block["n_false"], 0)
+
+    def test_miss_beyond_one_bar_and_false_drop(self):
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [23.0, 40.0])])
+        )
+        block = m_drops.drop(dump, drop_ann([20.0]))  # bar = 2 s, |23-20| > 2
+        self.assertAlmostEqual(block["hit_rate"], 0.0)
+        self.assertEqual(block["n_false"], 2)
+        self.assertAlmostEqual(block["false_drops_per_min"], 2.0)
+
+    def test_greedy_matching_is_one_to_one(self):
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [19.9, 20.1])])
+        )
+        block = m_drops.drop(dump, drop_ann([20.0]))
+        self.assertEqual(block["n_matched"], 1)
+        self.assertEqual(block["n_false"], 1)
+
+    def test_zero_drop_track_feeds_false_rate(self):
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [10.0])])
+        )
+        block = m_drops.drop(dump, drop_ann([]))
+        self.assertIsNone(block["hit_rate"])
+        self.assertEqual(block["n_false"], 1)
+
+    def test_pooled_aggregation(self):
+        agg = m_drops._aggregate_drop(
+            [
+                {"n_ref": 1, "n_est": 1, "n_matched": 1, "n_false": 0, "duration_min": 1.0},
+                {"n_ref": 3, "n_est": 2, "n_matched": 1, "n_false": 1, "duration_min": 1.0},
+            ]
+        )
+        self.assertAlmostEqual(agg["hit_rate"], 0.5)  # 2/4 pooled, not (1+1/3)/2
+        self.assertAlmostEqual(agg["false_drops_per_min"], 0.5)
+
+
+def predict_series(pairs) -> list[str]:
+    return series("/fosfora/v1/predict/drop", pairs)
+
+
+def grid(t0: float, t1: float, value, hz: float = 30.0):
+    ts = np.arange(t0, t1, 1.0 / hz)
+    fn = value if callable(value) else (lambda _t: value)
+    return [(t, fn(t)) for t in ts]
+
+
+class TestPredictDrop(unittest.TestCase):
+    def test_sustained_crossing_and_lead_time(self):
+        pairs = grid(0.0, 14.0, 0.0) + grid(14.0, 20.0, 0.9)
+        dump = SignalDump.load(write_dump([META, *predict_series(pairs)]))
+        block = m_drops.predict_drop(dump, drop_ann([20.0], duration_s=25.0))
+        for theta in ("0.5", "0.8"):
+            t = block["thresholds"][theta]
+            self.assertAlmostEqual(t["coverage"], 1.0)
+            # crossing at 14.0, beat 0.5 s -> (20 - 14) / 0.5 = 12 beats
+            self.assertAlmostEqual(t["median_lead_beats"], 12.0, places=3)
+        self.assertEqual(block["n_false_alarms"], 0)
+
+    def test_single_sample_blip_is_ignored(self):
+        pairs = grid(0.0, 5.0, 0.0) + [(5.0, 0.9)] + grid(5.033, 20.0, 0.0)
+        dump = SignalDump.load(write_dump([META, *predict_series(pairs)]))
+        block = m_drops.predict_drop(dump, drop_ann([], duration_s=20.0))
+        self.assertEqual(block["thresholds"]["0.5"]["n_crossings"], 0)
+
+    def test_hysteresis_prevents_refire_until_rearm(self):
+        pairs = (
+            grid(0.0, 10.0, 0.0)
+            + grid(10.0, 12.0, 0.9)
+            + grid(12.0, 13.0, 0.42)  # above 0.5 - 0.15: still disarmed
+            + grid(13.0, 15.0, 0.9)  # no second crossing
+            + grid(15.0, 16.0, 0.2)  # below 0.35: re-arms
+            + grid(16.0, 18.0, 0.9)  # second crossing
+        )
+        dump = SignalDump.load(write_dump([META, *predict_series(pairs)]))
+        block = m_drops.predict_drop(dump, drop_ann([], duration_s=18.0))
+        self.assertEqual(block["thresholds"]["0.5"]["n_crossings"], 2)
+
+    def test_decimation_gap_two_samples_qualify(self):
+        pairs = grid(0.0, 10.0, 0.0, hz=30.0) + [(10.0, 0.9), (10.2, 0.9), (11.0, 0.0)]
+        dump = SignalDump.load(write_dump([META, *predict_series(pairs)]))
+        block = m_drops.predict_drop(dump, drop_ann([], duration_s=11.0))
+        self.assertEqual(block["thresholds"]["0.5"]["n_crossings"], 1)
+
+    def test_false_alarm_when_no_drop_follows(self):
+        # Crossing at 2.0: no drop in (2, 18]. Crossing at 14: drop 20 in (14, 30].
+        pairs = (
+            grid(0.0, 2.0, 0.0)
+            + grid(2.0, 3.0, 0.9)
+            + grid(3.0, 14.0, 0.0)
+            + grid(14.0, 20.0, 0.9)
+        )
+        dump = SignalDump.load(write_dump([META, *predict_series(pairs)]))
+        block = m_drops.predict_drop(dump, drop_ann([20.0], duration_s=25.0))
+        self.assertEqual(block["n_false_alarms"], 1)
+
+    def test_lead_aggregation_pools_across_tracks(self):
+        blocks = [
+            {
+                "thresholds": {"0.5": {"lead_beats": [8.0, 12.0]}, "0.8": {"lead_beats": []}},
+                "n_ref": 2, "n_false_alarms": 1, "duration_min": 2.0,
+            },
+            {
+                "thresholds": {"0.5": {"lead_beats": [4.0]}, "0.8": {"lead_beats": [2.0]}},
+                "n_ref": 2, "n_false_alarms": 0, "duration_min": 2.0,
+            },
+        ]
+        agg = m_drops._aggregate_predict(blocks)
+        self.assertAlmostEqual(agg["0.5"]["lead_beats"]["median"], 8.0)
+        self.assertAlmostEqual(agg["0.5"]["coverage"], 0.75)
+        self.assertAlmostEqual(agg["0.8"]["coverage"], 0.25)
+        self.assertAlmostEqual(agg["false_alarms_per_min"], 0.25)
+
+
+class TestStemsMetric(unittest.TestCase):
+    def test_correlation_against_constructed_stems(self):
+        import soundfile as sf
+
+        sr, dur = 44100, 4.0
+        t = np.arange(int(sr * dur)) / sr
+        silent_first = t >= 1.0  # first second: every stem silent -> excluded
+
+        td = Path(tempfile.mkdtemp())
+        ramp = np.where(silent_first, (t - 1.0) / 3.0, 0.0)
+        sf.write(td / "drums.wav", ramp * np.sin(2 * np.pi * 220 * t), sr)
+        sf.write(
+            td / "bass.wav",
+            np.where(silent_first, 0.1, 0.0) * np.sin(2 * np.pi * 60 * t),
+            sr,
+        )
+        for name in ("vocals.wav", "other.wav"):
+            sf.write(
+                td / name,
+                np.where(silent_first, 0.2, 0.0) * np.sin(2 * np.pi * 440 * t),
+                sr,
+            )
+
+        raw = {
+            "schema": "fosfora-bench-annotation/v1",
+            "dataset": "test",
+            "track_id": "t1",
+            "audio": {"path": "t1.wav", "duration_s": dur},
+            "stems": {
+                "drums": "drums.wav",
+                "bass": "bass.wav",
+                "vocals": "vocals.wav",
+                "other": "other.wav",
+            },
+        }
+        (td / "t1.json").write_text(json.dumps(raw), encoding="utf-8")
+        ann = Annotations.load(td / "t1.json")
+
+        # Proxy streams on a 30 Hz grid: drums proxy follows the ramp.
+        lines = [META]
+        for name, fn in (
+            ("drums", lambda x: max(0.0, (x - 1.0) / 3.0)),
+            ("bass", lambda x: 0.5 if x >= 1.0 else 0.0),
+            ("melody", lambda x: 0.5 if x >= 1.0 else 0.0),
+        ):
+            lines += series(f"/fosfora/v1/stem/{name}/energy", grid(0.1, dur, fn))
+        block = m_stems.stems(SignalDump.load(write_dump(lines)), ann)
+
+        self.assertGreater(block["drums"]["spearman"], 0.99)
+        self.assertGreater(block["drums"]["pearson"], 0.8)
+        self.assertGreater(block["drums"]["n_excluded_silence"], 0)
+        # bass/melody proxies are constant on the kept frames: no correlation claim
+        self.assertIsNone(block["bass"]["pearson"])
 
 
 if __name__ == "__main__":
