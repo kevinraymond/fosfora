@@ -1103,70 +1103,120 @@ impl TempoEstimator {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3: Beat scheduler (prediction + confirmation)
+// Stage 3: Beat scheduler — a phase-locked grid oscillator (Q1 rewrite)
 // ---------------------------------------------------------------------------
+//
+// Beats FIRE at predicted grid instants; onsets are evidence that corrects the
+// grid's phase, never fire triggers (with one bounded exception while the
+// tempo is still unlocked). This inverts the old state machine, whose "a beat
+// is an event that happens at the hop where we decide it" assumption produced
+// every measured defect at once: firing on every gated onset below the
+// confidence gate (n_est/n_ref 1.5-1.7×), a 0.9×period backup free-running
+// 11% fast, missed beats fired 80-92 ms late at the hop that noticed them, and
+// the grid re-anchored onto whichever late tail onset happened to confirm.
+//
+// Modes, keyed off the estimator's hysteretic lock (Q3):
+// - LOCKED, supported (freerun): fire ON the grid; `beat_time` is the grid
+//   instant itself, so n_est/n_ref ≈ 1 and timing error ≈ phase-correction
+//   residual by construction. In-window onsets apply a two-gain PI correction.
+// - LOCKED, unsupported (muted freerun): after enough unsupported beats the
+//   grid keeps advancing silently — a breakdown mutes the strobe instead of
+//   spraying it — and the first supported beats resume emission on-grid with
+//   no re-acquisition.
+// - UNLOCKED with a provisional period (acquisition): fire only where onset
+//   and grid agree, at the onset's own time, at most one per 0.6 period.
+// - NO TEMPO (bootstrap, or sustained silence): no beats. /onset and the kick
+//   stem events keep carrying transient reactivity (user-approved behavior).
 
-#[derive(PartialEq)]
-enum BeatState {
-    Waiting,
-    Expecting,
-    Confirmed,
-    Missed,
-}
+/// Onset-to-grid window: ±10% of the period, capped at the bench tolerance.
+const PLL_WINDOW_PERIOD_FRAC: f64 = 0.10;
+const PLL_WINDOW_MAX_SECS: f64 = 0.07;
+/// Bid capture reach on BOTH sides, as a period fraction. Wide, so a
+/// desynced grid can still see the true beat (a tight late window measured a
+/// self-sustaining −60 ms dead-zone desync on the fixture: real evidence
+/// couldn't bid, and 0.005-strength flux ripples kept the grid early).
+const PLL_CAPTURE_PERIOD_FRAC: f64 = 0.25;
+/// Bid score = √strength × exp(−½(e/σ)²). The root softens loudness wars
+/// (a build's crescendo roll is genuinely louder just BEFORE the bar line
+/// than on it); the proximity kernel makes far bids need a real strength
+/// advantage. σ is in seconds of grid error.
+const PLL_BID_PROXIMITY_SIGMA_SECS: f64 = 0.06;
+/// Bids below this onset strength are flux ripples, not evidence.
+const PLL_MIN_BID_STRENGTH: f32 = 0.05;
+
+/// Two-gain PI correction (Ellis-style): phase pulls the upcoming beat, the
+/// trim nudges the grid rate between tempo updates.
+const PLL_PHASE_GAIN: f64 = 0.3;
+const PLL_TRIM_GAIN: f64 = 0.02;
+const PLL_TRIM_CLAMP: f64 = 0.02;
+/// Per-beat trim relaxation. The trim exists to track a sustained rate
+/// mismatch; without decay, the corrections of a one-off phase convergence
+/// wind it to the clamp and the grid then free-runs off-rate faster than the
+/// tight late window can recapture (measured: −20 ms/beat runaway).
+const PLL_TRIM_DECAY_SUPPORTED: f64 = 0.85;
+const PLL_TRIM_DECAY_UNSUPPORTED: f64 = 0.5;
+/// Per-beat support EMA and the mute hysteresis it drives.
+const PLL_SUPPORT_ALPHA: f64 = 0.25;
+const PLL_MUTE_ENTER_SUPPORT: f64 = 0.2;
+const PLL_MUTE_EXIT_SUPPORT: f64 = 0.4;
+/// Acquisition-mode minimum spacing, in periods.
+const PLL_ACQ_MIN_SPACING: f64 = 0.6;
+/// Unlocked and nothing fired for this many periods → the anchor is stale;
+/// re-anchor on the next onset instead of letting a dead grid veto agreement.
+const PLL_ACQ_STALE_PERIODS: f64 = 4.0;
 
 struct BeatScheduler {
-    /// Q3: the estimator's hysteretic lock state, carried alongside the raw
-    /// confidence. The Stage 4 PLL keys its modes off this; until then it is
-    /// telemetry pinned by `scheduler_receives_lock_state`.
+    /// Q3: the estimator's hysteretic lock state — selects the firing mode.
     tempo_locked: bool,
-    beat_window: f64,
-    refractory: f64,
-    min_confidence: f64,
-    phase_correction: f64,
-    max_misses: u32,
-    beat_timeout: f64,
-
-    state: BeatState,
-    last_beat_time: f64,
-    next_predicted: f64,
-    phase: f64,
-
     bpm: f64,
     period: f64,
     tempo_confidence: f64,
 
-    beat_strength: f64,
-    tracking_confidence: f64,
-    consecutive_misses: u32,
+    /// The next grid instant on the sample clock; 0.0 = no grid anchored.
+    next_beat_time: f64,
+    /// Multiplicative grid-rate trim from the PI loop, clamped ±[`PLL_TRIM_CLAMP`].
+    period_trim: f64,
+    /// Time of the most recently fired (or silently passed) grid beat.
+    last_beat_time: f64,
+    /// Time of the last EMITTED beat (grid or acquisition).
     last_fired_time: f64,
-    stored_period: f64,
+    /// Was any in-window onset seen since the last grid beat?
+    onset_support_pending: bool,
+    /// Best EARLY-side bid (score, error) for the upcoming grid instant —
+    /// held until the fire so a weak far hit cannot pre-empt the actual
+    /// beat-carrying hit behind it.
+    slot_early_best: Option<(f64, f64)>,
+    /// The just-fired slot, still collecting late-side bids until its
+    /// deadline: (deadline, best bid so far from either side).
+    closing_slot: Option<(f64, Option<(f64, f64)>)>,
+    /// EMA of per-beat onset support; drives mute hysteresis.
+    beat_support: f64,
+    /// Running count of grid instants passed — INCLUDING muted ones — so the
+    /// downbeat tracker's bar rotation stays phase-coherent through mutes and
+    /// unlocked gaps (counting only fired beats slips the modulo every gap).
+    grid_beat_count: u64,
+    muted: bool,
+    beat_strength: f64,
 }
 
 impl BeatScheduler {
     fn new() -> Self {
         Self {
             tempo_locked: false,
-            beat_window: 0.08,
-            refractory: 0.15,
-            min_confidence: 0.4,
-            phase_correction: 0.3,
-            max_misses: 4,
-            beat_timeout: 3.0,
-
-            state: BeatState::Waiting,
-            last_beat_time: 0.0,
-            next_predicted: 0.0,
-            phase: 0.0,
-
             bpm: 0.0,
             period: 0.0,
             tempo_confidence: 0.0,
-
-            beat_strength: 0.0,
-            tracking_confidence: 0.0,
-            consecutive_misses: 0,
+            next_beat_time: 0.0,
+            period_trim: 0.0,
+            last_beat_time: 0.0,
             last_fired_time: 0.0,
-            stored_period: 0.0,
+            onset_support_pending: false,
+            slot_early_best: None,
+            closing_slot: None,
+            beat_support: 0.0,
+            grid_beat_count: 0,
+            muted: false,
+            beat_strength: 0.0,
         }
     }
 
@@ -1175,177 +1225,210 @@ impl BeatScheduler {
         self.bpm = bpm;
         self.period = period;
         self.tempo_confidence = confidence;
-        if confidence >= self.min_confidence && period > 0.0 {
-            self.stored_period = period;
-        }
     }
 
-    /// Main beat decision. Returns (is_beat, beat_phase, smoothed_bpm).
+    fn grid_period(&self) -> f64 {
+        self.period * (1.0 + self.period_trim)
+    }
+
+    /// Two-gain PI step: e > 0 means the music runs late vs the grid.
+    fn apply_phase_correction(&mut self, e: f64, period: f64) {
+        self.next_beat_time += PLL_PHASE_GAIN * e;
+        self.period_trim =
+            (self.period_trim + PLL_TRIM_GAIN * e / period).clamp(-PLL_TRIM_CLAMP, PLL_TRIM_CLAMP);
+    }
+
+    fn window(&self) -> f64 {
+        (self.grid_period() * PLL_WINDOW_PERIOD_FRAC).min(PLL_WINDOW_MAX_SECS)
+    }
+
+    /// Main beat decision. Returns (is_beat, beat_time, beat_phase, bpm) —
+    /// `beat_time` is the beat's true instant, at or before `timestamp`.
     fn process(
         &mut self,
         is_onset: bool,
         onset_strength: f32,
         timestamp: f64,
         is_silence: bool,
-    ) -> (bool, f64, f64) {
-        let time_since_beat = if self.last_beat_time > 0.0 {
-            timestamp - self.last_beat_time
-        } else {
-            f64::INFINITY
-        };
-        let in_refractory = time_since_beat < self.refractory;
-
-        if is_onset {
-            self.beat_strength = onset_strength as f64;
-        }
-
-        // Update phase and count missed predicted beats
-        let missed = if self.period > 0.0 {
-            self.update_phase(timestamp)
-        } else {
-            0
-        };
-
-        // Beat timeout recovery
-        let time_since_fired = if self.last_fired_time > 0.0 {
-            timestamp - self.last_fired_time
-        } else {
-            0.0
-        };
-        if time_since_fired > self.beat_timeout && self.last_fired_time > 0.0 {
-            self.tracking_confidence *= 0.3;
-            self.consecutive_misses = 0;
-            self.state = BeatState::Waiting;
-            self.last_fired_time = timestamp;
-        }
-
-        // Silence → pause beat detection
+    ) -> (bool, f64, f64, f64) {
+        // Sustained silence: mute and drop the grid — re-entry re-acquires
+        // fresh instead of trusting a phase that free-ran through the gap.
         if is_silence {
-            if self.state != BeatState::Waiting {
-                self.state = BeatState::Waiting;
-                self.consecutive_misses = 0;
-            }
-            return (false, 0.0, self.bpm);
+            self.next_beat_time = 0.0;
+            self.period_trim = 0.0;
+            self.beat_support = 0.0;
+            self.muted = false;
+            self.slot_early_best = None;
+            self.closing_slot = None;
+            return (false, 0.0, 0.0, self.bpm);
         }
 
-        // Determine if we should fire a beat
-        let is_beat = if missed > 0 && self.tempo_confidence >= self.min_confidence {
-            self.beat_strength = 0.5;
-            self.state = BeatState::Missed;
-            true
-        } else if self.tempo_confidence < self.min_confidence || self.period == 0.0 {
-            // Low confidence: onset-only mode
-            let mut beat = self.onset_only(is_onset, in_refractory);
+        if self.period <= 0.0 {
+            // Bootstrap: no tempo hypothesis yet — no grid, no beats.
+            return (false, 0.0, 0.0, self.bpm);
+        }
+        let period = self.grid_period();
 
-            // Backup prediction
-            if !beat && self.stored_period > 0.0 && self.last_fired_time > 0.0 {
-                if time_since_fired >= self.stored_period * 0.9 && !in_refractory {
-                    beat = true;
+        // No grid anchored yet: anchor on the first gated onset. Locked or
+        // not, the first beat needs an event to phase against.
+        if self.next_beat_time == 0.0 {
+            if is_onset {
+                self.beat_strength = f64::from(onset_strength);
+                self.last_beat_time = timestamp;
+                self.last_fired_time = timestamp;
+                self.next_beat_time = timestamp + period;
+                self.onset_support_pending = false;
+                self.grid_beat_count += 1;
+                return (true, timestamp, 0.0, self.bpm);
+            }
+            return (false, 0.0, 0.0, self.bpm);
+        }
+
+        // Onset evidence: measure against the NEAREST grid instant (the
+        // upcoming one or the one just passed) and BID to correct that slot.
+        // One correction per slot, decided at the slot's deadline by the best
+        // bid. Bid score = √strength × proximity — three measured failure
+        // modes shaped this: first-captured-wins let roll hits drag the grid
+        // fast; strength-alone let a build's crescendo (louder just before
+        // the bar line than on it) walk the grid early; and a tight late
+        // window created a dead zone where a desynced grid could no longer
+        // see the true beat at all. SUPPORT (mute hysteresis) stays tight:
+        // only onsets inside the ±window count as "this beat had backing".
+        if is_onset && onset_strength >= PLL_MIN_BID_STRENGTH {
+            let prev = self.next_beat_time - period;
+            let e_next = timestamp - self.next_beat_time;
+            let e_prev = timestamp - prev;
+            let e = if e_prev.abs() < e_next.abs() {
+                e_prev
+            } else {
+                e_next
+            };
+            let capture = period * PLL_CAPTURE_PERIOD_FRAC;
+            if e.abs() <= capture {
+                if e.abs() <= self.window() {
+                    self.beat_strength = f64::from(onset_strength);
+                    self.onset_support_pending = true;
+                }
+                let prox = (-0.5 * (e / PLL_BID_PROXIMITY_SIGMA_SECS).powi(2)).exp();
+                let score = f64::from(onset_strength).sqrt() * prox;
+                if e == e_next && e < 0.0 {
+                    // Early side of the upcoming instant: hold until its fire.
+                    if self.slot_early_best.is_none_or(|(b, _)| score > b) {
+                        self.slot_early_best = Some((score, e));
+                    }
+                } else if e == e_prev && e >= 0.0 {
+                    // Late side of the just-fired slot: bid into its window.
+                    if let Some((_, best)) = &mut self.closing_slot {
+                        if best.is_none_or(|(b, _)| score > b) {
+                            *best = Some((score, e));
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut fired = false;
+        let mut beat_time = 0.0;
+
+        if self.tempo_locked {
+            // Settle an expired decision window: its closest attack corrects
+            // the grid now, in time to shape the very next instant.
+            if let Some((deadline, best)) = self.closing_slot {
+                if timestamp > deadline {
+                    if let Some((_, e)) = best {
+                        self.apply_phase_correction(e, period);
+                    }
+                    self.closing_slot = None;
+                }
+            }
+            // Grid instants due this hop fire (or pass silently while muted).
+            if self.next_beat_time <= timestamp {
+                let supported = self.onset_support_pending;
+                self.beat_support +=
+                    PLL_SUPPORT_ALPHA * (f64::from(supported as u8) - self.beat_support);
+                self.onset_support_pending = false;
+                self.period_trim *= if supported {
+                    PLL_TRIM_DECAY_SUPPORTED
+                } else {
+                    PLL_TRIM_DECAY_UNSUPPORTED
+                };
+                // Open the fired slot's decision window: early-side evidence
+                // already collected bids against late-side attacks still to
+                // come; the closest wins when the window expires. (A pending
+                // unresolved slot is settled first — periods are ≫ windows, so
+                // it has necessarily expired by now.)
+                if let Some((_, Some((_, e)))) = self.closing_slot.take() {
+                    self.apply_phase_correction(e, period);
+                }
+                self.closing_slot = Some((
+                    self.next_beat_time + period * PLL_CAPTURE_PERIOD_FRAC,
+                    self.slot_early_best.take(),
+                ));
+                if self.muted {
+                    if self.beat_support > PLL_MUTE_EXIT_SUPPORT {
+                        self.muted = false;
+                    }
+                } else if self.beat_support < PLL_MUTE_ENTER_SUPPORT {
+                    self.muted = true;
+                }
+
+                beat_time = self.next_beat_time;
+                self.last_beat_time = self.next_beat_time;
+                self.next_beat_time += period;
+                self.grid_beat_count += 1;
+                if !supported {
                     self.beat_strength = 0.5;
                 }
-            }
-            beat
-        } else {
-            // High confidence: predictive mode
-            self.predictive(is_onset, timestamp, in_refractory)
-        };
-
-        if is_beat {
-            self.last_beat_time = timestamp;
-            self.last_fired_time = timestamp;
-            self.phase = 0.0;
-            self.consecutive_misses = 0;
-            if self.period > 0.0 {
-                self.next_predicted = timestamp + self.period;
-            }
-            self.tracking_confidence = (self.tracking_confidence + 0.15).min(1.0);
-        } else {
-            self.tracking_confidence = (self.tracking_confidence - 0.0005).max(0.0);
-        }
-
-        (is_beat, self.phase, self.bpm)
-    }
-
-    fn onset_only(&mut self, is_onset: bool, in_refractory: bool) -> bool {
-        self.state = BeatState::Waiting;
-        if is_onset && !in_refractory {
-            self.state = BeatState::Confirmed;
-            return true;
-        }
-        false
-    }
-
-    fn predictive(&mut self, is_onset: bool, timestamp: f64, in_refractory: bool) -> bool {
-        let dist = if self.next_predicted > 0.0 {
-            timestamp - self.next_predicted
-        } else {
-            f64::INFINITY
-        };
-        let in_window = dist.abs() <= self.beat_window;
-        let window_expired = dist > self.beat_window;
-
-        match self.state {
-            BeatState::Waiting => {
-                if self.next_predicted == 0.0 {
-                    if is_onset && !in_refractory {
-                        self.next_predicted = timestamp + self.period;
-                        self.state = BeatState::Confirmed;
-                        return true;
-                    }
-                } else {
-                    self.state = BeatState::Expecting;
+                if !self.muted {
+                    fired = true;
+                    self.last_fired_time = beat_time;
                 }
-                false
             }
-            BeatState::Expecting => {
-                if is_onset && in_window && !in_refractory {
-                    self.state = BeatState::Confirmed;
-                    if self.period > 0.0 {
-                        let phase_error = dist / self.period;
-                        self.apply_phase_correction(phase_error);
-                    }
-                    return true;
-                } else if window_expired {
-                    self.state = BeatState::Missed;
-                    return true;
+        } else {
+            // Acquisition: evidence-gated fires only — an in-window onset, far
+            // enough from the previous fire. The onset is the better clock
+            // while unlocked, so the beat carries the onset's own time.
+            if is_onset
+                && self.onset_support_pending
+                && timestamp - self.last_fired_time >= PLL_ACQ_MIN_SPACING * period
+            {
+                fired = true;
+                beat_time = timestamp;
+                self.last_fired_time = timestamp;
+                self.last_beat_time = timestamp;
+                self.grid_beat_count += 1;
+                // Fold the grid onto this fire so phase reads from it.
+                while self.next_beat_time <= timestamp {
+                    self.next_beat_time += period;
                 }
-                false
+            } else if is_onset
+                && !self.onset_support_pending
+                && timestamp - self.last_fired_time >= PLL_ACQ_STALE_PERIODS * period
+            {
+                // Stale anchor: nothing has agreed for several periods —
+                // re-anchor on this onset rather than let a dead grid veto
+                // every candidate forever.
+                self.beat_strength = f64::from(onset_strength);
+                self.last_beat_time = timestamp;
+                self.last_fired_time = timestamp;
+                self.next_beat_time = timestamp + period;
+                self.onset_support_pending = false;
+                self.grid_beat_count += 1;
+                return (true, timestamp, 0.0, self.bpm);
             }
-            BeatState::Confirmed | BeatState::Missed => {
-                self.state = BeatState::Expecting;
-                if is_onset && in_window && !in_refractory {
-                    self.state = BeatState::Confirmed;
-                    return true;
-                }
-                false
+            // Advance the provisional grid past due instants (no emission —
+            // unsupported unlocked beats are exactly the old over-firing).
+            while self.next_beat_time <= timestamp {
+                self.last_beat_time = self.next_beat_time;
+                self.next_beat_time += period;
+                self.onset_support_pending = false;
+                self.grid_beat_count += 1;
             }
-        }
-    }
-
-    fn update_phase(&mut self, timestamp: f64) -> u32 {
-        if self.last_beat_time == 0.0 || self.period == 0.0 {
-            return 0;
+            self.onset_support_pending = is_onset && self.onset_support_pending;
         }
 
-        let elapsed = timestamp - self.last_beat_time;
-        self.phase = (elapsed / self.period) % 1.0;
-
-        let mut missed = 0u32;
-        while self.next_predicted > 0.0 && timestamp > self.next_predicted + self.beat_window {
-            self.consecutive_misses += 1;
-            missed += 1;
-            self.next_predicted += self.period;
-            if self.consecutive_misses == self.max_misses {
-                self.tracking_confidence *= 0.7;
-            }
-        }
-        missed
-    }
-
-    fn apply_phase_correction(&mut self, phase_error: f64) {
-        let clamped = phase_error.clamp(-0.5, 0.5);
-        let correction = clamped * self.period * self.phase_correction;
-        self.next_predicted += correction;
+        let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
+        (fired, beat_time, phase, self.bpm)
     }
 }
 
@@ -1361,10 +1444,14 @@ pub struct BeatResult {
     pub bpm: f32,
     pub beat_strength: f32,
     /// The beat's event time on the sample clock, seconds. Only meaningful when
-    /// `beat > 0.5`; may lag the hop timestamp by up to one scheduler window once
-    /// the scheduler fires at predicted instants rather than at the hop that
-    /// noticed them.
+    /// `beat > 0.5`. The PLL scheduler fires grid beats at their predicted
+    /// instants, so this sits at or (by up to one hop + one correction step)
+    /// before the hop timestamp that emits it.
     pub beat_time: f64,
+    /// The scheduler's grid index of this beat — counts every grid instant,
+    /// including MUTED ones, so bar rotation downstream stays phase-coherent
+    /// through breakdown mutes and unlocked gaps. Meaningful when `beat > 0.5`.
+    pub beat_index: u64,
 }
 
 /// 3-stage beat detection pipeline.
@@ -1468,7 +1555,7 @@ impl BeatDetector {
         // Stage 3: Beat scheduling
         self.beat_scheduler
             .update_tempo(bpm, period_s, confidence, self.tempo_estimator.locked);
-        let (is_beat, beat_phase, smoothed_bpm) = self.beat_scheduler.process(
+        let (is_beat, beat_time, beat_phase, smoothed_bpm) = self.beat_scheduler.process(
             onset_gated,
             onset_strength,
             timestamp,
@@ -1506,7 +1593,8 @@ impl BeatDetector {
             } else {
                 0.0
             },
-            beat_time: timestamp,
+            beat_time: if is_beat { beat_time } else { timestamp },
+            beat_index: self.beat_scheduler.grid_beat_count,
         }
     }
 }
@@ -1753,19 +1841,25 @@ mod tests {
 
     // ---- BeatScheduler tests ----
 
+    /// Q1 PLL: the old scheduler fired a beat on EVERY gated onset whenever
+    /// tempo confidence was low — the mechanical source of the 1.5-1.7×
+    /// over-firing. With no tempo hypothesis there is now no grid and no beat;
+    /// /onset still carries the transient (user-approved pre-lock behavior).
     #[test]
-    fn scheduler_zero_confidence_onset_fires() {
+    fn scheduler_no_tempo_means_no_beats() {
         let mut bs = BeatScheduler::new();
         bs.update_tempo(0.0, 0.0, 0.0, false);
-        let (is_beat, _, _) = bs.process(true, 0.8, 1.0, false);
-        assert!(is_beat);
+        for i in 0..8 {
+            let (is_beat, _, _, _) = bs.process(true, 0.8, 1.0 + i as f64 * 0.3, false);
+            assert!(!is_beat, "onset {i} must not fire without a tempo");
+        }
     }
 
     #[test]
     fn scheduler_silence_no_beat() {
         let mut bs = BeatScheduler::new();
         bs.update_tempo(120.0, 0.5, 0.8, false);
-        let (is_beat, phase, _) = bs.process(false, 0.0, 1.0, true);
+        let (is_beat, _, phase, _) = bs.process(false, 0.0, 1.0, true);
         assert!(!is_beat);
         assert!(approx_eq_f64(phase, 0.0, 1e-6));
     }
@@ -1774,14 +1868,126 @@ mod tests {
     fn scheduler_phase_in_range() {
         let mut bs = BeatScheduler::new();
         bs.update_tempo(120.0, 0.5, 0.8, false);
-        // Trigger a beat
+        // Anchor the grid
         bs.process(true, 0.8, 1.0, false);
         // Advance time
         for i in 1..100 {
             let t = 1.0 + (i as f64) * 0.01;
-            let (_, phase, _) = bs.process(false, 0.0, t, false);
+            let (_, _, phase, _) = bs.process(false, 0.0, t, false);
             assert!((0.0..=1.0).contains(&phase), "phase={} at t={}", phase, t);
         }
+    }
+
+    /// Q1 PLL, locked freerun: beats fire AT grid instants (beat_time carries
+    /// the instant, not the hop that noticed it), exactly one per period.
+    #[test]
+    fn scheduler_locked_fires_on_grid() {
+        let mut bs = BeatScheduler::new();
+        bs.update_tempo(120.0, 0.5, 0.9, true);
+        bs.process(true, 0.9, 1.0, false); // anchor
+        let mut beats = Vec::new();
+        let dt = 512.0 / 44100.0;
+        let mut t: f64 = 1.0;
+        while t < 9.0 {
+            t += dt;
+            // Supporting onsets exactly on the (true) beat grid at 120 BPM.
+            let near_beat = ((t - 1.0) / 0.5 - ((t - 1.0) / 0.5).round()).abs() * 0.5 < dt * 0.5;
+            let (fired, bt, _, _) = bs.process(near_beat, 0.8, t, false);
+            if fired {
+                beats.push(bt);
+            }
+        }
+        assert!(
+            (14..=17).contains(&beats.len()),
+            "expected ~16 beats in 8 s at 120 BPM, got {}",
+            beats.len()
+        );
+        for pair in beats.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (gap - 0.5).abs() < 0.05,
+                "grid beats must be one period apart, got {gap}"
+            );
+        }
+    }
+
+    /// Q1 PLL, muted freerun: a breakdown (no onsets) mutes emission after a
+    /// few unsupported beats, the grid keeps phase, and the return of support
+    /// resumes on-grid without re-acquisition.
+    #[test]
+    fn scheduler_breakdown_mutes_then_resumes_on_grid() {
+        let mut bs = BeatScheduler::new();
+        bs.update_tempo(120.0, 0.5, 0.9, true);
+        let dt = 512.0 / 44100.0;
+        let on_grid = |t: f64| ((t - 1.0) / 0.5 - ((t - 1.0) / 0.5).round()).abs() * 0.5 < dt * 0.5;
+        bs.process(true, 0.9, 1.0, false); // anchor
+        let mut t = 1.0;
+        // 8 s supported.
+        while t < 9.0 {
+            t += dt;
+            bs.process(on_grid(t), 0.8, t, false);
+        }
+        // 8 s breakdown: count emissions — must stop after a few beats.
+        let mut gap_fires = 0;
+        while t < 17.0 {
+            t += dt;
+            let (fired, _, _, _) = bs.process(false, 0.0, t, false);
+            gap_fires += fired as u32;
+        }
+        assert!(
+            gap_fires <= 8,
+            "breakdown must mute freerun, got {gap_fires} fires in 16 bars"
+        );
+        // Support returns: emission resumes, and the resumed beats sit on the
+        // ORIGINAL grid (phase preserved through the gap).
+        let mut resumed = Vec::new();
+        while t < 25.0 {
+            t += dt;
+            let (fired, bt, _, _) = bs.process(on_grid(t), 0.8, t, false);
+            if fired {
+                resumed.push(bt);
+            }
+        }
+        assert!(
+            resumed.len() >= 12,
+            "must resume firing, got {}",
+            resumed.len()
+        );
+        for &bt in &resumed[2..] {
+            let phase_err = ((bt - 1.0) / 0.5 - ((bt - 1.0) / 0.5).round()).abs() * 0.5;
+            assert!(
+                phase_err < 0.08,
+                "resumed beat at {bt} is {phase_err}s off the original grid"
+            );
+        }
+    }
+
+    /// Q1 PLL, acquisition: unlocked fires need onset+grid agreement and are
+    /// spaced at least 0.6 period — a hi-hat run cannot spray beats.
+    #[test]
+    fn scheduler_acquisition_is_evidence_gated_and_spaced() {
+        let mut bs = BeatScheduler::new();
+        bs.update_tempo(120.0, 0.5, 0.3, false);
+        bs.process(true, 0.8, 1.0, false); // anchor fire
+        // Onsets every 100 ms (16th-note spam at 150 BPM): only those agreeing
+        // with the 0.5 s grid may fire, so ≤ 1 fire per 0.3 s minimum spacing.
+        let mut fires = 0;
+        let dt = 512.0 / 44100.0;
+        let mut t = 1.0;
+        let mut next_onset = 1.1;
+        while t < 6.0 {
+            t += dt;
+            let onset = t + dt * 0.5 >= next_onset;
+            if onset {
+                next_onset += 0.1;
+            }
+            let (fired, _, _, _) = bs.process(onset, 0.7, t, false);
+            fires += fired as u32;
+        }
+        assert!(
+            fires <= 11,
+            "acquisition must not fire above ~1 per period on onset spam, got {fires} in 5 s"
+        );
     }
 
     // ---- Integration test ----

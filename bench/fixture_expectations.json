@@ -11,9 +11,9 @@
   "false-alarm numbers come from real music (Harmonix run + C13 hand labels)."
  ],
  "asserts": [
-  {"path": "dump.n_events.beat", "op": "in_range", "value": [90, 120]},
+  {"path": "dump.n_events.beat", "op": "in_range", "value": [55, 90]},
   {"path": "dump.n_events.drop", "op": "==", "value": 1},
-  {"path": "metrics.beat.f_measure", "op": ">=", "value": 0.6},
+  {"path": "metrics.beat.f_measure", "op": ">=", "value": 0.85},
   {"path": "metrics.beat.n_ref", "op": "==", "value": 80},
   {"path": "metrics.downbeat.f_measure", "op": ">=", "value": 0.15},
   {"path": "metrics.tempo.acc1", "op": "==", "value": true},

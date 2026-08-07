@@ -202,7 +202,14 @@ impl DownbeatTracker {
 
     /// Snapshot the beat vector, re-score meter/phase, and decide if this beat is the "one".
     fn on_beat(&mut self, beat: &BeatResult, rms: f32, chroma: &[f32; 12], timestamp: f64) -> f32 {
-        let idx = self.beat_idx;
+        // Q1: index on the scheduler's GRID (which counts muted instants too),
+        // not on fired-beat count — a gap that skips fires must not slip the
+        // bar rotation's modulo. Fall back to the local counter pre-grid.
+        let idx = if beat.beat_index > 0 {
+            beat.beat_index - 1
+        } else {
+            self.beat_idx
+        };
 
         // Beat-level cues (0 on the very first beat, before we have a reference).
         let (chroma_change, loud_rise) = if self.have_prev {
@@ -214,15 +221,18 @@ impl DownbeatTracker {
             (0.0, 0.0)
         };
 
-        if self.ring.len() == RING_LEN {
-            self.ring.pop_front();
+        // Q1: ALL cues attribute one beat BACK. The PLL fires a beat AT its
+        // instant, so the beat's own attack — its flux, its loudness step, its
+        // chord's (attack-delayed) chroma move — lands in the interval that
+        // ends at the NEXT fire. The old scheduler fired 80-155 ms late, which
+        // put a beat's attack before its own fire and made forward attribution
+        // accidentally correct; on time, forward attribution rotated every
+        // fixture downbeat exactly one beat late.
+        if let Some(last) = self.ring.back_mut() {
+            last.flux_low = self.flux_accum[0];
+            last.chroma_change = chroma_change;
+            last.loud_rise = loud_rise;
         }
-        self.ring.push_back(BeatEntry {
-            global_idx: idx,
-            flux_low: self.flux_accum[0],
-            chroma_change,
-            loud_rise,
-        });
 
         // Reset per-beat accumulators / references for the next interval.
         self.flux_accum = [0.0; 3];
@@ -230,7 +240,17 @@ impl DownbeatTracker {
         self.prev_chroma = *chroma;
         self.have_prev = true;
 
+        // Score on complete entries, then open this beat's (still-empty) one.
         self.update_meter_phase();
+        if self.ring.len() == RING_LEN {
+            self.ring.pop_front();
+        }
+        self.ring.push_back(BeatEntry {
+            global_idx: idx,
+            flux_low: 0.0,
+            chroma_change: 0.0,
+            loud_rise: 0.0,
+        });
 
         // This beat's position within the bar and whether it is the downbeat.
         let pos = (idx as i64 - self.phase as i64).rem_euclid(self.meter as i64) as usize;
@@ -389,6 +409,7 @@ mod tests {
             bpm,
             beat_strength: 1.0,
             beat_time: 0.0,
+            beat_index: 0,
         }
     }
 
@@ -404,6 +425,7 @@ mod tests {
             bpm,
             beat_strength: 0.0,
             beat_time: 0.0,
+            beat_index: 0,
         }
     }
 
@@ -414,7 +436,10 @@ mod tests {
         let period = 60.0 / bpm as f64;
         let mut out = Vec::new();
         for i in 0..count {
-            let accent = i.is_multiple_of(meter);
+            // The interval arriving at fire i carries the PREVIOUS beat's
+            // content — the PLL fires at the beat instant, before its attack.
+            let cue_beat = i.wrapping_sub(1);
+            let accent = i > 0 && cue_beat.is_multiple_of(meter);
             let flux = if accent {
                 [1.0, 0.2, 0.1]
             } else {
@@ -422,7 +447,7 @@ mod tests {
             };
             let rms = if accent { 0.9 } else { 0.5 };
             // Chord changes land on the downbeat.
-            let chroma = if (i / meter).is_multiple_of(2) {
+            let chroma = if (cue_beat / meter).is_multiple_of(2) {
                 [1.0, 0.0, 0.5, 0.0, 0.7, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.0]
             } else {
                 [0.0, 0.6, 0.0, 0.8, 0.0, 0.5, 0.0, 0.0, 1.0, 0.0, 0.4, 0.0]
@@ -471,10 +496,11 @@ mod tests {
         let period = 60.0 / 120.0f64;
         let t0 = 32.0 * period;
         let chroma = [0.5; 12];
+        // Call 32's interval carries beat 31 (≡ 3 mod 4): not accented.
         let mut prev = t.process(
             &beat_result(120.0),
-            [1.0, 0.2, 0.1],
-            0.9,
+            [0.15, 0.3, 0.2],
+            0.5,
             &chroma,
             t0,
             false,
@@ -500,7 +526,9 @@ mod tests {
                 "bar_index held between beats"
             );
 
-            let accent = i % 4 == 0;
+            // Interval arriving at call i carries beat (32 + i − 1): accents
+            // (beats ≡ 0 mod 4) therefore land in calls with i % 4 == 1.
+            let accent = i % 4 == 1;
             let flux = if accent {
                 [1.0, 0.2, 0.1]
             } else {

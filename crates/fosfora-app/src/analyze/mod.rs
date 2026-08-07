@@ -340,7 +340,6 @@ mod tests {
     /// unnecessary and deliberately NOT added; this test would catch anyone
     /// re-adding one (median would go ≈ −46 ms).
     #[test]
-    #[ignore = "Q1 Stage 4 gate: enable with the PLL scheduler rewrite"]
     fn beat_times_land_on_the_click() {
         const SR: f32 = 44100.0;
         const SECS: f64 = 30.0;

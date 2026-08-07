@@ -417,6 +417,7 @@ mod tests {
             bpm: 128.0,
             beat_strength: 0.0,
             beat_time: 0.0,
+            beat_index: 0,
         }
     }
 
