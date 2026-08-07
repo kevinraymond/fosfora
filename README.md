@@ -94,7 +94,12 @@ cargo run --release --features webcam  # webcam layers — needs libclang-dev, v
 cargo run --release --features ndi     # NDI out — needs the NDI runtime
 cargo run --release --features "v4l2,spout,syphon"  # virtual camera / Spout / Syphon — each inert off its OS
 cargo run --release --features depth   # webcam + MiDaS depth — needs libssl-dev, libclang-dev
+cargo run --release --features link    # Ableton Link tempo sync — needs cmake; see licensing note below
 ```
+
+**Ableton Link licensing:** the `link` feature builds Ableton's Link library, which is
+GPL-2.0-or-later — a binary built with it is distributed under GPL terms, so the
+prebuilt downloads don't include it. Building it from source for your own rig is fine.
 
 </details>
 

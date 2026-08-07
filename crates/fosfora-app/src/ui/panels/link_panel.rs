@@ -44,7 +44,10 @@ pub fn draw_link_panel(ui: &mut Ui, info: &LinkInfo) {
             .width(130.0)
             .show_ui(ui, |ui| {
                 for (i, mode) in [LinkMode::Follow, LinkMode::Lead].into_iter().enumerate() {
-                    if ui.selectable_label(info.mode == mode, label(mode)).clicked() {
+                    if ui
+                        .selectable_label(info.mode == mode, label(mode))
+                        .clicked()
+                    {
                         ui.ctx()
                             .data_mut(|d| d.insert_temp(egui::Id::new("link_set_mode"), i as u8));
                     }
@@ -93,9 +96,17 @@ pub fn draw_link_panel(ui: &mut Ui, info: &LinkInfo) {
             info.quantum
         );
         if info.start_stop_sync {
-            status.push_str(if info.playing { " · playing" } else { " · stopped" });
+            status.push_str(if info.playing {
+                " · playing"
+            } else {
+                " · stopped"
+            });
         }
-        ui.label(RichText::new(status).size(SMALL_SIZE).color(tc.text_secondary));
+        ui.label(
+            RichText::new(status)
+                .size(SMALL_SIZE)
+                .color(tc.text_secondary),
+        );
         let hint = if info.peers == 0 {
             "No peers yet — the beat tracker runs free until one joins."
         } else if info.mode == LinkMode::Follow {

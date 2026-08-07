@@ -182,7 +182,12 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
         if last_status.elapsed() >= Duration::from_secs(1) {
             last_status = Instant::now();
             #[cfg(feature = "link")]
-            emit_link(&mut sink, last_ts, link_sys.config.enabled, link_sys.last_tick());
+            emit_link(
+                &mut sink,
+                last_ts,
+                link_sys.config.enabled,
+                link_sys.last_tick(),
+            );
             em.emit_status(
                 last_ts,
                 started.elapsed().as_secs_f64(),

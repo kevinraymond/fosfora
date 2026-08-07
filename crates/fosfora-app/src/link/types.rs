@@ -115,7 +115,10 @@ mod tests {
 
     #[test]
     fn mode_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&LinkMode::Follow).unwrap(), r#""follow""#);
+        assert_eq!(
+            serde_json::to_string(&LinkMode::Follow).unwrap(),
+            r#""follow""#
+        );
         assert_eq!(serde_json::to_string(&LinkMode::Lead).unwrap(), r#""lead""#);
     }
 

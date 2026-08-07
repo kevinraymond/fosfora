@@ -79,6 +79,21 @@ process cannot, so treat more than ~3 s of status silence as offline.
 | `/fosfora/v1/status/hop_hz` | float analysis rate |
 | `/fosfora/v1/status/tier` | string estimator tier, `heuristic-v1` today |
 
+### Ableton Link (opt-in build: `--features link`)
+
+Only in builds with the `link` cargo feature (Ableton Link is GPL-licensed, so the
+prebuilt release binaries ship without it — build from source to get it). Emitted on
+change plus a 1 Hz re-broadcast, from the live loop only: Link is wall-clock network
+state, so `--signal-dump` output never contains these addresses and stays
+deterministic.
+
+| Address | Args |
+|---|---|
+| `/fosfora/v1/link/enabled` | int — 1 while Link is enabled in `link.json` |
+| `/fosfora/v1/link/peers` | int — connected Link peers |
+| `/fosfora/v1/link/tempo` | float — session tempo in BPM |
+| `/fosfora/v1/link/playing` | int 0\|1 — Link transport (meaningful with start/stop sync) |
+
 ### The raw feature bus (opt-in: `--feat-bus`)
 
 `/fosfora/v1/feat/<name>` — every one of the 83 analysis features, normalized 0..1
@@ -112,10 +127,11 @@ under the best hypothesis with low confidence.
 ## Version policy
 
 `/v1/` is frozen: existing addresses never change type or semantics. New addresses
-may be added (additive is allowed — that is why `chord` and `link/*` are reserved
-here rather than invented later elsewhere). Anything breaking becomes `/fosfora/v2/`
-alongside, not instead. Reserved: `/fosfora/v1/chord`, `/fosfora/v1/link/*`,
-`/fosfora/v1/stem/{bass,melody}/onset`.
+may be added (additive is allowed — that is how `link/*` arrived, and why `chord` is
+reserved here rather than invented later elsewhere). Anything breaking becomes
+`/fosfora/v2/` alongside, not instead. Reserved: `/fosfora/v1/chord`,
+`/fosfora/v1/stem/{bass,melody}/onset`; further `/fosfora/v1/link/*` additions stay
+additive-only.
 
 ## Offline dumps — `--signal-dump` (needs a build with `--features analyze`)
 

@@ -15,6 +15,13 @@
   `phosphor_*` helpers keep working via deprecated aliases.
 
 ### Added
+- **Ableton Link (build option).** Build with `--features link` and Fosfora joins your
+  Link session: Follow mode locks the beat tracker's tempo to the session (beat phase
+  still tracks the audio it hears), Lead mode pushes Fosfora's detected BPM to your
+  other gear once it holds steady, and beat-synced scene advance rides the shared
+  session grid. Works in `--signal` headless mode too (`/fosfora/v1/link/*`). Absent
+  from the prebuilt downloads — Ableton Link is GPL-licensed, so it's a from-source
+  option. Enable it in Settings → Ableton Link.
 - **Signal: headless analysis broadcast.** `fosfora --signal` runs the analysis engine
   with no window or GPU and broadcasts what it hears over versioned OSC
   (`/fosfora/v1/...`): beats and bars the hop they fire, BPM, key, build level,
