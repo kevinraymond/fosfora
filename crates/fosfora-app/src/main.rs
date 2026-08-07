@@ -9,6 +9,8 @@ mod download;
 mod effect;
 mod gpu;
 mod headless;
+#[cfg(feature = "link")]
+mod link;
 mod media;
 mod midi;
 #[cfg(feature = "ndi")]
