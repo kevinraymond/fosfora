@@ -18,6 +18,7 @@ Update this file at the end of every session (status board + session log).
 | E — UI workspaces | later (Signal panel depends on A) |
 | F — FFGL/ISF export | later (naga WGSL→GLSL spike first) |
 | G — Art-Net/sACN output | later (follows `FrameSink` pattern) |
+| H — Virtual venue / projector previz | later (added 2026-08-06; see block below) |
 
 Decisions locked (2026-08-06): full rename; config dir auto-move; OSC RX accepts both
 prefixes + TX prefix toggle (default `fosfora`); stem addresses ship as documented
@@ -101,6 +102,43 @@ entries.
 - **Deferred by design**: portable preset bundle format (define only); role-scoped web
   surface (seams: `server.rs` route match, `run_client` role param, clients vec,
   `parse_client_message` gating — see ARCHITECTURE-NOTES).
+
+## H — Virtual venue / projector previz (added 2026-08-06)
+
+Goal: a 3D "virtual venue" mode — import a mesh, place physically-modeled virtual
+projectors, render Fosfora's live audio-reactive output through them onto the mesh for
+practice + pre-show previz, with a path to per-projector physical output routing.
+
+- **H1 Scene & import** — new `Scene3D` module: orbit/fly camera, grid, gizmos (egui
+  panels as usual). Mesh import via `gltf` (already a dep) + `tobj` (glTF/GLB/OBJ);
+  bundle 3-4 primitive venues (cube, facade, arch); center/scale-normalize on load,
+  expose decimate + recenter. Lives as a new tab/mode alongside the compositor — the
+  existing 8-layer pipeline is untouched.
+- **H2 Virtual projector (core)** — `VirtualProjector { pose: Mat4, throw_ratio,
+  lens_shift_h/v, resolution, lumens, aspect }`; off-axis perspective projection from
+  throw ratio + lens shift. Pipeline: (1) depth-only pass from projector POV → depth
+  texture; (2) main pass samples the **existing compositor output texture** as
+  projector content, transforms fragment → projector clip space, depth-compares for
+  occlusion, applies inverse-square + cosine falloff + albedo + ambient. WebGPU NDC
+  bias matrix for the projection. Integration: one new bind group on the compositor's
+  final RGBA texture — no changes to effects.
+- **H3 Views & practice mode** — projector-POV / audience-POV / free-orbit; readouts
+  (pixels-on-surface, coverage %, throw distance). Practice mode = bundled model +
+  one projector + guided prompts.
+- **H4 Multi-projector + output routing (V2)** — N projectors, each mapped to an
+  existing NDI/Spout/Syphon/virtual-camera output (reuse the output module — each
+  projector's content view becomes an output feed; disguise's
+  content-independent-of-position model). Edge-blend preview: per-overlap gradient
+  falloff (preview only).
+- **H5 Calibration/scan (V3, deferred)** — phone-scan import (OBJ/glTF from
+  Polycam/Scaniverse) + cleanup; camera calibration via gray-code/structured-light or
+  PnP (≥6 non-coplanar correspondences) to solve projector pose and conform the mesh
+  to reality. Needs a Rust CV path (OpenCV bindings or an nalgebra-based solver).
+
+Reused Fosfora modules: compositor output texture (content source), output module
+(NDI/Spout/Syphon routing), preset/scene-cue system (store venue + projector layouts
+as scenes/cues), OSC/MIDI (drive projector params live), planned Art-Net/sACN (G) +
+Signal (A) to co-visualize lighting states in the same 3D scene.
 
 ## Positioning guardrails (addendum — product constraints)
 
