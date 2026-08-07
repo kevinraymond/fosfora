@@ -16,12 +16,17 @@ path = "src/main.rs"
 [dependencies]
 # GPU
 wgpu = "27"
+# WGSL front-end validation before pipeline creation (trama I5) — keep the major
+# in lockstep with wgpu's transitive naga so the lock stays single-version
+naga = { version = "27", features = ["wgsl-in"] }
 # Windowing
 winit = "0.30"
 # UI
 egui = "0.33"
 egui-wgpu = "0.33"
 egui-winit = "0.33"
+# trama node-graph canvas — 0.9.x is the egui-0.33 line (0.10+ track egui 0.34/0.35)
+egui-snarl = "0.9"
 # Audio
 cpal = "0.17.3"
 # FFT
