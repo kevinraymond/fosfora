@@ -312,12 +312,31 @@ def ffprobe_duration(path: Path) -> float:
 
 
 def transcode_flac(src: Path, dest: Path, sr: int = 44100) -> Path:
-    """Canonical local audio: FLAC 44.1 kHz (soxr), original channel count."""
+    """Canonical local audio: FLAC 44.1 kHz, original channel count.
+
+    Uses ffmpeg's default swresample engine — Homebrew's ffmpeg ships without
+    libsoxr — and determinism rests on the ffmpeg version recorded in
+    status.json (the transcode runs once; the dump cache keys on the FLAC's
+    own bytes after that)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    # -f flac is required: ffmpeg cannot infer the format from the .part suffix
+    run_tool(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(src),
+         "-ar", str(sr), "-c:a", "flac", "-f", "flac", str(tmp)]
+    )
+    tmp.replace(dest)
+    return dest
+
+
+def cut_flac(src: Path, dest: Path, start_s: float, duration_s: float) -> Path:
+    """Sample-accurate span cut (-ss/-t as output options: decode-then-trim)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     run_tool(
         ["ffmpeg", "-y", "-v", "error", "-i", str(src),
-         "-af", f"aresample=resampler=soxr:osr={sr}", "-c:a", "flac", str(tmp)]
+         "-ss", f"{start_s:.4f}", "-t", f"{duration_s:.4f}",
+         "-c:a", "flac", "-f", "flac", str(tmp)]
     )
     tmp.replace(dest)
     return dest

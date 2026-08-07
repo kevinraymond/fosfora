@@ -1,0 +1,47 @@
+{
+ "schema": "fosfora-bench-manifest/v1",
+ "dataset": "harmonix",
+ "signals": ["beats", "downbeats", "tempo", "segments", "drops"],
+ "license_notes": "Annotations: urinieto/harmonixset (MIT, annotations only — Harmonix Music Systems / ISMIR 2019). Audio: YouTube-sourced per the upstream youtube_urls.csv, fetched locally with yt-dlp, never redistributed. Mel spectrograms of the ORIGINAL audio distributed by the authors via Dropbox (the alignment-gate reference).",
+ "citations": ["nieto2019harmonix"],
+ "sources": [
+  {
+   "name": "annotations",
+   "kind": "git",
+   "url": "https://github.com/urinieto/harmonixset",
+   "pin": "64abeb509429e73d74559fb98e621dac866efea1",
+   "notes": "dataset/beats_and_downbeats/<id>.txt = 'time<TAB>beat_in_bar<TAB>bar' (beat_in_bar 1 = downbeat); dataset/segments/<id>.txt = 'start label' rows (last row is the end marker); metadata.csv carries Duration/BPM/Genre; youtube_urls.csv + youtube_alignment_scores.csv drive the fetch and the gate prior; jams/ carries librosa onsets of the first 30 s of the ORIGINAL audio (the offset-estimation reference). The pinned clone IS the track list — coverage is computed from its CSVs, not duplicated here."
+  },
+  {
+   "name": "audio",
+   "kind": "per-track",
+   "url": null,
+   "url_patterns": [],
+   "notes": "yt-dlp (Python API, bestaudio) per youtube_urls.csv into raw/yt/, then ffmpeg -> FLAC 44.1 kHz in audio/. Re-fetched YouTube audio is not byte-reproducible and may be a different master/edit — that is exactly what the alignment gate exists for; per-track hashes are status.json observations. Unavailable/region-locked/removed videos are normal per-track failures."
+  },
+  {
+   "name": "melspecs",
+   "kind": "archive",
+   "url": "https://www.dropbox.com/s/zxnqlx0hxz0lsyc/Harmonix_melspecs.tgz?dl=1",
+   "sha256": null,
+   "unpack": "tar.gz",
+   "notes": "~1.2 GB, mel spectrograms of the original (annotation-matching) audio + info.json with parameters — the whole-track DTW reference for the alignment gate. sha256 pinned after first verified fetch."
+  }
+ ],
+ "expected": {"tracks": 912, "scoreable": null},
+ "exclusions": [],
+ "gate": {
+  "shorter_tolerance_s": 1.0,
+  "head_missing_max_s": 5.0,
+  "dtw": {"on_line_min": 0.85, "median_residual_ms": 60},
+  "refine": {"half_window_s": 0.6, "agreement_s": 0.2, "grid_ms": 10},
+  "offset_pass_s": 0.025,
+  "upstream_weak_below": 0.95,
+  "calibrated": false,
+  "notes": "Pilot findings (2026-08-07, first 40 tracks): (1) fetched videos are typically LONGER than annotated — official music videos embed the song behind intros/skits — so subsequence mel-DTW against the authors' distributed melspecs is BOTH the offset estimator (path median) and the whole-span verifier (on-line fraction + median residual), and prep cuts the FLAC to the aligned span (annotation times stay on the original clock); (2) the JAMS-onset xcorr cannot be a wide-window gate (true matches peak at r~0.4-0.55, indistinct from noise) — it is the sub-frame REFINEMENT of the DTW offset in a narrow window, gated only on agreement; (3) the shorter-duration check compares against the last annotation time, not metadata Duration (which counts trailing silence)."
+ },
+ "notes": [
+  "gate.calibrated flips to true after the C12 threshold calibration on ~20 hand-checked tracks; prep refuses to emit bundles for tracks without a pass* verdict.",
+  "Drop ground truth: the segment vocabulary has NO drop/build labels (verified from the paper + files) — tier 1 = /(^|_)drop/ label matches (expected ~zero, reported), tier 2 = non-chorus->chorus* transitions on Genre in {Dance/Electronic, Dubstep} as kind proxy_chorus_onset. Tiers never merge in reporting."
+ ]
+}
