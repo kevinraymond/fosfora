@@ -1,0 +1,31 @@
+{
+ "schema": "fosfora-bench-manifest/v1",
+ "dataset": "giantsteps_tempo",
+ "signals": ["tempo"],
+ "license_notes": "Annotations: GiantSteps project (github.com/GiantSteps/giantsteps-tempo-dataset); annotations_v2 are the Schreiber & Mueller 2018 crowdsourced values. Audio: Beatport 2-minute preview mp3s (never redistributed); primary fetch is JKU's backup mirror per the upstream audio_dl.sh v0.3 (2025-03).",
+ "citations": ["knees2015giantsteps", "schreiber2018tempo"],
+ "sources": [
+  {
+   "name": "annotations",
+   "kind": "git",
+   "url": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+   "pin": "d51ab2422e76abacfaa86616a57054bc222ec9fd",
+   "notes": "annotations_v2/tempo/<id>.LOFI.bpm = single crowdsourced BPM (the eval standard; v1 kept in provenance); annotations_v2/mirex/ carries the two-tempo+salience form we do not score. md5/<id>.LOFI.md5 is the track list + per-file audio pin."
+  },
+  {
+   "name": "audio",
+   "kind": "per-track",
+   "url": null,
+   "url_patterns": [
+    "https://www.cp.jku.at/datasets/giantsteps/backup/{file}",
+    "https://geo-samples.beatport.com/lofi/{file}"
+   ],
+   "notes": "Same refetched_mismatch policy as giantsteps_key; kept as mp3 (tempo Acc1/2 is timing-insensitive)."
+  }
+ ],
+ "expected": {"tracks": 664, "scoreable": null},
+ "exclusions": [],
+ "notes": [
+  "Tracks whose annotations_v2 value is 0.0 (unusable per Schreiber) are skipped at prep and counted; VERIFY the exact count at first prep run."
+ ]
+}

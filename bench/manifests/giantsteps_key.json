@@ -1,0 +1,31 @@
+{
+ "schema": "fosfora-bench-manifest/v1",
+ "dataset": "giantsteps_key",
+ "signals": ["key"],
+ "license_notes": "Annotations: GiantSteps project (CC-licensed, github.com/GiantSteps/giantsteps-key-dataset). Audio: Beatport 2-minute preview mp3s (never redistributed from this repo); primary fetch is JKU's backup mirror per the upstream audio_dl.sh v0.3 (2025-03).",
+ "citations": ["knees2015giantsteps"],
+ "sources": [
+  {
+   "name": "annotations",
+   "kind": "git",
+   "url": "https://github.com/GiantSteps/giantsteps-key-dataset",
+   "pin": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b",
+   "notes": "annotations/key/<id>.LOFI.key holds literal '<Tonic> <mode>' (e.g. 'C minor'); md5/<id>.LOFI.md5 is both the track list and the per-file audio pin."
+  },
+  {
+   "name": "audio",
+   "kind": "per-track",
+   "url": null,
+   "url_patterns": [
+    "https://www.cp.jku.at/datasets/giantsteps/backup/{file}",
+    "https://geo-samples.beatport.com/lofi/{file}"
+   ],
+   "notes": "Refetched previews may legitimately re-encode: an md5 mismatch is recorded as refetched_mismatch and the track still scores (key ground truth is track-level); the count is reported. Kept as mp3 — key scoring is timing-insensitive, so the FLAC transcode policy (which exists for the ±70 ms beat tolerance) does not apply."
+  }
+ ],
+ "expected": {"tracks": 604, "scoreable": null},
+ "exclusions": [],
+ "notes": [
+  "scoreable = whatever fetch coverage yields (preview rot is normal); the report prints N of 604."
+ ]
+}
