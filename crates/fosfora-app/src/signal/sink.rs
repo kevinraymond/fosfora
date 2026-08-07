@@ -41,10 +41,12 @@ impl SignalSink for UdpSink {
 ///
 /// Args are single-key objects — `i` (int32), `f` (float32), `s` (string) —
 /// exactly the OSC type tags.
+#[cfg(any(test, feature = "analyze"))]
 pub struct JsonlSink<W: std::io::Write> {
     w: W,
 }
 
+#[cfg(any(test, feature = "analyze"))]
 impl<W: std::io::Write> JsonlSink<W> {
     pub fn new(w: W) -> Self {
         Self { w }
@@ -69,6 +71,7 @@ impl<W: std::io::Write> JsonlSink<W> {
     }
 }
 
+#[cfg(any(test, feature = "analyze"))]
 fn arg_json(arg: &OscType) -> serde_json::Value {
     match arg {
         OscType::Int(v) => serde_json::json!({ "i": v }),
@@ -85,6 +88,7 @@ fn arg_json(arg: &OscType) -> serde_json::Value {
     }
 }
 
+#[cfg(any(test, feature = "analyze"))]
 impl<W: std::io::Write> SignalSink for JsonlSink<W> {
     fn emit(&mut self, ts: f64, addr: &str, args: &[OscType]) {
         let args: Vec<serde_json::Value> = args.iter().map(arg_json).collect();
