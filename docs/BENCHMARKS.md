@@ -20,7 +20,7 @@ headline beat numbers adopt the literature's 5 s trim.
 | ballroom | 698 | 685 | 13 | 0 | `8775a3a8ba19410a` |
 | giantsteps_key | 604 | 604 | 0 | 0 | `8775a3a8ba19410a` |
 | giantsteps_tempo | 664 | 661 | 0 | 0 | `8775a3a8ba19410a` |
-| harmonix | 912 | 374 | 0 | 0 | `8775a3a8ba19410a` |
+| harmonix | 912 | 374 | 0 | 0 | `febb9028f26b46e6` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -83,6 +83,17 @@ Context: audio is re-fetched from YouTube and admitted only by the alignment gat
 | **Fosfora** | **causal (streaming)** | **0.545** | **0.794** |
 
 Causal extras: mean lock time 148.8 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.477. Offline systems have no equivalent — they see the whole file.
+
+### Drop prediction (`/fosfora/v1/predict/drop`)
+
+Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix has no drop labels). Proxies undercount real drop-scale events, so the false-alarm rate is an upper bound; the hand-annotated local set (C13) carries the headline lead-time number.
+
+| Tier | Coverage | Median lead (beats) | p25–p75 lead |
+|---|---|---|---|
+| ≥ 0.5 | 0.518 | 21.4 | 11.1–29.0 |
+| ≥ 0.8 | 0.347 | 17.0 | 4.0–24.3 |
+
+False alarms 2.72/min pooled over all 374 tracks (≈⅓ of off-genre alarms are the predictor correctly anticipating a chorus landing). `/drop` detection event: hit rate 0.007 vs the same proxies, 0.09 false/min — it fires on loudness+sub-bass impact, which chorus onsets mostly are not.
 
 ## References
 
