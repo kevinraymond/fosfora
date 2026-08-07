@@ -22,18 +22,23 @@ Syphon, or a virtual camera.
 
 ## See it move
 
-Six of the fifty-five, all at default settings:
+Nine of the fifty-five, all at default settings:
 
 <table>
 <tr>
-<td width="33%"><img src="assets/media/tiles/prism.webp" width="100%" alt="Prism"><br><b>Prism</b><br><sub>Kaleidoscopic mirror symmetry</sub></td>
 <td width="33%"><img src="assets/media/tiles/cymatics.webp" width="100%" alt="Cymatics"><br><b>Cymatics</b><br><sub>Chladni standing waves, per band</sub></td>
 <td width="33%"><img src="assets/media/tiles/morph.webp" width="100%" alt="Morph"><br><b>Morph</b><br><sub>Particles spring between images</sub></td>
+<td width="33%"><img src="assets/media/tiles/murmur.webp" width="100%" alt="Murmur"><br><b>Murmur</b><br><sub>Starling murmuration at twilight</sub></td>
+</tr>
+<tr>
+<td><img src="assets/media/tiles/intarsia.webp" width="100%" alt="Intarsia"><br><b>Intarsia</b><br><sub>Beat-revealed mosaic inlay</sub></td>
+<td><img src="assets/media/tiles/symbiosis.webp" width="100%" alt="Symbiosis"><br><b>Symbiosis</b><br><sub>Particle life, ecosystems emerging</sub></td>
+<td><img src="assets/media/tiles/reliquary.webp" width="100%" alt="Reliquary"><br><b>Reliquary</b><br><sub>A form that holds light</sub></td>
 </tr>
 <tr>
 <td><img src="assets/media/tiles/genesis.webp" width="100%" alt="Genesis"><br><b>Genesis</b><br><sub>Two species, self-organizing</sub></td>
-<td><img src="assets/media/tiles/lattice_clouds.webp" width="100%" alt="Lattice Clouds"><br><b>Lattice Clouds</b><br><sub>3D cellular automata, ray-marched</sub></td>
-<td><img src="assets/media/tiles/chaos.webp" width="100%" alt="Chaos"><br><b>Chaos</b><br><sub>Strange attractors</sub></td>
+<td><img src="assets/media/tiles/accretion.webp" width="100%" alt="Accretion"><br><b>Accretion</b><br><sub>N-body gravity, discs and slingshots</sub></td>
+<td><img src="assets/media/tiles/lumen.webp" width="100%" alt="Lumen"><br><b>Lumen</b><br><sub>Real-time global illumination</sub></td>
 </tr>
 </table>
 
