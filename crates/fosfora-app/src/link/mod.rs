@@ -299,6 +299,171 @@ mod tests {
         Mutex::new(TempoControl::new(TempoConfig::default()))
     }
 
+    // ---- Live-session integration tests (`--ignored`, dev-run only) ----
+    //
+    // These join a REAL Link session over LAN multicast, using a raw AblLink
+    // instance as a scriptable peer — the same reference implementation
+    // Ableton ships, so passing here is protocol-level interop evidence, not
+    // self-agreement. Ignored in CI (runners often block multicast, and a
+    // stray Link peer on the LAN would perturb the session). Run with:
+    //
+    //   cargo test --features link -- --ignored link::
+    //
+    // on a LAN with no other Link peers. Results are recorded in TASKS.md (B).
+
+    /// Poll `f` every 50 ms until it returns true or `secs` elapse.
+    fn eventually(secs: f32, mut f: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f32(secs);
+        while std::time::Instant::now() < deadline {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    /// Follow against a real peer: adopt its session tempo into the prior,
+    /// chase a mid-run tempo change, and restore the operator's prior when the
+    /// last peer leaves.
+    #[test]
+    #[ignore = "joins a real Link session over LAN multicast — dev-run only"]
+    fn live_follow_chases_a_real_peer() {
+        let ctl = ctl();
+        // The "DJ": a session at 174 established before we join, so the
+        // joining side (us) adopts its timeline per Link's merge rules.
+        let peer = AblLink::new(174.0);
+        peer.enable(true);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let mut sys = LinkSystem::new(LinkConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        let pinned = eventually(10.0, || {
+            sys.drive(&ctl, 0.0, 0.05);
+            let c = ctl.lock().unwrap().config;
+            (c.prior_center_bpm - 174.0).abs() < 0.5 && !c.auto_prior
+        });
+        assert!(pinned, "prior never pinned to the peer's 174 BPM session");
+
+        // The DJ moves to 140 mid-run — the pin must chase it.
+        let mut ss = SessionState::new();
+        peer.capture_app_session_state(&mut ss);
+        ss.set_tempo(140.0, peer.clock_micros());
+        peer.commit_app_session_state(&ss);
+        let repinned = eventually(10.0, || {
+            sys.drive(&ctl, 0.0, 0.05);
+            (ctl.lock().unwrap().config.prior_center_bpm - 140.0).abs() < 0.5
+        });
+        assert!(
+            repinned,
+            "prior did not chase the session tempo change to 140"
+        );
+
+        // The DJ leaves → peers 0 → the operator's saved prior comes back.
+        peer.enable(false);
+        let restored = eventually(10.0, || {
+            sys.drive(&ctl, 0.0, 0.05);
+            ctl.lock().unwrap().config == TempoConfig::default()
+        });
+        assert!(
+            restored,
+            "operator prior not restored after the last peer left"
+        );
+    }
+
+    /// Lead against a real peer: a stability-gated commit must land in the
+    /// session and be adopted by the other side. Also covers transport edges
+    /// (start/stop sync) arriving from the peer.
+    #[test]
+    #[ignore = "joins a real Link session over LAN multicast — dev-run only"]
+    fn live_lead_retempos_a_real_peer_and_transport_edges_arrive() {
+        let ctl = ctl();
+        let peer = AblLink::new(120.0);
+        peer.enable_start_stop_sync(true);
+        peer.enable(true);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let mut sys = LinkSystem::new(LinkConfig {
+            enabled: true,
+            mode: LinkMode::Lead,
+            start_stop_sync: true,
+            ..Default::default()
+        });
+        assert!(
+            eventually(10.0, || {
+                sys.drive(&ctl, 0.0, 0.05).is_some_and(|t| t.peers > 0)
+            }),
+            "peer never discovered"
+        );
+
+        // Feed a stable detected 174 BPM; the gate needs 3 s of stability,
+        // then the commit must propagate into the peer's view of the session.
+        let mut ss = SessionState::new();
+        let adopted = eventually(15.0, || {
+            sys.drive(&ctl, 174.0, 0.1);
+            peer.capture_app_session_state(&mut ss);
+            (ss.tempo() - 174.0).abs() < 0.5
+        });
+        assert!(adopted, "peer never adopted our committed 174 BPM");
+        // Lead must never touch the local prior.
+        assert_eq!(ctl.lock().unwrap().config, TempoConfig::default());
+
+        // Peer starts its transport → we must see the rising edge.
+        peer.capture_app_session_state(&mut ss);
+        ss.set_is_playing(true, peer.clock_micros());
+        peer.commit_app_session_state(&ss);
+        let mut started = false;
+        assert!(
+            eventually(10.0, || {
+                let t = sys.drive(&ctl, 174.0, 0.05);
+                started |= t.is_some_and(|t| t.playing_started);
+                started
+            }),
+            "playing_started edge never observed"
+        );
+        peer.enable(false);
+    }
+
+    /// The session beat grid must actually tick: with a peer present, whole-
+    /// beat crossings arrive at roughly the session tempo (the signal that
+    /// drives BeatSync scene advance).
+    #[test]
+    #[ignore = "joins a real Link session over LAN multicast — dev-run only"]
+    fn live_beat_crossings_arrive_at_session_rate() {
+        let ctl = ctl();
+        let peer = AblLink::new(120.0);
+        peer.enable(true);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let mut sys = LinkSystem::new(LinkConfig {
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(
+            eventually(10.0, || {
+                sys.drive(&ctl, 0.0, 0.05).is_some_and(|t| t.peers > 0)
+            }),
+            "peer never discovered"
+        );
+        // 120 BPM = 2 beats/s → expect ~8 crossings in 4 s; accept 6..=10
+        // (scheduling jitter, and the first poll swallows one crossing).
+        let mut crossings = 0;
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(4) {
+            if sys.drive(&ctl, 0.0, 0.01).is_some_and(|t| t.beat_crossed) {
+                crossings += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        peer.enable(false);
+        assert!(
+            (6..=10).contains(&crossings),
+            "expected ~8 beat crossings in 4 s at 120 BPM, saw {crossings}"
+        );
+    }
+
     /// Constructing (FFI) with `enabled: false` never joins the network and
     /// never touches the tracker's prior.
     #[test]
