@@ -130,46 +130,65 @@ def check_pins(path: Path, sha256: str | None, md5: str | None) -> dict:
 # --------------------------------------------------------------------------- fetch
 
 
+def _download_once(url: str, part: Path, quiet: bool, label: str) -> None:
+    offset = part.stat().st_size if part.is_file() else 0
+    req = urllib.request.Request(url, headers={"User-Agent": "fosfora-bench/1.0"})
+    if offset:
+        req.add_header("Range", f"bytes={offset}-")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        if offset and resp.status != 206:
+            offset = 0  # server ignored Range: restart
+        done = offset
+        with part.open("ab" if offset else "wb") as f:
+            while True:
+                chunk = resp.read(_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if not quiet:
+                    print(f"\r  {label}: {done >> 20} MiB", end="", flush=True)
+        if not quiet:
+            print()
+
+
 def download(
     url: str,
     dest: Path,
     sha256: str | None = None,
     md5: str | None = None,
     quiet: bool = False,
+    attempts: int = 8,
 ) -> Path:
     """Resumable download to dest via dest.part; verifies pins when given.
 
     An existing dest that passes the pins is a no-op. A .part file resumes
-    with an HTTP Range request when the server allows it.
+    with an HTTP Range request; mid-stream resets (academic servers under a
+    multi-hundred-MB pull) retry with resume up to `attempts` times, but only
+    while each attempt makes forward progress.
     """
     if dest.is_file():
         check_pins(dest, sha256, md5)
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
-    offset = part.stat().st_size if part.is_file() else 0
-    req = urllib.request.Request(url, headers={"User-Agent": "fosfora-bench/1.0"})
-    if offset:
-        req.add_header("Range", f"bytes={offset}-")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            if offset and resp.status != 206:
-                offset = 0  # server ignored Range: restart
-            mode = "ab" if offset else "wb"
-            done = offset
-            with part.open(mode) as f:
-                while True:
-                    chunk = resp.read(_CHUNK)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    if not quiet:
-                        print(f"\r  {dest.name}: {done >> 20} MiB", end="", flush=True)
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        before = part.stat().st_size if part.is_file() else 0
+        try:
+            _download_once(url, part, quiet, dest.name)
+            last_err = None
+            break
+        except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            last_err = e
+            after = part.stat().st_size if part.is_file() else 0
+            if after <= before:
+                break  # no forward progress: stop hammering the server
             if not quiet:
-                print()
-    except urllib.error.URLError as e:
-        raise DatasetError(f"download {url}: {e}") from e
+                print(f"\n  {dest.name}: interrupted ({e}), resuming "
+                      f"({attempt + 1}/{attempts}) ...")
+    if last_err is not None:
+        raise DatasetError(f"download {url}: {last_err}") from last_err
     check_pins(part, sha256, md5)
     part.replace(dest)
     return dest
@@ -201,6 +220,53 @@ def git_clone_pinned(url: str, dest: Path, pin: str | None = None) -> str:
     if pin and head != pin:
         raise DatasetError(f"{dest.name}: HEAD {head[:12]} != pinned {pin[:12]}")
     return head
+
+
+def fetch_per_track(
+    ctx,
+    src: dict,
+    files: dict[str, str | None],
+    dest_dir: Path,
+    jobs: int = 8,
+) -> None:
+    """Per-track downloads with mirror fallback (`url_patterns`, `{file}` slot).
+
+    Per the checksum policy, a per-track md5 mismatch on refetched preview
+    audio is NOT structural — the file is kept and the track is recorded as
+    `refetched_mismatch` (re-encodes happen); only total unavailability marks
+    a track `unavailable`. Outcomes land in status under stage `fetch`.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    patterns = src["url_patterns"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    def one(item: tuple[str, str | None]) -> tuple[str, str]:
+        fname, md5 = item
+        track_id = Path(fname).stem
+        dest = dest_dir / fname
+        if not dest.is_file():
+            last = None
+            for pat in patterns:
+                try:
+                    download(pat.format(file=fname), dest, quiet=True, attempts=2)
+                    break
+                except DatasetError as e:
+                    last = e
+            if not dest.is_file():
+                return track_id, f"unavailable: {last}"
+        if md5 is not None and md5_file(dest) != md5:
+            return track_id, "refetched_mismatch"
+        return track_id, "ok"
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for track_id, outcome in pool.map(one, sorted(files.items())):
+            ctx.status.track(track_id, fetch=outcome)
+            done += 1
+            if done % 25 == 0:
+                print(f"\r  {done}/{len(files)} tracks", end="", flush=True)
+    print(f"\r  {done}/{len(files)} tracks")
 
 
 # --------------------------------------------------------------------------- tools
@@ -304,12 +370,17 @@ def coverage_report(manifest: dict, status: Status, stage: str) -> str:
     expected = (manifest.get("expected") or {}).get("tracks")
     outcomes = status.outcomes(stage)
     ok = sum(1 for v in outcomes.values() if v == "ok")
-    failed = {tid: v for tid, v in outcomes.items() if v not in ("ok", "pending")}
+    excluded_seen = sum(1 for v in outcomes.values() if v.startswith("excluded"))
+    failed = {
+        tid: v
+        for tid, v in outcomes.items()
+        if v not in ("ok", "pending") and not v.startswith("excluded")
+    }
     excluded = len(manifest.get("exclusions") or [])
     lines = [
         f"{manifest['dataset']} {stage}: {ok} of "
         f"{expected if expected is not None else len(outcomes)} ok, "
-        f"{len(failed)} failed, {excluded} excluded (manifest)"
+        f"{len(failed)} failed, {excluded_seen or excluded} excluded"
     ]
     for tid, v in sorted(failed.items())[:20]:
         lines.append(f"  {tid}: {v}")

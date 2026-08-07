@@ -12,7 +12,7 @@
    "upstream_md5": null,
    "sha256": null,
    "unpack": "tar.gz",
-   "notes": "UNRESOLVED (2026-08-06): both smc.inescporto.pt and smc.inesctec.pt refused connections during research. Resolve at C8 — candidates: INESC TEC page when back up, the marl/jams-data GitHub mirror of SMC_MIREX annotations, or the authors. fetch_smc.py must tolerate total unavailability: report and exit 0, never fabricate."
+   "notes": "UNRESOLVED (2026-08-06, re-verified at C8): smc.inescporto.pt and smc.inesctec.pt refuse connections. Known author mirror: https://bit.ly/33SlutJ (J. Zapata's UPB SharePoint, linked from joserzapata.github.io/project/smc-beat-tracker-dataset) — 403s for non-browser clients, so fetch_smc.py supports a manual browser download dropped into raw/ (sha256 gets pinned here on first verified drop). Total unavailability reports and exits 0."
   }
  ],
  "expected": {"tracks": 217, "scoreable": null},
