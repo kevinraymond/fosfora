@@ -1,0 +1,171 @@
+{
+ "schema": "fosfora-bench-dev-subset/v1",
+ "_policy": "Deterministic ~40-track iteration subset for beat/tempo work (workstream Q). Selection, no RNG: ballroom = ids sorted within each of 8 dance styles (Rumba-* merged), indices 0 and n//2; giantsteps_tempo = sorted by (tempo_bpm, track_id), even stride of 14; harmonix = sorted ids, even stride of 10. Expand with: python3 -c \"import json,sys; print(' '.join('--only '+t for t in json.load(open('bench/manifests/dev_subset.json'))['tracks'][sys.argv[1]]))\" <dataset>. The 47-track predrop subset is drop-biased; do not reuse it here.",
+ "tracks": {
+  "ballroom": [
+   "Albums-Cafe_Paradiso-05",
+   "Media-103417",
+   "Albums-Cafe_Paradiso-14",
+   "Media-103614",
+   "Albums-AnaBelen_Veneo-11",
+   "Media-104616",
+   "Albums-AnaBelen_Veneo-01",
+   "Media-103610",
+   "Albums-AnaBelen_Veneo-02",
+   "Media-103705",
+   "Albums-Ballroom_Classics4-06",
+   "Media-104207",
+   "Albums-Ballroom_Classics4-11",
+   "Media-104409",
+   "Albums-Ballroom_Classics4-01",
+   "Media-104604"
+  ],
+  "giantsteps_tempo": [
+   "3088145.LOFI",
+   "3649527.LOFI",
+   "3520036.LOFI",
+   "1030011.LOFI",
+   "4480118.LOFI",
+   "4300619.LOFI",
+   "3181214.LOFI",
+   "4191591.LOFI",
+   "3069960.LOFI",
+   "2022116.LOFI",
+   "4624663.LOFI",
+   "1728723.LOFI",
+   "4399289.LOFI",
+   "4366506.LOFI"
+  ],
+  "harmonix": [
+   "0005_again",
+   "0327_youmakemefeel",
+   "0411_ifihadyou",
+   "0502_stronger",
+   "0582_beautifulday",
+   "0655_earthquakey",
+   "0745_immabewolf",
+   "0830_nightwatch",
+   "0912_somenights",
+   "1000_yourloveismydrug"
+  ]
+ },
+ "baselines": {
+  "_provenance": "binary febb9028, commit 2eac941, full-run cached results, 2026-08-07",
+  "ballroom": {
+   "beat": {
+    "f_measure": {
+     "mean": 0.4481,
+     "n": 16
+    },
+    "cmlt": {
+     "mean": 0.0926,
+     "n": 16
+    },
+    "amlt": {
+     "mean": 0.2043,
+     "n": 16
+    },
+    "n_est": {
+     "mean": 105.6875,
+     "n": 16
+    },
+    "n_ref": {
+     "mean": 67.4375,
+     "n": 16
+    }
+   },
+   "downbeat": {
+    "f_measure": {
+     "mean": 0.141,
+     "n": 16
+    }
+   },
+   "tempo": {
+    "acc1": {
+     "mean": 0.6875,
+     "n": 16
+    },
+    "acc2": {
+     "mean": 0.875,
+     "n": 16
+    },
+    "locked_fraction": {
+     "mean": 0.4758,
+     "n": 16
+    },
+    "lock_time_secs": {
+     "mean": 18.4748,
+     "n": 7
+    }
+   }
+  },
+  "giantsteps_tempo": {
+   "tempo": {
+    "acc1": {
+     "mean": 0.4286,
+     "n": 14
+    },
+    "acc2": {
+     "mean": 0.5714,
+     "n": 14
+    },
+    "locked_fraction": {
+     "mean": 0.3822,
+     "n": 14
+    },
+    "lock_time_secs": {
+     "mean": 55.9717,
+     "n": 6
+    }
+   }
+  },
+  "harmonix": {
+   "beat": {
+    "f_measure": {
+     "mean": 0.4418,
+     "n": 10
+    },
+    "cmlt": {
+     "mean": 0.2273,
+     "n": 10
+    },
+    "amlt": {
+     "mean": 0.2838,
+     "n": 10
+    },
+    "n_est": {
+     "mean": 618.2,
+     "n": 10
+    },
+    "n_ref": {
+     "mean": 463.2,
+     "n": 10
+    }
+   },
+   "downbeat": {
+    "f_measure": {
+     "mean": 0.1383,
+     "n": 10
+    }
+   },
+   "tempo": {
+    "acc1": {
+     "mean": 0.7,
+     "n": 10
+    },
+    "acc2": {
+     "mean": 0.9,
+     "n": 10
+    },
+    "locked_fraction": {
+     "mean": 0.5795,
+     "n": 10
+    },
+    "lock_time_secs": {
+     "mean": 168.5333,
+     "n": 4
+    }
+   }
+  }
+ }
+}
