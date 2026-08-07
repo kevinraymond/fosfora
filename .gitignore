@@ -19,3 +19,8 @@ Thumbs.db
 /catalog/test_track.wav
 /catalog/capabilities.json
 __pycache__/
+
+# Session-planning working files — local only, never in the repo
+/TASKS.md
+/2026-08-06_SESSION_STARTER.md
+/2026-08-06_SESSION_STARTER_ADDENDUM.md
