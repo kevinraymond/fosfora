@@ -28,6 +28,7 @@ mod recording;
 mod scene;
 mod settings;
 mod shader;
+mod signal;
 #[cfg(all(target_os = "windows", feature = "spout"))]
 mod spout;
 #[cfg(all(target_os = "macos", feature = "syphon"))]

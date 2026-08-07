@@ -208,11 +208,17 @@ impl OscSender {
     }
 
     fn send_packet(&self, suffix: &str, args: Vec<OscType>) {
+        self.send_message(&format!("/{}{}", self.prefix, suffix), args);
+    }
+
+    /// Send one message at a complete address, no namespace prefix applied — the
+    /// Signal emitter builds full `/fosfora/v1/...` addresses itself.
+    pub fn send_message(&self, addr: &str, args: Vec<OscType>) {
         let Some(ref socket) = self.socket else {
             return;
         };
         let packet = OscPacket::Message(OscMessage {
-            addr: format!("/{}{}", self.prefix, suffix),
+            addr: addr.to_string(),
             args,
         });
         match rosc::encoder::encode(&packet) {
