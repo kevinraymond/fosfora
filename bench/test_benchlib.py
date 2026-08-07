@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import numpy as np
 
+import datasetlib as dl
 from benchlib import results
 from benchlib.annotations import Annotations, key_to_mir_eval, load_index
 from benchlib.dump import DumpError, SignalDump
@@ -601,6 +602,82 @@ class TestStemsMetric(unittest.TestCase):
         self.assertGreater(block["drums"]["n_excluded_silence"], 0)
         # bass/melody proxies are constant on the kept frames: no correlation claim
         self.assertIsNone(block["bass"]["pearson"])
+
+
+class TestDatasetlib(unittest.TestCase):
+    def test_checked_in_manifests_validate(self):
+        for name in ("ballroom", "smc"):
+            m = dl.load_manifest(name)
+            self.assertEqual(m["dataset"], name)
+        self.assertEqual(
+            dl.source(dl.load_manifest("ballroom"), "audio")["kind"], "archive"
+        )
+        with self.assertRaises(dl.DatasetError):
+            dl.source(dl.load_manifest("ballroom"), "nope")
+
+    def test_check_pins(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "f.bin"
+            p.write_bytes(b"fosfora")
+            got = dl.check_pins(p, dl.sha256_file(p), dl.md5_file(p))
+            self.assertEqual(got["size"], 7)
+            with self.assertRaises(dl.DatasetError):
+                dl.check_pins(p, "0" * 64, None)
+            with self.assertRaises(dl.DatasetError):
+                dl.check_pins(p, None, "0" * 32)
+
+    def test_download_file_url_with_pins(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            src = td / "src.bin"
+            src.write_bytes(b"payload")
+            dest = td / "out" / "dest.bin"
+            got = dl.download(src.as_uri(), dest, sha256=dl.sha256_file(src), quiet=True)
+            self.assertEqual(got.read_bytes(), b"payload")
+            # existing verified dest is a no-op; a bad pin refuses the file
+            dl.download(src.as_uri(), dest, sha256=dl.sha256_file(src), quiet=True)
+            dest2 = td / "out" / "dest2.bin"
+            with self.assertRaises(dl.DatasetError):
+                dl.download(src.as_uri(), dest2, sha256="0" * 64, quiet=True)
+            self.assertFalse(dest2.exists())
+
+    def test_status_roundtrip_and_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            st = dl.Status(td / "status.json", "test")
+            f = td / "raw" / "a.bin"
+            f.parent.mkdir()
+            f.write_bytes(b"x")
+            st.record_file(td, f)
+            st.track("t1", fetch="ok")
+            st.track("t2", fetch="http 404")
+            st.save()
+            st2 = dl.Status(td / "status.json", "test")
+            self.assertEqual(st2.outcomes("fetch"), {"t1": "ok", "t2": "http 404"})
+            manifest = {"dataset": "test", "expected": {"tracks": 5},
+                        "exclusions": [{"id": "t9", "reason": "dup"}]}
+            report = dl.coverage_report(manifest, st2, "fetch")
+            self.assertIn("1 of 5 ok", report)
+            self.assertIn("1 failed", report)
+            self.assertIn("t2: http 404", report)
+
+    def test_bundle_and_index_interop_with_scorer(self):
+        with tempfile.TemporaryDirectory() as td:
+            norm = Path(td)
+            bundle = {
+                "schema": "fosfora-bench-annotation/v1",
+                "dataset": "test",
+                "track_id": "t1",
+                "audio": {"path": "t1.flac", "duration_s": 10.0},
+                "beats": [0.5, 1.0],
+            }
+            dl.write_bundle(norm, bundle)
+            dl.write_index(norm, "test", [
+                {"track_id": "t1", "audio": "t1.flac", "annotations": "t1.json"}
+            ])
+            tracks = load_index(norm / "index.json")
+            ann = Annotations.load(tracks[0]["annotations"])
+            np.testing.assert_allclose(ann.beats, [0.5, 1.0])
 
 
 if __name__ == "__main__":

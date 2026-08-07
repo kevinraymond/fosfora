@@ -1,0 +1,31 @@
+{
+ "schema": "fosfora-bench-manifest/v1",
+ "dataset": "ballroom",
+ "signals": ["beats", "downbeats", "tempo"],
+ "license_notes": "Audio: ISMIR 2004 tempo-induction contest distribution (BallroomDancers.com excerpts), no explicit license — research use only, never redistributed from this repo. Annotations: CPJKU/BallroomAnnotations GitHub repo.",
+ "citations": ["gouyon2006tempo", "krebs2013ballroom"],
+ "sources": [
+  {
+   "name": "audio",
+   "kind": "archive",
+   "url": "http://mtg.upf.edu/ismir2004/contest/tempoContest/data1.tar.gz",
+   "upstream_md5": "2872a3e52070bc342a4510a95e2fa0b8",
+   "sha256": null,
+   "unpack": "tar.gz",
+   "notes": "sha256 gets filled by the first verified fetch (md5 above is the upstream pin) and committed; ~698 thirty-second wavs, ~1.5 GB unpacked."
+  },
+  {
+   "name": "annotations",
+   "kind": "git",
+   "url": "https://github.com/CPJKU/BallroomAnnotations",
+   "pin": null,
+   "notes": ".beats files: 'time_sec beat_id' per line, beat_id 1 = downbeat. Pin gets set to the commit sha of the first fetch and committed."
+  }
+ ],
+ "expected": {"tracks": 698, "scoreable": null},
+ "exclusions": [],
+ "notes": [
+  "VERIFY AT C8: the Sturm 2014 duplicate list (4 exact + 9 near replicas) goes into exclusions with ids + reasons; expected.scoreable = 698 - excluded.",
+  "Tempo ground truth: derived as median inter-beat interval from the CPJKU beats (VERIFY AT C8 whether the ISMIR2004 contest tempo list should be preferred; record the choice in tempo_source)."
+ ]
+}

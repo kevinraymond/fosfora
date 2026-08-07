@@ -1,0 +1,24 @@
+{
+ "schema": "fosfora-bench-manifest/v1",
+ "dataset": "smc",
+ "signals": ["beats"],
+ "license_notes": "SMC_MIREX (Holzapfel et al. 2012): 40 s mono excerpts selected for beat-tracking difficulty; Creative Commons per the original INESC distribution — verify exact variant when the source resolves.",
+ "citations": ["holzapfel2012smc"],
+ "sources": [
+  {
+   "name": "bundle",
+   "kind": "archive",
+   "url": null,
+   "upstream_md5": null,
+   "sha256": null,
+   "unpack": "tar.gz",
+   "notes": "UNRESOLVED (2026-08-06): both smc.inescporto.pt and smc.inesctec.pt refused connections during research. Resolve at C8 — candidates: INESC TEC page when back up, the marl/jams-data GitHub mirror of SMC_MIREX annotations, or the authors. fetch_smc.py must tolerate total unavailability: report and exit 0, never fabricate."
+  }
+ ],
+ "expected": {"tracks": 217, "scoreable": null},
+ "exclusions": [],
+ "notes": [
+  "No downbeats by design (the difficulty is the point); beats only.",
+  "VERIFY AT C8: track count (217 vs 218 appears in different secondary sources) against the actual archive."
+ ]
+}
