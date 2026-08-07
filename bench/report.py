@@ -54,6 +54,14 @@ DATASET_NOTES = {
         "Context: the in-genre test — EDM, 2-minute previews. Mixed In Key and "
         "RekordBox rows are commercial DJ tools benchmarked offline."
     ),
+    "harmonix": (
+        "Context: audio is re-fetched from YouTube and admitted only by the "
+        "alignment gate (subsequence mel-DTW vs the authors' distributed "
+        "original-audio spectrograms + onset refinement) — the coverage table "
+        "counts every exclusion. Published rows are 8-fold cross-validation on "
+        "the full 912; ours is zero-shot on the gated subset. Not the same "
+        "test bed — both facts stated."
+    ),
 }
 
 

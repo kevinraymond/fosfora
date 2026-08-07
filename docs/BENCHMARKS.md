@@ -20,6 +20,7 @@ headline beat numbers adopt the literature's 5 s trim.
 | ballroom | 698 | 685 | 13 | 0 | `8775a3a8ba19410a` |
 | giantsteps_key | 604 | 604 | 0 | 0 | `8775a3a8ba19410a` |
 | giantsteps_tempo | 664 | 661 | 0 | 0 | `8775a3a8ba19410a` |
+| harmonix | 912 | 374 | 0 | 0 | `8775a3a8ba19410a` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -66,6 +67,23 @@ Context: the in-genre test — EDM, 2-minute previews. Ground truth is the crowd
 
 Causal extras: mean lock time 75.4 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.514. Offline systems have no equivalent — they see the whole file.
 
+## Harmonix Set (pop/EDM, YouTube-sourced audio)
+
+Context: audio is re-fetched from YouTube and admitted only by the alignment gate (subsequence mel-DTW vs the authors' distributed original-audio spectrograms + onset refinement) — the coverage table counts every exclusion. Published rows are 8-fold cross-validation on the full 912; ours is zero-shot on the gated subset. Not the same test bed — both facts stated.
+
+| System | Mode | Beat F | CMLt | AMLt | Downbeat F |
+|---|---|---|---|---|---|
+| **Fosfora** | **causal (streaming)** | **0.482** | **0.190** | **0.273** | **0.124** |
+| All-In-One ([kim2023allinone](#references) — 8-fold CV on the full 912) | offline | 0.958 | 0.913 | 0.964 | 0.915 |
+| SpecTNT-TCN ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.908 |
+| TCN-Large (Böck TCN repro) ([kim2023allinone](#references)) | offline | 0.953 | — | — | 0.901 |
+
+| System | Mode | Acc1 | Acc2 |
+|---|---|---|---|
+| **Fosfora** | **causal (streaming)** | **0.545** | **0.794** |
+
+Causal extras: mean lock time 148.8 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.477. Offline systems have no equivalent — they see the whole file.
+
 ## References
 
 - **bock2016joint** — Böck, Krebs & Widmer, "Joint Beat and Downbeat Tracking with Recurrent Neural Networks", ISMIR 2016 (the madmom DBNDownBeatTracker). <https://archives.ismir.net/ismir2016/paper/000186.pdf>
@@ -73,6 +91,7 @@ Causal extras: mean lock time 75.4 s (earliest instant after which every later e
 - **heydari2021beatnet** — Heydari, Cwitkowitz & Duan, "BeatNet: CRNN and Particle Filtering for Online Joint Beat, Downbeat and Meter Tracking", ISMIR 2021. <https://archives.ismir.net/ismir2021/paper/000033.pdf>
 - **schreiber2018cnn** — Schreiber & Müller, "A Single-Step Approach to Musical Tempo Estimation Using a Convolutional Neural Network", ISMIR 2018. <https://www.tagtraum.com/download/2018_schreiber_tempo_cnn.pdf>
 - **korzeniowski2018key** — Korzeniowski & Widmer, "Genre-Agnostic Key Classification with Convolutional Neural Networks", ISMIR 2018. <https://arxiv.org/abs/1808.05340>
+- **kim2023allinone** — Kim & Nam, "All-In-One Metrical and Functional Structure Analysis with Neighborhood Attentions on Demixed Audio", WASPAA 2023. <https://arxiv.org/abs/2307.16425>
 - **sturm2014ballroom** — Sturm, "Faults in the Ballroom dataset" (duplicate list), 2014. <https://highnoongmt.wordpress.com/2014/01/23/ballroom_dataset/>
 - **krebs2013ballroom** — Krebs, Böck & Widmer, "Rhythmic Pattern Modeling for Beat and Downbeat Tracking in Musical Audio", ISMIR 2013 (Ballroom beat/downbeat annotations). <https://github.com/CPJKU/BallroomAnnotations>
 - **gouyon2006tempo** — Gouyon et al., "An Experimental Comparison of Audio Tempo Induction Algorithms", IEEE TASLP 2006 (the ISMIR 2004 Ballroom distribution). <http://mtg.upf.edu/ismir2004/contest/tempoContest/>
