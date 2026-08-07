@@ -124,11 +124,19 @@ impl SignalEmitter {
         let beat_ts = frame.beat_time.unwrap_or(ts);
         if f.beat > 0.5 {
             self.beat_total += 1;
-            sink.emit(beat_ts, schema::BEAT, &[OscType::Int(self.beat_total as i32)]);
+            sink.emit(
+                beat_ts,
+                schema::BEAT,
+                &[OscType::Int(self.beat_total as i32)],
+            );
         }
         if f.downbeat > 0.5 {
             self.bar_total += 1;
-            sink.emit(beat_ts, schema::DOWNBEAT, &[OscType::Int(self.bar_total as i32)]);
+            sink.emit(
+                beat_ts,
+                schema::DOWNBEAT,
+                &[OscType::Int(self.bar_total as i32)],
+            );
         }
         if f.drop > 0.5 {
             self.drop_total += 1;

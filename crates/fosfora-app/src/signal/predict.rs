@@ -405,8 +405,8 @@ mod tests {
                 f.drop = 1.0;
             }
         });
-        let bar_vals =
-            &d.values[d.values.len() - HOPS_PER_BAR as usize..d.values.len() - HOPS_PER_BAR as usize + 1];
+        let bar_vals = &d.values
+            [d.values.len() - HOPS_PER_BAR as usize..d.values.len() - HOPS_PER_BAR as usize + 1];
         assert!(
             (bar_vals[0] - DROP_COLLAPSE).abs() < 1e-6,
             "collapse on the drop hop: {bar_vals:?}"

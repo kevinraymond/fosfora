@@ -463,8 +463,7 @@ struct KalmanBpm {
     variance: f64,      // estimation uncertainty
     q: f64,             // process noise
     r: f64,             // measurement noise
-    diverge_count: u32, // consecutive divergent frames
-    snap_count: u32,    // consecutive octave-snapped frames
+    diverge_count: u32, // leaky count of recent divergent frames
     initialized: bool,
 }
 
@@ -476,14 +475,11 @@ impl KalmanBpm {
             q: 0.001,
             r: 0.1,
             diverge_count: 0,
-            snap_count: 0,
             initialized: false,
         }
     }
 
-    /// Jump the state to `bpm` with high certainty (A7 #1458: tap tempo). Bypasses the
-    /// octave-snap preprocessing in `update`, which would otherwise reject a tap that is
-    /// an octave away from the current estimate — exactly the case the user is correcting.
+    /// Jump the state to `bpm` with high certainty (A7 #1458: tap tempo).
     fn force(&mut self, bpm: f64) {
         if bpm <= 0.0 {
             return;
@@ -491,18 +487,15 @@ impl KalmanBpm {
         self.state = bpm.log2();
         self.variance = 0.01;
         self.diverge_count = 0;
-        self.snap_count = 0;
         self.initialized = true;
     }
 
-    /// Shift the filtered state by `direction` octaves (A7 #1458). Resets `snap_count` so
-    /// the shift doesn't immediately trip the snap-escape counter.
+    /// Shift the filtered state by `direction` octaves (A7 #1458).
     fn shift_octave(&mut self, direction: i32) {
         if !self.initialized {
             return;
         }
         self.state += direction as f64;
-        self.snap_count = 0;
     }
 
     /// Update with a raw BPM measurement and confidence. Returns filtered BPM.
@@ -524,44 +517,21 @@ impl KalmanBpm {
 
         let current_bpm = 2.0f64.powf(self.state);
 
-        // Octave-aware preprocessing: snap only true octave errors (2:1, 1:2)
-        let ratio = raw_bpm / current_bpm;
-        let mut snapped_bpm = raw_bpm;
-        let mut was_snapped = false;
-        for &hr in &[0.5, 2.0] {
-            if (ratio - hr).abs() / hr < 0.05 {
-                snapped_bpm = current_bpm;
-                was_snapped = true;
-                break;
-            }
-        }
+        // Q2: no octave-snap preprocessing here anymore. Octave decisions live in
+        // `compute_tempo`'s candidate scoring (continuity weight), where they are
+        // made on graded evidence — the old snap-then-count-to-30 loop reset on any
+        // single non-snapping frame, which is how tracks got permanently stuck on
+        // the wrong octave.
+        let measurement = raw_bpm.log2();
 
-        // Track consecutive snaps — if snapping for too long, the tempo may
-        // have genuinely changed to the half/double. Accept raw measurement.
-        if was_snapped {
-            self.snap_count += 1;
-            if self.snap_count >= 30 {
-                log::debug!(
-                    "Kalman snap escape: accepting {:.1} BPM after {} consecutive snaps",
-                    raw_bpm,
-                    self.snap_count
-                );
-                snapped_bpm = raw_bpm;
-                // was_snapped is intentionally not read after this reassignment;
-                // the snap_count reset handles the state change.
-                self.snap_count = 0;
-            }
-        } else {
-            self.snap_count = 0;
-        }
-        let snapped_measurement = snapped_bpm.log2();
-
-        // Divergence detection: 5 consecutive frames >10% deviation -> hard reset
-        let bpm_deviation = (snapped_bpm - current_bpm).abs() / current_bpm.max(1.0);
+        // Divergence detection: sustained large deviation -> hard reset. The count
+        // leaks instead of zeroing so one in-range frame cannot indefinitely
+        // postpone a genuine tempo change.
+        let bpm_deviation = (raw_bpm - current_bpm).abs() / current_bpm.max(1.0);
         if bpm_deviation > 0.10 {
             self.diverge_count += 1;
         } else {
-            self.diverge_count = 0;
+            self.diverge_count = self.diverge_count.saturating_sub(1);
         }
 
         if self.diverge_count >= 15 {
@@ -579,13 +549,16 @@ impl KalmanBpm {
 
         // Adaptive noise: R = f(confidence), Q = f(stability)
         self.r = 0.01 + (1.0 - confidence) * 0.5;
-        self.q = if self.diverge_count > 0 { 0.1 } else { 0.001 };
+        // Escalate process noise only once divergence is SUSTAINED — a single
+        // divergent frame with q = 0.1 would let 2-3 noisy frames drag the
+        // state most of the way to a false octave.
+        self.q = if self.diverge_count >= 5 { 0.1 } else { 0.001 };
 
         // Kalman predict (constant model: state unchanged)
         self.variance += self.q;
 
         // Kalman update
-        let innovation = snapped_measurement - self.state;
+        let innovation = measurement - self.state;
         let s = self.variance + self.r;
         let k = self.variance / s;
         self.state += k * innovation;
@@ -598,6 +571,54 @@ impl KalmanBpm {
 // ---------------------------------------------------------------------------
 // Stage 2: FFT-based tempo estimation with Kalman tracking
 // ---------------------------------------------------------------------------
+
+/// Q2 seed gate: the first measurement the Kalman adopts defines the octave the
+/// whole track then argues against, so it must be earned — either one confident
+/// reading, or two readings that agree within 5% across at least
+/// [`SEED_AGREE_SPAN_SECS`] of NEW audio. The span is load-bearing: consecutive
+/// tempo updates are 70 ms apart on a multi-second ACF window, so "two
+/// consecutive agree" is satisfied by any persistent noise artifact (measured:
+/// white noise holds conf ≈ 0.26 and self-agrees indefinitely).
+const SEED_MIN_CONFIDENCE: f64 = 0.35;
+const SEED_AGREE_MIN_CONFIDENCE: f64 = 0.2;
+const SEED_AGREE_SPAN_SECS: f64 = 2.0;
+/// Continuity bonus for candidates near the tracked tempo (log2 σ ≈ 4%): enough
+/// hysteresis that near-tied octave scores don't flap frame to frame, weak
+/// enough that a genuinely better octave still wins on evidence.
+const CONTINUITY_BONUS: f64 = 0.25;
+const CONTINUITY_SIGMA_LOG2: f64 = 0.06;
+
+/// Linearly interpolated ACF value at a continuous lag. `x` must be within
+/// `[0, len-1]`; callers guarantee it via the float lag bounds.
+fn acf_at(acf: &[f64], x: f64) -> f64 {
+    let i = x.floor() as usize;
+    if i + 1 >= acf.len() {
+        return acf[acf.len() - 1];
+    }
+    let frac = x - i as f64;
+    acf[i] * (1.0 - frac) + acf[i + 1] * frac
+}
+
+/// Comb evidence for a candidate period: the 1/h-weighted MEAN of the ACF at
+/// h·lag for h = 1..4, over the harmonics that fit inside the ACF. A mean, not
+/// a sum: with a sum, a candidate whose harmonics ran past the end of the ACF
+/// scored fewer terms than its double-tempo rival — at the 2 s seed a 120 BPM
+/// candidate summed 4 terms while 60 BPM got 2, which is exactly when the old
+/// ungated seed was taken.
+fn comb_score(acf: &[f64], lag: f64) -> f64 {
+    let acr_max = (acf.len() - 1) as f64;
+    let mut num = 0.0;
+    let mut wsum = 0.0;
+    for h in 1..=4u32 {
+        let x = lag * f64::from(h);
+        if x <= acr_max {
+            let w = 1.0 / f64::from(h);
+            num += w * acf_at(acf, x);
+            wsum += w;
+        }
+    }
+    if wsum > 0.0 { num / wsum } else { 0.0 }
+}
 
 struct TempoEstimator {
     bpm_range: (f32, f32),
@@ -629,6 +650,10 @@ struct TempoEstimator {
 
     // Kalman filter replaces EMA + stability tracking
     kalman: KalmanBpm,
+    /// Q2: last unseeded measurement that cleared [`SEED_AGREE_MIN_CONFIDENCE`]
+    /// with the frame it was taken at, waiting for a confirming reading that
+    /// agrees within 5% at least [`SEED_AGREE_SPAN_SECS`] later.
+    pending_seed: Option<(f64, u32)>,
 }
 
 impl TempoEstimator {
@@ -658,6 +683,7 @@ impl TempoEstimator {
             auto_prior: config.auto_prior,
             octave_offset: 0,
             kalman: KalmanBpm::new(),
+            pending_seed: None,
         }
     }
 
@@ -757,17 +783,42 @@ impl TempoEstimator {
 
         let (raw_bpm, confidence, _raw_period_frames) = self.compute_tempo();
 
-        // Confidence gate: don't feed low-confidence garbage to the Kalman.
-        // During noisy sections (off-beats, transitions), the autocorrelation
-        // is unreliable and would corrupt the filter state.
-        if confidence < 0.15 && self.current_bpm > 0.0 {
-            self.current_confidence = confidence;
-            let period_s = self.current_period_frames * self.frame_time;
-            return (self.current_bpm, self.current_confidence, period_s);
-        }
-
         // A7 (#1458): honour the user's octave override before filtering.
         let raw_bpm = self.apply_octave_offset(raw_bpm);
+
+        // Q2 seed gate. The old code adopted the very first post-2s measurement
+        // with NO confidence requirement (the low-confidence hold below only
+        // applied once current_bpm > 0), then defended that garbage seed
+        // indefinitely. Until a seed is earned, keep honestly reporting silence —
+        // the scheduler stays in its no-tempo path rather than free-running on
+        // a fiction. Post-seed, every measurement flows to the filter: the
+        // adaptive R already shrinks the gain to near-zero at low confidence,
+        // which is what the deleted `< 0.15` early-return was redundantly (and
+        // harmfully — it also froze the published BPM forever) doing.
+        if !self.kalman.initialized {
+            let span = (SEED_AGREE_SPAN_SECS * self.frame_rate) as u32;
+            let confirmed = raw_bpm > 0.0
+                && self.pending_seed.is_some_and(|(p, f0)| {
+                    (raw_bpm / p - 1.0).abs() < 0.05 && self.frame_count.wrapping_sub(f0) >= span
+                });
+            let earned = raw_bpm > 0.0
+                && (confidence >= SEED_MIN_CONFIDENCE
+                    || (confidence >= SEED_AGREE_MIN_CONFIDENCE && confirmed));
+            if !earned {
+                if raw_bpm > 0.0 && confidence >= SEED_AGREE_MIN_CONFIDENCE {
+                    match self.pending_seed {
+                        // An agreeing reading keeps the ORIGINAL stamp — the span
+                        // measures how long the hypothesis has held, not how
+                        // recently it was repeated.
+                        Some((p, _)) if (raw_bpm / p - 1.0).abs() < 0.05 => {}
+                        _ => self.pending_seed = Some((raw_bpm, self.frame_count)),
+                    }
+                }
+                self.current_confidence = confidence;
+                return (0.0, self.current_confidence, 0.0);
+            }
+            self.pending_seed = None;
+        }
 
         // Kalman filter update
         let filtered_bpm = self.kalman.update(raw_bpm, confidence);
@@ -837,117 +888,107 @@ impl TempoEstimator {
             return (0.0, 0.0, 0.0);
         }
 
-        // Extract autocorrelation up to 4*max_lag for harmonic scoring
+        // Extract autocorrelation up to 4*max_lag for harmonic scoring.
+        //
+        // Q2: unbiased estimate. The zero-padded ACF sums (n − lag) products, so
+        // long lags were attenuated by exactly (n − lag)/n — a permanent
+        // structural bias toward double-time (~+16% for the 2:1 pair at full
+        // history). Divide it out; clamp the factor so the noisy far tail (few
+        // products per bin) cannot explode.
         let acr_len = (4 * max_lag + 1).min(n).min(self.fft_size);
         let autocorr: Vec<f64> = buffer[..acr_len]
             .iter()
-            .map(|c| c.re * scale / zero_lag)
+            .enumerate()
+            .map(|(lag, c)| (c.re * scale / zero_lag) * (n as f64 / (n - lag) as f64).min(4.0))
             .collect();
         let acr_max = autocorr.len() - 1;
 
-        // Find initial peak using raw autocorrelation (no prior bias)
-        // Prior is applied only in the multi-ratio correction step
-        let mut best_lag = min_lag;
-        let mut best_value = f64::NEG_INFINITY;
-
-        for lag in min_lag..=max_lag.min(acr_max) {
-            if autocorr[lag] > best_value {
-                best_value = autocorr[lag];
-                best_lag = lag;
-            }
-        }
-
-        // Multi-ratio octave correction
-        // Check metrical ratios: for each, compute harmonic score weighted by tempo prior.
-        // 1:3 and 1:4 are needed because the initial peak can land on the 3rd or 4th
-        // subharmonic (e.g., lag 66 for a true period of 22), and without these ratios
-        // the correction can only step down to 2T, never reaching T directly.
-        let ratios: [(f64, f64); 9] = [
-            (1.0, 4.0), // quarter lag -> 4x BPM
-            (1.0, 3.0), // third lag -> 3x BPM
-            (1.0, 2.0), // half lag -> double BPM
-            (2.0, 3.0),
-            (3.0, 4.0),
-            (1.0, 1.0), // same
-            (4.0, 3.0),
-            (3.0, 2.0),
-            (2.0, 1.0), // double lag -> half BPM
-        ];
-
-        let mut best_candidate_lag = best_lag;
-        let mut best_score = f64::NEG_INFINITY;
-
-        for &(num, den) in &ratios {
-            let candidate_lag = ((best_lag as f64 * num / den).round() as usize).max(1);
-            if candidate_lag < min_lag || candidate_lag > max_lag || candidate_lag > acr_max {
+        // Q2: candidates live in CONTINUOUS lag from here on. Adjacent-bin
+        // spacing is 1/lag — 2.5-3.4% at EDM tempi against the 4% Acc1
+        // tolerance — so integer-rounded candidate lags could not represent the
+        // true tempo at all. The parabolic vertex is only valid at a true local
+        // max, so refine each ACF peak at its own bin, then project metrical
+        // ratios in float.
+        let range_end = max_lag.min(acr_max.saturating_sub(1));
+        let mut peaks: Vec<(f64, f64)> = Vec::new(); // (refined lag, refined height)
+        for lag in min_lag.max(1)..=range_end {
+            let (alpha, beta, gamma) = (autocorr[lag - 1], autocorr[lag], autocorr[lag + 1]);
+            if beta < alpha || beta < gamma || beta <= 0.0 {
                 continue;
             }
+            let curvature = alpha - 2.0 * beta + gamma; // ≤ 0 at a local max
+            let (rl, rv) = if curvature < -1e-12 {
+                let p = (0.5 * (alpha - gamma) / curvature).clamp(-0.5, 0.5);
+                (lag as f64 + p, beta - 0.25 * (alpha - gamma) * p)
+            } else {
+                (lag as f64, beta)
+            };
+            peaks.push((rl, rv));
+        }
+        // Strongest few peaks are enough — every metrical level of a real
+        // rhythm is a local max, and the ratio projection reaches the rest.
+        peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        peaks.truncate(5);
+        if peaks.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
 
-            // Harmonic score: base + sum(autocorr[h*lag] / h) for h=2,3,4
-            let mut harmonic_score = autocorr[candidate_lag];
-            for h in 2..=4usize {
-                let h_lag = candidate_lag * h;
-                if h_lag <= acr_max {
-                    harmonic_score += autocorr[h_lag] / h as f64;
+        // Metrical ratios: 1:3 and 1:4 are needed because a peak can land on the
+        // 3rd or 4th subharmonic; without them the projection can only step to
+        // 2T, never reaching T directly.
+        let ratios: [(f64, f64); 9] = [
+            (1.0, 4.0),
+            (1.0, 3.0),
+            (1.0, 2.0),
+            (2.0, 3.0),
+            (3.0, 4.0),
+            (1.0, 1.0),
+            (4.0, 3.0),
+            (3.0, 2.0),
+            (2.0, 1.0),
+        ];
+        // Float lag bounds from the BPM range itself — a candidate at, say, lag
+        // 17.5 (295 BPM) is legal even though no integer bin represents it. This
+        // also removes the old silent (0,0,0) discard when a rounded ratio
+        // landed just outside the range.
+        let min_lag_f = 60.0 / (self.bpm_range.1 as f64 * self.frame_time);
+        let max_lag_f = 60.0 / (self.bpm_range.0 as f64 * self.frame_time);
+
+        let mut best: Option<(f64, f64)> = None; // (lag, weighted score)
+        for &(peak_lag, _) in &peaks {
+            for &(num, den) in &ratios {
+                let cand = peak_lag * num / den;
+                if cand < min_lag_f || cand > max_lag_f {
+                    continue;
+                }
+                let bpm = 60.0 / (cand * self.frame_time);
+                let weighted = comb_score(&autocorr, cand)
+                    * self.tempo_prior_weight(bpm)
+                    * self.continuity_weight(bpm);
+                if best.is_none_or(|(_, b)| weighted > b) {
+                    best = Some((cand, weighted));
                 }
             }
-
-            let bpm = 60.0 / (candidate_lag as f64 * self.frame_time);
-            let weight = self.tempo_prior_weight(bpm);
-            let weighted_score = harmonic_score * weight;
-
-            if weighted_score > best_score {
-                best_score = weighted_score;
-                best_candidate_lag = candidate_lag;
-            }
         }
+        let Some((best_lag_f, _)) = best else {
+            return (0.0, 0.0, 0.0);
+        };
 
-        if best_candidate_lag != best_lag {
-            let old_bpm = 60.0 / (best_lag as f64 * self.frame_time);
-            let new_bpm = 60.0 / (best_candidate_lag as f64 * self.frame_time);
-            log::debug!(
-                "Multi-ratio correction: lag {} ({:.1} BPM) -> lag {} ({:.1} BPM)",
-                best_lag,
-                old_bpm,
-                best_candidate_lag,
-                new_bpm
-            );
-        }
+        let bpm = 60.0 / (best_lag_f * self.frame_time);
 
-        best_lag = best_candidate_lag;
-
-        // Parabolic interpolation for sub-frame precision
-        let mut refined_lag = best_lag as f64;
-        if best_lag > min_lag && best_lag < max_lag.min(acr_max) {
-            let alpha = autocorr[best_lag - 1];
-            let beta = autocorr[best_lag];
-            let gamma = autocorr[best_lag + 1];
-            let denom = 2.0 * (2.0 * beta - alpha - gamma);
-            if denom.abs() > 1e-10 {
-                let p = (alpha - gamma) / denom;
-                refined_lag = best_lag as f64 + p.clamp(-0.5, 0.5);
-            }
-        }
-
-        // Convert to BPM
-        let period_s = refined_lag * self.frame_time;
-        let bpm = if period_s > 0.0 { 60.0 / period_s } else { 0.0 };
-
-        // Confidence: peak height relative to noise floor in the BPM range
-        // Generalized autocorrelation (|FFT|^1) gives lower absolute values than
-        // standard autocorrelation, so use relative measure instead
-        let confidence = if best_lag <= acr_max {
+        // Confidence: the winner's interpolated height relative to the median
+        // floor across the candidate range.
+        let confidence = {
             let range_end = max_lag.min(acr_max);
             let mut sorted_vals: Vec<f64> = autocorr[min_lag..=range_end].to_vec();
             sorted_vals
                 .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let noise_floor = sorted_vals[sorted_vals.len() / 2]; // median
-            let peak = autocorr[best_lag];
+            let peak = acf_at(&autocorr, best_lag_f);
             ((peak - noise_floor) / (1.0 - noise_floor).max(1e-6)).clamp(0.0, 1.0)
-        } else {
-            0.0
         };
 
+        // Safety net only — the float bounds above already confine candidates.
         if bpm < self.bpm_range.0 as f64 || bpm > self.bpm_range.1 as f64 {
             return (0.0, 0.0, 0.0);
         }
@@ -956,10 +997,22 @@ impl TempoEstimator {
             "Tempo estimate: {:.1} BPM (confidence {:.2}, lag {:.1})",
             bpm,
             confidence,
-            refined_lag
+            best_lag_f
         );
 
-        (bpm, confidence, refined_lag)
+        (bpm, confidence, best_lag_f)
+    }
+
+    /// Q2 octave hysteresis (replaces the Kalman's snap counter): a candidate
+    /// within a few percent of the tempo already being tracked gets a modest
+    /// bonus, so near-tied octave scores don't flap frame to frame, while a
+    /// genuinely better octave (> ~25% comb advantage) still wins immediately.
+    fn continuity_weight(&self, bpm: f64) -> f64 {
+        if self.current_bpm <= 0.0 || bpm <= 0.0 {
+            return 1.0;
+        }
+        let d = bpm.log2() - self.current_bpm.log2();
+        1.0 + CONTINUITY_BONUS * (-0.5 * (d / CONTINUITY_SIGMA_LOG2).powi(2)).exp()
     }
 
     /// Apply the user's octave override to a raw measurement (A7 #1458). Walks the offset
@@ -1514,29 +1567,47 @@ mod tests {
         }
     }
 
+    /// Q2 replaced the snap-then-count-to-30 octave preprocessing with graded
+    /// evidence upstream (continuity weight in candidate scoring). At the
+    /// filter, brief octave noise is only *damped* now — the small gain keeps a
+    /// couple of wild frames from moving the estimate far — and the track
+    /// recovers as soon as sane measurements resume.
     #[test]
-    fn kalman_octave_snap() {
+    fn kalman_brief_octave_noise_is_damped() {
         let mut k = KalmanBpm::new();
         k.update(120.0, 0.8);
         for _ in 0..10 {
             k.update(120.0, 0.8);
         }
-        // Now feed 240 (octave double) — should snap back to 120
-        let bpm = k.update(240.0, 0.8);
-        assert!((bpm - 120.0).abs() < 10.0, "expected near 120, got {}", bpm);
+        for _ in 0..3 {
+            let bpm = k.update(240.0, 0.8);
+            assert!(
+                bpm < 160.0,
+                "3 noisy frames must not reach the far octave, got {bpm}"
+            );
+        }
+        let mut bpm = 0.0;
+        for _ in 0..20 {
+            bpm = k.update(120.0, 0.8);
+        }
+        assert!(
+            (bpm - 120.0).abs() < 6.0,
+            "must recover after noise, got {bpm}"
+        );
     }
 
+    /// A sustained, genuine change to the double tempo is followed promptly —
+    /// the leaky divergence counter hard-resets after ~15 divergent frames
+    /// (~1 s at the tempo cadence) instead of chasing through the filter gain.
     #[test]
-    fn kalman_octave_escape() {
+    fn kalman_sustained_octave_change_is_followed() {
         let mut k = KalmanBpm::new();
         k.update(120.0, 0.8);
-        // Feed 240 for 60 frames — should eventually escape snap
-        for _ in 0..60 {
+        for _ in 0..20 {
             k.update(240.0, 0.8);
         }
         let bpm = k.update(240.0, 0.8);
-        // After escape, should be near 240
-        assert!((bpm - 240.0).abs() < 30.0, "expected near 240, got {}", bpm);
+        assert!((bpm - 240.0).abs() < 12.0, "expected near 240, got {}", bpm);
     }
 
     #[test]
@@ -1650,6 +1721,39 @@ mod tests {
 
     // ---- Integration test ----
 
+    /// Per-frame band magnitude for a kick train with sub-hop placement. Kick
+    /// `i` (0-based) lands at `(i+1) * interval`; its magnitude rises to
+    /// `amp(i)` GEOMETRICALLY across the two frames the instant falls between,
+    /// so the SuperFlux log-domain rise splits (1−frac)/frac — which is how the
+    /// real 87.5%-overlap analysis window encodes sub-hop onset position in the
+    /// flux envelope. Binary single-frame impulses instead quantize an off-bin
+    /// tempo like 175 BPM into a hard 29/30-frame alternation whose
+    /// every-other-kick lag is EXACTLY 59 frames, making half tempo genuinely
+    /// sharper in the synthetic signal than the tempo it claims to carry.
+    fn kick_amplitude_track(
+        num_frames: usize,
+        dt: f64,
+        interval: f64,
+        amp: impl Fn(usize) -> f32,
+    ) -> Vec<f32> {
+        const BASE: f64 = 0.001;
+        let mut track = vec![BASE as f32; num_frames];
+        let mut i = 0usize;
+        loop {
+            let f = (i + 1) as f64 * interval / dt;
+            let idx = f as usize;
+            if idx + 1 >= num_frames {
+                return track;
+            }
+            let frac = f - idx as f64;
+            let a = f64::from(amp(i));
+            let first = BASE * (a / BASE).powf(1.0 - frac);
+            track[idx] = track[idx].max(first as f32);
+            track[idx + 1] = track[idx + 1].max(a as f32);
+            i += 1;
+        }
+    }
+
     /// Run a BPM convergence test with synthetic kicks at the given tempo.
     /// Returns the detected BPM after `duration_secs` seconds.
     fn run_bpm_convergence_test(target_bpm: f64, duration_secs: f64) -> f32 {
@@ -1670,24 +1774,26 @@ mod tests {
         // estimator 13.9% low, and only the +/-15% tolerance bands hid it.
         let dt = crate::audio::ANALYSIS_HOP as f64 / sample_rate as f64;
         let kick_interval = 60.0 / target_bpm;
-        let mut last_kick = -1.0f64;
         let num_frames = (duration_secs / dt) as usize;
+        // Sub-hop onset placement, like a real windowed analyzer sees it: a kick
+        // between two hops splits its energy across both in proportion to its
+        // fractional position. Single-frame impulses instead quantize an off-bin
+        // tempo like 175 BPM (29.53 frames) into a hard 29/30 alternation whose
+        // every-other-kick lag is EXACTLY 59 — making half tempo genuinely
+        // sharper in the synthetic signal than the tempo it claims to carry.
+        let kick_amp = kick_amplitude_track(num_frames, dt, kick_interval, |_| 2.0);
 
         let mut last_bpm = 0.0f32;
 
-        for frame in 0..num_frames {
+        for (frame, &amp) in kick_amp.iter().enumerate() {
             let t = frame as f64 * dt;
 
-            let is_kick_frame = (t - last_kick) >= kick_interval - dt * 0.5;
             let mut bass = vec![0.001f32; bass_len];
             let mid = vec![0.001f32; mid_len];
             let high = vec![0.001f32; high_len];
 
-            if is_kick_frame && t >= kick_interval {
-                for bin in 1..12 {
-                    bass[bin] = 2.0;
-                }
-                last_kick = t;
+            for bin in 1..12 {
+                bass[bin] = amp;
             }
 
             let result = detector.process(&bass, &mid, &high, t, false);
@@ -1700,12 +1806,48 @@ mod tests {
         last_bpm
     }
 
+    /// Like `run_bpm_convergence_with`, but alternating strong/weak hits — the
+    /// strong-hits-only grid (half tempo) carries real ACF evidence of its own,
+    /// like a kick/snare backbeat does.
+    fn run_backbeat_convergence(target_bpm: f64, duration_secs: f64, preset: TempoPreset) -> f32 {
+        let (center, sigma) = preset.values();
+        let tempo = TempoConfig {
+            prior_center_bpm: center,
+            prior_sigma: sigma,
+            auto_prior: false,
+        };
+        let sample_rate = 44100.0;
+        let mut detector = BeatDetector::new(sample_rate, tempo);
+        let (bass_len, mid_len, high_len) = (2049, 513, 257);
+        let dt = crate::audio::ANALYSIS_HOP as f64 / sample_rate as f64;
+        let kick_interval = 60.0 / target_bpm;
+        let num_frames = (duration_secs / dt) as usize;
+        let kick_amp = kick_amplitude_track(num_frames, dt, kick_interval, |i| {
+            if i % 2 == 0 { 2.0 } else { 0.8 }
+        });
+        let mut last_bpm = 0.0f32;
+        for (frame, &amp) in kick_amp.iter().enumerate() {
+            let t = frame as f64 * dt;
+            let mut bass = vec![0.001f32; bass_len];
+            let mid = vec![0.001f32; mid_len];
+            let high = vec![0.001f32; high_len];
+            for bin in 1..12 {
+                bass[bin] = amp;
+            }
+            last_bpm = detector.process(&bass, &mid, &high, t, false).bpm;
+        }
+        eprintln!("Backbeat convergence: target={target_bpm}, detected={last_bpm}");
+        last_bpm
+    }
+
+    // Q2: bands tightened from the ±15-20% that hid the lag quantization and the
+    // sign-flipped parabola to ±5% — continuous-lag scoring lands well inside.
     #[test]
     fn bpm_converges_120() {
         let bpm = run_bpm_convergence_test(120.0, 8.0);
         assert!(
-            bpm > 102.0 && bpm < 138.0,
-            "120 BPM: expected 102-138, got {bpm}"
+            (f64::from(bpm) - 120.0).abs() / 120.0 < 0.05,
+            "120 BPM: expected within 5%, got {bpm}"
         );
     }
 
@@ -1713,8 +1855,8 @@ mod tests {
     fn bpm_converges_90() {
         let bpm = run_bpm_convergence_test(90.0, 10.0);
         assert!(
-            bpm > 72.0 && bpm < 108.0,
-            "90 BPM: expected 72-108, got {bpm}"
+            (f64::from(bpm) - 90.0).abs() / 90.0 < 0.05,
+            "90 BPM: expected within 5%, got {bpm}"
         );
     }
 
@@ -1722,8 +1864,8 @@ mod tests {
     fn bpm_converges_140() {
         let bpm = run_bpm_convergence_test(140.0, 10.0);
         assert!(
-            bpm > 112.0 && bpm < 168.0,
-            "140 BPM: expected 112-168, got {bpm}"
+            (f64::from(bpm) - 140.0).abs() / 140.0 < 0.05,
+            "140 BPM: expected within 5%, got {bpm}"
         );
     }
 
@@ -1731,8 +1873,8 @@ mod tests {
     fn bpm_converges_170() {
         let bpm = run_bpm_convergence_test(170.0, 10.0);
         assert!(
-            bpm > 136.0 && bpm < 204.0,
-            "170 BPM: expected 136-204, got {bpm}"
+            (f64::from(bpm) - 170.0).abs() / 170.0 < 0.05,
+            "170 BPM: expected within 5%, got {bpm}"
         );
     }
 
@@ -1740,26 +1882,80 @@ mod tests {
     fn bpm_converges_200() {
         let bpm = run_bpm_convergence_test(200.0, 10.0);
         assert!(
-            bpm > 160.0 && bpm < 240.0,
-            "200 BPM: expected 160-240, got {bpm}"
+            (f64::from(bpm) - 200.0).abs() / 200.0 < 0.05,
+            "200 BPM: expected within 5%, got {bpm}"
         );
     }
 
     #[test]
     fn bpm_converges_230() {
         let bpm = run_bpm_convergence_test(230.0, 10.0);
-        // Accept 230 BPM or half-tempo 115 BPM (prior centered at 150 favors lower octave)
-        let in_range = (bpm > 92.0 && bpm < 138.0) || (bpm > 184.0 && bpm < 276.0);
-        assert!(in_range, "230 BPM: expected 92-138 or 184-276, got {bpm}");
+        // Accept 230 or half-tempo 115 (prior centered at 150 favors the lower octave)
+        let b = f64::from(bpm);
+        let in_range = (b - 230.0).abs() / 230.0 < 0.05 || (b - 115.0).abs() / 115.0 < 0.05;
+        assert!(
+            in_range,
+            "230 BPM: expected within 5% of 230 or 115, got {bpm}"
+        );
     }
 
     #[test]
     fn bpm_no_octave_double_145() {
         let bpm = run_bpm_convergence_test(145.0, 10.0);
         assert!(
-            bpm > 116.0 && bpm < 174.0,
-            "145 BPM: expected 116-174 (not 290 octave double), got {bpm}"
+            (f64::from(bpm) - 145.0).abs() / 145.0 < 0.05,
+            "145 BPM: expected within 5% (not 290 octave double), got {bpm}"
         );
+    }
+
+    /// Q2: 175 BPM sits at lag 29.53 — between ACF bins that are 3.4% apart at
+    /// this tempo, against a 4% Acc1 tolerance. Integer-lag candidates could
+    /// not represent it (the old GiantSteps floor); continuous-lag candidates
+    /// with peak interpolation must land within 1%.
+    #[test]
+    fn off_bin_tempo_locks_within_one_percent() {
+        let bpm = run_bpm_convergence_test(175.0, 10.0);
+        assert!(
+            (f64::from(bpm) - 175.0).abs() / 175.0 < 0.01,
+            "175 BPM: expected within 1%, got {bpm}"
+        );
+    }
+
+    /// Q2 seed gate: white-noise onset input produces low-confidence ACF
+    /// readings only, and the estimator must never adopt one as its seed — the
+    /// old code seeded on the very first post-2s measurement unconditionally
+    /// and then defended it.
+    #[test]
+    fn tempo_seed_requires_confidence() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        let mut rng: u64 = 12345;
+        for _ in 0..(6.0 * 86.13) as usize {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let v = (rng >> 32) as f64 / (1u64 << 32) as f64;
+            let (bpm, _conf, _period) = est.update(v);
+            assert_eq!(bpm, 0.0, "white-noise onsets must never seed a tempo");
+        }
+    }
+
+    /// Q2: flat ACF ⇒ every candidate scores identically no matter how many of
+    /// its harmonics fit inside the array. The old SUM gave a candidate with 4
+    /// in-range harmonics up to 2× the score of an equally-supported longer
+    /// period — the double-time seed bias.
+    #[test]
+    fn comb_score_is_truncation_fair() {
+        let acf = vec![0.5; 101];
+        let full = comb_score(&acf, 20.0); // h=1..4 → 20,40,60,80 all inside
+        let cut = comb_score(&acf, 40.0); // h=3,4 → 120,160 truncated
+        assert!((full - cut).abs() < 1e-12, "{full} vs {cut}");
+    }
+
+    #[test]
+    fn acf_at_interpolates_linearly() {
+        let acf = vec![0.0, 1.0, 0.0];
+        assert!((acf_at(&acf, 0.5) - 0.5).abs() < 1e-12);
+        assert!((acf_at(&acf, 1.25) - 0.75).abs() < 1e-12);
     }
 
     // ---- A7 (#1458): tempo prior, octave override, tap tempo ----
@@ -1799,18 +1995,19 @@ mod tests {
     #[test]
     fn prior_center_decides_the_octave() {
         // The A7 payoff, stated as something this harness can actually prove: the same 172 BPM
-        // signal reads as 172 under the default prior and folds to half tempo under a prior
-        // centred low. That is the prior steering metrical-ratio selection — the mechanism the
-        // genre presets exist to drive.
+        // signal reads as 172 under the default prior and folds to a metrical division under a
+        // prior centred low. That is the prior steering metrical-ratio selection — the mechanism
+        // the genre presets exist to drive.
         //
-        // Note this harness feeds a clean impulse train, whose autocorrelation has no strong
-        // half-tempo subharmonic, so it cannot reproduce the real-world 172->86 fold the task
-        // describes (that needs a backbeat on 2 and 4). It proves the prior is wired and
-        // effective; it does not prove the DnB preset fixes real DnB audio.
+        // Q2 note: a clean impulse train's subharmonics all carry identical normalized comb
+        // evidence (every division of the grid IS a valid slower reading of it), so under a low
+        // prior the winner among 86/57.4/43 is decided by prior proximity alone — the fold may
+        // land on ÷2 or ÷3. `backbeat_fold_prefers_the_supported_octave` pins the realistic
+        // case where rhythm evidence breaks the tie.
         let default_bpm = run_bpm_convergence_with(172.0, 10.0, TempoConfig::default());
         assert!(
-            default_bpm > 155.0 && default_bpm < 190.0,
-            "default prior should hold 172, got {default_bpm}"
+            (default_bpm - 172.0).abs() / 172.0 < 0.04,
+            "default prior should hold 172 within 4%, got {default_bpm}"
         );
 
         let (center, sigma) = TempoPreset::Ambient.values();
@@ -1824,8 +2021,22 @@ mod tests {
             },
         );
         assert!(
-            low_bpm > 78.0 && low_bpm < 95.0,
-            "a prior centred at {center} should fold 172 to half tempo, got {low_bpm}"
+            low_bpm > 40.0 && low_bpm < 95.0,
+            "a prior centred at {center} should fold 172 to a metrical division, got {low_bpm}"
+        );
+    }
+
+    /// Q2: when the rhythm itself carries octave evidence — strong hits on the
+    /// half-tempo grid, weaker ones between (a backbeat) — a low prior folds to
+    /// the SUPPORTED division (86), not whichever division sits closest to the
+    /// prior centre. This is the realistic fold `prior_center_decides_the_octave`
+    /// admits its clean impulse train cannot reproduce.
+    #[test]
+    fn backbeat_fold_prefers_the_supported_octave() {
+        let bpm = run_backbeat_convergence(172.0, 10.0, TempoPreset::Ambient);
+        assert!(
+            (bpm - 86.0).abs() / 86.0 < 0.05,
+            "backbeat at 172 under a low prior should fold to 86, got {bpm}"
         );
     }
 
