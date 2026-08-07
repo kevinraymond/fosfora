@@ -1,0 +1,171 @@
+# Published comparison numbers for docs/BENCHMARKS.md — cited, never re-run.
+#
+# status: verified   = read from the primary source (paper table) by us
+#         tbd-verify = secondary-source number awaiting a primary check
+# mode:   offline = full-file/lookahead processing; online = causal streaming
+#         (same constraint class as Fosfora's engine)
+#
+# Only rows whose dataset has local results get rendered; harmonix rows sit
+# here waiting for C12.
+
+refs:
+  kim2023allinone:
+    cite: "Kim & Nam, \"All-In-One Metrical and Functional Structure Analysis with Neighborhood Attentions on Demixed Audio\", WASPAA 2023"
+    url: "https://arxiv.org/abs/2307.16425"
+  heydari2021beatnet:
+    cite: "Heydari, Cwitkowitz & Duan, \"BeatNet: CRNN and Particle Filtering for Online Joint Beat, Downbeat and Meter Tracking\", ISMIR 2021"
+    url: "https://archives.ismir.net/ismir2021/paper/000033.pdf"
+  foscarin2024beatthis:
+    cite: "Foscarin, Schlüter & Widmer, \"Beat This! Accurate Beat Tracking Without DBN Postprocessing\", ISMIR 2024"
+    url: "https://arxiv.org/abs/2407.21658"
+  bock2016joint:
+    cite: "Böck, Krebs & Widmer, \"Joint Beat and Downbeat Tracking with Recurrent Neural Networks\", ISMIR 2016 (the madmom DBNDownBeatTracker)"
+    url: "https://archives.ismir.net/ismir2016/paper/000186.pdf"
+  schreiber2018cnn:
+    cite: "Schreiber & Müller, \"A Single-Step Approach to Musical Tempo Estimation Using a Convolutional Neural Network\", ISMIR 2018"
+    url: "https://www.tagtraum.com/download/2018_schreiber_tempo_cnn.pdf"
+  korzeniowski2018key:
+    cite: "Korzeniowski & Widmer, \"Genre-Agnostic Key Classification with Convolutional Neural Networks\", ISMIR 2018"
+    url: "https://arxiv.org/abs/1808.05340"
+  nieto2019harmonix:
+    cite: "Nieto et al., \"The Harmonix Set: Beats, Downbeats, and Functional Segment Annotations of Western Popular Music\", ISMIR 2019"
+    url: "https://github.com/urinieto/harmonixset"
+  knees2015giantsteps:
+    cite: "Knees et al., \"Two Data Sets for Tempo Estimation and Key Detection in Electronic Dance Music Annotated from User Corrections\", ISMIR 2015"
+    url: "https://github.com/GiantSteps"
+  schreiber2018giantsteps:
+    cite: "Schreiber & Müller, \"A Crowdsourced Experiment for Tempo Estimation of Electronic Dance Music\", ISMIR 2018 (the annotations_v2 ground truth)"
+    url: "https://www.tagtraum.com/download/2018_schreiber_tempo_giantsteps.pdf"
+  gouyon2006tempo:
+    cite: "Gouyon et al., \"An Experimental Comparison of Audio Tempo Induction Algorithms\", IEEE TASLP 2006 (the ISMIR 2004 Ballroom distribution)"
+    url: "http://mtg.upf.edu/ismir2004/contest/tempoContest/"
+  krebs2013ballroom:
+    cite: "Krebs, Böck & Widmer, \"Rhythmic Pattern Modeling for Beat and Downbeat Tracking in Musical Audio\", ISMIR 2013 (Ballroom beat/downbeat annotations)"
+    url: "https://github.com/CPJKU/BallroomAnnotations"
+  holzapfel2012smc:
+    cite: "Holzapfel et al., \"Selective Sampling for Beat Tracking Evaluation\", IEEE TASLP 2012 (SMC_MIREX)"
+    url: "http://smc.inescporto.pt/research/data-2/"
+  sturm2014ballroom:
+    cite: "Sturm, \"Faults in the Ballroom dataset\" (duplicate list), 2014"
+    url: "https://highnoongmt.wordpress.com/2014/01/23/ballroom_dataset/"
+
+entries:
+  # ---- ballroom ----
+  - system: "Böck 2016 joint RNN (madmom)"
+    mode: offline
+    dataset: ballroom
+    metrics: {beat_f: 0.938, downbeat_f: 0.863}
+    ref: bock2016joint
+    note: "8-fold CV; 685 files after the same Sturm dedup we apply"
+    status: verified
+  - system: "Beat This!"
+    mode: offline
+    dataset: ballroom
+    metrics: {beat_f: 0.975, downbeat_f: 0.953}
+    ref: foscarin2024beatthis
+    note: "8-fold CV"
+    status: verified
+  - system: "SpecTNT (Hung et al.)"
+    mode: offline
+    dataset: ballroom
+    metrics: {beat_f: 0.962, downbeat_f: 0.937}
+    ref: foscarin2024beatthis
+    note: "as reported in the Beat This! comparison"
+    status: verified
+  - system: "BeatNet"
+    mode: online
+    dataset: ballroom
+    metrics: {beat_f: 0.7741, downbeat_f: 0.4745}
+    ref: heydari2021beatnet
+    note: "Ballroom held out of training; online mode"
+    status: verified
+
+  - system: "Schreiber CNN"
+    mode: offline
+    dataset: ballroom
+    metrics: {acc1: 0.920, acc2: 0.984}
+    ref: schreiber2018cnn
+    note: "Ballroom row of Table 1"
+    status: verified
+  - system: "Böck 2015 (madmom tempo)"
+    mode: offline
+    dataset: ballroom
+    metrics: {acc1: 0.840, acc2: 0.987}
+    ref: schreiber2018cnn
+    note: "as reported in the Schreiber CNN comparison"
+    status: verified
+
+  # ---- smc ----
+  - system: "Böck 2016 joint RNN (madmom)"
+    mode: offline
+    dataset: smc
+    metrics: {beat_f: 0.516}
+    ref: bock2016joint
+    note: "tested unseen (SMC excluded from training)"
+    status: verified
+  - system: "Beat This!"
+    mode: offline
+    dataset: smc
+    metrics: {beat_f: 0.627}
+    ref: foscarin2024beatthis
+    note: "8-fold CV"
+    status: verified
+
+  # ---- giantsteps_tempo ----
+  - system: "Schreiber CNN"
+    mode: offline
+    dataset: giantsteps_tempo
+    metrics: {acc1: 0.730, acc2: 0.893}
+    ref: schreiber2018cnn
+    note: "GiantSteps row of Table 1, corrected annotations"
+    status: verified
+  - system: "Böck 2015 (madmom tempo)"
+    mode: offline
+    dataset: giantsteps_tempo
+    metrics: {acc1: 0.589, acc2: 0.864}
+    ref: schreiber2018cnn
+    note: "as reported in the Schreiber CNN comparison"
+    status: verified
+
+  # ---- giantsteps_key ----
+  - system: "keynet CNN (Korzeniowski)"
+    mode: offline
+    dataset: giantsteps_key
+    metrics: {mirex_weighted: 0.7351}
+    ref: korzeniowski2018key
+    status: verified
+  - system: "Mixed In Key 8.3"
+    mode: offline
+    dataset: giantsteps_key
+    metrics: {mirex_weighted: 0.7570}
+    ref: korzeniowski2018key
+    note: "commercial DJ tool, as benchmarked by Korzeniowski & Widmer"
+    status: verified
+  - system: "RekordBox"
+    mode: offline
+    dataset: giantsteps_key
+    metrics: {mirex_weighted: 0.6553}
+    ref: korzeniowski2018key
+    note: "commercial DJ tool, as benchmarked by Korzeniowski & Widmer"
+    status: verified
+
+  # ---- harmonix (rendered once C12 lands) ----
+  - system: "All-In-One"
+    mode: offline
+    dataset: harmonix
+    metrics: {beat_f: 0.958, beat_cmlt: 0.913, beat_amlt: 0.964, downbeat_f: 0.915, hr05f: 0.660, pwf: 0.738}
+    ref: kim2023allinone
+    note: "8-fold CV on the full 912"
+    status: verified
+  - system: "SpecTNT-TCN"
+    mode: offline
+    dataset: harmonix
+    metrics: {beat_f: 0.953, downbeat_f: 0.908}
+    ref: kim2023allinone
+    status: verified
+  - system: "TCN-Large (Böck TCN repro)"
+    mode: offline
+    dataset: harmonix
+    metrics: {beat_f: 0.953, downbeat_f: 0.901}
+    ref: kim2023allinone
+    status: verified
