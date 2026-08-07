@@ -696,6 +696,25 @@ impl ApplicationHandler for FosforaApp {
                         });
                     }
 
+                    // Store Ableton Link state in egui temp data for UI panels
+                    #[cfg(feature = "link")]
+                    {
+                        let tick = app.link.last_tick();
+                        let link_info = crate::ui::panels::link_panel::LinkInfo {
+                            enabled: app.link.config.enabled,
+                            mode: app.link.config.mode,
+                            quantum: app.link.config.quantum,
+                            start_stop_sync: app.link.config.start_stop_sync,
+                            peers: tick.map_or(0, |t| t.peers),
+                            session_tempo: tick.map_or(0.0, |t| t.tempo),
+                            quantum_phase: tick.map_or(0.0, |t| t.quantum_phase),
+                            playing: tick.is_some_and(|t| t.playing),
+                        };
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("link_info"), link_info);
+                        });
+                    }
+
                     // Store v4l2 state in egui temp data for UI panels
                     #[cfg(all(target_os = "linux", feature = "v4l2"))]
                     {
@@ -1363,6 +1382,36 @@ impl ApplicationHandler for FosforaApp {
                         Some(device_str)
                     };
                     app.settings.save();
+                }
+
+                // Handle Ableton Link signals from UI
+                #[cfg(feature = "link")]
+                {
+                    let ctx = app.egui_overlay.context();
+                    let enable: Option<bool> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("link_set_enabled")));
+                    if let Some(on) = enable {
+                        app.link.set_enabled(on);
+                    }
+                    let mode: Option<u8> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("link_set_mode")));
+                    if let Some(m) = mode {
+                        app.link.set_mode(if m == 1 {
+                            crate::link::LinkMode::Lead
+                        } else {
+                            crate::link::LinkMode::Follow
+                        });
+                    }
+                    let quantum: Option<f64> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("link_set_quantum")));
+                    if let Some(q) = quantum {
+                        app.link.set_quantum(q);
+                    }
+                    let sss: Option<bool> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("link_set_start_stop")));
+                    if let Some(on) = sss {
+                        app.link.set_start_stop_sync(on);
+                    }
                 }
 
                 // Handle NDI signals from UI

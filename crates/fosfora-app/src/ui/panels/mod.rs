@@ -7,6 +7,8 @@ pub mod effect_panel;
 pub mod helix_panel;
 pub mod lattice_panel;
 pub mod layer_panel;
+#[cfg(feature = "link")]
+pub mod link_panel;
 pub mod media_panel;
 pub mod midi_panel;
 #[cfg(feature = "ndi")]
@@ -283,6 +285,10 @@ pub fn draw_panels(
                 let midi_on = midi.config.enabled && midi.connected_port().is_some();
                 let osc_on = osc.config.enabled;
                 let web_on = web.config.enabled;
+                #[cfg(feature = "link")]
+                let link_info: Option<link_panel::LinkInfo> = ui
+                    .ctx()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("link_info")));
                 #[cfg(feature = "ndi")]
                 let ndi_info: Option<ndi_panel::NdiInfo> = ui
                     .ctx()
@@ -328,6 +334,8 @@ pub fn draw_panels(
                 #[cfg(all(target_os = "macos", feature = "syphon"))]
                 let dot_active_syphon = egui::Color32::from_rgb(0xA0, 0x60, 0xE0);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
+                #[cfg(feature = "link")]
+                let dot_active_link = egui::Color32::from_rgb(0xE0, 0xB8, 0x30);
                 let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
                 widgets::section_with_header(
@@ -454,6 +462,35 @@ pub fn draw_panels(
                                 web_panel::draw_web_panel(ui, web);
                             },
                         );
+
+                        // Ableton Link subsection (feature-gated, default collapsed)
+                        #[cfg(feature = "link")]
+                        if let Some(ref info) = link_info {
+                            let link_badge_text;
+                            let (link_badge, link_color) = if !info.enabled {
+                                ("OFF", dim)
+                            } else if info.peers > 0 {
+                                link_badge_text = format!(
+                                    "{} peer{}",
+                                    info.peers,
+                                    if info.peers == 1 { "" } else { "s" }
+                                );
+                                (link_badge_text.as_str(), dot_active_link)
+                            } else {
+                                ("ON", dot_active_link)
+                            };
+                            widgets::subsection(
+                                ui,
+                                "sub_link",
+                                "Ableton Link",
+                                Some(link_badge),
+                                link_color,
+                                false,
+                                |ui| {
+                                    link_panel::draw_link_panel(ui, info);
+                                },
+                            );
+                        }
 
                         // Outputs subsection (Recording + NDI + virtual camera)
                         {

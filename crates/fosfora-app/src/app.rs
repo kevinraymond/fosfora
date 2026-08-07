@@ -104,6 +104,9 @@ pub struct App {
     // Syphon output (macOS texture sharing, feature-gated)
     #[cfg(all(target_os = "macos", feature = "syphon"))]
     pub syphon: crate::syphon::SyphonSystem,
+    // Ableton Link session sync (feature-gated)
+    #[cfg(feature = "link")]
+    pub link: crate::link::LinkSystem,
     // Video recording (always available — ffmpeg is a subprocess)
     pub recording: crate::recording::RecordingSystem,
     // Scenes
@@ -507,6 +510,8 @@ impl App {
             spout,
             #[cfg(all(target_os = "macos", feature = "syphon"))]
             syphon,
+            #[cfg(feature = "link")]
+            link: crate::link::LinkSystem::new(crate::link::LinkConfig::load()),
             recording,
             shader_editor: ShaderEditorState::default(),
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
@@ -1030,6 +1035,30 @@ impl App {
         // Drain MIDI clock bytes into MidiClock
         self.midi_clock_beat_crossed = self.midi.drain_clock(&mut self.midi_clock);
 
+        // Ableton Link: poll the session and route tempo per the configured
+        // mode (Follow pins the tracker's prior, Lead commits our detected
+        // BPM). The tick's beat/transport edges feed the timeline below.
+        #[cfg(feature = "link")]
+        let link_tick = {
+            let detected_bpm = self.latest_audio.map(|a| a.raw_bpm()).unwrap_or(0.0);
+            self.link.drive(self.audio.tempo(), detected_bpm, dt)
+        };
+
+        // Auto-follow Link transport → timeline (opt-in via start/stop sync),
+        // same contract as the MIDI transport follow below.
+        #[cfg(feature = "link")]
+        if self.link.config.start_stop_sync {
+            if let Some(t) = link_tick {
+                if t.playing_started && !self.timeline.active && !self.timeline.cues.is_empty() {
+                    let event = self.timeline.start(0);
+                    self.process_timeline_event(event);
+                }
+                if t.playing_stopped && self.timeline.active {
+                    self.timeline.stop();
+                }
+            }
+        }
+
         // Auto-follow MIDI transport → timeline
         if self.midi_clock.playing()
             && !self.midi_clock_was_playing
@@ -1055,9 +1084,17 @@ impl App {
                     .as_ref()
                     .and_then(|a| a.beat_period_secs()),
             );
-            // Feed beat signal for BeatSync mode:
-            // prefer MIDI clock beat when playing, fall back to audio beat detector
-            let beat_on = if self.midi_clock.playing() {
+            // Feed beat signal for BeatSync mode. Precedence: Link session
+            // grid (while peers are connected — the shared grid is the point,
+            // and it holds through breakdowns where the detector goes quiet) >
+            // MIDI clock while its transport plays > our own beat detector.
+            #[cfg(feature = "link")]
+            let link_beat = link_tick.filter(|t| t.peers > 0).map(|t| t.beat_crossed);
+            #[cfg(not(feature = "link"))]
+            let link_beat: Option<bool> = None;
+            let beat_on = if let Some(crossed) = link_beat {
+                crossed
+            } else if self.midi_clock.playing() {
                 self.midi_clock_beat_crossed
             } else {
                 self.uniforms.beat > 0.5
