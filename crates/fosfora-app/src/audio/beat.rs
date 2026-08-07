@@ -499,7 +499,8 @@ impl KalmanBpm {
     }
 
     /// Update with a raw BPM measurement and confidence. Returns filtered BPM.
-    fn update(&mut self, raw_bpm: f64, confidence: f64) -> f64 {
+    /// `locked` engages the innovation gate — see the update step below.
+    fn update(&mut self, raw_bpm: f64, confidence: f64, locked: bool) -> f64 {
         if raw_bpm <= 0.0 {
             return if self.initialized {
                 2.0f64.powf(self.state)
@@ -559,7 +560,20 @@ impl KalmanBpm {
 
         // Kalman update
         let innovation = measurement - self.state;
-        let s = self.variance + self.r;
+        // Q3 lock dynamics: once the estimator is locked, a strongly-disagreeing
+        // measurement is far more likely a transient (breakdown, fill, half-bar
+        // of percussion dropout) than a tempo change, so its gain is cut instead
+        // of letting a ~2 s wobble drag the state out of the ±4% band — measured
+        // as up to 10 excursions per GiantSteps track, each resetting the
+        // trailing-lock clock. A GENUINE change still escapes: the divergence
+        // counter above accumulates on the raw deviation regardless of gain and
+        // hard-resets after ~1 s of sustained disagreement.
+        let r = if locked && innovation.abs() > LOCK_INNOVATION_GATE_LOG2 {
+            self.r * LOCK_INNOVATION_R_MULT
+        } else {
+            self.r
+        };
+        let s = self.variance + r;
         let k = self.variance / s;
         self.state += k * innovation;
         self.variance *= 1.0 - k;
@@ -587,6 +601,17 @@ const SEED_AGREE_SPAN_SECS: f64 = 2.0;
 /// enough that a genuinely better octave still wins on evidence.
 const CONTINUITY_BONUS: f64 = 0.25;
 const CONTINUITY_SIGMA_LOG2: f64 = 0.06;
+/// Q3 lock dynamics: an EMA of winner-agrees-with-tracked-tempo (within 4%,
+/// confidence-scaled) with hysteresis. One noisy update moves the EMA a few
+/// percent — unlike the old consecutive counters, which any single frame reset.
+const SUPPORT_TAU_SECS: f64 = 2.5;
+const LOCK_ENTER_SUPPORT: f64 = 0.6;
+const LOCK_EXIT_SUPPORT: f64 = 0.35;
+/// When locked, innovations beyond ~4% in log2 pay this measurement-noise
+/// multiplier — brief wobbles stop dragging the published BPM out of the
+/// tolerance band, while the divergence hard reset still follows real changes.
+const LOCK_INNOVATION_GATE_LOG2: f64 = 0.057;
+const LOCK_INNOVATION_R_MULT: f64 = 6.0;
 
 /// Linearly interpolated ACF value at a continuous lag. `x` must be within
 /// `[0, len-1]`; callers guarantee it via the float lag bounds.
@@ -654,6 +679,10 @@ struct TempoEstimator {
     /// with the frame it was taken at, waiting for a confirming reading that
     /// agrees within 5% at least [`SEED_AGREE_SPAN_SECS`] later.
     pending_seed: Option<(f64, u32)>,
+    /// Q3: EMA of "this update's winner agrees with the tracked tempo".
+    support: f64,
+    /// Q3: hysteretic lock state derived from `support`.
+    locked: bool,
 }
 
 impl TempoEstimator {
@@ -684,6 +713,8 @@ impl TempoEstimator {
             octave_offset: 0,
             kalman: KalmanBpm::new(),
             pending_seed: None,
+            support: 0.0,
+            locked: false,
         }
     }
 
@@ -751,6 +782,8 @@ impl TempoEstimator {
         self.kalman.force(bpm);
         self.current_bpm = bpm;
         self.current_confidence = 1.0;
+        self.support = 1.0;
+        self.locked = true;
         self.current_period_frames = 60.0 / (bpm * self.frame_time);
         log::info!(
             "Tap tempo: {:.1} BPM (octave offset {})",
@@ -820,8 +853,33 @@ impl TempoEstimator {
             self.pending_seed = None;
         }
 
-        // Kalman filter update
-        let filtered_bpm = self.kalman.update(raw_bpm, confidence);
+        // Kalman filter update (innovation-gated while locked)
+        let filtered_bpm = self.kalman.update(raw_bpm, confidence, self.locked);
+
+        // Q3 lock dynamics: support = EMA of "the winner agrees with what we're
+        // tracking", scaled by confidence, at the ~14.4 Hz tempo cadence.
+        if filtered_bpm > 0.0 {
+            let agrees = raw_bpm > 0.0 && (raw_bpm / filtered_bpm - 1.0).abs() <= 0.04;
+            let alpha = 1.0 - (-(6.0 * self.frame_time) / SUPPORT_TAU_SECS).exp();
+            // Binary target with a confidence floor, NOT confidence-scaled: a
+            // clean signal's absolute confidence sits near 0.5, so scaling
+            // would cap support below any usable lock threshold. Support reads
+            // "fraction of recent updates that were confident-enough
+            // agreement".
+            let target = if agrees && confidence >= 0.2 {
+                1.0
+            } else {
+                0.0
+            };
+            self.support += alpha * (target - self.support);
+            if self.locked {
+                if self.support < LOCK_EXIT_SUPPORT {
+                    self.locked = false;
+                }
+            } else if self.support > LOCK_ENTER_SUPPORT {
+                self.locked = true;
+            }
+        }
 
         // A7 (#1458): auto prior — walk the centre toward the tempo we're locking onto, so
         // the prior stops fighting a track whose real tempo sits far from it. Gated on high
@@ -1057,6 +1115,10 @@ enum BeatState {
 }
 
 struct BeatScheduler {
+    /// Q3: the estimator's hysteretic lock state, carried alongside the raw
+    /// confidence. The Stage 4 PLL keys its modes off this; until then it is
+    /// telemetry pinned by `scheduler_receives_lock_state`.
+    tempo_locked: bool,
     beat_window: f64,
     refractory: f64,
     min_confidence: f64,
@@ -1083,6 +1145,7 @@ struct BeatScheduler {
 impl BeatScheduler {
     fn new() -> Self {
         Self {
+            tempo_locked: false,
             beat_window: 0.08,
             refractory: 0.15,
             min_confidence: 0.4,
@@ -1107,7 +1170,8 @@ impl BeatScheduler {
         }
     }
 
-    fn update_tempo(&mut self, bpm: f64, period: f64, confidence: f64) {
+    fn update_tempo(&mut self, bpm: f64, period: f64, confidence: f64, locked: bool) {
+        self.tempo_locked = locked;
         self.bpm = bpm;
         self.period = period;
         self.tempo_confidence = confidence;
@@ -1402,7 +1466,8 @@ impl BeatDetector {
         let (bpm, confidence, period_s) = self.tempo_estimator.update(combined_flux);
 
         // Stage 3: Beat scheduling
-        self.beat_scheduler.update_tempo(bpm, period_s, confidence);
+        self.beat_scheduler
+            .update_tempo(bpm, period_s, confidence, self.tempo_estimator.locked);
         let (is_beat, beat_phase, smoothed_bpm) = self.beat_scheduler.process(
             onset_gated,
             onset_strength,
@@ -1553,16 +1618,16 @@ mod tests {
     #[test]
     fn kalman_first_measurement_returns_raw() {
         let mut k = KalmanBpm::new();
-        let bpm = k.update(120.0, 0.5);
+        let bpm = k.update(120.0, 0.5, false);
         assert!(approx_eq_f64(bpm, 120.0, 1e-6));
     }
 
     #[test]
     fn kalman_stable_input_stays_near() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8);
+        k.update(120.0, 0.8, false);
         for _ in 0..50 {
-            let bpm = k.update(120.0, 0.8);
+            let bpm = k.update(120.0, 0.8, false);
             assert!((bpm - 120.0).abs() < 5.0, "got {}", bpm);
         }
     }
@@ -1575,12 +1640,12 @@ mod tests {
     #[test]
     fn kalman_brief_octave_noise_is_damped() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8);
+        k.update(120.0, 0.8, false);
         for _ in 0..10 {
-            k.update(120.0, 0.8);
+            k.update(120.0, 0.8, false);
         }
         for _ in 0..3 {
-            let bpm = k.update(240.0, 0.8);
+            let bpm = k.update(240.0, 0.8, false);
             assert!(
                 bpm < 160.0,
                 "3 noisy frames must not reach the far octave, got {bpm}"
@@ -1588,7 +1653,7 @@ mod tests {
         }
         let mut bpm = 0.0;
         for _ in 0..20 {
-            bpm = k.update(120.0, 0.8);
+            bpm = k.update(120.0, 0.8, false);
         }
         assert!(
             (bpm - 120.0).abs() < 6.0,
@@ -1602,26 +1667,26 @@ mod tests {
     #[test]
     fn kalman_sustained_octave_change_is_followed() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8);
+        k.update(120.0, 0.8, false);
         for _ in 0..20 {
-            k.update(240.0, 0.8);
+            k.update(240.0, 0.8, false);
         }
-        let bpm = k.update(240.0, 0.8);
+        let bpm = k.update(240.0, 0.8, false);
         assert!((bpm - 240.0).abs() < 12.0, "expected near 240, got {}", bpm);
     }
 
     #[test]
     fn kalman_divergence_reset() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8);
+        k.update(120.0, 0.8, false);
         for _ in 0..5 {
-            k.update(120.0, 0.8);
+            k.update(120.0, 0.8, false);
         }
         // Feed completely different BPM — should reset after 15 frames
         for _ in 0..20 {
-            k.update(80.0, 0.8);
+            k.update(80.0, 0.8, false);
         }
-        let bpm = k.update(80.0, 0.8);
+        let bpm = k.update(80.0, 0.8, false);
         assert!((bpm - 80.0).abs() < 15.0, "expected near 80, got {}", bpm);
     }
 
@@ -1691,7 +1756,7 @@ mod tests {
     #[test]
     fn scheduler_zero_confidence_onset_fires() {
         let mut bs = BeatScheduler::new();
-        bs.update_tempo(0.0, 0.0, 0.0);
+        bs.update_tempo(0.0, 0.0, 0.0, false);
         let (is_beat, _, _) = bs.process(true, 0.8, 1.0, false);
         assert!(is_beat);
     }
@@ -1699,7 +1764,7 @@ mod tests {
     #[test]
     fn scheduler_silence_no_beat() {
         let mut bs = BeatScheduler::new();
-        bs.update_tempo(120.0, 0.5, 0.8);
+        bs.update_tempo(120.0, 0.5, 0.8, false);
         let (is_beat, phase, _) = bs.process(false, 0.0, 1.0, true);
         assert!(!is_beat);
         assert!(approx_eq_f64(phase, 0.0, 1e-6));
@@ -1708,7 +1773,7 @@ mod tests {
     #[test]
     fn scheduler_phase_in_range() {
         let mut bs = BeatScheduler::new();
-        bs.update_tempo(120.0, 0.5, 0.8);
+        bs.update_tempo(120.0, 0.5, 0.8, false);
         // Trigger a beat
         bs.process(true, 0.8, 1.0, false);
         // Advance time
@@ -1937,6 +2002,90 @@ mod tests {
             let (bpm, _conf, _period) = est.update(v);
             assert_eq!(bpm, 0.0, "white-noise onsets must never seed a tempo");
         }
+    }
+
+    /// Drive a TempoEstimator with an impulse train at the given period (in
+    /// frames, fractional OK) for `secs`, returning the last published BPM.
+    fn drive_estimator(est: &mut TempoEstimator, period_frames: f64, secs: f64) -> f64 {
+        let mut bpm = 0.0;
+        let mut next = period_frames;
+        for i in 0..(secs * 86.13) as usize {
+            let v = if i as f64 + 0.5 >= next {
+                next += period_frames;
+                1.0
+            } else {
+                0.05
+            };
+            bpm = est.update(v).0;
+        }
+        bpm
+    }
+
+    /// Q3 lock dynamics: a locked estimator rides out a brief burst of
+    /// contradictory readings (a fill, a breakdown bar) without its published
+    /// BPM leaving the ±4% band — the excursion class that reset the bench's
+    /// trailing-lock clock up to 10× per track — and re-locks seamlessly.
+    #[test]
+    fn tempo_lock_survives_brief_wobble() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        // ~128 BPM: period 40.4 frames.
+        let bpm = drive_estimator(&mut est, 40.4, 20.0);
+        assert!(
+            est.locked,
+            "20 s of a clean train must lock (support {})",
+            est.support
+        );
+        assert!(
+            (bpm - 128.0).abs() / 128.0 < 0.04,
+            "locked near 128, got {bpm}"
+        );
+        // 2.5 s of white noise — support dips, published BPM must hold the band.
+        let mut rng: u64 = 777;
+        for _ in 0..(2.5 * 86.13) as usize {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let v = (rng >> 32) as f64 / (1u64 << 32) as f64;
+            let (b, _, _) = est.update(v);
+            assert!(
+                (b - 128.0).abs() / 128.0 < 0.04,
+                "published BPM left the band during a brief wobble: {b}"
+            );
+        }
+        // Train resumes: still (or again) locked shortly after.
+        drive_estimator(&mut est, 40.4, 5.0);
+        assert!(
+            est.locked,
+            "must re-lock after the wobble (support {})",
+            est.support
+        );
+    }
+
+    /// Q3: lock resists wobble but NOT a real change — a sustained new tempo
+    /// unlocks (or hard-resets) and is adopted within a few seconds.
+    #[test]
+    fn tempo_lock_releases_on_sustained_change() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        drive_estimator(&mut est, 40.4, 20.0); // ~128 BPM
+        assert!(est.locked);
+        // Genuine move to ~148 BPM (period 34.9 frames) for 12 s.
+        let bpm = drive_estimator(&mut est, 34.9, 12.0);
+        assert!(
+            (bpm - 148.0).abs() / 148.0 < 0.05,
+            "sustained new tempo must be adopted, got {bpm}"
+        );
+    }
+
+    /// Q3: the lock state reaches the scheduler alongside confidence — the
+    /// Stage 4 PLL keys its modes off this flag.
+    #[test]
+    fn scheduler_receives_lock_state() {
+        let mut bs = BeatScheduler::new();
+        assert!(!bs.tempo_locked);
+        bs.update_tempo(128.0, 60.0 / 128.0, 0.9, true);
+        assert!(bs.tempo_locked);
+        bs.update_tempo(128.0, 60.0 / 128.0, 0.2, false);
+        assert!(!bs.tempo_locked);
     }
 
     /// Q2: flat ACF ⇒ every candidate scores identically no matter how many of
