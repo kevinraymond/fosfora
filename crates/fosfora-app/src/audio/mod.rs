@@ -61,6 +61,11 @@ pub struct AudioFrame {
     /// the property the render side leans on. It is deliberately not `meter`: that changes on
     /// any beat, mid-bar, and re-deriving the rate from it would fight the phase it chases.
     pub bar_duration: f64,
+    /// Q1: the fired beat's event time on the sample clock, seconds — `Some` only on the
+    /// hop where `features.beat` pulses. Carried separately from `timestamp` because the
+    /// scheduler's beat may belong to an instant earlier than the hop that emitted it;
+    /// the Signal emitter stamps `/beat` and `/downbeat` with this, not the hop time.
+    pub beat_time: Option<f64>,
 }
 
 /// Running totals for the three counter-latched 1-frame pulses — `beat` (A7), `downbeat`

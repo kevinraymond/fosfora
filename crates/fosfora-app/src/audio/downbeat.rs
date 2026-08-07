@@ -388,6 +388,7 @@ mod tests {
             beat_phase: 0.0,
             bpm,
             beat_strength: 1.0,
+            beat_time: 0.0,
         }
     }
 
@@ -402,6 +403,7 @@ mod tests {
             beat_phase: 0.0,
             bpm,
             beat_strength: 0.0,
+            beat_time: 0.0,
         }
     }
 

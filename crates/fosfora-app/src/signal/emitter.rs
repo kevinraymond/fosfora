@@ -119,13 +119,16 @@ impl SignalEmitter {
 
         // ---- Events: emitted the hop they fire. Counts as args, so a receiver
         // can detect its own datagram loss from a gap.
+        // Q1: /beat and /downbeat carry the beat's event time, which may sit before
+        // this hop's timestamp once the scheduler fires at predicted instants.
+        let beat_ts = frame.beat_time.unwrap_or(ts);
         if f.beat > 0.5 {
             self.beat_total += 1;
-            sink.emit(ts, schema::BEAT, &[OscType::Int(self.beat_total as i32)]);
+            sink.emit(beat_ts, schema::BEAT, &[OscType::Int(self.beat_total as i32)]);
         }
         if f.downbeat > 0.5 {
             self.bar_total += 1;
-            sink.emit(ts, schema::DOWNBEAT, &[OscType::Int(self.bar_total as i32)]);
+            sink.emit(beat_ts, schema::DOWNBEAT, &[OscType::Int(self.bar_total as i32)]);
         }
         if f.drop > 0.5 {
             self.drop_total += 1;
@@ -346,6 +349,7 @@ mod tests {
             timestamp: ts,
             phase_frozen: false,
             bar_duration: 2.0,
+            beat_time: None,
         }
     }
 

@@ -1243,6 +1243,11 @@ pub struct BeatResult {
     pub beat_phase: f32,
     pub bpm: f32,
     pub beat_strength: f32,
+    /// The beat's event time on the sample clock, seconds. Only meaningful when
+    /// `beat > 0.5`; may lag the hop timestamp by up to one scheduler window once
+    /// the scheduler fires at predicted instants rather than at the hop that
+    /// noticed them.
+    pub beat_time: f64,
 }
 
 /// 3-stage beat detection pipeline.
@@ -1383,6 +1388,7 @@ impl BeatDetector {
             } else {
                 0.0
             },
+            beat_time: timestamp,
         }
     }
 }
