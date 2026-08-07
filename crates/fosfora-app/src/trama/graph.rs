@@ -94,10 +94,7 @@ impl NodeGraph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &NodeInstance> {
-        self.nodes.iter()
-    }
-
+    #[cfg(test)]
     pub fn wires(&self) -> &[Wire] {
         &self.wires
     }

@@ -4,12 +4,11 @@
 //! decision log: `docs/trama/DECISIONS.md`. M0 builds the graph model, the
 //! manifest registry, the scene-level executor behind the
 //! `execute_and_composite` seam, and the canvas.
-#![allow(dead_code)] // M0 lands in stages; removed when the canvas commit wires everything up.
-
 pub mod effect;
 pub mod exec;
 pub mod graph;
 pub mod node;
+pub mod ui;
 
 use crate::effect::loader::EffectLoader;
 use crate::gpu::ShaderUniforms;
@@ -34,6 +33,7 @@ pub struct TramaSystem {
     pub canvas_open: bool,
     pub graph: graph::NodeGraph,
     pub registry: effect::TramaRegistry,
+    pub canvas: ui::canvas::CanvasState,
     /// Most recent plan-build failure, if any — shown in the canvas window.
     /// The executor keeps rendering its last-good plan meanwhile (I4).
     pub last_error: Option<String>,
@@ -55,11 +55,14 @@ impl TramaSystem {
     ) -> Self {
         let registry =
             effect::TramaRegistry::load(device, cache, loader, &effect::trama_effects_dir());
+        let graph = graph::NodeGraph::new_with_output();
+        let canvas = ui::canvas::CanvasState::new(&graph);
         Self {
             mode: RenderMode::default(),
             canvas_open: false,
-            graph: graph::NodeGraph::new_with_output(),
+            graph,
             registry,
+            canvas,
             last_error: None,
             executor: exec::executor::TramaExecutor::new(device, placeholder, audio, width, height),
             frame_uniforms: ShaderUniforms::zeroed(),

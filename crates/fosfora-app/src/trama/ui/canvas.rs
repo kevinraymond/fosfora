@@ -1,0 +1,244 @@
+//! The trama graph canvas: an egui-snarl view over the node graph.
+//!
+//! [`NodeGraph`] is the single source of truth; the snarl holds only view
+//! state (canvas positions, which node id sits where). Every mutation flows
+//! through the [`SnarlViewer`] callbacks, which update both structures
+//! atomically — a graph-refused edit (cycle, arity) leaves the snarl
+//! untouched and explains itself in the status line. Live rewire needs no
+//! apply button: an accepted edit bumps the graph version and the executor
+//! replans next frame.
+
+use egui_snarl::ui::{PinInfo, SnarlPin, SnarlViewer, SnarlWidget};
+use egui_snarl::{InPin, OutPin, Snarl};
+
+use super::super::TramaSystem;
+use super::super::effect::{EffectKind, TramaRegistry};
+use super::super::graph::NodeGraph;
+use super::super::node::{NodeId, NodeKind};
+
+pub struct CanvasState {
+    /// Snarl payload is the trama [`NodeId`] itself — the index map for free.
+    /// Positions live here (M3 serializes them via snarl's serde feature).
+    pub snarl: Snarl<NodeId>,
+    /// Last refused edit, shown under the header until the next accepted one.
+    pub status: Option<String>,
+}
+
+impl CanvasState {
+    pub fn new(graph: &NodeGraph) -> Self {
+        let mut snarl = Snarl::new();
+        snarl.insert_node(egui::pos2(480.0, 200.0), graph.output_node());
+        Self {
+            snarl,
+            status: None,
+        }
+    }
+}
+
+struct CanvasViewer<'a> {
+    graph: &'a mut NodeGraph,
+    registry: &'a TramaRegistry,
+    status: &'a mut Option<String>,
+}
+
+impl CanvasViewer<'_> {
+    fn pin_of(pin_input: usize) -> u8 {
+        u8::try_from(pin_input).unwrap_or(u8::MAX)
+    }
+}
+
+impl SnarlViewer<NodeId> for CanvasViewer<'_> {
+    fn title(&mut self, node: &NodeId) -> String {
+        match self.graph.node(*node).map(|n| &n.kind) {
+            Some(NodeKind::Output) => "Output".to_string(),
+            Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
+                .registry
+                .get(effect)
+                .map_or_else(|| effect.0.clone(), |def| def.name.clone()),
+            None => "?".to_string(),
+        }
+    }
+
+    fn inputs(&mut self, node: &NodeId) -> usize {
+        self.graph.node(*node).map_or(0, |n| usize::from(n.inputs))
+    }
+
+    fn outputs(&mut self, node: &NodeId) -> usize {
+        match self.graph.node(*node).map(|n| &n.kind) {
+            Some(NodeKind::Output) | None => 0,
+            Some(_) => 1,
+        }
+    }
+
+    fn show_input(
+        &mut self,
+        _pin: &InPin,
+        _ui: &mut egui::Ui,
+        _snarl: &mut Snarl<NodeId>,
+    ) -> impl SnarlPin + 'static {
+        // Texture-typed only in M0 — a plain circle is the whole story.
+        PinInfo::circle()
+    }
+
+    fn show_output(
+        &mut self,
+        _pin: &OutPin,
+        _ui: &mut egui::Ui,
+        _snarl: &mut Snarl<NodeId>,
+    ) -> impl SnarlPin + 'static {
+        PinInfo::circle()
+    }
+
+    fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<NodeId>) {
+        let f = snarl[from.id.node];
+        let t = snarl[to.id.node];
+        match self.graph.connect(f, t, Self::pin_of(to.id.input)) {
+            Ok(()) => {
+                // The graph replaced any wire on this pin; mirror that.
+                snarl.drop_inputs(to.id);
+                snarl.connect(from.id, to.id);
+                *self.status = None;
+            }
+            Err(e) => *self.status = Some(e.to_string()),
+        }
+    }
+
+    fn disconnect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<NodeId>) {
+        let t = snarl[to.id.node];
+        self.graph.disconnect(t, Self::pin_of(to.id.input));
+        snarl.disconnect(from.id, to.id);
+    }
+
+    fn drop_inputs(&mut self, pin: &InPin, snarl: &mut Snarl<NodeId>) {
+        let t = snarl[pin.id.node];
+        self.graph.disconnect(t, Self::pin_of(pin.id.input));
+        snarl.drop_inputs(pin.id);
+    }
+
+    fn drop_outputs(&mut self, pin: &OutPin, snarl: &mut Snarl<NodeId>) {
+        for remote in &pin.remotes {
+            let t = snarl[remote.node];
+            self.graph.disconnect(t, Self::pin_of(remote.input));
+        }
+        snarl.drop_outputs(pin.id);
+    }
+
+    fn has_graph_menu(&mut self, _pos: egui::Pos2, _snarl: &mut Snarl<NodeId>) -> bool {
+        true
+    }
+
+    fn show_graph_menu(&mut self, pos: egui::Pos2, ui: &mut egui::Ui, snarl: &mut Snarl<NodeId>) {
+        ui.label("Add node");
+        ui.separator();
+        for (label, kind) in [("Sources", EffectKind::Source), ("Effects", EffectKind::Effect)] {
+            ui.menu_button(label, |ui| {
+                for def in self.registry.effects.iter().filter(|d| d.kind == kind) {
+                    if ui.button(&def.name).clicked() {
+                        let node_kind = match def.kind {
+                            EffectKind::Source => NodeKind::Source {
+                                effect: def.id.clone(),
+                            },
+                            EffectKind::Effect => NodeKind::Effect {
+                                effect: def.id.clone(),
+                            },
+                        };
+                        let id = self.graph.add_node(node_kind, def.inputs, &def.params);
+                        snarl.insert_node(pos, id);
+                        ui.close();
+                    }
+                }
+            });
+        }
+    }
+
+    fn has_node_menu(&mut self, _node: &NodeId) -> bool {
+        true
+    }
+
+    fn show_node_menu(
+        &mut self,
+        node: egui_snarl::NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<NodeId>,
+    ) {
+        let id = snarl[node];
+        let is_output = matches!(
+            self.graph.node(id).map(|n| &n.kind),
+            Some(NodeKind::Output)
+        );
+        if is_output {
+            ui.label("Output");
+            return;
+        }
+        let mut bypass = self.graph.node(id).is_some_and(|n| n.bypass);
+        if ui.checkbox(&mut bypass, "Bypass").changed() {
+            let _ = self.graph.set_bypass(id, bypass);
+        }
+        if ui.button("Delete").clicked() {
+            if self.graph.remove_node(id).is_ok() {
+                snarl.remove_node(node);
+            }
+            ui.close();
+        }
+    }
+}
+
+/// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
+/// same hosting pattern as the shader editor — `draw_panels` stays untouched.
+pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
+    if !trama.canvas_open {
+        return;
+    }
+    let (pool_in_use, pool_total) = trama.pool_stats();
+    let mut open = trama.canvas_open;
+    let TramaSystem {
+        mode,
+        graph,
+        registry,
+        canvas,
+        last_error,
+        ..
+    } = trama;
+    egui::Window::new("trama")
+        .default_size([760.0, 480.0])
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(mode, super::super::RenderMode::Layers, "Layers");
+                ui.selectable_value(mode, super::super::RenderMode::Trama, "Trama");
+                ui.separator();
+                ui.weak(format!("pool {pool_in_use}/{pool_total}"));
+                if !registry.errors.is_empty() {
+                    ui.separator();
+                    let n = registry.errors.len();
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("{n} effect file(s) failed"),
+                    )
+                    .on_hover_text(
+                        registry
+                            .errors
+                            .iter()
+                            .map(|(f, e)| format!("{f}: {e}"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                }
+            });
+            if let Some(err) = last_error.as_deref().or(canvas.status.as_deref()) {
+                ui.colored_label(ui.visuals().error_fg_color, err);
+            }
+            ui.separator();
+            let mut viewer = CanvasViewer {
+                graph,
+                registry,
+                status: &mut canvas.status,
+            };
+            SnarlWidget::new()
+                .id_salt("trama-canvas")
+                .show(&mut canvas.snarl, &mut viewer, ui);
+        });
+    trama.canvas_open = open;
+}

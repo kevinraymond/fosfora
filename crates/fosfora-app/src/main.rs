@@ -227,6 +227,11 @@ impl ApplicationHandler for FosforaApp {
                         if !app.shader_editor.open => {
                             app.binding_matrix.open = !app.binding_matrix.open;
                         }
+                    KeyCode::KeyG
+                        // Toggle the trama graph canvas
+                        if !app.shader_editor.open => {
+                            app.trama.canvas_open = !app.trama.canvas_open;
+                        }
                     KeyCode::BracketLeft => {
                         // Previous layer
                         let num = app.layer_stack.layers.len();
@@ -894,6 +899,10 @@ impl ApplicationHandler for FosforaApp {
                         &ctx,
                         &mut app.shader_editor,
                     );
+
+                    // Trama graph canvas (G toggles; hosted here like the
+                    // shader editor — draw_panels stays untouched)
+                    crate::trama::ui::canvas::draw_trama_window(&ctx, &mut app.trama);
 
                     // Check if sidebar "Matrix" button was clicked
                     let matrix_open_requested = ctx.data_mut(|d| {
