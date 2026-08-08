@@ -12,6 +12,7 @@ use crate::audio::AudioFrame;
 use crate::audio::features::AudioFeatures;
 
 use super::phrase::PhraseTracker;
+use super::predict::DropPredictor;
 use super::schema;
 use super::section::{HeuristicSectionEstimator, SectionEstimator, SectionLabel};
 use super::sink::SignalSink;
@@ -48,6 +49,7 @@ pub struct SignalEmitter {
 
     section: Box<dyn SectionEstimator>,
     phrase: PhraseTracker,
+    predict: DropPredictor,
 
     beat_total: u32,
     bar_total: u32,
@@ -81,6 +83,7 @@ impl SignalEmitter {
             next_tx: 0.0,
             section,
             phrase: PhraseTracker::new(),
+            predict: DropPredictor::new(),
             beat_total: 0,
             bar_total: 0,
             drop_total: 0,
@@ -116,13 +119,24 @@ impl SignalEmitter {
 
         // ---- Events: emitted the hop they fire. Counts as args, so a receiver
         // can detect its own datagram loss from a gap.
+        // Q1: /beat and /downbeat carry the beat's event time, which may sit before
+        // this hop's timestamp once the scheduler fires at predicted instants.
+        let beat_ts = frame.beat_time.unwrap_or(ts);
         if f.beat > 0.5 {
             self.beat_total += 1;
-            sink.emit(ts, schema::BEAT, &[OscType::Int(self.beat_total as i32)]);
+            sink.emit(
+                beat_ts,
+                schema::BEAT,
+                &[OscType::Int(self.beat_total as i32)],
+            );
         }
         if f.downbeat > 0.5 {
             self.bar_total += 1;
-            sink.emit(ts, schema::DOWNBEAT, &[OscType::Int(self.bar_total as i32)]);
+            sink.emit(
+                beat_ts,
+                schema::DOWNBEAT,
+                &[OscType::Int(self.bar_total as i32)],
+            );
         }
         if f.drop > 0.5 {
             self.drop_total += 1;
@@ -174,6 +188,7 @@ impl SignalEmitter {
         }
 
         let ph = self.phrase.process(f, ts);
+        let predict = self.predict.process(f, &ph, ts);
         if self.last_phrase_len != Some(ph.len) {
             self.last_phrase_len = Some(ph.len);
             self.last_phrase_conf = ph.len_confidence;
@@ -200,7 +215,7 @@ impl SignalEmitter {
         if ts >= self.next_tx {
             // One message per tick even if frames stall briefly; never a burst.
             self.next_tx = (self.next_tx + self.tx_interval).max(ts - self.tx_interval);
-            self.emit_continuous(ts, f, &ph, sink);
+            self.emit_continuous(ts, f, &ph, predict, sink);
         }
     }
 
@@ -209,6 +224,7 @@ impl SignalEmitter {
         ts: f64,
         f: &AudioFeatures,
         ph: &super::phrase::PhraseState,
+        predict: f32,
         sink: &mut dyn SignalSink,
     ) {
         sink.emit(ts, schema::BPM, &[OscType::Float(f.raw_bpm())]);
@@ -242,7 +258,7 @@ impl SignalEmitter {
             schema::PHRASE_BEATS_LEFT,
             &[OscType::Int(ph.beats_left as i32)],
         );
-        sink.emit(ts, schema::PREDICT_DROP, &[OscType::Float(ph.predict_drop)]);
+        sink.emit(ts, schema::PREDICT_DROP, &[OscType::Float(predict)]);
 
         if self.cfg.feat_bus {
             for (addr, value) in self.feat_addrs.iter().zip(f.as_slice()) {
@@ -341,6 +357,7 @@ mod tests {
             timestamp: ts,
             phase_frozen: false,
             bar_duration: 2.0,
+            beat_time: None,
         }
     }
 

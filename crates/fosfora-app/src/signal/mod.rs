@@ -10,6 +10,7 @@
 pub mod clock;
 pub mod emitter;
 pub mod phrase;
+pub mod predict;
 pub mod schema;
 pub mod section;
 pub mod sink;

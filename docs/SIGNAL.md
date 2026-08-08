@@ -59,7 +59,18 @@ process cannot, so treat more than ~3 s of status silence as offline.
 | `/fosfora/v1/stem/melody/energy` | float 0..1 | Harmonic (sustained/pitched) energy — **proxy** |
 | `/fosfora/v1/phrase/bar` | int | Bar within the phrase, 1-based |
 | `/fosfora/v1/phrase/beats_left` | int | Whole beats until the next phrase boundary (4/4 assumption) |
-| `/fosfora/v1/predict/drop` | float 0..1 | Drop likelihood, designed to rise **before** the boundary — lead time, not detection |
+| `/fosfora/v1/predict/drop` | float 0..1 | Drop likelihood, designed to rise **before** the drop lands — lead time, not detection |
+
+`predict/drop` has three calibrated regimes: **below 0.5** is tension telemetry
+(no committed build — never treat it as a warning); **0.5 and above** means a
+build has sustained long enough to commit, with a drop-scale landing expected
+within roughly 8 bars; **0.8 and above** adds imminence evidence (sub-bass
+withdrawal, kick gap, phrase boundary) and is the tier to act on. The value is
+monotone within a build and collapses when the drop fires or the build fails.
+It is likelihood-*ordered*, not a calibrated probability — measured per-tier
+precision lives in `docs/BENCHMARKS.md`, and it is genre-calibrated against
+EDM-style arrangements: on other material the 0.5 tier fires on chorus-scale
+dynamics too.
 
 ### On change (+ 1 Hz re-broadcast)
 

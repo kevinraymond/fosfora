@@ -2,23 +2,23 @@
  "_policy": [
   "Floors/bands, never exact pins: exact scores are per-binary (toolchain and",
   "platform shift ULPs). Values sit just below the 2026-08-06 measured run on",
-  "this machine (beat F .688, downbeat F .238, tempo lock 3.9 s @ 122.3 BPM,",
+  "this machine (beat F .9545, downbeat F .1875, tempo lock 3.6 s @ 124 BPM,",
   "pairwise .649, boundary@3s .40) so a pipeline regression crashes through",
   "them while detector jitter does not. Ratchet upward as detectors improve.",
-  "predict/drop measured: max 0.378 on this fixture — never crosses the 0.5",
-  "threshold (phrase confidence ~0 on a 20-bar track caps the heuristic at",
-  "build_score * ~0.35), so only the false-alarm side is asserted here; lead",
-  "time gets measured on real annotated EDM (workstream C datasets)."
+  "predict/drop (episode-gated predictor, 2026-08-07): measured coverage 1.0",
+  "at BOTH thresholds on this fixture — lead 14.2 beats @0.5 / 11.1 @0.8,",
+  "zero false alarms. Floors sit well under those leads; the honest lead and",
+  "false-alarm numbers come from real music (Harmonix run + C13 hand labels)."
  ],
  "asserts": [
-  {"path": "dump.n_events.beat", "op": "in_range", "value": [90, 120]},
+  {"path": "dump.n_events.beat", "op": "in_range", "value": [55, 90]},
   {"path": "dump.n_events.drop", "op": "==", "value": 1},
-  {"path": "metrics.beat.f_measure", "op": ">=", "value": 0.6},
+  {"path": "metrics.beat.f_measure", "op": ">=", "value": 0.85},
   {"path": "metrics.beat.n_ref", "op": "==", "value": 80},
   {"path": "metrics.downbeat.f_measure", "op": ">=", "value": 0.15},
   {"path": "metrics.tempo.acc1", "op": "==", "value": true},
-  {"path": "metrics.tempo.lock_time_secs", "op": "<=", "value": 10.0},
-  {"path": "metrics.tempo.locked_fraction", "op": ">=", "value": 0.85},
+  {"path": "metrics.tempo.lock_time_secs", "op": "<=", "value": 6.0},
+  {"path": "metrics.tempo.locked_fraction", "op": ">=", "value": 0.9},
   {"path": "metrics.key.final_key_score", "op": "==", "value": 1.0},
   {"path": "metrics.key.score", "op": ">=", "value": 0.3},
   {"path": "metrics.key.first_emit_ts", "op": "<=", "value": 5.0},
@@ -27,6 +27,9 @@
   {"path": "metrics.drop.hit_rate", "op": "==", "value": 1.0},
   {"path": "metrics.drop.n_false", "op": "==", "value": 0},
   {"path": "metrics.predict_drop.n_false_alarms", "op": "==", "value": 0},
-  {"path": ["metrics", "predict_drop", "thresholds", "0.5", "coverage"], "op": "not_null"}
+  {"path": ["metrics", "predict_drop", "thresholds", "0.5", "coverage"], "op": "==", "value": 1.0},
+  {"path": ["metrics", "predict_drop", "thresholds", "0.5", "median_lead_beats"], "op": ">=", "value": 8.0},
+  {"path": ["metrics", "predict_drop", "thresholds", "0.8", "coverage"], "op": "==", "value": 1.0},
+  {"path": ["metrics", "predict_drop", "thresholds", "0.8", "median_lead_beats"], "op": ">=", "value": 4.0}
  ]
 }

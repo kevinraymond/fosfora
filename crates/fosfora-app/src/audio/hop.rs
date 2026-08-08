@@ -292,6 +292,7 @@ impl HopAnalyzer {
             // A8b (#1554): the tracker's own bar-clock denominator, so the render side
             // advances `bar_phase` on the same rate that produced the phase above.
             bar_duration: db.bar_duration,
+            beat_time: beat_fired.then_some(beat_result.beat_time),
         };
 
         HopOutput {

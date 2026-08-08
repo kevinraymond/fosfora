@@ -133,8 +133,11 @@ impl AudioFeatures {
         self.bpm * BPM_NORM
     }
 
-    /// Seconds per beat at the detected tempo, or `None` before tempo lock
-    /// (the detector reports `bpm == 0.0` until it locks).
+    /// Seconds per beat at the detected tempo, or `None` before the first
+    /// tempo lock. Q2b: the detector reports `bpm == 0.0` until the FIRST
+    /// lock is earned; after that the value HOLDS the last locked tempo
+    /// through unlocks (breakdowns, re-acquisition) rather than blanking or
+    /// gliding — the beat grid free-runs on the same held tempo.
     pub fn beat_period_secs(&self) -> Option<f32> {
         let period = 60.0 / self.raw_bpm();
         (period.is_finite() && period > 0.0).then_some(period)

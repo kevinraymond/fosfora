@@ -186,6 +186,41 @@ def key_table(ds: str, summary: dict, baselines: dict) -> list[str]:
     return rows
 
 
+def predict_drop_table(summary: dict) -> list[str]:
+    """Drop prediction vs chorus-onset PROXY truth. No published baseline
+    exists for causal drop prediction — the rows stand alone, caveats attached."""
+    pd = summary["metrics"]["predict_drop"]
+    dp = summary["metrics"].get("drop", {})
+    rows = [
+        "### Drop prediction (`/fosfora/v1/predict/drop`)",
+        "",
+        "Truth tier: **chorus-onset proxies** on the Dance/Electronic subset "
+        "(Harmonix has no drop labels). Proxies undercount real drop-scale "
+        "events, so the false-alarm rate is an upper bound; the hand-annotated "
+        "local set (C13) carries the headline lead-time number.",
+        "",
+        "| Tier | Coverage | Median lead (beats) | p25–p75 lead |",
+        "|---|---|---|---|",
+    ]
+    for theta in ("0.5", "0.8"):
+        t = pd.get(theta) or {}
+        lead = t.get("lead_beats") or {}
+        rows.append(
+            f"| ≥ {theta} | {fmt(t.get('coverage'))} | {fmt(lead.get('median'), 1)} | "
+            f"{fmt(lead.get('p25'), 1)}–{fmt(lead.get('p75'), 1)} |"
+        )
+    rows.append("")
+    rows.append(
+        f"False alarms {fmt(pd.get('false_alarms_per_min'), 2)}/min pooled over all "
+        f"{pd.get('n_tracks', '?')} tracks (≈⅓ of off-genre alarms are the predictor "
+        f"correctly anticipating a chorus landing). `/drop` detection event: "
+        f"hit rate {fmt(dp.get('hit_rate'))} vs the same proxies, "
+        f"{fmt(dp.get('false_drops_per_min'), 2)} false/min — it fires on "
+        f"loudness+sub-bass impact, which chorus onsets mostly are not."
+    )
+    return rows
+
+
 def coverage_table(results: dict[str, dict]) -> list[str]:
     rows = [
         "| Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |",
@@ -267,6 +302,9 @@ def render(root: Path) -> str:
             L.append("")
         if "key" in metrics:
             L.extend(key_table(ds, summary, baselines))
+            L.append("")
+        if (metrics.get("predict_drop") or {}).get("0.5", {}).get("coverage") is not None:
+            L.extend(predict_drop_table(summary))
             L.append("")
 
     L.append("## References")
