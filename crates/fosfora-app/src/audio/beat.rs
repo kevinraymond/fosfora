@@ -666,6 +666,31 @@ const ANCHOR_PROBATION_SECS: f64 = 30.0;
 /// divergence path (a genuine new tempo, e.g. 128 → 148, log2 0.209) gets here.
 /// The anchor is stale at that point and re-earns at the new tempo.
 const ANCHOR_ABANDON_LOG2: f64 = 0.12;
+/// An abandoned anchor lingers as a GHOST this long. If the replacement anchor
+/// earns at a non-octave relative (⅔, ¾ …) of the ghost, the earn snaps to the
+/// ghost's level instead: a level war's mush can fire the unrelated reset,
+/// abandon the anchor, and let the wrong level lock long enough to re-earn —
+/// measured on the 2026-08-08 re-listen, where the orchestral section did
+/// exactly this (172 → mush → abandon → ⅔ re-earn, then held wrong by
+/// design). Non-octave anchors are unrecoverable post-probation, so a wrong
+/// one must never be minted off a fresh abandon. ALL related re-earns fold —
+/// octave included: if the material genuinely half-timed, the octave
+/// displacement path re-displaces from the restored level within ~10 s, so
+/// folding costs nothing; not folding lets a mixed-window artifact level
+/// (measured: a 60.09 BPM earn off the mush/⅔ boundary) become the anchor.
+/// Unrelated re-earns are a genuine new song and keep their level.
+const GHOST_ANCHOR_TTL_SECS: f64 = 60.0;
+/// The ghost comparison asks a coarse question — "same metrical family?" —
+/// so its band is wider than the fold tolerance (the measured artifact earn
+/// sat 0.006 log2 outside RELATED_TOL_LOG2's ±0.08).
+const GHOST_RELATED_TOL_LOG2: f64 = 0.12;
+/// The ghost veto only applies when the dead anchor had at least this much
+/// tenure: an anchor that survived a minute of music is a veteran whose level
+/// war deserves to be lost by the challenger, but a first anchor that died
+/// young (GiantSteps 30 s clips: wrong intro locks, ~10 s tenure) is exactly
+/// the mistake the re-earn is correcting — measured both ways on the dev
+/// subset (ghost-without-tenure reverted 4191591's fix).
+const GHOST_MIN_TENURE_SECS: f64 = 30.0;
 
 /// Linearly interpolated ACF value at a continuous lag. `x` must be within
 /// `[0, len-1]`; callers guarantee it via the float lag bounds.
@@ -742,6 +767,12 @@ struct TempoEstimator {
     /// Q2b: hop stamp of the anchor earn — non-octave displacement is allowed
     /// within [`ANCHOR_PROBATION_SECS`] of it. `None` = no probation (tap).
     anchor_earned_at: Option<u32>,
+    /// Q2b: (level, hop stamp) of the last abandoned anchor, kept only when
+    /// it had [`GHOST_MIN_TENURE_SECS`]. See [`GHOST_ANCHOR_TTL_SECS`].
+    ghost_anchor: Option<(f64, u32)>,
+    /// Q2b: hop stamp of the current anchor's original earn (displacement
+    /// keeps the lineage) — the ghost veto's tenure clock.
+    anchor_born_at: Option<u32>,
     /// Q2b: hop stamp of the false→true lock transition (anchor-earn clock).
     locked_since: Option<u32>,
     /// Q2b: EMA of confident winners at the one related level in
@@ -788,6 +819,8 @@ impl TempoEstimator {
             locked: false,
             anchor_log2: None,
             anchor_earned_at: None,
+            ghost_anchor: None,
+            anchor_born_at: None,
             locked_since: None,
             challenge: 0.0,
             challenge_ratio: 0.0,
@@ -885,6 +918,7 @@ impl TempoEstimator {
         // Q2b: a tap is the strongest possible level evidence — anchor there now.
         self.anchor_log2 = Some(bpm.log2());
         self.anchor_earned_at = None;
+        self.anchor_born_at = Some(self.frame_count);
         self.locked_since = Some(self.frame_count);
         self.last_locked_bpm = bpm;
         self.challenge = 0.0;
@@ -1070,8 +1104,17 @@ impl TempoEstimator {
                     .is_some_and(|a| (filtered_bpm.log2() - a).abs() > ANCHOR_ABANDON_LOG2)
             {
                 log::info!("Tempo anchor abandoned at {filtered_bpm:.1} BPM (unrelated change)");
+                let tenure = self.anchor_born_at.map_or(0.0, |b| {
+                    f64::from(self.frame_count.wrapping_sub(b)) * self.frame_time
+                });
+                self.ghost_anchor = if tenure >= GHOST_MIN_TENURE_SECS {
+                    self.anchor_log2.map(|a| (a, self.frame_count))
+                } else {
+                    None
+                };
                 self.anchor_log2 = None;
                 self.anchor_earned_at = None;
+                self.anchor_born_at = None;
                 self.locked_since = None;
                 self.challenge = 0.0;
                 self.challenge_above_since = None;
@@ -1117,9 +1160,41 @@ impl TempoEstimator {
                     && f64::from(self.frame_count.wrapping_sub(since)) * self.frame_time
                         >= ANCHOR_EARN_SECS
                 {
-                    log::info!("Tempo anchor earned: {filtered_bpm:.1} BPM");
-                    self.anchor_log2 = Some(filtered_bpm.log2());
-                    self.anchor_earned_at = Some(self.frame_count);
+                    let mut level = filtered_bpm.log2();
+                    let mut folded_to_ghost = false;
+                    // A fresh ghost vetoes a non-octave-related re-earn — the
+                    // level war that killed the old anchor must not mint an
+                    // unrecoverable wrong one (see GHOST_ANCHOR_TTL_SECS).
+                    if let Some((ghost, at)) = self.ghost_anchor {
+                        let fresh = f64::from(self.frame_count.wrapping_sub(at)) * self.frame_time
+                            < GHOST_ANCHOR_TTL_SECS;
+                        let rel = RELATED_RATIOS_LOG2
+                            .iter()
+                            .copied()
+                            .find(|r| (level - ghost - r).abs() <= GHOST_RELATED_TOL_LOG2);
+                        if fresh && rel.is_some() {
+                            log::info!(
+                                "Tempo anchor re-earn folded to ghost level: {:.1} -> {:.1} BPM",
+                                filtered_bpm,
+                                2.0f64.powf(ghost)
+                            );
+                            level = ghost;
+                            folded_to_ghost = true;
+                            self.kalman.force(2.0f64.powf(ghost));
+                        }
+                    }
+                    log::info!("Tempo anchor earned: {:.1} BPM", 2.0f64.powf(level));
+                    self.anchor_log2 = Some(level);
+                    // A ghost-folded earn is a veteran level — no probation,
+                    // or the same ⅔ evidence that lost the level war would
+                    // immediately displace the anchor it just failed to earn.
+                    self.anchor_earned_at = if folded_to_ghost {
+                        None
+                    } else {
+                        Some(self.frame_count)
+                    };
+                    self.anchor_born_at = Some(self.frame_count);
+                    self.ghost_anchor = None;
                 }
             } else if let Some(a) = &mut self.anchor_log2 {
                 if filtered_bpm > 0.0 && (filtered_bpm.log2() - *a).abs() <= RELATED_TOL_LOG2 {
@@ -2605,6 +2680,45 @@ mod tests {
         assert!(
             (bpm - 64.0).abs() / 64.0 < 0.05,
             "sustained related level must displace, got {bpm}"
+        );
+    }
+
+    /// Q2b ghost anchor: a level war (anchor → unrelated mush → abandon → a
+    /// related level locks and re-earns) must not mint an unrecoverable
+    /// non-octave anchor — the re-earn folds back to the ghost's level. This
+    /// is the 2026-08-08 re-listen failure: the orchestral section's mush
+    /// abandoned the 172 anchor and the ⅔ level (115) re-earned, then held
+    /// wrong by design for 90 s.
+    #[test]
+    fn ghost_anchor_vetoes_related_reearn() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        // ~128 BPM long enough for the anchor to be a VETERAN — the ghost
+        // only forms with GHOST_MIN_TENURE_SECS of tenure (young first
+        // anchors are the mistake a re-earn corrects, not a level to defend).
+        drive_estimator(&mut est, 40.4, 45.0);
+        assert!(est.anchor_log2.is_some());
+        // ~12 s of unrelated MUSH — alternating ~105 / ~93 BPM so the winner
+        // keeps deviating >10% from the anchor (the hard reset fires) but
+        // support can never build 8 s of lock (no intermediate anchor may
+        // earn, or it would launder the ghost — the exact live failure).
+        for _ in 0..4 {
+            drive_estimator(&mut est, 49.2, 1.5);
+            drive_estimator(&mut est, 55.4, 1.5);
+        }
+        assert!(est.anchor_log2.is_none(), "mush must abandon the anchor");
+        assert!(est.ghost_anchor.is_some(), "abandon leaves a ghost");
+        // Sustained ⅔ level (~85.3 BPM): locks and re-earns — the ghost must
+        // fold the earn back to ~128, not let 85.3 stick.
+        drive_estimator(&mut est, 60.6, 22.0);
+        let anchor_bpm = est.anchor_log2.map(|a| 2.0f64.powf(a)).unwrap_or(0.0);
+        assert!(
+            (anchor_bpm - 128.0).abs() / 128.0 < 0.06,
+            "re-earn must fold to the ghost level, anchored at {anchor_bpm}"
+        );
+        let published = est.published_bpm();
+        assert!(
+            (published - 128.0).abs() / 128.0 < 0.06,
+            "published must return to the ghost level, got {published}"
         );
     }
 
