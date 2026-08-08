@@ -30,3 +30,5 @@ __pycache__/
 # (tens of GB, audio never enters the repo); out/ is regenerable dumps + scores.
 /bench/datasets/
 /bench/out/
+/bench/*.mp3
+/bench/*.signal.jsonl
