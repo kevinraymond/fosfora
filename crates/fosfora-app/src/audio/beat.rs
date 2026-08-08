@@ -631,11 +631,14 @@ const LOCK_INNOVATION_R_MULT: f64 = 6.0;
 /// divergence hard-reset, which is how double-kick-over-four-on-the-floor
 /// material teleported the filter between levels (live smoke 2026-08-08).
 /// Displacing the anchor takes sustained confident evidence at ONE related
-/// level: a challenge EMA above [`DISPLACE_CHALLENGE`] for
-/// [`DISPLACE_SPAN_SECS`]. Unrelated tempos (a genuinely different song) skip
-/// all of this and keep the fast divergence path. Note 4:3 catches some real
-/// song transitions (172 → 128 reads as ¾) — those still displace, just on
-/// the ~10 s clock instead of the ~1 s one; recorded trade.
+/// level — a challenge EMA above [`DISPLACE_CHALLENGE`] for
+/// [`DISPLACE_SPAN_SECS`] — and is possible ONLY during the post-earn
+/// probation ([`ANCHOR_PROBATION_SECS`]): once a level survives probation it
+/// is settled for the track's lifetime (owner-ruled, live run 3 — sustained
+/// half-level evidence mid-track is a half-time FEEL, not a tempo change).
+/// Unrelated tempos (a genuinely different song) skip all of this and keep
+/// the fast divergence path; tap and the octave override are the operator's
+/// escape for a set that truly changes level.
 const ANCHOR_EARN_SECS: f64 = 8.0;
 const RELATED_TOL_LOG2: f64 = 0.08;
 /// log2 of {2, ½, 3/2, ⅔, 4/3, ¾}.
@@ -678,7 +681,9 @@ const ANCHOR_ABANDON_LOG2: f64 = 0.12;
 /// displacement path re-displaces from the restored level within ~10 s, so
 /// folding costs nothing; not folding lets a mixed-window artifact level
 /// (measured: a 60.09 BPM earn off the mush/⅔ boundary) become the anchor.
-/// Unrelated re-earns are a genuine new song and keep their level.
+/// A ghost-restored anchor carries no probation — its level was already
+/// probated in its first life and is settled. Unrelated re-earns are a
+/// genuine new song and keep their level.
 const GHOST_ANCHOR_TTL_SECS: f64 = 60.0;
 /// The ghost comparison asks a coarse question — "same metrical family?" —
 /// so its band is wider than the fold tolerance (the measured artifact earn
@@ -1016,19 +1021,21 @@ impl TempoEstimator {
                     .find(|r| (d - r).abs() <= RELATED_TOL_LOG2)
                 {
                     measurement_bpm = 2.0f64.powf(raw_bpm.log2() - r);
-                    // Only OCTAVE relations may displace the anchor: half- and
-                    // double-time switches are real musical events. A 3:2/4:3
-                    // "tactus change" mid-track is essentially always the ACF
-                    // fooling itself (measured: the fixture's orchestral
-                    // section sustains ⅔-level winners for 60+ s — no finite
-                    // span survives that), so those ratios fold forever. A
-                    // genuinely different song still escapes via the unrelated
-                    // divergence path.
+                    // Displacement evidence accumulates ONLY during probation.
+                    // Post-probation the level is settled for the track's
+                    // lifetime — owner-ruled after live run 3 (2026-08-08):
+                    // the mid-section's sustained half-level evidence is a
+                    // half-time FEEL, not a tempo change, and following it
+                    // (172→86→172→86 ping-pong) is wrong. Related winners
+                    // still fold, so a half-feel section keeps supporting the
+                    // real grid; a genuinely different song escapes via the
+                    // unrelated divergence path; tap / octave override remain
+                    // the operator's escape for a set that truly half-times.
                     let in_probation = self.anchor_earned_at.is_some_and(|f| {
                         f64::from(self.frame_count.wrapping_sub(f)) * self.frame_time
                             < ANCHOR_PROBATION_SECS
                     });
-                    if r.abs() == 1.0 || in_probation {
+                    if in_probation {
                         if r != self.challenge_ratio {
                             self.challenge = 0.0;
                             self.challenge_ratio = r;
@@ -2680,6 +2687,28 @@ mod tests {
         assert!(
             (bpm - 64.0).abs() / 64.0 < 0.05,
             "sustained related level must displace, got {bpm}"
+        );
+    }
+
+    /// Q2b, owner-ruled after live run 3: once probation ends the level is
+    /// settled — even sustained OCTAVE evidence folds instead of displacing
+    /// (the 172→86→172→86 ping-pong followed a half-time feel, not a tempo
+    /// change). Escape hatches: unrelated divergence, tap, octave override.
+    #[test]
+    fn post_probation_octave_evidence_folds_not_displaces() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        // ~128 BPM well past probation (earn ~13 s + 30 s probation).
+        drive_estimator(&mut est, 40.4, 50.0);
+        assert!(est.locked && est.anchor_log2.is_some());
+        // 20 s of sustained ½-level winners: pre-ruling this displaced.
+        let bpm = drive_estimator(&mut est, 80.8, 20.0);
+        assert!(
+            (bpm - 128.0).abs() / 128.0 < 0.04,
+            "post-probation octave evidence must fold, got {bpm}"
+        );
+        assert!(
+            est.locked,
+            "folded octave evidence keeps supporting the lock"
         );
     }
 
