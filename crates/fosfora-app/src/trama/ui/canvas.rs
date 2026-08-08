@@ -317,9 +317,13 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 );
             }
             ui.separator();
+            // Fixed width (house pattern, ui/panels/mod.rs): the inspector's
+            // sliders greedily fill available width, so a resizable panel in
+            // an auto-sizing window ratchets the window wider on every
+            // selection. 315 px is the budget rows.rs columns are sized for.
             egui::SidePanel::right("trama-inspector")
-                .resizable(true)
-                .default_width(300.0)
+                .resizable(false)
+                .exact_width(315.0)
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         super::inspector::draw_inspector(ui, graph, registry, audio_view, selected);

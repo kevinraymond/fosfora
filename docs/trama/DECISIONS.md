@@ -97,3 +97,9 @@ Owner reads this instead of diffs when reviewing direction.
   deselects, and the selected node carries a bright outline ring
   (luminance-based). `CanvasState.selected` is the single source of truth;
   snarl's internal selection set is unused.
+- **2026-08-07 — M1 play-test refinements (owner): inspector width is fixed
+  at 315 px (house `exact_width` pattern) — greedy-width sliders inside a
+  resizable panel inside an auto-sizing window ratcheted the window wider on
+  every selection; each parameter is a card with its modulation sub-block
+  indented beneath; every control row leads with the house `R` reset button
+  and carries a tooltip.**
