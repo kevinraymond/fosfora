@@ -8,6 +8,7 @@ pub mod audio;
 pub mod effect;
 pub mod exec;
 pub mod graph;
+pub mod modulation;
 pub mod node;
 pub mod ui;
 

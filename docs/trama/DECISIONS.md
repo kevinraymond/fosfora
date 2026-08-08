@@ -52,3 +52,20 @@ Owner reads this instead of diffs when reviewing direction.
   named features arrive adaptive-normalized and asymmetrically smoothed from the
   audio pipeline, so a second feature-level stage would double-smooth. The
   per-modulation `smoothing` knob remains the user's additional stage by choice.
+- **2026-08-07 — M1: modulation lives on `NodeInstance` as a name-keyed slot
+  list (one per param); runtime state (osc phase, S&H/Drift RNG, smoother) is
+  embedded beside the config, never serialized, and seeded from node id + param
+  name** — deterministic replay, no wall clock anywhere.
+- **2026-08-07 — M1: resolution-rule semantics.** Oscillator signals are
+  bipolar, audio signals unipolar; Add = `base + s·amount·span`; **Multiply is
+  relative** (`base·(1 + s·amount)`) — the handoff's literal `base·m` with `m`
+  pre-scaled into the span is dimensionally param-units² and pins the value to
+  ~0 whenever the signal rests; Replace crossfades the base toward the
+  range-mapped signal by `|amount|` (negative amounts invert). Clamp to
+  [min,max], then a symmetric dt-correct one-pole with τ = smoothing² · 2 s
+  (quadratic knob; 0 snaps, first resolve always snaps).
+- **2026-08-07 — M1: param/modulation edits do not bump the graph version.**
+  Only structural edits replan — a replan rebuilds every bind group and
+  reassigns the texture pool, which would break I8 at slider-drag rates. The
+  mutators hand out a `NodeParamsMut` projection so structural fields stay
+  behind the versioned API.

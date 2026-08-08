@@ -107,6 +107,12 @@ impl AudioView {
     pub fn tempo_locked(&self) -> bool {
         self.tempo_locked
     }
+
+    /// Seconds per beat at the detected tempo; `None` pre-lock. Time math
+    /// only (Drift slew periods) — signals use the normalized `Bpm`.
+    pub fn beat_period_secs(&self) -> Option<f32> {
+        self.features.beat_period_secs()
+    }
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 use crate::params::ParamStore;
 
 use super::effect::EffectId;
+use super::modulation::ParamMod;
 
 /// Stable identity of a node within one graph.
 ///
@@ -30,9 +31,12 @@ pub struct NodeInstance {
     /// Input-pin count, denormalized from the effect manifest at add time so
     /// graph logic never needs the registry (`Output` = 1, sources = 0).
     pub inputs: u8,
-    /// Per-node parameter values. M0 leaves these at manifest defaults; the
-    /// inspector starts editing them in M1.
+    /// Per-node parameter values — the manual base half of the triple.
     pub params: ParamStore,
+    /// Per-parameter modulation slots (name-keyed, at most one per param).
+    /// The embedded runtime state never serializes — M3 skips it.
+    #[allow(dead_code)] // read by the executor overlay, commit 3
+    pub mods: Vec<ParamMod>,
     /// A bypassed effect forwards its input 0; the executor resolves the
     /// aliasing at plan build, so no pass runs for it.
     pub bypass: bool,

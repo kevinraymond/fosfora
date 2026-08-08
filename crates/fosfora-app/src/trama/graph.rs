@@ -12,8 +12,9 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use crate::params::ParamDef;
+use crate::params::{ParamDef, ParamStore};
 
+use super::modulation::{Modulation, ParamMod};
 use super::node::{NodeId, NodeInstance, NodeKind};
 
 /// A texture connection. Out pins are not modeled: every node has exactly one
@@ -45,6 +46,30 @@ pub enum GraphError {
     DuplicateWire,
 }
 
+/// Projection of one node's *non-structural* state: the manual base values
+/// and the modulation slots. Handing out disjoint field borrows (rather
+/// than `&mut NodeInstance`) makes it impossible to flip `bypass`/`kind`
+/// without going through the version-bumping structural API.
+// Consumed by the frame loop and inspector in the follow-up M1 commits; the
+// allow keeps this commit green under -D warnings until then.
+#[allow(dead_code)]
+pub struct NodeParamsMut<'a> {
+    pub id: NodeId,
+    pub params: &'a mut ParamStore,
+    pub mods: &'a mut Vec<ParamMod>,
+}
+
+impl<'a> NodeParamsMut<'a> {
+    #[allow(dead_code)] // see struct note
+    fn of(node: &'a mut NodeInstance) -> Self {
+        Self {
+            id: node.id,
+            params: &mut node.params,
+            mods: &mut node.mods,
+        }
+    }
+}
+
 pub struct NodeGraph {
     nodes: Vec<NodeInstance>,
     wires: Vec<Wire>,
@@ -67,6 +92,7 @@ impl NodeGraph {
                 kind: NodeKind::Output,
                 inputs: 1,
                 params: crate::params::ParamStore::new(),
+                mods: Vec::new(),
                 bypass: false,
             }],
             wires: Vec::new(),
@@ -111,6 +137,7 @@ impl NodeGraph {
             kind,
             inputs,
             params,
+            mods: Vec::new(),
             bypass: false,
         });
         self.touch();
@@ -188,6 +215,56 @@ impl NodeGraph {
         if node.bypass != bypass {
             node.bypass = bypass;
             self.touch();
+        }
+        Ok(())
+    }
+
+    /// Mutable access to one node's non-structural state (base values +
+    /// modulations). Deliberately NOT a `node_mut()`: structural fields
+    /// (kind, inputs, bypass) stay behind the versioned API, because
+    /// param/mod edits must not bump `version` — a replan rebuilds every
+    /// bind group and reassigns the texture pool (I8).
+    #[allow(dead_code)] // inspector, commit 4
+    pub fn params_mut(&mut self, id: NodeId) -> Option<NodeParamsMut<'_>> {
+        self.nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .map(NodeParamsMut::of)
+    }
+
+    /// Per-frame iteration over every node's non-structural state, for the
+    /// modulation resolve pass. Orphans included — their oscillator phases
+    /// stay warm across rewires (and `live_set()` would allocate).
+    #[allow(dead_code)] // frame loop, commit 3
+    pub fn params_iter_mut(&mut self) -> impl Iterator<Item = NodeParamsMut<'_>> {
+        self.nodes.iter_mut().map(NodeParamsMut::of)
+    }
+
+    /// Install, replace, or (with `None`) remove the modulation on one
+    /// param. At most one slot per param; replacing keeps the runtime state
+    /// so oscillator phase stays warm across config tweaks. Non-structural:
+    /// no version bump.
+    #[allow(dead_code)] // inspector, commit 4
+    pub fn set_modulation(
+        &mut self,
+        id: NodeId,
+        param: &str,
+        config: Option<Modulation>,
+    ) -> Result<(), GraphError> {
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or(GraphError::UnknownNode)?;
+        match config {
+            Some(config) => {
+                if let Some(existing) = node.mods.iter_mut().find(|m| m.param == param) {
+                    existing.config = config;
+                } else {
+                    node.mods.push(ParamMod::new(node.id, param, config));
+                }
+            }
+            None => node.mods.retain(|m| m.param != param),
         }
         Ok(())
     }
@@ -518,5 +595,53 @@ mod tests {
         assert_eq!(g.topo_order(), first.as_slice());
         g.disconnect(out, 0);
         assert!(!g.topo_cached());
+    }
+
+    fn any_modulation() -> Modulation {
+        use crate::trama::audio::AudioFeature;
+        use crate::trama::modulation::{ModMode, ModSource};
+        Modulation {
+            source: ModSource::Audio(AudioFeature::Rms),
+            amount: 0.5,
+            mode: ModMode::Add,
+            smoothing: 0.0,
+        }
+    }
+
+    #[test]
+    fn param_and_modulation_edits_do_not_bump_version() {
+        let mut g = NodeGraph::new_with_output();
+        let s = src(&mut g);
+        let v = g.version();
+        let node = g.params_mut(s).unwrap();
+        node.params.set("x", crate::params::ParamValue::Float(0.9));
+        g.set_modulation(s, "x", Some(any_modulation())).unwrap();
+        g.set_modulation(s, "x", None).unwrap();
+        for _ in g.params_iter_mut() {}
+        assert_eq!(g.version(), v, "non-structural edits must not replan");
+    }
+
+    #[test]
+    fn set_modulation_keeps_one_slot_per_param() {
+        let mut g = NodeGraph::new_with_output();
+        let s = src(&mut g);
+        g.set_modulation(s, "x", Some(any_modulation())).unwrap();
+        g.set_modulation(s, "x", Some(any_modulation())).unwrap();
+        assert_eq!(g.params_mut(s).unwrap().mods.len(), 1);
+        g.set_modulation(s, "y", Some(any_modulation())).unwrap();
+        assert_eq!(g.params_mut(s).unwrap().mods.len(), 2);
+        assert_eq!(
+            g.set_modulation(NodeId(999), "x", Some(any_modulation())),
+            Err(GraphError::UnknownNode)
+        );
+    }
+
+    #[test]
+    fn remove_node_drops_its_modulations() {
+        let mut g = NodeGraph::new_with_output();
+        let s = src(&mut g);
+        g.set_modulation(s, "x", Some(any_modulation())).unwrap();
+        g.remove_node(s).unwrap();
+        assert!(g.params_mut(s).is_none(), "mods die with the node");
     }
 }
