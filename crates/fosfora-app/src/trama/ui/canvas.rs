@@ -160,9 +160,21 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     ) {
         // Plain-press selection. egui-snarl 0.9 selects only on shift/cmd
         // click or a background rect-drag, which no one discovers — pressing
-        // a node (click or drag-grab) is what inspects it. Nodes draw in topo
-        // order of insertion, so on overlap the last (topmost) hook call wins.
-        if ui.rect_contains_pointer(rect) {
+        // a node (click or drag-grab) is what inspects it. Nodes draw in
+        // insertion order, so on overlap the last (topmost) hook call wins.
+        //
+        // The pointer test is manual: `Ui::rect_contains_pointer` demands
+        // the pointer's topmost layer BE this ui's layer, but snarl paints
+        // nodes in a non-Area sublayer that `layer_id_at` never returns, so
+        // that test is unconditionally false here. Transform the rect to
+        // global ourselves and skip the layer check.
+        let to_global = ui
+            .ctx()
+            .layer_transform_to_global(ui.layer_id())
+            .unwrap_or(egui::emath::TSTransform::IDENTITY);
+        let global_rect = to_global * rect.intersect(ui.clip_rect());
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        if pointer.is_some_and(|pos| global_rect.contains(pos)) {
             self.pointer_on_node = true;
             if ui.input(|i| i.pointer.primary_pressed()) {
                 *self.selected = Some(snarl[node]);
