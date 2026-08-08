@@ -21,8 +21,8 @@ pub const VALUE_WIDTH: f32 = 40.0;
 
 /// Response from a [`ParamRow`] slider/drag.
 pub struct RowResponse {
-    /// The slider/drag widget itself (for hover, context menus, …).
-    #[allow(dead_code)] // part of the row vocabulary; no caller needs it yet
+    /// The slider/drag widget itself (for hover, context menus, and overlay
+    /// painting — the trama inspector's ghost tick draws over its rect).
     pub response: Response,
     /// Value changed this frame.
     pub changed: bool,

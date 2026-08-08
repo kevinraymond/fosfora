@@ -23,7 +23,6 @@ const BAND_RELEASE: f32 = 0.200;
 /// Audio-feature modulation sources. `Bpm` is the normalized 0..1 field
 /// (bpm/300) — correct as a *signal*; anything doing time math must go
 /// through `AudioFeatures::raw_bpm` instead (#2054).
-#[allow(dead_code)] // variants constructed by the inspector, final M1 commit
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioFeature {
     Rms,
@@ -101,7 +100,6 @@ impl AudioView {
 
     /// Whether the tempo detector has locked (`bpm > 0`). The inspector uses
     /// this to caption BeatSync rates ("waiting for tempo…").
-    #[allow(dead_code)] // inspector, final M1 commit
     pub fn tempo_locked(&self) -> bool {
         self.tempo_locked
     }

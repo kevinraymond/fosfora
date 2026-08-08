@@ -13,11 +13,6 @@
 //! path's second execute per frame cannot double-advance oscillators, and
 //! the inspector's ghost indicator reads the same values after the fact.
 
-// The resolve/apply path is live, but the config type surface (mode/shape/
-// rate variants) is only *constructed* by the inspector — final M1 commit,
-// which removes this allow.
-#![allow(dead_code)]
-
 use crate::params::{ParamDef, ParamStore, ParamValue};
 
 use super::audio::{AudioFeature, AudioView};
@@ -49,6 +44,17 @@ pub enum OscShape {
     /// Random walk: a fresh target each cycle, slewed toward with
     /// τ = period/3 — smooth bounded wander.
     Drift,
+}
+
+impl OscShape {
+    pub const ALL: [OscShape; 6] = [
+        OscShape::Sine,
+        OscShape::Saw,
+        OscShape::Square,
+        OscShape::Triangle,
+        OscShape::SampleHold,
+        OscShape::Drift,
+    ];
 }
 
 /// Musical divisions for beat-synced rates. 4/4 is assumed in v1 (the bar
@@ -503,19 +509,6 @@ mod tests {
             (two_steps - one_step).abs() < 1e-5,
             "{two_steps} vs {one_step}"
         );
-    }
-
-    fn hz_osc(shape: OscShape, hz: f32) -> Modulation {
-        Modulation {
-            source: ModSource::Oscillator(Osc {
-                shape,
-                rate: OscRate::Hz(hz),
-                phase: 0.0,
-            }),
-            amount: 1.0,
-            mode: ModMode::Replace,
-            smoothing: 0.0,
-        }
     }
 
     #[test]

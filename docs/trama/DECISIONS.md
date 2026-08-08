@@ -75,3 +75,19 @@ Owner reads this instead of diffs when reviewing direction.
   per frame — advancing state in `execute` would double-run oscillators. All
   nodes resolve, orphans included: phases stay warm across rewires, and
   `live_set()` would allocate per frame.
+- **2026-08-07 — M1: modulation targets Float params only.** Bool needs
+  thresholding/flicker semantics, Color a per-channel-vs-HSV policy, Point2D
+  2D sources — deferred design debt serving no accept criterion. The
+  inspector still gives Color/Bool/Point2D plain unmodulated editors.
+- **2026-08-07 — M1: BeatSync derives phase from the continuous beat clock
+  (`beat_index + beat_phase`) and freezes pre-tempo-lock; 4/4 assumed.** The
+  interp PLL already holds phase through silence, and a fallback tempo would
+  guarantee a visible snap the moment lock lands — Hz rates are the
+  always-moving option. The inspector captions unlocked BeatSync in text.
+- **2026-08-07 — M1: inspector is a right side column inside the trama
+  window; the ghost indicator is a bright tick + triangle over the slider
+  rail plus a monospace `→ value` readout** — luminance + shape + text,
+  never hue alone (owner is colorblind). Mod-source state reads as a text
+  glyph ("~ sine", "≈ bass"). The snarl canvas switched from `id_salt` to an
+  explicit widget id so selection is readable from outside the widget's Ui —
+  one-time pan/zoom state reset accepted.

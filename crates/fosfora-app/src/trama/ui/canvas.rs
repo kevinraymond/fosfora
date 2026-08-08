@@ -203,6 +203,13 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     }
 }
 
+/// The canvas widget's explicit id: shared by the draw call and the
+/// selection query (the free `get_selected_nodes` cannot resolve an
+/// `id_salt`-derived id from outside the widget's own `Ui`).
+fn canvas_widget_id() -> egui::Id {
+    egui::Id::new("trama-canvas")
+}
+
 /// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
 /// same hosting pattern as the shader editor — `draw_panels` stays untouched.
 pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
@@ -217,10 +224,16 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         registry,
         canvas,
         last_error,
+        audio_view,
         ..
     } = trama;
+    // Last frame's selection — read before this frame's canvas draws, the
+    // standard one-frame egui lag. Snarl payloads ARE trama node ids.
+    let selected = egui_snarl::ui::get_selected_nodes(canvas_widget_id(), ctx)
+        .last()
+        .and_then(|sid| canvas.snarl.get_node(*sid).copied());
     egui::Window::new("trama")
-        .default_size([760.0, 480.0])
+        .default_size([1020.0, 520.0])
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -258,18 +271,28 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 );
             }
             ui.separator();
-            let origin = ui.next_widget_position();
-            let translate = canvas.last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
-            canvas.last_origin = Some(origin);
-            let mut viewer = CanvasViewer {
-                graph,
-                registry,
-                status: &mut canvas.status,
-                translate,
-            };
-            SnarlWidget::new()
-                .id_salt("trama-canvas")
-                .show(&mut canvas.snarl, &mut viewer, ui);
+            egui::SidePanel::right("trama-inspector")
+                .resizable(true)
+                .default_width(300.0)
+                .show_inside(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        super::inspector::draw_inspector(ui, graph, registry, audio_view, selected);
+                    });
+                });
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let origin = ui.next_widget_position();
+                let translate = canvas.last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
+                canvas.last_origin = Some(origin);
+                let mut viewer = CanvasViewer {
+                    graph,
+                    registry,
+                    status: &mut canvas.status,
+                    translate,
+                };
+                SnarlWidget::new()
+                    .id(canvas_widget_id())
+                    .show(&mut canvas.snarl, &mut viewer, ui);
+            });
         });
     trama.canvas_open = open;
 }

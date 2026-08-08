@@ -50,9 +50,6 @@ pub enum GraphError {
 /// and the modulation slots. Handing out disjoint field borrows (rather
 /// than `&mut NodeInstance`) makes it impossible to flip `bypass`/`kind`
 /// without going through the version-bumping structural API.
-// Consumed by the frame loop and inspector in the follow-up M1 commits; the
-// allow keeps this commit green under -D warnings until then.
-#[allow(dead_code)]
 pub struct NodeParamsMut<'a> {
     pub id: NodeId,
     pub params: &'a mut ParamStore,
@@ -223,7 +220,6 @@ impl NodeGraph {
     /// (kind, inputs, bypass) stay behind the versioned API, because
     /// param/mod edits must not bump `version` — a replan rebuilds every
     /// bind group and reassigns the texture pool (I8).
-    #[allow(dead_code)] // inspector, commit 4
     pub fn params_mut(&mut self, id: NodeId) -> Option<NodeParamsMut<'_>> {
         self.nodes
             .iter_mut()
@@ -242,7 +238,6 @@ impl NodeGraph {
     /// param. At most one slot per param; replacing keeps the runtime state
     /// so oscillator phase stays warm across config tweaks. Non-structural:
     /// no version bump.
-    #[allow(dead_code)] // inspector, commit 4
     pub fn set_modulation(
         &mut self,
         id: NodeId,
