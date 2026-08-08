@@ -162,9 +162,10 @@ def main() -> int:
             b = latest.get("build", [0.0])[0]
             d = latest.get("stem/drums/energy", [0.0])[0]
             p = latest.get("predict/drop", [0.0])[0]
+            bpm_now = latest.get("bpm", [0.0])[0]
             print(
-                f"[{rel:8.2f}]   energy {bar(e)} {e:.2f}  drums {d:.2f}"
-                f"  build {b:.2f}  predict {p:.2f}"
+                f"[{rel:8.2f}]   BPM {bpm_now:6.1f}  energy {bar(e)} {e:.2f}"
+                f"  drums {d:.2f}  build {b:.2f}  predict {p:.2f}"
             )
 
     out.close()
