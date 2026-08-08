@@ -38,3 +38,11 @@ Owner reads this instead of diffs when reviewing direction.
   `(w, h, format)` keying, same resize-only rebuild; per-plan assignment is what
   makes cached per-node bind groups sound and yields I8's zero-steady-state-alloc
   directly. Per-frame timing buys nothing until M2 previews/multi-resolution.
+- **2026-08-07 — Canvas re-anchors the snarl viewport per frame (owner
+  play-test finding).** egui-snarl persists its pan/zoom as a *screen-space*
+  transform, so nodes ignored window drags; the viewer's `current_transform`
+  hook now translates it by the canvas origin's frame-to-frame delta, keeping
+  the window movable. Also from the play-test: noise_field became
+  palette-colored — hue-rotating grayscale is a mathematical no-op, so the
+  original demo chain showed nothing — and the canvas warns when Output is
+  unwired in Trama mode instead of silently showing black.

@@ -22,6 +22,11 @@ pub struct CanvasState {
     pub snarl: Snarl<NodeId>,
     /// Last refused edit, shown under the header until the next accepted one.
     pub status: Option<String>,
+    /// Where the canvas widget sat last frame. egui-snarl persists its
+    /// viewport as a *screen-space* transform, so nodes would stay put while
+    /// the host window moves; the frame-to-frame origin delta re-anchors them
+    /// via `current_transform` below.
+    last_origin: Option<egui::Pos2>,
 }
 
 impl CanvasState {
@@ -31,6 +36,7 @@ impl CanvasState {
         Self {
             snarl,
             status: None,
+            last_origin: None,
         }
     }
 }
@@ -39,6 +45,10 @@ struct CanvasViewer<'a> {
     graph: &'a mut NodeGraph,
     registry: &'a TramaRegistry,
     status: &'a mut Option<String>,
+    /// Screen-space shift of the canvas since last frame (window drag,
+    /// header lines appearing); applied to the snarl viewport so nodes ride
+    /// along with their container.
+    translate: egui::Vec2,
 }
 
 impl CanvasViewer<'_> {
@@ -121,6 +131,14 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             self.graph.disconnect(t, Self::pin_of(remote.input));
         }
         snarl.drop_outputs(pin.id);
+    }
+
+    fn current_transform(
+        &mut self,
+        to_global: &mut egui::emath::TSTransform,
+        _snarl: &mut Snarl<NodeId>,
+    ) {
+        to_global.translation += self.translate;
     }
 
     fn has_graph_menu(&mut self, _pos: egui::Pos2, _snarl: &mut Snarl<NodeId>) -> bool {
@@ -230,11 +248,24 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
             if let Some(err) = last_error.as_deref().or(canvas.status.as_deref()) {
                 ui.colored_label(ui.visuals().error_fg_color, err);
             }
+            if *mode == super::super::RenderMode::Trama
+                && graph.input_source(graph.output_node(), 0).is_none()
+            {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Nothing reaches Output — the screen stays black. Right-click the \
+                     canvas to add nodes; drag from a pin to wire them.",
+                );
+            }
             ui.separator();
+            let origin = ui.next_widget_position();
+            let translate = canvas.last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
+            canvas.last_origin = Some(origin);
             let mut viewer = CanvasViewer {
                 graph,
                 registry,
                 status: &mut canvas.status,
+                translate,
             };
             SnarlWidget::new()
                 .id_salt("trama-canvas")
