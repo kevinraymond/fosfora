@@ -1035,7 +1035,14 @@ impl TempoEstimator {
                         f64::from(self.frame_count.wrapping_sub(f)) * self.frame_time
                             < ANCHOR_PROBATION_SECS
                     });
-                    if in_probation {
+                    // Octave never displaces, probation included (owner-ruled
+                    // after live run 4's logged chain: the intro's ½-level
+                    // evidence displaced a CORRECT young anchor at +26 s and
+                    // the wrong lineage then out-tenured the truth). Probation
+                    // displacement exists to fix the unrecoverable class —
+                    // wrong NON-octave anchors; an octave-wrong young anchor
+                    // is benign (beats nest) and the override corrects it.
+                    if in_probation && r.abs() != 1.0 {
                         if r != self.challenge_ratio {
                             self.challenge = 0.0;
                             self.challenge_ratio = r;
@@ -2674,19 +2681,38 @@ mod tests {
         assert!(est.anchor_log2.is_some(), "anchor survives");
     }
 
-    /// Q2b: sustained confident evidence at ONE related level displaces the
-    /// anchor — a genuine half-time switch is honored, on the slow clock.
+    /// Q2b: during probation, sustained NON-octave evidence displaces — this
+    /// is the correction path for the unrecoverable class (a wrong ⅔/¾ first
+    /// anchor), the measured GiantSteps win.
     #[test]
-    fn anchor_displaces_on_sustained_related_level() {
+    fn nonoctave_evidence_displaces_during_probation() {
         let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
-        drive_estimator(&mut est, 40.4, 20.0); // ~128 BPM
+        drive_estimator(&mut est, 40.4, 16.0); // ~128 BPM, anchor ~13 s in
         assert!(est.anchor_log2.is_some());
-        // ~24 s at the ½ level: the 8 s ACF window must first flush the old
-        // train, then challenge τ (3 s) + displacement span (10 s).
+        // ⅔ level (~85.3 BPM, period 60.6): flush + challenge + span lands
+        // inside the 30 s probation window.
+        let bpm = drive_estimator(&mut est, 60.6, 24.0);
+        assert!(
+            (bpm - 85.3).abs() / 85.3 < 0.05,
+            "non-octave evidence in probation must displace, got {bpm}"
+        );
+    }
+
+    /// Q2b, owner-ruled after live run 4: OCTAVE evidence never displaces —
+    /// not even during probation. Run 4's logged chain: ½-level intro
+    /// evidence displaced a CORRECT 26 s-old anchor, the wrong lineage
+    /// out-tenured the truth, and the ghost then defended 115 against a
+    /// genuine 172 detection. An octave-wrong young anchor is benign; a
+    /// displaced correct one is not.
+    #[test]
+    fn octave_evidence_folds_even_in_probation() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        drive_estimator(&mut est, 40.4, 16.0); // ~128 BPM, probation active
+        assert!(est.anchor_log2.is_some());
         let bpm = drive_estimator(&mut est, 80.8, 24.0);
         assert!(
-            (bpm - 64.0).abs() / 64.0 < 0.05,
-            "sustained related level must displace, got {bpm}"
+            (bpm - 128.0).abs() / 128.0 < 0.04,
+            "octave evidence must fold even in probation, got {bpm}"
         );
     }
 
