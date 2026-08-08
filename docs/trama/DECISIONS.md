@@ -46,3 +46,9 @@ Owner reads this instead of diffs when reviewing direction.
   palette-colored — hue-rotating grayscale is a mathematical no-op, so the
   original demo chain showed nothing — and the canvas warns when Output is
   unwired in Trama mode instead of silently showing black.
+- **2026-08-07 — M1: 32-band modulation smoother is attack 20 ms / release
+  200 ms, uniform across bands; named-band sources (bass/mid/high, rms, onset…)
+  are consumed as-is.** The mel column is the only raw source trama reads — the
+  named features arrive adaptive-normalized and asymmetrically smoothed from the
+  audio pipeline, so a second feature-level stage would double-smooth. The
+  per-modulation `smoothing` knob remains the user's additional stage by choice.

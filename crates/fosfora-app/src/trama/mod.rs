@@ -4,6 +4,7 @@
 //! decision log: `docs/trama/DECISIONS.md`. M0 builds the graph model, the
 //! manifest registry, the scene-level executor behind the
 //! `execute_and_composite` seam, and the canvas.
+pub mod audio;
 pub mod effect;
 pub mod exec;
 pub mod graph;
