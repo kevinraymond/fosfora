@@ -405,11 +405,10 @@ mod tests {
                 f.drop = 1.0;
             }
         });
-        let bar_vals = &d.values
-            [d.values.len() - HOPS_PER_BAR as usize..d.values.len() - HOPS_PER_BAR as usize + 1];
+        let drop_hop = d.values[d.values.len() - HOPS_PER_BAR as usize];
         assert!(
-            (bar_vals[0] - DROP_COLLAPSE).abs() < 1e-6,
-            "collapse on the drop hop: {bar_vals:?}"
+            (drop_hop - DROP_COLLAPSE).abs() < 1e-6,
+            "collapse on the drop hop: {drop_hop}"
         );
         assert!(d.last() < 0.35, "stays re-armable after: {}", d.last());
     }
@@ -440,6 +439,6 @@ mod tests {
         let dip = tail.iter().cloned().fold(f32::INFINITY, f32::min);
         assert!(dip < 0.35, "release dip through re-arm: {dip}");
         // Idle by construction sits below 0.5 - 0.15 even at max buildup.
-        assert!(IDLE_CAP < 0.35);
+        const { assert!(IDLE_CAP < 0.35) };
     }
 }
