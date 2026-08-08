@@ -500,7 +500,12 @@ impl KalmanBpm {
 
     /// Update with a raw BPM measurement and confidence. Returns filtered BPM.
     /// `locked` engages the innovation gate — see the update step below.
-    fn update(&mut self, raw_bpm: f64, confidence: f64, locked: bool) -> f64 {
+    /// `anchored` (Q2b) hardens the divergence path: the hard reset needs ~3 s
+    /// of sustained deviation instead of ~1 s, and process noise stays low so
+    /// transition mush cannot glide the state off the anchor — an ACF window
+    /// flushing between metrical levels produces exactly such mush, and it
+    /// must not read as "a genuinely different song".
+    fn update(&mut self, raw_bpm: f64, confidence: f64, locked: bool, anchored: bool) -> f64 {
         if raw_bpm <= 0.0 {
             return if self.initialized {
                 2.0f64.powf(self.state)
@@ -535,7 +540,8 @@ impl KalmanBpm {
             self.diverge_count = self.diverge_count.saturating_sub(1);
         }
 
-        if self.diverge_count >= 15 {
+        let reset_limit = if anchored { 45 } else { 15 };
+        if self.diverge_count >= reset_limit {
             log::debug!(
                 "Kalman hard reset: {:.1} -> {:.1} BPM (diverged for {} frames)",
                 current_bpm,
@@ -552,8 +558,14 @@ impl KalmanBpm {
         self.r = 0.01 + (1.0 - confidence) * 0.5;
         // Escalate process noise only once divergence is SUSTAINED — a single
         // divergent frame with q = 0.1 would let 2-3 noisy frames drag the
-        // state most of the way to a false octave.
-        self.q = if self.diverge_count >= 5 { 0.1 } else { 0.001 };
+        // state most of the way to a false octave. While anchored, never: the
+        // hard reset (above) is the only unrelated-change path, so the state
+        // cannot be dragged off the anchor by mush.
+        self.q = if self.diverge_count >= 5 && !anchored {
+            0.1
+        } else {
+            0.001
+        };
 
         // Kalman predict (constant model: state unchanged)
         self.variance += self.q;
@@ -612,6 +624,48 @@ const LOCK_EXIT_SUPPORT: f64 = 0.35;
 /// tolerance band, while the divergence hard reset still follows real changes.
 const LOCK_INNOVATION_GATE_LOG2: f64 = 0.057;
 const LOCK_INNOVATION_R_MULT: f64 = 6.0;
+/// Q2b metrical anchor: a lock held this long earns an anchor level. Once
+/// anchored, ACF winners at a metrically-related level (±octave, 3:2, 4:3 and
+/// inverses) are FOLDED onto the anchor level before the filter — they carry
+/// fine tempo information about the same grid — instead of feeding the
+/// divergence hard-reset, which is how double-kick-over-four-on-the-floor
+/// material teleported the filter between levels (live smoke 2026-08-08).
+/// Displacing the anchor takes sustained confident evidence at ONE related
+/// level: a challenge EMA above [`DISPLACE_CHALLENGE`] for
+/// [`DISPLACE_SPAN_SECS`]. Unrelated tempos (a genuinely different song) skip
+/// all of this and keep the fast divergence path. Note 4:3 catches some real
+/// song transitions (172 → 128 reads as ¾) — those still displace, just on
+/// the ~10 s clock instead of the ~1 s one; recorded trade.
+const ANCHOR_EARN_SECS: f64 = 8.0;
+const RELATED_TOL_LOG2: f64 = 0.08;
+/// log2 of {2, ½, 3/2, ⅔, 4/3, ¾}.
+const RELATED_RATIOS_LOG2: [f64; 6] = [
+    1.0,
+    -1.0,
+    0.584_962_500_721_156,
+    -0.584_962_500_721_156,
+    0.415_037_499_278_844,
+    -0.415_037_499_278_844,
+];
+const CHALLENGE_TAU_SECS: f64 = 3.0;
+const DISPLACE_CHALLENGE: f64 = 0.7;
+const DISPLACE_SPAN_SECS: f64 = 10.0;
+/// Slow anchor re-center toward the filtered tempo while locked, so gradual
+/// drift/automation tracks without ever letting a level flip masquerade as it.
+const ANCHOR_RECENTER_TAU_SECS: f64 = 10.0;
+/// For this long after an anchor is EARNED, non-octave related levels may
+/// still displace it: an intro can lock ≥8 s at a wrong ¾/⅔ level (measured:
+/// dev-subset immabewolf, two GiantSteps tracks), and the sustained true-level
+/// evidence that follows must be able to correct the mistake. After probation,
+/// displacement hardens to octave-only. Tap anchors skip probation — the user
+/// is authoritative.
+const ANCHOR_PROBATION_SECS: f64 = 30.0;
+/// A filter state this far from the anchor (log2) means the filter has escaped
+/// the fold regime — related winners fold to within [`RELATED_TOL_LOG2`] of the
+/// anchor and displacement moves the anchor itself, so only the unrelated
+/// divergence path (a genuine new tempo, e.g. 128 → 148, log2 0.209) gets here.
+/// The anchor is stale at that point and re-earns at the new tempo.
+const ANCHOR_ABANDON_LOG2: f64 = 0.12;
 
 /// Linearly interpolated ACF value at a continuous lag. `x` must be within
 /// `[0, len-1]`; callers guarantee it via the float lag bounds.
@@ -683,6 +737,23 @@ struct TempoEstimator {
     support: f64,
     /// Q3: hysteretic lock state derived from `support`.
     locked: bool,
+    /// Q2b: log2 of the earned tempo level. See [`ANCHOR_EARN_SECS`].
+    anchor_log2: Option<f64>,
+    /// Q2b: hop stamp of the anchor earn — non-octave displacement is allowed
+    /// within [`ANCHOR_PROBATION_SECS`] of it. `None` = no probation (tap).
+    anchor_earned_at: Option<u32>,
+    /// Q2b: hop stamp of the false→true lock transition (anchor-earn clock).
+    locked_since: Option<u32>,
+    /// Q2b: EMA of confident winners at the one related level in
+    /// `challenge_ratio`; switching levels restarts it.
+    challenge: f64,
+    /// Q2b: log2 ratio (vs anchor) of the level currently challenging.
+    challenge_ratio: f64,
+    /// Q2b: hop stamp when `challenge` first cleared [`DISPLACE_CHALLENGE`].
+    challenge_above_since: Option<u32>,
+    /// Q2b (F3): last tempo published while locked — held on the wire through
+    /// unlocks so the readout never blanks or glides mid-set.
+    last_locked_bpm: f64,
 }
 
 impl TempoEstimator {
@@ -715,6 +786,13 @@ impl TempoEstimator {
             pending_seed: None,
             support: 0.0,
             locked: false,
+            anchor_log2: None,
+            anchor_earned_at: None,
+            locked_since: None,
+            challenge: 0.0,
+            challenge_ratio: 0.0,
+            challenge_above_since: None,
+            last_locked_bpm: 0.0,
         }
     }
 
@@ -737,6 +815,18 @@ impl TempoEstimator {
         2.0f64.powf(self.prior_center_log2) as f32
     }
 
+    /// Q2b (F3): tempo for the wire — the filtered value while locked, held at
+    /// the last locked value through unlocks (breakdowns, re-acquisition
+    /// wobble), and 0.0 only before the first lock is ever earned. The readout
+    /// never blanks or glides mid-set.
+    fn published_bpm(&self) -> f64 {
+        if self.locked {
+            self.current_bpm
+        } else {
+            self.last_locked_bpm
+        }
+    }
+
     /// A7 (#1458): force the reported tempo up/down an octave. Shifts both the offset
     /// (so it sticks) and the filter state (so the readout moves now, not after the
     /// filter reconverges). Rejected when the result would leave the BPM range.
@@ -754,6 +844,14 @@ impl TempoEstimator {
         if current > 0.0 {
             self.current_bpm = current * 2.0f64.powi(direction);
             self.current_period_frames = 60.0 / (self.current_bpm * self.frame_time);
+        }
+        // Q2b: the anchor and the held wire value ride the shift — the user just
+        // told us which level is correct.
+        if let Some(a) = &mut self.anchor_log2 {
+            *a += f64::from(direction);
+        }
+        if self.last_locked_bpm > 0.0 {
+            self.last_locked_bpm *= 2.0f64.powi(direction);
         }
         log::info!(
             "Tempo octave shift {:+} -> offset {}",
@@ -784,6 +882,13 @@ impl TempoEstimator {
         self.current_confidence = 1.0;
         self.support = 1.0;
         self.locked = true;
+        // Q2b: a tap is the strongest possible level evidence — anchor there now.
+        self.anchor_log2 = Some(bpm.log2());
+        self.anchor_earned_at = None;
+        self.locked_since = Some(self.frame_count);
+        self.last_locked_bpm = bpm;
+        self.challenge = 0.0;
+        self.challenge_above_since = None;
         self.current_period_frames = 60.0 / (bpm * self.frame_time);
         log::info!(
             "Tap tempo: {:.1} BPM (octave offset {})",
@@ -853,13 +958,134 @@ impl TempoEstimator {
             self.pending_seed = None;
         }
 
-        // Kalman filter update (innovation-gated while locked)
-        let filtered_bpm = self.kalman.update(raw_bpm, confidence, self.locked);
+        // Q2b metrical anchor: classify the winner against the anchor level.
+        // Related-level winners (±octave, 3:2, 4:3) are folded onto the anchor
+        // level — a ⅔-level reading is fine tempo information about the same
+        // grid — so they refine the filter instead of feeding its divergence
+        // reset. Only ONE related level accumulates displacement evidence at a
+        // time; switching levels restarts the clock.
+        let mut measurement_bpm = raw_bpm;
+        if let Some(anchor) = self.anchor_log2 {
+            let alpha = 1.0 - (-(6.0 * self.frame_time) / CHALLENGE_TAU_SECS).exp();
+            // No-evidence frames (silence, weak windows) HOLD the challenge:
+            // they argue neither for the challenger nor for the anchor.
+            // Confident evidence moves it — toward 1 at the challenging level,
+            // toward 0 at the anchor level or an unrelated tempo.
+            let confident = raw_bpm > 0.0 && confidence >= SEED_AGREE_MIN_CONFIDENCE;
+            if confident {
+                let d = raw_bpm.log2() - anchor;
+                if d.abs() <= RELATED_TOL_LOG2 {
+                    self.challenge += alpha * (0.0 - self.challenge);
+                } else if let Some(r) = RELATED_RATIOS_LOG2
+                    .iter()
+                    .copied()
+                    .find(|r| (d - r).abs() <= RELATED_TOL_LOG2)
+                {
+                    measurement_bpm = 2.0f64.powf(raw_bpm.log2() - r);
+                    // Only OCTAVE relations may displace the anchor: half- and
+                    // double-time switches are real musical events. A 3:2/4:3
+                    // "tactus change" mid-track is essentially always the ACF
+                    // fooling itself (measured: the fixture's orchestral
+                    // section sustains ⅔-level winners for 60+ s — no finite
+                    // span survives that), so those ratios fold forever. A
+                    // genuinely different song still escapes via the unrelated
+                    // divergence path.
+                    let in_probation = self.anchor_earned_at.is_some_and(|f| {
+                        f64::from(self.frame_count.wrapping_sub(f)) * self.frame_time
+                            < ANCHOR_PROBATION_SECS
+                    });
+                    if r.abs() == 1.0 || in_probation {
+                        if r != self.challenge_ratio {
+                            self.challenge = 0.0;
+                            self.challenge_ratio = r;
+                            self.challenge_above_since = None;
+                        }
+                        self.challenge += alpha * (1.0 - self.challenge);
+                    }
+                } else {
+                    // Unrelated tempo: leave the raw measurement for the
+                    // divergence path — a genuinely different song follows fast.
+                    self.challenge += alpha * (0.0 - self.challenge);
+                }
+            } else if raw_bpm > 0.0 {
+                // Low-confidence winners still fold (the filter should not see
+                // level jumps) but don't move the challenge.
+                let d = raw_bpm.log2() - anchor;
+                if let Some(r) = RELATED_RATIOS_LOG2
+                    .iter()
+                    .copied()
+                    .find(|r| (d - r).abs() <= RELATED_TOL_LOG2)
+                {
+                    measurement_bpm = 2.0f64.powf(raw_bpm.log2() - r);
+                }
+            }
+        }
+
+        // Kalman filter update. The innovation gate holds while locked OR
+        // anchored — losing the support lock must not free the filter to glide
+        // (that glide was the live-smoke flap mechanism).
+        let anchored = self.anchor_log2.is_some();
+        let mut filtered_bpm = self.kalman.update(
+            measurement_bpm,
+            confidence,
+            self.locked || anchored,
+            anchored,
+        );
+
+        // Q2b displacement: one related level with sustained confident evidence
+        // takes the anchor with it — a snap, never a glide through the gap.
+        if self.anchor_log2.is_some() {
+            if self.challenge > DISPLACE_CHALLENGE {
+                let since = *self.challenge_above_since.get_or_insert(self.frame_count);
+                if f64::from(self.frame_count.wrapping_sub(since)) * self.frame_time
+                    >= DISPLACE_SPAN_SECS
+                    && filtered_bpm > 0.0
+                {
+                    // Displace from the ANCHOR, not the filter state — the
+                    // anchor is the slow consensus; the filter can be dragged
+                    // a few percent by transition mush, and the challenger's
+                    // claim is "the true level is anchor × 2^r".
+                    let new_bpm = 2.0f64.powf(
+                        self.anchor_log2.unwrap_or(filtered_bpm.log2()) + self.challenge_ratio,
+                    );
+                    log::info!(
+                        "Tempo anchor displaced: {:.1} -> {:.1} BPM after sustained challenge",
+                        filtered_bpm,
+                        new_bpm
+                    );
+                    self.kalman.force(new_bpm);
+                    self.anchor_log2 = Some(new_bpm.log2());
+                    self.challenge = 0.0;
+                    self.challenge_above_since = None;
+                    filtered_bpm = new_bpm;
+                }
+            } else {
+                self.challenge_above_since = None;
+            }
+            // The unrelated divergence path teleported the filter: a genuine
+            // new tempo. The anchor is stale — drop it and re-earn.
+            if filtered_bpm > 0.0
+                && self
+                    .anchor_log2
+                    .is_some_and(|a| (filtered_bpm.log2() - a).abs() > ANCHOR_ABANDON_LOG2)
+            {
+                log::info!("Tempo anchor abandoned at {filtered_bpm:.1} BPM (unrelated change)");
+                self.anchor_log2 = None;
+                self.anchor_earned_at = None;
+                self.locked_since = None;
+                self.challenge = 0.0;
+                self.challenge_above_since = None;
+            }
+        }
 
         // Q3 lock dynamics: support = EMA of "the winner agrees with what we're
         // tracking", scaled by confidence, at the ~14.4 Hz tempo cadence.
+        // Q2b: agreement is judged on the FOLDED measurement — a related-level
+        // winner is evidence FOR the anchor grid (its onsets subdivide it), so
+        // it must not drain the lock and mute beats mid-groove.
         if filtered_bpm > 0.0 {
-            let agrees = raw_bpm > 0.0 && (raw_bpm / filtered_bpm - 1.0).abs() <= 0.04;
+            let agrees =
+                measurement_bpm > 0.0 && (measurement_bpm / filtered_bpm - 1.0).abs() <= 0.04;
             let alpha = 1.0 - (-(6.0 * self.frame_time) / SUPPORT_TAU_SECS).exp();
             // Binary target with a confidence floor, NOT confidence-scaled: a
             // clean signal's absolute confidence sits near 0.5, so scaling
@@ -879,6 +1105,33 @@ impl TempoEstimator {
             } else if self.support > LOCK_ENTER_SUPPORT {
                 self.locked = true;
             }
+        }
+
+        // Q2b: earn the anchor after a sustained lock; while locked at the
+        // anchor level, re-center it slowly so gradual drift/automation tracks
+        // without a level flip ever passing as drift.
+        if self.locked {
+            let since = *self.locked_since.get_or_insert(self.frame_count);
+            if self.anchor_log2.is_none() {
+                if filtered_bpm > 0.0
+                    && f64::from(self.frame_count.wrapping_sub(since)) * self.frame_time
+                        >= ANCHOR_EARN_SECS
+                {
+                    log::info!("Tempo anchor earned: {filtered_bpm:.1} BPM");
+                    self.anchor_log2 = Some(filtered_bpm.log2());
+                    self.anchor_earned_at = Some(self.frame_count);
+                }
+            } else if let Some(a) = &mut self.anchor_log2 {
+                if filtered_bpm > 0.0 && (filtered_bpm.log2() - *a).abs() <= RELATED_TOL_LOG2 {
+                    let alpha = 1.0 - (-(6.0 * self.frame_time) / ANCHOR_RECENTER_TAU_SECS).exp();
+                    *a += alpha * (filtered_bpm.log2() - *a);
+                }
+            }
+            if filtered_bpm > 0.0 {
+                self.last_locked_bpm = filtered_bpm;
+            }
+        } else {
+            self.locked_since = None;
         }
 
         // A7 (#1458): auto prior — walk the centre toward the tempo we're locking onto, so
@@ -1566,7 +1819,7 @@ impl BeatDetector {
         // Stage 3: Beat scheduling
         self.beat_scheduler
             .update_tempo(bpm, period_s, confidence, self.tempo_estimator.locked);
-        let (is_beat, beat_time, beat_phase, smoothed_bpm) = self.beat_scheduler.process(
+        let (is_beat, beat_time, beat_phase, _smoothed_bpm) = self.beat_scheduler.process(
             onset_gated,
             onset_strength,
             timestamp,
@@ -1594,11 +1847,9 @@ impl BeatDetector {
             onset_strength: self.held_onset,
             beat: if is_beat { 1.0 } else { 0.0 },
             beat_phase: phase,
-            bpm: if smoothed_bpm > 0.0 {
-                smoothed_bpm as f32
-            } else {
-                0.0
-            },
+            // Q2b (F3): the wire carries the held tempo, not the raw filter —
+            // see `TempoEstimator::published_bpm`.
+            bpm: self.tempo_estimator.published_bpm() as f32,
             beat_strength: if is_beat {
                 self.beat_scheduler.beat_strength as f32
             } else {
@@ -1717,16 +1968,16 @@ mod tests {
     #[test]
     fn kalman_first_measurement_returns_raw() {
         let mut k = KalmanBpm::new();
-        let bpm = k.update(120.0, 0.5, false);
+        let bpm = k.update(120.0, 0.5, false, false);
         assert!(approx_eq_f64(bpm, 120.0, 1e-6));
     }
 
     #[test]
     fn kalman_stable_input_stays_near() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8, false);
+        k.update(120.0, 0.8, false, false);
         for _ in 0..50 {
-            let bpm = k.update(120.0, 0.8, false);
+            let bpm = k.update(120.0, 0.8, false, false);
             assert!((bpm - 120.0).abs() < 5.0, "got {}", bpm);
         }
     }
@@ -1739,12 +1990,12 @@ mod tests {
     #[test]
     fn kalman_brief_octave_noise_is_damped() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8, false);
+        k.update(120.0, 0.8, false, false);
         for _ in 0..10 {
-            k.update(120.0, 0.8, false);
+            k.update(120.0, 0.8, false, false);
         }
         for _ in 0..3 {
-            let bpm = k.update(240.0, 0.8, false);
+            let bpm = k.update(240.0, 0.8, false, false);
             assert!(
                 bpm < 160.0,
                 "3 noisy frames must not reach the far octave, got {bpm}"
@@ -1752,7 +2003,7 @@ mod tests {
         }
         let mut bpm = 0.0;
         for _ in 0..20 {
-            bpm = k.update(120.0, 0.8, false);
+            bpm = k.update(120.0, 0.8, false, false);
         }
         assert!(
             (bpm - 120.0).abs() < 6.0,
@@ -1766,26 +2017,26 @@ mod tests {
     #[test]
     fn kalman_sustained_octave_change_is_followed() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8, false);
+        k.update(120.0, 0.8, false, false);
         for _ in 0..20 {
-            k.update(240.0, 0.8, false);
+            k.update(240.0, 0.8, false, false);
         }
-        let bpm = k.update(240.0, 0.8, false);
+        let bpm = k.update(240.0, 0.8, false, false);
         assert!((bpm - 240.0).abs() < 12.0, "expected near 240, got {}", bpm);
     }
 
     #[test]
     fn kalman_divergence_reset() {
         let mut k = KalmanBpm::new();
-        k.update(120.0, 0.8, false);
+        k.update(120.0, 0.8, false, false);
         for _ in 0..5 {
-            k.update(120.0, 0.8, false);
+            k.update(120.0, 0.8, false, false);
         }
         // Feed completely different BPM — should reset after 15 frames
         for _ in 0..20 {
-            k.update(80.0, 0.8, false);
+            k.update(80.0, 0.8, false, false);
         }
-        let bpm = k.update(80.0, 0.8, false);
+        let bpm = k.update(80.0, 0.8, false, false);
         assert!((bpm - 80.0).abs() < 15.0, "expected near 80, got {}", bpm);
     }
 
@@ -2317,6 +2568,70 @@ mod tests {
             est.locked,
             "must re-lock after the wobble (support {})",
             est.support
+        );
+    }
+
+    /// Q2b: a brief stretch of winners at a metrically-related level (the
+    /// double-kick-over-four-on-the-floor case from the 2026-08-08 live smoke)
+    /// folds into the anchor grid instead of teleporting the filter — the
+    /// published tempo never leaves the band and the lock holds.
+    #[test]
+    fn anchor_ignores_brief_related_level_flip() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        drive_estimator(&mut est, 40.4, 20.0); // ~128 BPM
+        assert!(est.locked && est.anchor_log2.is_some(), "anchor earned");
+        // 5 s at the ½ level (~64 BPM, period 80.8 frames): pre-Q2b this fed
+        // the divergence hard reset within ~1 s.
+        drive_estimator(&mut est, 80.8, 5.0);
+        let published = est.published_bpm();
+        assert!(
+            (published - 128.0).abs() / 128.0 < 0.04,
+            "published held the anchor level, got {published}"
+        );
+        assert!(est.locked, "related-level winners must not drain the lock");
+        assert!(est.anchor_log2.is_some(), "anchor survives");
+    }
+
+    /// Q2b: sustained confident evidence at ONE related level displaces the
+    /// anchor — a genuine half-time switch is honored, on the slow clock.
+    #[test]
+    fn anchor_displaces_on_sustained_related_level() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        drive_estimator(&mut est, 40.4, 20.0); // ~128 BPM
+        assert!(est.anchor_log2.is_some());
+        // ~24 s at the ½ level: the 8 s ACF window must first flush the old
+        // train, then challenge τ (3 s) + displacement span (10 s).
+        let bpm = drive_estimator(&mut est, 80.8, 24.0);
+        assert!(
+            (bpm - 64.0).abs() / 64.0 < 0.05,
+            "sustained related level must displace, got {bpm}"
+        );
+    }
+
+    /// Q2b (F3): the wire holds the last locked tempo through an unlock and
+    /// reads 0 only before the first lock is ever earned.
+    #[test]
+    fn published_bpm_holds_through_unlock_and_zeroes_before_first_lock() {
+        let mut est = TempoEstimator::new(8.0, 86.13, TempoConfig::default());
+        // Fresh estimator + noise: nothing published.
+        let mut rng: u64 = 42;
+        for _ in 0..(3.0 * 86.13) as usize {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            est.update((rng >> 32) as f64 / (1u64 << 32) as f64);
+        }
+        assert_eq!(est.published_bpm(), 0.0, "no lock ever -> wire silent");
+        // Lock at ~128, then starve support with silence-grade input.
+        drive_estimator(&mut est, 40.4, 20.0);
+        assert!(est.locked);
+        for _ in 0..(6.0 * 86.13) as usize {
+            est.update(0.0);
+        }
+        let published = est.published_bpm();
+        assert!(
+            (published - 128.0).abs() / 128.0 < 0.04,
+            "wire must hold the last locked tempo, got {published}"
         );
     }
 
