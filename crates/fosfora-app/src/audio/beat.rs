@@ -1343,6 +1343,17 @@ impl BeatScheduler {
             }
             // Grid instants due this hop fire (or pass silently while muted).
             if self.next_beat_time <= timestamp {
+                // Degenerate transitional slot: around a mode flip, a pending
+                // negative correction can leave the next grid instant at or
+                // before the beat just emitted (measured once in 374 tracks:
+                // a −1.6 ms inversion after an acquisition fire). That instant
+                // IS the beat already fired — advance past it silently so
+                // /beat stays strictly monotonic.
+                if self.next_beat_time <= self.last_fired_time + 0.3 * period {
+                    self.next_beat_time += period;
+                    let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
+                    return (false, 0.0, phase, self.bpm);
+                }
                 let supported = self.onset_support_pending;
                 self.beat_support +=
                     PLL_SUPPORT_ALPHA * (f64::from(supported as u8) - self.beat_support);
@@ -1960,6 +1971,48 @@ mod tests {
                 "resumed beat at {bt} is {phase_err}s off the original grid"
             );
         }
+    }
+
+    /// Q1 PLL invariant: emitted beat_times are STRICTLY increasing and never
+    /// closer than 0.3 period, across lock flips, corrections, silences and
+    /// mode churn. (A pending negative slot correction around an acquisition
+    /// fire once produced a −1.6 ms inversion that crashed mir_eval.)
+    #[test]
+    fn scheduler_beat_times_strictly_monotonic_through_mode_churn() {
+        let mut bs = BeatScheduler::new();
+        let dt = 512.0 / 44100.0;
+        let period = 0.5;
+        let mut rng: u64 = 0xBEEF;
+        let mut emitted: Vec<f64> = Vec::new();
+        let mut t = 1.0;
+        for step in 0..(120.0 / dt) as usize {
+            t += dt;
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let r = (rng >> 40) as f64 / (1u64 << 24) as f64;
+            // Lock flaps every ~2 s; onsets arrive ~5/s at pseudo-random
+            // instants; occasional silence patches.
+            let locked = (step / 172) % 2 == 0;
+            bs.update_tempo(120.0, period, if locked { 0.8 } else { 0.3 }, locked);
+            let onset = r < 0.06;
+            let silence = (step / 800) % 7 == 6;
+            let (fired, bt, _, _) = bs.process(onset, 0.5 + (r * 0.5) as f32, t, silence);
+            if fired {
+                if let Some(&prev) = emitted.last() {
+                    assert!(
+                        bt > prev + 0.3 * period - 1e-9,
+                        "beat at {bt:.4} too close to previous {prev:.4} (step {step})"
+                    );
+                }
+                emitted.push(bt);
+            }
+        }
+        assert!(
+            emitted.len() > 40,
+            "churn drive should still emit beats, got {}",
+            emitted.len()
+        );
     }
 
     /// Q1 PLL, acquisition: unlocked fires need onset+grid agreement and are
