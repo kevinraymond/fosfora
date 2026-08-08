@@ -20,6 +20,10 @@ pub struct CanvasState {
     /// Snarl payload is the trama [`NodeId`] itself — the index map for free.
     /// Positions live here (M3 serializes them via snarl's serde feature).
     pub snarl: Snarl<NodeId>,
+    /// The inspected node. Ours, not egui-snarl's: snarl 0.9 only selects on
+    /// shift/cmd-click or a rect-drag (owner play-test: "the inspector never
+    /// shows any content"), so a plain press on a node selects here instead.
+    pub selected: Option<NodeId>,
     /// Last refused edit, shown under the header until the next accepted one.
     pub status: Option<String>,
     /// Where the canvas widget sat last frame. egui-snarl persists its
@@ -35,6 +39,7 @@ impl CanvasState {
         snarl.insert_node(egui::pos2(480.0, 200.0), graph.output_node());
         Self {
             snarl,
+            selected: None,
             status: None,
             last_origin: None,
         }
@@ -45,6 +50,11 @@ struct CanvasViewer<'a> {
     graph: &'a mut NodeGraph,
     registry: &'a TramaRegistry,
     status: &'a mut Option<String>,
+    /// The inspected node (see [`CanvasState::selected`]).
+    selected: &'a mut Option<NodeId>,
+    /// Whether the pointer sat over any node this frame — lets the caller
+    /// distinguish a background click (deselect) from a node click.
+    pointer_on_node: bool,
     /// Screen-space shift of the canvas since last frame (window drag,
     /// header lines appearing); applied to the snarl viewport so nodes ride
     /// along with their container.
@@ -141,6 +151,36 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         to_global.translation += self.translate;
     }
 
+    fn final_node_rect(
+        &mut self,
+        node: egui_snarl::NodeId,
+        rect: egui::Rect,
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<NodeId>,
+    ) {
+        // Plain-press selection. egui-snarl 0.9 selects only on shift/cmd
+        // click or a background rect-drag, which no one discovers — pressing
+        // a node (click or drag-grab) is what inspects it. Nodes draw in topo
+        // order of insertion, so on overlap the last (topmost) hook call wins.
+        if ui.rect_contains_pointer(rect) {
+            self.pointer_on_node = true;
+            if ui.input(|i| i.pointer.primary_pressed()) {
+                *self.selected = Some(snarl[node]);
+            }
+        }
+        // Selection ring: a bright outline (luminance, not hue — snarl's own
+        // highlight only tracks its internal shift-click set, not this one).
+        if *self.selected == Some(snarl[node]) {
+            let tc = crate::ui::theme::colors::theme_colors(ui.ctx());
+            ui.painter().rect_stroke(
+                rect.expand(3.0),
+                4.0,
+                egui::Stroke::new(1.5, tc.text_primary),
+                egui::StrokeKind::Outside,
+            );
+        }
+    }
+
     fn has_graph_menu(&mut self, _pos: egui::Pos2, _snarl: &mut Snarl<NodeId>) -> bool {
         true
     }
@@ -197,17 +237,13 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         if ui.button("Delete").clicked() {
             if self.graph.remove_node(id).is_ok() {
                 snarl.remove_node(node);
+                if *self.selected == Some(id) {
+                    *self.selected = None;
+                }
             }
             ui.close();
         }
     }
-}
-
-/// The canvas widget's explicit id: shared by the draw call and the
-/// selection query (the free `get_selected_nodes` cannot resolve an
-/// `id_salt`-derived id from outside the widget's own `Ui`).
-fn canvas_widget_id() -> egui::Id {
-    egui::Id::new("trama-canvas")
 }
 
 /// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
@@ -227,11 +263,9 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         audio_view,
         ..
     } = trama;
-    // Last frame's selection — read before this frame's canvas draws, the
-    // standard one-frame egui lag. Snarl payloads ARE trama node ids.
-    let selected = egui_snarl::ui::get_selected_nodes(canvas_widget_id(), ctx)
-        .last()
-        .and_then(|sid| canvas.snarl.get_node(*sid).copied());
+    // Last frame's selection — the inspector draws before the canvas, the
+    // standard one-frame egui lag.
+    let selected = canvas.selected;
     egui::Window::new("trama")
         .default_size([1020.0, 520.0])
         .open(&mut open)
@@ -287,11 +321,21 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                     graph,
                     registry,
                     status: &mut canvas.status,
+                    selected: &mut canvas.selected,
+                    pointer_on_node: false,
                     translate,
                 };
-                SnarlWidget::new()
-                    .id(canvas_widget_id())
-                    .show(&mut canvas.snarl, &mut viewer, ui);
+                let background = SnarlWidget::new().id_salt("trama-canvas").show(
+                    &mut canvas.snarl,
+                    &mut viewer,
+                    ui,
+                );
+                // A completed click on empty canvas clears the selection; the
+                // pointer_on_node guard keeps node clicks (which select in
+                // `final_node_rect` on press) from immediately deselecting.
+                if background.clicked() && !viewer.pointer_on_node {
+                    *viewer.selected = None;
+                }
             });
         });
     trama.canvas_open = open;

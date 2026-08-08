@@ -88,6 +88,12 @@ Owner reads this instead of diffs when reviewing direction.
   window; the ghost indicator is a bright tick + triangle over the slider
   rail plus a monospace `→ value` readout** — luminance + shape + text,
   never hue alone (owner is colorblind). Mod-source state reads as a text
-  glyph ("~ sine", "≈ bass"). The snarl canvas switched from `id_salt` to an
-  explicit widget id so selection is readable from outside the widget's Ui —
-  one-time pan/zoom state reset accepted.
+  glyph ("~ sine", "≈ bass").
+- **2026-08-07 — M1 play-test finding: selection is ours, not egui-snarl's.**
+  snarl 0.9 selects nodes only on shift/cmd-click or a background rect-drag —
+  the owner clicked nodes and the inspector never showed content. A plain
+  primary press on a node now selects it (via the `final_node_rect` hook,
+  which hands the viewer each node's on-screen rect), a click on empty canvas
+  deselects, and the selected node carries a bright outline ring
+  (luminance-based). `CanvasState.selected` is the single source of truth;
+  snarl's internal selection set is unused.
