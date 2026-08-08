@@ -188,6 +188,10 @@ impl TramaExecutor {
             let node = graph.node(step.node).expect("plan nodes exist in graph");
             let mut u = *template;
             u.params = node.params.pack_to_buffer();
+            // Overlay the modulation values resolved in `TramaSystem::update`
+            // — this only reads cached state, so the dissolve path's second
+            // execute per frame sees identical values (no double-advance).
+            super::super::modulation::apply_resolved(&mut u.params, &node.mods);
             queue.write_buffer(&self.arena, step.uniform_offset, bytemuck::bytes_of(&u));
         }
 
@@ -481,6 +485,53 @@ mod tests {
         let out = graph.output_node();
         graph.connect(n, h, 0).unwrap();
         graph.connect(h, out, 0).unwrap();
+
+        // Modulate hue_drift.speed from Bass and resolve once, as
+        // App::update does — the executes below then exercise the
+        // resolved-value overlay under the validation scope.
+        use crate::trama::modulation::{ModMode, ModSource, Modulation, resolve_node};
+        graph
+            .set_modulation(
+                h,
+                "speed",
+                Some(Modulation {
+                    source: ModSource::Audio(crate::trama::audio::AudioFeature::Bass),
+                    amount: 0.6,
+                    mode: ModMode::Add,
+                    smoothing: 0.0,
+                }),
+            )
+            .unwrap();
+        let mut view = crate::trama::audio::AudioView::default();
+        let features = crate::audio::features::AudioFeatures {
+            sub_bass: 1.0,
+            bass: 1.0,
+            ..Default::default()
+        };
+        view.update(0.016, &features, &[]);
+        for node in graph.params_iter_mut() {
+            resolve_node(node.params, node.mods, 0.016, &view);
+        }
+        let hue_mod = &graph.node(h).unwrap().mods[0];
+        assert!(hue_mod.state.slot.is_some(), "speed must resolve to a slot");
+        // Bass signal is 1.0 here, so Add lands at base + 0.6·span (clamped).
+        let expected = hue_params
+            .iter()
+            .find_map(|d| match d {
+                crate::params::ParamDef::Float {
+                    name,
+                    default,
+                    min,
+                    max,
+                } if name == "speed" => Some((default + 0.6 * (max - min)).clamp(*min, *max)),
+                _ => None,
+            })
+            .expect("hue_drift has a Float speed param");
+        assert!(
+            (hue_mod.state.resolved - expected).abs() < 1e-5,
+            "resolved {} != expected {expected}",
+            hue_mod.state.resolved
+        );
 
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);

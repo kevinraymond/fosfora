@@ -13,8 +13,9 @@
 //! path's second execute per frame cannot double-advance oscillators, and
 //! the inspector's ghost indicator reads the same values after the fact.
 
-// Wired into the frame loop by the executor-integration commit; the allow
-// keeps this commit green under -D warnings until then.
+// The resolve/apply path is live, but the config type surface (mode/shape/
+// rate variants) is only *constructed* by the inspector — final M1 commit,
+// which removes this allow.
 #![allow(dead_code)]
 
 use crate::params::{ParamDef, ParamStore, ParamValue};
@@ -713,5 +714,53 @@ mod tests {
         let mut buf2 = [7.0f32; 16];
         apply_resolved(&mut buf2, std::slice::from_ref(&ghost));
         assert!(buf2.iter().all(|v| *v == 7.0));
+    }
+
+    #[test]
+    fn resolve_then_double_apply_is_identical() {
+        // The dissolve path executes the graph twice per frame; both
+        // executes must see identical values because apply only reads.
+        let store = float_store("speed", 0.5, 0.0, 1.0);
+        let mut m = ParamMod::new(NodeId(1), "speed", audio_mod(ModMode::Add, 0.5, 0.3));
+        resolve_node(&store, std::slice::from_mut(&mut m), 0.016, &rms_view(0.8));
+        let resolved = m.state.resolved;
+        let mut first = [0.0f32; 16];
+        let mut second = [0.0f32; 16];
+        apply_resolved(&mut first, std::slice::from_ref(&m));
+        apply_resolved(&mut second, std::slice::from_ref(&m));
+        assert_eq!(first, second);
+        assert_eq!(m.state.resolved, resolved, "apply must not advance state");
+    }
+
+    #[test]
+    fn orphan_nodes_still_resolve() {
+        use super::super::effect::EffectId;
+        use crate::trama::graph::NodeGraph;
+        use crate::trama::node::NodeKind;
+        // An unwired node's modulation still resolves via params_iter_mut,
+        // so its oscillator phase stays warm across rewires.
+        let mut g = NodeGraph::new_with_output();
+        let s = g.add_node(
+            NodeKind::Source {
+                effect: EffectId("s".into()),
+            },
+            0,
+            &[ParamDef::Float {
+                name: "x".into(),
+                default: 0.0,
+                min: 0.0,
+                max: 1.0,
+            }],
+        );
+        g.set_modulation(s, "x", Some(audio_mod(ModMode::Replace, 1.0, 0.0)))
+            .unwrap();
+        let view = rms_view(0.9);
+        for node in g.params_iter_mut() {
+            resolve_node(node.params, node.mods, 0.016, &view);
+        }
+        let node = g.params_mut(s).unwrap();
+        let m = &node.mods[0];
+        assert_eq!(m.state.slot, Some(0));
+        assert!((m.state.resolved - 0.9).abs() < 1e-6);
     }
 }

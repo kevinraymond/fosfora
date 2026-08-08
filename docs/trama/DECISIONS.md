@@ -69,3 +69,9 @@ Owner reads this instead of diffs when reviewing direction.
   reassigns the texture pool, which would break I8 at slider-drag rates. The
   mutators hand out a `NodeParamsMut` projection so structural fields stay
   behind the versioned API.
+- **2026-08-07 — M1: modulation resolves once per frame in `App::update`
+  (`TramaSystem::update`, absorbing `set_frame_uniforms`); the executor only
+  overlays the cached results.** The dissolve path executes the graph twice
+  per frame — advancing state in `execute` would double-run oscillators. All
+  nodes resolve, orphans included: phases stay warm across rewires, and
+  `live_set()` would allocate per frame.

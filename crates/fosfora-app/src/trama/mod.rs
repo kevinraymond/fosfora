@@ -12,6 +12,7 @@ pub mod modulation;
 pub mod node;
 pub mod ui;
 
+use crate::audio::features::AudioFeatures;
 use crate::effect::loader::EffectLoader;
 use crate::gpu::ShaderUniforms;
 use crate::gpu::audio_textures::AudioTextures;
@@ -43,6 +44,8 @@ pub struct TramaSystem {
     /// This frame's global uniform template (time/resolution/audio mirror),
     /// captured in `App::update` after the mirror is complete.
     frame_uniforms: ShaderUniforms,
+    /// This frame's modulation-source snapshot, advanced in [`Self::update`].
+    audio_view: audio::AudioView,
 }
 
 impl TramaSystem {
@@ -68,13 +71,31 @@ impl TramaSystem {
             last_error: None,
             executor: exec::executor::TramaExecutor::new(device, placeholder, audio, width, height),
             frame_uniforms: ShaderUniforms::zeroed(),
+            audio_view: audio::AudioView::default(),
         }
     }
 
-    /// Capture this frame's fully-mirrored global uniforms; the executor
-    /// copies them per node and overwrites only `params`.
-    pub fn set_frame_uniforms(&mut self, template: &ShaderUniforms) {
+    /// Once-per-frame advance, from `App::update`: capture the fully-mirrored
+    /// uniform template, fold the audio view, then resolve every node's
+    /// modulations (orphans included — phases stay warm across rewires).
+    ///
+    /// This is the ONLY place modulation state moves. `execute` just reads
+    /// the cached resolved values, so the dissolve path's second execute per
+    /// frame cannot double-advance oscillators, and the canvas (drawn after
+    /// `execute` has borrowed the system) reads the same values for the
+    /// inspector's ghost indicators.
+    pub fn update(
+        &mut self,
+        dt: f32,
+        template: &ShaderUniforms,
+        features: &AudioFeatures,
+        mel: &[f32],
+    ) {
         self.frame_uniforms = *template;
+        self.audio_view.update(dt, features, mel);
+        for node in self.graph.params_iter_mut() {
+            modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
+        }
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {

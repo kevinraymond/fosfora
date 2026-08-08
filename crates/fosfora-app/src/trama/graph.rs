@@ -60,7 +60,6 @@ pub struct NodeParamsMut<'a> {
 }
 
 impl<'a> NodeParamsMut<'a> {
-    #[allow(dead_code)] // see struct note
     fn of(node: &'a mut NodeInstance) -> Self {
         Self {
             id: node.id,
@@ -235,7 +234,6 @@ impl NodeGraph {
     /// Per-frame iteration over every node's non-structural state, for the
     /// modulation resolve pass. Orphans included — their oscillator phases
     /// stay warm across rewires (and `live_set()` would allocate).
-    #[allow(dead_code)] // frame loop, commit 3
     pub fn params_iter_mut(&mut self) -> impl Iterator<Item = NodeParamsMut<'_>> {
         self.nodes.iter_mut().map(NodeParamsMut::of)
     }

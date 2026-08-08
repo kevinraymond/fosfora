@@ -1316,9 +1316,13 @@ impl App {
             }
         }
 
-        // The trama executor copies this frame's fully-mirrored template per
-        // node, the same shape as the per-layer preparation below.
-        self.trama.set_frame_uniforms(&self.uniforms);
+        // Advance trama modulation and capture this frame's fully-mirrored
+        // template. Reads the features App already drained this frame —
+        // `latest_features` consumes a single-consumer pulse latch and must
+        // not be called again.
+        let trama_audio = self.latest_audio.unwrap_or_default();
+        self.trama
+            .update(dt, &self.uniforms, &trama_audio, self.audio.latest_mel());
 
         // Update each layer's uniforms from global template + per-layer params.
         // The body lives in gpu/frame_prep.rs so the headless renderer runs the

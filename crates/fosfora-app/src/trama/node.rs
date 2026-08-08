@@ -35,7 +35,6 @@ pub struct NodeInstance {
     pub params: ParamStore,
     /// Per-parameter modulation slots (name-keyed, at most one per param).
     /// The embedded runtime state never serializes — M3 skips it.
-    #[allow(dead_code)] // read by the executor overlay, commit 3
     pub mods: Vec<ParamMod>,
     /// A bypassed effect forwards its input 0; the executor resolves the
     /// aliasing at plan build, so no pass runs for it.
