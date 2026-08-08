@@ -302,8 +302,9 @@ impl TramaExecutor {
             };
             targets.push((id, slot));
         }
-        let target_of =
-            |id: NodeId| -> Option<TargetSlot> { targets.iter().find(|(n, _)| *n == id).map(|(_, s)| *s) };
+        let target_of = |id: NodeId| -> Option<TargetSlot> {
+            targets.iter().find(|(n, _)| *n == id).map(|(_, s)| *s)
+        };
 
         // Pass 2: bind groups. Binding 0 is an arena slice at a static offset
         // — the reason `UniformBuffer::create_bind_group` (which binds its own

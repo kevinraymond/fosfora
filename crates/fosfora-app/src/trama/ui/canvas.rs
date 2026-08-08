@@ -148,7 +148,10 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     fn show_graph_menu(&mut self, pos: egui::Pos2, ui: &mut egui::Ui, snarl: &mut Snarl<NodeId>) {
         ui.label("Add node");
         ui.separator();
-        for (label, kind) in [("Sources", EffectKind::Source), ("Effects", EffectKind::Effect)] {
+        for (label, kind) in [
+            ("Sources", EffectKind::Source),
+            ("Effects", EffectKind::Effect),
+        ] {
             ui.menu_button(label, |ui| {
                 for def in self.registry.effects.iter().filter(|d| d.kind == kind) {
                     if ui.button(&def.name).clicked() {
@@ -182,10 +185,7 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         snarl: &mut Snarl<NodeId>,
     ) {
         let id = snarl[node];
-        let is_output = matches!(
-            self.graph.node(id).map(|n| &n.kind),
-            Some(NodeKind::Output)
-        );
+        let is_output = matches!(self.graph.node(id).map(|n| &n.kind), Some(NodeKind::Output));
         if is_output {
             ui.label("Output");
             return;

@@ -267,7 +267,9 @@ mod tests {
     const HUE_DRIFT: &str = include_str!("../../../../assets/trama/effects/hue_drift.wgsl");
 
     fn manifest(json: &str) -> Result<TramaManifest, EffectLoadError> {
-        parse_effect_file(&format!("/*! trama\n{json}\n*/\n@fragment fn fs_main() {{}}"))
+        parse_effect_file(&format!(
+            "/*! trama\n{json}\n*/\n@fragment fn fs_main() {{}}"
+        ))
     }
 
     #[test]
@@ -310,10 +312,9 @@ mod tests {
 
     #[test]
     fn manifest_rejects_unknown_field() {
-        let err = manifest(
-            r#"{ "name": "X", "id": "x", "kind": "source", "inputs": 0, "index": 3 }"#,
-        )
-        .unwrap_err();
+        let err =
+            manifest(r#"{ "name": "X", "id": "x", "kind": "source", "inputs": 0, "index": 3 }"#)
+                .unwrap_err();
         assert!(matches!(err, EffectLoadError::Json(_)));
     }
 
@@ -331,7 +332,10 @@ mod tests {
                 r#"{{ "name": "X", "id": "x", "kind": "effect", "inputs": {inputs} }}"#
             ))
             .unwrap_err();
-            assert!(matches!(err, EffectLoadError::KindInputs(_)), "inputs = {inputs}");
+            assert!(
+                matches!(err, EffectLoadError::KindInputs(_)),
+                "inputs = {inputs}"
+            );
         }
     }
 
@@ -361,7 +365,10 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             err,
-            EffectLoadError::ParamOverflow { needed: 20, cap: PARAM_SLOT_CAP }
+            EffectLoadError::ParamOverflow {
+                needed: 20,
+                cap: PARAM_SLOT_CAP
+            }
         ));
     }
 

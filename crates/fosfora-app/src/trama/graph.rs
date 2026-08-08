@@ -152,7 +152,8 @@ impl NodeGraph {
         if self.reaches(to, from) {
             return Err(GraphError::Cycle);
         }
-        self.wires.retain(|w| !(w.to == to && w.to_input == to_input));
+        self.wires
+            .retain(|w| !(w.to == to && w.to_input == to_input));
         self.wires.push(Wire { from, to, to_input });
         self.touch();
         Ok(())
@@ -161,7 +162,8 @@ impl NodeGraph {
     /// Remove the wire into `to`'s input pin, if any.
     pub fn disconnect(&mut self, to: NodeId, to_input: u8) {
         let before = self.wires.len();
-        self.wires.retain(|w| !(w.to == to && w.to_input == to_input));
+        self.wires
+            .retain(|w| !(w.to == to && w.to_input == to_input));
         if self.wires.len() != before {
             self.touch();
         }
