@@ -187,7 +187,7 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             ui.painter().rect_stroke(
                 rect.expand(3.0),
                 4.0,
-                egui::Stroke::new(1.5, tc.text_primary),
+                egui::Stroke::new(1.5_f32, tc.text_primary),
                 egui::StrokeKind::Outside,
             );
         }

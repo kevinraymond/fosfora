@@ -544,11 +544,11 @@ fn draw_ghost(ui: &egui::Ui, rect: &egui::Rect, fraction: f32) {
     let painter = ui.painter();
     painter.line_segment(
         [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-        egui::Stroke::new(4.0, tc.canvas),
+        egui::Stroke::new(4.0_f32, tc.canvas),
     );
     painter.line_segment(
         [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-        egui::Stroke::new(2.0, tc.text_primary),
+        egui::Stroke::new(2.0_f32, tc.text_primary),
     );
     painter.add(egui::Shape::convex_polygon(
         vec![
@@ -557,7 +557,7 @@ fn draw_ghost(ui: &egui::Ui, rect: &egui::Rect, fraction: f32) {
             egui::pos2(x, rect.top() + 5.0),
         ],
         tc.text_primary,
-        egui::Stroke::new(1.0, tc.canvas),
+        egui::Stroke::new(1.0_f32, tc.canvas),
     ));
 }
 
