@@ -6,6 +6,13 @@
 ## Unreleased
 
 ### Changed
+- **Key detection now hears the actual key on EDM.** It used to name an unrelated
+  key more than half the time — quiet noise frames voted as loudly as drops, the
+  chroma template manufactured subdominant energy, and the loudest content in the
+  genre (kick and sub-bass) was either invisible or misread. The key path now
+  energy-weights a clean fold and tracks the sub-bass root directly: 0.317 → 0.520
+  MIREX-weighted on 604 GiantSteps EDM tracks, exact keys 153 → 272. Key readouts
+  and key-driven palettes settle in about 3 s.
 - **Beat and tempo tracking rebuilt.** Beats fired on every loud onset whenever tempo
   confidence dipped — 1.5-1.7× too many, spraying beat-bound strobes — and drifted
   100+ ms late on misses; they now fire on a phase-locked grid (within ~10 ms on

@@ -40,5 +40,37 @@
   "guard_datasets": "harmonix beat-F/downbeat-F/tempo-acc1 + structure pairwise/boundary, ballroom beat-F, giantsteps_tempo acc1 each within 0.02 of the #2077 report card, or the regression is stated and explicitly accepted with rationale"
  },
  "iteration_cmd": "bench/run_bench.py bench/datasets/giantsteps_key --jobs 4 --out-root bench/out/q-iter $(python3 -c \"import json; print(' '.join('--only '+t for t in json.load(open('bench/manifests/dev_subset.json'))['tracks']['giantsteps_key']))\")",
- "chosen_config": null
+ "chosen_config": {
+  "_selected_on": "tune half only, via bench/sweep_key.py replay over production e61 sidecars (fidelity 46/48 vs real bench); holdout scored once at round end (binary 38a932cb, 2026-08-10)",
+  "front_end": {
+   "key_fold": "pure fold, no harmonic template, unnormalized, floored at MIDI 54",
+   "bass_tracker": "32-183 Hz log-QIFFT dominant peak, 0.35 st cents gate, 3-hop persistence, W_BASS 1.0"
+  },
+  "detector": {
+   "profiles": "braw (Faraldo Beatport median profiles, Essentia key.cpp; corpus disjoint from the 604-track test set per Faraldo 2016)",
+   "mean_tau_s": 20.0,
+   "switch_margin": 0.05,
+   "switch_time_s": 3.0
+  },
+  "rejected_with_evidence": {
+   "edmm": "tune .5135 but major_recall 0.0 — disqualified by the pre-registered floor",
+   "mode_contrast_override": "hurts at every margin on the full config (best .5513 vs .5524 baseline); bass deposit already carries the mode information",
+   "sqrt_compression": ".3545 — peaky energy weighting is load-bearing",
+   "harmonic_ratio_weighting": ".4698 vs .4840"
+  },
+  "measured": {
+   "full": {"n": 604, "score_mean": 0.5205, "mode_accuracy": 0.7268, "major_mode_recall": 0.4194, "no_estimate_rate": 0.0017, "first_emit_mean_s": 3.263,
+            "taxonomy": {"exact": 272, "fifth": 39, "relative": 53, "parallel": 35, "other": 204, "none": 1}},
+   "tune": {"n": 275, "score_mean": 0.5513},
+   "holdout": {"n": 329, "score_mean": 0.4948, "major_mode_recall": 0.3774}
+  },
+  "targets_verdict": {
+   "holdout_weighted_score": "MISSED by 0.0052 (.4948 vs >= .5) — stated, not excused; remaining lever is the learned profile (Q6)",
+   "tune_minus_holdout": "MISSED by 0.0065 (.0565 vs <= .05) — stated; profile+constants were tune-selected, gap is real",
+   "major_mode_recall": "PASS on the full run (.4194 vs >= .4); holdout alone reads .3774",
+   "no_estimate_rate": "PASS (.0017)",
+   "fixture": "PASS at every commit; key floor ratcheted .3 -> .9",
+   "guard_datasets": "PASS — ballroom/giantsteps_tempo/harmonix beat/downbeat/tempo/structure all match the #2077 report card to rounding"
+  }
+ }
 }

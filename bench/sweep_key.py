@@ -182,6 +182,7 @@ def replay(side: dict, cfg: dict, profs: np.ndarray) -> tuple[str | None, dict]:
     confidence = 0.0
     last_emitted: int | None = None
     emits: list[tuple[float, int]] = []
+    mode_mu = cfg.get("mode_mu", 0.0)
     for t in range(len(ts)):
         if gated[t]:
             confidence *= 0.99
@@ -203,9 +204,21 @@ def replay(side: dict, cfg: dict, profs: np.ndarray) -> tuple[str | None, dict]:
             else:
                 challenger_time = 0.0
             confidence = float(np.clip(c[current], 0.0, 1.0))
-        if confidence >= KEY_MIN_CONFIDENCE and current != last_emitted:
-            emits.append((ts[t], current))
-            last_emitted = current
+        # Optional third-contrast mode override (output layer only): the voiced
+        # third in the rolling mean outranks the profile's mode call when its
+        # relative contrast exceeds mu; absence of contrast keeps the profile mode.
+        out_key = current
+        if mode_mu > 0.0 and started:
+            tonic = current % 12
+            m3, m4 = means[t, (tonic + 3) % 12], means[t, (tonic + 4) % 12]
+            contrast = (m4 - m3) / (m4 + m3 + 1e-30)
+            if contrast > mode_mu:
+                out_key = tonic
+            elif contrast < -mode_mu:
+                out_key = tonic + 12
+        if confidence >= KEY_MIN_CONFIDENCE and out_key != last_emitted:
+            emits.append((ts[t], out_key))
+            last_emitted = out_key
 
     if not emits:
         return None, {"n_changes": 0}
@@ -273,12 +286,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("dataset", type=Path)
     ap.add_argument("--validate", type=Path, help="results dir to diff the shipped config against")
-    ap.add_argument("--stage", choices=["profiles", "dynamics", "frontend", "bass"])
+    ap.add_argument("--stage", choices=["profiles", "dynamics", "frontend", "bass", "mode"])
     ap.add_argument("--profile", default=DEFAULT["profile"])
     ap.add_argument("--floor", type=int, default=DEFAULT["floor"])
     ap.add_argument("--tau", type=float, default=DEFAULT["tau"])
     ap.add_argument("--margin", type=float, default=DEFAULT["margin"])
     ap.add_argument("--switch-time", type=float, default=DEFAULT["switch_time"])
+    ap.add_argument("--w-bass", type=float, default=DEFAULT["w_bass"])
     args = ap.parse_args()
 
     side_dir = Path(__file__).parent / "out" / "keysweep" / args.dataset.name
@@ -290,7 +304,7 @@ def main() -> int:
     refs = load_refs(args.dataset, list(sides))
 
     base = dict(DEFAULT, profile=args.profile, floor=args.floor, tau=args.tau,
-                margin=args.margin, switch_time=args.switch_time)
+                margin=args.margin, switch_time=args.switch_time, w_bass=args.w_bass)
 
     if args.validate:
         profs = rotated_profiles("krumhansl")
@@ -348,6 +362,11 @@ def main() -> int:
             print(f"w_bass={w:4.2f}  mean={r['mean']:.4f}  mode={r['mode_acc']:.3f}"
                   f"  major_recall={r['major_recall']}  taxonomy={r['taxonomy']}"
                   f"  Δ={r['tonic_delta_hist']}")
+    elif args.stage == "mode":
+        for mu in (0.0, 0.02, 0.05, 0.1, 0.15, 0.25):
+            r = score_config(dict(base, mode_mu=mu), sides, refs)
+            print(f"mode_mu={mu:4.2f}  mean={r['mean']:.4f}  mode={r['mode_acc']:.3f}"
+                  f"  major_recall={r['major_recall']}  taxonomy={r['taxonomy']}")
     else:
         r = score_config(base, sides, refs)
         print(f"single config {base}: {r}")

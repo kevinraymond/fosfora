@@ -8,7 +8,11 @@
   "predict/drop (episode-gated predictor, 2026-08-07): measured coverage 1.0",
   "at BOTH thresholds on this fixture — lead 14.2 beats @0.5 / 11.1 @0.8,",
   "zero false alarms. Floors sit well under those leads; the honest lead and",
-  "false-alarm numbers come from real music (Harmonix run + C13 hand labels)."
+  "false-alarm numbers come from real music (Harmonix run + C13 hand labels).",
+  "key (Q3 rework, 2026-08-10): measured majority score 1.0, first emit 3.2 s —",
+  "the .9 floor means the duration-weighted majority must be the EXACT key (the",
+  "next mir_eval credit down is 0.5), where the old detector held a wrong key",
+  "through the intro and only had to reach 0.3."
  ],
  "asserts": [
   {"path": "dump.n_events.beat", "op": "in_range", "value": [55, 90]},
@@ -20,7 +24,7 @@
   {"path": "metrics.tempo.lock_time_secs", "op": "<=", "value": 6.0},
   {"path": "metrics.tempo.locked_fraction", "op": ">=", "value": 0.9},
   {"path": "metrics.key.final_key_score", "op": "==", "value": 1.0},
-  {"path": "metrics.key.score", "op": ">=", "value": 0.3},
+  {"path": "metrics.key.score", "op": ">=", "value": 0.9},
   {"path": "metrics.key.first_emit_ts", "op": "<=", "value": 5.0},
   {"path": "metrics.structure.pairwise.f", "op": ">=", "value": 0.55},
   {"path": "metrics.structure.boundary_3_0s.f", "op": ">=", "value": 0.35},
