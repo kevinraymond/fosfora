@@ -259,6 +259,8 @@ pub struct FftAnalyzer {
     cqt: CqtChroma,
     // #2079: this hop's pure-fold unnormalized chroma, read by the key detector.
     key_chroma: [f32; N_CHROMA],
+    // #2079: this hop's accepted bass root observation, for the key sidecar.
+    key_bass: Option<super::chroma::BassObs>,
 }
 
 impl FftAnalyzer {
@@ -323,6 +325,7 @@ impl FftAnalyzer {
             spectrogram_mel,
             cqt,
             key_chroma: [0.0; N_CHROMA],
+            key_bass: None,
         }
     }
 
@@ -336,6 +339,11 @@ impl FftAnalyzer {
     /// This hop's pre-fold per-semitone energies, for the key-sidecar dump (#2079).
     pub fn key_e61(&self) -> &[f32; super::chroma::N_SEMITONES] {
         self.cqt.e61()
+    }
+
+    /// This hop's accepted bass root observation, for the key-sidecar dump (#2079).
+    pub fn key_bass(&self) -> Option<super::chroma::BassObs> {
+        self.key_bass
     }
 
     /// Build sparse mel filterbank: `n_mels` triangular filters from lo_hz to hi_hz.
@@ -623,6 +631,7 @@ impl FftAnalyzer {
         let chroma_frame = self.cqt.compute(&self.large.magnitude);
         out.chroma = chroma_frame.chroma;
         self.key_chroma = chroma_frame.e12;
+        self.key_bass = chroma_frame.bass;
 
         // Dominant chroma: argmax of chroma bins, normalized to 0-1
         let mut max_idx = 0usize;

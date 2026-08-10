@@ -114,14 +114,23 @@ def rotated_profiles(name: str) -> np.ndarray:
 
 
 def load_sidecar(path: Path) -> dict:
-    ts, hr, e61 = [], [], []
+    ts, hr, e61, bass_pc, bass_mag = [], [], [], [], []
     with path.open() as f:
         for line in f:
             r = json.loads(line)
             ts.append(r["ts"])
             hr.append(r["hr"])
             e61.append(r["e61"])
-    return {"ts": np.array(ts), "hr": np.array(hr), "e61": np.array(e61, dtype=np.float64)}
+            b = r.get("bass")
+            bass_pc.append(b["pc"] if b else -1)
+            bass_mag.append(b["mag"] if b else 0.0)
+    return {
+        "ts": np.array(ts),
+        "hr": np.array(hr),
+        "e61": np.array(e61, dtype=np.float64),
+        "bass_pc": np.array(bass_pc, dtype=np.int64),
+        "bass_mag": np.array(bass_mag),
+    }
 
 
 def fold_matrix(floor_midi: int) -> np.ndarray:
@@ -139,6 +148,11 @@ def replay(side: dict, cfg: dict, profs: np.ndarray) -> tuple[str | None, dict]:
     Returns (majority key string or None, extras)."""
     ts = side["ts"]
     x = side["e61"] @ fold_matrix(cfg["floor"])
+    if cfg["w_bass"]:
+        # Mirror of chroma.rs: the accepted bass observation deposits into the key
+        # fold before the EMA (bass_pc == -1 where the tracker was silent).
+        has = side["bass_pc"] >= 0
+        x[np.nonzero(has)[0], side["bass_pc"][has]] += cfg["w_bass"] * side["bass_mag"][has]
     if cfg["comp"] == "sqrt":
         x = np.sqrt(x)
     if cfg["beta"]:
@@ -252,14 +266,14 @@ def score_config(cfg: dict, sides: dict[str, dict], refs: dict[str, str]) -> dic
 
 
 DEFAULT = {"profile": "krumhansl", "floor": 54, "tau": 12.0, "margin": 0.05,
-           "switch_time": 3.0, "beta": 0, "comp": "linear"}
+           "switch_time": 3.0, "beta": 0, "comp": "linear", "w_bass": 0.0}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("dataset", type=Path)
     ap.add_argument("--validate", type=Path, help="results dir to diff the shipped config against")
-    ap.add_argument("--stage", choices=["profiles", "dynamics", "frontend"])
+    ap.add_argument("--stage", choices=["profiles", "dynamics", "frontend", "bass"])
     ap.add_argument("--profile", default=DEFAULT["profile"])
     ap.add_argument("--floor", type=int, default=DEFAULT["floor"])
     ap.add_argument("--tau", type=float, default=DEFAULT["tau"])
@@ -328,6 +342,12 @@ def main() -> int:
         for mean, beta, comp, r in rows:
             print(f"beta={beta} comp={comp:6s}  mean={mean:.4f}  mode={r['mode_acc']:.3f}"
                   f"  major_recall={r['major_recall']}")
+    elif args.stage == "bass":
+        for w in (0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0):
+            r = score_config(dict(base, w_bass=w), sides, refs)
+            print(f"w_bass={w:4.2f}  mean={r['mean']:.4f}  mode={r['mode_acc']:.3f}"
+                  f"  major_recall={r['major_recall']}  taxonomy={r['taxonomy']}"
+                  f"  Δ={r['tonic_delta_hist']}")
     else:
         r = score_config(base, sides, refs)
         print(f"single config {base}: {r}")

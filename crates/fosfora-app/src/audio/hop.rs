@@ -217,6 +217,7 @@ impl HopAnalyzer {
             sidecar.record(
                 timestamp,
                 self.analyzer.key_e61(),
+                self.analyzer.key_bass(),
                 raw.harmonic_ratio,
                 loud_silent,
             );

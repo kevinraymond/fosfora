@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
-use super::chroma::N_SEMITONES;
+use super::chroma::{BassObs, N_SEMITONES};
 
 /// Record every Nth hop: ~21.5 Hz at the 86 Hz hop rate — ample for a 12 s key EMA,
 /// and a quarter of the bytes.
@@ -43,6 +43,7 @@ impl KeySidecar {
         &mut self,
         timestamp: f64,
         e61: &[f32; N_SEMITONES],
+        bass: Option<BassObs>,
         harmonic_ratio: f32,
         loud_silent: bool,
     ) {
@@ -50,8 +51,12 @@ impl KeySidecar {
         if self.hops_seen % DECIMATE != 1 {
             return;
         }
+        let bass_json = match bass {
+            Some(b) => format!("{{\"pc\":{},\"mag\":{:.5e}}}", b.pc, b.mag),
+            None => "null".to_owned(),
+        };
         let mut line = format!(
-            "{{\"ts\":{timestamp:.4},\"hr\":{harmonic_ratio:.4},\"silent\":{},\"e61\":[",
+            "{{\"ts\":{timestamp:.4},\"hr\":{harmonic_ratio:.4},\"silent\":{},\"bass\":{bass_json},\"e61\":[",
             u8::from(loud_silent)
         );
         for (i, v) in e61.iter().enumerate() {
