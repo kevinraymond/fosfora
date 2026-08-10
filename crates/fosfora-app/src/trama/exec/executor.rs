@@ -463,7 +463,11 @@ mod tests {
             reg.errors
         );
         let ids: Vec<&str> = reg.effects.iter().map(|e| e.id.0.as_str()).collect();
-        assert_eq!(ids, ["hue_drift", "noise_field"], "sorted by id");
+        assert_eq!(
+            ids,
+            ["hue_drift", "mix", "noise_field", "transform"],
+            "sorted by id"
+        );
     }
 
     // Run: cargo test -p fosfora-app -- --ignored trama_executor_renders_noise_hue_output_chain

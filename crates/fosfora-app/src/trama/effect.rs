@@ -265,6 +265,8 @@ mod tests {
 
     const NOISE_FIELD: &str = include_str!("../../../../assets/trama/effects/noise_field.wgsl");
     const HUE_DRIFT: &str = include_str!("../../../../assets/trama/effects/hue_drift.wgsl");
+    const MIX: &str = include_str!("../../../../assets/trama/effects/mix.wgsl");
+    const TRANSFORM: &str = include_str!("../../../../assets/trama/effects/transform.wgsl");
 
     fn manifest(json: &str) -> Result<TramaManifest, EffectLoadError> {
         parse_effect_file(&format!(
@@ -401,11 +403,30 @@ mod tests {
     }
 
     #[test]
+    fn builtin_mix_and_transform_parse_from_assets() {
+        let m = parse_effect_file(MIX).unwrap();
+        assert_eq!(m.id, "mix");
+        assert_eq!(m.kind, EffectKind::Effect);
+        assert_eq!(m.inputs, 2);
+        assert_eq!(m.params.len(), 1);
+        let m = parse_effect_file(TRANSFORM).unwrap();
+        assert_eq!(m.id, "transform");
+        assert_eq!(m.kind, EffectKind::Effect);
+        assert_eq!(m.inputs, 1);
+        assert_eq!(m.params.len(), 4);
+    }
+
+    #[test]
     fn builtin_effects_pass_naga_validation() {
         // The production compile source, byte for byte, but validated on the
         // CPU — no GPU adapter needed, so this runs in plain CI.
         let loader = EffectLoader::for_test(&probe_libs());
-        for (name, source) in [("noise_field", NOISE_FIELD), ("hue_drift", HUE_DRIFT)] {
+        for (name, source) in [
+            ("noise_field", NOISE_FIELD),
+            ("hue_drift", HUE_DRIFT),
+            ("mix", MIX),
+            ("transform", TRANSFORM),
+        ] {
             let m = parse_effect_file(source).unwrap();
             let fragment = loader.prepend_library_with_inputs(source, usize::from(m.inputs));
             let full = format!("{FULLSCREEN_TRIANGLE_VS}\n{fragment}");
