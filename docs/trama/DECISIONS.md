@@ -103,3 +103,68 @@ Owner reads this instead of diffs when reviewing direction.
   every selection; each parameter is a card with its modulation sub-block
   indented beneath; every control row leads with the house `R` reset button
   and carries a tooltip.**
+- **2026-08-09 — M2: Feedback's input wire is a non-edge in every cycle
+  computation (`connect`/`topo_order`/`validate`) but a real edge in
+  `live_set`** — the loop's upstream chain must stay live. A loop closed by
+  a feedback node's *output* edge is still refused, and the delay edge dies
+  with the node.
+- **2026-08-09 — M2: feedback ping-pong pairs live OUTSIDE the plan
+  (HashMap by node), with ONE executor-global parity — the pass_executor
+  #1481 idiom.** A rewire elsewhere must not clear an unrelated echo, and
+  pool identity isn't preserved across replans. Parity (and the preview
+  cursor) advance only in `begin_frame`, driven from `TramaSystem::update`,
+  because the dissolve path executes the graph twice per frame — same rule
+  that keeps modulation single-advance. Steps carry `[BindGroup; 2]`
+  (identical Arc-clones when no feedback input) indexed by parity.
+- **2026-08-09 — M2: feedback copy steps are 1-input "effect-shaped"
+  passthrough pipelines appended after all effect passes.** Consumers read
+  the *read* buffer, so end-of-frame copies are universally correct
+  (chained feedbacks included); the effect-shaped layout reuses the entire
+  bind-group builder. A Feedback node feeding Output gets an explicit
+  read→Output blit — it has no effect pass to target the output.
+- **2026-08-09 — M2: bypassed Feedback = placeholder, never wire-through;
+  unwired input = no copy step, consumers read black, pair retained.**
+  Bypass aliasing across the delay edge would re-close the cycle
+  combinationally (a node sampling its own target in its own pass); an
+  un-copied pair under a flipping parity would strobe two stale frames.
+  Retaining the pair means rewiring resumes from the stale echo.
+- **2026-08-09 — M2: preview targets are `Rgba8Unorm`, NOT `-srgb`
+  (deviation from handoff §9.6); the blit shader encodes linear→sRGB
+  itself.** The egui renderer paints the sRGB surface via its
+  linear-framebuffer entry point, which treats sampled *user* textures as
+  gamma-encoded — an `-srgb` view would hardware-decode and then get
+  gamma-converted a second time (thumbnails too dark). First
+  `register_native_texture` use in the repo; texture identity is stable per
+  node so registration is once-per-texture, freed via a dead-list when the
+  node goes.
+- **2026-08-09 — M2: the plan is keyed `(graph version, canvas_open)`;
+  orphans execute only while the canvas is open (handoff §9.1), and
+  Layers mode runs a preview-only execute when it is.** Toggle-replan is a
+  human-speed event; always-running orphans would burn GPU rendering
+  invisible content. The I4 failure path stamps BOTH keys or a failed
+  build would retry every frame. Transform ships 4 Float params (not
+  Point2D) because M1 modulation targets Floats only and a modulated
+  transform is the entire point of the node.
+- **2026-08-09 — M2: I8 is now *verified*, with this interpretation: trama-
+  owned per-frame CPU work allocates a hard ZERO (thread-local counting
+  allocator, test-only; guard proven by injecting an allocation); around
+  the GPU boundary the assertion is that the per-frame allocation FLOOR
+  never rises (wgpu's own encoding allocates ~93/frame with sporadic
+  spikes — exact constancy is untestable there), plus the existing frozen
+  resource identity (pool stats, feedback generation, plan version).**
+- **2026-08-09 — M2: first wgpu-profiler scopes, via a cfg-free zero-sized
+  `ProfilerHandle` threaded `execute_and_composite → TramaSystem →
+  TramaExecutor`** — "layers", "trama" + per-node children by effect id,
+  "feedback-copy", "preview-blit". The profiler window had shipped
+  data-less since the feature landed; this is also the measuring stick for
+  the previews-<1 ms acceptance.
+- **2026-08-09 — M2: .pfx-wrap spike verdict: GO for M4 wrapped Sources.**
+  Aurora built via `layer_builder` feeds a trama input validation-clean
+  (probe `trama_spike_pfx_layer_feeds_trama_input`): formats/usages match,
+  ParamStore packing is shared, `layer.flip()` maps 1:1 onto
+  `begin_frame` (both parities advance in lockstep → consumers use the
+  existing `[BindGroup; 2]` idiom). Costs accepted going in: a full-res
+  ping-pong pair per wrapped pass (a few sources fine, tens not — profile
+  it), particle dispatch runs 2× during a dissolve (inherited from the
+  Layers path), and the real M4 work is registry/hot-reload bridging, not
+  rendering.
