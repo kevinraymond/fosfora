@@ -1316,4 +1316,166 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
         assert!(last_error.is_none(), "{last_error:?}");
     }
+
+    /// SPIKE (#2088, M2): mechanical feasibility of hosting a `.pfx` effect
+    /// as a trama Source. Builds a real shipped effect (Aurora) into a
+    /// `Layer` through `layer_builder` — the one production path — executes
+    /// it, and binds its output target as a trama effect's `input0`, exactly
+    /// as a wrapped-Source step would. What this proves: format/usage
+    /// compatibility (both sides are Rgba16Float RENDER_ATTACHMENT |
+    /// TEXTURE_BINDING), the flip()-per-frame cadence matching trama's
+    /// `begin_frame`, and validation-clean cross-system sampling. The
+    /// architectural findings (parity-alternating target identity needs the
+    /// per-parity bind-group machinery trama already has; params share
+    /// ParamStore/16-slot packing; cost = a full ping-pong pair per wrapped
+    /// pass) live in docs/trama/DECISIONS.md.
+    // Run: cargo test -p fosfora-app -- --ignored trama_spike_pfx_layer_feeds_trama_input
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_spike_pfx_layer_feeds_trama_input() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+
+        // The .pfx side, assembled the way LoopSession does it.
+        let mut loader = EffectLoader::new();
+        loader.scan_effects_directory();
+        let idx = loader
+            .effects
+            .iter()
+            .position(|e| e.name == "Aurora")
+            .expect("Aurora ships");
+        let effect = loader.effects[idx].clone();
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let ctx = crate::gpu::layer_builder::LayerBuildCtx {
+            device: &device,
+            queue: &queue,
+            pipeline_cache: None,
+            width: 128,
+            height: 72,
+            placeholder: &placeholder,
+            audio_textures: &audio,
+            particle_quality: Default::default(),
+            backdrop: None,
+        };
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut layer =
+            crate::gpu::layer_builder::new_default_layer(&ctx, "spike".into()).expect("layer");
+        let ps = crate::gpu::layer_builder::prepare_particles(&ctx, &mut loader, &effect);
+        crate::gpu::layer_builder::load_effect_into_layer(
+            &ctx, &loader, &mut layer, 0, &effect, idx, ps,
+        )
+        .expect("Aurora loads");
+        layer.param_store.load_from_defs(&effect.inputs);
+
+        // The trama side: hue_drift's real pipeline, its input0 bound to the
+        // LAYER's output — the exact bind a wrapped-Source step would build.
+        let reg = registry(&device);
+        let hue = reg.get(&EffectId("hue_drift".into())).unwrap();
+        let stride = aligned_stride(
+            UNIFORM_SIZE,
+            u64::from(device.limits().min_uniform_buffer_offset_alignment),
+        );
+        let arena = create_arena(&device, stride, 1);
+        queue.write_buffer(&arena, 0, bytemuck::bytes_of(&ShaderUniforms::zeroed()));
+        let scratch = RenderTarget::new(
+            &device,
+            128,
+            72,
+            GpuContext::hdr_format(),
+            1.0,
+            "spike-scratch",
+        );
+
+        // Two frames: layer flip() once per frame, mirroring trama's
+        // begin_frame — the returned target alternates sides, so the bind
+        // group is rebuilt per frame here (a real wrap prebuilds both
+        // parities, the executor's existing [BindGroup; 2] idiom).
+        for frame in 0..2 {
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let pfx_out = layer.execute(&mut encoder, &queue);
+            assert_eq!(
+                pfx_out.format,
+                GpuContext::hdr_format(),
+                "same internal format both sides"
+            );
+            let entries = [
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &arena,
+                        offset: 0,
+                        size: Some(NonZeroU64::new(UNIFORM_SIZE).expect("nonzero")),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&placeholder.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&placeholder.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&audio.waveform_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&audio.spectrum_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&audio.spectrogram_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&audio.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&pfx_out.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::Sampler(&pfx_out.sampler),
+                },
+            ];
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("spike-pfx-into-trama"),
+                layout: &hue.pipeline.bind_group_layout,
+                entries: &entries,
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("spike-trama-consumer"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &scratch.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&hue.pipeline.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            queue.submit([encoder.finish()]);
+            layer.flip();
+            let _ = frame;
+        }
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
 }
