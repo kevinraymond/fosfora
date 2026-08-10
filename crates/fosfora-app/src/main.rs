@@ -901,7 +901,12 @@ impl ApplicationHandler for FosforaApp {
                     );
 
                     // Trama graph canvas (G toggles; hosted here like the
-                    // shader editor — draw_panels stays untouched)
+                    // shader editor — draw_panels stays untouched). Preview
+                    // textures created during last frame's execute register
+                    // with egui here, right before the canvas needs their
+                    // TextureIds; dead ones are freed on the same call.
+                    app.trama
+                        .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
                     crate::trama::ui::canvas::draw_trama_window(&ctx, &mut app.trama);
 
                     // Check if sidebar "Matrix" button was clicked

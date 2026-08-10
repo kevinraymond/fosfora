@@ -123,7 +123,10 @@ impl TramaSystem {
     }
 
     /// Execute the graph and return the Output node's target. Called from
-    /// `execute_and_composite` when `mode == Trama`.
+    /// `execute_and_composite` when `mode == Trama`, and from `App::render`
+    /// for preview-only execution while patching in Layers mode. Previews
+    /// (and orphan execution) follow the canvas: no one can see a thumbnail
+    /// through a closed window.
     pub(crate) fn execute(
         &mut self,
         device: &wgpu::Device,
@@ -134,10 +137,18 @@ impl TramaSystem {
             &mut self.graph,
             &self.registry,
             &self.frame_uniforms,
+            self.canvas_open,
             device,
             queue,
             encoder,
             &mut self.last_error,
         )
+    }
+
+    /// Register freshly created preview targets with egui and free the dead
+    /// ones. Called from `main.rs` right before the canvas draws, where the
+    /// egui renderer lives.
+    pub fn register_previews(&mut self, device: &wgpu::Device, renderer: &mut egui_wgpu::Renderer) {
+        self.executor.register_previews(device, renderer);
     }
 }

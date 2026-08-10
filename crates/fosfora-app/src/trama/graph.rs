@@ -344,8 +344,9 @@ impl NodeGraph {
     }
 
     /// The nodes that actually feed the Output, in topological order. Orphan
-    /// subgraphs are legal to author but excluded from execution (nothing
-    /// renders them until previews land in M2).
+    /// subgraphs are legal to author but excluded from execution — unless
+    /// previews are on (canvas open), where the executor widens its step set
+    /// to `topo_order()` so orphan thumbnails stay alive (handoff §9.1).
     pub fn live_set(&mut self) -> Vec<NodeId> {
         let mut live: HashSet<NodeId> = HashSet::from([self.output]);
         let mut queue = VecDeque::from([self.output]);

@@ -44,6 +44,29 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 }
 ";
 
+/// Downscale blit into a node's 192×108 `Rgba8Unorm` preview target. The
+/// linear→sRGB encode happens HERE because the target is deliberately not an
+/// `-srgb` format — see the `preview` module docs for the egui color-space
+/// story. HDR input is clamped (the real output gets tonemapped in
+/// postprocess; a thumbnail just needs to be legible). Alpha forced to 1 so
+/// egui never blends the thumbnail with the node background.
+const PREVIEW_FS: &str = "
+@group(0) @binding(7) var input0_tex: texture_2d<f32>;
+@group(0) @binding(8) var input0_samp: sampler;
+fn srgb_encode(c: f32) -> f32 {
+    return select(12.92 * c, 1.055 * pow(c, 1.0 / 2.4) - 0.055, c > 0.0031308);
+}
+@fragment
+fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let uv = pos.xy / vec2f(192.0, 108.0);
+    let c = clamp(textureSample(input0_tex, input0_samp, uv).rgb, vec3f(0.0), vec3f(1.0));
+    return vec4f(srgb_encode(c.r), srgb_encode(c.g), srgb_encode(c.b), 1.0);
+}
+";
+
+/// How often the round-robin preview blit runs (every Nth frame, D4).
+const PREVIEW_CADENCE: u64 = 3;
+
 /// Round `size` up to a multiple of `align` (a power of two).
 pub(crate) fn aligned_stride(size: u64, align: u64) -> u64 {
     debug_assert!(align.is_power_of_two());
@@ -81,15 +104,27 @@ struct Step {
     bind_groups: [wgpu::BindGroup; 2],
 }
 
+/// One node's thumbnail blit: samples the node's output (per parity, same
+/// story as [`Step::bind_groups`]) into its persistent preview target.
+struct PreviewBlit {
+    node: NodeId,
+    bind_groups: [wgpu::BindGroup; 2],
+}
+
 struct ExecPlan {
     /// The `NodeGraph::version()` this plan was built for.
     version: u64,
+    /// The second plan key: whether orphans execute and previews blit
+    /// (= canvas open). Toggling replans — a rare human-speed event.
+    previews_on: bool,
     /// Effect passes in topological order, then all feedback copy steps —
     /// a copy only needs its producer to have run this frame, and nothing
     /// reads a write buffer until next frame, so end-of-frame placement is
     /// universally correct (chained feedbacks included: copies read *read*
     /// buffers, write *write* buffers — always disjoint textures).
     steps: Vec<Step>,
+    /// Round-robin thumbnail blits; empty when `previews_on` is false.
+    previews: Vec<PreviewBlit>,
     /// False ⇒ nothing feeds Output; `execute` clears the output target.
     output_written: bool,
 }
@@ -116,6 +151,15 @@ pub struct TramaExecutor {
     #[allow(dead_code)] // read from tests
     feedback_generation: u64,
     copy_pipeline: ShaderPipeline,
+    preview_pipeline: ShaderPipeline,
+    /// Persistent thumbnail targets, outside the plan for the same reason as
+    /// `feedback`: stable texture identity across replans (egui registers a
+    /// texture once).
+    previews: super::preview::PreviewSet,
+    /// Frames seen (advanced in `begin_frame`); gates the preview cadence.
+    frame_index: u64,
+    /// Which planned preview blits this cadence tick, round-robin.
+    preview_cursor: usize,
     // Stable resource handles, cloned once (wgpu handles are ref-counted; the
     // AudioTextures views are fixed-size and never recreated, so bind groups
     // built against them stay valid).
@@ -159,10 +203,21 @@ impl TramaExecutor {
             feedback: HashMap::new(),
             parity: 0,
             feedback_generation: 0,
-            // A baked-in constant shader: failure here is a programming bug,
+            // Baked-in constant shaders: failure here is a programming bug,
             // not an authoring error, so I4's keep-last-good doesn't apply.
             copy_pipeline: ShaderPipeline::new(device, GpuContext::hdr_format(), COPY_FS, cache, 1)
                 .expect("built-in trama copy shader compiles"),
+            preview_pipeline: ShaderPipeline::new(
+                device,
+                wgpu::TextureFormat::Rgba8Unorm,
+                PREVIEW_FS,
+                cache,
+                1,
+            )
+            .expect("built-in trama preview shader compiles"),
+            previews: super::preview::PreviewSet::default(),
+            frame_index: 0,
+            preview_cursor: 0,
             prev_view: placeholder.view.clone(),
             prev_sampler: placeholder.sampler.clone(),
             waveform: audio.waveform_view.clone(),
@@ -201,9 +256,14 @@ impl TramaExecutor {
     /// from `execute`, which the dissolve path runs twice per frame. With
     /// parity fixed for the whole frame, the second execute copies the same
     /// input into the same write buffer (last write wins, deterministic) and
-    /// consumers read the same delayed frame twice.
+    /// consumers read the same delayed frame twice; likewise the preview
+    /// cursor holds still, so a double execute re-blits the same thumbnail.
     pub fn begin_frame(&mut self) {
         self.parity ^= 1;
+        self.frame_index = self.frame_index.wrapping_add(1);
+        if self.frame_index.is_multiple_of(PREVIEW_CADENCE) {
+            self.preview_cursor = self.preview_cursor.wrapping_add(1);
+        }
     }
 
     /// `(in_use, total)` pooled targets — the canvas debug line.
@@ -214,6 +274,22 @@ impl TramaExecutor {
     /// Live feedback ping-pong pairs — the canvas debug line.
     pub fn feedback_stats(&self) -> usize {
         self.feedback.len()
+    }
+
+    /// Persistent preview targets — the canvas debug line.
+    pub fn preview_stats(&self) -> usize {
+        self.previews.count()
+    }
+
+    /// The egui texture for a node's thumbnail, once registered.
+    pub fn preview_tex(&self, node: NodeId) -> Option<egui::TextureId> {
+        self.previews.tex_of(node)
+    }
+
+    /// Register new preview targets with egui, free dead ones. Called from
+    /// the frame loop (needs the egui renderer); GPU tests skip it.
+    pub fn register_previews(&mut self, device: &wgpu::Device, renderer: &mut egui_wgpu::Renderer) {
+        self.previews.register(device, renderer);
     }
 
     /// Execute the graph for this frame and return the Output node's target.
@@ -227,29 +303,39 @@ impl TramaExecutor {
         graph: &mut NodeGraph,
         registry: &TramaRegistry,
         template: &ShaderUniforms,
+        previews_on: bool,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         last_error: &mut Option<String>,
     ) -> &RenderTarget {
         let version = graph.version();
-        if self.plan.as_ref().is_none_or(|p| p.version != version) {
-            match self.build_plan(graph, registry, device, queue, version) {
+        if self
+            .plan
+            .as_ref()
+            .is_none_or(|p| p.version != version || p.previews_on != previews_on)
+        {
+            match self.build_plan(graph, registry, device, queue, version, previews_on) {
                 Ok(plan) => {
                     self.plan = Some(plan);
                     *last_error = None;
                 }
                 Err(e) => {
-                    // Keep the last-good plan rendering (I4). Stamp its
-                    // version so the failed build is not retried every frame;
+                    // Keep the last-good plan rendering (I4). Stamp BOTH plan
+                    // keys so the failed build is not retried every frame;
                     // the next structural edit retries naturally.
                     *last_error = Some(e);
                     match self.plan.as_mut() {
-                        Some(p) => p.version = version,
+                        Some(p) => {
+                            p.version = version;
+                            p.previews_on = previews_on;
+                        }
                         None => {
                             self.plan = Some(ExecPlan {
                                 version,
+                                previews_on,
                                 steps: Vec::new(),
+                                previews: Vec::new(),
                                 output_written: false,
                             });
                         }
@@ -327,6 +413,36 @@ impl TramaExecutor {
             });
         }
 
+        // One thumbnail every PREVIEW_CADENCE frames, round-robin (D4) —
+        // amortized well under a pass. The cursor moved in `begin_frame`, so
+        // a dissolve's double execute re-blits the same node harmlessly.
+        if plan.previews_on
+            && self.frame_index.is_multiple_of(PREVIEW_CADENCE)
+            && !plan.previews.is_empty()
+        {
+            let blit = &plan.previews[self.preview_cursor % plan.previews.len()];
+            if let Some(view) = self.previews.view_of(blit.node) {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("trama-preview-blit"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.preview_pipeline.pipeline);
+                pass.set_bind_group(0, &blit.bind_groups[self.parity], &[]);
+                pass.draw(0..3, 0..1);
+            }
+        }
+
         &self.output
     }
 
@@ -337,17 +453,25 @@ impl TramaExecutor {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         version: u64,
+        previews_on: bool,
     ) -> Result<ExecPlan, String> {
         graph.validate().map_err(|e| e.to_string())?;
-        let live = graph.live_set();
+        // The execution set: nodes feeding Output — widened to every node
+        // (orphans included) when previews are on, per handoff §9.1: orphan
+        // subgraphs render only while someone can see their thumbnails.
+        let exec_set: Vec<NodeId> = if previews_on {
+            graph.topo_order().to_vec()
+        } else {
+            graph.live_set()
+        };
 
-        // The nodes that run an *effect* pass: live, not the Output, not
-        // bypassed, not Feedback (feedback nodes get copy steps, not passes).
-        let step_nodes: Vec<NodeId> = live
+        // The nodes that run an *effect* pass: not the Output, not bypassed,
+        // not Feedback (feedback nodes get copy steps, not passes).
+        let step_nodes: Vec<NodeId> = exec_set
             .iter()
             .copied()
             .filter(|&id| {
-                let node = graph.node(id).expect("live nodes exist");
+                let node = graph.node(id).expect("exec-set nodes exist");
                 !matches!(node.kind, NodeKind::Output | NodeKind::Feedback) && !node.bypass
             })
             .collect();
@@ -380,18 +504,18 @@ impl TramaExecutor {
             }
         };
 
-        // Feedback nodes that copy this frame: live, not bypassed, input
-        // wired to a running producer. An unwired feedback node emits no
-        // copy step and its consumers read the placeholder — with parity
+        // Feedback nodes that copy this frame: executing, not bypassed,
+        // input wired to a running producer. An unwired feedback node emits
+        // no copy step and its consumers read the placeholder — with parity
         // still flipping, an un-copied pair would alternate two different
         // stale frames at frame rate (a visible strobe); stable black wins.
         // The pair itself is retained, so rewiring resumes from the stale
         // image rather than restarting the echo from scratch.
-        let active_feedback: Vec<(NodeId, NodeId)> = live
+        let active_feedback: Vec<(NodeId, NodeId)> = exec_set
             .iter()
             .copied()
             .filter(|&id| {
-                let node = graph.node(id).expect("live nodes exist");
+                let node = graph.node(id).expect("exec-set nodes exist");
                 matches!(node.kind, NodeKind::Feedback) && !node.bypass
             })
             .filter_map(|id| {
@@ -430,6 +554,24 @@ impl TramaExecutor {
                 *generation += 1;
                 PingPongTarget::new_cleared(device, queue, w, h, GpuContext::hdr_format(), 1.0)
             });
+        }
+
+        // Preview targets: prune removed nodes always (their egui textures
+        // are freed at the next register call); create targets only while
+        // previews are on. Both are plan-build-time mutations — the render
+        // path below only reads (I8).
+        self.previews.prune(|id| graph.node(id).is_some());
+        let previewed: Vec<NodeId> = if previews_on {
+            step_nodes
+                .iter()
+                .copied()
+                .chain(active_feedback.iter().map(|&(fb, _)| fb))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for &id in &previewed {
+            self.previews.ensure(device, id);
         }
 
         let total_steps =
@@ -629,9 +771,30 @@ impl TramaExecutor {
             });
         }
 
+        // Thumbnail blits: each previewed node's own output, resolved with
+        // the same per-parity rule as any consumer (a feedback node previews
+        // its read buffer — the delayed frame it presents to the graph).
+        // Binding 0 must be a valid arena slice per the layout; the preview
+        // shader never reads it, so offset 0 serves every blit.
+        let previews = previewed
+            .iter()
+            .map(|&id| {
+                let layout = &self.preview_pipeline.bind_group_layout;
+                PreviewBlit {
+                    node: id,
+                    bind_groups: [
+                        make_bind_group(layout, 0, &[resolve(Some(id), 0)]),
+                        make_bind_group(layout, 0, &[resolve(Some(id), 1)]),
+                    ],
+                }
+            })
+            .collect();
+
         Ok(ExecPlan {
             version,
+            previews_on,
             steps,
+            previews,
             output_written,
         })
     }
@@ -793,6 +956,7 @@ mod tests {
             &mut graph,
             &reg,
             &template,
+            false,
             &device,
             &queue,
             &mut encoder,
@@ -815,6 +979,7 @@ mod tests {
             &mut graph,
             &reg,
             &template,
+            false,
             &device,
             &queue,
             &mut encoder,
@@ -892,6 +1057,7 @@ mod tests {
                 &mut graph,
                 &reg,
                 &template,
+                false,
                 &device,
                 &queue,
                 &mut encoder,
@@ -947,6 +1113,7 @@ mod tests {
                     graph,
                     &reg,
                     &template,
+                    false,
                     &device,
                     &queue,
                     &mut encoder,
@@ -988,6 +1155,92 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored trama_previews_toggle_replans_and_runs_orphans
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_previews_toggle_replans_and_runs_orphans() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let reg = registry(&device);
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+        let mut graph = NodeGraph::new_with_output();
+        build_motion_echo(&reg, &mut graph);
+        // An orphan source: never reaches Output, renders only for previews.
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let orphan = graph.add_node(
+            NodeKind::Source {
+                effect: noise.id.clone(),
+            },
+            0,
+            &noise.params.clone(),
+        );
+
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 128, 72);
+        let mut template = ShaderUniforms::zeroed();
+        template.resolution = [128.0, 72.0];
+        let mut last_error = None;
+        let run_frame = |exec: &mut TramaExecutor,
+                         graph: &mut NodeGraph,
+                         previews_on: bool,
+                         last_error: &mut Option<String>| {
+            exec.begin_frame();
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let _ = exec.execute(
+                graph,
+                &reg,
+                &template,
+                previews_on,
+                &device,
+                &queue,
+                &mut encoder,
+                &mut *last_error,
+            );
+            queue.submit([encoder.finish()]);
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // Canvas closed: the orphan is culled, no preview targets exist.
+        run_frame(&mut exec, &mut graph, false, &mut last_error);
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(exec.plan_step_count(), 4, "3 effects + 1 copy, no orphan");
+        assert_eq!(exec.preview_stats(), 0);
+        let version = graph.version();
+
+        // Canvas opens: same graph version, but the plan re-keys — the
+        // orphan joins the step set and every executing node (feedback
+        // included) gets a preview target. Run past a cadence tick so the
+        // round-robin blit itself passes validation.
+        for _ in 0..4 {
+            run_frame(&mut exec, &mut graph, true, &mut last_error);
+        }
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(graph.version(), version, "toggle is not a graph edit");
+        assert_eq!(exec.plan_step_count(), 5, "orphan joined");
+        assert_eq!(
+            exec.preview_stats(),
+            5,
+            "noise, mix, transform, orphan, feedback"
+        );
+
+        // Canvas closes: orphan culled again; targets persist so reopening
+        // doesn't recreate textures (stable identity for egui registration).
+        run_frame(&mut exec, &mut graph, false, &mut last_error);
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(exec.plan_step_count(), 4);
+        assert_eq!(exec.preview_stats(), 5, "targets persist across toggle");
+
+        // Removing a node prunes its preview target.
+        graph.remove_node(orphan).unwrap();
+        run_frame(&mut exec, &mut graph, false, &mut last_error);
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(exec.preview_stats(), 4, "pruned with its node");
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored trama_executor_black_on_unwired_output
     #[test]
     #[ignore = "requires a GPU/software adapter"]
@@ -1009,6 +1262,7 @@ mod tests {
             &mut graph,
             &reg,
             &template,
+            false,
             &device,
             &queue,
             &mut encoder,

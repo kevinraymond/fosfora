@@ -13,8 +13,13 @@ use egui_snarl::{InPin, OutPin, Snarl};
 
 use super::super::TramaSystem;
 use super::super::effect::{EffectKind, TramaRegistry};
+use super::super::exec::executor::TramaExecutor;
 use super::super::graph::NodeGraph;
 use super::super::node::{NodeId, NodeKind};
+
+/// Thumbnail display size — half the 192×108 preview texture, so it stays
+/// crisp on hidpi and nodes stay compact. Tune by eye in play-tests.
+const PREVIEW_DISPLAY: egui::Vec2 = egui::vec2(96.0, 54.0);
 
 pub struct CanvasState {
     /// Snarl payload is the trama [`NodeId`] itself — the index map for free.
@@ -49,6 +54,8 @@ impl CanvasState {
 struct CanvasViewer<'a> {
     graph: &'a mut NodeGraph,
     registry: &'a TramaRegistry,
+    /// Read-only: thumbnail texture lookups for node bodies.
+    executor: &'a TramaExecutor,
     status: &'a mut Option<String>,
     /// The inspected node (see [`CanvasState::selected`]).
     selected: &'a mut Option<NodeId>,
@@ -194,6 +201,38 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         }
     }
 
+    fn has_body(&mut self, node: &NodeId) -> bool {
+        // Every rendering node gets a thumbnail slot; Output's content IS the
+        // screen (and the window title bar already says which mode is live).
+        !matches!(
+            self.graph.node(*node).map(|n| &n.kind),
+            Some(NodeKind::Output) | None
+        )
+    }
+
+    fn show_body(
+        &mut self,
+        node: egui_snarl::NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut egui::Ui,
+        snarl: &mut Snarl<NodeId>,
+    ) {
+        let id = snarl[node];
+        match self.executor.preview_tex(id) {
+            Some(tex) => {
+                ui.image((tex, PREVIEW_DISPLAY));
+            }
+            None => {
+                // Fixed-size stand-in (first frame after a node appears, or
+                // previews not yet running) so the node never changes size.
+                let (rect, _) = ui.allocate_exact_size(PREVIEW_DISPLAY, egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+            }
+        }
+    }
+
     fn has_graph_menu(&mut self, _pos: egui::Pos2, _snarl: &mut Snarl<NodeId>) -> bool {
         true
     }
@@ -279,6 +318,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
     }
     let (pool_in_use, pool_total) = trama.pool_stats();
     let feedback_pairs = trama.feedback_stats();
+    let preview_targets = trama.executor.preview_stats();
     let mut open = trama.canvas_open;
     let TramaSystem {
         mode,
@@ -287,6 +327,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         canvas,
         last_error,
         audio_view,
+        executor,
         ..
     } = trama;
     // Last frame's selection — the inspector draws before the canvas, the
@@ -301,7 +342,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 ui.selectable_value(mode, super::super::RenderMode::Trama, "Trama");
                 ui.separator();
                 ui.weak(format!(
-                    "pool {pool_in_use}/{pool_total} · fb {feedback_pairs}"
+                    "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
                 ));
                 if !registry.errors.is_empty() {
                     ui.separator();
@@ -352,6 +393,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 let mut viewer = CanvasViewer {
                     graph,
                     registry,
+                    executor: &*executor,
                     status: &mut canvas.status,
                     selected: &mut canvas.selected,
                     pointer_on_node: false,

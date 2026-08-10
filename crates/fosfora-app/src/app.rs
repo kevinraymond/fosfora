@@ -3280,6 +3280,18 @@ impl App {
         // for the rest of the frame, and the resolver reads &self.
         let alpha_mode = self.resolve_output_alpha();
 
+        // Previews while patching in Layers mode: `execute_and_composite`
+        // only runs the trama executor in Trama mode, which would leave the
+        // canvas thumbnails frozen while building a patch before switching
+        // over. Opt-in by the open canvas; the output target goes unused.
+        // (Skipped on the dissolve re-render below — previews pause during a
+        // dissolve.)
+        if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
+            let _ = self
+                .trama
+                .execute(&self.gpu.device, &self.gpu.queue, &mut encoder);
+        }
+
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
         let (source, postprocess) = crate::gpu::frame_graph::execute_and_composite(
