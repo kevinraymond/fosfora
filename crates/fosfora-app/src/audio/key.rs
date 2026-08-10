@@ -1,6 +1,7 @@
-//! Musical key detection via Krumhansl-Kessler profile correlation (A11 #1462).
+//! Musical key detection via key-profile correlation (A11 #1462, profiles reworked
+//! #2079).
 //!
-//! Maintains a slow (~12 s) rolling mean of the **unnormalized pure-fold** CQT chroma
+//! Maintains a slow (~20 s) rolling mean of the **unnormalized pure-fold** CQT chroma
 //! (`CqtChroma`'s `e12`, #2079) and Pearson-correlates it against the 24 major/minor
 //! key profiles. Because the input is raw energy, the mean is energy-weighted: a drop
 //! frame deposits proportionally more evidence than a noise-floor frame, where the old
@@ -10,17 +11,24 @@
 //! the detected key doesn't flicker between relatives. Outputs feed the reserved
 //! `key_*` shader-uniform fields.
 
-/// Krumhansl-Kessler major key profile (tonic-relative, degree 0 = tonic).
-const KK_MAJOR: [f32; 12] = [
-    6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+/// Major/minor key profiles: the "braw" set — median chroma profiles derived by
+/// Faraldo et al. from a 1160-track expert-annotated Beatport corpus (disjoint from
+/// the GiantSteps test set; transcribed from Essentia `key.cpp`). Chosen on the
+/// GiantSteps tune half (#2079): braw .4840 vs Krumhansl-Kessler .4207, with every
+/// candidate that cannot name a major key (edmm's flat major vector) disqualified by
+/// the pre-registered major-recall floor. Tonic-relative, degree 0 = tonic.
+const PROFILE_MAJOR: [f32; 12] = [
+    1.0000, 0.1573, 0.4200, 0.1570, 0.5296, 0.3669, 0.1632, 0.7711, 0.1676, 0.3827, 0.2113, 0.2965,
 ];
-/// Krumhansl-Kessler minor key profile (tonic-relative).
-const KK_MINOR: [f32; 12] = [
-    6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+/// Minor sibling of [`PROFILE_MAJOR`] (same derivation).
+const PROFILE_MINOR: [f32; 12] = [
+    1.0000, 0.2330, 0.3615, 0.3905, 0.2925, 0.3777, 0.1961, 0.7425, 0.2701, 0.2161, 0.4228, 0.2272,
 ];
 
 /// Rolling-mean time constant (seconds). Key is a global, slowly-varying property.
-const MEAN_TAU: f32 = 12.0;
+/// 20 s over 12 s is worth ~+.015 on the tune half; 30 s ties 20 within the sweep's
+/// noise floor and loses live key-change responsiveness, so 20 it is (#2079).
+const MEAN_TAU: f32 = 20.0;
 /// A challenger must beat the incumbent's correlation by this much…
 const SWITCH_MARGIN: f32 = 0.05;
 /// …sustained for this long (seconds) before the detected key switches.
@@ -60,8 +68,8 @@ impl KeyDetector {
         for tonic in 0..12 {
             for pc in 0..12 {
                 let deg = (pc + 12 - tonic) % 12;
-                profiles[tonic][pc] = KK_MAJOR[deg];
-                profiles[tonic + 12][pc] = KK_MINOR[deg];
+                profiles[tonic][pc] = PROFILE_MAJOR[deg];
+                profiles[tonic + 12][pc] = PROFILE_MINOR[deg];
             }
         }
         Self {
@@ -175,12 +183,20 @@ fn pearson(a: &[f32; 12], b: &[f32; 12]) -> f32 {
 mod tests {
     use super::*;
 
-    /// A chroma vector matching a key profile rotated to `tonic` (0 = C).
-    fn profile_chroma(tonic: usize, minor: bool) -> [f32; 12] {
-        let base = if minor { KK_MINOR } else { KK_MAJOR };
-        let mut c = [0.0f32; 12];
-        for (pc, cv) in c.iter_mut().enumerate() {
-            *cv = base[(pc + 12 - tonic) % 12];
+    /// A chroma vector for a triad on `tonic` with light diatonic support — musical
+    /// ground truth rather than the detector's own profiles, so these tests survive
+    /// profile swaps (#2079; the old `profile_chroma` helper fed the detector its own
+    /// rotated profile, which passed by construction for ANY profile set).
+    fn triad_chroma(tonic: usize, minor: bool) -> [f32; 12] {
+        let mut c = [0.05f32; 12];
+        c[tonic] = 1.0;
+        c[(tonic + if minor { 3 } else { 4 }) % 12] = 0.75;
+        c[(tonic + 7) % 12] = 0.85;
+        // Light scale-tone support: 2nd, 4th, 6th and 7th degrees. Minor uses the
+        // HARMONIC-minor leading tone — same reason the bench fixture's cadence
+        // raises it: it pins the tonic against the relative-major reading.
+        for d in if minor { [2, 5, 8, 11] } else { [2, 5, 9, 11] } {
+            c[(tonic + d) % 12] += 0.15;
         }
         c
     }
@@ -197,19 +213,19 @@ mod tests {
     #[test]
     fn detects_c_major() {
         let mut det = KeyDetector::new(48_000.0);
-        let r = settle(&mut det, &profile_chroma(0, false), 60.0);
+        let r = settle(&mut det, &triad_chroma(0, false), 60.0);
         assert_eq!(r.key_class, 0.0, "expected C tonic");
         assert_eq!(r.is_minor, 0.0);
-        assert!(r.confidence > 0.9, "confidence {}", r.confidence);
+        assert!(r.confidence > 0.8, "confidence {}", r.confidence);
     }
 
     #[test]
     fn detects_a_minor() {
         let mut det = KeyDetector::new(48_000.0);
-        let r = settle(&mut det, &profile_chroma(9, true), 60.0);
+        let r = settle(&mut det, &triad_chroma(9, true), 60.0);
         assert!((r.key_class - 9.0 / 11.0).abs() < 1e-6, "expected A tonic");
         assert_eq!(r.is_minor, 1.0);
-        assert!(r.confidence > 0.9, "confidence {}", r.confidence);
+        assert!(r.confidence > 0.8, "confidence {}", r.confidence);
     }
 
     #[test]
@@ -229,11 +245,11 @@ mod tests {
         let mut det = KeyDetector::new(48_000.0);
         // Loud C major alternating with a −60 dB frame shaped like the maximally
         // distant key (F# major) at unit peak — the old pathology's worst case.
-        let mut loud = profile_chroma(0, false);
+        let mut loud = triad_chroma(0, false);
         for v in &mut loud {
             *v *= 10.0;
         }
-        let mut quiet = profile_chroma(6, false);
+        let mut quiet = triad_chroma(6, false);
         let peak = quiet.iter().cloned().fold(0.0f32, f32::max);
         for v in &mut quiet {
             *v = *v / peak * 1e-3;
@@ -255,10 +271,12 @@ mod tests {
     #[test]
     fn silence_decays_confidence_and_holds_key() {
         let mut det = KeyDetector::new(48_000.0);
-        settle(&mut det, &profile_chroma(9, true), 60.0);
+        settle(&mut det, &triad_chroma(9, true), 60.0);
         let zero = [0.0f32; 12];
         let mut r = det.process(&zero, 0.01);
-        for _ in 0..40_000 {
+        // The mean reaches ENERGY_FLOOR after ~22 time constants (~440 s at τ = 20 s);
+        // run past that so the decay path actually engages.
+        for _ in 0..60_000 {
             r = det.process(&zero, 0.01);
         }
         assert!(
@@ -277,9 +295,9 @@ mod tests {
     fn hysteresis_holds_then_switches() {
         let mut det = KeyDetector::new(48_000.0);
         // Establish C major.
-        settle(&mut det, &profile_chroma(0, false), 60.0);
+        settle(&mut det, &triad_chroma(0, false), 60.0);
         // Feed F#-major (maximally distant) briefly — should still read C major.
-        let fs = profile_chroma(6, false);
+        let fs = triad_chroma(6, false);
         let brief = det.process(&fs, 0.01);
         assert_eq!(brief.key_class, 0.0, "flipped too early");
         // Sustained exposure eventually switches to F# major.
