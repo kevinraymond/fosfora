@@ -307,6 +307,7 @@ impl TramaExecutor {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: crate::gpu::profiler::ProfilerHandle<'_>,
         last_error: &mut Option<String>,
     ) -> &RenderTarget {
         let version = graph.version();
@@ -369,21 +370,31 @@ impl TramaExecutor {
                         .view
                 }
             };
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("trama-node-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            // Per-node timing scope (feature `profiling`), labeled by effect
+            // id. Declared before `pass` so the pass ends before the scope's
+            // end-timestamp lands on the encoder.
+            let label = match step.kind {
+                StepKind::Effect { effect } => registry.effects[effect].id.0.as_str(),
+                StepKind::Copy => "feedback-copy",
+            };
+            let mut step_scope = profiler.scope(label, encoder);
+            let mut pass = step_scope
+                .encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("trama-node-pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
             let pipeline = match step.kind {
                 StepKind::Effect { effect } => &registry.effects[effect].pipeline.pipeline,
                 StepKind::Copy => &self.copy_pipeline.pipeline,
@@ -422,21 +433,25 @@ impl TramaExecutor {
         {
             let blit = &plan.previews[self.preview_cursor % plan.previews.len()];
             if let Some(view) = self.previews.view_of(blit.node) {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("trama-preview-blit"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
+                let mut blit_scope = profiler.scope("preview-blit", encoder);
+                let mut pass =
+                    blit_scope
+                        .encoder()
+                        .begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("trama-preview-blit"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                        });
                 pass.set_pipeline(&self.preview_pipeline.pipeline);
                 pass.set_bind_group(0, &blit.bind_groups[self.parity], &[]);
                 pass.draw(0..3, 0..1);
@@ -960,6 +975,7 @@ mod tests {
             &device,
             &queue,
             &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
             &mut last_error,
         );
         queue.submit([encoder.finish()]);
@@ -983,6 +999,7 @@ mod tests {
             &device,
             &queue,
             &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
             &mut last_error,
         );
         queue.submit([encoder.finish()]);
@@ -1061,6 +1078,7 @@ mod tests {
                 &device,
                 &queue,
                 &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
                 &mut last_error,
             );
             queue.submit([encoder.finish()]);
@@ -1117,6 +1135,7 @@ mod tests {
                     &device,
                     &queue,
                     &mut encoder,
+                    crate::gpu::profiler::ProfilerHandle::none(),
                     last_error,
                 );
                 queue.submit([encoder.finish()]);
@@ -1196,6 +1215,7 @@ mod tests {
                 &device,
                 &queue,
                 &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
                 &mut *last_error,
             );
             queue.submit([encoder.finish()]);
@@ -1266,6 +1286,7 @@ mod tests {
             &device,
             &queue,
             &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
             &mut last_error,
         );
         queue.submit([encoder.finish()]);

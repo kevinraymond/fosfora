@@ -610,6 +610,7 @@ impl SceneRenderer {
             &self.device,
             &self.queue,
             &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
         );
         if capture {
             self.post_process.render(

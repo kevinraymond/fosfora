@@ -3286,10 +3286,18 @@ impl App {
         // over. Opt-in by the open canvas; the output target goes unused.
         // (Skipped on the dissolve re-render below — previews pause during a
         // dissolve.)
+        // Cfg-free profiler handle for the render paths (no-op without the
+        // `profiling` feature). Built from the field so `&mut self.trama`
+        // below stays a disjoint borrow.
+        #[cfg(feature = "profiling")]
+        let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+        #[cfg(not(feature = "profiling"))]
+        let profiler = crate::gpu::profiler::ProfilerHandle::none();
+
         if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
             let _ = self
                 .trama
-                .execute(&self.gpu.device, &self.gpu.queue, &mut encoder);
+                .execute(&self.gpu.device, &self.gpu.queue, &mut encoder, profiler);
         }
 
         // Compute the HDR source from layer execution + compositing — shared
@@ -3301,6 +3309,7 @@ impl App {
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
+            profiler,
         );
 
         // Dissolve capture: on the first frame of a dissolve, capture outgoing then load incoming.
@@ -3324,6 +3333,12 @@ impl App {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("fosfora-encoder-dissolve"),
                 });
+            // Fresh handle: `load_preset_for_cue` above took `&mut self`,
+            // ending the outer one's field borrow.
+            #[cfg(feature = "profiling")]
+            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+            #[cfg(not(feature = "profiling"))]
+            let profiler = crate::gpu::profiler::ProfilerHandle::none();
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
@@ -3331,6 +3346,7 @@ impl App {
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
+                profiler,
             );
             // Crossfade snapshot (outgoing) + new_source (incoming)
             let source = if let Some(ref tr) = self.transition_renderer {

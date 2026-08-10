@@ -69,6 +69,7 @@ pub(crate) fn execute_and_composite<'a>(
     device: &Device,
     queue: &Queue,
     encoder: &mut CommandEncoder,
+    profiler: crate::gpu::profiler::ProfilerHandle<'_>,
 ) -> (&'a RenderTarget, PostProcessDef) {
     // Trama replaces layer execution for the frame; postprocess keeps
     // ownership of tonemapping downstream, and default postprocess is the
@@ -76,9 +77,17 @@ pub(crate) fn execute_and_composite<'a>(
     // Headless passes `None` in M0 and stays Layers-only.
     if let Some(t) = trama {
         if t.mode == crate::trama::RenderMode::Trama {
-            return (t.execute(device, queue, encoder), PostProcessDef::default());
+            return (
+                t.execute(device, queue, encoder, profiler),
+                PostProcessDef::default(),
+            );
         }
     }
+
+    // Everything below is layer work; scopes opened by layers would nest
+    // here if they ever grow their own.
+    let mut layers_scope = profiler.scope("layers", encoder);
+    let encoder = layers_scope.encoder();
 
     let enabled: Vec<usize> = layer_stack
         .layers

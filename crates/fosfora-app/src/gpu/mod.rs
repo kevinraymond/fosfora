@@ -15,7 +15,6 @@ pub mod pass_executor;
 pub mod pipeline;
 pub mod placeholder;
 pub mod postprocess;
-#[cfg(feature = "profiling")]
 pub mod profiler;
 pub mod render_target;
 pub mod shader_compiler;

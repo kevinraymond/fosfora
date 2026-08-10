@@ -132,7 +132,11 @@ impl TramaSystem {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        profiler: crate::gpu::profiler::ProfilerHandle<'_>,
     ) -> &RenderTarget {
+        // Parent timing scope: the executor's per-node scopes nest under it,
+        // so the profiler panel shows both the trama total and the split.
+        let mut scope = profiler.scope("trama", encoder);
         self.executor.execute(
             &mut self.graph,
             &self.registry,
@@ -140,7 +144,8 @@ impl TramaSystem {
             self.canvas_open,
             device,
             queue,
-            encoder,
+            scope.encoder(),
+            profiler,
             &mut self.last_error,
         )
     }
