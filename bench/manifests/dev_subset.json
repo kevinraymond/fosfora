@@ -1,6 +1,6 @@
 {
  "schema": "fosfora-bench-dev-subset/v1",
- "_policy": "Deterministic ~40-track iteration subset for beat/tempo work (workstream Q). Selection, no RNG: ballroom = ids sorted within each of 8 dance styles (Rumba-* merged), indices 0 and n//2; giantsteps_tempo = sorted by (tempo_bpm, track_id), even stride of 14; harmonix = sorted ids, even stride of 10. Expand with: python3 -c \"import json,sys; print(' '.join('--only '+t for t in json.load(open('bench/manifests/dev_subset.json'))['tracks'][sys.argv[1]]))\" <dataset>. The 47-track predrop subset is drop-biased; do not reuse it here.",
+ "_policy": "Deterministic ~40-track iteration subset for beat/tempo work (workstream Q). Selection, no RNG: ballroom = ids sorted within each of 8 dance styles (Rumba-* merged), indices 0 and n//2; giantsteps_tempo = sorted by (tempo_bpm, track_id), even stride of 14; harmonix = sorted ids, even stride of 10. Expand with: python3 -c \"import json,sys; print(' '.join('--only '+t for t in json.load(open('bench/manifests/dev_subset.json'))['tracks'][sys.argv[1]]))\" <dataset>. The 47-track predrop subset is drop-biased; do not reuse it here. giantsteps_key (Q3, 48 tracks): classify the 604 cached full-run results (binary 59f359b4) by mir_eval credit exact/fifth/relative/parallel/other; keep TUNE-HALF tracks only (int(sha256(id),16) % 2 == 0 — the iteration loop tunes, so holdout tracks never enter it); allocate proportional to the full-run taxonomy (exact 12 / fifth 3 / relative 3 / parallel 3 / other 27); within each stratum sort by (ref_mode, track_id) and take indices round(j*n/k) for j = 0..k-1.",
  "tracks": {
   "ballroom": [
    "Albums-Cafe_Paradiso-05",
@@ -47,6 +47,56 @@
    "0830_nightwatch",
    "0912_somenights",
    "1000_yourloveismydrug"
+  ],
+  "giantsteps_key": [
+   "10089.LOFI",
+   "1037507.LOFI",
+   "1103512.LOFI",
+   "1161234.LOFI",
+   "1298595.LOFI",
+   "1316308.LOFI",
+   "1614715.LOFI",
+   "1682815.LOFI",
+   "1690921.LOFI",
+   "1695408.LOFI",
+   "1822087.LOFI",
+   "1927655.LOFI",
+   "1939732.LOFI",
+   "1986370.LOFI",
+   "2031096.LOFI",
+   "2053495.LOFI",
+   "2666332.LOFI",
+   "2666528.LOFI",
+   "2673251.LOFI",
+   "3211603.LOFI",
+   "3229038.LOFI",
+   "3232851.LOFI",
+   "3317417.LOFI",
+   "3363602.LOFI",
+   "3434746.LOFI",
+   "3517044.LOFI",
+   "3572701.LOFI",
+   "3642409.LOFI",
+   "3661550.LOFI",
+   "3706570.LOFI",
+   "3725440.LOFI",
+   "3935095.LOFI",
+   "3954078.LOFI",
+   "3969868.LOFI",
+   "398124.LOFI",
+   "4191993.LOFI",
+   "423054.LOFI",
+   "4433083.LOFI",
+   "4452003.LOFI",
+   "4483817.LOFI",
+   "4657878.LOFI",
+   "4927724.LOFI",
+   "4935536.LOFI",
+   "5009084.LOFI",
+   "5039016.LOFI",
+   "5048263.LOFI",
+   "631240.LOFI",
+   "992081.LOFI"
   ]
  },
  "baselines": {
@@ -165,6 +215,30 @@
      "mean": 168.5333,
      "n": 4
     }
+   }
+  },
+  "giantsteps_key": {
+   "_provenance": "binary 59f359b4, cached full-run results, 2026-08-09, tune-half-only selection",
+   "key": {
+    "score": {
+     "mean": 0.3125,
+     "n": 48
+    },
+    "taxonomy": {
+     "exact": 12,
+     "fifth": 3,
+     "relative": 3,
+     "parallel": 3,
+     "other": 27
+    },
+    "mode_accuracy": 0.5625,
+    "major_mode_recall": 0.5556,
+    "n_ref_major": 9,
+    "first_emit_ts": {
+     "mean": 1.0253,
+     "n": 48
+    },
+    "no_estimate_rate": 0.0
    }
   }
  }

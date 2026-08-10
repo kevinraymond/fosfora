@@ -17,10 +17,10 @@ headline beat numbers adopt the literature's 5 s trim.
 
 | Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |
 |---|---|---|---|---|---|
-| ballroom | 698 | 685 | 13 | 0 | `59f359b4773f1924` |
-| giantsteps_key | 604 | 604 | 0 | 0 | `59f359b4773f1924` |
-| giantsteps_tempo | 664 | 661 | 0 | 0 | `59f359b4773f1924` |
-| harmonix | 912 | 374 | 0 | 0 | `59f359b4773f1924` |
+| ballroom | 698 | 685 | 13 | 0 | `38a932cb6ad0ed08` |
+| giantsteps_key | 604 | 604 | 0 | 0 | `38a932cb6ad0ed08` |
+| giantsteps_tempo | 664 | 661 | 0 | 0 | `38a932cb6ad0ed08` |
+| harmonix | 912 | 374 | 0 | 0 | `38a932cb6ad0ed08` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -48,12 +48,12 @@ Context: the in-genre test — EDM, 2-minute previews. Mixed In Key and RekordBo
 
 | System | Mode | MIREX weighted |
 |---|---|---|
-| **Fosfora** | **causal (streaming)** | **0.317** |
+| **Fosfora** | **causal (streaming)** | **0.520** |
 | keynet CNN (Korzeniowski) ([korzeniowski2018key](#references)) | offline | 0.7351 |
 | Mixed In Key 8.3 ([korzeniowski2018key](#references) — commercial DJ tool, as benchmarked by Korzeniowski & Widmer) | offline | 0.7570 |
 | RekordBox ([korzeniowski2018key](#references) — commercial DJ tool, as benchmarked by Korzeniowski & Widmer) | offline | 0.6553 |
 
-Causal extras: no-estimate rate 0.000 (silent detectors score 0 in the mean above, never dropped), mean time-to-first-estimate 1.4 s.
+Causal extras: no-estimate rate 0.002 (silent detectors score 0 in the mean above, never dropped), mean time-to-first-estimate 3.3 s.
 
 ## GiantSteps Tempo (664 EDM previews)
 

@@ -378,6 +378,30 @@ class TestKeyMetric(unittest.TestCase):
         self.assertAlmostEqual(agg["score"]["mean"], 0.5)
         self.assertAlmostEqual(agg["no_estimate_rate"], 0.5)
 
+    def test_aggregator_taxonomy_and_mode(self):
+        def block(score, est, ref):
+            return {"score": score, "estimated_key": est, "ref_key": ref,
+                    "first_emit_ts": 1.0}
+
+        agg = m_key._aggregate(
+            [
+                block(1.0, "C major", "C major"),
+                block(0.5, "G major", "C major"),
+                block(0.3, "A minor", "C major"),
+                block(0.2, "C minor", "C major"),
+                block(0.0, "B minor", "C major"),
+                # Silence is a miss in every column, incl. major recall.
+                {"no_estimate": True, "ref_key": "D major"},
+            ]
+        )
+        self.assertEqual(
+            agg["taxonomy"],
+            {"exact": 1, "fifth": 1, "relative": 1, "parallel": 1,
+             "other": 1, "none": 1},
+        )
+        self.assertAlmostEqual(agg["mode_accuracy"], 2 / 6)
+        self.assertAlmostEqual(agg["major_mode_recall"], 2 / 6)
+
 
 def section_lines(changes: list[tuple[float, str]]) -> list[str]:
     return [
