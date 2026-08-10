@@ -55,6 +55,12 @@
   (`--allow-non-loop`, `--crossfade-bars` with warmup). One CLI call replaces the After
   Effects loop-compositing grind; needs ffmpeg on PATH. See docs/loop-export.md.
 
+### Fixed
+- **Intarsia filled the screen with tiles, then blanked and started over every few
+  bars.** Tiles now trade in and out individually on the bar clock, holding a steady
+  mosaic with no reset. A new `density` param sets how much of the mosaic is lit at
+  once; `bars_per_cycle` is now the turnover period — how often each tile trades.
+
 ## v1.32.0 — 2026-08-01
 
 ### Added
