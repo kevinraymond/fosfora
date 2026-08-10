@@ -35,6 +35,8 @@ mod signal;
 mod spout;
 #[cfg(all(target_os = "macos", feature = "syphon"))]
 mod syphon;
+#[cfg(test)]
+mod test_alloc;
 mod trama;
 mod ui;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]

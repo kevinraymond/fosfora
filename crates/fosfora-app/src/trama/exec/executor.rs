@@ -1065,23 +1065,28 @@ mod tests {
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut first = (None, (0, 0), 0);
-        for frame in 0..4 {
+        const FRAMES: usize = 10;
+        let mut alloc_deltas = [0u64; FRAMES];
+        for (frame, delta) in alloc_deltas.iter_mut().enumerate() {
             // Parity flips once per frame, as TramaSystem::update drives it.
             exec.begin_frame();
-            let mut encoder =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            let _ = exec.execute(
-                &mut graph,
-                &reg,
-                &template,
-                false,
-                &device,
-                &queue,
-                &mut encoder,
-                crate::gpu::profiler::ProfilerHandle::none(),
-                &mut last_error,
-            );
-            queue.submit([encoder.finish()]);
+            let (allocs, ()) = crate::test_alloc::count_allocs(|| {
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                let _ = exec.execute(
+                    &mut graph,
+                    &reg,
+                    &template,
+                    false,
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    crate::gpu::profiler::ProfilerHandle::none(),
+                    &mut last_error,
+                );
+                queue.submit([encoder.finish()]);
+            });
+            *delta = allocs;
             assert!(last_error.is_none(), "frame {frame}: {last_error:?}");
             let state = (
                 exec.plan_version(),
@@ -1103,6 +1108,23 @@ mod tests {
         assert_eq!(exec.plan_step_count(), 4, "3 effect passes + 1 copy");
         assert_eq!(exec.feedback_stats(), 1, "one ping-pong pair");
         assert_eq!(exec.feedback_generation(), 1, "pair created exactly once");
+
+        // I8's heap half at the GPU boundary: wgpu's own command encoding
+        // allocates every frame (a ~93-alloc floor with sporadic internal
+        // spikes), so neither zero nor exact constancy is attainable around
+        // `execute`. What IS assertable: the per-frame allocation FLOOR must
+        // not RISE between early and late steady-state frames — that catches
+        // accumulation-type regressions (a Vec pushed per frame, a growing
+        // map) which surface as an upward drift; a lower late floor is spike
+        // noise in our favor. Constant per-frame costs in trama-owned CPU
+        // code are held to a hard zero by
+        // `steady_state_frame_cpu_work_allocates_nothing`.
+        let early_floor = alloc_deltas[1..5].iter().min();
+        let late_floor = alloc_deltas[FRAMES - 4..].iter().min();
+        assert!(
+            late_floor <= early_floor,
+            "steady-state allocation floor rose: {alloc_deltas:?}"
+        );
     }
 
     // Run: cargo test -p fosfora-app -- --ignored trama_feedback_state_survives_unrelated_rewire

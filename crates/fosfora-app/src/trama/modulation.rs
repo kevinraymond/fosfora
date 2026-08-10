@@ -756,4 +756,108 @@ mod tests {
         assert_eq!(m.state.slot, Some(0));
         assert!((m.state.resolved - 0.9).abs() < 1e-6);
     }
+
+    /// I8's heap half, verified: after warmup, one frame of trama's CPU
+    /// work — audio-view fold, modulation resolve for every node, and the
+    /// executor's per-node uniform prep (pack + overlay) — performs ZERO
+    /// heap allocations. The GPU probes hold the other half (no texture or
+    /// resource creation in steady state); wgpu's own command encoding is
+    /// outside trama's control and outside this claim.
+    #[test]
+    fn steady_state_frame_cpu_work_allocates_nothing() {
+        use super::super::effect::EffectId;
+        use crate::gpu::ShaderUniforms;
+        use crate::trama::graph::NodeGraph;
+        use crate::trama::node::NodeKind;
+
+        let float = |name: &str| ParamDef::Float {
+            name: name.into(),
+            default: 0.5,
+            min: 0.0,
+            max: 1.0,
+        };
+        let eff = |g: &mut NodeGraph, id: &str, inputs: u8, defs: &[ParamDef]| {
+            g.add_node(
+                NodeKind::Effect {
+                    effect: EffectId(id.into()),
+                },
+                inputs,
+                defs,
+            )
+        };
+
+        // Motion-echo shape with every modulation source family in play:
+        // audio feature, Hz oscillator, and SampleHold (the RNG path).
+        let mut g = NodeGraph::new_with_output();
+        let src = g.add_node(
+            NodeKind::Source {
+                effect: EffectId("noise".into()),
+            },
+            0,
+            &[float("scale"), float("speed")],
+        );
+        let mix = eff(&mut g, "mix", 2, &[float("amount")]);
+        let tr = eff(&mut g, "transform", 1, &[float("scale"), float("rotate")]);
+        let fb = g.add_node(NodeKind::Feedback, 1, &[]);
+        let out = g.output_node();
+        g.connect(src, mix, 0).unwrap();
+        g.connect(mix, tr, 0).unwrap();
+        g.connect(tr, fb, 0).unwrap();
+        g.connect(fb, mix, 1).unwrap();
+        g.connect(mix, out, 0).unwrap();
+        g.set_modulation(src, "speed", Some(audio_mod(ModMode::Add, 0.5, 0.3)))
+            .unwrap();
+        let osc = |shape: OscShape| Modulation {
+            source: ModSource::Oscillator(Osc {
+                shape,
+                rate: OscRate::Hz(1.7),
+                phase: 0.25,
+            }),
+            amount: 0.8,
+            mode: ModMode::Replace,
+            smoothing: 0.2,
+        };
+        g.set_modulation(tr, "rotate", Some(osc(OscShape::Sine)))
+            .unwrap();
+        g.set_modulation(mix, "amount", Some(osc(OscShape::SampleHold)))
+            .unwrap();
+
+        let features = AudioFeatures {
+            rms: 0.6,
+            bass: 0.8,
+            ..Default::default()
+        };
+        let mel = vec![0.3f32; 64];
+        let template = ShaderUniforms::zeroed();
+        let mut view = AudioView::default();
+
+        let frame = |g: &mut NodeGraph, view: &mut AudioView| {
+            // TramaSystem::update's steady-state body...
+            view.update(1.0 / 60.0, &features, &mel);
+            for node in g.params_iter_mut() {
+                resolve_node(node.params, node.mods, 1.0 / 60.0, view);
+            }
+            // ...and the executor's per-step CPU prep (write_buffer's
+            // payload construction; the GPU call itself is out of scope).
+            for node in g.params_iter_mut() {
+                let mut u = template;
+                u.params = node.params.pack_to_buffer();
+                apply_resolved(&mut u.params, node.mods);
+                std::hint::black_box(&u);
+            }
+        };
+
+        // Warmup: first resolves snap smoothers and seed S&H state.
+        frame(&mut g, &mut view);
+        frame(&mut g, &mut view);
+        let (allocs, ()) = crate::test_alloc::count_allocs(|| {
+            for _ in 0..10 {
+                frame(&mut g, &mut view);
+            }
+        });
+        assert_eq!(
+            allocs, 0,
+            "steady-state frame CPU work must not allocate (I8)"
+        );
+    }
 }
