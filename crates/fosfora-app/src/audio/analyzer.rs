@@ -333,6 +333,11 @@ impl FftAnalyzer {
         &self.key_chroma
     }
 
+    /// This hop's pre-fold per-semitone energies, for the key-sidecar dump (#2079).
+    pub fn key_e61(&self) -> &[f32; super::chroma::N_SEMITONES] {
+        self.cqt.e61()
+    }
+
     /// Build sparse mel filterbank: `n_mels` triangular filters from lo_hz to hi_hz.
     fn build_mel_filterbank(
         num_bins: usize,

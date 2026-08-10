@@ -21,9 +21,9 @@
 pub const N_CHROMA: usize = 12;
 
 /// Constant-Q kernel note range: MIDI 36 (C2, ~65 Hz) .. MIDI 96 (C7, ~2093 Hz).
-const MIDI_LO: i32 = 36;
+pub const MIDI_LO: i32 = 36;
 const MIDI_HI: i32 = 96;
-const N_SEMITONES: usize = (MIDI_HI - MIDI_LO + 1) as usize; // 61
+pub const N_SEMITONES: usize = (MIDI_HI - MIDI_LO + 1) as usize; // 61
 
 /// Gaussian kernel width in **semitones** (log-frequency space). At 0.5 semitones an
 /// adjacent semitone sits 2σ away (weight ≈ 0.14) and two semitones away is 4σ (≈ 0),
@@ -83,6 +83,10 @@ pub struct CqtChroma {
     tuning_cents: f32,     // EMA'd global offset from A440, in cents
     kernel_cents: f32,     // offset the current kernels were built for
     frames_since_regen: u32,
+
+    /// This frame's per-semitone energies, pre-fold — the key-sidecar dump reads them
+    /// (#2079) so offline sweeps can re-fold with any floor without a replica front-end.
+    e61: [f32; N_SEMITONES],
 }
 
 impl CqtChroma {
@@ -95,7 +99,14 @@ impl CqtChroma {
             tuning_cents: 0.0,
             kernel_cents: 0.0,
             frames_since_regen: 0,
+            e61: [0.0; N_SEMITONES],
         }
+    }
+
+    /// This frame's per-semitone energies (see the `e61` field doc). Valid after
+    /// `compute()`.
+    pub fn e61(&self) -> &[f32; N_SEMITONES] {
+        &self.e61
     }
 
     /// Compute one magnitude frame's chroma in both published forms (see module doc).
@@ -114,6 +125,7 @@ impl CqtChroma {
             for &(k, w) in kernel {
                 e += mag[k] * w;
             }
+            self.e61[s] = e;
             let midi = MIDI_LO + s as i32;
             let pc = ((midi % 12 + 12) % 12) as usize;
             e12_vis[pc] += e;

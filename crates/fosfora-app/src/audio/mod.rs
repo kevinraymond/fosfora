@@ -8,6 +8,7 @@ pub mod hop;
 pub mod hpss;
 pub mod interp;
 pub mod key;
+pub mod key_sidecar;
 pub mod loudness;
 pub mod normalizer;
 pub mod pitch;

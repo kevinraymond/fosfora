@@ -17,6 +17,7 @@ use super::beat::{BeatDetector, TempoCommand, TempoConfig};
 use super::downbeat::DownbeatTracker;
 use super::hpss::HpssAnalyzer;
 use super::key::KeyDetector;
+use super::key_sidecar::KeySidecar;
 use super::loudness::LoudnessMeter;
 use super::normalizer::FeatureNormalizer;
 use super::pitch::PitchAnalyzer;
@@ -69,6 +70,8 @@ pub struct HopAnalyzer {
     hpss_analyzer: HpssAnalyzer,
     pitch_analyzer: PitchAnalyzer,
     dmfcc_analyzer: DeltaMfccAnalyzer,
+    /// Dev-only sweep instrumentation, active iff `FOSFORA_KEY_SIDECAR` is set (#2079).
+    key_sidecar: Option<KeySidecar>,
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
@@ -89,6 +92,7 @@ impl HopAnalyzer {
             hpss_analyzer: HpssAnalyzer::new(),
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
             dmfcc_analyzer: DeltaMfccAnalyzer::new(),
+            key_sidecar: KeySidecar::from_env(),
             dt: ANALYSIS_HOP as f32 / sample_rate,
         }
     }
@@ -207,6 +211,16 @@ impl HopAnalyzer {
         raw.key_class = key_result.key_class;
         raw.key_is_minor = key_result.is_minor;
         raw.key_confidence = key_result.confidence;
+
+        // Dev-only (#2079): dump the key path's raw inputs for offline sweeps.
+        if let Some(sidecar) = &mut self.key_sidecar {
+            sidecar.record(
+                timestamp,
+                self.analyzer.key_e61(),
+                raw.harmonic_ratio,
+                loud_silent,
+            );
+        }
 
         // A12 (#1463): capture pre-normalization chroma + per-band flux for the downbeat
         // tracker. The adaptive normalizer rescales chroma per-bin, which would distort
