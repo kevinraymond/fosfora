@@ -71,6 +71,7 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     fn title(&mut self, node: &NodeId) -> String {
         match self.graph.node(*node).map(|n| &n.kind) {
             Some(NodeKind::Output) => "Output".to_string(),
+            Some(NodeKind::Feedback) => "Feedback".to_string(),
             Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
                 .registry
                 .get(effect)
@@ -222,6 +223,18 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
                 }
             });
         }
+        // Graph primitives (not effect files, so not in the registry).
+        ui.menu_button("Utility", |ui| {
+            if ui
+                .button("Feedback")
+                .on_hover_text("One-frame delay — the building block for echo loops")
+                .clicked()
+            {
+                let id = self.graph.add_node(NodeKind::Feedback, 1, &[]);
+                snarl.insert_node(pos, id);
+                ui.close();
+            }
+        });
     }
 
     fn has_node_menu(&mut self, _node: &NodeId) -> bool {

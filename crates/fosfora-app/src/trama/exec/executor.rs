@@ -253,13 +253,14 @@ impl TramaExecutor {
         graph.validate().map_err(|e| e.to_string())?;
         let live = graph.live_set();
 
-        // The nodes that actually run: live, not the Output, not bypassed.
+        // The nodes that run an *effect* pass: live, not the Output, not
+        // bypassed, not Feedback (feedback nodes get copy steps, not passes).
         let step_nodes: Vec<NodeId> = live
             .iter()
             .copied()
             .filter(|&id| {
                 let node = graph.node(id).expect("live nodes exist");
-                !matches!(node.kind, NodeKind::Output) && !node.bypass
+                !matches!(node.kind, NodeKind::Output | NodeKind::Feedback) && !node.bypass
             })
             .collect();
 
@@ -318,7 +319,7 @@ impl TramaExecutor {
             let node = graph.node(id).expect("live nodes exist");
             let effect_id = match &node.kind {
                 NodeKind::Source { effect } | NodeKind::Effect { effect } => effect,
-                NodeKind::Output => unreachable!("filtered above"),
+                NodeKind::Output | NodeKind::Feedback => unreachable!("filtered above"),
             };
             let effect_idx = registry
                 .effects

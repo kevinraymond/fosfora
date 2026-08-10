@@ -171,8 +171,10 @@ impl NodeGraph {
         }
         // The new edge from→to closes a cycle iff `from` is already reachable
         // downstream of `to`. DFS over existing wires; O(nodes + wires) per
-        // edit is nothing at canvas scale.
-        if self.reaches(to, from) {
+        // edit is nothing at canvas scale. A wire into a Feedback node is the
+        // one-frame-delay edge — not a dataflow edge (I9) — so it can never
+        // close a combinational cycle and skips the check entirely.
+        if !self.is_feedback(to) && self.reaches(to, from) {
             return Err(GraphError::Cycle);
         }
         self.wires
@@ -262,7 +264,17 @@ impl NodeGraph {
         Ok(())
     }
 
-    /// True if `target` is reachable from `start` walking producer→consumer.
+    /// True if `id` names a Feedback node. Wires *into* one are delay edges,
+    /// excluded from every cycle computation (I9) — but NOT from `live_set`,
+    /// which must keep the chain feeding a feedback loop alive.
+    fn is_feedback(&self, id: NodeId) -> bool {
+        self.node(id)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Feedback))
+    }
+
+    /// True if `target` is reachable from `start` walking producer→consumer
+    /// along *dataflow* edges — wires into Feedback nodes are delay edges and
+    /// are not traversed (I9).
     fn reaches(&self, start: NodeId, target: NodeId) -> bool {
         let mut seen: HashSet<NodeId> = HashSet::new();
         let mut queue = VecDeque::from([start]);
@@ -270,7 +282,11 @@ impl NodeGraph {
             if n == target {
                 return true;
             }
-            for w in self.wires.iter().filter(|w| w.from == n) {
+            for w in self
+                .wires
+                .iter()
+                .filter(|w| w.from == n && !self.is_feedback(w.to))
+            {
                 if seen.insert(w.to) {
                     queue.push_back(w.to);
                 }
@@ -281,13 +297,20 @@ impl NodeGraph {
 
     /// Topological order over *all* nodes (orphans included), cached until the
     /// next structural edit. Kahn's algorithm; insertion order breaks ties so
-    /// the result is deterministic.
+    /// the result is deterministic. Delay edges (wires into Feedback nodes)
+    /// don't count (I9): a Feedback node orders as a source — its consumers
+    /// read the buffer written last frame, so no same-frame dependency exists.
     pub fn topo_order(&mut self) -> &[NodeId] {
         if self.topo.is_none() {
             let mut indegree: Vec<usize> = self
                 .nodes
                 .iter()
-                .map(|n| self.wires.iter().filter(|w| w.to == n.id).count())
+                .map(|n| {
+                    self.wires
+                        .iter()
+                        .filter(|w| w.to == n.id && !self.is_feedback(w.to))
+                        .count()
+                })
                 .collect();
             let mut queue: VecDeque<usize> = (0..self.nodes.len())
                 .filter(|&i| indegree[i] == 0)
@@ -296,7 +319,11 @@ impl NodeGraph {
             while let Some(i) = queue.pop_front() {
                 let id = self.nodes[i].id;
                 order.push(id);
-                for w in self.wires.iter().filter(|w| w.from == id) {
+                for w in self
+                    .wires
+                    .iter()
+                    .filter(|w| w.from == id && !self.is_feedback(w.to))
+                {
                     let j = self
                         .nodes
                         .iter()
@@ -361,11 +388,18 @@ impl NodeGraph {
                 return Err(GraphError::DuplicateWire);
             }
         }
-        // Kahn without the cache: a leftover node means a cycle.
+        // Kahn without the cache: a leftover node means a cycle. Same delay-
+        // edge exclusion as `topo_order` (I9): a loop that closes only
+        // through a Feedback node's input is legal.
         let mut indegree: Vec<usize> = self
             .nodes
             .iter()
-            .map(|n| self.wires.iter().filter(|w| w.to == n.id).count())
+            .map(|n| {
+                self.wires
+                    .iter()
+                    .filter(|w| w.to == n.id && !self.is_feedback(w.to))
+                    .count()
+            })
             .collect();
         let mut queue: VecDeque<usize> = (0..self.nodes.len())
             .filter(|&i| indegree[i] == 0)
@@ -374,7 +408,11 @@ impl NodeGraph {
         while let Some(i) = queue.pop_front() {
             visited += 1;
             let id = self.nodes[i].id;
-            for w in self.wires.iter().filter(|w| w.from == id) {
+            for w in self
+                .wires
+                .iter()
+                .filter(|w| w.from == id && !self.is_feedback(w.to))
+            {
                 let j = self
                     .nodes
                     .iter()
@@ -423,6 +461,27 @@ mod tests {
         )
     }
 
+    fn fb(g: &mut NodeGraph) -> NodeId {
+        g.add_node(NodeKind::Feedback, 1, &[])
+    }
+
+    /// The classic M2 patch: `src → mix ← feedback(transform(mix)) → out`.
+    /// Returns `(src, mix, transform, feedback)`. The loop closes only
+    /// through the feedback node's input — legal under I9.
+    fn motion_echo(g: &mut NodeGraph) -> (NodeId, NodeId, NodeId, NodeId) {
+        let s = src(g);
+        let mix = eff(g, 2);
+        let t = eff(g, 1);
+        let f = fb(g);
+        let out = g.output_node();
+        g.connect(s, mix, 0).unwrap();
+        g.connect(mix, t, 0).unwrap();
+        g.connect(t, f, 0).unwrap();
+        g.connect(f, mix, 1).unwrap();
+        g.connect(mix, out, 0).unwrap();
+        (s, mix, t, f)
+    }
+
     #[test]
     fn topo_linear_chain_orders_source_first() {
         let mut g = NodeGraph::new_with_output();
@@ -469,6 +528,64 @@ mod tests {
         g.connect(b, c, 0).unwrap();
         assert_eq!(g.connect(c, a, 0), Err(GraphError::Cycle));
         g.validate().unwrap();
+    }
+
+    #[test]
+    fn feedback_input_edge_is_not_a_cycle_edge() {
+        let mut g = NodeGraph::new_with_output();
+        let (s, mix, t, f) = motion_echo(&mut g);
+        g.validate().unwrap();
+        // Every node topo-sorts (the loop is broken by the delay edge), and
+        // the feedback node's OUTPUT edge is real: consumers order after it.
+        let order: Vec<NodeId> = g.topo_order().to_vec();
+        assert_eq!(order.len(), 5, "all nodes ordered, no cycle leftover");
+        let pos = |id| order.iter().position(|&n| n == id).unwrap();
+        assert!(pos(s) < pos(mix));
+        assert!(pos(f) < pos(mix), "feedback orders as a source");
+        assert!(pos(mix) < pos(t));
+    }
+
+    #[test]
+    fn real_cycles_still_refused() {
+        let mut g = NodeGraph::new_with_output();
+        // A loop closed by a feedback node's *output* edge (a real dataflow
+        // edge) without its input edge is still a combinational cycle.
+        let f = fb(&mut g);
+        let a = eff(&mut g, 1);
+        let b = eff(&mut g, 1);
+        g.connect(f, a, 0).unwrap();
+        g.connect(a, b, 0).unwrap();
+        assert_eq!(g.connect(b, a, 0), Err(GraphError::Cycle));
+        g.validate().unwrap();
+    }
+
+    #[test]
+    fn live_set_traverses_feedback_input() {
+        let mut g = NodeGraph::new_with_output();
+        let (s, mix, t, f) = motion_echo(&mut g);
+        let live = g.live_set();
+        for id in [s, mix, t, f, g.output_node()] {
+            assert!(live.contains(&id), "the whole echo loop stays live");
+        }
+    }
+
+    #[test]
+    fn removing_feedback_breaks_loop_cleanly() {
+        let mut g = NodeGraph::new_with_output();
+        let (_, mix, t, f) = motion_echo(&mut g);
+        g.remove_node(f).unwrap();
+        g.validate().unwrap();
+        assert!(g.input_source(mix, 1).is_none(), "fb wires died with it");
+        // The delay edge died with the node: closing the loop directly is a
+        // plain combinational cycle again.
+        assert_eq!(g.connect(t, mix, 1), Err(GraphError::Cycle));
+    }
+
+    #[test]
+    fn feedback_self_loop_refused() {
+        let mut g = NodeGraph::new_with_output();
+        let f = fb(&mut g);
+        assert_eq!(g.connect(f, f, 0), Err(GraphError::SelfLoop));
     }
 
     #[test]

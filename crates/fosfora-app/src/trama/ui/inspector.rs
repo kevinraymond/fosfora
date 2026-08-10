@@ -84,6 +84,17 @@ pub fn draw_inspector(
             ui.label(dim("The output node has no parameters."));
             return;
         }
+        NodeKind::Feedback => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Feedback").color(tc.text_primary));
+                ui.label(dim("one-frame delay"));
+            });
+            ui.label(dim(
+                "Outputs what its input looked like last frame — wire it back \
+                 into an earlier node to build echo loops. No parameters.",
+            ));
+            return;
+        }
         NodeKind::Source { effect } | NodeKind::Effect { effect } => match registry.get(effect) {
             Some(def) => {
                 ui.horizontal(|ui| {

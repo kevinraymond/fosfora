@@ -20,6 +20,11 @@ pub enum NodeKind {
     Source { effect: EffectId },
     /// Transforms content; 1..=2 texture inputs.
     Effect { effect: EffectId },
+    /// Explicit one-frame delay — the only temporal recursion (I9). Outputs
+    /// the buffer its input wrote *last* frame; 1 texture input, no params.
+    /// A wire INTO a Feedback node is not a dataflow edge for cycle purposes,
+    /// which is what lets `mix → transform → feedback → mix` exist in a DAG.
+    Feedback,
     /// The single sink; whatever feeds its one input reaches the screen.
     Output,
 }
