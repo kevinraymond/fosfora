@@ -69,7 +69,14 @@ impl TramaSystem {
             registry,
             canvas,
             last_error: None,
-            executor: exec::executor::TramaExecutor::new(device, placeholder, audio, width, height),
+            executor: exec::executor::TramaExecutor::new(
+                device,
+                cache,
+                placeholder,
+                audio,
+                width,
+                height,
+            ),
             frame_uniforms: ShaderUniforms::zeroed(),
             audio_view: audio::AudioView::default(),
         }
@@ -91,6 +98,9 @@ impl TramaSystem {
         features: &AudioFeatures,
         mel: &[f32],
     ) {
+        // Feedback parity advances here for the same reason modulation does:
+        // once per frame, never per execute.
+        self.executor.begin_frame();
         self.frame_uniforms = *template;
         self.audio_view.update(dt, features, mel);
         for node in self.graph.params_iter_mut() {
@@ -105,6 +115,11 @@ impl TramaSystem {
     /// `(in_use, total)` pooled targets — the canvas debug line.
     pub fn pool_stats(&self) -> (usize, usize) {
         self.executor.pool_stats()
+    }
+
+    /// Live feedback ping-pong pairs — the canvas debug line.
+    pub fn feedback_stats(&self) -> usize {
+        self.executor.feedback_stats()
     }
 
     /// Execute the graph and return the Output node's target. Called from

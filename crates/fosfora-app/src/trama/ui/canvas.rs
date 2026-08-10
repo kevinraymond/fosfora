@@ -278,6 +278,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         return;
     }
     let (pool_in_use, pool_total) = trama.pool_stats();
+    let feedback_pairs = trama.feedback_stats();
     let mut open = trama.canvas_open;
     let TramaSystem {
         mode,
@@ -299,7 +300,9 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 ui.selectable_value(mode, super::super::RenderMode::Layers, "Layers");
                 ui.selectable_value(mode, super::super::RenderMode::Trama, "Trama");
                 ui.separator();
-                ui.weak(format!("pool {pool_in_use}/{pool_total}"));
+                ui.weak(format!(
+                    "pool {pool_in_use}/{pool_total} · fb {feedback_pairs}"
+                ));
                 if !registry.errors.is_empty() {
                     ui.separator();
                     let n = registry.errors.len();
