@@ -36,9 +36,10 @@ bench/
   datasetlib.py          fetch/prep library (downloads, checksums, status)
   fetch_<dataset>.py     one per dataset: fetch | prep | verify
   manifests/<ds>.json    CHECKED IN: what is pinnable (see checksum policy)
-  manifests/dev_subset.json  CHECKED IN: deterministic ~40-track iteration subset
-                         for beat/tempo tuning (workstream Q) + its frozen
-                         baselines; selection rule + expansion command in _policy
+  manifests/dev_subset.json  CHECKED IN: deterministic iteration subsets
+                         (workstream Q) + their frozen baselines; ~40 tracks for
+                         beat/tempo, 48 taxonomy-stratified tune-half tracks for
+                         key (Q3); selection rules + expansion command in _policy
   datasets/<ds>/         GITIGNORED: raw/ audio/ norm/ status.json
   out/                   GITIGNORED: dumps cache + results (regenerable)
 ```
