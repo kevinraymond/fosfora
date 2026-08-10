@@ -1,9 +1,14 @@
 //! Musical key detection via Krumhansl-Kessler profile correlation (A11 #1462).
 //!
-//! Maintains a slow (~12 s) rolling mean of the CQT chroma vector and Pearson-correlates
-//! it against the 24 major/minor key profiles. Hysteresis holds the incumbent key unless a
-//! challenger beats it by a margin for a sustained interval, so the detected key doesn't
-//! flicker between relatives. Outputs feed the reserved `key_*` shader-uniform fields.
+//! Maintains a slow (~12 s) rolling mean of the **unnormalized pure-fold** CQT chroma
+//! (`CqtChroma`'s `e12`, #2079) and Pearson-correlates it against the 24 major/minor
+//! key profiles. Because the input is raw energy, the mean is energy-weighted: a drop
+//! frame deposits proportionally more evidence than a noise-floor frame, where the old
+//! per-frame-normalized input let every frame vote equally. Pearson is shift/scale
+//! invariant, so the unnormalized mean feeds correlation directly. Hysteresis holds the
+//! incumbent key unless a challenger beats it by a margin for a sustained interval, so
+//! the detected key doesn't flicker between relatives. Outputs feed the reserved
+//! `key_*` shader-uniform fields.
 
 /// Krumhansl-Kessler major key profile (tonic-relative, degree 0 = tonic).
 const KK_MAJOR: [f32; 12] = [
@@ -20,8 +25,14 @@ const MEAN_TAU: f32 = 12.0;
 const SWITCH_MARGIN: f32 = 0.05;
 /// …sustained for this long (seconds) before the detected key switches.
 const SWITCH_TIME: f32 = 3.0;
-/// Minimum chroma-mean variance before correlation is trusted (else: silence/atonal).
-const MIN_VARIANCE: f32 = 1e-4;
+/// Total-energy floor for the rolling mean. Under sustained silence the mean decays
+/// toward zero — a pure scale change Pearson cannot see — so correlation is only
+/// trusted while the mean still carries real energy (#2079).
+const ENERGY_FLOOR: f32 = 1e-9;
+/// Minimum variance of the mean's *shape* (mean rescaled to sum 1) before correlation
+/// is trusted — a flat shape is broadband noise / atonal material. Scale-invariant,
+/// replacing the old absolute-variance gate that was calibrated to unit-peak input.
+const SHAPE_MIN_VAR: f32 = 2e-4;
 
 pub struct KeyResult {
     /// Tonic pitch class / 11 (same encoding as `dominant_chroma`), 0 = C.
@@ -65,16 +76,28 @@ impl KeyDetector {
     }
 
     /// Fold one chroma frame into the rolling mean and update the detected key.
-    /// `chroma` should be the raw (pre-normalization) CQT chroma; `dt` is seconds
-    /// since the previous call.
-    pub fn process(&mut self, chroma: &[f32; 12], dt: f32) -> KeyResult {
+    /// `e12` is the **unnormalized pure-fold** energy chroma (`CqtChroma`'s key
+    /// output, #2079) — never a per-frame-normalized vector, or loud and silent
+    /// frames vote equally again. `dt` is seconds since the previous call.
+    pub fn process(&mut self, e12: &[f32; 12], dt: f32) -> KeyResult {
         let alpha = 1.0 - (-dt / MEAN_TAU).exp();
         for i in 0..12 {
-            self.chroma_mean[i] += alpha * (chroma[i] - self.chroma_mean[i]);
+            self.chroma_mean[i] += alpha * (e12[i] - self.chroma_mean[i]);
         }
 
-        // Too little tonal variance (silence / broadband noise): hold key, decay confidence.
-        if variance(&self.chroma_mean) < MIN_VARIANCE {
+        // Cold or decayed-to-silence mean: hold key, decay confidence. Silence now
+        // stops *voting* instead of voting flat.
+        let total: f32 = self.chroma_mean.iter().sum();
+        if total < ENERGY_FLOOR {
+            self.confidence *= 0.99;
+            return self.result();
+        }
+        // Flat shape (broadband noise / atonal): hold key, decay confidence.
+        let mut shape = [0.0f32; 12];
+        for (s, m) in shape.iter_mut().zip(&self.chroma_mean) {
+            *s = m / total;
+        }
+        if variance(&shape) < SHAPE_MIN_VAR {
             self.confidence *= 0.99;
             return self.result();
         }
@@ -194,6 +217,60 @@ mod tests {
         let mut det = KeyDetector::new(48_000.0);
         let r = settle(&mut det, &[0.5f32; 12], 30.0);
         assert!(r.confidence < 0.2, "confidence {}", r.confidence);
+    }
+
+    /// #2079: the rolling mean is energy-weighted — near-silent frames (a noise
+    /// floor the old per-frame L-∞ normalization blew up to unit peak) must not
+    /// dilute loud tonal evidence. Reintroducing any per-frame normalization of
+    /// the detector's input makes this fail: the wrong-key quiet frames would
+    /// again vote as loudly as the music.
+    #[test]
+    fn quiet_noise_frames_do_not_dilute_loud_key() {
+        let mut det = KeyDetector::new(48_000.0);
+        // Loud C major alternating with a −60 dB frame shaped like the maximally
+        // distant key (F# major) at unit peak — the old pathology's worst case.
+        let mut loud = profile_chroma(0, false);
+        for v in &mut loud {
+            *v *= 10.0;
+        }
+        let mut quiet = profile_chroma(6, false);
+        let peak = quiet.iter().cloned().fold(0.0f32, f32::max);
+        for v in &mut quiet {
+            *v = *v / peak * 1e-3;
+        }
+
+        let mut r = det.process(&loud, 0.01);
+        for i in 0..12_000 {
+            r = det.process(if i % 2 == 0 { &loud } else { &quiet }, 0.01);
+        }
+        assert_eq!(r.key_class, 0.0, "expected C tonic");
+        assert_eq!(r.is_minor, 0.0);
+        assert!(r.confidence > 0.85, "confidence {}", r.confidence);
+    }
+
+    /// Sustained silence must decay confidence and hold the key (energy-floor
+    /// gate) — under energy weighting the mean decays as a pure scale change
+    /// Pearson can't see, so without the floor the detector would stay confident
+    /// on nothing forever.
+    #[test]
+    fn silence_decays_confidence_and_holds_key() {
+        let mut det = KeyDetector::new(48_000.0);
+        settle(&mut det, &profile_chroma(9, true), 60.0);
+        let zero = [0.0f32; 12];
+        let mut r = det.process(&zero, 0.01);
+        for _ in 0..40_000 {
+            r = det.process(&zero, 0.01);
+        }
+        assert!(
+            (r.key_class - 9.0 / 11.0).abs() < 1e-6,
+            "key must hold through silence"
+        );
+        assert!(
+            r.confidence < 0.2,
+            "confidence should decay: {}",
+            r.confidence
+        );
+        assert!(r.confidence.is_finite());
     }
 
     #[test]

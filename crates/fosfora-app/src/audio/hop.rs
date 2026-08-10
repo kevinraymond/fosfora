@@ -198,9 +198,12 @@ impl HopAnalyzer {
         // Passthrough).
         raw.kick = self.analyzer.kick_envelope(loud_silent);
 
-        // A11 (#1462): key detection on the fresh CQT chroma, before normalization
-        // rescales it. Key fields are Passthrough, so they survive normalize/smooth.
-        let key_result = self.key_detector.process(&raw.chroma, dt);
+        // A11 (#1462), reworked #2079: key detection on the analyzer's pure-fold
+        // *unnormalized* energy chroma, so loud frames outvote quiet ones in the
+        // detector's rolling mean; the visual `raw.chroma` stays harmonic-templated
+        // and L-∞ normalized for the feature bus. Key fields are Passthrough, so
+        // they survive normalize/smooth.
+        let key_result = self.key_detector.process(self.analyzer.key_chroma(), dt);
         raw.key_class = key_result.key_class;
         raw.key_is_minor = key_result.is_minor;
         raw.key_confidence = key_result.confidence;

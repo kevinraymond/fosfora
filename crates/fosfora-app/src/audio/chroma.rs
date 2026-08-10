@@ -3,9 +3,16 @@
 //! Replaces the old FFT-bin → pitch-class histogram (which hard-rounded every bin
 //! to the nearest of 12 classes) with sparse per-semitone Gaussian kernels over the
 //! 4096-pt magnitude spectrum. The 61 semitone energies (MIDI 36–96) are octave-folded
-//! to 12 pitch classes, then harmonically summed with 1/h weighting so a note is
-//! reinforced by its own upper harmonics — recovering low fundamentals the 4096-pt FFT
-//! can't resolve directly (their harmonics live at higher, well-resolved frequencies).
+//! to 12 pitch classes.
+//!
+//! Each frame is published in two forms (#2079): the **visual chroma** — harmonic
+//! template applied, L-∞ normalized to 0..1 — feeds the feature bus, shaders and the
+//! downbeat tracker exactly as before; the **key chroma** (`e12`) is the pure
+//! unnormalized fold of the well-resolved kernels only (MIDI ≥ `KEY_FOLD_LO_MIDI`),
+//! because the key detector needs energy weighting (a quiet frame must not vote like a
+//! drop frame), no manufactured harmonics (the template's only cross-term deposits a
+//! third of every note's energy on its subdominant, which measurably drags key
+//! estimates a fifth flat), and no aliased bottom-octave garbage.
 //!
 //! A slow tuning estimator tracks the global A-reference offset (±50 cents) from
 //! parabola-refined spectral peaks and shifts the kernel centers so a 432 Hz-tuned
@@ -32,6 +39,17 @@ const KERNEL_HALF_WIDTH_SEMITONES: f32 = 3.0 * SIGMA_SEMITONES;
 const HARM_OFFSET_UP: [i32; 4] = [0, 0, 7, 0];
 const HARM_WEIGHT: [f32; 4] = [1.0, 0.5, 1.0 / 3.0, 0.25];
 
+/// The key path folds only kernels from MIDI 54 (F#3, ~185 Hz) upward (#2079). Below
+/// that, semitone spacing at the 4096-pt resolution is narrower than one FFT bin, so
+/// adjacent kernels collapse onto the SAME bin (C2 and C#2 both read bin 6): the bottom
+/// octaves cannot attribute pitch class, and their single-bin kernels collect the
+/// spectral skirts of sub-floor kick/bass fundamentals. Under energy weighting that
+/// garbage dominated the key mean — measured on the bench fixture, the kick's skirt
+/// made the whole bottom octave read C/C♯ and the detector called C minor; flooring the
+/// fold reads A minor at 0.79 correlation. The visual chroma keeps the full fold so the
+/// wheel still lights for bass.
+const KEY_FOLD_LO_MIDI: i32 = 54;
+
 /// Tuning histogram: 1 bin per cent over ±50 cents.
 const TUNING_BINS: usize = 100;
 /// Per-frame histogram decay ≈ 10 s memory at ~100 analysis frames/s.
@@ -45,6 +63,15 @@ const KERNEL_REGEN_MIN_FRAMES: u32 = 300;
 
 /// One sparse constant-Q kernel per semitone: (fft_bin, weight) pairs.
 type Kernel = Vec<(usize, f32)>;
+
+/// One analysis frame's chroma, in both published forms (#2079).
+pub struct ChromaFrame {
+    /// Harmonic-templated, L-∞ normalized to 0..1 — the visual/feature-bus chroma.
+    pub chroma: [f32; N_CHROMA],
+    /// Pure octave fold of the well-resolved kernels (MIDI ≥ `KEY_FOLD_LO_MIDI`),
+    /// unnormalized magnitudes — the key detector's input.
+    pub e12: [f32; N_CHROMA],
+}
 
 pub struct CqtChroma {
     num_bins: usize,
@@ -71,24 +98,36 @@ impl CqtChroma {
         }
     }
 
-    /// Compute the 12-bin chroma vector for one magnitude frame (L-∞ normalized to 0..1).
+    /// Compute one magnitude frame's chroma in both published forms (see module doc).
     /// Also advances the tuning estimator and lazily rebuilds kernels when tuning drifts.
-    pub fn compute(&mut self, mag: &[f32]) -> [f32; N_CHROMA] {
+    pub fn compute(&mut self, mag: &[f32]) -> ChromaFrame {
         self.update_tuning(mag);
         self.maybe_regen_kernels();
 
         // Weighted-magnitude energy per semitone, octave-folded into 12 pitch classes.
-        let mut e12 = [0.0f32; N_CHROMA];
+        // Two folds: the full range feeds the visual template; the key fold starts at
+        // `KEY_FOLD_LO_MIDI`, above the pairwise-aliased bottom octaves (see its doc).
+        let mut e12_vis = [0.0f32; N_CHROMA];
+        let mut e12_key = [0.0f32; N_CHROMA];
         for (s, kernel) in self.kernels.iter().enumerate() {
             let mut e = 0.0f32;
             for &(k, w) in kernel {
                 e += mag[k] * w;
             }
-            let pc = ((MIDI_LO + s as i32) % 12 + 12) % 12;
-            e12[pc as usize] += e;
+            let midi = MIDI_LO + s as i32;
+            let pc = ((midi % 12 + 12) % 12) as usize;
+            e12_vis[pc] += e;
+            if midi >= KEY_FOLD_LO_MIDI {
+                e12_key[pc] += e;
+            }
         }
+        let e12 = e12_vis;
 
-        // Harmonic reinforcement: gather each fundamental's harmonics with 1/h weight.
+        // Harmonic reinforcement (visual chroma only): gather each fundamental's
+        // harmonics with 1/h weight. Post-fold, the octave terms collapse onto the
+        // fundamental, so the sole cross-term is the +7 gather — equivalently, every
+        // sounding note deposits 1/3 of its energy on its subdominant. That reads
+        // fine on a chroma wheel but is poison for key profiles, so `e12` stays pure.
         let mut chroma = [0.0f32; N_CHROMA];
         for (p, c) in chroma.iter_mut().enumerate() {
             let mut acc = 0.0f32;
@@ -99,14 +138,17 @@ impl CqtChroma {
             *c = acc;
         }
 
-        // L-∞ normalize.
+        // L-∞ normalize the visual chroma.
         let max = chroma.iter().cloned().fold(0.0f32, f32::max);
         if max > 1e-10 {
             for c in &mut chroma {
                 *c /= max;
             }
         }
-        chroma
+        ChromaFrame {
+            chroma,
+            e12: e12_key,
+        }
     }
 
     /// Build one Gaussian constant-Q kernel per semitone, centred for a given global
@@ -271,7 +313,7 @@ mod tests {
         let mag = sine_mag(440.0);
         let mut chroma = [0.0f32; N_CHROMA];
         for _ in 0..2000 {
-            chroma = cqt.compute(&mag);
+            chroma = cqt.compute(&mag).chroma;
         }
         // Pitch class 9 == A (C=0).
         assert_eq!(dominant(&chroma), 9, "chroma = {chroma:?}");
@@ -288,7 +330,7 @@ mod tests {
         let mag = sine_mag(432.0);
         let mut chroma = [0.0f32; N_CHROMA];
         for _ in 0..3000 {
-            chroma = cqt.compute(&mag);
+            chroma = cqt.compute(&mag).chroma;
         }
         assert_eq!(dominant(&chroma), 9, "chroma = {chroma:?}");
         // 432 Hz is ~−31.8 cents flat of A440.
@@ -304,11 +346,40 @@ mod tests {
         let mut cqt = CqtChroma::new(num_bins(), bin_hz());
         let mag = vec![0.0f32; num_bins()];
         for _ in 0..100 {
-            let chroma = cqt.compute(&mag);
-            for v in chroma {
+            let frame = cqt.compute(&mag);
+            for v in frame.chroma.iter().chain(frame.e12.iter()) {
                 assert!(v.is_finite());
             }
         }
         assert_eq!(cqt.tuning_cents, 0.0);
+    }
+
+    /// #2079: the key path's `e12` is a pure fold — a single note deposits energy
+    /// only on its own class (± kernel bleed), while the visual chroma's harmonic
+    /// template manufactures a subdominant at 1/3 weight. This test documents WHY
+    /// the two outputs exist; it fails if the template ever leaks back into `e12`.
+    #[test]
+    fn pure_fold_has_no_subdominant_deposit() {
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mag = sine_mag(440.0); // A, pitch class 9; its subdominant is D, class 2.
+        let mut frame = cqt.compute(&mag);
+        for _ in 0..10 {
+            frame = cqt.compute(&mag);
+        }
+
+        // Pure fold: nothing lands on D beyond numerical dust.
+        assert!(
+            frame.e12[2] < frame.e12[9] * 1e-3,
+            "e12 subdominant contamination: {:?}",
+            frame.e12
+        );
+        // Visual chroma: the template gathers e12[p+7] at 1/3 against the 1.75×
+        // self-term, so D reads at ≈ 0.19 of A.
+        let ratio = frame.chroma[2] / frame.chroma[9];
+        assert!(
+            (ratio - (1.0 / 3.0) / 1.75).abs() < 0.02,
+            "templated subdominant ratio {ratio}, chroma = {:?}",
+            frame.chroma
+        );
     }
 }
