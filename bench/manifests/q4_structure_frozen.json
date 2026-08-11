@@ -1,0 +1,49 @@
+{
+ "schema": "fosfora-bench-q4-structure-frozen/v1",
+ "_policy": "Pre-registered targets for the Q4 section-boundary rework (#2080), frozen BEFORE any DSP change lands. Same discipline as q3_key_frozen.json: numbers move or the change reverts. Constant selection reads the TUNE half only; the holdout half is scored once, at the end of the round. Split rule: int(sha256(track_id),16) % 2 == 0 -> tune (canonical: analyze_predict_drop.py is_tune). chosen_config stays null until the final report-card commit.",
+ "_diagnosis": "At 3.74 estimated boundaries against 12.32 references, recall is capped at 0.30 EVEN WITH PERFECT PRECISION — the deficit is emission volume before it is placement. Two causes: (1) the Foote novelty curve in audio/structure.rs is never turned into boundary events at all, since the only producer of a /section change is the label state machine in signal/section.rs and emitter.rs suppresses same-label emission; (2) the curve is self-normalized by a decaying running max, which saturates to 1.0 exactly when the material is STABLE (the defect analyze/structure_offline.rs documents as #1973 and deliberately does not inherit).",
+ "split": {
+  "rule": "sha256(track_id) parity, even -> tune",
+  "tune": {
+   "n": 180,
+   "boundary_3_0s": {"f": 0.1039, "p": 0.3138, "r": 0.0701},
+   "boundary_0_5s": {"f": 0.0226, "p": 0.0626, "r": 0.0152},
+   "pairwise": {"f": 0.4569, "p": 0.3129, "r": 0.9146},
+   "lag_compensated_boundary_3_0s_f": 0.145,
+   "n_est_segments": 3.7778,
+   "n_ref_segments": 12.45
+  },
+  "holdout": {
+   "n": 194,
+   "boundary_3_0s": {"f": 0.1063, "p": 0.3049, "r": 0.0712},
+   "boundary_0_5s": {"f": 0.0314, "p": 0.08, "r": 0.022},
+   "pairwise": {"f": 0.4595, "p": 0.3156, "r": 0.9177},
+   "lag_compensated_boundary_3_0s_f": 0.1253,
+   "n_est_segments": 3.7062,
+   "n_ref_segments": 12.2062
+  },
+  "full": {
+   "n": 374,
+   "boundary_3_0s": {"f": 0.1051, "p": 0.3092, "r": 0.0707},
+   "boundary_0_5s": {"f": 0.0272, "p": 0.0716, "r": 0.0188},
+   "pairwise": {"f": 0.4582, "p": 0.3143, "r": 0.9162},
+   "lag_compensated_boundary_3_0s_f": 0.1348,
+   "n_est_segments": 3.7406,
+   "n_ref_segments": 12.3235
+  },
+  "_balance_check": "tune boundary_3_0s.f .1039 vs holdout .1063 — a .0024 gap, so the split carries no material difficulty bias.",
+  "_provenance": "binary 38a932cb, cached full-run results bench/out/results/harmonix, commit 09132c0, 2026-08-11"
+ },
+ "targets": {
+  "holdout_boundary_3_0s_f": ">= 0.35",
+  "tune_minus_holdout": "<= 0.05 (overfit guard; Q3's actual gap was 0.0565)",
+  "holdout_boundary_3_0s_p": ">= 0.35 (ANTI-CHEAT: emitting a boundary every 6 s reaches F ~= .42 at P ~= .27 on recall alone. This floor makes the degenerate strategy fail, and demands real improvement over the .3049 baseline rather than volume. Same move as Q3's major_mode_recall floor catching the always-minor cheat.)",
+  "n_est_segments_mean": "within [7.4, 18.5], i.e. 0.6x-1.5x the 12.32 reference mean (second anti-cheat, on emission volume directly)",
+  "pairwise_f": ">= 0.4582 (must not regress; splitting segments should trade the inflated R .9162 for precision, so F should rise or hold)",
+  "fixture": "bench/check_fixture.py green at ratcheted structure floors (current: pairwise .649, boundary@3s .40 on the synthetic fixture)",
+  "guard_datasets": "harmonix beat-F/downbeat-F/tempo-acc1, ballroom beat-F, giantsteps_tempo acc1, giantsteps_key score_mean each within 0.02 of the #2077 report card (as regenerated after Q3), or the regression is stated and explicitly accepted with rationale"
+ },
+ "_scope_note": "Measured on Harmonix alone. SALAMI (#2085) is NOT in this round, so the generalization claim rests entirely on the frozen holdout and must be stated that way in the report card.",
+ "iteration_cmd": "bench/sweep_structure.py bench/datasets/harmonix --stage <stage>   # replay over tune-half sidecars from bench/dump_structure_sidecar.py; validate with --validate before trusting any number",
+ "chosen_config": null
+}
