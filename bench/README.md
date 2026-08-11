@@ -40,6 +40,17 @@ bench/
                          (workstream Q) + their frozen baselines; ~40 tracks for
                          beat/tempo, 48 taxonomy-stratified tune-half tracks for
                          key (Q3); selection rules + expansion command in _policy
+  manifests/q<N>_*_frozen.json  CHECKED IN: one per quality round — the split,
+                         the targets pre-registered BEFORE any DSP change, and
+                         afterwards the chosen config, what was rejected with
+                         the evidence, and the verdict against each target
+  dump_<x>_sidecar.py    dev-only: re-run the binary with FOSFORA_<X>_SIDECAR set
+                         to dump one detector's raw per-hop inputs, TUNE HALF ONLY
+  sweep_<x>.py           replay that detector's back-end over those sidecars in
+                         Python, so constants sweep in seconds instead of hours.
+                         ALWAYS run --validate first: it replays the SHIPPED
+                         config and diffs against cached run_bench results, and a
+                         replay that has drifted makes every sweep number a lie
   datasets/<ds>/         GITIGNORED: raw/ audio/ norm/ status.json
   out/                   GITIGNORED: dumps cache + results (regenerable)
 ```
