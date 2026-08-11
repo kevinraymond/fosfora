@@ -289,7 +289,7 @@ pub const FEATURES: [FeatureDef; NUM_FEATURES] = [
         SmoothParams::ar(0.08, 0.08),
         Scale,
     ),
-    // A18 structure (#1469) — detector-owned. `section_novelty` is self-normalized 0..1 and
+    // A18 structure (#1469) — detector-owned. `section_novelty` is absolute 0..1 (#2080) and
     // `buildup` is a logistic 0..1, so both pass through the normalizer; each is smoothed to
     // iron out the ~10 Hz decimation stairs, and Scales toward 0 on silence. `drop` is a
     // 1-frame trigger like `beat`/`downbeat`: pass through, no EMA, ForceZero on silence.

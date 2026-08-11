@@ -83,4 +83,31 @@ def structure(dump, ann) -> dict:
         p, r, f = mir_eval.segment.detection(ref_iv, lag_iv, window=w, trim=True)
         lag_block[_window_key(w)] = {"f": f, "p": p, "r": r}
     out["lag_compensated"] = lag_block
+
+    # Q4 (#2080): /section/boundary — peak-picked novelty events, fired whether or not the
+    # LABEL changed. This is the headline boundary estimate once it is present; the
+    # label-change numbers above stay reported so the before/after is legible.
+    #
+    # Each event carries its own age: the detector's fixed kernel-centring plus
+    # peak-confirmation delay. Back-dating by it is NOT the quarantined
+    # "lag_compensated" move — that shifts by a constant the SCORER chose, whereas this is
+    # the system stating where it thinks the boundary was. Both readings are published:
+    # `announced` is what a consumer that ignores the age field experiences.
+    events = dump.events(dump_mod.SECTION_BOUNDARY)
+    if events:
+        ann_times = [ts for ts, _ in events]
+        aged = [max(0.0, ts - float(args[1])) for ts, args in events]
+        block: dict = {"n_events": len(events)}
+        for key, times in (("", aged), ("announced.", ann_times)):
+            iv, lab = _to_intervals([0.0] + sorted(t for t in times if 0.0 < t < duration),
+                                    [str(i) for i in range(len(times) + 1)], duration)
+            if len(iv) == 0:
+                continue
+            iv, lab = _adjusted(iv, lab, duration)
+            for w in _WINDOWS:
+                p, r, f = mir_eval.segment.detection(ref_iv, iv, window=w, trim=True)
+                block[f"{key}{_window_key(w)}"] = {"f": f, "p": p, "r": r}
+            if not key:
+                block["n_est_segments"] = len(lab)
+        out["boundary_events"] = block
     return out

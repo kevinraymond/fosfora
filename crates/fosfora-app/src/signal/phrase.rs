@@ -1,7 +1,7 @@
 //! Phrase-grid tracking: `/fosfora/v1/phrase/*`.
 //!
 //! Infers the phrase length (8 / 16 / 32 bars, 4/4 assumption) by scoring how
-//! well salient events — drops, section changes, buildup onsets, novelty peaks —
+//! well salient events — drops, section boundaries, buildup onsets —
 //! align with each candidate grid. Off-grid material degrades gracefully: the
 //! position keeps being emitted under the best hypothesis, and the confidence
 //! value tells the consumer how much to trust it (measured reality: confidence
@@ -30,13 +30,10 @@ const EVIDENCE_SATURATION: f64 = 3.0;
 // Internal salience detectors (the emitter feeds drops / section changes in).
 const BUILDUP_EVENT_ENTER: f32 = 0.6;
 const BUILDUP_EVENT_REARM: f32 = 0.4;
-const NOVELTY_EVENT_ENTER: f32 = 0.7;
-const NOVELTY_EVENT_REARM: f32 = 0.5;
 
 const W_DROP: f64 = 1.0;
 const W_SECTION: f64 = 0.6;
 const W_BUILD_ONSET: f64 = 0.4;
-const W_NOVELTY_PEAK: f64 = 0.3;
 
 /// 4/4 assumption, per the program addendum.
 const BEATS_PER_BAR: f64 = 4.0;
@@ -61,7 +58,6 @@ pub struct PhraseTracker {
     scores: [Vec<f64>; 3],
 
     buildup_armed: bool,
-    novelty_armed: bool,
 }
 
 impl PhraseTracker {
@@ -71,12 +67,11 @@ impl PhraseTracker {
             prev_bars: 0.0,
             scores: [vec![0.0; 8], vec![0.0; 16], vec![0.0; 32]],
             buildup_armed: true,
-            novelty_armed: true,
         }
     }
 
     /// Record a salient event at the current bar position (drops and section
-    /// changes are fed in by the emitter; buildup/novelty events are internal).
+    /// boundaries are fed in by the emitter; the buildup onset is internal).
     pub fn note_event(&mut self, weight: f64) {
         let bar = self.prev_bars.max(0.0).floor() as usize;
         for (i, len) in LENGTHS.iter().enumerate() {
@@ -144,8 +139,8 @@ impl PhraseTracker {
             }
         }
 
-        // Internal salience: buildup onset and novelty peak, both with re-arm
-        // hysteresis so a plateau is one event, not a stream of them.
+        // Internal salience: the buildup onset, with re-arm hysteresis so a plateau is
+        // one event, not a stream of them.
         if f.buildup < BUILDUP_EVENT_REARM {
             self.buildup_armed = true;
         }
@@ -153,13 +148,13 @@ impl PhraseTracker {
             self.buildup_armed = false;
             self.note_event(W_BUILD_ONSET);
         }
-        if f.section_novelty < NOVELTY_EVENT_REARM {
-            self.novelty_armed = true;
-        }
-        if self.novelty_armed && f.section_novelty >= NOVELTY_EVENT_ENTER {
-            self.novelty_armed = false;
-            self.note_event(W_NOVELTY_PEAK);
-        }
+        // The novelty peak is no longer detected here (#2080). This was a bare threshold on
+        // `section_novelty` with re-arm hysteresis, and it was calibrated against the old
+        // running-max curve — which saturated at 1.0 on steady material, so it fired on
+        // stability rather than change. The structure tracker now peak-picks properly
+        // against a trailing mean/stddev and the emitter feeds each confirmed boundary in
+        // through `on_section_change`, so keeping a second, worse detector here would both
+        // double-count the same event and re-import the bug.
 
         // Position under the best hypothesis.
         let (len, anchor, len_confidence) = self.best();

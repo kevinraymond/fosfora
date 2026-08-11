@@ -670,17 +670,23 @@ def stage_dwell(tracks: list[Track]) -> int:
 
 
 def stage_combined(tracks: list[Track], weights: tuple[float, float, float]) -> int:
-    """Both boundary sources together — what the wire will actually carry."""
-    print(f"stage combined: novelty peaks UNION label changes, weights {weights}\n")
-    half = int(KERNEL_SECONDS * TICK_HZ)
-    for sigma in (1.0, 1.5, 2.0):
+    """The operating point: kernel 3 s + confirm 3 s (6 s total lag, chosen in --stage
+    latency), sweeping the threshold and dwell, with and without unioning the label
+    machine's own transitions."""
+    print(f"stage combined: kernel 3.0 s, confirm 3.0 s, weights {weights}\n")
+    half = int(3.0 * TICK_HZ)
+    best = None
+    for sigma in (0.25, 0.5, 1.0, 1.5):
         for min_gap in (6.0, 8.0, 12.0):
             for labels in (False, True):
                 row = run_config(tracks, half=half, weights=weights, sigma=sigma,
                                  min_gap_s=min_gap, stat_window_s=45.0, gain=1.0,
-                                 with_labels=labels)
+                                 with_labels=labels, confirm_s=3.0)
                 tag = f"sigma {sigma} gap {min_gap} {'peaks+labels' if labels else 'peaks only'}"
-                print(f"  {tag:<34} {fmt(row)}")
+                print(f"  {tag:<36} {fmt(row)}")
+                if best is None or row["boundary_3.0s.f"] > best[0]:
+                    best = (row["boundary_3.0s.f"], tag, row)
+    print(f"\nbest: {best[1]} -> {fmt(best[2])}")
     return 0
 
 

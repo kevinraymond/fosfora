@@ -60,6 +60,21 @@ pub trait SectionEstimator {
 // tunes them against annotated sets; live knobs would make its numbers meaningless.
 const BUILD_ENTER: f32 = 0.60;
 const BUILD_EXIT: f32 = 0.40;
+/// Bars of sustained `buildup` before a build is declared.
+///
+/// Q4 (#2080) swept every gate in this file on the tune half and left them all alone. Only
+/// this one moved the label stream at all — dropping it to 1.0 raises boundary F from .108
+/// to .190 — but the gain is not what it looks like. `dbars` advances by a whole 1.0 at each
+/// downbeat and by nothing in between, so this accumulator is quantized to downbeats: 0.5
+/// and 1.0 both mean "one downbeat", 1.5 and 2.0 both mean "two". The choice is binary, and
+/// the one-downbeat setting makes a buildup that is merely high *at* the downbeat declare a
+/// build — which `buildup_flapping_at_threshold_does_not_enter_build` exists to forbid, and
+/// which fails on it.
+///
+/// So it stays at 2.0. The label stream is no longer where boundary recall comes from
+/// (`/section/boundary` is), and trading a live anti-flap guarantee for a metric that no
+/// longer headlines would be a bad deal. Fixing it properly means making the accumulator
+/// track fractional bars, which is a separate change.
 const BUILD_SUSTAIN_BARS: f64 = 2.0;
 const BUILD_MIN_AGE_BARS: f64 = 2.0;
 const FAILED_BUILD_MIN_AGE_BARS: f64 = 4.0;

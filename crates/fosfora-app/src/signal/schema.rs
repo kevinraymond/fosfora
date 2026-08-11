@@ -14,6 +14,12 @@ pub const BEAT: &str = "/fosfora/v1/beat"; // i running beat count
 pub const DOWNBEAT: &str = "/fosfora/v1/downbeat"; // i running bar count
 pub const DROP: &str = "/fosfora/v1/drop"; // i running drop count
 pub const ONSET: &str = "/fosfora/v1/onset"; // f strength
+// Q4 (#2080): f confidence 0..1 + f age in seconds. Additive, so still v1. Fires on a
+// confirmed novelty peak whether or not the /section LABEL changed — a chorus following a
+// verse is a boundary even when both read "steady". The age is the detector's own fixed
+// latency (kernel centring + peak confirmation), not an estimate: subtract it to place the
+// boundary in musical time.
+pub const SECTION_BOUNDARY: &str = "/fosfora/v1/section/boundary";
 pub const STEM_DRUMS_ONSET: &str = "/fosfora/v1/stem/drums/onset"; // f kick-band strength
 
 // Continuous (decimated to the configured TX rate).
@@ -74,7 +80,7 @@ mod tests {
     /// a silent breaking change for every patched rig, so pin the exact strings.
     #[test]
     fn v1_addresses_are_pinned() {
-        let pinned: [(&str, &str); 21] = [
+        let pinned: [(&str, &str); 22] = [
             (BEAT, "/fosfora/v1/beat"),
             (DOWNBEAT, "/fosfora/v1/downbeat"),
             (DROP, "/fosfora/v1/drop"),
@@ -92,6 +98,7 @@ mod tests {
             (PREDICT_DROP, "/fosfora/v1/predict/drop"),
             (KEY, "/fosfora/v1/key"),
             (SECTION, "/fosfora/v1/section"),
+            (SECTION_BOUNDARY, "/fosfora/v1/section/boundary"),
             (PHRASE_LEN, "/fosfora/v1/phrase/len"),
             (STATUS_ONLINE, "/fosfora/v1/status/online"),
             (STATUS_UPTIME, "/fosfora/v1/status/uptime"),

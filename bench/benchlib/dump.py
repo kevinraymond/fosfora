@@ -26,6 +26,7 @@ BUILD = f"{PREFIX}/build"
 ENERGY = f"{PREFIX}/energy"
 KEY = f"{PREFIX}/key"
 SECTION = f"{PREFIX}/section"
+SECTION_BOUNDARY = f"{PREFIX}/section/boundary"
 PHRASE_LEN = f"{PREFIX}/phrase/len"
 PREDICT_DROP = f"{PREFIX}/predict/drop"
 STEM_ENERGY = {

@@ -45,6 +45,7 @@ process cannot, so treat more than ~3 s of status silence as offline.
 | `/fosfora/v1/drop` | int count | Drop detected (armed by a sustained build, fired on the loudness jump + sub-bass return) |
 | `/fosfora/v1/onset` | float strength | Note/hit onset (derived rising edge of the onset envelope) |
 | `/fosfora/v1/stem/drums/onset` | float strength | Kick-band onset (30–120 Hz flux crossing, hysteresis) |
+| `/fosfora/v1/section/boundary` | float conf, float age_s | A section boundary was confirmed `age_s` **ago** — see below |
 
 ### Continuous (at TX rate)
 
@@ -131,8 +132,28 @@ explicit hysteresis and per-state minimum dwell measured in bars. On material wi
 beat lock (ambient), musical time falls back to a 2 s/bar equivalent. The confidence
 argument is not decoration — gate on it.
 
+**`section/boundary` is a separate stream from `section`, and the two disagree on
+purpose.** `section` announces what the music *is* (intro, build, drop, break, steady) and
+only speaks when that label changes; a chorus following a verse is not a label change, so
+it is silent there. `section/boundary` announces *that the material changed*, from a peak
+in the self-similarity novelty, whether or not the label moved. If you want cues, patch
+this one; if you want to know the current state, patch `section`.
+
+Its second argument is the boundary's **age in seconds**, and it is a fixed property of
+the detector, not an estimate: the novelty kernel is centred, so it can only describe the
+music some seconds behind the playhead, and a peak has to be confirmed before it is a peak.
+Both delays are constants, so the event says exactly how old it is. Subtract `age_s` to
+place the boundary on a timeline; ignore it if you just want a trigger and do not mind
+firing late. Measured accuracy for both readings is in `docs/BENCHMARKS.md`.
+
+Its confidence argument is worth gating on — it predicts correctness rather than decorating
+the message. Measured against reference annotations, boundaries in the top third by
+confidence are right about 62% of the time against 35% for the bottom third; gating at 0.5
+discards roughly two thirds of the events and takes precision from 0.48 to 0.60. Take
+everything for a busy, responsive patch; gate high when a false cue is expensive.
+
 **`phrase/*` assumes 4/4** and infers 8/16/32-bar grids from how drops, section
-changes, build onsets and novelty peaks align. Off-grid material keeps a position
+boundaries and build onsets align. Off-grid material keeps a position
 under the best hypothesis with low confidence.
 
 ## Version policy

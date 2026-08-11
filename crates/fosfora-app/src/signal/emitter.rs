@@ -143,6 +143,21 @@ impl SignalEmitter {
             sink.emit(ts, schema::DROP, &[OscType::Int(self.drop_total as i32)]);
             self.phrase.on_drop();
         }
+        // Q4 (#2080): a confirmed novelty peak. Deliberately independent of the label
+        // machine below — a chorus following a verse is a boundary even when both stretches
+        // label as "steady", and suppressing those is what left the old stream emitting 3.7
+        // boundaries against 12.3 references.
+        if let Some(conf) = frame.section_boundary {
+            sink.emit(
+                ts,
+                schema::SECTION_BOUNDARY,
+                &[
+                    OscType::Float(conf),
+                    OscType::Float(crate::audio::structure::BOUNDARY_LAG_SECONDS),
+                ],
+            );
+            self.phrase.on_section_change();
+        }
         if f.onset - self.prev_onset >= ONSET_EDGE_DELTA
             && ts - self.last_onset_ts >= ONSET_MIN_GAP_SECS
         {
@@ -358,6 +373,7 @@ mod tests {
             phase_frozen: false,
             bar_duration: 2.0,
             beat_time: None,
+            section_boundary: None,
         }
     }
 

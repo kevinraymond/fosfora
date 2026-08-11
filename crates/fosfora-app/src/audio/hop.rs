@@ -322,6 +322,9 @@ impl HopAnalyzer {
             // advances `bar_phase` on the same rate that produced the phase above.
             bar_duration: db.bar_duration,
             beat_time: beat_fired.then_some(beat_result.beat_time),
+            // Q4 (#2080): read off the pre-smoothing structure result, like the three pulses
+            // above — smoothing a trigger would smear it across hops.
+            section_boundary: (structure.boundary > 0.0).then_some(structure.boundary),
         };
 
         HopOutput {

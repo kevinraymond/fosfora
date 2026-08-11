@@ -68,6 +68,16 @@ pub struct AudioFrame {
     /// scheduler's beat may belong to an instant earlier than the hop that emitted it;
     /// the Signal emitter stamps `/beat` and `/downbeat` with this, not the hop time.
     pub beat_time: Option<f64>,
+    /// Q4 (#2080): confidence 0..1 on the hop a section boundary is confirmed, `None`
+    /// otherwise. Carried here rather than in [`AudioFeatures`] because it is a trigger no
+    /// shader wants and the uniform ABI is the expensive place to spend a slot; the bindable
+    /// continuous form of the same information is `section_novelty`.
+    ///
+    /// The boundary it reports sits [`structure::BOUNDARY_LAG_SECONDS`] in the past — the
+    /// detector's kernel centring plus its peak-confirmation delay. Consumers that place
+    /// boundaries in musical time must subtract it; consumers that just want a cue do not
+    /// care. The Signal emitter publishes both the confidence and the age.
+    pub section_boundary: Option<f32>,
 }
 
 /// Running totals for the three counter-latched 1-frame pulses — `beat` (A7), `downbeat`

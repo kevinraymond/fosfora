@@ -5,10 +5,16 @@
 //! cheap, decimated (~10 Hz) analysis on top of the per-hop features:
 //!
 //! - `section_novelty` — a **Foote** self-similarity novelty. Each tick appends a compact
-//!   timbre vector (7 bands + MFCC 1–8, unit-normalized) to a 60 s ring; a Gaussian-tapered
-//!   **checkerboard kernel** slid along the self-similarity diagonal peaks where the block
-//!   structure changes (a new section). Causal, so it reports a boundary ~`KERNEL_SECONDS`
-//!   after it happens.
+//!   timbre vector (7 bands + MFCC 1–8, each block RMS-equalized then unit-normalized) to a
+//!   60 s ring; a Gaussian-tapered **checkerboard kernel** slid along the self-similarity
+//!   diagonal peaks where the block structure changes (a new section). Causal, so it reports
+//!   a boundary ~`KERNEL_SECONDS` after it happens. Normalized **absolutely**, by the
+//!   kernel's own weight — steady material reads near zero rather than saturating (#2080).
+//! - `boundary` — a 1-tick pulse carrying confidence, from a causal peak-pick over that
+//!   curve. This is what turns the novelty into events: the curve alone was computed and
+//!   published for four releases without anything ever thresholding it, which is why the
+//!   `/section` stream emitted 3.7 boundaries against 12.3 references. The boundary it
+//!   reports sits [`BOUNDARY_LAG_SECONDS`] in the past, published on the wire alongside it.
 //! - `buildup` — a logistic combination of loudness rise (A10 `loudness_trend`), spectral
 //!   **brightening** (centroid rise), **onset-density** rise (A6 onset stream), and sub-bass
 //!   **withdrawal** (the classic EDM pre-drop high-pass sweep). A superb global-intensity
@@ -40,6 +46,69 @@ const RING_SECONDS: f32 = 60.0;
 /// Foote checkerboard-kernel half-width, seconds. Also the causal latency of
 /// `section_novelty`; a modest value trades boundary sharpness for lower latency.
 const KERNEL_SECONDS: f32 = 3.0;
+
+/// Per-block scale equalization for the timbre vector (#2204).
+///
+/// The seven bands and MFCC 1..=8 live on wildly different scales — measured per-dim RMS
+/// over 120 Harmonix tracks is 0.342 for the bands against 6.197 for the MFCCs. Unit-norming
+/// the raw concatenation therefore hands MFCC ~97% of the vector's energy and the bands are
+/// decoration: the "timbre vector" was an MFCC-only detector wearing seven extra dimensions.
+///
+/// Dividing each block by its own measured RMS before the unit-norm makes the weights below
+/// mean what they say. The constants are fixed rather than tracked: across those 120 tracks
+/// the per-block RMS varies with coefficient of variation 0.14 (bands) and 0.13 (MFCC), so
+/// these are properties of the feature definitions, not of the music — and a fixed scale
+/// keeps the detector deterministic, which the offline bench and the loop-export golden gate
+/// both rely on.
+const BAND_RMS: f32 = 0.342;
+const MFCC_RMS: f32 = 6.197;
+/// Block weights after equalization, chosen on the Q4 tune half (`bench/sweep_structure.py
+/// --stage blocks`). Equal weighting wins; the two blocks carry comparable and partly
+/// independent boundary information once they are on the same scale.
+const W_BANDS: f32 = 1.0;
+const W_MFCC: f32 = 1.0;
+
+/// Peak confirmation half-width, seconds: how long the detector waits before calling a
+/// novelty sample a local maximum.
+///
+/// Deliberately independent of [`KERNEL_SECONDS`]. The kernel's own centring lag is
+/// irreducible — the novelty value produced at tick `t` describes the material at
+/// `t - KERNEL_SECONDS` — but the confirmation delay is a free parameter, and tying the two
+/// together would double the announcement latency for no accuracy. Total detection lag is
+/// `KERNEL_SECONDS + CONFIRM_SECONDS`, published on the wire so a consumer can back-date.
+const CONFIRM_SECONDS: f32 = 3.0;
+/// Trailing window the boundary threshold's mean/stddev are measured over, seconds.
+const PEAK_STAT_SECONDS: f32 = 45.0;
+/// A peak must clear `mean + PEAK_SIGMA * stddev` of that trailing window.
+const PEAK_SIGMA: f32 = 1.0;
+/// Minimum musical distance between two boundaries, seconds. Shorter than this is a fill or
+/// a turnaround, not a section (`analyze::structure_offline` uses the same idea at 8 s).
+const MIN_SECTION_SECONDS: f32 = 6.0;
+/// Divisor mapping `(peak - mean) / stddev` into the reported 0..1 confidence, so 8 sigma
+/// of excess reads full confidence.
+///
+/// Calibrated, not guessed: over 948 boundaries on the tune half the sigma excess runs p25
+/// 1.8 / p50 3.0 / p95 7.8, so a 4-sigma span (the obvious first choice) pinned 34% of
+/// events at exactly 1.0 and threw away the discrimination. At 8 only 3% saturate.
+///
+/// And the value earns its name — measured against reference segments, precision rises
+/// monotonically with it: .349 in the bottom third, .482 in the middle, .616 in the top.
+/// Gating at 0.5 keeps 36% of events and lifts precision .483 -> .604.
+const CONF_SIGMA_SPAN: f32 = 8.0;
+/// Display gain for the bindable `section_novelty`, so the feature keeps a usable 0..1 range.
+///
+/// The absolute novelty is genuinely small on real music — pooled over 60 Harmonix tracks
+/// its median is 0.003 and its p95 is 0.024 — because a unit-norm self-similarity block is
+/// mostly diagonal. 33 puts that p95 at 0.80, leaving the median near 0.10: steady material
+/// sits low (which is the entire point of dropping the running max) and only genuine change
+/// approaches the top. 3.6% of frames clamp, and they are section changes and transients,
+/// not stable passages.
+///
+/// Applied to the PUBLISHED feature only. The peak-picker reads the unclamped, ungained
+/// curve: it thresholds on `mean + sigma*stddev`, which is scale-invariant, but clamping is
+/// not — a clamped peak is indistinguishable from any other clamped peak, which would blind
+/// the local-max test exactly on the strongest boundaries.
+const NOVELTY_GAIN: f32 = 33.0;
 
 /// Long window (seconds) for the build-up slope/decline references.
 const SLOPE_SECONDS: f32 = 8.0;
@@ -75,8 +144,6 @@ const DROP_LOUD_JUMP: f32 = 0.08;
 const DROP_SUBBASS_RETURN: f32 = 0.5;
 /// No further drop for this long (seconds) after one fires.
 const DROP_REFRACTORY: f32 = 16.0;
-/// Running-max forgetting window (seconds) for self-normalizing `section_novelty`.
-const NOVELTY_MAX_SECONDS: f32 = 30.0;
 
 /// Runtime-tunable A18 thresholds (task #1510). Only the hot-loop build-up weights and
 /// drop-machine thresholds are exposed — a VJ tunes build-up sensitivity and drop firing
@@ -129,13 +196,22 @@ impl Default for StructureConfig {
 
 /// Per-frame structure outputs, copied onto `AudioFeatures`.
 pub struct StructureResult {
-    /// Section-boundary novelty, self-normalized 0..1.
+    /// Section-boundary novelty, absolute 0..1 (see [`StructureTracker::foote_novelty`]).
     pub section_novelty: f32,
     /// Build-up / tension estimate, 0..1.
     pub buildup: f32,
     /// 1.0 on the frame a drop is detected, else 0.0 (a trigger, counter-latched upstream).
     pub drop: f32,
+    /// Confidence 0..1 on the tick a section boundary is confirmed, else 0.0. A trigger,
+    /// like `drop` — the boundary it reports happened [`BOUNDARY_LAG_SECONDS`] earlier.
+    pub boundary: f32,
 }
+
+/// How far in the past a confirmed boundary actually sits, seconds. The kernel's centring
+/// lag plus the peak-confirmation delay; both are constants, so this is exact rather than
+/// estimated, and it is published on the wire so consumers can place the boundary in
+/// musical time instead of at the moment of announcement.
+pub const BOUNDARY_LAG_SECONDS: f32 = KERNEL_SECONDS + CONFIRM_SECONDS;
 
 pub struct StructureTracker {
     tick_interval: f64,
@@ -143,10 +219,20 @@ pub struct StructureTracker {
     /// row-major of side `2L+1`.
     kernel: Vec<f32>,
     kernel_half: usize,
+    /// Reciprocal of the kernel's total absolute weight — the absolute novelty's divisor.
+    kernel_weight_recip: f32,
     ring: VecDeque<[f32; VEC_DIM]>,
     ring_cap: usize,
-    novelty_max: f32,
     cur_novelty: f32,
+
+    // Boundary peak-picking. `nov_hist` is the trailing absolute-novelty curve; the
+    // candidate sits `confirm_ticks` back from its newest entry so the local-max test only
+    // ever reads samples the detector has already seen.
+    nov_hist: VecDeque<f32>,
+    nov_hist_cap: usize,
+    confirm_ticks: usize,
+    /// Sample-clock time of the last confirmed boundary (its back-dated musical time).
+    last_boundary_time: f64,
 
     // Build-up references (updated every frame).
     onset_fast: f32,
@@ -187,14 +273,21 @@ impl StructureTracker {
                 kernel[di * side + dj] = g * sign(i) * sign(j);
             }
         }
+        let kernel_weight = kernel.iter().map(|k| k.abs()).sum::<f32>().max(1e-6);
+        let confirm_ticks = (CONFIRM_SECONDS * TICK_HZ).round().max(1.0) as usize;
+        let nov_hist_cap = (PEAK_STAT_SECONDS * TICK_HZ) as usize + confirm_ticks + 1;
         Self {
             tick_interval: (1.0 / TICK_HZ) as f64,
             kernel,
             kernel_half,
+            kernel_weight_recip: 1.0 / kernel_weight,
             ring: VecDeque::with_capacity((RING_SECONDS * TICK_HZ) as usize + 1),
             ring_cap: (RING_SECONDS * TICK_HZ) as usize,
-            novelty_max: 1e-6,
             cur_novelty: 0.0,
+            nov_hist: VecDeque::with_capacity(nov_hist_cap),
+            nov_hist_cap,
+            confirm_ticks,
+            last_boundary_time: f64::NEG_INFINITY,
             onset_fast: 0.0,
             onset_slow: 0.0,
             centroid_slow: 0.0,
@@ -234,15 +327,19 @@ impl StructureTracker {
         self.update_refs(pre_norm, beat, frame_dt);
 
         let mut drop = 0.0;
+        let mut boundary = 0.0;
         if self.last_tick_time < 0.0 || timestamp - self.last_tick_time >= self.tick_interval {
             self.last_tick_time = timestamp;
-            drop = self.tick(pre_norm, timestamp);
+            let ticked = self.tick(pre_norm, timestamp);
+            drop = ticked.0;
+            boundary = ticked.1;
         }
 
         StructureResult {
             section_novelty: self.cur_novelty,
             buildup: self.cur_buildup,
             drop,
+            boundary,
         }
     }
 
@@ -259,17 +356,21 @@ impl StructureTracker {
         self.subbass_ref = (self.subbass_ref * decay).max(pre_norm.sub_bass);
     }
 
-    fn tick(&mut self, pre_norm: &AudioFeatures, timestamp: f64) -> f32 {
+    /// Returns `(drop pulse, boundary confidence)` for this tick.
+    fn tick(&mut self, pre_norm: &AudioFeatures, timestamp: f64) -> (f32, f32) {
         // --- section_novelty (Foote) ---
         let v = timbre_vector(pre_norm);
         if self.ring.len() == self.ring_cap {
             self.ring.pop_front();
         }
         self.ring.push_back(v);
-        let raw_novelty = self.foote_novelty();
-        let max_decay = (-(1.0 / TICK_HZ) / NOVELTY_MAX_SECONDS).exp();
-        self.novelty_max = (self.novelty_max * max_decay).max(raw_novelty).max(1e-6);
-        self.cur_novelty = (raw_novelty / self.novelty_max).clamp(0.0, 1.0);
+        // Absolute normalization: divide by the kernel's own total weight. The ring vectors
+        // are unit-norm, so every similarity is in -1..1 and the kernel-weighted sum is
+        // bounded by that weight — this is a real curve, and steady material reads near
+        // zero. The previous decaying-running-max normalization saturated to 1.0 in exactly
+        // that case (#1973), which is why nothing downstream could threshold it.
+        let abs_novelty = self.foote_novelty() * self.kernel_weight_recip;
+        self.cur_novelty = (abs_novelty * NOVELTY_GAIN).clamp(0.0, 1.0);
 
         // --- buildup (logistic, EMA-smoothed at tick rate) ---
         let build_raw = self.buildup_logistic(pre_norm);
@@ -277,8 +378,58 @@ impl StructureTracker {
         self.buildup_ema += (build_raw - self.buildup_ema) * a;
         self.cur_buildup = self.buildup_ema;
 
+        let boundary = self.update_boundary(abs_novelty, timestamp);
+
         // --- drop state machine ---
-        self.update_drop(pre_norm, timestamp)
+        (self.update_drop(pre_norm, timestamp), boundary)
+    }
+
+    /// Causal peak-pick over the absolute novelty curve. Returns the boundary confidence on
+    /// the tick a peak is confirmed, else 0.0.
+    ///
+    /// The candidate is `confirm_ticks` behind the newest sample, so its local-max test reads
+    /// only samples already observed. It must also clear `mean + PEAK_SIGMA * stddev` of the
+    /// trailing window — an adaptive floor, so a busy track needs a bigger jump than a sparse
+    /// one — and sit at least `MIN_SECTION_SECONDS` after the last boundary in musical time.
+    fn update_boundary(&mut self, abs_novelty: f32, timestamp: f64) -> f32 {
+        if self.nov_hist.len() == self.nov_hist_cap {
+            self.nov_hist.pop_front();
+        }
+        self.nov_hist.push_back(abs_novelty);
+
+        let n = self.nov_hist.len();
+        // Need the candidate plus a full confirmation window on each side of it, and enough
+        // history for the trailing statistics to mean anything.
+        if n < 2 * self.confirm_ticks + 20 {
+            return 0.0;
+        }
+        let cand = n - 1 - self.confirm_ticks;
+        let v = self.nov_hist[cand];
+
+        // Trailing mean/stddev up to and including the candidate.
+        let stats: Vec<f32> = self.nov_hist.iter().take(cand + 1).copied().collect();
+        let count = stats.len() as f32;
+        let mean = stats.iter().sum::<f32>() / count;
+        let var = stats.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / count;
+        let std = var.sqrt();
+        if std < 1e-9 || v < mean + PEAK_SIGMA * std {
+            return 0.0;
+        }
+        // Local maximum over the confirmation window.
+        let lo = cand.saturating_sub(self.confirm_ticks);
+        for i in lo..n {
+            if self.nov_hist[i] > v {
+                return 0.0;
+            }
+        }
+        // Back-date to the boundary's musical time before the dwell test, so the minimum
+        // section length is measured in the music rather than in announcements.
+        let boundary_time = timestamp - f64::from(BOUNDARY_LAG_SECONDS);
+        if boundary_time - self.last_boundary_time < f64::from(MIN_SECTION_SECONDS) {
+            return 0.0;
+        }
+        self.last_boundary_time = boundary_time;
+        ((v - mean) / (std * CONF_SIGMA_SPAN)).clamp(0.0, 1.0)
     }
 
     /// Checkerboard-kernel novelty at the point `kernel_half` ticks behind the newest (so the
@@ -356,24 +507,27 @@ impl StructureTracker {
     }
 }
 
-/// Build the unit-normalized compact timbre vector (7 bands + MFCC 1..=8).
+/// Build the unit-normalized compact timbre vector (7 bands + MFCC 1..=8), each block first
+/// divided by its own measured RMS so the two contribute at their intended weights (#2204).
 fn timbre_vector(f: &AudioFeatures) -> [f32; VEC_DIM] {
+    let b = W_BANDS / BAND_RMS;
+    let m = W_MFCC / MFCC_RMS;
     let mut v = [
-        f.sub_bass,
-        f.bass,
-        f.low_mid,
-        f.mid,
-        f.upper_mid,
-        f.presence,
-        f.brilliance,
-        f.mfcc[1],
-        f.mfcc[2],
-        f.mfcc[3],
-        f.mfcc[4],
-        f.mfcc[5],
-        f.mfcc[6],
-        f.mfcc[7],
-        f.mfcc[8],
+        f.sub_bass * b,
+        f.bass * b,
+        f.low_mid * b,
+        f.mid * b,
+        f.upper_mid * b,
+        f.presence * b,
+        f.brilliance * b,
+        f.mfcc[1] * m,
+        f.mfcc[2] * m,
+        f.mfcc[3] * m,
+        f.mfcc[4] * m,
+        f.mfcc[5] * m,
+        f.mfcc[6] * m,
+        f.mfcc[7] * m,
+        f.mfcc[8] * m,
     ];
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 1e-6 {
@@ -444,6 +598,32 @@ mod tests {
             *clock += dt;
         }
         (drops, max_nov, last_build)
+    }
+
+    /// As [`drive`], plus the count of boundary events fired over the interval (#2080).
+    fn drive_b(
+        t: &mut StructureTracker,
+        clock: &mut f64,
+        secs: f32,
+        mut feat: impl FnMut(f32) -> (AudioFeatures, f32),
+    ) -> (usize, f32, f32, usize) {
+        let dt = 1.0 / HOP as f64;
+        let n = (secs * HOP) as usize;
+        let (mut drops, mut max_nov, mut last_build, mut bounds) = (0, 0.0f32, 0.0, 0);
+        for i in 0..n {
+            let (f, onset) = feat(i as f32 / HOP);
+            let r = t.process(StructureConfig::default(), &f, &beat(onset), *clock);
+            if r.drop > 0.5 {
+                drops += 1;
+            }
+            if r.boundary > 0.0 {
+                bounds += 1;
+            }
+            max_nov = max_nov.max(r.section_novelty);
+            last_build = r.buildup;
+            *clock += dt;
+        }
+        (drops, max_nov, last_build, bounds)
     }
 
     fn feat_with(loudness_m: f32, sub_bass: f32, centroid: f32, loud_trend: f32) -> AudioFeatures {
@@ -534,9 +714,79 @@ mod tests {
         // The causal kernel reports the boundary ~KERNEL_SECONDS into section B; drive long
         // enough to cover the peak, taking the max novelty over the transition.
         let (_, nov_peak, _) = drive(&mut t, &mut clock, 8.0, section_b);
+
+        // The load-bearing half of this test is the STEADY reading, not the peak (#2080).
+        // Under the old decaying-running-max normalization steady material read a hard 1.0 —
+        // the curve self-normalized to its own recent maximum, so a song that never changed
+        // pinned the meter and nothing downstream could threshold it (#1973). Absolute
+        // normalization is what makes "nothing is happening" representable, so assert that
+        // first: this bound is what fails if the running max ever comes back.
         assert!(
-            nov_peak > 0.3 && nov_peak > nov_steady + 0.1,
+            nov_steady < 0.05,
+            "steady material must read near zero, got {nov_steady}"
+        );
+        assert!(
+            nov_peak > 0.1 && nov_peak > nov_steady * 10.0,
             "novelty should spike at the section change (peak {nov_peak}, steady {nov_steady})"
+        );
+    }
+
+    /// A section change produces exactly one boundary event, and steady material produces
+    /// none — the two halves of turning the novelty curve into wire events (#2080).
+    #[test]
+    fn section_change_fires_one_boundary() {
+        let mut t = StructureTracker::new(HOP);
+        let mut clock = 0.0;
+        let section_a = |_: f32| {
+            let mut f = feat_with(0.5, 0.8, 0.2, 0.0);
+            f.brilliance = 0.05;
+            f.presence = 0.05;
+            (f, 0.3)
+        };
+        let section_b = |_: f32| {
+            let mut f = feat_with(0.5, 0.1, 0.8, 0.0);
+            f.brilliance = 0.8;
+            f.presence = 0.7;
+            (f, 0.3)
+        };
+        // Long enough to fill the ring and the peak-statistics window.
+        let (_, _, _, b_steady) = drive_b(&mut t, &mut clock, 60.0, section_a);
+        assert_eq!(b_steady, 0, "unchanging material must not fire a boundary");
+
+        let (_, _, _, b_change) = drive_b(&mut t, &mut clock, 30.0, section_b);
+        assert_eq!(
+            b_change, 1,
+            "one section change must fire exactly one boundary"
+        );
+    }
+
+    /// The dwell gate suppresses a second peak inside `MIN_SECTION_SECONDS`: a fill or a
+    /// turnaround is not a section.
+    #[test]
+    fn dwell_suppresses_a_rapid_second_boundary() {
+        let mut t = StructureTracker::new(HOP);
+        let mut clock = 0.0;
+        let quiet = |_: f32| {
+            let mut f = feat_with(0.5, 0.8, 0.2, 0.0);
+            f.brilliance = 0.05;
+            f.presence = 0.05;
+            (f, 0.3)
+        };
+        let bright = |_: f32| {
+            let mut f = feat_with(0.5, 0.1, 0.8, 0.0);
+            f.brilliance = 0.8;
+            f.presence = 0.7;
+            (f, 0.3)
+        };
+        drive_b(&mut t, &mut clock, 60.0, quiet);
+        // Two changes only 4 s apart — well inside the 8 s minimum section length.
+        let (_, _, _, first) = drive_b(&mut t, &mut clock, 4.0, bright);
+        let (_, _, _, second) = drive_b(&mut t, &mut clock, 4.0, quiet);
+        let (_, _, _, settle) = drive_b(&mut t, &mut clock, 12.0, quiet);
+        assert!(
+            first + second + settle <= 1,
+            "two changes {MIN_SECTION_SECONDS} s apart must yield at most one boundary, \
+             got {first}+{second}+{settle}"
         );
     }
 
