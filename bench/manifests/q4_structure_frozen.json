@@ -45,5 +45,50 @@
  },
  "_scope_note": "Measured on Harmonix alone. SALAMI (#2085) is NOT in this round, so the generalization claim rests entirely on the frozen holdout and must be stated that way in the report card.",
  "iteration_cmd": "bench/sweep_structure.py bench/datasets/harmonix --stage <stage>   # replay over tune-half sidecars from bench/dump_structure_sidecar.py; validate with --validate before trusting any number",
- "chosen_config": null
+ "chosen_config": {
+  "_selected_on": "tune half only, via bench/sweep_structure.py replay over production sidecars from bench/dump_structure_sidecar.py (fidelity 30/33 vs real bench, aggregate boundary@3s delta -0.0007); holdout scored once at round end (binary 4d78ff6, 2026-08-11)",
+  "fingerprint": {
+   "blocks": "7 bands + MFCC 1..=8, each divided by its measured per-dim RMS (0.342 / 6.197) before the unit-norm, then weighted 1:1",
+   "chroma": "NOT INCLUDED — see rejected_with_evidence"
+  },
+  "novelty": {
+   "normalization": "absolute: raw checkerboard sum / sum(|kernel|). No running max.",
+   "kernel_seconds": 3.0,
+   "display_gain": "33.0 on the published section_novelty only; the peak-picker reads the unclamped, ungained curve because clamping is not scale-invariant"
+  },
+  "peak_pick": {
+   "confirm_seconds": 3.0,
+   "total_detection_lag_s": 6.0,
+   "peak_sigma": 1.0,
+   "stat_window_s": 45.0,
+   "min_section_s": 6.0,
+   "confidence_span_sigma": 8.0
+  },
+  "rejected_with_evidence": {
+   "chroma_in_the_fingerprint": "The task asked for it; the measurement says no. At honest scale it degrades boundary F at EVERY weight tested — mfcc+chroma .3881 vs bands+mfcc .4840, chroma-led .3738, chroma alone .3304. Also undercuts analyze/structure_offline.rs's stated rationale for its own 27-dim fingerprint, which has never been measured against a 15-dim one.",
+   "raw_block_concatenation": ".4622 — identical to MFCC-alone (.4620) to four decimals, which is the whole of finding #2204: the shipped 'timbre vector' was an MFCC-only detector.",
+   "wider_kernel_for_score": "kernel 6 s + confirm 3 s scores .5160 vs .5087 at 6 s lag, but costs 9 s of live latency for +.007 F. The F-vs-lag curve is nearly flat; a VJ feels the seconds.",
+   "confirm_window_tied_to_kernel_half": "The obvious implementation. Doubles announcement latency (12 s at kernel 6) for no accuracy gain, because the two delays do different jobs.",
+   "unioning_label_changes_as_boundaries": "Hurts at all 12 sigma/gap settings tested (e.g. .4952 -> .4764 at sigma 0.5 / gap 8). The label machine's transitions are worse-placed than the novelty peaks.",
+   "argmax_operating_point": "sigma 0.5 / gap 6.0 scores .5123 on tune but emits 15.21 boundaries against 12.3 references. Chose sigma 1.0 / gap 6.0: .5092, precision .5230, n_est 13.00 — +.003 F is not worth 24% over-emission.",
+   "build_sustain_bars_retune": "2.0 -> 1.0 raises the LABEL stream's boundary F .108 -> .190, but dbars advances a whole 1.0 per downbeat, so the accumulator is quantized and 1.0 means 'one downbeat'. It fails buildup_flapping_at_threshold_does_not_enter_build. Left at 2.0; the label stream is no longer the recall path."
+  },
+  "measured": {
+   "tune": {"n": 180, "boundary_3_0s": {"f": 0.5087, "p": 0.5237, "r": 0.5221}, "n_est_segments": 12.9278},
+   "holdout": {"n": 194, "boundary_3_0s": {"f": 0.5129, "p": 0.5156, "r": 0.5345}, "boundary_0_5s_f": 0.2572, "n_est_segments": 13.1856},
+   "full": {"n": 374, "boundary_3_0s": {"f": 0.5109, "p": 0.5195, "r": 0.5285}, "boundary_0_5s_f": 0.2458,
+            "announced_boundary_3_0s_f": 0.2086, "n_est_segments": 13.0615, "n_events": 12.0615},
+   "_replay_accuracy": "the tune-half sweep predicted .5092 for this config; the real bench measured .5087 — the replay was accurate to 0.0005, which is the justification for having built it",
+   "_announced_vs_backdated": "0.2086 vs 0.5109. A consumer that ignores the age argument and treats each event as happening now scores the lower number; that is the honest cost of a causal detector and both are published."
+  },
+  "targets_verdict": {
+   "holdout_boundary_3_0s_f": "PASS (.5129 vs >= .35)",
+   "tune_minus_holdout": "PASS (-.0042 — the holdout scored HIGHER than the tune half, so there is no measurable overfit; Q3's gap was .0565)",
+   "holdout_boundary_3_0s_p": "PASS (.5156 vs >= .35) — the anti-cheat floor is cleared on precision, not just volume",
+   "n_est_segments_mean": "PASS (13.19 vs the [7.4, 18.5] band, against a 12.21 reference mean)",
+   "pairwise_f": "PASS (.4582 full run, bit-identical to the baseline — the label stream was not touched)",
+   "fixture": "PASS, 22 assertions; two new boundary-event floors added and proven to fail when peak-picking is disabled",
+   "guard_datasets": "PASS — every pre-existing Harmonix metric is bit-identical to the #2077 report card (beat, downbeat, tempo, label-boundary, pairwise all move 0.0000). predict/drop shifted only in its 0.8-tier lead-time TAILS (p10 1.44 -> 1.91, p90 27.28 -> 28.14, leads marginally longer); coverage and false-alarm rate unchanged, tracing to the phrase tracker now receiving real boundary events instead of its own threshold crossings."
+  }
+ }
 }

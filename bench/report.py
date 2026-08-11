@@ -221,6 +221,55 @@ def predict_drop_table(summary: dict) -> list[str]:
     return rows
 
 
+def structure_table(summary: dict) -> list[str]:
+    """Section boundaries. Two streams with different jobs, reported separately
+    because averaging them would hide what each one is for."""
+    st = summary["metrics"].get("structure") or {}
+    ev = st.get("boundary_events") or {}
+    if not ev:
+        return []
+
+    def blk(d, key):
+        b = d.get(key) or {}
+        return fmt(b.get("f")), fmt(b.get("p")), fmt(b.get("r"))
+
+    ef, ep, er = blk(ev, "boundary_3_0s")
+    ef5, _, _ = blk(ev, "boundary_0_5s")
+    af, _, _ = blk(ev, "announced.boundary_3_0s")
+    lf, lp, lr = blk(st, "boundary_3_0s")
+    rows = [
+        "### Section boundaries (`/fosfora/v1/section/boundary`)",
+        "",
+        "No published causal baseline exists for this task, and the offline "
+        "structure systems in the literature segment a whole file at once — the "
+        "rows stand alone. Boundary detection is vocabulary-agnostic (labels are "
+        "ignored), so Fosfora's EDM-shaped states need no mapping onto "
+        "verse/chorus annotations.",
+        "",
+        "| Stream | Window | F | P | R |",
+        "|---|---|---|---|---|",
+        f"| **`/section/boundary`, back-dated by the reported age** | **3.0 s** "
+        f"| **{ef}** | **{ep}** | **{er}** |",
+        f"| `/section/boundary`, back-dated | 0.5 s | {ef5} | — | — |",
+        f"| `/section/boundary`, taken at the moment announced | 3.0 s | {af} | — | — |",
+        f"| `/section` label changes (all this stream carried before) | 3.0 s "
+        f"| {lf} | {lp} | {lr} |",
+        "",
+        f"Estimated {fmt(ev.get('n_est_segments'), 1)} segments per track against "
+        f"{fmt(st.get('n_ref_segments'), 1)} annotated.",
+        "",
+        "The first two rows subtract each event's own reported age — a fixed "
+        "property of the detector (a centred novelty kernel plus a peak "
+        "confirmation delay), published on the wire precisely so a consumer can "
+        "do this. The third row is what a consumer sees if it ignores that "
+        "argument and treats every cue as happening now; the gap between them is "
+        "the honest price of hearing the song once, in order. Neither number is "
+        "the quarantined fixed-shift compensation below, which is a constant the "
+        "*scorer* chose.",
+    ]
+    return rows
+
+
 def coverage_table(results: dict[str, dict]) -> list[str]:
     rows = [
         "| Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |",
@@ -302,6 +351,9 @@ def render(root: Path) -> str:
             L.append("")
         if "key" in metrics:
             L.extend(key_table(ds, summary, baselines))
+            L.append("")
+        if "structure" in metrics:
+            L.extend(structure_table(summary))
             L.append("")
         if (metrics.get("predict_drop") or {}).get("0.5", {}).get("coverage") is not None:
             L.extend(predict_drop_table(summary))
