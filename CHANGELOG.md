@@ -16,8 +16,8 @@
 - **Section boundaries are actually detected now.** The self-similarity novelty had been
   computed and published for four releases without anything ever thresholding it, so the
   section stream announced 3.7 boundaries on a track averaging 12.3 — boundary accuracy
-  0.105 → 0.51 on 374 Harmonix tracks. Cues land about 6 s after the boundary they describe,
-  and each event says so.
+  0.105 → 0.503 on 374 Harmonix tracks, at 12.1 boundaries per track. Cues land about 6 s
+  after the boundary they describe, and each event says so.
 - **`audio.section_novelty` no longer sits pinned at 1.0.** It was normalized against its own
   recent maximum, so unchanging music drove it to full scale — the opposite of what the name
   promises. It now reads near zero on steady material and rises only on real change. Anything

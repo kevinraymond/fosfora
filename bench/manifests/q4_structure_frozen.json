@@ -1,37 +1,73 @@
 {
  "schema": "fosfora-bench-q4-structure-frozen/v1",
  "_policy": "Pre-registered targets for the Q4 section-boundary rework (#2080), frozen BEFORE any DSP change lands. Same discipline as q3_key_frozen.json: numbers move or the change reverts. Constant selection reads the TUNE half only; the holdout half is scored once, at the end of the round. Split rule: int(sha256(track_id),16) % 2 == 0 -> tune (canonical: analyze_predict_drop.py is_tune). chosen_config stays null until the final report-card commit.",
- "_diagnosis": "At 3.74 estimated boundaries against 12.32 references, recall is capped at 0.30 EVEN WITH PERFECT PRECISION — the deficit is emission volume before it is placement. Two causes: (1) the Foote novelty curve in audio/structure.rs is never turned into boundary events at all, since the only producer of a /section change is the label state machine in signal/section.rs and emitter.rs suppresses same-label emission; (2) the curve is self-normalized by a decaying running max, which saturates to 1.0 exactly when the material is STABLE (the defect analyze/structure_offline.rs documents as #1973 and deliberately does not inherit).",
+ "_diagnosis": "At 3.74 estimated boundaries against 12.32 references, recall is capped at 0.30 EVEN WITH PERFECT PRECISION \u2014 the deficit is emission volume before it is placement. Two causes: (1) the Foote novelty curve in audio/structure.rs is never turned into boundary events at all, since the only producer of a /section change is the label state machine in signal/section.rs and emitter.rs suppresses same-label emission; (2) the curve is self-normalized by a decaying running max, which saturates to 1.0 exactly when the material is STABLE (the defect analyze/structure_offline.rs documents as #1973 and deliberately does not inherit).",
  "split": {
   "rule": "sha256(track_id) parity, even -> tune",
   "tune": {
    "n": 180,
-   "boundary_3_0s": {"f": 0.1039, "p": 0.3138, "r": 0.0701},
-   "boundary_0_5s": {"f": 0.0226, "p": 0.0626, "r": 0.0152},
-   "pairwise": {"f": 0.4569, "p": 0.3129, "r": 0.9146},
+   "boundary_3_0s": {
+    "f": 0.1039,
+    "p": 0.3138,
+    "r": 0.0701
+   },
+   "boundary_0_5s": {
+    "f": 0.0226,
+    "p": 0.0626,
+    "r": 0.0152
+   },
+   "pairwise": {
+    "f": 0.4569,
+    "p": 0.3129,
+    "r": 0.9146
+   },
    "lag_compensated_boundary_3_0s_f": 0.145,
    "n_est_segments": 3.7778,
    "n_ref_segments": 12.45
   },
   "holdout": {
    "n": 194,
-   "boundary_3_0s": {"f": 0.1063, "p": 0.3049, "r": 0.0712},
-   "boundary_0_5s": {"f": 0.0314, "p": 0.08, "r": 0.022},
-   "pairwise": {"f": 0.4595, "p": 0.3156, "r": 0.9177},
+   "boundary_3_0s": {
+    "f": 0.1063,
+    "p": 0.3049,
+    "r": 0.0712
+   },
+   "boundary_0_5s": {
+    "f": 0.0314,
+    "p": 0.08,
+    "r": 0.022
+   },
+   "pairwise": {
+    "f": 0.4595,
+    "p": 0.3156,
+    "r": 0.9177
+   },
    "lag_compensated_boundary_3_0s_f": 0.1253,
    "n_est_segments": 3.7062,
    "n_ref_segments": 12.2062
   },
   "full": {
    "n": 374,
-   "boundary_3_0s": {"f": 0.1051, "p": 0.3092, "r": 0.0707},
-   "boundary_0_5s": {"f": 0.0272, "p": 0.0716, "r": 0.0188},
-   "pairwise": {"f": 0.4582, "p": 0.3143, "r": 0.9162},
+   "boundary_3_0s": {
+    "f": 0.1051,
+    "p": 0.3092,
+    "r": 0.0707
+   },
+   "boundary_0_5s": {
+    "f": 0.0272,
+    "p": 0.0716,
+    "r": 0.0188
+   },
+   "pairwise": {
+    "f": 0.4582,
+    "p": 0.3143,
+    "r": 0.9162
+   },
    "lag_compensated_boundary_3_0s_f": 0.1348,
    "n_est_segments": 3.7406,
    "n_ref_segments": 12.3235
   },
-  "_balance_check": "tune boundary_3_0s.f .1039 vs holdout .1063 — a .0024 gap, so the split carries no material difficulty bias.",
+  "_balance_check": "tune boundary_3_0s.f .1039 vs holdout .1063 \u2014 a .0024 gap, so the split carries no material difficulty bias.",
   "_provenance": "binary 38a932cb, cached full-run results bench/out/results/harmonix, commit 09132c0, 2026-08-11"
  },
  "targets": {
@@ -46,10 +82,10 @@
  "_scope_note": "Measured on Harmonix alone. SALAMI (#2085) is NOT in this round, so the generalization claim rests entirely on the frozen holdout and must be stated that way in the report card.",
  "iteration_cmd": "bench/sweep_structure.py bench/datasets/harmonix --stage <stage>   # replay over tune-half sidecars from bench/dump_structure_sidecar.py; validate with --validate before trusting any number",
  "chosen_config": {
-  "_selected_on": "tune half only, via bench/sweep_structure.py replay over production sidecars from bench/dump_structure_sidecar.py (fidelity 30/33 vs real bench, aggregate boundary@3s delta -0.0007); holdout scored once at round end (binary 4d78ff6, 2026-08-11)",
+  "_selected_on": "tune half only, via bench/sweep_structure.py replay over production sidecars from bench/dump_structure_sidecar.py (fidelity 30/33 vs real bench, aggregate boundary@3s delta -0.0007); holdout scored once at round end (binary 0f5eff6, 2026-08-11)",
   "fingerprint": {
    "blocks": "7 bands + MFCC 1..=8, each divided by its measured per-dim RMS (0.342 / 6.197) before the unit-norm, then weighted 1:1",
-   "chroma": "NOT INCLUDED — see rejected_with_evidence"
+   "chroma": "NOT INCLUDED \u2014 see rejected_with_evidence"
   },
   "novelty": {
    "normalization": "absolute: raw checkerboard sum / sum(|kernel|). No running max.",
@@ -65,30 +101,62 @@
    "confidence_span_sigma": 8.0
   },
   "rejected_with_evidence": {
-   "chroma_in_the_fingerprint": "The task asked for it; the measurement says no. At honest scale it degrades boundary F at EVERY weight tested — mfcc+chroma .3881 vs bands+mfcc .4840, chroma-led .3738, chroma alone .3304. Also undercuts analyze/structure_offline.rs's stated rationale for its own 27-dim fingerprint, which has never been measured against a 15-dim one.",
-   "raw_block_concatenation": ".4622 — identical to MFCC-alone (.4620) to four decimals, which is the whole of finding #2204: the shipped 'timbre vector' was an MFCC-only detector.",
+   "chroma_in_the_fingerprint": "The task asked for it; the measurement says no. At honest scale it degrades boundary F at EVERY weight tested \u2014 mfcc+chroma .3881 vs bands+mfcc .4840, chroma-led .3738, chroma alone .3304. Also undercuts analyze/structure_offline.rs's stated rationale for its own 27-dim fingerprint, which has never been measured against a 15-dim one.",
+   "raw_block_concatenation": ".4622 \u2014 identical to MFCC-alone (.4620) to four decimals, which is the whole of finding #2204: the shipped 'timbre vector' was an MFCC-only detector.",
    "wider_kernel_for_score": "kernel 6 s + confirm 3 s scores .5160 vs .5087 at 6 s lag, but costs 9 s of live latency for +.007 F. The F-vs-lag curve is nearly flat; a VJ feels the seconds.",
    "confirm_window_tied_to_kernel_half": "The obvious implementation. Doubles announcement latency (12 s at kernel 6) for no accuracy gain, because the two delays do different jobs.",
    "unioning_label_changes_as_boundaries": "Hurts at all 12 sigma/gap settings tested (e.g. .4952 -> .4764 at sigma 0.5 / gap 8). The label machine's transitions are worse-placed than the novelty peaks.",
-   "argmax_operating_point": "sigma 0.5 / gap 6.0 scores .5123 on tune but emits 15.21 boundaries against 12.3 references. Chose sigma 1.0 / gap 6.0: .5092, precision .5230, n_est 13.00 — +.003 F is not worth 24% over-emission.",
-   "build_sustain_bars_retune": "2.0 -> 1.0 raises the LABEL stream's boundary F .108 -> .190, but dbars advances a whole 1.0 per downbeat, so the accumulator is quantized and 1.0 means 'one downbeat'. It fails buildup_flapping_at_threshold_does_not_enter_build. Left at 2.0; the label stream is no longer the recall path."
+   "argmax_operating_point": "sigma 0.5 / gap 6.0 scored .5123 on tune against sigma 1.0 / gap 6.0 at .5092, but emitted 15.21 boundaries against 12.3 references where the chosen config emitted 13.00. +.003 F is not worth 24% over-emission. (Post-fix the chosen config emits 11.98 on tune, 12.17 on holdout, against a 12.21 reference.)",
+   "build_sustain_bars_retune": "2.0 -> 1.0 raises the LABEL stream's boundary F .108 -> .190, but dbars advances a whole 1.0 per downbeat, so the accumulator is quantized and 1.0 means 'one downbeat'. It fails buildup_flapping_at_threshold_does_not_enter_build. Left at 2.0; the label stream is no longer the recall path.",
+   "_measurement_note": "Every figure in this block was measured on the tune half BEFORE the blind-window fix (the peak-picker was still feeding its own pre-ring-fill placeholder zeros into the trailing statistics), so they sit ~.01 above the final scale. They are kept as measured rather than restated, because what decided each rejection is the ORDERING between variants under identical conditions, and the fix moved every variant the same way. The shipped config's post-fix numbers are in `measured`."
   },
   "measured": {
-   "tune": {"n": 180, "boundary_3_0s": {"f": 0.5087, "p": 0.5237, "r": 0.5221}, "n_est_segments": 12.9278},
-   "holdout": {"n": 194, "boundary_3_0s": {"f": 0.5129, "p": 0.5156, "r": 0.5345}, "boundary_0_5s_f": 0.2572, "n_est_segments": 13.1856},
-   "full": {"n": 374, "boundary_3_0s": {"f": 0.5109, "p": 0.5195, "r": 0.5285}, "boundary_0_5s_f": 0.2458,
-            "announced_boundary_3_0s_f": 0.2086, "n_est_segments": 13.0615, "n_events": 12.0615},
-   "_replay_accuracy": "the tune-half sweep predicted .5092 for this config; the real bench measured .5087 — the replay was accurate to 0.0005, which is the justification for having built it",
-   "_announced_vs_backdated": "0.2086 vs 0.5109. A consumer that ignores the age argument and treats each event as happening now scores the lower number; that is the honest cost of a causal detector and both are published."
+   "tune": {
+    "n": 180,
+    "boundary_3_0s": {
+     "f": 0.4994,
+     "p": 0.5396,
+     "r": 0.4926
+    },
+    "boundary_0_5s_f": 0.2311,
+    "n_est_segments": 11.9833
+   },
+   "holdout": {
+    "n": 194,
+    "boundary_3_0s": {
+     "f": 0.5057,
+     "p": 0.5357,
+     "r": 0.5048
+    },
+    "boundary_0_5s_f": 0.2543,
+    "n_est_segments": 12.1701
+   },
+   "full": {
+    "n": 374,
+    "boundary_3_0s": {
+     "f": 0.5027,
+     "p": 0.5376,
+     "r": 0.499
+    },
+    "boundary_0_5s_f": 0.2432,
+    "announced_boundary_3_0s_f": 0.192,
+    "n_est_segments": 12.0802,
+    "n_ref_segments": 12.3235,
+    "pairwise_f": 0.4582,
+    "label_change_boundary_3_0s_f": 0.1051
+   },
+   "_replay_accuracy": "the tune-half sweep predicted .5003 for this config; the real bench measured .4994 \u2014 the replay was accurate to 0.0009, which is the justification for having built it",
+   "_announced_vs_backdated": "0.1920 vs 0.5027. A consumer that ignores the age argument and treats each event as happening now scores the lower number; that is the honest cost of a causal detector and both are published.",
+   "_a_late_correction": "An earlier pass measured .5129 holdout. Reviewing the peak-picker found it was feeding its own pre-ring-fill placeholder zeros into the trailing mean/stddev, so the opening ~45 s of every track was thresholded against a fiction. Excluding them costs .007 F and buys precision (.5156 -> .5357) and an emission count that lands within 0.3% of the reference (13.19 -> 12.17 against 12.21). The lower number is the one that ships."
   },
   "targets_verdict": {
-   "holdout_boundary_3_0s_f": "PASS (.5129 vs >= .35)",
-   "tune_minus_holdout": "PASS (-.0042 — the holdout scored HIGHER than the tune half, so there is no measurable overfit; Q3's gap was .0565)",
-   "holdout_boundary_3_0s_p": "PASS (.5156 vs >= .35) — the anti-cheat floor is cleared on precision, not just volume",
-   "n_est_segments_mean": "PASS (13.19 vs the [7.4, 18.5] band, against a 12.21 reference mean)",
-   "pairwise_f": "PASS (.4582 full run, bit-identical to the baseline — the label stream was not touched)",
+   "holdout_boundary_3_0s_f": "PASS (.5057 vs >= .35)",
+   "tune_minus_holdout": "PASS (-.0063 \u2014 the holdout scored HIGHER than the half the constants were chosen on, so there is no measurable overfit; Q3's gap was .0565)",
+   "holdout_boundary_3_0s_p": "PASS (.5357 vs >= .35) \u2014 the anti-cheat floor is cleared on precision, not just volume",
+   "n_est_segments_mean": "PASS (12.17 against a 12.21 reference mean \u2014 within 0.3%, not merely inside the [7.4, 18.5] band)",
+   "pairwise_f": "PASS (.4582 full run, bit-identical to baseline \u2014 the label stream was deliberately left alone)",
    "fixture": "PASS, 22 assertions; two new boundary-event floors added and proven to fail when peak-picking is disabled",
-   "guard_datasets": "PASS — every pre-existing Harmonix metric is bit-identical to the #2077 report card (beat, downbeat, tempo, label-boundary, pairwise all move 0.0000). predict/drop shifted only in its 0.8-tier lead-time TAILS (p10 1.44 -> 1.91, p90 27.28 -> 28.14, leads marginally longer); coverage and false-alarm rate unchanged, tracing to the phrase tracker now receiving real boundary events instead of its own threshold crossings."
+   "guard_datasets": "PASS \u2014 ballroom (685/685) and giantsteps_key (604/604) bit-identical to the #2077 report card, every Harmonix beat/downbeat/tempo/pairwise/label metric unmoved. predict/drop shifts only in its 0.8-tier lead TAILS, tracing to the phrase tracker now receiving real boundary events instead of its own threshold crossings."
   }
  }
 }
