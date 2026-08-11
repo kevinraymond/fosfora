@@ -240,11 +240,16 @@ def peak_boundaries(nov: np.ndarray, ts: np.ndarray, half: int, sigma: float,
     n = len(nov)
     w = int(stat_window_s * TICK_HZ)
     conf_ticks = half if confirm_s is None else max(1, int(round(confirm_s * TICK_HZ)))
+    # Ticks before the ring holds a full kernel carry a placeholder 0.0 meaning "not
+    # computed yet", not "nothing is happening". They are excluded from the statistics,
+    # matching StructureTracker::update_boundary — otherwise the opening 45 s of every
+    # track is thresholded against a fiction.
+    valid = 2 * half
     out: list[tuple[float, float]] = []
     last_t = -1e9
-    for t in range(half + conf_ticks, n):
+    for t in range(valid + conf_ticks, n):
         c = t - conf_ticks  # candidate tick, now fully surrounded by observed data
-        lo = max(0, c - w)
+        lo = max(valid, c - w)
         window = nov[lo:c + 1]
         if len(window) < 20:
             continue

@@ -392,6 +392,13 @@ impl StructureTracker {
     /// trailing window — an adaptive floor, so a busy track needs a bigger jump than a sparse
     /// one — and sit at least `MIN_SECTION_SECONDS` after the last boundary in musical time.
     fn update_boundary(&mut self, abs_novelty: f32, timestamp: f64) -> f32 {
+        // Only record ticks whose novelty is real. Before the ring holds a full kernel,
+        // `foote_novelty` returns a placeholder 0.0 that means "not computed yet", not
+        // "nothing is happening" — feeding those into the trailing mean and stddev would
+        // let the first 45 s of every track be thresholded against a fiction.
+        if self.ring.len() < 2 * self.kernel_half + 1 {
+            return 0.0;
+        }
         if self.nov_hist.len() == self.nov_hist_cap {
             self.nov_hist.pop_front();
         }
@@ -406,11 +413,19 @@ impl StructureTracker {
         let cand = n - 1 - self.confirm_ticks;
         let v = self.nov_hist[cand];
 
-        // Trailing mean/stddev up to and including the candidate.
-        let stats: Vec<f32> = self.nov_hist.iter().take(cand + 1).copied().collect();
-        let count = stats.len() as f32;
-        let mean = stats.iter().sum::<f32>() / count;
-        let var = stats.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / count;
+        // Trailing mean/stddev up to and including the candidate. Two passes over the
+        // deque rather than a collected slice: this runs on the analysis thread, where a
+        // per-tick heap allocation is exactly the kind of thing the zero-alloc probes exist
+        // to catch.
+        let count = (cand + 1) as f32;
+        let mean = self.nov_hist.iter().take(cand + 1).sum::<f32>() / count;
+        let var = self
+            .nov_hist
+            .iter()
+            .take(cand + 1)
+            .map(|x| (x - mean) * (x - mean))
+            .sum::<f32>()
+            / count;
         let std = var.sqrt();
         if std < 1e-9 || v < mean + PEAK_SIGMA * std {
             return 0.0;
