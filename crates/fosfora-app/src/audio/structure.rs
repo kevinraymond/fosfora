@@ -89,11 +89,12 @@ const MIN_SECTION_SECONDS: f32 = 6.0;
 ///
 /// Calibrated, not guessed: over 948 boundaries on the tune half the sigma excess runs p25
 /// 1.8 / p50 3.0 / p95 7.8, so a 4-sigma span (the obvious first choice) pinned 34% of
-/// events at exactly 1.0 and threw away the discrimination. At 8 only 3% saturate.
+/// events at exactly 1.0 and threw away the discrimination. At 8 only 3.9% saturate.
 ///
-/// And the value earns its name — measured against reference segments, precision rises
-/// monotonically with it: .349 in the bottom third, .482 in the middle, .616 in the top.
-/// Gating at 0.5 keeps 36% of events and lifts precision .483 -> .604.
+/// And the value earns its name. Over the 4,144 boundaries this detector emits across the
+/// full 374-track Harmonix set, precision rises monotonically with it: .384 in the bottom
+/// third, .493 in the middle, .656 in the top. Gating at 0.5 keeps 31% of events and lifts
+/// precision .511 -> .664.
 const CONF_SIGMA_SPAN: f32 = 8.0;
 /// Display gain for the bindable `section_novelty`, so the feature keeps a usable 0..1 range.
 ///

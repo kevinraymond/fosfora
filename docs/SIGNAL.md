@@ -148,9 +148,9 @@ firing late. Measured accuracy for both readings is in `docs/BENCHMARKS.md`.
 
 Its confidence argument is worth gating on — it predicts correctness rather than decorating
 the message. Measured against reference annotations, boundaries in the top third by
-confidence are right about 62% of the time against 35% for the bottom third; gating at 0.5
-discards roughly two thirds of the events and takes precision from 0.48 to 0.60. Take
-everything for a busy, responsive patch; gate high when a false cue is expensive.
+confidence are right about 66% of the time against 38% for the bottom third; gating at 0.5
+keeps under a third of the events and takes precision from 0.51 to 0.66. Take everything for
+a busy, responsive patch; gate high when a false cue is expensive.
 
 **`phrase/*` assumes 4/4** and infers 8/16/32-bar grids from how drops, section
 boundaries and build onsets align. Off-grid material keeps a position

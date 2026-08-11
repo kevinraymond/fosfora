@@ -10,7 +10,7 @@
   material, carrying a confidence and the boundary's age in seconds. `/section` only ever
   spoke when its label changed, so a chorus following a verse was silent; this one is not.
   Gate on the confidence if false cues are costly — the top third of events are right about
-  62% of the time against 35% for the bottom third.
+  66% of the time against 38% for the bottom third.
 
 ### Changed
 - **Section boundaries are actually detected now.** The self-similarity novelty had been
