@@ -20,6 +20,7 @@ pub mod schema;
 pub mod smoother;
 pub mod stereo;
 pub mod structure;
+pub mod structure_sidecar;
 pub mod timbre;
 #[cfg(target_os = "windows")]
 pub mod wasapi_capture;

@@ -24,6 +24,7 @@ use super::pitch::PitchAnalyzer;
 use super::smoother::FeatureSmoother;
 use super::stereo::StereoAnalyzer;
 use super::structure::{StructureConfig, StructureTracker};
+use super::structure_sidecar::StructureSidecar;
 use super::timbre::DeltaMfccAnalyzer;
 use super::{ANALYSIS_HOP, AudioFeatures, AudioFrame};
 use crate::settings::BandScale;
@@ -72,6 +73,8 @@ pub struct HopAnalyzer {
     dmfcc_analyzer: DeltaMfccAnalyzer,
     /// Dev-only sweep instrumentation, active iff `FOSFORA_KEY_SIDECAR` is set (#2079).
     key_sidecar: Option<KeySidecar>,
+    /// Dev-only sweep instrumentation, active iff `FOSFORA_STRUCTURE_SIDECAR` is set (#2080).
+    structure_sidecar: Option<StructureSidecar>,
     /// `ANALYSIS_HOP / sample_rate` — the attack/release EMAs and the onset decay are
     /// expressed as time constants, so they need the hop duration, not the hop length.
     dt: f32,
@@ -93,6 +96,7 @@ impl HopAnalyzer {
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
             dmfcc_analyzer: DeltaMfccAnalyzer::new(),
             key_sidecar: KeySidecar::from_env(),
+            structure_sidecar: StructureSidecar::from_env(),
             dt: ANALYSIS_HOP as f32 / sample_rate,
         }
     }
@@ -291,6 +295,13 @@ impl HopAnalyzer {
 
         // Smoothing (per-feature asymmetric EMA; beat/beat_phase pass through)
         let smoothed = self.smoother.smooth(&raw, dt);
+
+        // Dev-only (#2080): dump the structure path's raw inputs for offline sweeps. Takes
+        // the fingerprint from `pre_norm` and the label-machine fields from the smoothed
+        // features, matching where production reads each (see `structure_sidecar`).
+        if let Some(sidecar) = &mut self.structure_sidecar {
+            sidecar.record(timestamp, &pre_norm, &smoothed);
+        }
 
         // A17 (#1468): sample the render-facing spectrum + mel column from the analyzer's
         // fresh magnitude, so all three ride the same frame across the channel.
