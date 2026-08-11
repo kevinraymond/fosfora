@@ -156,7 +156,7 @@
    "n_est_segments_mean": "PASS (12.17 against a 12.21 reference mean \u2014 within 0.3%, not merely inside the [7.4, 18.5] band)",
    "pairwise_f": "PASS (.4582 full run, bit-identical to baseline \u2014 the label stream was deliberately left alone)",
    "fixture": "PASS, 22 assertions; two new boundary-event floors added and proven to fail when peak-picking is disabled",
-   "guard_datasets": "PASS \u2014 ballroom (685/685) and giantsteps_key (604/604) bit-identical to the #2077 report card, every Harmonix beat/downbeat/tempo/pairwise/label metric unmoved. predict/drop shifts only in its 0.8-tier lead TAILS, tracing to the phrase tracker now receiving real boundary events instead of its own threshold crossings."
+   "guard_datasets": "PASS \u2014 all three guard datasets bit-identical to the #2077 report card at full coverage: ballroom 685/685, giantsteps_tempo 661/661, giantsteps_key 604/604, zero metrics moved on any of them. On Harmonix every pre-existing beat/downbeat/tempo/pairwise/label-boundary metric is likewise unmoved; the only change is the new boundary_events block. predict/drop shifts only in its 0.8-tier lead TAILS (p10 1.44 -> 1.91, p90 27.3 -> 28.1 \u2014 leads marginally longer), coverage and false-alarm rate unchanged, tracing to the phrase tracker now receiving real boundary events instead of its own threshold crossings."
   }
  }
 }
