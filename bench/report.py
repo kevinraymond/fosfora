@@ -224,19 +224,20 @@ def predict_drop_table(summary: dict) -> list[str]:
 def structure_table(summary: dict) -> list[str]:
     """Section boundaries. Two streams with different jobs, reported separately
     because averaging them would hide what each one is for."""
-    st = summary["metrics"].get("structure") or {}
-    ev = st.get("boundary_events") or {}
-    if not ev:
+    # Summary metrics are flattened dotted keys with {"mean", "n"} leaves.
+    if mean(summary, "structure", "boundary_events.boundary_3_0s.f") is None:
         return []
 
-    def blk(d, key):
-        b = d.get(key) or {}
-        return fmt(b.get("f")), fmt(b.get("p")), fmt(b.get("r"))
+    def m(leaf):
+        return fmt(mean(summary, "structure", leaf))
 
-    ef, ep, er = blk(ev, "boundary_3_0s")
-    ef5, _, _ = blk(ev, "boundary_0_5s")
-    af, _, _ = blk(ev, "announced.boundary_3_0s")
-    lf, lp, lr = blk(st, "boundary_3_0s")
+    def blk(prefix, window="boundary_3_0s"):
+        return (m(f"{prefix}{window}.f"), m(f"{prefix}{window}.p"), m(f"{prefix}{window}.r"))
+
+    ef, ep, er = blk("boundary_events.")
+    ef5 = m("boundary_events.boundary_0_5s.f")
+    af = m("boundary_events.announced.boundary_3_0s.f")
+    lf, lp, lr = blk("")
     rows = [
         "### Section boundaries (`/fosfora/v1/section/boundary`)",
         "",
@@ -255,17 +256,19 @@ def structure_table(summary: dict) -> list[str]:
         f"| `/section` label changes (all this stream carried before) | 3.0 s "
         f"| {lf} | {lp} | {lr} |",
         "",
-        f"Estimated {fmt(ev.get('n_est_segments'), 1)} segments per track against "
-        f"{fmt(st.get('n_ref_segments'), 1)} annotated.",
+        f"Estimated {fmt(mean(summary, 'structure', 'boundary_events.n_est_segments'), 1)} "
+        f"segments per track against "
+        f"{fmt(mean(summary, 'structure', 'n_ref_segments'), 1)} annotated.",
         "",
         "The first two rows subtract each event's own reported age — a fixed "
         "property of the detector (a centred novelty kernel plus a peak "
         "confirmation delay), published on the wire precisely so a consumer can "
         "do this. The third row is what a consumer sees if it ignores that "
         "argument and treats every cue as happening now; the gap between them is "
-        "the honest price of hearing the song once, in order. Neither number is "
-        "the quarantined fixed-shift compensation below, which is a constant the "
-        "*scorer* chose.",
+        "the honest price of hearing the song once, in order. Neither is the "
+        "lag-compensated variant the results files carry and this card omits — "
+        "that one shifts by a constant the *scorer* picked, where these use a "
+        "latency the detector states about itself.",
     ]
     return rows
 

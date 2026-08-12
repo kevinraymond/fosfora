@@ -17,10 +17,10 @@ headline beat numbers adopt the literature's 5 s trim.
 
 | Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |
 |---|---|---|---|---|---|
-| ballroom | 698 | 685 | 13 | 0 | `38a932cb6ad0ed08` |
-| giantsteps_key | 604 | 604 | 0 | 0 | `38a932cb6ad0ed08` |
-| giantsteps_tempo | 664 | 661 | 0 | 0 | `38a932cb6ad0ed08` |
-| harmonix | 912 | 374 | 0 | 0 | `38a932cb6ad0ed08` |
+| ballroom | 698 | 685 | 13 | 0 | `e51584239d5f8f58` |
+| giantsteps_key | 604 | 604 | 0 | 0 | `e51584239d5f8f58` |
+| giantsteps_tempo | 664 | 661 | 0 | 0 | `e51584239d5f8f58` |
+| harmonix | 912 | 374 | 0 | 0 | `e51584239d5f8f58` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -84,6 +84,21 @@ Context: audio is re-fetched from YouTube and admitted only by the alignment gat
 
 Causal extras: mean lock time 29.9 s (earliest instant after which every later estimate stays within 4%), mean locked fraction 0.620. Offline systems have no equivalent — they see the whole file.
 
+### Section boundaries (`/fosfora/v1/section/boundary`)
+
+No published causal baseline exists for this task, and the offline structure systems in the literature segment a whole file at once — the rows stand alone. Boundary detection is vocabulary-agnostic (labels are ignored), so Fosfora's EDM-shaped states need no mapping onto verse/chorus annotations.
+
+| Stream | Window | F | P | R |
+|---|---|---|---|---|
+| **`/section/boundary`, back-dated by the reported age** | **3.0 s** | **0.503** | **0.538** | **0.499** |
+| `/section/boundary`, back-dated | 0.5 s | 0.243 | — | — |
+| `/section/boundary`, taken at the moment announced | 3.0 s | 0.192 | — | — |
+| `/section` label changes (all this stream carried before) | 3.0 s | 0.105 | 0.309 | 0.071 |
+
+Estimated 12.1 segments per track against 12.3 annotated.
+
+The first two rows subtract each event's own reported age — a fixed property of the detector (a centred novelty kernel plus a peak confirmation delay), published on the wire precisely so a consumer can do this. The third row is what a consumer sees if it ignores that argument and treats every cue as happening now; the gap between them is the honest price of hearing the song once, in order. Neither is the lag-compensated variant the results files carry and this card omits — that one shifts by a constant the *scorer* picked, where these use a latency the detector states about itself.
+
 ### Drop prediction (`/fosfora/v1/predict/drop`)
 
 Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix has no drop labels). Proxies undercount real drop-scale events, so the false-alarm rate is an upper bound; the hand-annotated local set (C13) carries the headline lead-time number.
@@ -91,7 +106,7 @@ Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix ha
 | Tier | Coverage | Median lead (beats) | p25–p75 lead |
 |---|---|---|---|
 | ≥ 0.5 | 0.475 | 16.5 | 8.2–27.0 |
-| ≥ 0.8 | 0.319 | 10.9 | 4.2–22.0 |
+| ≥ 0.8 | 0.319 | 10.9 | 4.3–23.9 |
 
 False alarms 2.14/min pooled over all 374 tracks (≈⅓ of off-genre alarms are the predictor correctly anticipating a chorus landing). `/drop` detection event: hit rate 0.007 vs the same proxies, 0.09 false/min — it fires on loudness+sub-bass impact, which chorus onsets mostly are not.
 
