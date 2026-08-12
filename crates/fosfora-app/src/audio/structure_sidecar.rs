@@ -92,8 +92,9 @@ impl StructureSidecar {
             let meta = format!(
                 "{{\"meta\":1,\"schema\":{SCHEMA_VERSION},\"tick_hz\":{TICK_HZ},\"cfg\":{{\
 \"buildup_bias\":{},\"buildup_w_loud\":{},\"buildup_w_centroid\":{},\"buildup_w_onset\":{},\
-\"buildup_w_subbass\":{},\"drop_arm_buildup\":{},\"drop_arm_sustain\":{},\"drop_loud_jump\":{},\
-\"drop_subbass_return\":{},\"drop_refractory\":{}}}}}\n",
+\"buildup_w_subbass\":{},\"drop_arm_buildup\":{},\"drop_arm_sustain\":{},\"drop_arm_hold\":{},\
+\"drop_loud_jump\":{},\"drop_baseline_seconds\":{},\"drop_subbass_return\":{},\
+\"drop_refractory\":{}}}}}\n",
                 cfg.buildup_bias,
                 cfg.buildup_w_loud,
                 cfg.buildup_w_centroid,
@@ -101,7 +102,9 @@ impl StructureSidecar {
                 cfg.buildup_w_subbass,
                 cfg.drop_arm_buildup,
                 cfg.drop_arm_sustain,
+                cfg.drop_arm_hold,
                 cfg.drop_loud_jump,
+                cfg.drop_baseline_seconds,
                 cfg.drop_subbass_return,
                 cfg.drop_refractory,
             );

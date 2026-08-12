@@ -20,7 +20,7 @@ headline beat numbers adopt the literature's 5 s trim.
 | ballroom | 698 | 685 | 13 | 0 | `e51584239d5f8f58` |
 | giantsteps_key | 604 | 604 | 0 | 0 | `e51584239d5f8f58` |
 | giantsteps_tempo | 664 | 661 | 0 | 0 | `e51584239d5f8f58` |
-| harmonix | 912 | 374 | 0 | 0 | `e51584239d5f8f58` |
+| harmonix | 912 | 374 | 0 | 0 | `5fd9e79dad4c7df9` |
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -93,7 +93,7 @@ No published causal baseline exists for this task, and the offline structure sys
 | **`/section/boundary`, back-dated by the reported age** | **3.0 s** | **0.503** | **0.538** | **0.499** |
 | `/section/boundary`, back-dated | 0.5 s | 0.243 | — | — |
 | `/section/boundary`, taken at the moment announced | 3.0 s | 0.192 | — | — |
-| `/section` label changes (all this stream carried before) | 3.0 s | 0.105 | 0.309 | 0.071 |
+| `/section` label changes (all this stream carried before) | 3.0 s | 0.170 | 0.323 | 0.135 |
 
 Estimated 12.1 segments per track against 12.3 annotated.
 
@@ -105,10 +105,10 @@ Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix ha
 
 | Tier | Coverage | Median lead (beats) | p25–p75 lead |
 |---|---|---|---|
-| ≥ 0.5 | 0.475 | 16.5 | 8.2–27.0 |
-| ≥ 0.8 | 0.319 | 10.9 | 4.3–23.9 |
+| ≥ 0.5 | 0.482 | 18.2 | 9.9–27.3 |
+| ≥ 0.8 | 0.312 | 11.2 | 4.3–24.9 |
 
-False alarms 2.14/min pooled over all 374 tracks (≈⅓ of off-genre alarms are the predictor correctly anticipating a chorus landing). `/drop` detection event: hit rate 0.007 vs the same proxies, 0.09 false/min — it fires on loudness+sub-bass impact, which chorus onsets mostly are not.
+False alarms 2.30/min pooled over all 374 tracks (≈⅓ of off-genre alarms are the predictor correctly anticipating a chorus landing). `/drop` detection event: hit rate 0.121 vs the same proxies, 0.47 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
 
 ## References
 

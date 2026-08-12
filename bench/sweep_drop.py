@@ -155,9 +155,10 @@ def check_integrity(tid: str, records: list[dict]) -> None:
 
 class Track:
     __slots__ = ("tid", "t", "build", "loud", "sub", "sub_ref", "fired",
-                 "refs", "beats", "downbeats", "duration", "shipped_ticks")
+                 "refs", "beats", "downbeats", "duration", "shipped_ticks", "dump_cfg")
 
-    def __init__(self, tid: str, records: list[dict], ann: dict):
+    def __init__(self, tid: str, records: list[dict], ann: dict, meta: dict | None = None):
+        self.dump_cfg = (meta or {}).get("cfg", {})
         check_integrity(tid, records)
         self.tid = tid
         self.t = np.array([r["d_t"] for r in records], dtype=np.float64)
@@ -190,12 +191,14 @@ def load_specimens(sidecar_dir: Path, refs_path: Path) -> list[Track]:
         p = sidecar_dir / f"{name}.jsonl"
         if not p.exists():
             continue
-        records = [r for r in (json.loads(line) for line in p.read_text().splitlines()
-                               if line.strip()) if "meta" not in r]
+        parsed = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        meta = next((r for r in parsed if "meta" in r), {})
+        records = [r for r in parsed if "meta" not in r]
         if not records or "d_fired" not in records[0]:
             sys.exit(f"{p}: schema v1 sidecar — re-dump")
         out.append(Track(name, records,
-                         {"drops": ref["drops"], "audio": {"duration_s": ref["duration_s"]}}))
+                         {"drops": ref["drops"], "audio": {"duration_s": ref["duration_s"]}},
+                         meta))
     if not out:
         sys.exit(f"no specimen sidecars in {sidecar_dir}")
     return out
@@ -254,12 +257,13 @@ def load_tracks(dataset: Path, tune_only: bool = True,
         ann_path = dataset / "norm" / f"{tid}.json"
         if not ann_path.exists():
             continue
-        records = []
+        records, meta = [], {}
         for line in p.read_text().splitlines():
             if not line.strip():
                 continue
             r = json.loads(line)
             if "meta" in r:
+                meta = r
                 continue
             if "d_fired" not in r:
                 v1 += 1
@@ -268,7 +272,7 @@ def load_tracks(dataset: Path, tune_only: bool = True,
             records.append(r)
         if len(records) < 100:
             continue
-        out.append(Track(tid, records, json.loads(ann_path.read_text())))
+        out.append(Track(tid, records, json.loads(ann_path.read_text()), meta))
     if v1:
         # Never silent: a sweep that quietly dropped a third of the corpus would read as
         # having covered it.
@@ -286,7 +290,7 @@ def load_tracks(dataset: Path, tune_only: bool = True,
 # =================================================================================
 
 
-def score(tracks: list[Track], cfg: DropCfg, cache: dict | None = None) -> dict:
+def score(tracks: list[Track], cfg: DropCfg) -> dict:
     hits = misses = false = 0
     total_min = 0.0
     per_track = []
@@ -325,11 +329,27 @@ def score(tracks: list[Track], cfg: DropCfg, cache: dict | None = None) -> dict:
     }
 
 
+def cfg_from_dump(tr: Track) -> DropCfg:
+    """The config the binary held when this sidecar was written.
+
+    Fields the writer did not record fall back to DropCfg's defaults, which is correct for
+    the schema-v2 corpus: it predates drop_arm_hold and drop_baseline_seconds, and those
+    defaults reproduce the behaviour it was dumped with.
+    """
+    m = {"drop_arm_buildup": "arm_buildup", "drop_arm_sustain": "arm_sustain",
+         "drop_loud_jump": "loud_jump", "drop_subbass_return": "subbass_return",
+         "drop_refractory": "refractory", "drop_arm_hold": "arm_hold"}
+    over = {m[k]: float(v) for k, v in tr.dump_cfg.items() if k in m}
+    if "drop_baseline_seconds" in tr.dump_cfg:
+        over["baseline_ticks"] = int(round(float(tr.dump_cfg["drop_baseline_seconds"]) * 10.0))
+    return replace(DropCfg(), **over)
+
+
 def fmt(cfg: DropCfg, s: dict) -> str:
     return (f"lvl {cfg.arm_buildup:.2f} sus {cfg.arm_sustain:4.1f} hold {cfg.arm_hold:4.1f} "
             f"dec {cfg.arm_decay:.1f} jump {cfg.loud_jump:.3f} "
             f"base {cfg.baseline_ticks if cfg.baseline_ticks is not None else 'shipped':>7} "
-            f"sub {cfg.subbass_return:.2f} | "
+            f"sub {cfg.subbass_return:.2f} refr {cfg.refractory:4.1f} | "
             f"recall {s['recall']:.3f} ({s['hits']}/{s['n_refs']})  "
             f"prec {s['precision']:.3f}  FA/min {s['fa_per_min']:.3f}  "
             f"est/track {s['est_per_track']:.2f}")
@@ -402,13 +422,17 @@ def main() -> int:
               f"{sum(1 for t in tracks if len(t.refs))} with drops")
 
     if args.validate:
-        # The gate. `d_fired` is what the shipped binary did on this very audio; the
-        # replay must reproduce it tick for tick, not approximately.
+        # The gate. `d_fired` is what the binary did on this very audio; the replay must
+        # reproduce it tick for tick, not approximately.
+        #
+        # Replayed under the config recorded in each dump's meta line, NOT under today's
+        # defaults — otherwise this fails the moment a round changes a constant, and reads
+        # as replay drift when it is only a stale corpus.
         exact = mismatched = 0
         worst = []
         for tr in tracks:
-            est = simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref, DropCfg(),
-                           tr.shipped_ticks)
+            est = simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref,
+                           cfg_from_dump(tr), tr.shipped_ticks)
             if len(est) == len(tr.fired) and np.allclose(est, tr.fired, atol=1e-6):
                 exact += 1
             else:
@@ -420,8 +444,9 @@ def main() -> int:
         if mismatched:
             print("\nreplay has drifted — every sweep number below it would be a lie")
             return 1
-        s = score(tracks, DropCfg())
-        print("shipped: " + fmt(DropCfg(), s))
+        dumped = cfg_from_dump(tracks[0])
+        s = score(tracks, dumped)
+        print("as dumped: " + fmt(dumped, s))
         if args.json:
             args.json.write_text(json.dumps({"fidelity": exact, "shipped": {
                 k: v for k, v in s.items() if k != "per_track"}}, indent=2) + "\n")
@@ -440,8 +465,9 @@ def main() -> int:
     if not args.stage:
         ap.error("need --validate, --stage or --config")
 
-    shipped = score(tracks, DropCfg())
-    print("shipped baseline: " + fmt(DropCfg(), shipped) + "\n")
+    # The incumbent is whatever produced this corpus, not whatever the defaults say today.
+    incumbent = cfg_from_dump(tracks[0])
+    print("as-dumped baseline: " + fmt(incumbent, score(tracks, incumbent)) + "\n")
 
     grid = stage_grid(args.stage) if args.stage != "combined" else combined_grid()
     print(f"stage {args.stage}: {len(grid)} configs")

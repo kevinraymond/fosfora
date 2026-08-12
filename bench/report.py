@@ -215,8 +215,10 @@ def predict_drop_table(summary: dict) -> list[str]:
         f"{pd.get('n_tracks', '?')} tracks (≈⅓ of off-genre alarms are the predictor "
         f"correctly anticipating a chorus landing). `/drop` detection event: "
         f"hit rate {fmt(dp.get('hit_rate'))} vs the same proxies, "
-        f"{fmt(dp.get('false_drops_per_min'), 2)} false/min — it fires on "
-        f"loudness+sub-bass impact, which chorus onsets mostly are not."
+        f"{fmt(dp.get('false_drops_per_min'), 2)} false/min. It fires on loudness+sub-bass "
+        f"impact and these proxies are chorus onsets, so most of what it finds is not "
+        f"annotated here and most of what is annotated is not a drop — the hit rate is a "
+        f"floor and the false rate a ceiling, both against the wrong target."
     )
     return rows
 
