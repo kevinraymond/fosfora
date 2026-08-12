@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.33.0 — 2026-08-11
 
 ### Added
 - **New `/fosfora/v1/section/boundary` Signal address** fires whenever the music changes
