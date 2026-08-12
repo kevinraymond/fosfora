@@ -218,7 +218,9 @@ def find_tracks(dataset: str, flags: str = "r30_fb0_st1", dumps_dir: Path | None
             {
                 "track_id": t["track_id"],
                 "audio": t["audio"],
-                "dump": matches[-1],
+                # Several binaries' dumps can coexist; lexicographic hash order
+                # is arbitrary, so take the newest run.
+                "dump": max(matches, key=lambda p: p.stat().st_mtime),
                 "annotations": t["annotations"],
             }
         )

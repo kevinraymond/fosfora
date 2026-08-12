@@ -76,6 +76,11 @@
   bars.** Tiles now trade in and out individually on the bar clock, holding a steady
   mosaic with no reset. A new `density` param sets how much of the mosaic is lit at
   once; `bars_per_cycle` is now the turnover period — how often each tile trades.
+- **A mistyped or unsupported command-line flag silently launched the full app** —
+  window, GPU and all. Unknown flags now print an error and exit, `--help` and
+  `--version` work, and a flag needing a build feature you don't have (like
+  `--signal-dump` without `--features analyze`) says so by name. New `--caps` prints
+  the features a binary was built with.
 
 ## v1.32.0 — 2026-08-01
 

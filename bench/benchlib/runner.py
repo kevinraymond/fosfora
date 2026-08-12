@@ -34,26 +34,63 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _probe_caps(binary: Path) -> str:
+    """`<binary> --caps` output, or raise. The timeout+kill contains binaries
+    that predate the argv gate: they treat unknown flags as "launch the app"
+    and would sit in GPU init forever."""
+    try:
+        proc = subprocess.run(
+            [str(binary), "--caps"], capture_output=True, text=True, timeout=10
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RunnerError(
+            f"{binary} did not answer --caps in 10s — it is probably launching "
+            "the full app (a build predating the argv gate). Rebuild: "
+            "cargo build -p fosfora-app --features analyze --release"
+        ) from e
+    if proc.returncode != 0 or "features:" not in proc.stdout:
+        raise RunnerError(
+            f"{binary} --caps failed (exit {proc.returncode}): "
+            f"{(proc.stderr or proc.stdout).strip()[:200]}"
+        )
+    return proc.stdout.strip()
+
+
+def require_features(binary: Path, *needed: str) -> None:
+    """Refuse a binary whose build lacks a feature the bench depends on —
+    a wrong-featured binary at the right path must never pass silently."""
+    caps = _probe_caps(binary)
+    have = set(caps.removeprefix("features:").strip().split(","))
+    missing = [f for f in needed if f not in have]
+    if missing:
+        raise RunnerError(
+            f"{binary} was built without --features {','.join(missing)} ({caps}). "
+            f"Rebuild: cargo build -p fosfora-app --features {','.join(needed)} --release"
+        )
+
+
 def resolve_binary(root: Path | None = None) -> Path:
-    """FOSFORA_BIN env var wins; else target/release/fosfora; else build it."""
+    """FOSFORA_BIN env var wins; else target/release/fosfora; else build it.
+    Whatever is resolved must prove it has the analyze feature (--caps)."""
     env = os.environ.get("FOSFORA_BIN")
     if env:
         p = Path(env).resolve()
         if not p.is_file():
             raise RunnerError(f"FOSFORA_BIN={env} does not exist")
+        require_features(p, "analyze")
         return p
     root = root or repo_root()
     release = root / "target" / "release" / "fosfora"
-    if release.is_file():
-        return release
-    print("bench: building fosfora (release, --features analyze) ...", flush=True)
-    subprocess.run(
-        ["cargo", "build", "-p", "fosfora-app", "--features", "analyze", "--release"],
-        cwd=root,
-        check=True,
-    )
     if not release.is_file():
-        raise RunnerError(f"build succeeded but {release} is missing")
+        print("bench: building fosfora (release, --features analyze) ...", flush=True)
+        subprocess.run(
+            ["cargo", "build", "-p", "fosfora-app", "--features", "analyze", "--release"],
+            cwd=root,
+            check=True,
+        )
+        if not release.is_file():
+            raise RunnerError(f"build succeeded but {release} is missing")
+    require_features(release, "analyze")
     return release
 
 
@@ -104,7 +141,13 @@ class DumpRunner:
         # Dump to a .part and rename, so a killed run never leaves a truncated
         # file that a later run would trust.
         part = out.with_suffix(".jsonl.part")
+        # `nice -n 19`: a dump fan-out must yield to whoever is at the machine.
+        # (Command prefix, not preexec_fn — that is unsafe under the thread
+        # pool in ensure_dumps.)
         cmd = [
+            "nice",
+            "-n",
+            "19",
             str(self.binary),
             "--signal-dump",
             str(audio),

@@ -4075,6 +4075,96 @@ fn parse_signal_flags(args: &[String]) -> Result<signal::SignalCliArgs, String> 
     Ok(cli)
 }
 
+/// Every `--flag` any mode of this binary accepts, with the cargo feature it
+/// needs compiled in (`None` = always available) and whether this build has it.
+const KNOWN_FLAGS: &[(&str, Option<&str>, bool)] = &[
+    ("--audio-test", None, true),
+    ("--signal", None, true),
+    ("--host", None, true),
+    ("--port", None, true),
+    ("--rate", None, true),
+    ("--feat-bus", None, true),
+    ("--no-stems", None, true),
+    ("--device", None, true),
+    ("--render-loop", None, true),
+    ("--out", None, true),
+    ("--crossfade-bars", None, true),
+    ("--warmup-bars", None, true),
+    ("--allow-non-loop", None, true),
+    ("--help", None, true),
+    ("--version", None, true),
+    ("--caps", None, true),
+    ("--analyze", Some("analyze"), cfg!(feature = "analyze")),
+    ("--signal-dump", Some("analyze"), cfg!(feature = "analyze")),
+    ("--dump-schema", Some("analyze"), cfg!(feature = "analyze")),
+    ("--render-scene", Some("analyze"), cfg!(feature = "analyze")),
+    ("--song", Some("analyze"), cfg!(feature = "analyze")),
+    ("--res", Some("analyze"), cfg!(feature = "analyze")),
+    ("--quality", Some("analyze"), cfg!(feature = "analyze")),
+    ("--window-secs", Some("analyze"), cfg!(feature = "analyze")),
+    ("--validate", Some("analyze"), cfg!(feature = "analyze")),
+    ("--dense", Some("analyze"), cfg!(feature = "analyze")),
+];
+
+const USAGE: &str = "\
+fosfora — audio-reactive VJ engine
+
+USAGE:
+  fosfora                       launch the app
+  fosfora --signal [--host H] [--port N] [--rate HZ] [--feat-bus] [--no-stems] [--device NAME]
+  fosfora --audio-test
+  fosfora --render-loop <spec.loop.json> [--out F] [--crossfade-bars N] [--warmup-bars N] [--allow-non-loop]
+  fosfora --analyze <audio> [--out F] [--dense]                                    (feature: analyze)
+  fosfora --signal-dump <audio> [--out F|-] [--rate HZ] [--feat-bus] [--no-stems]  (feature: analyze)
+  fosfora --dump-schema [--out F]                                                  (feature: analyze)
+  fosfora --render-scene <dir> --song <audio> [--out D] [--res WxH] [--quality Q]  (feature: analyze)
+  fosfora --validate <dir>                                                         (feature: analyze)
+  fosfora --caps | --version | --help";
+
+fn compiled_features() -> String {
+    let on: Vec<&str> = [
+        ("analyze", cfg!(feature = "analyze")),
+        ("link", cfg!(feature = "link")),
+        ("video", cfg!(feature = "video")),
+        ("ndi", cfg!(feature = "ndi")),
+        ("v4l2", cfg!(feature = "v4l2")),
+        ("spout", cfg!(feature = "spout")),
+        ("syphon", cfg!(feature = "syphon")),
+        ("webcam", cfg!(feature = "webcam")),
+        ("depth", cfg!(feature = "depth")),
+        ("profiling", cfg!(feature = "profiling")),
+    ]
+    .iter()
+    .filter_map(|&(name, on)| on.then_some(name))
+    .collect();
+    format!("features: {}", on.join(","))
+}
+
+/// Reject any `--flag` the table doesn't know, or knows but this build lacks.
+/// Must run before any window/GPU/audio work: a flag that isn't caught here
+/// falls through to a full app launch.
+fn validate_args_against(
+    args: &[String],
+    known: &[(&str, Option<&str>, bool)],
+) -> Result<(), String> {
+    for a in args.iter().skip(1) {
+        if !a.starts_with("--") {
+            continue; // positional value (path, `-` for stdout, ...)
+        }
+        match known.iter().find(|(flag, _, _)| *flag == a.as_str()) {
+            None => return Err(format!("unknown flag: {a}")),
+            Some((flag, Some(feature), false)) => {
+                return Err(format!(
+                    "{flag} requires a binary built with --features {feature}\n(this build has {})",
+                    compiled_features()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn load_window_icon() -> Option<Icon> {
     let png_bytes = include_bytes!("../../../assets/icon/icon_256x256.png");
     let img = image::load_from_memory(png_bytes).ok()?.into_rgba8();
@@ -4092,6 +4182,27 @@ fn main() -> Result<()> {
 
     // Suppress noisy ALSA/JACK C library messages on Linux (missing JACK server, OSS, dsnoop)
     crate::audio::capture::suppress_audio_library_noise();
+
+    // Argv gate — before any window/GPU/audio work.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        if args.iter().any(|a| a == "--version") {
+            println!("fosfora {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        if args.iter().any(|a| a == "--caps") {
+            println!("{}", compiled_features());
+            return Ok(());
+        }
+        if let Err(e) = validate_args_against(&args, KNOWN_FLAGS) {
+            eprintln!("{e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    }
 
     // --audio-test: run standalone audio diagnostic (no GPU, no window)
     if std::env::args().any(|a| a == "--audio-test") {
@@ -4389,4 +4500,54 @@ fn main() -> Result<()> {
     event_loop.run_app(&mut app)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod argv_tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_launch_and_known_flags_pass() {
+        assert!(validate_args_against(&args(&["fosfora"]), KNOWN_FLAGS).is_ok());
+        assert!(
+            validate_args_against(
+                &args(&["fosfora", "--signal", "--port", "9000"]),
+                KNOWN_FLAGS
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn unknown_flag_is_rejected() {
+        let err =
+            validate_args_against(&args(&["fosfora", "--frobnicate"]), KNOWN_FLAGS).unwrap_err();
+        assert!(err.contains("--frobnicate"), "{err}");
+    }
+
+    #[test]
+    fn compiled_out_flag_names_the_missing_feature() {
+        let table = [("--signal-dump", Some("analyze"), false)];
+        let err = validate_args_against(&args(&["fosfora", "--signal-dump", "x.wav"]), &table)
+            .unwrap_err();
+        assert!(err.contains("--features analyze"), "{err}");
+    }
+
+    #[test]
+    fn compiled_in_flag_passes() {
+        let table = [("--signal-dump", Some("analyze"), true)];
+        assert!(
+            validate_args_against(&args(&["fosfora", "--signal-dump", "x.wav"]), &table).is_ok()
+        );
+    }
+
+    #[test]
+    fn positional_values_are_not_flags() {
+        let table = [("--out", None, true)];
+        assert!(validate_args_against(&args(&["fosfora", "--out", "-"]), &table).is_ok());
+    }
 }
