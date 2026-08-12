@@ -70,10 +70,17 @@ def main() -> int:
 
     def dump(job: tuple[str, Path, Path]) -> str | None:
         tid, audio, sidecar = job
-        part = sidecar.with_suffix(".jsonl.part")
+        # PID in the temp name: two dumpers pointed at one directory would otherwise share
+        # a .part path and interleave their writes into it, and the result still parses as
+        # JSONL — a corrupt corpus that looks fine. (Observed; the tick-index check in
+        # sweep_drop.py is the other half of the guard.)
+        part = sidecar.with_suffix(f".jsonl.{os.getpid()}.part")
         env = os.environ | {"FOSFORA_STRUCTURE_SIDECAR": str(part)}
+        # Niced: a fan-out of these must never contend with whatever the human is doing
+        # on this machine (#2206).
         r = subprocess.run(
-            [str(binary), "--signal-dump", str(audio), "--out", os.devnull],
+            ["nice", "-n", "19", str(binary), "--signal-dump", str(audio),
+             "--out", os.devnull],
             env=env,
             capture_output=True,
             text=True,

@@ -1,0 +1,63 @@
+{
+  "schema": "fosfora-bench-q-drop-event-frozen/v1",
+  "_policy": "Pre-registered targets for the drop-event arm rework (board #2211), frozen BEFORE any DSP change lands. Same discipline as q3_key_frozen.json and q4_structure_frozen.json: numbers move or the change reverts. Constant selection reads the TUNE half only; the holdout half is scored once, at the end of the round. Split rule: int(sha256(track_id),16) % 2 == 0 -> tune (canonical: analyze_predict_drop.py is_tune). chosen_config stays null until the final report-card commit.",
+
+  "_diagnosis": "The legacy drop machine (audio/structure.rs::update_drop) fires on almost nothing outside step drops, and the ARM conjunct is the sole reason. Measured on the detector's own per-tick state (sidecar schema v2, DropTrace, commit 07ccdf8) across 12 references on three AI-mastered specimens: at 11 of 11 misses 'armed' is never true, while jump, sub-return and not-refractory all hold simultaneously on some tick of every one — arming the machine is sufficient to fire all 11. jump_max at those misses is .086-.734 against a .080 gate, i.e. the fire side already works. Finding #2210 reported the opposite (jump_max .016-.050, jump as the blocker) because it replayed wire proxies: /energy is short-term SMOOTHED loudness and feat/sub_bass is adaptively re-ranged, and update_drop reads neither. Refuted and superseded by finding #2212.",
+
+  "_arm_failure_modes": "Two, both measured over the 20 s run-up to each reference: (a) build-up never sustains above the .6 arm level on loudness-flat masters — Thirty Two Hertz at 75.2 s has build_max .62, 1% of the run-up above level, longest run .2 s; (b) the machine arms and then bleeds out before the drop lands — Tropical Pulse at 25.1 s peaks at 7.0 s of arm timer against a 4.0 s requirement yet is unarmed at the drop, because the pre-drop gap (the genre's strongest drop cue) collapses build-up and the timer decays at 2x. The 2x decay is NOT itself the cause: peak arm timer at 1x decay is within .1 s of 2x at 10 of 12 events. The one true positive armed with 4.1 s against the 4.0 s requirement — a 0.1 s margin.",
+
+  "levers": {
+    "arm_buildup": "level build-up must exceed; shipped .6. Run-up sim: level .5 gets 6/11 specimen misses to >= 4 s of timer, level .4 gets 9/11.",
+    "arm_sustain": "seconds required; shipped 4.0",
+    "arm_hold": "NEW — seconds the arm stays live after the timer falls short, so the pre-drop gap cannot disarm. Shipped behaviour is 0.0 (disarm immediately).",
+    "arm_decay": "multiplier on the timer's decay below level; shipped 2.0",
+    "baseline_ticks": "length of the jump baseline's running minimum, in 10 Hz ticks. Shipped is 141 (~14.1 s) — DROP_BASELINE_SECONDS names 1.5 s but sizes the ring at the ~86 Hz analysis rate while update_drop pushes it at the 10 Hz tick, so the constant has never meant what it says (finding #2212). Swept rather than assumed.",
+    "loud_jump": "fire gate on the loudness jump; shipped .08",
+    "subbass_return": "fraction of the sub-bass reference peak that must return; shipped .5",
+    "refractory": "suppression after a fire; shipped 16.0"
+  },
+
+  "split": {
+    "rule": "sha256(track_id) parity, even -> tune",
+    "dataset": "harmonix",
+    "reference": "the 'drops' array in bench/datasets/harmonix/norm/<id>.json — proxy_chorus_onset transitions, NOT hand-labelled drops",
+    "tune": {"n_tracks": 180, "n_refs": 77, "n_tracks_with_drops": 25},
+    "holdout": {"n_tracks": 194, "n_refs": 64, "n_tracks_with_drops": 22},
+    "shipped_tune": {
+      "hits": 1, "misses": 76, "false": 25,
+      "recall": 0.013, "precision": 0.016, "fa_per_min": 0.091,
+      "_measured": "bench/sweep_drop.py --validate, 2026-08-12, binary at commit 07ccdf8, 180/180 tracks reproduced EXACTLY"
+    },
+    "shipped_holdout": {
+      "hits": 0, "misses": 64, "recall": 0.0,
+      "_derived": "The standing report card scores the full 374-track set at drop hit_rate .0071 = 1 hit / 141 refs, and that one hit is in the tune half (measured above), so the holdout half has zero. Stated as a derivation rather than a measurement: the holdout is scored once, at the end of this round."
+    },
+    "_balance_check": "The shipped detector hits 1 of 141 references across the whole corpus, so there is no meaningful difficulty gradient to check between halves — both are effectively at zero. The split still governs constant selection.",
+    "_shipped_report_card": {"hit_rate": 0.0071, "n_est": 130, "precision": 0.0077, "false_drops_per_min": 0.0926, "n_tracks": 374}
+  },
+
+  "scoring": "benchlib's drop convention, reimplemented in bench/sweep_drop.py: a hit is within +-1 bar of an annotated drop (bar length measured locally over +-16 s), greedy one-to-one by ascending |dt|; every unmatched estimate is a false alarm, including on the zero-drop tracks whose only contribution is false alarms.",
+
+  "fidelity_gate": "bench/sweep_drop.py --validate must reproduce the shipped binary's fired ticks EXACTLY on every tune track (not approximately — the sidecar carries the detector's own inputs, so equality is achievable and anything less means the replay has drifted). The arm timer is replayed in float32 because the detector's f32 rounding is load-bearing at the 4.0 s threshold.",
+
+  "targets": {
+    "specimen_hand_verified": "3/3 — Thermal Break 47.8 s (currently the only hit; must stay), Thirty Two Hertz 75.15 s and 150.15 s (the two events finding #2209 hand-checked as textbook drops, both currently missed). This is the gate; the other 9 specimen references are reported as descriptive evidence, not pass/fail, because they were derived mechanically rather than hand-listened.",
+    "tune_recall": "> shipped tune recall .013 (selection metric; the round is pointless otherwise)",
+    "holdout_recall": ">= 0.20, against a shipped 0.00. Set at 0.20 rather than higher because the reference is PROXY truth — chorus onsets, not drops — so a drop detector should not reach the top of this scale, and reaching it would be evidence of firing on every section change rather than of detecting drops.",
+    "tune_minus_holdout_recall": "<= 0.10 (overfit guard; Q3's actual gap was .0565)",
+    "holdout_fa_per_min": "<= 0.60 (ANTI-CHEAT, and the binding constraint of the round: arming permanently would fire on every loudness jump with the sub-bass up, which recall alone rewards. 0.60/min is roughly one spurious drop every 100 s of music — already generous for a VJ trigger, and ~6.5x the shipped .091, so the ceiling is what makes the degenerate strategy fail rather than a formality. Absolute FA/min against proxy truth is an UPPER BOUND on true false alarms, not a measurement of them.)",
+    "holdout_est_per_track": "<= 2.0 (second anti-cheat, on emission volume directly: the 16 s refractory permits ~11 drops in a 3-minute track, and the reference mean is 0.33/track. A detector emitting more than 2 per track on average is announcing sections, not drops.)",
+    "fixture": "bench/check_fixture.py green — currently 22/22, including dump.n_events.drop == 1, metrics.drop.hit_rate == 1.0, metrics.drop.n_false == 0",
+    "guard_datasets": "harmonix beat-F/downbeat-F/tempo-acc1 and structure boundary@3s, ballroom beat-F, giantsteps_tempo acc1, giantsteps_key score_mean each within 0.02 of the standing report card, or the regression is stated and explicitly accepted with rationale",
+    "predict_drop_rider": "Q5's standing rider (finding #2207): the episode predictor reads f.drop to collapse an episode, so if this round changes when drops fire, predict/drop coverage and FA must be re-measured and the cl .35 vs .40 question re-checked."
+  },
+
+  "_scope_note": "Measured on Harmonix alone, against PROXY drop truth (chorus-onset transitions), plus 12 references on three AI-mastered specimen tracks. The generalization claim rests on the frozen holdout and must be stated that way in the report card. C13 hand annotations (#2084) would be the real answer and are Kevin-gated.",
+
+  "_out_of_scope": "The build-up logistic's own weights (its inputs are not recorded in the sidecar, so they are not replayable this round); key tracking on sub-32 Hz roots (#2209 sidebar); predict/drop's own constants (re-frozen last round, #2207).",
+
+  "iteration_cmd": "bench/sweep_drop.py --validate  &&  bench/sweep_drop.py --stage arm --fa-budget <shipped*1.5> --json bench/out/dropsweep/arm.json",
+
+  "chosen_config": null,
+  "targets_verdict": null
+}
