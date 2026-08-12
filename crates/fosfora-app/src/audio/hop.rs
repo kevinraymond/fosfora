@@ -89,7 +89,7 @@ impl HopAnalyzer {
             key_detector: KeyDetector::new(sample_rate),
             loudness_meter: LoudnessMeter::new(sample_rate),
             downbeat_tracker: DownbeatTracker::new(),
-            structure_tracker: StructureTracker::new(sample_rate / ANALYSIS_HOP as f32),
+            structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
             stereo_analyzer: StereoAnalyzer::new(),
             hpss_analyzer: HpssAnalyzer::new(),

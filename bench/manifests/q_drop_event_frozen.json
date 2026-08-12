@@ -58,6 +58,56 @@
 
   "iteration_cmd": "bench/sweep_drop.py --validate  &&  bench/sweep_drop.py --stage arm --fa-budget <shipped*1.5> --json bench/out/dropsweep/arm.json",
 
-  "chosen_config": null,
-  "targets_verdict": null
+  "chosen_config": {
+    "_selected_on": "TUNE half only, bench/sweep_drop.py stages arm (192 configs) / fire (125) / combined (216), all at --fa-budget 0.6. Replay fidelity 180/180 tracks EXACT against the shipped binary.",
+    "_selection_rule": "The pre-registered rule, applied as written: specimen hand-verified 3/3 is the gate, tune recall is the selection metric, FA/min is a ceiling and not a minimization target. The winner is the highest-recall config that clears the gate.",
+    "drop_arm_buildup": 0.40,
+    "drop_arm_sustain": 3.0,
+    "drop_arm_hold": 0.0,
+    "drop_loud_jump": 0.060,
+    "drop_baseline_seconds": 1.5,
+    "drop_subbass_return": 0.50,
+    "drop_refractory": 16.0,
+    "measured_tune": {
+      "hits": 10, "n_refs": 77, "recall": 0.130, "precision": 0.030,
+      "fa_per_min": 0.473, "est_per_track": 1.83
+    },
+    "measured_specimens": {
+      "hand_verified": "3/3", "all_refs": "10/14",
+      "precision": 1.000, "fa_per_min": 0.000,
+      "_note": "Every fire on the three specimen tracks lands on a reference — 10 fires, 10 hits, nothing spurious."
+    },
+    "_baseline_window_note": "The sweep independently prefers 1.5 s, the value DROP_BASELINE_SECONDS always claimed and never delivered. The fix makes the constant honest and the sweep endorses it: 15 ticks beats the de-facto 129 by 1 hit at lower FA (.130/.473 vs .117/.524).",
+    "rejected_with_evidence": {
+      "arm_hold > 0 as a default": "The mechanism this round added, and the tune half declines it. At equal recall it costs false alarms (lvl .40 sus 3.0 jump .06 base 15: hold 0.0 -> .130 recall at .473 FA; hold 2.0 -> .130 at .512; hold 4.0 -> .130 at .540), and every hold>0 config reaching .130 recall drops the specimen gate to 2/3. Shipped as a slider at default 0.0: the gap-disarm failure it addresses is real and measured (Tropical Pulse 25.1 s), but a lower sustain reaches the same drops more cheaply, so the knob has to earn a nonzero default on some future corpus rather than on this one.",
+      "fire-side tuning alone": "With the arm at shipped, the whole fire grid tops out at 2/77 recall (.026) — jump gate, sub-return fraction and baseline window together cannot move a machine that is never armed. This is the sweep confirming the diagnosis rather than a tuning result.",
+      "arm level .35": "Reaches .104 recall but reads 0/3 on the specimen gate while adding FA (.598) — it arms on material that is not building.",
+      "arm_decay 1.0 (gentler dip penalty)": "Never decisive: peak arm timer at 1x decay is within .1 s of 2x at 10 of the 12 specimen events, and no 1x config beats its 2x twin on the tune half. Left at 2.0.",
+      "arm sustain 2.0 with the shipped jump gate": "Reaches the specimen gate 3/3 and 12/14 but only .117 tune recall at .524 FA — dominated by the chosen config on both axes."
+    }
+  },
+  "measured_holdout": {
+    "_scored": "ONCE, 2026-08-12, after the tune half selected the config and before any further change.",
+    "shipped": {"hits": 0, "n_refs": 64, "recall": 0.0, "fa_per_min": 0.095, "est_per_track": 0.35},
+    "chosen": {"hits": 7, "n_refs": 64, "recall": 0.109, "precision": 0.021, "fa_per_min": 0.462, "est_per_track": 1.75}
+  },
+
+  "end_to_end_check": {
+    "_what": "The chosen config compiled into the binary, re-dumped on the three specimen tracks — not the Python replay, the real detector.",
+    "result": "10/14 references hit, 3/3 hand-verified, 0 unmatched fires (Thermal Break 47.8/104.2/136.0; Thirty Two Hertz 7.6/74.7/149.7; Tropical Pulse 24.8/42.8/103.8/143.3).",
+    "_agreement": "Identical to the replay's prediction (10/14, precision 1.000), which is what makes the replay-driven selection trustworthy end to end.",
+    "_remaining_misses": "Thermal Break 16.05 s, Thirty Two Hertz 30.10 s, Tropical Pulse 3.30 s and 68.85 s. Three of the four are track intros out of silence, where there is no build-up to arm on and arguably nothing a VJ wants a drop cue for."
+  },
+
+  "targets_verdict": {
+    "specimen_hand_verified": "PASS — 3/3, confirmed from the compiled binary rather than the replay.",
+    "tune_recall": "PASS — .130 vs shipped .013 (10 vs 1 of 77 references).",
+    "holdout_recall": "MISSED — .109 against a pre-registered .20. Off by .091, i.e. 7 of 64 references where the target asked for 13. Stated rather than excused: the arm rework recovers about half of what the target assumed was reachable, and the tune-half sweep found nothing above .130 anywhere under the FA ceiling, so the gap is a property of what this detector can do with the build-up signal it has, not of the selection. Improving on it needs a better build-up front end (its logistic weights were out of scope this round because the sidecar does not record its inputs), or the Q6 learned tier.",
+    "tune_minus_holdout_recall": "PASS — .021 (.130 tune vs .109 holdout), well inside the .10 guard and far tighter than Q3's .0565. The improvement generalizes.",
+    "holdout_fa_per_min": "PASS — .462 against a .60 ceiling. Up from .095 shipped, which is the real cost of the round and is stated as such in the changelog: roughly one spurious drop per 100 s of music on unfamiliar material.",
+    "holdout_est_per_track": "PASS — 1.75 against a 2.0 ceiling (shipped .35, reference mean .33).",
+    "fixture": "PASS — bench/check_fixture.py 22/22 with the chosen config compiled in.",
+    "guard_datasets": "harmonix re-scored in full; see the report-card commit. ballroom / giantsteps_tempo / giantsteps_key are NOT re-run: the drop pulse is consumed only by the episode predictor, the section labeller and the phrase grid, and feeds nothing in the beat, tempo or key paths, so those metrics cannot move. Stated as an argument rather than a measurement, which is what the target's escape clause is for.",
+    "predict_drop_rider": "predict/drop re-measured on the harmonix re-score, since f.drop collapses an episode in predict.rs — see the report card."
+  }
 }

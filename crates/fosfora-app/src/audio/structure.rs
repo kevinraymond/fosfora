@@ -27,8 +27,8 @@
 //! the loudness/sub-bass dynamics this stage keys on) plus the beat result. Fills three
 //! reserved shader fields with **zero ABI churn** (#1505). The hot-loop weights and drop
 //! thresholds are exposed as a runtime-tunable [`StructureConfig`] (audio-panel sliders,
-//! #1510); the sizing windows (ring/kernel/tick/baseline) stay compile-time consts because
-//! they allocate. Heuristics tuned for electronic music.
+//! #1510); the sizing windows (ring/kernel/tick) stay compile-time consts because they
+//! allocate. Heuristics tuned for electronic music.
 
 use std::collections::VecDeque;
 
@@ -131,16 +131,53 @@ const BUILD_W_ONSET: f32 = 1.2;
 const BUILD_W_SUBBASS: f32 = 1.6;
 
 /// Drop state machine.
+///
+/// The arm is what this machine lives or dies by. Measured on the detector's own per-tick
+/// state, the arm conjunct was the *sole* blocker at 11 of 11 missed reference drops —
+/// jump, sub-bass return and refractory all coincided at every one of them, so arming was
+/// sufficient to fire all 11 (finding #2212). The two constants below therefore carry the
+/// round: chosen on the Harmonix tune half at a pre-registered false-alarm ceiling
+/// (`bench/sweep_drop.py`, `bench/manifests/q_drop_event_frozen.json`), lifting drop recall
+/// from 1 reference in 77 to 10.
+///
 /// `buildup` must exceed this...
-const DROP_ARM_BUILDUP: f32 = 0.6;
+const DROP_ARM_BUILDUP: f32 = 0.40;
 /// ...continuously for at least this long (seconds) to arm the drop.
-const DROP_ARM_SUSTAIN: f32 = 4.0;
-/// Window (seconds) the loudness-jump baseline (a running minimum) spans — roughly two
-/// beats at typical tempo.
+///
+/// 4.0 s was a knife edge: the single drop the old detector found anywhere in Harmonix
+/// armed with 4.1 s of timer against it.
+const DROP_ARM_SUSTAIN: f32 = 3.0;
+/// Seconds the arm stays live after the sustain timer falls short.
+///
+/// A drop is very often preceded by a cut — a bar of near-silence. Build-up collapses
+/// through it and the arm timer drains at twice the rate it filled, so without a hold the
+/// machine is unarmed at the exact moment the drop lands. Measured on Tropical Pulse at
+/// 25.1 s: the timer peaked at 7.0 s against a 4.0 s requirement and was still unarmed at
+/// the drop (finding #2212).
+///
+/// Ships **off**, as a slider rather than a default. The tune half declined it: at equal
+/// recall a nonzero hold only adds false alarms, because the lower sustain above already
+/// reaches those drops more cheaply. Kept because the failure it addresses is real and
+/// measured, and a VJ whose material has long cuts can dial it in.
+const DROP_ARM_HOLD: f32 = 0.0;
+/// Window (seconds) the loudness-jump baseline (a running minimum) spans.
+///
+/// The ring is allocated at [`DROP_BASELINE_MAX_SECONDS`] and the running minimum reads
+/// back only this far, so the window is a live knob rather than an allocation.
+///
+/// It used to be neither. The ring was sized at the ~86 Hz *analysis* rate while
+/// `update_drop` pushes it at the 10 Hz tick, so this constant never once meant what it
+/// said — and worse, it meant something different per input: 12.9 s at 44.1 kHz, 14.1 s at
+/// 48 kHz (finding #2212). Sizing on the tick rate removes the sample-rate dependence, and
+/// the tune-half sweep independently picked 1.5 s over the de-facto 12.9 s, so the value
+/// the constant always claimed is also the one that measures best.
 const DROP_BASELINE_SECONDS: f32 = 1.5;
-/// Loudness jump (in `loudness_m`'s 0..1 = −60..0 LUFS mapping) that counts as a drop. 0.08
-/// ≈ 5 LU; a real drop is a broadband loudness leap.
-const DROP_LOUD_JUMP: f32 = 0.08;
+/// Ring capacity, seconds. Bounds `drop_baseline_seconds` from the audio panel.
+const DROP_BASELINE_MAX_SECONDS: f32 = 20.0;
+/// Loudness jump (in `loudness_m`'s 0..1 = −60..0 LUFS mapping) that counts as a drop.
+/// 0.06 ≈ 3.6 LU; a real drop is a broadband loudness leap. Worth one extra reference on
+/// the tune half against 0.08 once the arm stopped being the binding constraint.
+const DROP_LOUD_JUMP: f32 = 0.06;
 /// Sub-bass must return to at least this fraction of its reference peak at the drop.
 const DROP_SUBBASS_RETURN: f32 = 0.5;
 /// No further drop for this long (seconds) after one fires.
@@ -148,11 +185,12 @@ const DROP_REFRACTORY: f32 = 16.0;
 
 /// Runtime-tunable A18 thresholds (task #1510). Only the hot-loop build-up weights and
 /// drop-machine thresholds are exposed — a VJ tunes build-up sensitivity and drop firing
-/// live from the audio panel. The sizing consts (`TICK_HZ`, `RING_SECONDS`, `KERNEL_SECONDS`,
-/// `DROP_BASELINE_SECONDS`) are *not* here: they allocate rings/kernels at construction, so
-/// changing them needs a rebuild, not a per-tick read. Shared with the audio thread via
-/// `Arc<Mutex<_>>` and snapshotted once per hop (no pipeline rebuild). Defaults mirror the
-/// module consts.
+/// live from the audio panel. The sizing consts (`TICK_HZ`, `RING_SECONDS`, `KERNEL_SECONDS`)
+/// are *not* here: they allocate rings/kernels at construction, so changing them needs a
+/// rebuild, not a per-tick read. `drop_baseline_seconds` is the exception that proves the
+/// rule — the loudness ring is allocated at its maximum so the window itself can be a live
+/// read. Shared with the audio thread via `Arc<Mutex<_>>` and snapshotted once per hop (no
+/// pipeline rebuild). Defaults mirror the module consts.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StructureConfig {
@@ -170,6 +208,12 @@ pub struct StructureConfig {
     pub drop_arm_buildup: f32,
     /// Drop arm: seconds build-up must stay above the arm level.
     pub drop_arm_sustain: f32,
+    /// Drop arm: seconds the arm survives after the timer falls short, so the cut before
+    /// a drop cannot disarm the machine.
+    pub drop_arm_hold: f32,
+    /// Drop fire: seconds the loudness-jump baseline (a running minimum) looks back.
+    /// Clamped to [`DROP_BASELINE_MAX_SECONDS`], the ring's capacity.
+    pub drop_baseline_seconds: f32,
     /// Drop fire: broadband loudness jump (0..1 = −60..0 LUFS; 0.08 ≈ 5 LU).
     pub drop_loud_jump: f32,
     /// Drop fire: fraction of the sub-bass reference peak that must return.
@@ -188,6 +232,8 @@ impl Default for StructureConfig {
             buildup_w_subbass: BUILD_W_SUBBASS,
             drop_arm_buildup: DROP_ARM_BUILDUP,
             drop_arm_sustain: DROP_ARM_SUSTAIN,
+            drop_arm_hold: DROP_ARM_HOLD,
+            drop_baseline_seconds: DROP_BASELINE_SECONDS,
             drop_loud_jump: DROP_LOUD_JUMP,
             drop_subbass_return: DROP_SUBBASS_RETURN,
             drop_refractory: DROP_REFRACTORY,
@@ -288,6 +334,9 @@ pub struct StructureTracker {
     loud_ring: VecDeque<f32>,
     loud_ring_cap: usize,
     refractory_until: f64,
+    /// While `timestamp` is at or before this, the machine counts as armed even though the
+    /// sustain timer has fallen short (see [`DROP_ARM_HOLD`]).
+    armed_until: f64,
     /// Last tick's drop-machine internals (#2211). Written every tick, read only by the dev
     /// sidecar; a handful of scalar stores at 10 Hz.
     drop_trace: DropTrace,
@@ -301,10 +350,11 @@ pub struct StructureTracker {
 }
 
 impl StructureTracker {
-    /// `hop_rate_hz` is the analysis frame rate (`sr / ANALYSIS_HOP`), used to size the
-    /// frame-rate loudness-baseline ring.
-    pub fn new(hop_rate_hz: f32) -> Self {
-        let hop = hop_rate_hz.max(1.0);
+    /// Takes no rate: every window here is measured in ticks, at the tracker's own
+    /// [`TICK_HZ`]. It used to take the analysis frame rate to size the loudness-baseline
+    /// ring, which is exactly how that window came to depend on the input's sample rate
+    /// (finding #2212).
+    pub fn new() -> Self {
         let kernel_half = (KERNEL_SECONDS * TICK_HZ).round().max(1.0) as usize;
         let side = 2 * kernel_half + 1;
         let sigma = kernel_half as f32 / 2.0;
@@ -341,8 +391,13 @@ impl StructureTracker {
             cur_buildup: 0.0,
             high_duration: 0.0,
             loud_ring: VecDeque::new(),
-            loud_ring_cap: (DROP_BASELINE_SECONDS * hop).round().max(1.0) as usize,
+            // Sized on the TICK rate, because `update_drop` — the only writer — runs on
+            // the tick. The previous frame-rate sizing is what made a 1.5 s constant mean
+            // 14.1 s. Capacity is the maximum window; the config picks how far back the
+            // minimum actually reads.
+            loud_ring_cap: (DROP_BASELINE_MAX_SECONDS * TICK_HZ).round().max(1.0) as usize,
             refractory_until: 0.0,
+            armed_until: f64::NEG_INFINITY,
             drop_trace: DropTrace::default(),
             tick_index: 0,
             last_frame_time: -1.0,
@@ -548,16 +603,30 @@ impl StructureTracker {
             self.high_duration = (self.high_duration - 2.0 * tick_dt).max(0.0);
         }
 
-        // Loudness-jump baseline: running minimum over ~DROP_BASELINE_SECONDS.
+        // Loudness-jump baseline: running minimum over the configured look-back.
         if self.loud_ring.len() == self.loud_ring_cap {
             self.loud_ring.pop_front();
         }
         self.loud_ring.push_back(pre_norm.loudness_m);
-        let baseline = self.loud_ring.iter().copied().fold(f32::INFINITY, f32::min);
+        let window = ((self.cfg.drop_baseline_seconds * TICK_HZ).round().max(1.0) as usize)
+            .min(self.loud_ring_cap);
+        let baseline = self
+            .loud_ring
+            .iter()
+            .rev()
+            .take(window)
+            .copied()
+            .fold(f32::INFINITY, f32::min);
         let jump = pre_norm.loudness_m - baseline;
         let subbass_returning = pre_norm.sub_bass > self.cfg.drop_subbass_return * self.subbass_ref;
 
-        let armed = self.high_duration >= self.cfg.drop_arm_sustain;
+        // The arm latches for `drop_arm_hold` seconds, so the cut before a drop drains the
+        // timer without disarming the machine.
+        if self.high_duration >= self.cfg.drop_arm_sustain {
+            self.armed_until = timestamp + self.cfg.drop_arm_hold as f64;
+        }
+        let armed =
+            self.high_duration >= self.cfg.drop_arm_sustain || timestamp <= self.armed_until;
         let in_refractory = timestamp < self.refractory_until;
         let fired = armed && !in_refractory && jump >= self.cfg.drop_loud_jump && subbass_returning;
 
@@ -583,6 +652,7 @@ impl StructureTracker {
 
         if fired {
             self.refractory_until = timestamp + self.cfg.drop_refractory as f64;
+            self.armed_until = f64::NEG_INFINITY;
             self.high_duration = 0.0;
             return 1.0;
         }
@@ -670,6 +740,17 @@ mod tests {
         t: &mut StructureTracker,
         clock: &mut f64,
         secs: f32,
+        feat: impl FnMut(f32) -> (AudioFeatures, f32),
+    ) -> (usize, f32, f32) {
+        drive_cfg(t, clock, secs, StructureConfig::default(), feat)
+    }
+
+    /// As [`drive`], under an explicit config.
+    fn drive_cfg(
+        t: &mut StructureTracker,
+        clock: &mut f64,
+        secs: f32,
+        cfg: StructureConfig,
         mut feat: impl FnMut(f32) -> (AudioFeatures, f32),
     ) -> (usize, f32, f32) {
         let dt = 1.0 / HOP as f64;
@@ -677,7 +758,7 @@ mod tests {
         let (mut drops, mut max_nov, mut last_build) = (0, 0.0f32, 0.0);
         for i in 0..n {
             let (f, onset) = feat(i as f32 / HOP);
-            let r = t.process(StructureConfig::default(), &f, &beat(onset), *clock);
+            let r = t.process(cfg, &f, &beat(onset), *clock);
             if r.drop > 0.5 {
                 drops += 1;
             }
@@ -729,7 +810,7 @@ mod tests {
 
     #[test]
     fn steady_state_low_buildup_no_drop() {
-        let mut t = StructureTracker::new(HOP);
+        let mut t = StructureTracker::new();
         let mut clock = 0.0;
         let (drops, _, build) = drive(&mut t, &mut clock, 20.0, |_| {
             (feat_with(0.5, 0.6, 0.4, 0.0), 0.3)
@@ -738,9 +819,76 @@ mod tests {
         assert!(build < 0.3, "steady build-up should stay low, got {build}");
     }
 
+    /// `drop_arm_hold` keeps the machine armed through the cut before a drop (#2211).
+    ///
+    /// A riser, then a bar of near-silence, then the drop. Build-up collapses through the
+    /// cut and the arm timer drains at twice the rate it filled, so by default the machine
+    /// is unarmed exactly when the drop lands — measured on Tropical Pulse at 25.1 s, where
+    /// the timer peaked at 7.0 s against the requirement and was still unarmed at the drop
+    /// (finding #2212).
+    ///
+    /// Both legs run, because the hold ships at 0.0: the tune half declined it as a default
+    /// (equal recall, more false alarms), so what is guarded here is that the *slider* does
+    /// what it claims. The mid-scenario assertions prove the run reproduces the mechanism —
+    /// armed by the riser, drained by the cut — rather than passing for some other reason.
+    #[test]
+    fn arm_hold_survives_the_cut_before_a_drop() {
+        // Long enough to drain the timer from any plausible peak at the 2x decay rate.
+        const GAP_SECONDS: f32 = 6.0;
+
+        let run = |hold: f32| -> (usize, f32, f32) {
+            let cfg = StructureConfig {
+                drop_arm_hold: hold,
+                ..Default::default()
+            };
+            let mut t = StructureTracker::new();
+            let mut clock = 0.0;
+            drive_cfg(&mut t, &mut clock, 3.0, cfg, |_| {
+                (feat_with(0.5, 0.6, 0.35, 0.0), 0.2)
+            });
+            // 10 s riser: loudness trend up, brightening, onsets denser, sub-bass swept out.
+            drive_cfg(&mut t, &mut clock, 10.0, cfg, |s| {
+                let p = (s / 10.0).min(1.0);
+                (
+                    feat_with(0.5, 0.6 - 0.4 * p, 0.35 + 0.35 * p, 0.7),
+                    0.2 + 0.6 * p,
+                )
+            });
+            let armed = t.drop_trace().high_duration;
+
+            // The cut: the track stops building and coasts quietly. Sub-bass stays at
+            // its section level, so nothing reads as the pre-drop high-pass sweep — this
+            // is a breakdown, and build-up falls away as it should.
+            drive_cfg(&mut t, &mut clock, GAP_SECONDS, cfg, |_| {
+                (feat_with(0.15, 0.5, 0.3, -0.3), 0.15)
+            });
+            let drained = t.drop_trace().high_duration;
+
+            // The drop: broadband loudness leap, sub-bass back.
+            let (drops, _, _) = drive_cfg(&mut t, &mut clock, 3.0, cfg, |_| {
+                (feat_with(0.75, 0.9, 0.6, 0.2), 0.9)
+            });
+            (drops, armed, drained)
+        };
+
+        let (without, armed, drained) = run(0.0);
+        assert!(
+            armed >= DROP_ARM_SUSTAIN,
+            "scenario check: the riser must arm the machine, timer reached {armed}s"
+        );
+        assert!(
+            drained < DROP_ARM_SUSTAIN,
+            "scenario check: the cut must drain the arm timer, left {drained}s"
+        );
+        assert_eq!(without, 0, "without a hold the cut disarms the machine");
+
+        let (with, _, _) = run(GAP_SECONDS + 1.0);
+        assert_eq!(with, 1, "a hold spanning the cut must keep the drop");
+    }
+
     #[test]
     fn build_then_drop_fires_once() {
-        let mut t = StructureTracker::new(HOP);
+        let mut t = StructureTracker::new();
         let mut clock = 0.0;
         // Baseline.
         drive(&mut t, &mut clock, 3.0, |_| {
@@ -781,7 +929,7 @@ mod tests {
 
     #[test]
     fn section_change_spikes_novelty() {
-        let mut t = StructureTracker::new(HOP);
+        let mut t = StructureTracker::new();
         let mut clock = 0.0;
         // Section A: bass-heavy timbre.
         let section_a = |_: f32| {
@@ -823,7 +971,7 @@ mod tests {
     /// none — the two halves of turning the novelty curve into wire events (#2080).
     #[test]
     fn section_change_fires_one_boundary() {
-        let mut t = StructureTracker::new(HOP);
+        let mut t = StructureTracker::new();
         let mut clock = 0.0;
         let section_a = |_: f32| {
             let mut f = feat_with(0.5, 0.8, 0.2, 0.0);
@@ -852,7 +1000,7 @@ mod tests {
     /// turnaround is not a section.
     #[test]
     fn dwell_suppresses_a_rapid_second_boundary() {
-        let mut t = StructureTracker::new(HOP);
+        let mut t = StructureTracker::new();
         let mut clock = 0.0;
         let quiet = |_: f32| {
             let mut f = feat_with(0.5, 0.8, 0.2, 0.0);
@@ -904,7 +1052,7 @@ mod tests {
         }
 
         fn count_drops(cfg: StructureConfig) -> usize {
-            let mut t = StructureTracker::new(HOP);
+            let mut t = StructureTracker::new();
             let mut clock = 0.0f64;
             let mut drops = 0usize;
             run(

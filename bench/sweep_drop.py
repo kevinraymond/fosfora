@@ -320,6 +320,7 @@ def score(tracks: list[Track], cfg: DropCfg, cache: dict | None = None) -> dict:
         "precision": hits / (hits + false) if (hits + false) else 0.0,
         "fa_per_min": false / total_min if total_min else 0.0,
         "minutes": total_min,
+        "est_per_track": (hits + false) / len(tracks) if tracks else 0.0,
         "per_track": per_track,
     }
 
@@ -330,7 +331,8 @@ def fmt(cfg: DropCfg, s: dict) -> str:
             f"base {cfg.baseline_ticks if cfg.baseline_ticks is not None else 'shipped':>7} "
             f"sub {cfg.subbass_return:.2f} | "
             f"recall {s['recall']:.3f} ({s['hits']}/{s['n_refs']})  "
-            f"prec {s['precision']:.3f}  FA/min {s['fa_per_min']:.3f}")
+            f"prec {s['precision']:.3f}  FA/min {s['fa_per_min']:.3f}  "
+            f"est/track {s['est_per_track']:.2f}")
 
 
 # =================================================================================
@@ -467,7 +469,8 @@ def main() -> int:
         line = "  " + fmt(cfg, s)
         if spec:
             hv, hits, _ = specimen_detail(spec, cfg)
-            line += f"  | specimen {hv}/3 hand-verified, {hits}/12 all"
+            line += (f"  | specimen {hv}/{len(HAND_VERIFIED)} hand-verified, "
+                     f"{hits}/{sum(len(t.refs) for t in spec)} all")
         print(line)
 
     if args.json:

@@ -3,6 +3,25 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **The drop event fires on drops now.** It had gone off once in 141 reference drops across
+  374 tracks: the machine demanded 4 seconds of unbroken build-up before it would even watch
+  for a drop, and almost nothing cleared that bar — the loudness leap and sub-bass return it
+  looks for were both landing, at every single missed drop, with nothing armed to catch them.
+  10 of 77 reference drops on the tuning set, and every drop in a hand-checked set of AI
+  masters that previously fired none. Expect roughly one spurious drop per 100 seconds of
+  music on unfamiliar material; the audio panel's Drop sliders trade that against sensitivity.
+- **The drop jump window now lasts the 1.5 seconds it always claimed.** It was sized against
+  the analysis rate but filled at a tenth of it, so the setting was off by nearly ten times —
+  and by different amounts at different sample rates (12.9 s at 44.1 kHz, 14.1 s at 48 kHz).
+
+### Added
+- **Two new Drop sliders in the audio panel**: "Arm hold" keeps the drop armed through a cut
+  before the drop, for material where the build-up drops out entirely first (off by default);
+  "Jump window" sets how far back the loudness-jump baseline looks.
+
 ## v1.33.0 — 2026-08-11
 
 ### Added

@@ -955,10 +955,25 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
             );
             committed |= row(
                 ui,
+                &mut cfg.drop_arm_hold,
+                0.0..=12.0,
+                "Arm hold",
+                "Seconds the arm survives after build-up falls away, so the cut before a \
+                 drop cannot disarm it.",
+            );
+            committed |= row(
+                ui,
                 &mut cfg.drop_loud_jump,
                 0.02..=0.2,
                 "Jump",
                 "Broadband loudness leap that fires a drop (0.08 \u{2248} 5 LU).",
+            );
+            committed |= row(
+                ui,
+                &mut cfg.drop_baseline_seconds,
+                0.5..=20.0,
+                "Jump window",
+                "Seconds the jump's running-minimum baseline looks back.",
             );
             committed |= row(
                 ui,
