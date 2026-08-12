@@ -300,7 +300,13 @@ impl HopAnalyzer {
         // the fingerprint from `pre_norm` and the label-machine fields from the smoothed
         // features, matching where production reads each (see `structure_sidecar`).
         if let Some(sidecar) = &mut self.structure_sidecar {
-            sidecar.record(timestamp, &pre_norm, &smoothed);
+            sidecar.record(
+                timestamp,
+                &pre_norm,
+                &smoothed,
+                &self.structure_tracker.drop_trace(),
+                &struct_cfg,
+            );
         }
 
         // A17 (#1468): sample the render-facing spectrum + mel column from the analyzer's

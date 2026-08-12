@@ -124,7 +124,10 @@ def load_tracks(dataset: Path, limit: int | None = None) -> list[Track]:
         ann = json.loads(ann_path.read_text())
         if not ann.get("segments"):
             continue
-        records = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        # Schema v2 leads with a `meta` line (config snapshot + drop-trace fields); v1 files
+        # have none. Skip it and read the tick records either way.
+        records = [r for r in (json.loads(line) for line in p.read_text().splitlines()
+                               if line.strip()) if "meta" not in r]
         if len(records) < 100:
             continue
         out.append(Track(tid, records, ann))

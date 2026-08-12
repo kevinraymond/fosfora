@@ -208,6 +208,45 @@ pub struct StructureResult {
     pub boundary: f32,
 }
 
+/// One tick of the drop state machine's internals, for the dev sidecar (#2211).
+///
+/// The machine's decisive inputs are the **pre-normalization** `loudness_m` and `sub_bass`,
+/// which no dump or wire field carries — `/energy` is short-term loudness and `feat/sub_bass`
+/// is adaptively re-ranged, so a replay built on either is measuring a different signal than
+/// the detector sees. Recording the conjuncts themselves also removes the guesswork: a miss
+/// names which test failed and by how much, instead of being inferred from proxies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DropTrace {
+    /// Sample-clock time of the tick this trace describes.
+    pub tick_time: f64,
+    /// Monotonic tick counter, so a replay can prove it is on the detector's grid.
+    pub tick_index: u64,
+    /// `pre_norm.loudness_m` — the jump test's raw input.
+    pub loud_m: f32,
+    /// `pre_norm.sub_bass` — the sub-bass-return test's raw input.
+    pub sub_bass: f32,
+    /// Decaying peak-hold the sub-bass return is measured against.
+    pub subbass_ref: f32,
+    /// Tick-rate build-up EMA (the arm test's input).
+    pub buildup: f32,
+    /// Seconds of sustained high build-up accumulated so far.
+    pub high_duration: f32,
+    /// Running minimum of `loud_ring` — the jump baseline.
+    pub baseline: f32,
+    /// `loud_m - baseline`, tested against `drop_loud_jump`.
+    pub jump: f32,
+    /// Occupancy of the baseline ring (its capacity is the window this baseline spans).
+    pub ring_len: usize,
+    /// Arm conjunct: `high_duration >= drop_arm_sustain`.
+    pub armed: bool,
+    /// Sub-bass conjunct: `sub_bass > drop_subbass_return * subbass_ref`.
+    pub sub_returning: bool,
+    /// Refractory conjunct (inverted: true means suppressed).
+    pub in_refractory: bool,
+    /// Whether this tick fired a drop.
+    pub fired: bool,
+}
+
 /// How far in the past a confirmed boundary actually sits, seconds. The kernel's centring
 /// lag plus the peak-confirmation delay; both are constants, so this is exact rather than
 /// estimated, and it is published on the wire so consumers can place the boundary in
@@ -249,6 +288,10 @@ pub struct StructureTracker {
     loud_ring: VecDeque<f32>,
     loud_ring_cap: usize,
     refractory_until: f64,
+    /// Last tick's drop-machine internals (#2211). Written every tick, read only by the dev
+    /// sidecar; a handful of scalar stores at 10 Hz.
+    drop_trace: DropTrace,
+    tick_index: u64,
 
     last_frame_time: f64,
     last_tick_time: f64,
@@ -300,6 +343,8 @@ impl StructureTracker {
             loud_ring: VecDeque::new(),
             loud_ring_cap: (DROP_BASELINE_SECONDS * hop).round().max(1.0) as usize,
             refractory_until: 0.0,
+            drop_trace: DropTrace::default(),
+            tick_index: 0,
             last_frame_time: -1.0,
             last_tick_time: -1.0,
             started: false,
@@ -514,12 +559,39 @@ impl StructureTracker {
 
         let armed = self.high_duration >= self.cfg.drop_arm_sustain;
         let in_refractory = timestamp < self.refractory_until;
-        if armed && !in_refractory && jump >= self.cfg.drop_loud_jump && subbass_returning {
+        let fired = armed && !in_refractory && jump >= self.cfg.drop_loud_jump && subbass_returning;
+
+        // Dev trace (#2211): snapshot every conjunct *before* the fire branch resets state, so
+        // a miss is attributable to the test that failed rather than inferred from proxies.
+        self.tick_index += 1;
+        self.drop_trace = DropTrace {
+            tick_time: timestamp,
+            tick_index: self.tick_index,
+            loud_m: pre_norm.loudness_m,
+            sub_bass: pre_norm.sub_bass,
+            subbass_ref: self.subbass_ref,
+            buildup: self.cur_buildup,
+            high_duration: self.high_duration,
+            baseline,
+            jump,
+            ring_len: self.loud_ring.len(),
+            armed,
+            sub_returning: subbass_returning,
+            in_refractory,
+            fired,
+        };
+
+        if fired {
             self.refractory_until = timestamp + self.cfg.drop_refractory as f64;
             self.high_duration = 0.0;
             return 1.0;
         }
         0.0
+    }
+
+    /// Last tick's drop-machine internals (#2211). Only the dev sidecar reads this.
+    pub fn drop_trace(&self) -> DropTrace {
+        self.drop_trace
     }
 }
 
