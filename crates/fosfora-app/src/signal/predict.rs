@@ -17,8 +17,9 @@
 //!   bench metric's re-arm), a failed build, or a timeout.
 //!
 //! Every constant here was calibrated against 374 Harmonix tracks and frozen
-//! before implementation (`bench/analyze_predict_drop.py`; record in
-//! `bench/out/analysis/predict_drop/frozen_episode.json` and TASKS.md). They
+//! before implementation (`bench/analyze_predict_drop.py`), then re-frozen
+//! unchanged on the post-Q1/Q4 grid (record:
+//! `bench/manifests/q5_predict_drop_refrozen.json`). They
 //! are named consts, not config, so the bench numbers stay meaningful. The
 //! sub-bass-withdrawal *gate* was ablated out (it barely discriminated); the
 //! withdrawal signal remains as in-episode evidence.

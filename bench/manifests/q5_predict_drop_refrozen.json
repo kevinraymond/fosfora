@@ -1,0 +1,37 @@
+{
+  "what": "Q5 re-freeze of the episode-gated /predict/drop constants after Q1/Q3/Q4 landed (board #2081)",
+  "date": "2026-08-11",
+  "verdict": "CONSTANTS UNCHANGED — the fresh sweep's optimum differs from the shipped config within binomial noise, and no config of the architecture reaches the balanced FA budget; the 2026-08-07 feature-ceiling conclusion stands. Better inputs (Q6 ONNX tier, C13 hand labels) remain the lever.",
+  "provenance": {
+    "binary_sha256_16": "179d0daf3ac633f6",
+    "source": "main 9f34a85 (argv gate; analysis code identical to the Q4 report-card binary e51584239d5f8f58)",
+    "featbus_dumps": "bench/out/dumps/harmonix_featbus, r30_fb1_st1, 147/147 tracks (47 positives both halves + 100 tune-negative sample), regenerated 2026-08-11",
+    "pipeline": "analyze_predict_drop.py featdump -> shipped-drift score (dumped /predict/drop, exact benchlib crossings) -> episode sweep (368 gate configs + weight refinement on top 10, --fa-budget 0.5)"
+  },
+  "shipped_config_measured": {
+    "note": "dumped /predict/drop scored as-is; this is the real predictor, not the sim",
+    "tune": { "cov0.5": 0.558, "cov0.8": 0.377, "fa_per_min": 2.02, "lead0.5_beats": 17.4 },
+    "holdout": { "cov0.5": 0.375, "cov0.8": 0.25, "fa_per_min": 1.26 },
+    "pooled": { "cov0.5": 0.475, "cov0.8": 0.319, "fa_per_min": 1.9, "fa_neg_per_min": 2.15, "lead0.5_beats": 16.5 }
+  },
+  "drift_vs_2026_08_07_freeze": {
+    "frozen_sim": { "tune_cov0.5": 0.597, "tune_fa_per_min": 2.77, "holdout_cov0.5": 0.469, "pooled_cov0.5_expected": 0.539 },
+    "now_real": { "tune_cov0.5": 0.558, "tune_fa_per_min": 2.02, "holdout_cov0.5": 0.375, "pooled_cov0.5": 0.475 },
+    "reading": "coverage drifted down ~.06 pooled and FA down ~.9/min on the post-Q1/Q4 grid — fewer, more precise commitments. Consistent with the interim Q1-grid observation (cov .518 -> .489, FA 2.72 -> 2.11)."
+  },
+  "sweep_summary": {
+    "n_under_fa_budget_0.5": 0,
+    "best_overall_sim": {
+      "config": { "commit_level": 0.35, "commit_bars": 1, "discriminators": "none", "weights": { "wp": 0.35, "ww": 0.3, "wb": 0.2, "wi": 0.35 } },
+      "tune": { "cov0.5": 0.584, "fa_per_min": 2.04 },
+      "holdout": { "cov0.5": 0.344 }
+    },
+    "shipped_config_sim": {
+      "config_delta": "commit_level 0.40 (all else identical)",
+      "tune": { "cov0.5": 0.545, "fa_per_min": 1.99 },
+      "holdout": { "cov0.5": 0.328 }
+    },
+    "why_not_moved": "tune +.039 is 3 hits in 77 refs, holdout +.016 is 1 hit in 64 — both inside 1-sigma binomial noise, FA equal. A constant change would force a full guard re-run for a noise-level gain inside a measured feature ceiling."
+  },
+  "rider_for_next_binary_changing_q_work": "commit_level 0.35 was weakly dominant on this grid (as it was raw-best on the 08-07 grid); re-check it whenever the predictor's inputs next move, and action it only if the margin exceeds noise."
+}
