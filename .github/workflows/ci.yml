@@ -55,7 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
@@ -89,10 +89,11 @@ jobs:
       # One update for both, not two: this used to be two steps that each synced the
       # mirrors, which doubled the exposure to an azure.archive.ubuntu.com stall for no
       # benefit — one of those stalls hung the job for 51 min before anything built.
-      # 15 rather than the 6 the other jobs use: ffmpeg pulls ~100 packages (libavcodec,
-      # libflite1 at 13.6 MB, the whole codec tree), and on a degraded mirror that is slow
-      # without being stuck — a 6-minute cap killed it mid-download at package 50. The cap
-      # is here to bound a hang, not to police throughput, so it has to clear a bad day.
+      # Same 15-minute cap as every other apt step. These normally run in 5-83 s (measured
+      # across six healthy runs), so the cap only ever fires on a genuinely bad mirror day —
+      # it is here to bound a hang, not to police throughput. Two tighter values were tried
+      # and both killed work that was progressing: ffmpeg's ~100-package codec tree and
+      # libclang-dev's LLVM tree are each well past 6 minutes when the mirror is degraded.
       - name: Install system deps
         timeout-minutes: 15
         run: |
@@ -122,7 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
@@ -164,7 +165,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
