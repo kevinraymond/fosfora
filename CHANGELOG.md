@@ -6,13 +6,12 @@
 ## Unreleased
 
 ### Fixed
-- **The drop event fires on drops now.** It had gone off once in 141 reference drops across
-  374 tracks: the machine demanded 4 seconds of unbroken build-up before it would even watch
-  for a drop, and almost nothing cleared that bar — the loudness leap and sub-bass return it
-  looks for were both landing, at every single missed drop, with nothing armed to catch them.
-  10 of 77 reference drops on the tuning set, and every drop in a hand-checked set of AI
-  masters that previously fired none. Expect roughly one spurious drop per 100 seconds of
-  music on unfamiliar material; the audio panel's Drop sliders trade that against sensitivity.
+- **The drop event fires on drops now** — it had gone off once in 141 reference drops across
+  374 tracks, because it demanded 4 seconds of unbroken build-up before it would even watch
+  for one, and almost nothing cleared that bar. It is still imprecise on real EDM: it also
+  fires on breaks, including breaks louder than the drops around them. On a hand-checked
+  track it gave 6 cues for 3 drops. Tuning that down is in progress; meanwhile the audio
+  panel's Drop sliders trade sensitivity against false cues.
 - **The drop jump window now lasts the 1.5 seconds it always claimed.** It was sized against
   the analysis rate but filled at a tenth of it, so the setting was off by nearly ten times —
   and by different amounts at different sample rates (12.9 s at 44.1 kHz, 14.1 s at 48 kHz).
