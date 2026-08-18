@@ -55,7 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+        timeout-minutes: 6
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
@@ -80,12 +83,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Loop-export encode tests probe real ffmpeg (decision #2066); the
-      # renders themselves still need a GPU and stay dev-run.
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      # ffmpeg for the loop-export encode tests, which probe the real binary
+      # (decision #2066); the renders themselves need a GPU and stay dev-run.
+      # ffmpeg is NOT on the ubuntu-24.04 runner image, so this apt call is load-bearing.
+      # One update for both, not two: this used to be two steps that each synced the
+      # mirrors, which doubled the exposure to an azure.archive.ubuntu.com stall for no
+      # benefit — one of those stalls hung the job for 51 min before anything built.
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+        timeout-minutes: 6
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 \
+            ffmpeg libasound2-dev libudev-dev libclang-dev
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - name: Test
@@ -109,7 +118,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+        timeout-minutes: 6
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
@@ -148,7 +160,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+        timeout-minutes: 6
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
