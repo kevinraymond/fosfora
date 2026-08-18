@@ -89,8 +89,12 @@ jobs:
       # One update for both, not two: this used to be two steps that each synced the
       # mirrors, which doubled the exposure to an azure.archive.ubuntu.com stall for no
       # benefit — one of those stalls hung the job for 51 min before anything built.
+      # 15 rather than the 6 the other jobs use: ffmpeg pulls ~100 packages (libavcodec,
+      # libflite1 at 13.6 MB, the whole codec tree), and on a degraded mirror that is slow
+      # without being stuck — a 6-minute cap killed it mid-download at package 50. The cap
+      # is here to bound a hang, not to police throughput, so it has to clear a bad day.
       - name: Install system deps
-        timeout-minutes: 6
+        timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 \
