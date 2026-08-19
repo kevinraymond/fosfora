@@ -90,7 +90,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     }
 
     // 5) viscosity damping + magnitude clamp (feedback-loop safety)
-    vel *= mix(0.985, 0.999, viscosity);
+    vel *= frame_decay(mix(0.985, 0.999, viscosity));
     let sp = length(vel);
     if (sp > 6.0) { vel *= 6.0 / sp; }
 

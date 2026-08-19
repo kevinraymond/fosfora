@@ -53,7 +53,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let decay = param(0u);
     let warp = 0.002 + u.rms * 0.001;
     let warped_uv = clamp(uv + (vec2f(0.5) - uv) * warp, vec2f(0.001), vec2f(0.999));
-    let trail = feedback(warped_uv).rgb * decay;
+    let trail = feedback(warped_uv).rgb * frame_decay(decay);
 
     // Ring-shaped glow at each emitter position
     let glow_param = param(7u);

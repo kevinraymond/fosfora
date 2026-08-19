@@ -128,7 +128,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev = feedback(uv + d_off);
     let decay = mix(0.60, 0.85, m);
     let fb_w = feedback_amount * mix(0.15, 0.55, m);
-    var result = mix(col, prev.rgb * decay, fb_w);
+    let keep60 = fb_w * decay;
+    var result = col * frame_gain(1.0 - fb_w, keep60) + prev.rgb * frame_decay(keep60);
 
     // Onset glint on fracture edges — after the blend so it never accumulates
     result += edge_col * edge_line * u.onset * 0.5 * (1.0 - m);

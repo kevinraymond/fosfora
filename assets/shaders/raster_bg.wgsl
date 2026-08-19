@@ -15,7 +15,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Feedback trails with decay
     let prev = feedback(uv);
-    let trail = clamp(prev.rgb, vec3f(0.0), vec3f(1.0)) * decay;
+    let trail = clamp(prev.rgb, vec3f(0.0), vec3f(1.0)) * frame_decay(decay);
 
     // HDR clamp for safety
     let result = min(trail, vec3f(1.2));

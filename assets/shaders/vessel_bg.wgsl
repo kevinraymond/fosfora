@@ -19,7 +19,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // rise; the drift freezes as the buildup completes — held breath.
     let rise = 0.0012 * (1.0 - u.buildup);
     let prev = feedback(clamp(uv + vec2f(0.0, rise), vec2f(0.001), vec2f(0.999)));
-    let trail = prev.rgb * decay * vec3f(0.97, 0.99, 1.02);
+    let trail = prev.rgb * frame_decay3(vec3f(decay * 0.97, decay * 0.99, decay * 1.02));
 
     // Key-locked charge floor rising with the buildup (the liquid metaphor on
     // the back wall). Kept faint — the fill story belongs to the particles.

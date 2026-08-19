@@ -47,8 +47,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev_advected = feedback(uv + advect_offset);
 
     // Blend: mix (not max) so dark areas can reclaim space
-    let decay = 0.78;
-    let result = mix(col, prev_advected.rgb * decay, 0.5);
+    // mix(col, prev*d, w) is col*(1-w) + prev*(w*d), so the per-frame retention
+    // of the history is w*d and the source gain is 1-w. Both need correcting or
+    // the plateau moves with frame rate.
+    let keep60 = 0.5 * 0.78;
+    let result = col * frame_gain(0.5, keep60) + prev_advected.rgb * frame_decay(keep60);
 
     // Clamp to prevent blowout
     return vec4f(min(result, vec3f(1.2)), 1.0);

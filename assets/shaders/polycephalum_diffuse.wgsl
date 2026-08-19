@@ -19,7 +19,7 @@ struct TrailUniforms {
     decay: f32,
     diffuse: f32,
     time: f32,
-    _pad: f32,
+    delta_time: f32,
 }
 
 @group(0) @binding(0) var<uniform> tu: TrailUniforms;
@@ -60,7 +60,22 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         atomicStore(&deposit[di], 0);
 
         // Decay + deposit; clamp to keep the field bounded.
-        let v = min(blurred * tu.decay + dep, 16.0);
+        //
+        // tu.decay is authored per 1/60 s frame, so it is re-exponentiated for the real
+        // frame time (#1986). The helper is duplicated from lib/chronoflow.wgsl rather
+        // than called: this is a standalone pipeline with no lib prepended (see header),
+        // the same reason etch_sim/etch_bg duplicate their clear-cycle helper. Keep the
+        // two in sync. delta_time == 0 means "behave exactly as authored", so an older
+        // binary still writing the old padding slot degrades to today's behavior instead
+        // of leaving the field undecayed.
+        var keep = tu.decay;
+        if (tu.delta_time > 0.0) {
+            let n = clamp(tu.delta_time * 60.0, 1e-4, 2.0);
+            if (n != 1.0) {
+                keep = pow(clamp(tu.decay, 0.0, 1.0), n);
+            }
+        }
+        let v = min(blurred * keep + dep, 16.0);
         trail_dst[di] = v;
     }
 }

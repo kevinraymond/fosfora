@@ -19,7 +19,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let warped_prev = feedback(clamp(warped_uv, vec2f(0.001), vec2f(0.999)));
 
     // Blend warped and straight feedback for smoother trails
-    let trail = mix(prev.rgb, warped_prev.rgb, 0.5) * decay;
+    // The 0.5 blends two feedback taps at different UVs — a spatial smear
+    // kernel, not a temporal weight, so only the decay is frame-rate corrected.
+    let trail = mix(prev.rgb, warped_prev.rgb, 0.5) * frame_decay(decay);
 
     // Very dark base with slight blue-green tint (deep ocean / primordial void)
     let base = vec3f(0.005, 0.008, 0.012);

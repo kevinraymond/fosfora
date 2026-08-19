@@ -23,7 +23,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let bg_tinted = bg + tint * max(radial_blend, 0.0) * u.rms * 0.04;
 
     // Blend feedback with background
-    let faded = prev.rgb * decay;
+    let faded = prev.rgb * frame_decay(decay);
     let color = max(faded, bg_tinted);
 
     return vec4f(color, 1.0);

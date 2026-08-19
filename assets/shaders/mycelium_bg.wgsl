@@ -19,7 +19,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Differential RGB decay: green persists longest (bioluminescent)
     let decay = param(0u);
     let prev = feedback(warped_uv).rgb;
-    let trail = prev * vec3f(decay * 0.94, decay, decay * 0.97);
+    let trail = prev * frame_decay3(vec3f(decay * 0.94, decay, decay * 0.97));
 
     // HDR clamp to prevent blowout
     let result = min(trail, vec3f(1.2));

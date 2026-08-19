@@ -19,7 +19,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Cool the wake as it ages so the live band stays the brightest, warmest
     // thing in frame.
-    let trail = prev.rgb * decay * vec3f(0.92, 0.96, 1.0);
+    let trail = prev.rgb * frame_decay3(vec3f(decay * 0.92, decay * 0.96, decay));
 
     let result = min(trail, vec3f(1.5)); // HDR clamp
     let alpha = clamp(max(result.r, max(result.g, result.b)) * 2.0, 0.0, 1.0);

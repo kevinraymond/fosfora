@@ -55,7 +55,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let shimmer_uv = uv + vec2f(shimmer_x, shimmer_y) * shimmer_str;
     let shimmer_prev = feedback(clamp(shimmer_uv, vec2f(0.001), vec2f(0.999)));
 
-    let trail = mix(prev.rgb, shimmer_prev.rgb, 0.4) * decay;
+    // The 0.4 blends two feedback taps at different UVs — a spatial shimmer
+    // kernel, not a temporal weight, so only the decay is frame-rate corrected.
+    let trail = mix(prev.rgb, shimmer_prev.rgb, 0.4) * frame_decay(decay);
 
     let mode = param(3u);
     let rotation = param(4u);

@@ -7,7 +7,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     let decay = param(0u);
     let prev = feedback(uv);
-    var trail = clamp(prev.rgb, vec3f(0.0), vec3f(1.0)) * decay;
+    var trail = clamp(prev.rgb, vec3f(0.0), vec3f(1.0)) * frame_decay(decay);
     // Raised cap for brighter pattern visibility
     trail = min(trail, vec3f(0.85));
 

@@ -1897,7 +1897,7 @@ impl ParticleSystem {
                 decay: (0.74 + self.uniforms.effect_params[4] * 0.12).clamp(0.5, 0.94),
                 diffuse: self.uniforms.effect_params[5],
                 time: self.uniforms.time,
-                _pad: 0.0,
+                delta_time: self.uniforms.delta_time,
             };
             queue.write_buffer(ubuf, 0, bytemuck::bytes_of(&tf_uniforms));
 

@@ -17,7 +17,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let warped_uv = clamp(uv + to_center * warp_str, vec2f(0.001), vec2f(0.999));
     let prev = feedback(warped_uv);
 
-    let trail = prev.rgb * decay;
+    let trail = prev.rgb * frame_decay(decay);
 
     // --- Audio-reactive edge glow ---
     // Glow width SCALES with audio energy (like Aurora's ribbon width)

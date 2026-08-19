@@ -12,7 +12,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let decay = clamp(param(4u) * (1.0 - u.beat * 0.12), 0.5, 0.995);
 
     let prev = feedback(uv).rgb;
-    let trail = prev * decay;
+    let trail = prev * frame_decay(decay);
 
     // HDR clamp to keep additive accumulation from blowing out.
     let result = min(trail, vec3f(1.6));

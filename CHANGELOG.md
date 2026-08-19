@@ -6,6 +6,11 @@
 ## Unreleased
 
 ### Fixed
+- **Trail and feedback effects measure trail length in seconds now, not frames**, so the same
+  preset looks the same on a 30 Hz laptop and a 240 Hz desktop — at a decay of 0.82 the image
+  surviving one second ran from 2.6e-3 at 30 fps to 2.1e-21 at 240. Nothing changes at 60 fps;
+  above it, feedback backgrounds that accumulate particles settle brighter than they used to,
+  and below 30 fps trails run a little long instead of flashing dark on a stutter.
 - **The drop event fires on drops now** — it had gone off once in 141 reference drops across
   374 tracks, because it demanded 4 seconds of unbroken build-up before it would even watch
   for one, and almost nothing cleared that bar. It is still imprecise on real EDM: it also

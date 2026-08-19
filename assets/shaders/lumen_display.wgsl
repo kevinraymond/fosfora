@@ -68,7 +68,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     col *= 0.18 + 0.85 * brightness;
 
     // Temporal smoothing over own history (mix, not add — self-limiting).
-    col = mix(col, feedback(uv).rgb, 0.22);
+    // mix(col, prev, w) already carries its own source gain (1-w), so correcting
+    // the weight alone preserves the steady state — frame_gain would be a no-op.
+    col = mix(col, feedback(uv).rgb, frame_decay(0.22));
     col = min(col, vec3f(2.5));
     return vec4f(col, 1.0);
 }

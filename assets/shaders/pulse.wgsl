@@ -20,7 +20,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // Read feedback and decay
     let prev = feedback(uv);
-    let decay = 0.82;
+    let decay = frame_decay(0.82);
 
     // Radial distance from center
     let r = length(p);

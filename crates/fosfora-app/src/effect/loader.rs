@@ -2245,12 +2245,21 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 let src = std::fs::read_to_string(&src_path)
                     .unwrap_or_else(|e| panic!("{name}: cannot read {}: {e}", src_path.display()));
                 let code = strip_wgsl_comments(&src);
+                // Note this is a denylist over the RAW effect source, so a lib helper
+                // that reads wall-clock uniforms hides behind its own name and has to
+                // be added here by hand — as frame_decay/frame_gain (#1986) and the
+                // chrono_keep pair are below.
                 for token in [
                     "feedback(",
                     "u.time",
                     "u.delta_time",
                     "u.frame_index",
                     "u.scroll_phase",
+                    "frame_steps(",
+                    "frame_decay(",
+                    "frame_decay3(",
+                    "frame_gain(",
+                    "chrono_keep",
                 ] {
                     assert!(
                         !code.contains(token),
@@ -2287,6 +2296,264 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "{name} missing from probe_libs()"
             );
         }
+    }
+
+    /// #1986: the retention helpers must measure trail length in SECONDS, not frames.
+    /// This mirrors `frame_steps`/`frame_decay`/`frame_gain` from lib/chronoflow.wgsl in
+    /// Rust so the invariants run in plain CI — the WGSL is the shipping copy, so any
+    /// change there has to land here too.
+    #[test]
+    fn frame_decay_measures_trail_length_in_seconds() {
+        fn frame_steps(dt: f32) -> f32 {
+            if dt <= 0.0 {
+                return 1.0;
+            }
+            (dt * 60.0).clamp(1e-4, 2.0)
+        }
+        fn frame_decay(keep60: f32, dt: f32) -> f32 {
+            let n = frame_steps(dt);
+            if n == 1.0 {
+                return keep60;
+            }
+            keep60.clamp(0.0, 1.0).powf(n)
+        }
+        fn frame_gain(gain60: f32, keep60: f32, dt: f32) -> f32 {
+            let k = keep60.clamp(0.0, 1.0);
+            let d = 1.0 - k;
+            if d < 1e-5 {
+                return gain60 * frame_steps(dt);
+            }
+            gain60 * (1.0 - frame_decay(k, dt)) / d
+        }
+
+        // 1. Exact identity at 60 fps, so every shipped look is preserved untouched.
+        //    This relies on (1.0f32 / 60.0) * 60.0 being bit-exactly 1.0.
+        let dt60 = 1.0f32 / 60.0;
+        assert_eq!(
+            frame_steps(dt60),
+            1.0,
+            "(1/60)*60 must be exactly 1.0 in f32"
+        );
+        for k in [0.72f32, 0.82, 0.90, 0.95, 0.98, 0.999] {
+            assert_eq!(
+                frame_decay(k, dt60),
+                k,
+                "60 fps must not change retention {k}"
+            );
+            assert_eq!(frame_gain(0.5, k, dt60), 0.5, "60 fps must not change gain");
+        }
+
+        // 2. The point of the fix: the fraction surviving one WALL-CLOCK SECOND is the
+        //    same at every frame rate from 30 up. With a per-frame constant these are
+        //    k^30 versus k^240 — a factor of 1e18 at k = 0.82.
+        for k in [0.72f32, 0.82, 0.95, 0.98] {
+            let reference = k.powi(60);
+            for fps in [30u32, 50, 60, 120, 144, 240] {
+                let dt = 1.0 / fps as f32;
+                let after_one_second = frame_decay(k, dt).powi(fps as i32);
+                let rel = (after_one_second - reference).abs() / reference;
+                assert!(
+                    rel < 1e-3,
+                    "k={k} at {fps} fps retained {after_one_second:e} after 1 s, \
+                     expected {reference:e} (relative error {rel:e})"
+                );
+            }
+        }
+
+        // 3. Steady state a/(1-k) is preserved wherever both helpers apply (the linear
+        //    blends and Chromatica's additive loop), so plateau brightness holds.
+        for k in [0.3f32, 0.72, 0.9, 0.98] {
+            for a in [0.5f32, 1.0] {
+                let reference = a / (1.0 - k);
+                for fps in [30u32, 60, 120, 240] {
+                    let dt = 1.0 / fps as f32;
+                    let steady = frame_gain(a, k, dt) / (1.0 - frame_decay(k, dt));
+                    assert!(
+                        (steady / reference - 1.0).abs() < 1e-3,
+                        "steady state moved at {fps} fps (k={k}, a={a}): \
+                         {steady} vs {reference}"
+                    );
+                }
+            }
+        }
+
+        // 4. The bound. dt is clamped to 0.05 upstream, so an unbounded exponent reaches
+        //    3 and one stalled frame takes 0.82 -> 0.55 — a new single-frame darkening on
+        //    exactly the hitches this absorbs, which is what forced the #1983 revert.
+        //    Capped at two normal frames, the same frame only reaches 0.672.
+        for k in [0.72f32, 0.82, 0.90] {
+            let hitched = frame_decay(k, 0.05);
+            assert!(
+                hitched >= k * k - 1e-6,
+                "a hitched frame decayed past the two-frame bound: {k} -> {hitched}"
+            );
+            assert!(
+                hitched > k * k * k,
+                "the bound is not actually clamping (unbounded would be {})",
+                k * k * k
+            );
+        }
+
+        // 5. Below 30 fps the bound deliberately wins over exactness: trails run long
+        //    rather than flashing dark. Documented here so the trade is not mistaken
+        //    for a regression.
+        let dt24 = 1.0f32 / 24.0;
+        assert_eq!(frame_steps(dt24), 2.0, "24 fps must saturate the bound");
+
+        // 6. Degenerate inputs stay benign.
+        assert_eq!(
+            frame_decay(0.82, 0.0),
+            0.82,
+            "dt <= 0 must behave as authored"
+        );
+        assert_eq!(frame_decay(0.0, 1.0 / 120.0), 0.0, "k = 0 must stay 0");
+        assert_eq!(
+            frame_gain(1.0, 0.0, 1.0 / 30.0),
+            1.0,
+            "k = 0 leaves gain alone"
+        );
+    }
+
+    /// `polycephalum_diffuse.wgsl` is a standalone pipeline compiled with `layout: None`,
+    /// so wgpu derives the layout from the shader and a WGSL struct that has drifted from
+    /// the Rust one still validates — every field past the drift then reads a shifted
+    /// offset and the trail field quietly misbehaves. Pin the two field lists together.
+    #[test]
+    fn trail_field_uniforms_wgsl_matches_rust() {
+        use crate::gpu::particle::types::TrailFieldUniforms;
+        const WGSL: &str = include_str!("../../../../assets/shaders/polycephalum_diffuse.wgsl");
+        // Mirrors TrailFieldUniforms in gpu/particle/types.rs, in declaration order.
+        const EXPECTED: &[&str] = &[
+            "grid_w: u32",
+            "grid_h: u32",
+            "channels: u32",
+            "deposit_scale: f32",
+            "decay: f32",
+            "diffuse: f32",
+            "time: f32",
+            "delta_time: f32",
+        ];
+
+        let src = strip_wgsl_comments(WGSL);
+        let start = src
+            .find("struct TrailUniforms")
+            .expect("TrailUniforms struct not found");
+        let end = src[start..].find('}').expect("unterminated TrailUniforms");
+        let fields: Vec<String> = src[start..start + end]
+            .lines()
+            .skip(1)
+            .map(|l| {
+                l.trim()
+                    .trim_end_matches(',')
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        assert_eq!(
+            fields, EXPECTED,
+            "polycephalum_diffuse.wgsl TrailUniforms has drifted from Rust \
+             TrailFieldUniforms — update both, or the diffuse pass reads shifted offsets"
+        );
+        assert_eq!(
+            std::mem::size_of::<TrailFieldUniforms>(),
+            32,
+            "TrailFieldUniforms is documented as 32 bytes"
+        );
+    }
+
+    /// #1986: a shader that multiplies its own history by a per-FRAME constant measures
+    /// trail length in frames, so the same preset is a different effect at 30 fps and at
+    /// 240. Every shader reading `feedback()` must therefore route its retention through
+    /// a delta-time-aware helper — `frame_decay`/`frame_decay3`/`frame_gain`, or the
+    /// older `chrono_keep` pair — unless it is exempted below with the reason why.
+    ///
+    /// This fires on the NEXT feedback effect someone writes, which is the moment the
+    /// bug would otherwise come back.
+    #[test]
+    fn feedback_shaders_correct_retention_for_frame_time() {
+        // Each entry records why the shader has no per-frame retention to correct.
+        const EXEMPT: &[(&str, &str)] = &[
+            (
+                "chronoflow_velocity.wgsl",
+                "carries its own pow(0.90, dt * 60.0)",
+            ),
+            (
+                "etch_bg.wgsl",
+                "retention is exactly 1.0 by design — nothing decays per frame",
+            ),
+            (
+                "lumen_cascade.wgsl",
+                "feedback read for target size only; cascades are recomputed each frame",
+            ),
+            (
+                "lumen_scene.wgsl",
+                "feedback read for target size only; never blended",
+            ),
+            (
+                "protea_mass.wgsl",
+                "Flow Lenia mass field is conserved, not decayed",
+            ),
+            (
+                "sumi_pressure.wgsl",
+                "feedback is the previous Jacobi iterate, not frame history",
+            ),
+            (
+                "phosphor.wgsl",
+                "unreferenced legacy file; phosphor.pfx runs the chronoflow history path",
+            ),
+        ];
+
+        // CARGO_MANIFEST_DIR, not assets_dir(): under `cargo test` the CWD is the package
+        // root, so assets_dir() falls through to its CWD-relative fallback.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+        let mut checked = 0usize;
+        let mut offenders = Vec::new();
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
+            .collect();
+        entries.sort();
+
+        for path in entries {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let src = strip_wgsl_comments(&std::fs::read_to_string(&path).unwrap());
+            if !src.contains("feedback(") {
+                continue;
+            }
+            if let Some((_, why)) = EXEMPT.iter().find(|(n, _)| *n == name) {
+                assert!(!why.is_empty(), "{name}: exemption needs a reason");
+                continue;
+            }
+            checked += 1;
+            let corrected = [
+                "frame_decay(",
+                "frame_decay3(",
+                "frame_gain(",
+                "chrono_keep",
+            ]
+            .iter()
+            .any(|h| src.contains(h));
+            if !corrected {
+                offenders.push(name);
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these shaders read feedback() but never correct retention for frame time \
+             (#1986) — wrap the per-frame constant in frame_decay()/frame_decay3(), or \
+             add an EXEMPT entry saying why none is needed: {offenders:?}"
+        );
+        assert!(
+            checked >= 25,
+            "expected the feedback family to be ~27 shaders, found {checked} — has the \
+             sweep stopped finding them?"
+        );
     }
 
     /// Etch's pen lives in a compute shader and its powder lives in a fragment shader, and

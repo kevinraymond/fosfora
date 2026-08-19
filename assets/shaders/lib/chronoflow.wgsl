@@ -32,6 +32,71 @@ fn chrono_uv_vel(ndc_vel: vec2f) -> vec2f {
     return vec2f(ndc_vel.x, -ndc_vel.y) * 0.5;
 }
 
+// ---- Frame-rate-independent feedback (#1986) ----
+//
+// Every feedback site in the tree is `out = a*col + k*prev`, where the source
+// gain `a` and the retention `k` were authored implicitly at 60 fps. Holding
+// BOTH the time constant and the steady state a/(1-k) at a real frame time:
+//
+//     n = clamp(dt*60, eps, 2)     k' = pow(k, n)     a' = a * (1-k')/(1-k)
+//
+// Without this, trail length is measured in FRAMES: at k = 0.82 the fraction
+// surviving one wall-clock second spans 2.6e-3 at 30 fps to 2.1e-21 at 240,
+// so the same preset is a different effect on different hardware.
+//
+// The bound of 2 is the lesson of the reverted attempt (4b106dd). dt is already
+// clamped to 0.05 upstream (app.rs), so an unbounded n reaches 3 and one stalled
+// frame took 0.82 -> 0.55 — a NEW single-frame darkening on exactly the hitches
+// this is meant to absorb. Two normal frames is the ceiling; the cost is that
+// below 30 fps trails run long rather than flashing dark. Correction is exact
+// from 30 fps up.
+//
+// These live here, in a lib already listed in LIB_FILENAMES, rather than in a
+// new lib file. assets/ is read at RUNTIME by whatever binary is running, so
+// adding to LIB_FILENAMES version-couples assets to the binary and breaks every
+// older build mid-session — that is what forced the revert.
+fn frame_steps() -> f32 {
+    // dt <= 0 means "no frame time recorded" -> behave exactly as authored,
+    // not "nothing decays". Also keeps pow(0, 0) out of reach.
+    if (u.delta_time <= 0.0) { return 1.0; }
+    return clamp(u.delta_time * 60.0, 1e-4, 2.0);
+}
+
+// Per-frame retention -> this frame's retention.
+// Deliberately NOT clamped to 0.985 like chrono_keep_direct: that clamp bounds
+// chrono_keep's audio-summed term, which can reach 0.995. The inputs here are
+// authored constants and params, and sumi_velocity legitimately runs at 0.999.
+fn frame_decay(keep60: f32) -> f32 {
+    let n = frame_steps();
+    // Uniform branch (n comes from a uniform), so it costs nothing and makes
+    // the 60 fps path bit-exactly the expression that shipped.
+    if (n == 1.0) { return keep60; }
+    return pow(clamp(keep60, 0.0, 1.0), n);
+}
+
+// Per-channel variant. Differential RGB decay is three independent retentions,
+// so the pow must see the PRODUCT of decay and tint — pow(k,n)*t != pow(k*t,n),
+// and the tint is itself a per-frame rate (Vessel's blue is 1.02, a per-frame
+// gain). WGSL has no overloading, hence the noise2/noise3 naming convention.
+fn frame_decay3(keep60: vec3f) -> vec3f {
+    let n = frame_steps();
+    if (n == 1.0) { return keep60; }
+    return pow(clamp(keep60, vec3f(0.0), vec3f(1.0)), vec3f(n));
+}
+
+// Matching source gain, so the steady state a/(1-k) does not move with frame
+// rate. `keep60` MUST be the same value handed to frame_decay at this site.
+// Only meaningful where the source term is a linear blend inside the shader;
+// sites whose source is combined with max(), or added by the Rust-side particle
+// composite, cannot use it.
+fn frame_gain(gain60: f32, keep60: f32) -> f32 {
+    let k = clamp(keep60, 0.0, 1.0);
+    let d = 1.0 - k;
+    // k -> 1 is a lossless integrator; the correction degenerates to n, continuously.
+    if (d < 1e-5) { return gain60 * frame_steps(); }
+    return gain60 * (1.0 - frame_decay(k)) / d;
+}
+
 // ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
 // compiling). Do not use in new code; may be removed in a future major release. ----
 

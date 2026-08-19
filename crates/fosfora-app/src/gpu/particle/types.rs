@@ -538,12 +538,15 @@ pub struct TrailFieldUniforms {
     pub channels: u32,
     /// Fixed-point scale for the atomic i32 deposit buffer.
     pub deposit_scale: f32,
-    /// Per-frame trail decay multiplier (< 1.0).
+    /// Trail decay multiplier (< 1.0), authored per 1/60 s frame — the diffuse pass
+    /// re-exponentiates it for the real frame time (#1986).
     pub decay: f32,
     /// Blur mix toward the 4-neighbour mean (0 = none, 1 = full box blur).
     pub diffuse: f32,
     pub time: f32,
-    pub _pad: f32,
+    /// Seconds since the last frame. Took over the old `_pad` slot; the shader treats
+    /// 0.0 as "behave as authored", so an older binary leaving it zero is harmless.
+    pub delta_time: f32,
 }
 
 fn default_sample_mode() -> String {

@@ -29,7 +29,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev = feedback(clamp(uv + offset, vec2f(0.001), vec2f(0.999)));
 
     // Cold chromatic decay: red dies fastest -> aged light goes ice-blue.
-    var trail = prev.rgb * decay * vec3f(0.94, 0.985, 1.0);
+    var trail = prev.rgb * frame_decay3(vec3f(decay * 0.94, decay * 0.985, decay));
 
     // Faint key-locked aurora floor swelling with sustained content — barely
     // visible alone, it keeps a pad bridge from going pitch black.

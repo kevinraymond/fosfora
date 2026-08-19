@@ -24,7 +24,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let prev = feedback(clamp(uv + vec2f(wx, -fall), vec2f(0.001), vec2f(0.999)));
 
     // Chromatic decay: red dies fastest -> aged light goes blue-green.
-    var trail = prev.rgb * decay * vec3f(0.90, 0.97, 1.0);
+    var trail = prev.rgb * frame_decay3(vec3f(decay * 0.90, decay * 0.97, decay));
 
     // Faint vertical caustic curtains, swelling with sustained (harmonic)
     // content — barely visible alone, they give the falls a back-wall.

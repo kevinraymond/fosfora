@@ -42,7 +42,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             + feedback(uv_back - vec2f(texel.x, 0.0)).rgb
             + feedback(uv_back + vec2f(0.0, texel.y)).rgb
             + feedback(uv_back - vec2f(0.0, texel.y)).rgb);
-    var col = mix(feedback(uv_back).rgb, blur, 0.12) * dye_decay;
+    // The 0.12 weights the 4-neighbour mean of the SAME tap — spatial diffusion,
+    // not a temporal weight, so only dye_decay is frame-rate corrected.
+    var col = mix(feedback(uv_back).rgb, blur, 0.12) * frame_decay(dye_decay);
 
     // coloured injection on a screen-filling circle-of-fifths ring (wide ellipse, matching
     // sumi_velocity so each colour is born where its velocity splat pushes)

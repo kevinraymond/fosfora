@@ -27,7 +27,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Chromatic decay: blue survives longest, so older light cools. Keeps a
     // busy field legible by separating "now" from "a moment ago" in hue as
     // well as brightness.
-    var trail = prev.rgb * decay * vec3f(0.94, 0.965, 1.0);
+    var trail = prev.rgb * frame_decay3(vec3f(decay * 0.94, decay * 0.965, decay));
 
     // Graticule: a centre line plus soft hard-left/hard-right markers. These
     // are the only fixed reference in the frame, so pan is readable as an

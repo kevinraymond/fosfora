@@ -22,7 +22,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Differential decay: red fades fastest, blue persists longest
     let decay = param(0u);
     let prev = feedback(warped_uv).rgb;
-    let trail = prev * vec3f(decay * 0.96, decay * 0.99, decay);
+    let trail = prev * frame_decay3(vec3f(decay * 0.96, decay * 0.99, decay));
 
     // HDR clamp to prevent blowout
     let result = min(trail, vec3f(1.2));
