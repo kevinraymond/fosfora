@@ -484,6 +484,125 @@ mod tests {
         );
     }
 
+    /// #1986 end to end, on the real shaders rather than a Rust mirror of the
+    /// formula: a trail must be a function of WALL-CLOCK time, so the same effect
+    /// driven over the same 1.2 s window at 30 fps and at 120 fps must land on
+    /// the same image. With a per-frame decay constant the 30 fps run retains
+    /// k^36 of its history where the 120 fps run retains k^144 — for Pulse's
+    /// k = 0.82 that is 8e-4 against 4e-13, i.e. one has trails and the other
+    /// has effectively none.
+    ///
+    /// 1.2 s at 120 BPM is beat 2.4 — deliberately off any beat boundary, since
+    /// `beat` is a one-frame pulse and so lasts 1/30 s in one run and 1/120 s in
+    /// the other. Effects are picked from the three with no particle system
+    /// (`pulse.pfx`, `iris.pfx`), whose sources live entirely in the shader, so
+    /// the comparison isn't polluted by the Rust-side particle composite.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored frame_rate_independent_trails
+    #[test]
+    #[ignore = "GPU"]
+    fn frame_rate_independent_trails() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+
+        const WINDOW_SECS: f32 = 1.2;
+        let spec_at = |effect: &str, fps: u32, trail: f32| LoopSpec {
+            version: 1,
+            effect: effect.to_string(),
+            params: [(
+                "trail_length".to_string(),
+                crate::params::ParamValue::Float(trail),
+            )]
+            .into_iter()
+            .collect(),
+            bpm: 120.0,
+            bars: 8,
+            fps,
+            resolution: [320, 180],
+            codec: crate::headless::loop_spec::LoopCodec::H264,
+            audio: LoopAudio::None,
+            audio_file: None,
+            background: LoopBackground::Opaque,
+        };
+
+        // Accumulate history frame by frame — the trail IS the state under test,
+        // so the window has to be walked, not jumped to.
+        let render_window = |effect: &str, fps: u32, trail: f32| -> Vec<u8> {
+            let spec = spec_at(effect, fps, trail);
+            let mut session = LoopSession::create_with(
+                &spec,
+                BestEffort::TimeWrapped,
+                (*device).clone(),
+                (*queue).clone(),
+            )
+            .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"));
+            let last = (WINDOW_SECS * fps as f32).round() as u32;
+            let mut frame_bytes = Vec::new();
+            for f in 0..=last {
+                frame_bytes = session.render_frame_at(f).unwrap();
+            }
+            frame_bytes
+        };
+
+        let mean_luma = |px: &[u8]| -> f64 {
+            px.chunks_exact(4)
+                .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 765.0)
+                .sum::<f64>()
+                / (px.len() / 4) as f64
+        };
+
+        let sweep = |trail: f32| -> Vec<f64> {
+            [30u32, 60, 120]
+                .iter()
+                .map(|&fps| {
+                    let m = mean_luma(&render_window("Iris", fps, trail));
+                    println!("FPSINDEP Iris trail={trail:.2} fps={fps:<4} mean={m:.6}");
+                    m
+                })
+                .collect()
+        };
+        let spread = |v: &[f64]| -> f64 {
+            let (lo, hi) = v
+                .iter()
+                .fold((f64::MAX, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
+            (hi - lo) / hi.max(1e-9)
+        };
+
+        // CONTROL: with no trail at all, only the current dot is drawn, so the
+        // three frame rates must agree exactly. This is what separates a decay
+        // bug from the OTHER frame-rate dependency shipped effects have — an
+        // effect that draws moving content leaves one sample per frame along its
+        // path, so its coverage grows with frame rate no matter what decay does.
+        // (Pulse is unusable for this test for exactly that reason: its expanding
+        // rings are ~2x denser at 120 fps than at 30, fix or no fix.)
+        let control = sweep(0.0);
+        assert!(
+            spread(&control) < 1e-6,
+            "control is not frame-rate flat ({control:?}) — Iris's own content has \
+             become rate-dependent, so this probe can no longer isolate the decay"
+        );
+
+        // The measurement: a long trail must reach the same brightness at every
+        // frame rate. With a per-frame decay constant this spreads ~40%.
+        let trailed = sweep(0.95);
+        assert!(
+            trailed.iter().all(|&m| m > control[0] * 1.3),
+            "trail=0.95 ({trailed:?}) is barely above the no-trail control \
+             ({control:?}) — no trail is actually accumulating, so a pass is vacuous"
+        );
+        assert!(
+            spread(&trailed) < 0.05,
+            "trail brightness depends on frame rate: means {trailed:?} across \
+             30/60/120 fps spread {:.1}%. Trail length is being measured in frames, \
+             not seconds (#1986).",
+            spread(&trailed) * 100.0
+        );
+    }
+
     /// Synthetic accents are cycle-periodic (the golden guarantee extends to
     /// synthetic mode) and actually pulse on the beat.
     #[test]
