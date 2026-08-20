@@ -414,14 +414,38 @@ def bar_seconds(tr: Track, at: float) -> float:
     return FALLBACK_BAR_S
 
 
-def load_local(sidecar_dir: Path, labels_dir: Path) -> list[Track]:
+# The local corpus has no sha256 parity split — it is nine tracks Kevin owns, not a
+# dataset — so the split is named explicitly in a frozen manifest and read from there.
+# Without this, labelling the holdout tracks would silently enlarge the tune corpus,
+# because load_local globs the whole directory.
+LOCAL_SPLIT = REPO / "bench" / "manifests" / "q_drop_precision_frozen.json"
+
+
+def local_split(which: str) -> set[str] | None:
+    """Track ids in the named half, or None for 'all' / no manifest yet."""
+    if which == "all" or not LOCAL_SPLIT.exists():
+        return None
+    m = json.loads(LOCAL_SPLIT.read_text())
+    ids = m.get("split", {}).get(which)
+    if ids is None:
+        sys.exit(f"{LOCAL_SPLIT.name} has no split.{which} — one of "
+                 f"{', '.join(m.get('split', {}))}")
+    return set(ids)
+
+
+def load_local(sidecar_dir: Path, labels_dir: Path, which: str = "tune") -> list[Track]:
     """Kevin's own drop-shaped EDM, labelled by ear (#2299, Phase 2).
 
     Unlike Harmonix these bundles carry `not_drops` — fires he was shown and ruled wrong —
     so `score` applies the beat_grace policy here and nowhere else. They carry no beat
     annotation, so the +-1 bar tolerance falls back to 2 s (measured: real per-track bar
     length, 99.9-170.3 BPM across the 9, flips no match verdict).
+
+    `which` selects a half of the frozen split. It defaults to `tune` so that constant
+    selection cannot read the holdout by forgetting a flag — the failure has to be typing
+    --split holdout on purpose.
     """
+    keep = local_split(which)
     out = []
     for b in sorted(labels_dir.glob("*.json")):
         ann = json.loads(b.read_text())
@@ -430,6 +454,8 @@ def load_local(sidecar_dir: Path, labels_dir: Path) -> list[Track]:
         # rather than either crashing or quietly scoring a corpus short of a track.
         if not str(ann.get("schema", "")).startswith("fosfora-bench-annotation/"):
             print(f"  (skip {b.name}: not an annotation bundle)")
+            continue
+        if keep is not None and ann["track_id"] not in keep:
             continue
         p = sidecar_dir / f"{ann['track_id']}.jsonl"
         if not p.exists():
@@ -441,7 +467,15 @@ def load_local(sidecar_dir: Path, labels_dir: Path) -> list[Track]:
             sys.exit(f"{p}: schema v1 sidecar — re-dump")
         out.append(Track(ann["track_id"], records, ann, meta))
     if not out:
-        sys.exit(f"no label bundles in {labels_dir}")
+        sys.exit(f"no label bundles in {labels_dir}"
+                 + (f" for split {which!r}" if keep is not None else ""))
+    if keep is not None:
+        unlabelled = sorted(keep - {t.tid for t in out})
+        if unlabelled:
+            # Loud, because a half that is only half-labelled scores as if the missing
+            # tracks contributed nothing — which reads as a corpus, not as a gap.
+            print(f"  NOTE: {len(unlabelled)} track(s) in split {which!r} are not labelled "
+                  f"yet: {', '.join(t[:28] for t in unlabelled)}")
     return out
 
 
@@ -761,8 +795,11 @@ def main() -> int:
     ap.add_argument("--specimens", action="store_true",
                     help="score the three AI-mastered specimen tracks instead of a dataset")
     ap.add_argument("--local", action="store_true",
-                    help="score Kevin's 9 hand-labelled tracks (bench/labels/) instead of "
+                    help="score Kevin's hand-labelled tracks (bench/labels/) instead of "
                          "a dataset — the only corpus carrying recorded negatives")
+    ap.add_argument("--split", choices=("tune", "holdout", "all"), default="tune",
+                    help="which half of the frozen local split to score (default tune). "
+                         "The holdout is measured ONCE, at the end of the round")
     ap.add_argument("--allow-partial", action="store_true",
                     help="score only the v2 sidecars present, reporting what was skipped")
     ap.add_argument("--gates", action="store_true",
@@ -781,8 +818,9 @@ def main() -> int:
 
     if args.local:
         tracks = load_local(REPO / "bench" / "out" / "dropsweep" / "music",
-                            REPO / "bench" / "labels")
-        print(f"local: {len(tracks)} tracks, {sum(len(t.refs) for t in tracks)} drops, "
+                            REPO / "bench" / "labels", args.split)
+        print(f"local[{args.split}]: {len(tracks)} tracks, "
+              f"{sum(len(t.refs) for t in tracks)} drops, "
               f"{sum(len(t.negs) for t in tracks)} recorded negatives")
     elif args.specimens:
         tracks = load_specimens(REPO / "bench" / "out" / "dropsweep" / "music",

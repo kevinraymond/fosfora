@@ -1,0 +1,84 @@
+{
+  "schema": "fosfora-bench-q-drop-precision-frozen/v1",
+  "_policy": "Pre-registered targets for the drop PRECISION round (board #2299), frozen BEFORE any constant moves and before the holdout tracks are labelled. Same discipline as q_drop_event_frozen.json: the numbers move or the change reverts. Constant selection reads the TUNE half only; the holdout half is scored ONCE, at the end of the round. Written 2026-08-20, at v1.34.0, main fd00127. chosen_config stays null until the final report-card commit.",
+
+  "_why_this_round_needed_a_new_manifest": "q_drop_event_frozen.json governs the RECALL round on Harmonix, whose references are proxy_chorus_onset transitions rather than hand-labelled drops. That corpus cannot answer the precision question at all: it has no recorded negatives, so a fire on a break is indistinguishable from a fire on nothing. It is also STALE — its sidecars were dumped at the pre-rework config and `sweep_drop.py --validate` reads recall .013 against them, so any Harmonix drop number today describes the old detector. This round runs on Kevin's own labelled EDM instead, and needs its own frozen split because that corpus has no sha256 parity rule to fall back on.",
+
+  "_diagnosis": "The shipped detector fires 28 times across the 9 labelled tracks: 7 land on a drop, 21 do not (recall .304 / precision .250 / FA .472 per min, strict policy). Precision is the open defect. Three things were tried and refuted this round, all on the detector's own replayed per-tick state (sidecar schema v3): the refractory DURATION moves recall by exactly zero from 2 s to 32 s (#2360); the ARM axis has no operating point, every recall gain costing precision roughly 1:1 across 192 configs (#2360, generalizing #2259); and the `kick`-peaked-within-1s conjunct is a saturation artifact, killing 5 of 43 wrong fires at the loose arm against the 6 of 21 it managed at the incumbent (#2360 note, 2026-08-20).",
+
+  "_mechanism_found": "A wrong fire arms a 16 s refractory lockout that MASKS the real drop behind it, so a conjunct that suppresses the wrong fire recovers the drop and recall RISES (#2366). Measured: Psykovsky fires at 28.6 s and swallows the labelled 38.5 s drop; gate the 28.6 away and it hits at 39.0. Same shape on the Tiesto at 176.2 s masking 184.7 s. This is why the refractory sweep measured nothing — shortening the lockout leaves the masking fire in place. It also means a gate must be replayed INSIDE the state machine; filtering an existing fire list cannot see it and understates every gate.",
+
+  "constraints": {
+    "causal_only": "The drop cue must fire on the tick it decides. Kevin's call, 2026-08-20 (#2299). This disqualifies every form that reads ticks after the fire, including the strongest gate measured (`perc_post4_ratio`, LOO .304/.280, the only form that beats the incumbent on precision) — it needs 4 s of lookahead, i.e. a cue arriving a bar late.",
+    "adjudication": "A config may only be scored on tracks where ITS fires were put in front of a listener (#2365). A labelling pass seeded from one config adjudicates that config alone: at the shipped config all 28 fires carry a verdict by construction, but at the loose arm 24 of 53 land at moments nobody has ever judged, and the strict policy counts those as false alarms on the assumption that the drop list is exhaustive there. Any sweep row firing more than the seed config is partly scoring its own unlabelled moments. Seeds live beside this file (drop_loose_arm_fires.json) and go in via `label_drops.py --predictions`.",
+    "_holdout_adjudication_order": "The holdout is deliberately NOT seeded with a second config's fires up front. Seeding anchors a labeller — the tool's own docstring warns that a drop the machine never predicted is one nobody was prompted to look at, and #2259 carried weight precisely because it was free listening. So the holdout gets the shipped fires plus free listening, and the CHOSEN config's extra fires are adjudicated in a second seeded pass at scoring time. That ordering costs nothing, because the holdout is scored once at the end anyway, after the config is fixed."
+  },
+
+  "split": {
+    "rule": "named explicitly — this corpus is Kevin's own music, not a dataset, so there is no sha256 parity rule to derive it from. bench/sweep_drop.py --local --split reads this object.",
+    "_holdout_provenance": "The five holdout tracks were dumped 2026-08-20 at the v1.34.0 config and were UNLABELLED when this manifest was frozen. That ordering is the point: the target below was written before anyone knew what the holdout contains.",
+    "tune": [
+      "EDM Detection Mode",
+      "Prison of Pixels (EASE)",
+      "Psykovsky - സ്നേഹതരംഗം (Wave Of Love) (feat. Kadhal Nathi) 230BPM",
+      "Take A Walk With Me",
+      "Thermal Break",
+      "Thirty Two Hertz",
+      "Ti-sto-feat-FORS-Bring-Me-To-Life-(SixLoaded.com)",
+      "Tropical Pulse",
+      "untitled_suno_song_for_phosphor"
+    ],
+    "holdout": [
+      "Back from the shadows again",
+      "metahuman-computer-signal",
+      "systemcrash-human-nature",
+      "🧀 MELT WITH ME 🧀",
+      "Prison of Pixels"
+    ],
+    "_weak_holdout_member": "'Prison of Pixels' is a different mix of the tune-half 'Prison of Pixels (EASE)'. It is NOT an independent track and its result must be reported separately, not folded into the holdout number. It is included because the two mixes differ audibly enough to be worth a datapoint, not because it is a fair test.",
+    "tune_shipped": {
+      "hits": 7, "misses": 16, "false": 21,
+      "recall": 0.304, "precision": 0.250, "fa_per_min": 0.472,
+      "n_tracks": 9, "n_refs": 23, "n_negatives": 21,
+      "_measured": "bench/sweep_drop.py --local --validate, 2026-08-20, 9/9 tracks reproduce the binary EXACTLY",
+      "_adjudication": "all 28 fires judged by ear: 10 near a labelled drop, 18 near a recorded negative, 0 unjudged"
+    },
+    "holdout_shipped": {
+      "n_tracks": 5, "n_fires": 12,
+      "_per_track_fires": {
+        "Back from the shadows again": 3, "metahuman-computer-signal": 1,
+        "systemcrash-human-nature": 1, "🧀 MELT WITH ME 🧀": 1, "Prison of Pixels": 6
+      },
+      "_note": "Fire COUNTS only. Recall and precision are unknown and stay unknown until the holdout is labelled and scored once, at the end of the round."
+    }
+  },
+
+  "scoring": {
+    "convention": "benchlib's drop convention as reimplemented in bench/sweep_drop.py: a hit is within +-1 bar of a labelled drop (bar length measured locally, falling back to 2 s on this corpus, which carries no beat annotation), greedy one-to-one by ascending |dt|; every unmatched estimate is a false alarm.",
+    "negative_policy": "strict — a fire within +-1 bar of a recorded negative cannot be credited as a hit, with no beat-level grace. Kevin settled this by ear on 2026-08-20: he watched Thirty Two Hertz play through the real app and called the 74.68 s fire visibly early, where the replay puts it 0.370 s / 0.79 beat out, inside the one-beat grace that was scoring it as a hit. The abstract argument for beat_grace did not survive the screen. Under beat_grace the same corpus reads .391/.321 and under bar_window .435/.357; those are the same detector measured more generously, not a better one.",
+    "estimator": "leave-one-track-out for anything with a fitted threshold. At 23 drops there is no honest split of the tune half, and fitting on all nine and scoring all nine is not a small effect: the strongest gate this round reads .345 in-sample against .280 LOO."
+  },
+
+  "target": {
+    "_pre_registered": "Written 2026-08-20 BEFORE the holdout was labelled and before any constant moved. Last round's pre-registered .20 missed at .109, and that was only visible because it was written down first.",
+    "primary": "Beat the shipped detector on BOTH axes on the TUNE half, leave-one-track-out, with a causal conjunct only: recall > 0.304 AND precision > 0.250.",
+    "_why_both": "#2360 established that the arm axis alone trades them ~1:1, so a win on one axis at the other's expense is the null result restated. Requiring both is what makes the claim 'a free conjunct changes what the arm can afford' falsifiable.",
+    "holdout": "Scored ONCE, after the tune-half config is chosen and committed. Target: recall > 0.304 AND precision > 0.250 on the four independent tracks, with 'Prison of Pixels' reported separately.",
+    "_expected_shortfall": "The best causal candidate measured so far (kick_dens_delta at the loose arm) reads .522/.235 LOO — over on recall, UNDER on precision, and on a corpus where 24 of its 53 fires are unadjudicated. It is not expected to clear the bar as it stands. Recording that expectation here so that clearing it is evidence and missing it is not a surprise reinterpreted after the fact."
+  },
+
+  "levers": {
+    "gate": "name of a candidate conjunct in sweep_drop.py's GATES table, AND-ed into the fire condition. Causal forms only: kick_trail1, kick_dens_delta, perc_ratio. kick_pm1 and perc_post4_ratio are non-causal and disqualified — they stay in the table so the refutations remain reproducible.",
+    "gate_thr": "threshold on that conjunct, fitted leave-one-track-out",
+    "arm_buildup": "level build-up must exceed; shipped .40",
+    "arm_sustain": "seconds required; shipped 3.0",
+    "arm_hold": "seconds the arm stays live after the timer falls short; shipped 0.0",
+    "arm_decay": "multiplier on the timer's decay below level; shipped 2.0",
+    "baseline_ticks": "length of the jump baseline's running minimum, in 10 Hz ticks; shipped 15",
+    "loud_jump": "fire gate on the loudness jump; shipped .06",
+    "subbass_return": "fraction of the sub-bass reference peak that must return; shipped .5. NOTE this gate is near-vacuous — subbass_ref is a tau=10s peak-hold that decays through the withdrawal, so it is open on 67.3% of all ticks and on 100% of the ticks at missed drops (#2300).",
+    "refractory": "suppression after a fire; shipped 16.0. Sweeping it moves recall by ZERO (#2360); what reaches it is removing the masking fire (#2366)."
+  },
+
+  "chosen_config": null
+}
