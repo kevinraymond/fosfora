@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.34.0 — 2026-08-20
+
 ### Fixed
 - **Trail and feedback effects measure trail length in seconds now, not frames**, so the same
   preset looks the same on a 30 Hz laptop and a 240 Hz desktop — at a decay of 0.82 the image
@@ -13,10 +15,9 @@
   and below 30 fps trails run a little long instead of flashing dark on a stutter.
 - **The drop event fires on drops now** — it had gone off once in 141 reference drops across
   374 tracks, because it demanded 4 seconds of unbroken build-up before it would even watch
-  for one, and almost nothing cleared that bar. It is still imprecise on real EDM: it also
-  fires on breaks, including breaks louder than the drops around them. On a hand-checked
-  track it gave 6 cues for 3 drops. Tuning that down is in progress; meanwhile the audio
-  panel's Drop sliders trade sensitivity against false cues.
+  for one. On nine hand-labelled EDM tracks it now catches 7 of 23 drops at three wrong cues
+  for every right one; it still fires on build-ups and breaks. The audio panel's Drop sliders
+  trade sensitivity against false cues.
 - **The drop jump window now lasts the 1.5 seconds it always claimed.** It was sized against
   the analysis rate but filled at a tenth of it, so the setting was off by nearly ten times —
   and by different amounts at different sample rates (12.9 s at 44.1 kHz, 14.1 s at 48 kHz).
