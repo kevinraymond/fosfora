@@ -1,0 +1,63 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "Thermal Break",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/Thermal Break.wav",
+    "duration_s": 181.01333333333332
+  },
+  "drops": [
+    {
+      "time": 15.938,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 31.72,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 47.797,
+      "kind": "local_manual",
+      "source": "kevin:confirm"
+    },
+    {
+      "time": 105.958,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 120.035,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 136.011,
+      "kind": "local_manual",
+      "source": "kevin:confirm"
+    }
+  ],
+  "not_drops": [
+    {
+      "time": 104.224,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "break"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 3,
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}

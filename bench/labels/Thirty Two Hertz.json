@@ -1,0 +1,55 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "Thirty Two Hertz",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/Thirty Two Hertz.wav",
+    "duration_s": 179.91466666666668
+  },
+  "drops": [
+    {
+      "time": 75.047,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 150.083,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    }
+  ],
+  "not_drops": [
+    {
+      "time": 7.584,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "buildup"
+    },
+    {
+      "time": 74.677,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "buildup"
+    },
+    {
+      "time": 149.664,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "buildup"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 3,
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "Tropical Pulse",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/Tropical Pulse.wav",
+    "duration_s": 176.97066666666666
+  },
+  "drops": [
+    {
+      "time": 42.571,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 68.732,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 103.586,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 151.604,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    }
+  ],
+  "not_drops": [
+    {
+      "time": 24.757,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "buildup"
+    },
+    {
+      "time": 143.264,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "fill"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 4,
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}

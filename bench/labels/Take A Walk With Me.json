@@ -1,0 +1,49 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "Take A Walk With Me",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/Take A Walk With Me.wav",
+    "duration_s": 211.95997916666667
+  },
+  "drops": [
+    {
+      "time": 69.218,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    },
+    {
+      "time": 174.307,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    }
+  ],
+  "not_drops": [
+    {
+      "time": 22.197,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "other"
+    },
+    {
+      "time": 123.424,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "label": "fill"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 2,
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}

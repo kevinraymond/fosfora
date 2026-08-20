@@ -1,0 +1,43 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "EDM Detection Mode",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/EDM Detection Mode.mp3",
+    "duration_s": 365.7231065759637
+  },
+  "drops": [
+    {
+      "time": 135.117,
+      "kind": "local_manual",
+      "source": "kevin:confirm"
+    },
+    {
+      "time": 210.039,
+      "kind": "local_manual",
+      "source": "kevin:click"
+    }
+  ],
+  "not_drops": [
+    {
+      "time": 5.234,
+      "kind": "local_manual",
+      "source": "kevin:click",
+      "label": "other"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 2,
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}
