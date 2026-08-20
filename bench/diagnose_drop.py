@@ -74,6 +74,46 @@ def load_boundaries(path: Path) -> list[tuple[float, float]]:
     return out
 
 
+def load_labels(labels_dir: Path) -> dict[str, dict]:
+    """bench/labels/*.json -> the same {track: {"drops": [...]}} shape as --refs.
+
+    Drops and recorded negatives go into one list tagged by `kind`, because the question
+    the round is asking spans both: at a drop, which conjunct blocked the fire; at a
+    rejection, which conjunct let it through.
+    """
+    out: dict[str, dict] = {}
+    for p in sorted(labels_dir.glob("*.json")):
+        b = json.loads(p.read_text())
+        marks = [{"time": float(d["time"]), "kind": "drop"} for d in b.get("drops") or []]
+        marks += [{"time": float(d["time"]), "kind": "not_drop", "label": d.get("label")}
+                  for d in b.get("not_drops") or []]
+        if marks:
+            out[b["track_id"]] = {"drops": sorted(marks, key=lambda m: m["time"])}
+    if not out:
+        sys.exit(f"no label bundles with marks in {labels_dir}")
+    return out
+
+
+def summarize_trio(hits: list[dict], miss: list[dict], fired_on_negatives: list[dict]) -> None:
+    """Can the v3 HPSS trio tell a fire that was right from a fire that was wrong?
+
+    The comparison that matters is fires-vs-fires — hits against fires on a recorded
+    negative — not drops against non-drops. A feature that separates drops from arbitrary
+    moments says nothing about a gate the machine only consults when it is already
+    about to fire.
+    """
+    if not hits or not fired_on_negatives or not hits[0].get("trio"):
+        return
+    print("\nHPSS trio at the machine's own fires (v3 sidecar):")
+    print(f"  {'':22}{'right fires':>13}{'wrong fires':>13}{'missed drops':>14}")
+    for k in hits[0]["trio"]:
+        def m(rows):
+            vals = [r["trio"][k] for r in rows if k in (r.get("trio") or {})]
+            return sum(vals) / len(vals) if vals else float("nan")
+        print(f"  {k:22}{m(hits):13.4f}{m(fired_on_negatives):13.4f}{m(miss):14.4f}")
+    print(f"  {'n':22}{len(hits):13}{len(fired_on_negatives):13}{len(miss):14}")
+
+
 def check_alignment(cols: dict[str, np.ndarray]) -> str:
     """The sidecar self-decimates; the tracker ticks on its own clock. Prove they agree."""
     d = np.diff(cols["d_tick"])
@@ -104,9 +144,14 @@ def diagnose(name: str, cols: dict[str, np.ndarray], meta: dict,
         if t0 < args.min_time:
             continue
         near = [(abs(bt - t0), bt, c) for bt, c in bounds if abs(bt - t0) <= args.boundary_window]
-        if not near:
+        if near:
+            _, btime, bconf = min(near)
+        elif args.boundary_window == float("inf"):
+            # Labelled by ear: no Q4 boundary needed, and its absence is not a reason to
+            # drop the reference.
+            btime, bconf = None, None
+        else:
             continue
-        _, btime, bconf = min(near)
 
         # Window: the drop moment plus the bar or so after it, where a fire would count.
         w = (ts >= t0 - args.pre) & (ts <= t0 + args.post)
@@ -142,8 +187,12 @@ def diagnose(name: str, cols: dict[str, np.ndarray], meta: dict,
 
         rows.append({
             "track": name, "time": t0, "hit": hit,
-            "boundary_time": round(btime, 2), "boundary_conf": round(bconf, 3),
-            "rms_step_db": ref["rms_step_db"], "sub_null_db": ref["sub_null_db"],
+            "kind": ref.get("kind", "drop"), "label": ref.get("label"),
+            "boundary_time": round(btime, 2) if btime is not None else None,
+            "boundary_conf": round(bconf, 3) if bconf is not None else None,
+            "rms_step_db": ref.get("rms_step_db"), "sub_null_db": ref.get("sub_null_db"),
+            "trio": {k: round(float(cols[k][w].mean()), 4)
+                     for k in ("d_kick", "d_perc", "d_hratio") if k in cols},
             "jump_max": round(jump_max, 4), "jump_gate": jump_gate,
             "armed_frac": round(armed_frac, 2), "subret_frac": round(subret_frac, 2),
             "refrac_frac": round(refrac_frac, 2),
@@ -152,9 +201,19 @@ def diagnose(name: str, cols: dict[str, np.ndarray], meta: dict,
             "never_true": failed, "sole_blockers": blockers,
         })
 
-        mark = "HIT " if hit else "MISS"
-        print(f"  {mark} @ {t0:7.2f}s  boundary {bconf:.2f} @ {btime:.1f}s | "
-              f"RMS step {ref['rms_step_db']:+5.1f} dB")
+        kind = ref.get("kind", "drop")
+        if kind == "not_drop":
+            # For a rejected fire the roles invert: firing is the error, so "HIT" would
+            # read backwards.
+            mark = "FIRED" if hit else "clean"
+        else:
+            mark = "HIT  " if hit else "MISS "
+        if btime is not None and ref.get("rms_step_db") is not None:
+            prov = (f"boundary {bconf:.2f} @ {btime:.1f}s | "
+                    f"RMS step {ref['rms_step_db']:+5.1f} dB")
+        else:
+            prov = "by ear" + (f" — {ref['label']}" if ref.get("label") else "")
+        print(f"  {mark} @ {t0:7.2f}s  {prov}")
         print(f"        jump max {jump_max:.4f} / gate {jump_gate:.3f}"
               f"{'  <-- BLOCKS' if 'jump' in failed else ''}   "
               f"armed {armed_frac * 100:3.0f}% of window (high {high_max:.1f}s / "
@@ -234,7 +293,12 @@ def arm_mechanics(cols: dict[str, np.ndarray], t0: float, pre_roll: float,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--sidecars", type=Path, required=True)
-    ap.add_argument("--refs", type=Path, required=True)
+    ap.add_argument("--refs", type=Path,
+                    help="drop_reference.py candidates (mechanical; needs Q4 corroboration)")
+    ap.add_argument("--labels", type=Path,
+                    help="bench/labels/ — listener-labelled drops (#2299). A human verdict "
+                         "needs neither boundary corroboration nor the intro filter, so "
+                         "both are bypassed; recorded negatives are diagnosed too.")
     ap.add_argument("--boundary-window", type=float, default=4.0,
                     help="s; a candidate needs a Q4 boundary this close to be a reference")
     ap.add_argument("--min-time", type=float, default=10.0,
@@ -246,7 +310,19 @@ def main() -> int:
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
 
-    refs = json.loads(args.refs.read_text())
+    if bool(args.refs) == bool(args.labels):
+        ap.error("give exactly one of --refs (mechanical candidates) or --labels (by ear)")
+
+    if args.labels:
+        refs = load_labels(args.labels)
+        # A listener's verdict is the corroboration, and "the track starts out of silence"
+        # is something they already ruled on — Kevin logged 4.9 s on Prison of Pixels as a
+        # rejected buildup rather than leaving it to a time filter.
+        args.boundary_window = float("inf")
+        args.min_time = -1.0
+    else:
+        refs = json.loads(args.refs.read_text())
+
     all_rows = []
     for name, ref in sorted(refs.items()):
         side = args.sidecars / f"{name}.jsonl"
@@ -266,9 +342,18 @@ def main() -> int:
         all_rows.extend(rows)
 
     print("\n" + "=" * 78)
-    hits = [r for r in all_rows if r["hit"]]
-    miss = [r for r in all_rows if not r["hit"]]
-    print(f"references {len(all_rows)}: {len(hits)} hit, {len(miss)} missed")
+    negatives = [r for r in all_rows if r["kind"] == "not_drop"]
+    # Report on drops only, but keep the negatives in all_rows — they are the precision
+    # evidence and the --json consumer needs them.
+    drops = [r for r in all_rows if r["kind"] != "not_drop"]
+    hits = [r for r in drops if r["hit"]]
+    miss = [r for r in drops if not r["hit"]]
+    print(f"references {len(drops)}: {len(hits)} hit, {len(miss)} missed")
+    if negatives:
+        fired = [r for r in negatives if r["hit"]]
+        print(f"recorded negatives {len(negatives)}: {len(fired)} fired on "
+              f"(the precision question), {len(negatives) - len(fired)} clean")
+        summarize_trio(hits, miss, fired)
     if miss:
         blocked = {}
         for r in miss:

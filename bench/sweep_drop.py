@@ -58,11 +58,18 @@ def is_tune(track_id: str) -> bool:
 
 @dataclass(frozen=True)
 class DropCfg:
-    """Shipped defaults mirror `StructureConfig::default()`."""
+    """Shipped defaults mirror `StructureConfig::default()` (audio/structure.rs).
 
-    arm_buildup: float = 0.6
-    arm_sustain: float = 4.0
-    loud_jump: float = 0.08
+    These had drifted a whole round behind it — .6/4.0/.08 against a shipped .40/3.0/.06
+    — which is how #2259's refractory sweep came to vary one lever around the pre-rework
+    arm config and measure nothing. Every grid now anchors on the dump's own meta line
+    instead, so the drift cannot poison a sweep again; keeping these current only matters
+    for a partial `--config`.
+    """
+
+    arm_buildup: float = 0.40
+    arm_sustain: float = 3.0
+    loud_jump: float = 0.06
     subbass_return: float = 0.5
     refractory: float = 16.0
     # --- levers this round adds ---
@@ -162,8 +169,8 @@ V3_COLS = ("d_kick", "d_perc", "d_hratio")
 
 class Track:
     __slots__ = ("tid", "t", "build", "loud", "sub", "sub_ref", "fired",
-                 "refs", "beats", "downbeats", "duration", "shipped_ticks", "dump_cfg",
-                 "v3")
+                 "refs", "negs", "beats", "downbeats", "duration", "shipped_ticks",
+                 "dump_cfg", "v3")
 
     def trio(self) -> dict[str, np.ndarray]:
         """The v3 columns, or a hard failure naming the track that lacks them."""
@@ -191,6 +198,8 @@ class Track:
             else None
         )
         self.refs = np.array([d["time"] for d in ann.get("drops", [])], dtype=np.float64)
+        self.negs = np.array([d["time"] for d in ann.get("not_drops") or []],
+                             dtype=np.float64)
         self.duration = float(ann["audio"]["duration_s"])
         db = ann.get("downbeats") or []
         bt = ann.get("beats") or []
@@ -264,6 +273,31 @@ def bar_seconds(tr: Track, at: float) -> float:
     return FALLBACK_BAR_S
 
 
+def load_local(sidecar_dir: Path, labels_dir: Path) -> list[Track]:
+    """Kevin's own drop-shaped EDM, labelled by ear (#2299, Phase 2).
+
+    Unlike Harmonix these bundles carry `not_drops` — fires he was shown and ruled wrong —
+    so `score` applies the beat_grace policy here and nowhere else. They carry no beat
+    annotation, so the +-1 bar tolerance falls back to 2 s (measured: real per-track bar
+    length, 99.9-170.3 BPM across the 9, flips no match verdict).
+    """
+    out = []
+    for b in sorted(labels_dir.glob("*.json")):
+        ann = json.loads(b.read_text())
+        p = sidecar_dir / f"{ann['track_id']}.jsonl"
+        if not p.exists():
+            sys.exit(f"{b.name}: no sidecar at {p} — run dump_structure_sidecar.py --files")
+        parsed = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+        meta = next((r for r in parsed if "meta" in r), {})
+        records = [r for r in parsed if "meta" not in r]
+        if not records or "d_fired" not in records[0]:
+            sys.exit(f"{p}: schema v1 sidecar — re-dump")
+        out.append(Track(ann["track_id"], records, ann, meta))
+    if not out:
+        sys.exit(f"no label bundles in {labels_dir}")
+    return out
+
+
 def load_tracks(dataset: Path, tune_only: bool = True,
                 allow_partial: bool = False) -> list[Track]:
     sidecar_dir = REPO / "bench" / "out" / "structsweep" / dataset.name
@@ -310,6 +344,25 @@ def load_tracks(dataset: Path, tune_only: bool = True,
 # =================================================================================
 
 
+# benchlib's beat_grace policy, ported (metrics/drops.py). A fire the listener rejected
+# may still match, but only within one BEAT of the drop.
+#
+# One deliberate difference: benchlib tests coincidence with a recorded negative at
+# +-0.25 s, because there the fires are the shipped binary's and a rejection is stamped on
+# the fire it judged. In a SWEEP the fires move, so a negative is treated as a rejected
+# *moment* — +-1 bar, the same zone of influence a drop gets. Verified inert at the
+# shipped config: --local reproduces benchlib's beat_grace numbers exactly.
+GRACE_BEATS = 1.0
+
+
+def _allowed(tr: Track, est_t: float, ref_t: float, bar: float) -> bool:
+    if not len(tr.negs):
+        return True
+    if not np.any(np.abs(tr.negs - est_t) <= MATCH_BARS * bar):
+        return True
+    return abs(est_t - ref_t) <= GRACE_BEATS * (bar / 4.0)
+
+
 def score(tracks: list[Track], cfg: DropCfg) -> dict:
     hits = misses = false = 0
     total_min = 0.0
@@ -319,9 +372,10 @@ def score(tracks: list[Track], cfg: DropCfg) -> dict:
         # Greedy one-to-one by ascending |dt|, +-1 bar measured locally.
         pairs = []
         for ri, rt in enumerate(tr.refs):
-            tol = MATCH_BARS * bar_seconds(tr, float(rt))
+            bar = bar_seconds(tr, float(rt))
+            tol = MATCH_BARS * bar
             for ei, et in enumerate(est):
-                if abs(et - rt) <= tol:
+                if abs(et - rt) <= tol and _allowed(tr, et, rt, bar):
                     pairs.append((abs(et - rt), ri, ei))
         pairs.sort()
         used_r, used_e = set(), set()
@@ -380,8 +434,14 @@ def fmt(cfg: DropCfg, s: dict) -> str:
 # =================================================================================
 
 
-def stage_grid(stage: str) -> list[DropCfg]:
-    base = DropCfg()
+def stage_grid(stage: str, base: DropCfg) -> list[DropCfg]:
+    """`base` is the config the corpus was dumped under, never DropCfg()'s defaults.
+
+    #2259's refractory sweep measured nothing because it varied one lever around the
+    *pre-rework* arm config, where the machine fired once in 77 refs and every row came
+    out identical. Anchoring the grid on the dump's own meta line makes that failure
+    impossible rather than unlikely.
+    """
     if stage == "arm":
         # The arm is the sole blocker at 11/11 specimen misses (#2212): level, the
         # sustain requirement, the dip decay, and holding the arm through the pre-drop
@@ -399,7 +459,11 @@ def stage_grid(stage: str) -> list[DropCfg]:
                     (0.3, 0.4, 0.5, 0.6, 0.7),
                     (15, 30, 60, 129, 200))]
     if stage == "refractory":
-        return [replace(base, refractory=r) for r in (8.0, 12.0, 16.0, 24.0, 32.0)]
+        # Extended below 8 s for #2299: 6 of 13 missed drops on Kevin's corpus are
+        # swallowed by the lockout an earlier fire started, so the interesting range is
+        # shorter than anything #2259's corrected sweep could see on Harmonix.
+        return [replace(base, refractory=r)
+                for r in (2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0)]
     sys.exit(f"unknown stage {stage}")
 
 
@@ -418,12 +482,20 @@ def main() -> int:
                     help="JSON dict of DropCfg overrides to score on its own")
     ap.add_argument("--specimens", action="store_true",
                     help="score the three AI-mastered specimen tracks instead of a dataset")
+    ap.add_argument("--local", action="store_true",
+                    help="score Kevin's 9 hand-labelled tracks (bench/labels/) instead of "
+                         "a dataset — the only corpus carrying recorded negatives")
     ap.add_argument("--allow-partial", action="store_true",
                     help="score only the v2 sidecars present, reporting what was skipped")
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
 
-    if args.specimens:
+    if args.local:
+        tracks = load_local(REPO / "bench" / "out" / "dropsweep" / "music",
+                            REPO / "bench" / "labels")
+        print(f"local: {len(tracks)} tracks, {sum(len(t.refs) for t in tracks)} drops, "
+              f"{sum(len(t.negs) for t in tracks)} recorded negatives")
+    elif args.specimens:
         tracks = load_specimens(REPO / "bench" / "out" / "dropsweep" / "music",
                                 REPO / "bench" / "out" / "dropsweep" / "music_refs.json")
         print(f"specimens: {len(tracks)} tracks, "
@@ -486,10 +558,17 @@ def main() -> int:
         ap.error("need --validate, --stage or --config")
 
     # The incumbent is whatever produced this corpus, not whatever the defaults say today.
+    # It anchors every grid below, so a corpus dumped under two configs would silently
+    # sweep around one of them: refuse instead.
+    configs = {json.dumps(t.dump_cfg, sort_keys=True) for t in tracks}
+    if len(configs) > 1:
+        sys.exit(f"corpus was dumped under {len(configs)} different configs — re-dump it "
+                 f"under one before sweeping")
     incumbent = cfg_from_dump(tracks[0])
     print("as-dumped baseline: " + fmt(incumbent, score(tracks, incumbent)) + "\n")
 
-    grid = stage_grid(args.stage) if args.stage != "combined" else combined_grid()
+    grid = (stage_grid(args.stage, incumbent) if args.stage != "combined"
+            else combined_grid(incumbent))
     print(f"stage {args.stage}: {len(grid)} configs")
     rows = []
     for i, cfg in enumerate(grid, 1):
@@ -527,9 +606,9 @@ def main() -> int:
     return 0
 
 
-def combined_grid() -> list[DropCfg]:
+def combined_grid(base: DropCfg) -> list[DropCfg]:
     """Arm levers crossed with the fire gate, around whatever the arm stage liked."""
-    return [replace(DropCfg(), arm_buildup=lv, arm_sustain=su, arm_hold=ho,
+    return [replace(base, arm_buildup=lv, arm_sustain=su, arm_hold=ho,
                     loud_jump=j, baseline_ticks=bt)
             for lv, su, ho, j, bt in itertools.product(
                 (0.4, 0.45, 0.5, 0.55),
