@@ -23,6 +23,15 @@
 //! conjuncts it actually evaluated, so a replay is checking the detector rather than a
 //! lookalike built from proxies.
 //!
+//! v3 adds `d_kick` / `d_perc` / `d_hratio` for the same reason and from the same source
+//! (#2299). They are *candidate* conjuncts, not evaluated ones — `update_drop` does not read
+//! them yet — but it is handed `pre_norm`, so those are the values a new conjunct would see.
+//! The wire's `/stem/drums/energy` and `/stem/melody/energy` are the live counterparts of
+//! two of them and are **adaptively re-ranged** (`audio::schema`): a percentile-ranged
+//! feature saturates while the signal is stable, which is precisely the failure mode that
+//! made `subbass_ref` useless as a gate (#2300). Sweeping the ranged proxy would measure
+//! the ranger, not the music.
+//!
 //! Never set the variable in live use: the writer does file I/O on the analysis thread.
 //! The bench drives it per track via `--signal-dump`, where the "audio thread" is an
 //! offline file loop.
@@ -44,9 +53,10 @@ pub const FP_DIM: usize = 27;
 const TICK_HZ: f64 = 10.0;
 
 /// Sidecar schema version. v1 was fingerprint + label-machine fields only; v2 adds the
-/// drop-machine trace and the leading `meta` line. Readers must skip the meta line and may
-/// ignore unknown fields, so a v1 reader keeps working on a v2 file once it does.
-const SCHEMA_VERSION: u32 = 2;
+/// drop-machine trace and the leading `meta` line; v3 adds the HPSS trio the precision
+/// round needs (#2299). Readers must skip the meta line and may ignore unknown fields, so
+/// a v1 reader keeps working on a v2 file once it does.
+const SCHEMA_VERSION: u32 = 3;
 
 pub struct StructureSidecar {
     out: BufWriter<File>,
@@ -116,7 +126,7 @@ impl StructureSidecar {
             "{{\"ts\":{timestamp:.4},\"loud_pre\":{:.5e},\"loud_s\":{:.5e},\"buildup\":{:.4},\"drop\":{:.1},\"bar_index\":{:.1},\"bar_phase\":{:.4},\"downbeat\":{:.1},\"sub_bass\":{:.5e},\"bass\":{:.5e},\
 \"d_tick\":{},\"d_t\":{:.4},\"d_loud_m\":{:.5e},\"d_sub\":{:.5e},\"d_sub_ref\":{:.5e},\"d_build\":{:.5e},\
 \"d_high\":{:.4},\"d_base\":{:.5e},\"d_jump\":{:.5e},\"d_ring\":{},\"d_armed\":{},\"d_subret\":{},\
-\"d_refrac\":{},\"d_fired\":{},\"fp\":[",
+\"d_refrac\":{},\"d_fired\":{},\"d_kick\":{:.5e},\"d_perc\":{:.5e},\"d_hratio\":{:.5e},\"fp\":[",
             pre_norm.loudness_s,
             live.loudness_s,
             live.buildup,
@@ -140,6 +150,9 @@ impl StructureSidecar {
             u8::from(trace.sub_returning),
             u8::from(trace.in_refractory),
             u8::from(trace.fired),
+            pre_norm.kick,
+            pre_norm.percussive_energy,
+            pre_norm.harmonic_ratio,
         );
         for (i, v) in fp.iter().enumerate() {
             if i > 0 {

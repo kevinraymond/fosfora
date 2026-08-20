@@ -51,6 +51,10 @@ def load_sidecar(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
         if k not in rows[0]:
             sys.exit(f"{path}: schema v1 sidecar (no {k}) — re-dump with the v2 binary")
         cols[k] = np.array([r[k] for r in rows], dtype=np.float64)
+    # v3 (#2299): candidate conjuncts, optional — the Harmonix corpus is still v2.
+    for k in ("d_kick", "d_perc", "d_hratio"):
+        if k in rows[0]:
+            cols[k] = np.array([r[k] for r in rows], dtype=np.float64)
     return meta, cols
 
 

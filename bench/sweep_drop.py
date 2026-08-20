@@ -153,9 +153,24 @@ def check_integrity(tid: str, records: list[dict]) -> None:
         prev = cur
 
 
+# Schema v3 (#2299): candidate conjuncts the drop machine does not read yet. Optional
+# everywhere, because the Harmonix sidecar corpus is v2 and is not being re-dumped —
+# an analysis that needs them asks `Track.trio()` and gets a loud failure if it is on
+# the wrong corpus, rather than every v2 reader breaking at load.
+V3_COLS = ("d_kick", "d_perc", "d_hratio")
+
+
 class Track:
     __slots__ = ("tid", "t", "build", "loud", "sub", "sub_ref", "fired",
-                 "refs", "beats", "downbeats", "duration", "shipped_ticks", "dump_cfg")
+                 "refs", "beats", "downbeats", "duration", "shipped_ticks", "dump_cfg",
+                 "v3")
+
+    def trio(self) -> dict[str, np.ndarray]:
+        """The v3 columns, or a hard failure naming the track that lacks them."""
+        if self.v3 is None:
+            sys.exit(f"{self.tid}: schema v2 sidecar (no {V3_COLS[0]}) — re-dump with the "
+                     f"v3 binary before asking for the HPSS trio")
+        return self.v3
 
     def __init__(self, tid: str, records: list[dict], ann: dict, meta: dict | None = None):
         self.dump_cfg = (meta or {}).get("cfg", {})
@@ -170,6 +185,11 @@ class Track:
         # The binary's own ring capacity for this track — sample-rate dependent, so read
         # it from the data rather than assuming one number for the corpus.
         self.shipped_ticks = int(max(r["d_ring"] for r in records))
+        self.v3 = (
+            {k: np.array([r[k] for r in records], dtype=np.float64) for k in V3_COLS}
+            if all(k in records[0] for k in V3_COLS)
+            else None
+        )
         self.refs = np.array([d["time"] for d in ann.get("drops", [])], dtype=np.float64)
         self.duration = float(ann["audio"]["duration_s"])
         db = ann.get("downbeats") or []
