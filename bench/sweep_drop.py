@@ -425,6 +425,12 @@ def load_local(sidecar_dir: Path, labels_dir: Path) -> list[Track]:
     out = []
     for b in sorted(labels_dir.glob("*.json")):
         ann = json.loads(b.read_text())
+        # Not every .json dropped in here is an annotation bundle — a --fires seed lands
+        # as one and used to crash the loader on a bare KeyError. Skip by schema, loudly,
+        # rather than either crashing or quietly scoring a corpus short of a track.
+        if not str(ann.get("schema", "")).startswith("fosfora-bench-annotation/"):
+            print(f"  (skip {b.name}: not an annotation bundle)")
+            continue
         p = sidecar_dir / f"{ann['track_id']}.jsonl"
         if not p.exists():
             sys.exit(f"{b.name}: no sidecar at {p} — run dump_structure_sidecar.py --files")
@@ -673,6 +679,23 @@ def stage_grid(stage: str, base: DropCfg) -> list[DropCfg]:
     sys.exit(f"unknown stage {stage}")
 
 
+def write_fires(tracks: list[Track], cfg: DropCfg, path: Path) -> None:
+    """`{track_id: [times]}` for `label_drops.py --predictions` (#2365).
+
+    Carries the config it came from in a `_config` key, because a bundle labelled against
+    these fires is evidence about THAT config and a later reader has to be able to tell
+    which. The loader skips underscore keys.
+    """
+    out: dict[str, object] = {"_config": {k: v for k, v in cfg.__dict__.items()}}
+    n = 0
+    for tr in tracks:
+        est = [round(float(t), 3) for t in simulate_track(tr, cfg)]
+        out[tr.tid] = est
+        n += len(est)
+    path.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"wrote {n} fires across {len(tracks)} tracks -> {path}")
+
+
 def report_gates(tracks: list[Track], args) -> int:
     """Every candidate conjunct against two arm configs, in-sample and LOO (#2299).
 
@@ -748,6 +771,11 @@ def main() -> int:
     ap.add_argument("--gate-quantile", type=float, default=0.0,
                     help="quantile of the right fires the gate threshold is fitted at; "
                          "0 = keep every right fire on the fit set")
+    ap.add_argument("--fires", type=Path, default=None,
+                    help="write {track_id: [times]} for the scored config, to seed a "
+                         "labelling pass with `label_drops.py --predictions` (#2365). "
+                         "Write it to bench/manifests/, NOT bench/labels/ — that directory "
+                         "is globbed for annotation bundles")
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
 
@@ -811,6 +839,8 @@ def main() -> int:
         cfg = replace(DropCfg(), **json.loads(args.config))
         s = score(tracks, cfg)
         print(fmt(cfg, s))
+        if args.fires:
+            write_fires(tracks, cfg, args.fires)
         if args.json:
             args.json.write_text(json.dumps(
                 {"config": cfg.__dict__, "score": {k: v for k, v in s.items()

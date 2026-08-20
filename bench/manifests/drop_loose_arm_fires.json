@@ -1,0 +1,85 @@
+{
+  "_config": {
+    "arm_buildup": 0.4,
+    "arm_sustain": 2.0,
+    "loud_jump": 0.06,
+    "subbass_return": 0.5,
+    "refractory": 16.0,
+    "baseline_ticks": 15,
+    "arm_decay": 1.0,
+    "arm_hold": 8.0,
+    "gate": null,
+    "gate_thr": 0.0
+  },
+  "EDM Detection Mode": [
+    5.236,
+    135.117
+  ],
+  "Prison of Pixels (EASE)": [
+    2.997,
+    38.197,
+    68.491,
+    200.651,
+    230.411,
+    252.917,
+    326.944,
+    354.251
+  ],
+  "Psykovsky - സ്നേഹതരംഗം (Wave Of Love) (feat. Kadhal Nathi) 230BPM": [
+    5.55,
+    28.642,
+    89.037
+  ],
+  "Take A Walk With Me": [
+    11.531,
+    30.731,
+    46.731,
+    69.237,
+    121.717,
+    138.464,
+    155.211,
+    174.304,
+    206.837
+  ],
+  "Thermal Break": [
+    16.011,
+    33.291,
+    53.131,
+    104.224,
+    121.504,
+    140.704,
+    170.251
+  ],
+  "Thirty Two Hertz": [
+    7.584,
+    30.624,
+    74.677,
+    149.664
+  ],
+  "Ti-sto-feat-FORS-Bring-Me-To-Life-(SixLoaded.com)": [
+    17.984,
+    43.375,
+    79.737,
+    176.181
+  ],
+  "Tropical Pulse": [
+    3.744,
+    24.757,
+    42.784,
+    69.131,
+    103.797,
+    143.264
+  ],
+  "untitled_suno_song_for_phosphor": [
+    2.997,
+    37.237,
+    55.797,
+    100.704,
+    176.864,
+    201.824,
+    231.051,
+    255.371,
+    272.331,
+    300.171
+  ]
+}

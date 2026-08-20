@@ -907,5 +907,121 @@ class TestDropGate(unittest.TestCase):
         self.assertEqual(float(np.nanmax(vals)), 1.0)
 
 
+def _label_drops():
+    """label_drops.py as a module — a uv script, loaded by path like sweep_drop."""
+    import importlib.util
+    path = Path(__file__).parent / "label_drops.py"
+    spec = importlib.util.spec_from_file_location("label_drops", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["label_drops"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestLabelBundleRoundTrip(unittest.TestCase):
+    """Resuming a label session must not corrupt the marks already in the bundle.
+
+    These bundles are Kevin's hand-labelled ground truth for the whole drop round; there is
+    no way to regenerate them except by listening to nine tracks again.
+    """
+
+    def setUp(self):
+        self.ld = _label_drops()
+
+    def round_trip(self, td: Path, body: dict) -> dict:
+        track = {"path": str(td / "t.wav"), "duration": 100.0, "predictions": []}
+        out = self.ld.write_bundle(track, body, td)
+        return json.loads(out.read_text())
+
+    def test_source_survives_a_resume(self):
+        # The writer prefixed "kevin:" onto whatever it was handed, but load_marks hands
+        # back the STORED value — so every resume produced "kevin:kevin:click", compounding
+        # once per save. `source` is what separates free listening from confirm/reject, and
+        # #2360's timing result rests on exactly that split.
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            first = self.round_trip(td, {"drops": [{"t": 10.0, "source": "click"}],
+                                         "not_drops": []})
+            self.assertEqual(first["drops"][0]["source"], "kevin:click")
+            # Now resume: read it back the way the tool does, and save again.
+            marks = self.ld.load_marks("t", td)
+            second = self.round_trip(td, {"drops": marks["drops"], "not_drops": []})
+            self.assertEqual(second["drops"][0]["source"], "kevin:click")
+
+    def test_resume_is_idempotent_over_many_saves(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            body = {"drops": [{"t": 10.0, "source": "confirm"}],
+                    "not_drops": [{"t": 20.0, "source": "reject", "label": "break"}]}
+            for _ in range(4):
+                self.round_trip(td, body)
+                m = self.ld.load_marks("t", td)
+                body = {"drops": m["drops"], "not_drops": m["not_drops"]}
+            final = json.loads((td / "t.json").read_text())
+            self.assertEqual(final["drops"][0]["source"], "kevin:confirm")
+            self.assertEqual(final["not_drops"][0]["source"], "kevin:reject")
+            self.assertEqual(final["not_drops"][0]["label"], "break")
+
+    def test_resume_preserves_times_labels_and_pred_time(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            self.round_trip(td, {
+                "drops": [{"t": 75.047, "source": "click"}],
+                "not_drops": [{"t": 7.584, "source": "reject", "label": "buildup",
+                               "pred_t": 7.584}],
+            })
+            m = self.ld.load_marks("t", td)
+            again = self.round_trip(td, {"drops": m["drops"], "not_drops": m["not_drops"]})
+            self.assertEqual(again["drops"][0]["time"], 75.047)
+            self.assertEqual(again["not_drops"][0]["time"], 7.584)
+            self.assertEqual(again["not_drops"][0]["label"], "buildup")
+            self.assertEqual(again["not_drops"][0]["pred_time"], 7.584)
+
+
+class TestSeededPredictions(unittest.TestCase):
+    """Seeding a second config's fires alongside the shipped ones (#2365)."""
+
+    def setUp(self):
+        self.ld = _label_drops()
+
+    def sidecar(self, td: Path, fired: list[float]) -> Path:
+        # Compact separators on purpose: `predictions()` prefilters lines on the literal
+        # substring '"d_fired":1', and structure_sidecar.rs writes exactly that. A fixture
+        # with json.dumps' default spacing would be testing a format nothing produces.
+        dump = lambda o: json.dumps(o, separators=(",", ":"))
+        lines = [dump({"meta": 1, "schema": 3})]
+        for t in np.arange(0, 60, 0.1):
+            hit = any(abs(t - f) < 0.05 for f in fired)
+            lines.append(dump({"d_t": round(float(t), 3), "d_fired": 1 if hit else 0}))
+        (td / "t.jsonl").write_text("\n".join(lines) + "\n")
+        return td
+
+    def test_shipped_fires_are_tagged_and_unchanged_without_extra(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = self.sidecar(Path(t), [10.0, 30.0])
+            p = self.ld.predictions("t", td)
+            self.assertEqual([round(d["t"]) for d in p], [10, 30])
+            self.assertEqual({d["src"] for d in p}, {"shipped"})
+
+    def test_extra_fires_are_added_and_tagged(self):
+        with tempfile.TemporaryDirectory() as t:
+            td = self.sidecar(Path(t), [10.0, 30.0])
+            p = self.ld.predictions("t", td, extra=[10.05, 45.0])
+            byt = {round(d["t"]): d["src"] for d in p}
+            # 10.05 is the same tick reached by two configs, not a second event.
+            self.assertEqual(byt[10], "both")
+            self.assertEqual(byt[30], "shipped")
+            self.assertEqual(byt[45], "added")
+
+    def test_seeding_never_drops_a_shipped_fire(self):
+        # The failure that would matter: a second pass that hides moments Kevin already
+        # judged makes his existing verdicts unreachable in the UI.
+        with tempfile.TemporaryDirectory() as t:
+            td = self.sidecar(Path(t), [10.0, 30.0])
+            p = self.ld.predictions("t", td, extra=[45.0])
+            self.assertEqual(len(p), 3)
+            self.assertEqual([round(d["t"]) for d in p], [10, 30, 45])  # sorted
+
+
 if __name__ == "__main__":
     unittest.main()

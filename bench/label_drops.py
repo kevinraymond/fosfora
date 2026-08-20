@@ -71,21 +71,57 @@ MIME = {
 
 # ---------------------------------------------------------------- sidecar
 
-def predictions(stem: str, sidecar_dir: Path) -> list[dict]:
-    """The detector's own drop fires — what the machine currently claims."""
+# Two fires this close are the same moment. The sidecar ticks every ~0.107 s and the
+# refractory keeps any one config 16 s from firing twice, so the only thing this ever
+# merges is the same tick reached by two different configs.
+SAME_MOMENT_S = 0.2
+
+
+def predictions(stem: str, sidecar_dir: Path, extra: list[float] | None = None) -> list[dict]:
+    """Fires to put in front of the labeller, tagged by where each one came from.
+
+    The sidecar's own `d_fired` is what the SHIPPED binary claims. `extra` is any other
+    config's fires — which matters because a labelling pass seeded from one config only
+    ever adjudicates that config (finding #2365): every fire a wider config makes at an
+    unseeded moment is scored as a false alarm on the assumption that the drop list is
+    exhaustive there, and nobody ever listened. Seeding both is what makes the second
+    config measurable.
+    """
     out: list[dict] = []
     p = sidecar_dir / f"{stem}.jsonl"
-    if not p.exists():
-        return out
-    with p.open(encoding="utf-8") as f:
-        for line in f:
-            if '"d_fired":1' not in line:
-                continue
-            try:
-                out.append({"t": round(float(json.loads(line)["d_t"]), 3)})
-            except (json.JSONDecodeError, KeyError, ValueError):
-                pass
+    if p.exists():
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                if '"d_fired":1' not in line:
+                    continue
+                try:
+                    out.append({"t": round(float(json.loads(line)["d_t"]), 3),
+                                "src": "shipped"})
+                except (json.JSONDecodeError, KeyError, ValueError):
+                    pass
+    for t in extra or []:
+        t = round(float(t), 3)
+        near = next((d for d in out if abs(d["t"] - t) <= SAME_MOMENT_S), None)
+        if near is not None:
+            near["src"] = "both"
+        else:
+            out.append({"t": t, "src": "added"})
     out.sort(key=lambda d: d["t"])
+    return out
+
+
+def load_extra_predictions(path: Path) -> dict[str, list[float]]:
+    """`{track_id: [times]}` from another config — `bench/sweep_drop.py --fires` writes it."""
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        sys.exit(f"{path}: expected a {{track_id: [times]}} object, got {type(raw).__name__}")
+    out = {}
+    for k, v in raw.items():
+        if k.startswith("_"):  # provenance keys the writer left for a human
+            continue
+        if not isinstance(v, list):
+            sys.exit(f"{path}: {k!r} maps to {type(v).__name__}, expected a list of times")
+        out[k] = [float(t) for t in v]
     return out
 
 
@@ -184,13 +220,23 @@ def write_bundle(track: dict, body: dict, out_dir: Path) -> Path:
     def marks(items: list[dict], with_label: bool) -> list[dict]:
         out = []
         for m in sorted(items, key=lambda d: float(d.get("t", 0.0))):
+            # How the mark came about: a fresh click, or a verdict on a
+            # prediction. Lets a later reader separate free listening from
+            # confirm/reject, which bias differently.
+            #
+            # Take the verb off the end rather than prefixing what arrives. The browser
+            # sends a bare verb ("click" / "confirm" / "reject") but `load_marks` hands
+            # back the STORED form, "kevin:click" — so prefixing unconditionally turned
+            # every resume into "kevin:kevin:click", compounding once per save. Times and
+            # labels survived it, which is why nothing caught it: the reader is tolerant
+            # (`d.get("source", "")`) and only the writer was wrong. Splitting on the last
+            # colon is idempotent, so this also repairs an already-corrupted bundle the
+            # next time it is saved.
+            verb = str(m.get("source") or "click").rsplit(":", 1)[-1] or "click"
             d = {
                 "time": round(max(0.0, float(m["t"])), 3),
                 "kind": "local_manual",
-                # How the mark came about: a fresh click, or a verdict on a
-                # prediction. Lets a later reader separate free listening from
-                # confirm/reject, which bias differently.
-                "source": f"kevin:{m.get('source') or 'click'}",
+                "source": f"kevin:{verb}",
             }
             # The prediction this mark was a verdict on, when it was one. A
             # confirm has no independent time — pressing Y stamps the machine's
@@ -221,6 +267,13 @@ def write_bundle(track: dict, body: dict, out_dir: Path) -> Path:
                              "there is no systematic reaction-time offset to subtract; the "
                              "drop match window is 1.0 bar regardless",
             "predictions_seeded": len(track["predictions"]),
+            # How many of those came from a config other than the shipped binary. A reader
+            # scoring a non-shipped config needs to know whether its fires were ever put in
+            # front of a listener — without this, an unjudged moment and a rejected one are
+            # indistinguishable in the bundle (#2365).
+            "predictions_added": sum(1 for p in track["predictions"]
+                                     if p.get("src") in ("added", "both")),
+            "predictions_source": track.get("pred_source") or "sidecar d_fired (shipped)",
             # False = labelled cold. True = the detector's fires were on screen, so
             # these labels are confirm/reject evidence and recall is anchored.
             "predictions_visible": bool(body.get("predictions_visible", True)),
@@ -464,8 +517,13 @@ async function load(i) {
 function sub() {
   const t = tracks[cur];
   const done = t.predictions.filter(p => verdictAt(p.t)).length;
+  // The count that matters on a second pass is the UNJUDGED new ones — that is the whole
+  // remaining job, and it is not the same as "predictions minus judged".
+  const todo = t.predictions.filter(p => p.src === "added" && !verdictAt(p.t)).length;
   $("#sub").textContent = `${mmss(audio.currentTime)} / ${mmss(dur)}   ·   `
-    + `${t.predictions.length} prediction(s), ${done} judged   ·   ${t.hints.length} boundary hint(s)`;
+    + `${t.predictions.length} prediction(s), ${done} judged`
+    + (todo ? `, ${todo} NEW unjudged` : "")
+    + `   ·   ${t.hints.length} boundary hint(s)`;
   $("#marks").textContent = `${drops.length} drop · ${notDrops.length} not-a-drop`
     + (dirty ? "  (unsaved)" : "");
 }
@@ -507,13 +565,19 @@ function markGlyph(ctx, x, top, bottom, kind, label) {
   ctx.restore();
 }
 
-function predGlyph(ctx, x, y, verdict) {
+function predGlyph(ctx, x, y, verdict, src) {
   ctx.save();
   ctx.strokeStyle = "#cfd6e0"; ctx.fillStyle = "#cfd6e0"; ctx.lineWidth = 1.8;
   ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
   if (verdict === "drop") ctx.fill(); else ctx.stroke();
   if (verdict === "not") {
     ctx.beginPath(); ctx.moveTo(x - 8, y - 8); ctx.lineTo(x + 8, y + 8); ctx.stroke();
+  }
+  // A fire only a WIDER config makes gets a stub beneath it, so "this is new work" is
+  // legible by shape. Never by hue: these judgments have to survive a colorblind reader.
+  if (src === "added") {
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(x, y + 7); ctx.lineTo(x, y + 12); ctx.stroke();
   }
   ctx.restore();
 }
@@ -551,7 +615,7 @@ function paint(cv, t0, t1) {
     ctx.beginPath(); ctx.moveTo(0, PRED_LANE - 1); ctx.lineTo(w, PRED_LANE - 1); ctx.stroke();
     t.predictions.forEach(p => {
       if (p.t < t0 || p.t > t1) return;
-      predGlyph(ctx, X(p.t), PRED_LANE / 2, verdictAt(p.t));
+      predGlyph(ctx, X(p.t), PRED_LANE / 2, verdictAt(p.t), p.src);
     });
   }
 
@@ -728,9 +792,16 @@ def main() -> int:
                     default=REPO / "bench" / "out" / "dropsweep" / "music")
     ap.add_argument("--music-dir", type=Path, default=Path.home() / "Music",
                     help="where to look for audio when discovering from sidecars")
+    ap.add_argument("--predictions", type=Path, default=None,
+                    help="seed another config's fires alongside the shipped ones: a "
+                         "{track_id: [times]} JSON, as written by sweep_drop.py --fires. "
+                         "Existing marks are kept, so a second pass only adds work for the "
+                         "moments nobody has judged yet (#2365).")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-open", action="store_true")
     args = ap.parse_args()
+
+    extra = load_extra_predictions(args.predictions) if args.predictions else {}
 
     files = list(args.files)
     if not files:
@@ -765,22 +836,38 @@ def main() -> int:
             sys.exit(f"cannot read {f}: {e}")
         tracks.append({
             "id": i, "name": f.name, "path": str(f), "duration": dur,
-            "predictions": predictions(f.stem, args.sidecar_dir),
+            "predictions": predictions(f.stem, args.sidecar_dir, extra.get(f.stem)),
             "hints": hints(f.stem, args.sidecar_dir),
             "marks": load_marks(f.stem, args.out_dir),
             "saved": bundle_path(f.stem, args.out_dir).exists(),
             "peaks": None,
         })
 
+    if args.predictions:
+        missing = sorted(set(extra) - {Path(t["path"]).stem for t in tracks})
+        if missing:
+            # Silence here would read as "that config fires nowhere new on those tracks".
+            print(f"  WARNING: --predictions names {len(missing)} track(s) not in this "
+                  f"session: {', '.join(missing[:4])}", file=sys.stderr)
+
     Handler.tracks = tracks
     Handler.out_dir = args.out_dir
 
+    if args.predictions:
+        for t in tracks:
+            t["pred_source"] = f"sidecar d_fired (shipped) + {args.predictions.name}"
+
     url = f"http://127.0.0.1:{args.port}/"
     n_pred = sum(len(t["predictions"]) for t in tracks)
-    print(f"\n  {len(tracks)} track(s), {n_pred} detector prediction(s) to judge")
+    n_add = sum(1 for t in tracks for p in t["predictions"] if p["src"] == "added")
+    print(f"\n  {len(tracks)} track(s), {n_pred} detector prediction(s) to judge"
+          + (f", {n_add} of them NEW (seeded from {args.predictions.name})"
+             if args.predictions else ""))
     for t in tracks:
+        new = sum(1 for p in t["predictions"] if p["src"] == "added")
         print(f"    {'*' if t['saved'] else ' '} {t['name']}  "
-              f"({len(t['predictions'])} pred, {len(t['hints'])} hint)")
+              f"({len(t['predictions'])} pred{f', {new} new' if new else ''}, "
+              f"{len(t['hints'])} hint)")
     print(f"\n  -> {url}    (ctrl-c when done)\n")
 
     if not args.no_open:
