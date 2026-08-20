@@ -92,6 +92,10 @@ class Annotations:
             raise AnnotationError("segments present but audio.duration_s missing")
 
         self.drops: list[dict] | None = raw.get("drops")
+        # Additive since the labelling pass (#2299): instants the listener was
+        # shown and ruled *not* a drop. Absent on every dataset-derived bundle,
+        # so nothing outside bench/labels/ changes behavior.
+        self.not_drops: list[dict] | None = raw.get("not_drops")
         self.stems: dict | None = raw.get("stems")
 
     @classmethod
@@ -111,6 +115,14 @@ class Annotations:
             for d in self.drops
             if kinds is None or d.get("kind") in kinds
         ]
+        return np.array(sorted(times), dtype=np.float64)
+
+    def not_drop_times(self) -> np.ndarray:
+        """Instants explicitly ruled not-a-drop. Empty when the bundle carries
+        none — which is every dataset-derived bundle, by construction."""
+        if not self.not_drops:
+            return np.array([], dtype=np.float64)
+        times = [float(d["time"]) for d in self.not_drops]
         return np.array(sorted(times), dtype=np.float64)
 
 

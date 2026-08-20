@@ -12,6 +12,7 @@ stdlib unittest, run as:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import tempfile
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 
 import datasetlib as dl
+from benchlib import metrics as m_metrics
 from benchlib import results
 from benchlib.annotations import Annotations, key_to_mir_eval, load_index
 from benchlib.dump import DumpError, SignalDump
@@ -442,13 +444,36 @@ class TestStructureMetric(unittest.TestCase):
         self.assertTrue(block["no_estimate"])
 
 
-def drop_ann(times: list[float], duration_s: float = 60.0) -> Annotations:
+def drop_ann(
+    times: list[float],
+    duration_s: float = 60.0,
+    not_drops: list[float] | None = None,
+) -> Annotations:
+    """Bar = 2 s, beat = 0.5 s — so 0.4 s is inside the beat grace and 1.7 s is
+    inside the +-1 bar window but well outside it."""
+    extra = (
+        {"not_drops": [{"time": t, "kind": "local_manual"} for t in not_drops]}
+        if not_drops is not None
+        else {}
+    )
     return make_ann(
         duration_s=duration_s,
         downbeats=list(np.arange(0.0, duration_s, 2.0)),
         beats=list(np.arange(0.0, duration_s, 0.5)),
         drops=[{"time": t, "source": "test", "kind": "direct"} for t in times],
+        **extra,
     )
+
+
+@contextlib.contextmanager
+def negative_policy(name: str):
+    conv = m_metrics.CONVENTIONS["drop"]
+    prev = conv["negative_policy"]
+    conv["negative_policy"] = name
+    try:
+        yield
+    finally:
+        conv["negative_policy"] = prev
 
 
 class TestDropMetric(unittest.TestCase):
@@ -484,6 +509,76 @@ class TestDropMetric(unittest.TestCase):
         block = m_drops.drop(dump, drop_ann([]))
         self.assertIsNone(block["hit_rate"])
         self.assertEqual(block["n_false"], 1)
+
+    # --- recorded negatives (#2299) -------------------------------------------
+    # The three real cases these encode: Thirty Two Hertz 74.68 and 149.66 fired
+    # 0.79 and 0.90 beat before a drop and were rejected as "buildup"; Thermal
+    # Break 104.22 fired 3.97 beats early and was rejected as "break".
+
+    def rejected_fire(self, fire: float, drop: float = 20.0):
+        dump = SignalDump.load(write_dump([META, *counted("/fosfora/v1/drop", [fire])]))
+        return dump, drop_ann([drop], not_drops=[fire])
+
+    def test_rejected_fire_under_a_beat_early_still_hits(self):
+        dump, ann = self.rejected_fire(19.6)  # 0.4 s = 0.8 beat
+        with negative_policy("beat_grace"):
+            block = m_drops.drop(dump, ann)
+        self.assertEqual(block["n_matched"], 1)
+        self.assertEqual(block["n_rejected"], 1)
+        self.assertEqual(block["n_rejected_matched"], 1)
+
+    def test_rejected_fire_a_bar_early_is_false_despite_the_window(self):
+        dump, ann = self.rejected_fire(18.3)  # 1.7 s: inside +-1 bar, 3.4 beats
+        with negative_policy("beat_grace"):
+            block = m_drops.drop(dump, ann)
+        self.assertEqual(block["n_matched"], 0)
+        self.assertEqual(block["n_false"], 1)
+        # ...and the pre-2026-08-20 convention scored exactly this as a hit.
+        with negative_policy("bar_window"):
+            self.assertEqual(m_drops.drop(dump, ann)["n_matched"], 1)
+
+    def test_strict_policy_rejects_even_a_sub_beat_fire(self):
+        dump, ann = self.rejected_fire(19.6)
+        with negative_policy("strict"):
+            block = m_drops.drop(dump, ann)
+        self.assertEqual(block["n_matched"], 0)
+        self.assertEqual(block["n_rejected_matched"], 0)
+
+    def test_demoted_pair_frees_its_reference_for_another_fire(self):
+        # Closest fire is rejected and 2.8 beats early; a second, unjudged fire
+        # is farther but valid — the reference must go to it rather than be
+        # eaten by the pair the policy forbids.
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [18.6, 21.5])])
+        )
+        ann = drop_ann([20.0], not_drops=[18.6])
+        with negative_policy("beat_grace"):
+            block = m_drops.drop(dump, ann)
+        self.assertEqual(block["n_matched"], 1)
+        self.assertEqual(block["n_rejected_matched"], 0)
+
+    def test_bundle_without_negatives_is_policy_invariant(self):
+        """The guard on every dataset-derived corpus: no `not_drops`, no change.
+
+        Harmonix carries none on all 374 tracks, so a policy change must not be
+        able to move a single one of its numbers."""
+        dump = SignalDump.load(
+            write_dump([META, *counted("/fosfora/v1/drop", [19.6, 18.3, 40.0])])
+        )
+        ann = drop_ann([20.0])
+        blocks = []
+        for name in m_metrics.NEGATIVE_POLICIES:
+            with negative_policy(name):
+                b = m_drops.drop(dump, ann)
+                b.pop("negative_policy")
+                blocks.append(b)
+        self.assertEqual(blocks[0], blocks[1])
+        self.assertEqual(blocks[0], blocks[2])
+
+    def test_unknown_policy_is_fatal_not_a_silent_default(self):
+        dump, ann = self.rejected_fire(19.6)
+        with negative_policy("beat_grazie"), self.assertRaises(ValueError):
+            m_drops.drop(dump, ann)
 
     def test_pooled_aggregation(self):
         agg = m_drops._aggregate_drop(

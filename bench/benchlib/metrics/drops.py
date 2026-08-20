@@ -8,6 +8,14 @@ within ±1 bar of the annotated drop (bar length measured locally from the
 annotation's own downbeats/beats). Zero-drop tracks still run — their
 unmatched estimates feed the false-drop rate.
 
+A bundle may also carry `not_drops` — instants a listener was shown and ruled
+not a drop (#2299). Under the default `beat_grace` policy a fire carrying a
+rejection can still match, but only within one *beat* of the drop: a strobe
+under a beat early reads as on the drop, a bar early does not. `strict` makes
+the listener's verdict absolute, `bar_window` restores the pre-2026-08-20
+behavior; see NEGATIVE_POLICIES. Bundles without `not_drops` — every
+dataset-derived one — are bit-identical under all three.
+
 predict/drop: a *sustained* crossing of theta occurs at tc iff v(tc) >= theta,
 the detector is armed, and every sample in [tc, tc + 0.25 s] is >= theta with
 at least 2 samples in the window (the >=2 floor tolerates decimation stalls);
@@ -21,10 +29,12 @@ from __future__ import annotations
 import numpy as np
 
 from .. import dump as dump_mod
-from . import AGGREGATORS, CONVENTIONS, register
+from . import AGGREGATORS, CONVENTIONS, NEGATIVE_POLICIES, register
 
 _MATCH_BARS = CONVENTIONS["drop"]["match_window_bars"]
 _LOCAL_S = CONVENTIONS["drop"]["bar_local_window_s"]
+_GRACE_BEATS = CONVENTIONS["drop"]["negative_override_beats"]
+_COINCIDE_S = CONVENTIONS["drop"]["negative_coincide_s"]
 _THRESHOLDS = CONVENTIONS["predict_drop"]["thresholds"]
 _SUSTAIN_S = CONVENTIONS["predict_drop"]["sustain_window_s"]
 _SUSTAIN_N = CONVENTIONS["predict_drop"]["sustain_min_samples"]
@@ -61,13 +71,18 @@ def beat_duration_near(ann, t: float) -> float:
     return bar_duration_near(ann, t) / 4.0
 
 
-def _greedy_match(est: np.ndarray, ref: np.ndarray, windows: np.ndarray):
-    """One-to-one pairs (est_idx, ref_idx), closest |dt| first, |dt| <= window."""
+def _greedy_match(est: np.ndarray, ref: np.ndarray, windows: np.ndarray, allowed=None):
+    """One-to-one pairs (est_idx, ref_idx), closest |dt| first, |dt| <= window.
+
+    `allowed(ei, ri)` filters candidate pairs *before* matching, so a pair the
+    negative policy forbids frees its reference for a second estimate rather
+    than consuming it.
+    """
     cands = sorted(
         (abs(e - r), ei, ri)
         for ei, e in enumerate(est)
         for ri, r in enumerate(ref)
-        if abs(e - r) <= windows[ri]
+        if abs(e - r) <= windows[ri] and (allowed is None or allowed(ei, ri))
     )
     used_e: set[int] = set()
     used_r: set[int] = set()
@@ -86,12 +101,44 @@ def _track_duration(dump, ann) -> float:
     return float(dump.records[-1][0]) if dump.records else 0.0
 
 
+def _rejected_mask(est: np.ndarray, ann) -> np.ndarray:
+    """Which estimates the listener explicitly ruled not-a-drop.
+
+    A rejection is stamped at the prediction's own time, so "this fire was
+    rejected" is a coincidence test, not a proximity test.
+    """
+    neg = ann.not_drop_times()
+    if not len(neg) or not len(est):
+        return np.zeros(len(est), dtype=bool)
+    return np.array([bool(np.any(np.abs(neg - e) <= _COINCIDE_S)) for e in est])
+
+
 @register("drop", ("drops",), allow_empty=True)
 def drop(dump, ann) -> dict:
     est = dump.drops()
     ref = ann.drop_times()
     windows = np.array([_MATCH_BARS * bar_duration_near(ann, r) for r in ref])
-    pairs = _greedy_match(est, ref, windows)
+
+    policy = CONVENTIONS["drop"]["negative_policy"]
+    if policy not in NEGATIVE_POLICIES:
+        # Never fall back silently: an unrecognized policy would score as
+        # beat_grace and the result JSON would name a rule it did not use.
+        raise ValueError(f"negative_policy {policy!r} is not one of {NEGATIVE_POLICIES}")
+    rejected = _rejected_mask(est, ann)
+    allowed = None
+    if policy != "bar_window" and rejected.any():
+
+        def allowed(ei: int, ri: int) -> bool:
+            if not rejected[ei]:
+                return True
+            if policy == "strict":
+                return False
+            # beat_grace: under a beat early still reads as on the drop.
+            return abs(est[ei] - ref[ri]) <= _GRACE_BEATS * beat_duration_near(
+                ann, ref[ri]
+            )
+
+    pairs = _greedy_match(est, ref, windows, allowed)
     matched = len(pairs)
     duration_min = _track_duration(dump, ann) / 60.0
     false = len(est) - matched
@@ -99,6 +146,11 @@ def drop(dump, ann) -> dict:
         "n_ref": int(len(ref)),
         "n_est": int(len(est)),
         "n_matched": matched,
+        # Visible rather than silent: how many fires carried a recorded
+        # rejection, and how many of those the policy still counted as hits.
+        "n_rejected": int(rejected.sum()),
+        "n_rejected_matched": int(sum(1 for ei, _ in pairs if rejected[ei])),
+        "negative_policy": policy,
         "hit_rate": matched / len(ref) if len(ref) else None,
         "precision": matched / len(est) if len(est) else None,
         "n_false": false,
@@ -199,6 +251,8 @@ def _aggregate_drop(blocks: list[dict]) -> dict:
         ),
         "n_ref": n_ref,
         "n_est": n_est,
+        "n_rejected": sum(b.get("n_rejected", 0) for b in blocks),
+        "n_rejected_matched": sum(b.get("n_rejected_matched", 0) for b in blocks),
     }
 
 

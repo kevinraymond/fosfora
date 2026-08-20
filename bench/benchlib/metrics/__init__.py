@@ -13,6 +13,8 @@ causal system relative to what a rig actually receives.
 
 from __future__ import annotations
 
+import os
+
 from ..annotations import Annotations
 from ..dump import SignalDump
 
@@ -30,7 +32,16 @@ CONVENTIONS = {
         "trim": True,
         "lag_compensation_s": 3.0,
     },
-    "drop": {"match_window_bars": 1.0, "bar_local_window_s": 16.0},
+    "drop": {
+        "match_window_bars": 1.0,
+        "bar_local_window_s": 16.0,
+        # How a fire the listener explicitly rejected is scored when it still
+        # lands inside the match window. See NEGATIVE_POLICIES below; only
+        # bundles carrying `not_drops` are affected at all.
+        "negative_policy": "beat_grace",
+        "negative_override_beats": 1.0,
+        "negative_coincide_s": 0.25,
+    },
     "predict_drop": {
         "thresholds": [0.5, 0.8],
         "sustain_window_s": 0.25,
@@ -43,6 +54,34 @@ CONVENTIONS = {
         "joint_silence_floor_dbfs": -60.0,
     },
 }
+
+# How a recorded negative interacts with the +-1 bar match window (#2299).
+#
+#   bar_window  the window alone decides; a rejected fire inside it is a hit.
+#               What every number published before 2026-08-20 was computed under.
+#   beat_grace  a rejected fire is false UNLESS it is within
+#               `negative_override_beats` of the drop it matched — a strobe
+#               under a beat early still reads as on the drop, a bar early
+#               does not. The default, and Kevin's call.
+#   strict      the listener's verdict always wins; a rejected fire is false
+#               however close the drop is. One env var away:
+#
+#                   FOSFORA_DROP_NEGATIVE_POLICY=strict bench/run_bench.py ...
+#
+# The override rewrites CONVENTIONS in place so the *active* policy, not the
+# default, is what every results JSON echoes. An unknown value is fatal: a
+# silent fallback would make a published number a lie about its own rule.
+NEGATIVE_POLICIES = ("bar_window", "beat_grace", "strict")
+
+_policy_override = os.environ.get("FOSFORA_DROP_NEGATIVE_POLICY")
+if _policy_override is not None:
+    if _policy_override not in NEGATIVE_POLICIES:
+        raise ValueError(
+            f"FOSFORA_DROP_NEGATIVE_POLICY={_policy_override!r} is not one of "
+            f"{NEGATIVE_POLICIES}"
+        )
+    CONVENTIONS["drop"]["negative_policy"] = _policy_override
+
 
 # (name, tuple of Annotations attributes that must be non-None, allow_empty, scorer)
 REGISTRY: list[tuple[str, tuple[str, ...], bool, object]] = []
