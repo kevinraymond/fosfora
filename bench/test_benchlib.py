@@ -799,5 +799,113 @@ class TestDatasetlib(unittest.TestCase):
             np.testing.assert_allclose(ann.beats, [0.5, 1.0])
 
 
+def _sweep_drop():
+    """sweep_drop.py as a module. It is a uv script, not a package, so it is loaded by path.
+
+    Registered in sys.modules before exec: @dataclass resolves its own module to build
+    __init__, and an unregistered module makes that lookup return None.
+    """
+    import importlib.util
+    path = Path(__file__).parent / "sweep_drop.py"
+    spec = importlib.util.spec_from_file_location("sweep_drop", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["sweep_drop"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestDropGate(unittest.TestCase):
+    """The candidate-conjunct gate in sweep_drop.simulate (#2299).
+
+    Synthetic throughout: bench/out/ is 37 GB and gitignored, so a test that reached for a
+    real sidecar would pass here and fail everywhere else.
+    """
+
+    def setUp(self):
+        self.sd = _sweep_drop()
+        n = 400
+        self.t = np.arange(n) * 0.1
+        self.build = np.ones(n)                     # armed from t = sustain onwards
+        self.sub = np.ones(n)
+        self.sub_ref = np.ones(n)
+        # Two loudness spikes: a wrong one at 10 s, a real drop at 20 s. With refractory
+        # 16 s the first locks out the second — the exact shape observed on Psykovsky
+        # (28.6 s masking 38.5 s) and the Tiesto (176.2 s masking 184.7 s).
+        self.loud = np.zeros(n)
+        self.loud[100] = 1.0
+        self.loud[200] = 1.0
+        self.cfg = self.sd.DropCfg(arm_buildup=0.4, arm_sustain=3.0, loud_jump=0.06,
+                                   subbass_return=0.5, refractory=16.0, baseline_ticks=15)
+
+    def fire(self, gate_vals=None, thr=0.0):
+        cfg = self.sd.replace(self.cfg, gate_thr=thr)
+        return self.sd.simulate(self.t, self.build, self.loud, self.sub, self.sub_ref,
+                                cfg, 15, gate_vals)
+
+    def test_ungated_fires_once_and_locks_out_the_second(self):
+        np.testing.assert_allclose(self.fire(), [10.0])
+
+    def test_gate_suppressing_the_wrong_fire_recovers_the_masked_drop(self):
+        # THE non-obvious property: a gate can RAISE recall. Recall is not monotone in the
+        # threshold, because the refractory is armed by whichever fire lands first. A
+        # future refactor that "restores monotonicity" by filtering the fire list after the
+        # fact would pass every other test here and silently understate every gate.
+        g = np.ones(len(self.t))
+        g[100] = 0.0                                 # only the 10 s fire is gated away
+        np.testing.assert_allclose(self.fire(g, thr=0.5), [20.0])
+
+    def test_gate_none_is_the_shipped_machine(self):
+        # The --validate guard in miniature: with no gate the loop must be bit-identical.
+        np.testing.assert_allclose(self.fire(None), self.fire(np.full(len(self.t), np.inf),
+                                                              thr=-np.inf))
+
+    def test_nan_abstains_rather_than_blocks(self):
+        # Windows come back empty only in a track's first ticks. A gate with no evidence
+        # must not manufacture a difference from the shipped machine there.
+        np.testing.assert_allclose(self.fire(np.full(len(self.t), np.nan), thr=0.5),
+                                   self.fire(None))
+
+    def test_gate_above_every_value_fires_nothing(self):
+        self.assertEqual(len(self.fire(np.zeros(len(self.t)), thr=1.0)), 0)
+
+    def test_window_is_seconds_not_ticks(self):
+        # The sidecar ticks every ~0.107 s, not the 0.100 s TICK_DT names. A window counted
+        # in ticks runs ~7% long — the mistake that made the baseline ring 12.9 s (#2212).
+        t = np.arange(200) * 0.107
+        v = np.zeros(200)
+        v[100] = 1.0                                 # a lone spike at 10.7 s
+        w = self.sd._win(t, v, -1.0, 0.0, "max")
+        self.assertEqual(w[100], 1.0)                # the spike's own tick sees it
+        self.assertEqual(w[109], 1.0)                # 0.96 s later, still inside
+        self.assertEqual(w[110], 0.0)                # 1.07 s later, outside
+
+    def test_every_gate_declares_causality_and_evaluates(self):
+        trio = {k: np.abs(np.sin(np.arange(400) * 0.3)) for k in self.sd.V3_COLS}
+        for form, (causal, doc, fn) in self.sd.GATES.items():
+            with self.subTest(form=form):
+                self.assertIsInstance(causal, bool)
+                self.assertTrue(doc.strip(), "a gate without a doc string is a magic number")
+                vals = fn(self.t, trio)
+                self.assertEqual(len(vals), len(self.t))
+
+    def test_kick_pm1_is_the_refuted_control_and_stays_non_causal(self):
+        # Guards the refutation itself (#2360, withdrawn). kick_pm1 reads +-1 s, so it is
+        # non-causal BY CONSTRUCTION; a later round that "fixes" it into a causal window has
+        # built a different feature and must not inherit this one's evidence.
+        causal, doc, _ = self.sd.GATES["kick_pm1"]
+        self.assertFalse(causal)
+        self.assertIn("REFUTED", doc)
+        self.assertFalse(self.sd.GATES["perc_post4_ratio"][0])
+
+    def test_kick_saturation_makes_a_max_gate_inert(self):
+        # Why kick_pm1 died: kick is P95-self-normalized, so its windowed max pins to 1.0
+        # wherever a kick is playing. A threshold fitted to the minimum of saturated
+        # positives lands ON the ceiling and separates nothing.
+        trio = {k: np.ones(400) for k in self.sd.V3_COLS}
+        vals = self.sd.GATES["kick_pm1"][2](self.t, trio)
+        self.assertEqual(float(np.nanmin(vals)), 1.0)
+        self.assertEqual(float(np.nanmax(vals)), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@
     bench/sweep_drop.py --validate            # gate: replay must reproduce the binary
     bench/sweep_drop.py --stage arm           # then sweep, tune half only
     bench/sweep_drop.py --stage combined --top 12
+    bench/sweep_drop.py --local --gates       # candidate conjuncts, in-sample vs LOO (#2299)
 
 Input is the v2 structure sidecar (`bench/dump_structure_sidecar.py`), which carries the
 drop machine's exact per-tick inputs — the pre-normalization `loudness_m`/`sub_bass` the
@@ -24,6 +25,13 @@ Scoring follows benchlib's drop convention: a hit is within +-1 bar of an annota
 (bar length measured locally), greedy one-to-one by ascending |dt|; every unmatched
 estimate is a false alarm, including on the 155 zero-drop tune tracks whose only
 contribution is false alarms.
+
+`--gates` sweeps CANDIDATE conjuncts the machine does not read yet (#2299) — see the GATES
+table. Two cautions that cost this round real time. First, a gate belongs INSIDE the state
+machine, not applied to a fire list afterwards: killing a wrong fire also cancels the
+refractory lockout it would have started, so a gate can raise recall, and post-hoc filtering
+cannot see that. Second, read the leave-one-track-out column; at 23 drops a threshold fitted
+on all nine tracks and scored on all nine reads about half a stop better than it is.
 """
 
 from __future__ import annotations
@@ -92,10 +100,16 @@ class DropCfg:
     # (disarm immediately), which makes the pre-drop gap disarm the machine right when
     # the drop lands.
     arm_hold: float = 0.0
+    # --- candidate conjunct (#2299), which `update_drop` does not read ---
+    # Name in GATES, or None for the shipped four-conjunct machine. See the GATES table
+    # for what each form means and which ones are disqualified.
+    gate: str | None = None
+    gate_thr: float = 0.0
 
 
 def simulate(t: np.ndarray, build: np.ndarray, loud: np.ndarray, sub: np.ndarray,
-             sub_ref: np.ndarray, cfg: DropCfg, shipped_ticks: int = 141) -> np.ndarray:
+             sub_ref: np.ndarray, cfg: DropCfg, shipped_ticks: int = 141,
+             gate_vals: np.ndarray | None = None) -> np.ndarray:
     """Return the times of fired drops. Mirrors update_drop tick for tick.
 
     The arm timer accumulates in **float32**, because the detector does and the rounding
@@ -103,6 +117,18 @@ def simulate(t: np.ndarray, build: np.ndarray, loud: np.ndarray, sub: np.ndarray
     hair under the 4.0 s requirement on the tick f64 has already crossed it, so an f64
     replay fires a tick early. The margin there is 0.1 s of a 4.0 s threshold — the
     shipped detector arms that close to the edge.
+
+    `gate_vals` is an optional fifth conjunct, AND-ed in. It can only ever suppress a fire —
+    but suppressing one can *create* a later fire, and recall is NOT monotone in the
+    threshold as a result: the refractory is armed by whichever fire happens first, so
+    killing a wrong fire cancels a 16 s lockout that was masking a real drop behind it.
+    Measured, at the loose arm with kick_dens_delta: Psykovsky fires at 28.6 s and locks out
+    the 38.5 s drop; gate the 28.6 away and it hits at 39.0. Same shape on the Tiesto at
+    176.2 s masking 184.7 s. Anything that reasons about a gate by filtering an existing
+    fire list instead of replaying the machine will miss this and understate every gate.
+
+    `gate_vals is None` reproduces the shipped machine exactly, which is what `--validate`
+    checks.
     """
     f32 = np.float32
     high = f32(0.0)
@@ -112,6 +138,7 @@ def simulate(t: np.ndarray, build: np.ndarray, loud: np.ndarray, sub: np.ndarray
     sustain = f32(cfg.arm_sustain)
     gate = f32(cfg.loud_jump)
     sub_frac = f32(cfg.subbass_return)
+    gate_thr = cfg.gate_thr
     refractory_until = -np.inf
     armed_until = -np.inf
     ring: list[np.float32] = []
@@ -134,7 +161,12 @@ def simulate(t: np.ndarray, build: np.ndarray, loud: np.ndarray, sub: np.ndarray
             armed_until = now + cfg.arm_hold
         armed = high >= sustain or now <= armed_until
 
-        if armed and now >= refractory_until and jump >= gate and sub_returning:
+        # NaN abstains rather than blocks: the only ticks a window comes back empty on are
+        # the first few of a track, and a gate with no evidence must not manufacture a
+        # difference from the shipped machine there.
+        passes = gate_vals is None or not (gate_vals[i] < gate_thr)
+
+        if armed and now >= refractory_until and jump >= gate and sub_returning and passes:
             refractory_until = now + cfg.refractory
             armed_until = -np.inf
             high = f32(0.0)
@@ -174,10 +206,99 @@ def check_integrity(tid: str, records: list[dict]) -> None:
 V3_COLS = ("d_kick", "d_perc", "d_hratio")
 
 
+# =================================================================================
+# Candidate conjuncts (#2299)
+# =================================================================================
+
+# A tick counts as carrying a kick transient above this. `kick` is a 0..1 detector output,
+# not a level — see the saturation note on kick_pm1 for why counting transients and reading
+# heights are very different measurements of it.
+KICK_PRESENT = 0.5
+
+
+def _win(t: np.ndarray, v: np.ndarray, lo: float, hi: float, op: str) -> np.ndarray:
+    """Per-tick reduction of `v` over the window [t+lo, t+hi], in seconds of real time.
+
+    Bounds come from `searchsorted` on the tick times, not from an index offset: the
+    sidecar's ticks land every ~0.107 s rather than the 0.100 s TICK_DT names, so a window
+    counted in ticks would run ~7% long — the same class of mistake as the baseline ring
+    that was sized at the analysis rate and pushed at the tick rate (#2212).
+    """
+    a = np.searchsorted(t, t + lo, side="left")
+    b = np.searchsorted(t, t + hi, side="right")
+    out = np.empty(len(t), dtype=np.float64)
+    for i in range(len(t)):
+        seg = v[a[i]:b[i]]
+        if len(seg) == 0:
+            out[i] = np.nan
+        elif op == "max":
+            out[i] = seg.max()
+        elif op == "mean":
+            out[i] = seg.mean()
+        else:  # "dens"
+            out[i] = float((seg > KICK_PRESENT).mean())
+    return out
+
+
+def _ratio(t, v, lo, hi, rlo, rhi):
+    return _win(t, v, lo, hi, "mean") / np.maximum(1e-9, _win(t, v, rlo, rhi, "mean"))
+
+
+# form -> (causal, doc, builder). CAUSAL is what decides whether a form could ever ship:
+# `update_drop` fires on the tick it decides, so a window extending past `t` describes a cue
+# the detector could only emit late. Kevin ruled causal-only on 2026-08-20 (#2299). The
+# disqualified and refuted forms stay in the table anyway — reproducing a refutation needs
+# the refuted form itself, not a lookalike, and a later round that rediscovers one of these
+# should land on the measurement rather than on the idea.
+GATES: dict[str, tuple[bool, str, object]] = {
+    "kick_pm1": (
+        False,
+        "REFUTED (#2360, withdrawn 2026-08-20). Max kick within +-1 s. `kick` is Passthrough, "
+        "self-normalized by its own long-term P95 (audio/schema.rs, A3 #1454), so its windowed "
+        "max pins to the ceiling wherever a kick is playing at all: at the loose arm 33 of 43 "
+        "wrong fires and 9 of 10 right fires read exactly 1.000. Kills 5 of 43 there, worse "
+        "than the 6 of 21 it managed at the incumbent — widening the arm drags the fitted "
+        "threshold off the ceiling and the gate collapses.",
+        lambda t, x: _win(t, x["d_kick"], -1.0, 1.0, "max"),
+    ),
+    "kick_trail1": (
+        True,
+        "Causal form of kick_pm1: max kick over the trailing 1 s. Saturates for the same "
+        "reason and is here as the control's control.",
+        lambda t, x: _win(t, x["d_kick"], -1.0, 0.0, "max"),
+    ),
+    "kick_dens_delta": (
+        True,
+        "Best causal form measured this round: how much denser kick transients are over the "
+        "trailing 2 s than over the 6 s before that. Immune to the saturation that killed "
+        "kick_pm1, because it counts ticks carrying a transient instead of reading a "
+        "normalized height. Still lands under the incumbent's precision under LOO.",
+        lambda t, x: (_win(t, x["d_kick"], -2.0, 0.0, "dens")
+                      - _win(t, x["d_kick"], -8.0, -2.0, "dens")),
+    ),
+    "perc_ratio": (
+        True,
+        "Percussive energy over the trailing 1 s against the 6 s ending 2 s ago. Kills ZERO "
+        "of 43 wrong fires at any zero-recall-cost threshold: the information that separates "
+        "a drop from a build-up arrives after the decision point, which is the whole content "
+        "of the causal-only result.",
+        lambda t, x: _ratio(t, x["d_perc"], -1.0, 0.0, -8.0, -2.0),
+    ),
+    "perc_post4_ratio": (
+        False,
+        "DISQUALIFIED by causal-only, recorded because it is the strongest gate measured: "
+        "percussive energy over 0..+4 s against -6..-2 s. Kills 24 of 43 in-sample and is the "
+        "only form anywhere that beats the incumbent on precision under LOO (.304/.280 vs "
+        "the incumbent .304/.250). The price is a drop cue arriving four seconds late.",
+        lambda t, x: _ratio(t, x["d_perc"], 0.0, 4.0, -6.0, -2.0),
+    ),
+}
+
+
 class Track:
     __slots__ = ("tid", "t", "build", "loud", "sub", "sub_ref", "fired",
                  "refs", "negs", "beats", "downbeats", "duration", "shipped_ticks",
-                 "dump_cfg", "v3")
+                 "dump_cfg", "v3", "_gates")
 
     def trio(self) -> dict[str, np.ndarray]:
         """The v3 columns, or a hard failure naming the track that lacks them."""
@@ -186,8 +307,21 @@ class Track:
                      f"v3 binary before asking for the HPSS trio")
         return self.v3
 
+    def gate(self, form: str) -> np.ndarray:
+        """Per-tick value of candidate conjunct `form`. Computed once, then cached.
+
+        The value does not depend on DropCfg — only the threshold does — so a 192-config
+        grid pays for each track's windows exactly once.
+        """
+        if form not in self._gates:
+            if form not in GATES:
+                sys.exit(f"unknown gate {form!r} — one of {', '.join(GATES)}")
+            self._gates[form] = GATES[form][2](self.t, self.trio())
+        return self._gates[form]
+
     def __init__(self, tid: str, records: list[dict], ann: dict, meta: dict | None = None):
         self.dump_cfg = (meta or {}).get("cfg", {})
+        self._gates: dict[str, np.ndarray] = {}
         check_integrity(tid, records)
         self.tid = tid
         self.t = np.array([r["d_t"] for r in records], dtype=np.float64)
@@ -251,7 +385,7 @@ def specimen_detail(tracks: list[Track], cfg: DropCfg) -> tuple[int, int, list[s
     hv = hits = 0
     lines = []
     for tr in tracks:
-        est = simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref, cfg, tr.shipped_ticks)
+        est = simulate_track(tr, cfg)
         for rt in tr.refs:
             tol = MATCH_BARS * bar_seconds(tr, float(rt))
             near = [e for e in est if abs(e - rt) <= tol]
@@ -374,33 +508,50 @@ def _allowed(tr: Track, est_t: float, ref_t: float, bar: float) -> bool:
     return abs(est_t - ref_t) <= GRACE_BEATS * (bar / 4.0)
 
 
-def score(tracks: list[Track], cfg: DropCfg) -> dict:
+def match(tr: Track, est: np.ndarray) -> tuple[set[int], set[int]]:
+    """Greedy one-to-one by ascending |dt|, +-1 bar measured locally.
+
+    The single implementation of the matching rule: `score` counts with it and the gate
+    fitter labels fires right-or-wrong with it. Two copies of one number is what the stale
+    DropCfg cost this round already.
+    """
+    pairs = []
+    for ri, rt in enumerate(tr.refs):
+        bar = bar_seconds(tr, float(rt))
+        tol = MATCH_BARS * bar
+        for ei, et in enumerate(est):
+            if abs(et - rt) <= tol and _allowed(tr, et, rt, bar):
+                pairs.append((abs(et - rt), ri, ei))
+    pairs.sort()
+    used_r, used_e = set(), set()
+    for _, ri, ei in pairs:
+        if ri in used_r or ei in used_e:
+            continue
+        used_r.add(ri)
+        used_e.add(ei)
+    return used_r, used_e
+
+
+def simulate_track(tr: Track, cfg: DropCfg) -> np.ndarray:
+    """`simulate` with this track's own ring capacity and gate array wired in."""
+    return simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref, cfg, tr.shipped_ticks,
+                    tr.gate(cfg.gate) if cfg.gate else None)
+
+
+def aggregate(fired: list[tuple[Track, np.ndarray]]) -> dict:
+    """Corpus totals from per-track (track, fired times). The one place the metric lives."""
     hits = misses = false = 0
     total_min = 0.0
     per_track = []
-    for tr in tracks:
-        est = simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref, cfg, tr.shipped_ticks)
-        # Greedy one-to-one by ascending |dt|, +-1 bar measured locally.
-        pairs = []
-        for ri, rt in enumerate(tr.refs):
-            bar = bar_seconds(tr, float(rt))
-            tol = MATCH_BARS * bar
-            for ei, et in enumerate(est):
-                if abs(et - rt) <= tol and _allowed(tr, et, rt, bar):
-                    pairs.append((abs(et - rt), ri, ei))
-        pairs.sort()
-        used_r, used_e = set(), set()
-        for _, ri, ei in pairs:
-            if ri in used_r or ei in used_e:
-                continue
-            used_r.add(ri)
-            used_e.add(ei)
+    for tr, est in fired:
+        used_r, used_e = match(tr, est)
         h = len(used_r)
         hits += h
         misses += len(tr.refs) - h
         false += len(est) - len(used_e)
         total_min += tr.duration / 60.0
         per_track.append((tr.tid, h, len(tr.refs), len(est) - len(used_e)))
+    tracks = [tr for tr, _ in fired]
     n_ref = hits + misses
     return {
         "hits": hits, "misses": misses, "false": false,
@@ -412,6 +563,49 @@ def score(tracks: list[Track], cfg: DropCfg) -> dict:
         "est_per_track": (hits + false) / len(tracks) if tracks else 0.0,
         "per_track": per_track,
     }
+
+
+def score(tracks: list[Track], cfg: DropCfg) -> dict:
+    return aggregate([(tr, simulate_track(tr, cfg)) for tr in tracks])
+
+
+def fit_gate(tracks: list[Track], cfg: DropCfg, form: str, quantile: float = 0.0) -> float:
+    """The gate threshold that keeps every right fire on `tracks` (quantile 0 = zero cost).
+
+    Fitted on fires produced with the gate OFF: the gate is the thing being chosen, so
+    fitting it on its own filtered output would be circular. Above quantile 0 it starts
+    trading right fires away, which the caller has to be willing to pay for.
+
+    `-inf` when the fit set produced no right fire at all — an inert gate, which is the
+    only honest answer with nothing to fit on.
+    """
+    vals = []
+    ungated = replace(cfg, gate=None)
+    for tr in tracks:
+        est = simulate_track(tr, ungated)
+        _, matched = match(tr, est)
+        g = tr.gate(form)
+        for ei in sorted(matched):
+            vals.append(float(g[int(np.searchsorted(tr.t, est[ei]))]))
+    vals = [v for v in vals if not np.isnan(v)]
+    if not vals:
+        return -np.inf
+    return float(np.quantile(vals, quantile))
+
+
+def score_loo(tracks: list[Track], cfg: DropCfg, form: str, quantile: float = 0.0) -> dict:
+    """Leave-one-track-out: fit the gate threshold on the other tracks, score the held-out one.
+
+    With 23 drops across 9 tracks there is no honest split, and this is the most that can be
+    claimed. It is not a formality — fitting on all nine and scoring all nine reported .345
+    precision for the strongest form this round, where LOO reports .280. The gap is the size
+    of the lie a threshold fitted to its own test set tells at this n.
+    """
+    out = []
+    for held in tracks:
+        thr = fit_gate([t for t in tracks if t.tid != held.tid], cfg, form, quantile)
+        out.append((held, simulate_track(held, replace(cfg, gate=form, gate_thr=thr))))
+    return aggregate(out)
 
 
 def cfg_from_dump(tr: Track) -> DropCfg:
@@ -431,10 +625,11 @@ def cfg_from_dump(tr: Track) -> DropCfg:
 
 
 def fmt(cfg: DropCfg, s: dict) -> str:
+    gate = f"gate {cfg.gate}>={cfg.gate_thr:.3f} " if cfg.gate else ""
     return (f"lvl {cfg.arm_buildup:.2f} sus {cfg.arm_sustain:4.1f} hold {cfg.arm_hold:4.1f} "
             f"dec {cfg.arm_decay:.1f} jump {cfg.loud_jump:.3f} "
             f"base {cfg.baseline_ticks if cfg.baseline_ticks is not None else 'shipped':>7} "
-            f"sub {cfg.subbass_return:.2f} refr {cfg.refractory:4.1f} | "
+            f"sub {cfg.subbass_return:.2f} refr {cfg.refractory:4.1f} {gate}| "
             f"recall {s['recall']:.3f} ({s['hits']}/{s['n_refs']})  "
             f"prec {s['precision']:.3f}  FA/min {s['fa_per_min']:.3f}  "
             f"est/track {s['est_per_track']:.2f}")
@@ -478,6 +673,55 @@ def stage_grid(stage: str, base: DropCfg) -> list[DropCfg]:
     sys.exit(f"unknown stage {stage}")
 
 
+def report_gates(tracks: list[Track], args) -> int:
+    """Every candidate conjunct against two arm configs, in-sample and LOO (#2299).
+
+    Two configs and not one, because the whole reason a free conjunct is interesting is that
+    it might make a LOOSER arm payable — #2360 measured the kick gate only at the incumbent,
+    where there are 21 wrong fires to kill rather than 43, and that understates a real gate
+    while flattering a saturating one.
+
+    Read the LOO column, not the in-sample one. The in-sample column is printed only so the
+    size of the gap between them stays visible.
+    """
+    incumbent = cfg_from_dump(tracks[0])
+    loose = replace(incumbent, arm_buildup=0.40, arm_sustain=2.0, arm_hold=8.0, arm_decay=1.0)
+    rows = []
+    for label, cfg in (("incumbent", incumbent), ("loose arm", loose)):
+        base = score(tracks, cfg)
+        judged = sum(
+            1 for tr in tracks for et in simulate_track(tr, cfg)
+            if (len(tr.refs) and np.any(np.abs(tr.refs - et) <= MATCH_BARS * bar_seconds(tr, float(et))))
+            or (len(tr.negs) and np.any(np.abs(tr.negs - et) <= MATCH_BARS * bar_seconds(tr, float(et))))
+        )
+        n_fires = base["hits"] + base["false"]
+        print(f"\n=== {label}: " + fmt(cfg, base))
+        # #2365: a labelling pass seeded from one config only adjudicates that config's
+        # fires. Any row firing more than the seed config is scoring its own unlabelled
+        # moments as errors, so the unjudged count is part of reading the precision.
+        print(f"    {n_fires} fires, {judged} adjudicated by ear, "
+              f"{n_fires - judged} at moments NEVER JUDGED"
+              + ("  <-- precision below is partly assumption" if n_fires > judged else ""))
+        print(f"    {'gate':20}{'causal':>8}{'thr':>9}{'in-sample':>22}{'leave-one-track-out':>24}")
+        for form, (causal, _doc, _fn) in GATES.items():
+            thr = fit_gate(tracks, cfg, form, args.gate_quantile)
+            ins = score(tracks, replace(cfg, gate=form, gate_thr=thr))
+            loo = score_loo(tracks, cfg, form, args.gate_quantile)
+            rows.append({"config": label, "gate": form, "causal": causal, "thr": thr,
+                         "in_sample": {k: v for k, v in ins.items() if k != "per_track"},
+                         "loo": {k: v for k, v in loo.items() if k != "per_track"}})
+            print(f"    {form:20}{'yes' if causal else 'NO':>8}{thr:9.3f}"
+                  f"{ins['recall']:9.3f} /{ins['precision']:7.3f}"
+                  f"{'':6}{loo['recall']:9.3f} /{loo['precision']:7.3f}"
+                  + ("" if causal else "   [disqualified]"))
+        print(f"    {'(no gate)':20}{'':>8}{'':>9}"
+              f"{base['recall']:9.3f} /{base['precision']:7.3f}")
+    if args.json:
+        args.json.write_text(json.dumps(rows, indent=2) + "\n")
+        print(f"\nwrote {args.json}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dataset", type=Path, default=REPO / "bench" / "datasets" / "harmonix")
@@ -498,6 +742,12 @@ def main() -> int:
                          "a dataset — the only corpus carrying recorded negatives")
     ap.add_argument("--allow-partial", action="store_true",
                     help="score only the v2 sidecars present, reporting what was skipped")
+    ap.add_argument("--gates", action="store_true",
+                    help="report every candidate conjunct in GATES against this corpus, "
+                         "in-sample and leave-one-track-out (#2299)")
+    ap.add_argument("--gate-quantile", type=float, default=0.0,
+                    help="quantile of the right fires the gate threshold is fitted at; "
+                         "0 = keep every right fire on the fit set")
     ap.add_argument("--json", type=Path)
     args = ap.parse_args()
 
@@ -534,8 +784,10 @@ def main() -> int:
         exact = mismatched = 0
         worst = []
         for tr in tracks:
-            est = simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref,
-                           cfg_from_dump(tr), tr.shipped_ticks)
+            # cfg_from_dump never carries a gate, so this is the shipped four-conjunct
+            # machine — which is the point: --validate proves the port is still the binary,
+            # and a gate in the loop would be proving something else.
+            est = simulate_track(tr, cfg_from_dump(tr))
             if len(est) == len(tr.fired) and np.allclose(est, tr.fired, atol=1e-6):
                 exact += 1
             else:
@@ -565,8 +817,11 @@ def main() -> int:
                                                    if k != "per_track"}}, indent=2) + "\n")
         return 0
 
+    if args.gates:
+        return report_gates(tracks, args)
+
     if not args.stage:
-        ap.error("need --validate, --stage or --config")
+        ap.error("need --validate, --stage, --config or --gates")
 
     # The incumbent is whatever produced this corpus, not whatever the defaults say today.
     # It anchors every grid below, so a corpus dumped under two configs would silently
