@@ -38,7 +38,7 @@ CONVENTIONS = {
         # How a fire the listener explicitly rejected is scored when it still
         # lands inside the match window. See NEGATIVE_POLICIES below; only
         # bundles carrying `not_drops` are affected at all.
-        "negative_policy": "beat_grace",
+        "negative_policy": "strict",
         "negative_override_beats": 1.0,
         "negative_coincide_s": 0.25,
     },
@@ -60,13 +60,18 @@ CONVENTIONS = {
 #   bar_window  the window alone decides; a rejected fire inside it is a hit.
 #               What every number published before 2026-08-20 was computed under.
 #   beat_grace  a rejected fire is false UNLESS it is within
-#               `negative_override_beats` of the drop it matched — a strobe
-#               under a beat early still reads as on the drop, a bar early
-#               does not. The default, and Kevin's call.
+#               `negative_override_beats` of the drop it matched. Chosen first
+#               on the argument that a strobe under a beat early still reads as
+#               on the drop — then Kevin watched Thirty Two Hertz play and
+#               called the 74.68 s fire (0.370 s / 0.79 beat early) visibly
+#               early. The argument was wrong; the mode is kept for
+#               reproducing the numbers it produced.
 #   strict      the listener's verdict always wins; a rejected fire is false
-#               however close the drop is. One env var away:
+#               however close the drop is. The default, settled by eye.
 #
-#                   FOSFORA_DROP_NEGATIVE_POLICY=strict bench/run_bench.py ...
+# Any of them for one run:
+#
+#     FOSFORA_DROP_NEGATIVE_POLICY=beat_grace bench/run_bench.py ...
 #
 # The override rewrites CONVENTIONS in place so the *active* policy, not the
 # default, is what every results JSON echoes. An unknown value is fatal: a

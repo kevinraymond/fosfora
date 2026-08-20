@@ -164,7 +164,9 @@ def load_marks(stem: str, out_dir: Path) -> dict:
     except json.JSONDecodeError:
         return empty
     grab = lambda k: [
-        {"t": float(d["time"]), "label": d.get("label"), "source": d.get("source", "")}
+        {"t": float(d["time"]), "label": d.get("label"), "source": d.get("source", ""),
+         # Carried through a resume, or re-saving the track would drop it.
+         "pred_t": d.get("pred_time")}
         for d in (raw.get(k) or []) if "time" in d
     ]
     return {
@@ -190,6 +192,14 @@ def write_bundle(track: dict, body: dict, out_dir: Path) -> Path:
                 # confirm/reject, which bias differently.
                 "source": f"kevin:{m.get('source') or 'click'}",
             }
+            # The prediction this mark was a verdict on, when it was one. A
+            # confirm has no independent time — pressing Y stamps the machine's
+            # own instant — so `time == pred_time` means this mark cannot
+            # measure the detector's timing error, only its existence. Recording
+            # it makes that visible in the data instead of requiring a reader to
+            # know what `source` implies.
+            if m.get("pred_t") is not None:
+                d["pred_time"] = round(max(0.0, float(m["pred_t"])), 3)
             if with_label and m.get("label"):
                 d["label"] = m["label"]
             out.append(d)
@@ -566,9 +576,10 @@ function draw() {
 function tick() { if (cur >= 0) { draw(); sub(); } requestAnimationFrame(tick); }
 
 // ---- marking
-function add(kind, t, source, label) {
+function add(kind, t, source, label, predT) {
   t = Math.max(0, Math.min(dur, t == null ? audio.currentTime : t));
-  const m = {t, source: source || "click", label: label || null};
+  const m = {t, source: source || "click", label: label || null,
+             pred_t: predT == null ? null : predT};
   (kind === "drop" ? drops : notDrops).push(m);
   dirty = true;
   toast(`${kind === "drop" ? "Drop" : "Not-a-drop"} at ${mmss(t)}`
@@ -593,7 +604,7 @@ function judge(kind) {
   drops = drops.filter(m => Math.abs(m.t - p.t) >= JUDGED_S);
   notDrops = notDrops.filter(m => Math.abs(m.t - p.t) >= JUDGED_S);
   add(kind, p.t, kind === "drop" ? "confirm" : "reject",
-      kind === "not" ? "break" : null);
+      kind === "not" ? "break" : null, p.t);
 }
 
 function delNearest() {

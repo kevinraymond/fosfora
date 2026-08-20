@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy"]
+# dependencies = ["numpy", "scipy", "mir_eval>=0.7", "soundfile"]
 # ///
 """Replay and sweep the drop state machine's arm/fire logic (#2211, workstream Q).
 
@@ -39,10 +39,17 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from benchlib.metrics import CONVENTIONS, NEGATIVE_POLICIES  # noqa: E402
+
 TICK_DT = 0.1
-# benchlib convention (metrics/__init__.py): +-1 bar, bar measured locally over +-16 s.
-MATCH_BARS = 1.0
-LOCAL_S = 16.0
+# One source of truth. This file re-implements the DETECTOR (it has to, to sweep it) but
+# must not re-implement the SCORING RULE — the stale-DropCfg bug below is what two copies
+# of one number costs. Imported at the price of benchlib's heavier deps, which uv caches.
+_DROP = CONVENTIONS["drop"]
+MATCH_BARS = _DROP["match_window_bars"]
+LOCAL_S = _DROP["bar_local_window_s"]
 FALLBACK_BAR_S = 2.0
 
 
@@ -344,22 +351,26 @@ def load_tracks(dataset: Path, tune_only: bool = True,
 # =================================================================================
 
 
-# benchlib's beat_grace policy, ported (metrics/drops.py). A fire the listener rejected
-# may still match, but only within one BEAT of the drop.
+# The negative policy, read from benchlib rather than restated — see CONVENTIONS["drop"]
+# and NEGATIVE_POLICIES for what each mode means and why `strict` is the default.
 #
-# One deliberate difference: benchlib tests coincidence with a recorded negative at
-# +-0.25 s, because there the fires are the shipped binary's and a rejection is stamped on
-# the fire it judged. In a SWEEP the fires move, so a negative is treated as a rejected
-# *moment* — +-1 bar, the same zone of influence a drop gets. Verified inert at the
-# shipped config: --local reproduces benchlib's beat_grace numbers exactly.
-GRACE_BEATS = 1.0
+# One deliberate difference from benchlib: there, coincidence with a recorded negative is
+# tested at +-0.25 s, because the fires being scored are the shipped binary's and a
+# rejection is stamped on the very fire it judged. In a SWEEP the fires move, so a negative
+# has to mean a rejected *moment* — +-1 bar, the same zone of influence a drop gets.
+GRACE_BEATS = _DROP["negative_override_beats"]
 
 
 def _allowed(tr: Track, est_t: float, ref_t: float, bar: float) -> bool:
-    if not len(tr.negs):
+    policy = _DROP["negative_policy"]
+    if policy not in NEGATIVE_POLICIES:
+        sys.exit(f"negative_policy {policy!r} is not one of {NEGATIVE_POLICIES}")
+    if policy == "bar_window" or not len(tr.negs):
         return True
     if not np.any(np.abs(tr.negs - est_t) <= MATCH_BARS * bar):
         return True
+    if policy == "strict":
+        return False
     return abs(est_t - ref_t) <= GRACE_BEATS * (bar / 4.0)
 
 
