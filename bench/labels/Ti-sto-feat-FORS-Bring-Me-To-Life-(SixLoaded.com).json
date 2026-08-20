@@ -25,6 +25,20 @@
   ],
   "not_drops": [
     {
+      "time": 17.984,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 17.984,
+      "label": "buildup"
+    },
+    {
+      "time": 43.375,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 43.375,
+      "label": "other"
+    },
+    {
       "time": 44.315,
       "kind": "local_manual",
       "source": "kevin:reject",
@@ -35,6 +49,13 @@
       "kind": "local_manual",
       "source": "kevin:reject",
       "label": "fill"
+    },
+    {
+      "time": 176.181,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 176.181,
+      "label": "buildup"
     }
   ],
   "provenance": {
@@ -42,7 +63,9 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 2,
+    "predictions_seeded": 5,
+    "predictions_added": 4,
+    "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [
       "break",

@@ -1,47 +1,29 @@
 {
   "schema": "fosfora-bench-annotation/v1",
-  "track_id": "Thirty Two Hertz",
+  "track_id": "metahuman-computer-signal",
   "dataset": "local_drops",
   "audio": {
-    "path": "../../../../../Music/Thirty Two Hertz.wav",
-    "duration_s": 179.91466666666668
+    "path": "../../../../../Music/metahuman-computer-signal.mp3",
+    "duration_s": 436.0312698412698
   },
   "drops": [
     {
-      "time": 75.047,
+      "time": 130.504,
       "kind": "local_manual",
       "source": "kevin:click"
     },
     {
-      "time": 150.083,
+      "time": 311.7,
       "kind": "local_manual",
       "source": "kevin:click"
     }
   ],
   "not_drops": [
     {
-      "time": 7.584,
+      "time": 13.177,
       "kind": "local_manual",
       "source": "kevin:reject",
-      "label": "buildup"
-    },
-    {
-      "time": 30.624,
-      "kind": "local_manual",
-      "source": "kevin:reject",
-      "pred_time": 30.624,
-      "label": "fill"
-    },
-    {
-      "time": 74.677,
-      "kind": "local_manual",
-      "source": "kevin:reject",
-      "label": "buildup"
-    },
-    {
-      "time": 149.664,
-      "kind": "local_manual",
-      "source": "kevin:reject",
+      "pred_time": 13.177,
       "label": "buildup"
     }
   ],
@@ -50,8 +32,8 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 4,
-    "predictions_added": 4,
+    "predictions_seeded": 1,
+    "predictions_added": 0,
     "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [

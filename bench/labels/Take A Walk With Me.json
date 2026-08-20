@@ -20,16 +20,65 @@
   ],
   "not_drops": [
     {
+      "time": 11.531,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 11.531,
+      "label": "buildup"
+    },
+    {
       "time": 22.197,
       "kind": "local_manual",
       "source": "kevin:reject",
       "label": "other"
     },
     {
+      "time": 30.731,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 30.731,
+      "label": "other"
+    },
+    {
+      "time": 46.731,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 46.731,
+      "label": "other"
+    },
+    {
+      "time": 121.717,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 121.717,
+      "label": "fill"
+    },
+    {
       "time": 123.424,
       "kind": "local_manual",
       "source": "kevin:reject",
       "label": "fill"
+    },
+    {
+      "time": 138.464,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 138.464,
+      "label": "other"
+    },
+    {
+      "time": 155.211,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 155.211,
+      "label": "other"
+    },
+    {
+      "time": 206.837,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 206.837,
+      "label": "other"
     }
   ],
   "provenance": {
@@ -37,7 +86,9 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 2,
+    "predictions_seeded": 11,
+    "predictions_added": 9,
+    "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [
       "break",

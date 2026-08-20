@@ -1,48 +1,36 @@
 {
   "schema": "fosfora-bench-annotation/v1",
-  "track_id": "Thirty Two Hertz",
+  "track_id": "\ud83e\uddc0 MELT WITH ME \ud83e\uddc0",
   "dataset": "local_drops",
   "audio": {
-    "path": "../../../../../Music/Thirty Two Hertz.wav",
-    "duration_s": 179.91466666666668
+    "path": "../../../../../Music/\ud83e\uddc0 MELT WITH ME \ud83e\uddc0.mp3",
+    "duration_s": 237.71997916666666
   },
   "drops": [
     {
-      "time": 75.047,
+      "time": 62.302,
       "kind": "local_manual",
       "source": "kevin:click"
     },
     {
-      "time": 150.083,
+      "time": 190.285,
       "kind": "local_manual",
       "source": "kevin:click"
     }
   ],
   "not_drops": [
     {
-      "time": 7.584,
+      "time": 126.411,
       "kind": "local_manual",
       "source": "kevin:reject",
-      "label": "buildup"
-    },
-    {
-      "time": 30.624,
-      "kind": "local_manual",
-      "source": "kevin:reject",
-      "pred_time": 30.624,
+      "pred_time": 126.411,
       "label": "fill"
     },
     {
-      "time": 74.677,
+      "time": 205.156,
       "kind": "local_manual",
-      "source": "kevin:reject",
-      "label": "buildup"
-    },
-    {
-      "time": 149.664,
-      "kind": "local_manual",
-      "source": "kevin:reject",
-      "label": "buildup"
+      "source": "kevin:click",
+      "label": "break"
     }
   ],
   "provenance": {
@@ -50,8 +38,8 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 4,
-    "predictions_added": 4,
+    "predictions_seeded": 1,
+    "predictions_added": 0,
     "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [

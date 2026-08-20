@@ -80,5 +80,53 @@
     "refractory": "suppression after a fire; shipped 16.0. Sweeping it moves recall by ZERO (#2360); what reaches it is removing the masking fire (#2366)."
   },
 
-  "chosen_config": null
+  "holdout_result": {
+    "_scored": "2026-08-20, ONCE, after chosen_config was committed. This half is now spent for the arm axis.",
+    "verdict": "TARGET MISSED. The tune-half win did not generalize at all.",
+    "independent_4_tracks": {
+      "n_drops": 7,
+      "shipped": {"recall": 0.0, "hits": 0, "precision": 0.0, "fa_per_min": 0.272},
+      "chosen": {"recall": 0.0, "hits": 0, "precision": 0.0, "fa_per_min": 0.272},
+      "_bound_on_the_2_unadjudicated_fires": "9 of the chosen config's 11 holdout fires were adjudicated. Even crediting BOTH unjudged fires as drops Kevin failed to mark, recall reaches only 0.222 — still under the 0.304 bar. The verdict does not depend on them, so no further listening was asked for."
+    },
+    "weak_member_prison_of_pixels": {
+      "n_drops": 3,
+      "shipped": {"recall": 0.667, "precision": 0.333},
+      "chosen": {"recall": 0.333, "precision": 0.200},
+      "_note": "The chosen config is WORSE than shipped here. Reported separately as pre-registered: this is a different mix of a tune-half track, not an independent test."
+    },
+    "_interpretation": "2 of 768 arm x causal-gate combinations cleared the bar on the tune half; the better of them scores identically to shipped on fresh material — both at zero. That is what a multiple-comparisons artifact looks like, and the caveat predicting it was written into chosen_config before this was read. No constant should move on the strength of the tune half.",
+    "_recommendation": "Ship nothing. The shipped config stands. The round's answer is that the arm needs a new INPUT, and there is now a mechanism for that claim rather than an inference."
+  },
+
+  "_mechanism_for_the_next_round": {
+    "finding": "All 6 holdout misses are blocked by `armed`, and by `armed` alone. The fire side is not implicated at any of them: the loudness jump clears its 0.060 gate at every miss, from 0.070 to 0.611. The arm timer simply never reaches the sustain requirement — high_max runs 0.0 to 2.9 s against 3.0 s required, and 🧀 MELT WITH ME 🧀 at 62.3 s misses by one tick.",
+    "root_cause_candidate": "The build-up logistic has almost no dynamic range at the moments that matter. Its peak over the run-up to a real holdout drop is 0.38 to 0.70 against an arm level of 0.40 — on metahuman-computer-signal it peaks BELOW the level at both drops (0.39, 0.38). A threshold cannot be placed usefully on a signal that barely crosses it, which is why every arm sweep trades recall against precision ~1:1 (#2360).",
+    "post_hoc_arm_scan": "Diagnosis only, on an already-scored holdout. Independent-holdout recall jumps 0.000 -> 0.571 as soon as sustain falls to 1.5 s at level .40, or at any sustain with level <= .35 — but precision collapses to .108-.267 across that whole region, on both halves. The drops ARE reachable; they cost six to nine wrong cues each. The shipped config sits on the wrong side of a cliff (sustain 3.0 -> recall .000, sustain 1.5 -> recall .571) which is itself a sign the constant is not measuring anything stable.",
+    "next_lever": "Replace or supplement the build-up logistic's inputs, rather than moving the arm constants over it. A holdout for that work needs FRESH material — these five tracks have now been scored and are spent."
+  },
+
+  "chosen_config": {
+    "_chosen": "2026-08-20, on the TUNE half only, BEFORE the holdout was scored.",
+    "_outcome": "NOT SHIPPED — see holdout_result. Recorded as the round's honest attempt, not as a recommendation.",
+    "arm_buildup": 0.40,
+    "arm_sustain": 4.0,
+    "arm_hold": 4.0,
+    "arm_decay": 1.0,
+    "gate": "kick_dens_delta",
+    "gate_thr": -0.1404,
+    "_gate_meaning": "kick-transient density over the trailing 2 s must not have fallen more than 0.14 below its level over the 6 s ending 2 s ago. In plain terms: a drop does not have thinning percussion. Causal — the window ends at the deciding tick.",
+    "tune_loo": {
+      "recall": 0.333, "hits": 8, "n_refs": 24,
+      "precision": 0.308, "fa_per_min": 0.404,
+      "_incumbent": {"recall": 0.292, "hits": 7, "precision": 0.250, "fa_per_min": 0.472},
+      "_estimator": "leave-one-track-out; threshold refitted per fold"
+    },
+    "_why_this_one": "Of 768 arm x causal-gate combinations scored leave-one-track-out, exactly 2 cleared the pre-registered bar; this is the better of them. The fitted threshold is stable across folds (-0.1404 on 8 of 9, -0.0526 on the ninth), and the recall gain is distributed rather than driven by one track: Psykovsky 0/1 -> 1/1 and Take A Walk With Me 0/2 -> 1/2 gained, Prison of Pixels (EASE) 2/3 -> 1/3 lost.",
+    "_caveats_recorded_before_the_holdout_was_read": [
+      "2 of 768 configurations clearing a bar is a multiple-comparisons result. The tune half cannot distinguish it from a lucky search, which is the entire reason the holdout is scored once and separately.",
+      "The margin is ONE drop: 8 hits against 7, and 8/26 against 7/28. On 24 references that is inside noise, and no claim about the size of the improvement should be made from the tune half.",
+      "This clears the LITERAL frozen bar (recall > .304, precision > .250). Note the shipped baseline itself moved from .304 to .292 when adjudication added a 24th drop, so the frozen number is now marginally HARDER than 'beat shipped' — which is the conservative direction, and it is being kept as written rather than restated after the fact."
+    ]
+  }
 }

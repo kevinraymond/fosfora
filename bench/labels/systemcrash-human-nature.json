@@ -1,0 +1,35 @@
+{
+  "schema": "fosfora-bench-annotation/v1",
+  "track_id": "systemcrash-human-nature",
+  "dataset": "local_drops",
+  "audio": {
+    "path": "../../../../../Music/systemcrash-human-nature.mp3",
+    "duration_s": 416.60526077097506
+  },
+  "drops": [],
+  "not_drops": [
+    {
+      "time": 3.982,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 3.982,
+      "label": "other"
+    }
+  ],
+  "provenance": {
+    "tool": "bench/label_drops.py",
+    "method": "listen + click (waveform)",
+    "tap_latency_s": 0.0,
+    "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
+    "predictions_seeded": 1,
+    "predictions_added": 0,
+    "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
+    "predictions_visible": true,
+    "negative_labels": [
+      "break",
+      "buildup",
+      "fill",
+      "other"
+    ]
+  }
+}

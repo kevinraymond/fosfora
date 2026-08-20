@@ -30,6 +30,13 @@
   ],
   "not_drops": [
     {
+      "time": 3.744,
+      "kind": "local_manual",
+      "source": "kevin:reject",
+      "pred_time": 3.744,
+      "label": "buildup"
+    },
+    {
       "time": 24.757,
       "kind": "local_manual",
       "source": "kevin:reject",
@@ -47,7 +54,9 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 4,
+    "predictions_seeded": 6,
+    "predictions_added": 6,
+    "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [
       "break",

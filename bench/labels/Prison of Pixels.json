@@ -1,47 +1,56 @@
 {
   "schema": "fosfora-bench-annotation/v1",
-  "track_id": "Thirty Two Hertz",
+  "track_id": "Prison of Pixels",
   "dataset": "local_drops",
   "audio": {
-    "path": "../../../../../Music/Thirty Two Hertz.wav",
-    "duration_s": 179.91466666666668
+    "path": "../../../../../Music/Prison of Pixels.mp3",
+    "duration_s": 294.4799791666667
   },
   "drops": [
     {
-      "time": 75.047,
+      "time": 48.437,
+      "kind": "local_manual",
+      "source": "kevin:confirm",
+      "pred_time": 48.437
+    },
+    {
+      "time": 139.437,
       "kind": "local_manual",
       "source": "kevin:click"
     },
     {
-      "time": 150.083,
+      "time": 238.521,
       "kind": "local_manual",
       "source": "kevin:click"
     }
   ],
   "not_drops": [
     {
-      "time": 7.584,
+      "time": 5.984,
       "kind": "local_manual",
       "source": "kevin:reject",
+      "pred_time": 5.984,
       "label": "buildup"
     },
     {
-      "time": 30.624,
+      "time": 108.277,
       "kind": "local_manual",
       "source": "kevin:reject",
-      "pred_time": 30.624,
+      "pred_time": 108.277,
       "label": "fill"
     },
     {
-      "time": 74.677,
+      "time": 205.024,
       "kind": "local_manual",
       "source": "kevin:reject",
-      "label": "buildup"
+      "pred_time": 205.024,
+      "label": "fill"
     },
     {
-      "time": 149.664,
+      "time": 237.557,
       "kind": "local_manual",
       "source": "kevin:reject",
+      "pred_time": 237.557,
       "label": "buildup"
     }
   ],
@@ -50,8 +59,8 @@
     "method": "listen + click (waveform)",
     "tap_latency_s": 0.0,
     "_latency_note": "clicks are placed on a waveform, not tapped in real time, so there is no systematic reaction-time offset to subtract; the drop match window is 1.0 bar regardless",
-    "predictions_seeded": 4,
-    "predictions_added": 4,
+    "predictions_seeded": 6,
+    "predictions_added": 0,
     "predictions_source": "sidecar d_fired (shipped) + drop_loose_arm_fires.json",
     "predictions_visible": true,
     "negative_labels": [
