@@ -5,6 +5,28 @@
 # ///
 """Replay and sweep the drop state machine's arm/fire logic (#2211, workstream Q).
 
+READ THIS BEFORE SWEEPING ANYTHING. The drop-tuning workstream CLOSED 2026-08-21 at a
+feature ceiling, and every lever this script exposes has been swept and refuted:
+
+  - the arm (level / sustain / hold / decay)      #2212, #2360, #2369
+  - the refractory, 2-32 s                        #2360 (moves recall by exactly zero)
+  - the HPSS trio, and `kick` as a gate           #2360 (weak; kick saturates)
+  - 768 causal gate x arm combinations            #2369 (2 cleared, holdout scored 0 of 7)
+  - the build-up logistic's five weights          #2373 (inverted, not merely weak)
+  - 372 arm x fire configs, PRECISION side        #2374 (no operating point either way)
+
+Shipped reads recall .265 / precision .225 on 14 hand-labelled tracks; past .31 precision
+the detector stops firing. The mechanism (#2373) is that `cur_buildup` is a BUILD-UP
+detector — AUC .932 against ordinary music, .43 against the moments a listener rejects —
+so the arm's only input is high by construction exactly where the machine must not fire.
+No threshold placed on it has an operating point, which is why every sweep here trades
+recall against precision ~1:1 forever.
+
+So this file is now a REGRESSION HARNESS, not a search tool. `--validate` still earns its
+keep on every sidecar change. A new *sweep* is only worth running behind a new INPUT — and
+the honest next input is a learned model (#2082), not another constant.
+
+
     bench/sweep_drop.py --validate            # gate: replay must reproduce the binary
     bench/sweep_drop.py --stage arm           # then sweep, tune half only
     bench/sweep_drop.py --stage combined --top 12

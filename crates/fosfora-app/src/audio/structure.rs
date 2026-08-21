@@ -18,10 +18,23 @@
 //! - `buildup` — a logistic combination of loudness rise (A10 `loudness_trend`), spectral
 //!   **brightening** (centroid rise), **onset-density** rise (A6 onset stream), and sub-bass
 //!   **withdrawal** (the classic EDM pre-drop high-pass sweep). A superb global-intensity
-//!   driver (auto camera push-in, tension).
+//!   driver (auto camera push-in, tension) — and that is now measured rather than claimed:
+//!   over the 8 s before a hand-labelled drop it separates from ordinary music at **AUC
+//!   .932** (#2374). Use it **continuously**. It is bad at exactly one thing, below.
 //! - `drop` — a 1-frame pulse: fires when `buildup` has been sustained high, then a broadband
 //!   loudness jump lands together with the sub-bass returning; 16 s refractory afterward.
 //!   Counter-latched by the audio thread (like `beat`/`downbeat`) so it can't be missed.
+//!
+//!   **This cue is at its ceiling and the constants are not the lever.** On 14 hand-labelled
+//!   tracks it reads recall .265 / precision .225, and a sweep of 372 arm × fire configs
+//!   finds no better operating point in *either* direction — past .31 precision it simply
+//!   stops firing (#2374). The mechanism is that `buildup` is a **build-up** detector and a
+//!   rejected build-up is a build-up, so its own input ranks the moments a listener rejects
+//!   *above* the drops it misses (AUC .43 against them, against .932 vs background) — the
+//!   feature is misassigned to a discrete decision, not miscalibrated (#2373). The arm, the
+//!   refractory, the HPSS trio, the kick gate, 768 causal gate × arm combinations and the
+//!   logistic's five weights are each separately refuted, each with a finding. Past this
+//!   needs a learned model (#2082), not another threshold.
 //!
 //! Reads the **pre-normalization** features (the adaptive normalizer would flatten exactly
 //! the loudness/sub-bass dynamics this stage keys on) plus the beat result. Fills three
