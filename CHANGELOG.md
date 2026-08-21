@@ -13,10 +13,13 @@
 - **Particle ribbon trails last the same time at any frame rate.** Cleave, Tide and Vessel
   measured their trails in frames, so a trail running 267 ms at 60 fps stretched to 533 ms
   at 30 and shrank to 133 ms at 120.
-- **Panorama's graticule no longer brightens with the frame rate.** Its centre and edge
-  guides were drawn at a fixed strength per frame rather than per second, so the reference
-  line the effect exists to provide got stronger the faster your machine ran. Brightness
-  spread across 30/60/120 fps drops from 59% to 33%; the rest is a separate issue.
+- **Panorama's graticule no longer brightens or smears with the frame rate.** Its centre and
+  edge guides were drawn at a fixed strength per frame, and its echo drifted a fixed distance
+  per frame, so the reference line the effect exists to provide got both stronger and wider
+  the faster your machine ran. Brightness spread across 30/60/120 fps drops from 59% to 1%.
+- **Ascend's horizon wake rises at the same speed on any machine.** The afterglow climbed a
+  fixed distance every frame rather than every second, so it travelled twice as far per
+  second at 120 fps as at 60. Brightness spread across 30/60/120 fps drops from 14% to 2%.
 - **Diffusion blur is measured in seconds now**, so Protea's bodies, Sumi's ink and
   Polycephalum's network smooth at the same rate however fast the machine runs. Protea's
   brightness spread across 30/60/120 fps drops from 41% to 18%.
