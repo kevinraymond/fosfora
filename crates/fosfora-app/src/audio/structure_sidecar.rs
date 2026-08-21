@@ -32,6 +32,16 @@
 //! made `subbass_ref` useless as a gate (#2300). Sweeping the ranged proxy would measure
 //! the ranger, not the music.
 //!
+//! v4 opens up the build-up logistic itself (#2370). Every round before it could replay
+//! everything *downstream* of `buildup_logistic` and nothing inside it, because only the
+//! output (`d_build`) was recorded — which is why the five weights have sat at their original
+//! values while the arm constants on top of them were swept four times. The four clamped terms
+//! now ride along with their raw ingredients, so a sweep can re-derive each term at any gain
+//! (`d_f_*` proves it re-derived them correctly) and reconstruct `d_build` exactly. The meta
+//! line grows a `consts` object for the same reason: `CENTROID_RISE_GAIN`, `BUILD_TAU` and the
+//! rest are module constants rather than live config, and a Python replay mirroring them by
+//! hand is a second copy of a number waiting to drift out of step with this one.
+//!
 //! Never set the variable in live use: the writer does file I/O on the analysis thread.
 //! The bench drives it per track via `--signal-dump`, where the "audio thread" is an
 //! offline file loop.
@@ -41,7 +51,11 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 
 use super::features::AudioFeatures;
-use super::structure::{DropTrace, StructureConfig};
+use super::loudness::{LUFS_SPAN_LU, TREND_RANGE_LU};
+use super::structure::{
+    BUILD_TAU, CENTROID_RISE_GAIN, DropTrace, ONSET_FAST_SECONDS, ONSET_RISE_GAIN, SLOPE_SECONDS,
+    STRUCTURE_TICK_HZ, StructureConfig,
+};
 
 /// Fingerprint dimension: 7 bands + MFCC 1..=8 + 12 chroma. Deliberately identical to
 /// `analyze::structure_offline::FP_DIM` — the two paths must agree on what "sounds the
@@ -54,9 +68,11 @@ const TICK_HZ: f64 = 10.0;
 
 /// Sidecar schema version. v1 was fingerprint + label-machine fields only; v2 adds the
 /// drop-machine trace and the leading `meta` line; v3 adds the HPSS trio the precision
-/// round needs (#2299). Readers must skip the meta line and may ignore unknown fields, so
-/// a v1 reader keeps working on a v2 file once it does.
-const SCHEMA_VERSION: u32 = 3;
+/// round needs (#2299); v4 adds the build-up logistic's own inputs and the `consts` object
+/// (#2370). Readers must skip the meta line and may ignore unknown fields, so a v1 reader
+/// keeps working on a v2 file once it does — and every bump since has stayed additive for
+/// exactly that reason: the Harmonix corpus is 374 v2 sidecars nobody is re-dumping.
+const SCHEMA_VERSION: u32 = 4;
 
 pub struct StructureSidecar {
     out: BufWriter<File>,
@@ -104,7 +120,9 @@ impl StructureSidecar {
 \"buildup_bias\":{},\"buildup_w_loud\":{},\"buildup_w_centroid\":{},\"buildup_w_onset\":{},\
 \"buildup_w_subbass\":{},\"drop_arm_buildup\":{},\"drop_arm_sustain\":{},\"drop_arm_hold\":{},\
 \"drop_loud_jump\":{},\"drop_baseline_seconds\":{},\"drop_subbass_return\":{},\
-\"drop_refractory\":{}}}}}\n",
+\"drop_refractory\":{}}},\"consts\":{{\"centroid_rise_gain\":{},\"onset_rise_gain\":{},\
+\"build_tau\":{},\"slope_seconds\":{},\"onset_fast_seconds\":{},\"trend_range_lu\":{},\
+\"lufs_span_lu\":{},\"tick_hz\":{}}}}}\n",
                 cfg.buildup_bias,
                 cfg.buildup_w_loud,
                 cfg.buildup_w_centroid,
@@ -117,6 +135,16 @@ impl StructureSidecar {
                 cfg.drop_baseline_seconds,
                 cfg.drop_subbass_return,
                 cfg.drop_refractory,
+                // Not config: module constants the logistic is built from. Written so a
+                // replay reads them rather than restating them (#2370).
+                CENTROID_RISE_GAIN,
+                ONSET_RISE_GAIN,
+                BUILD_TAU,
+                SLOPE_SECONDS,
+                ONSET_FAST_SECONDS,
+                TREND_RANGE_LU,
+                LUFS_SPAN_LU,
+                STRUCTURE_TICK_HZ,
             );
             let _ = self.out.write_all(meta.as_bytes());
         }
@@ -126,7 +154,10 @@ impl StructureSidecar {
             "{{\"ts\":{timestamp:.4},\"loud_pre\":{:.5e},\"loud_s\":{:.5e},\"buildup\":{:.4},\"drop\":{:.1},\"bar_index\":{:.1},\"bar_phase\":{:.4},\"downbeat\":{:.1},\"sub_bass\":{:.5e},\"bass\":{:.5e},\
 \"d_tick\":{},\"d_t\":{:.4},\"d_loud_m\":{:.5e},\"d_sub\":{:.5e},\"d_sub_ref\":{:.5e},\"d_build\":{:.5e},\
 \"d_high\":{:.4},\"d_base\":{:.5e},\"d_jump\":{:.5e},\"d_ring\":{},\"d_armed\":{},\"d_subret\":{},\
-\"d_refrac\":{},\"d_fired\":{},\"d_kick\":{:.5e},\"d_perc\":{:.5e},\"d_hratio\":{:.5e},\"fp\":[",
+\"d_refrac\":{},\"d_fired\":{},\"d_kick\":{:.5e},\"d_perc\":{:.5e},\"d_hratio\":{:.5e},\
+\"d_f_loud\":{:.5e},\"d_f_cent\":{:.5e},\"d_f_onset\":{:.5e},\"d_f_subgone\":{:.5e},\
+\"d_loud_trend\":{:.5e},\"d_loud_s\":{:.5e},\"d_cent\":{:.5e},\"d_cent_slow\":{:.5e},\
+\"d_onset_fast\":{:.5e},\"d_onset_slow\":{:.5e},\"d_sub_slow\":{:.5e},\"fp\":[",
             pre_norm.loudness_s,
             live.loudness_s,
             live.buildup,
@@ -153,6 +184,21 @@ impl StructureSidecar {
             pre_norm.kick,
             pre_norm.percussive_energy,
             pre_norm.harmonic_ratio,
+            // v4 (#2370): from the TRACE, not from `pre_norm`. The trio above are candidate
+            // conjuncts nothing evaluates, so the record-time snapshot is the honest source
+            // for them; these are values the tick actually computed, and taking them off a
+            // re-read here would be measuring a lookalike.
+            trace.build.f_loud,
+            trace.build.f_centroid,
+            trace.build.f_onset,
+            trace.build.f_subbass_gone,
+            trace.build.loud_trend,
+            trace.build.loud_s,
+            trace.build.centroid,
+            trace.build.centroid_slow,
+            trace.build.onset_fast,
+            trace.build.onset_slow,
+            trace.build.subbass_slow,
         );
         for (i, v) in fp.iter().enumerate() {
             if i > 0 {

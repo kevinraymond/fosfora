@@ -111,17 +111,26 @@ const CONF_SIGMA_SPAN: f32 = 8.0;
 /// the local-max test exactly on the strongest boundaries.
 const NOVELTY_GAIN: f32 = 33.0;
 
+// The five constants below are `pub` for one reason: the dev sidecar writes them into its
+// meta line so an offline replay reads the binary's own numbers instead of keeping a second
+// copy in Python (#2370). Two copies of one number is what made #2259's refractory sweep vary
+// a lever around a config that had already moved, and measure nothing.
 /// Long window (seconds) for the build-up slope/decline references.
-const SLOPE_SECONDS: f32 = 8.0;
+pub const SLOPE_SECONDS: f32 = 8.0;
 /// Fast onset-density EMA window (seconds); its excess over the slow one is "onsets rising".
-const ONSET_FAST_SECONDS: f32 = 1.0;
+pub const ONSET_FAST_SECONDS: f32 = 1.0;
 /// Decay window (seconds) for the sub-bass reference peak (the drop's "return" target).
 const SUBBASS_REF_SECONDS: f32 = 10.0;
 /// Build-up output smoothing (EMA) time constant, seconds.
-const BUILD_TAU: f32 = 0.5;
+pub const BUILD_TAU: f32 = 0.5;
 /// Gains mapping the raw centroid / onset rises into ~0..1 before weighting.
-const CENTROID_RISE_GAIN: f32 = 6.0;
-const ONSET_RISE_GAIN: f32 = 4.0;
+pub const CENTROID_RISE_GAIN: f32 = 6.0;
+pub const ONSET_RISE_GAIN: f32 = 4.0;
+
+/// The tracker's internal decimation rate, exposed for the same reason as the gains above:
+/// the build-up EMA's coefficient is `1 - exp(-(1/TICK_HZ)/BUILD_TAU)`, so a replay that
+/// reconstructs `buildup` needs both halves of it from the dump.
+pub const STRUCTURE_TICK_HZ: f32 = TICK_HZ;
 
 /// Build-up logistic: `buildup = σ(BIAS + Σ wᵢ·fᵢ)`, each fᵢ in ~0..1.
 const BUILD_BIAS: f32 = -2.2;
@@ -254,6 +263,55 @@ pub struct StructureResult {
     pub boundary: f32,
 }
 
+/// The build-up logistic's own inputs on one tick (#2370).
+///
+/// The arm conjunct reads `cur_buildup` and nothing else, and the arm is the sole blocker at
+/// every measured miss (#2212, #2369). So the logistic *is* the lever — but its five weights
+/// have never been sweepable, because the sidecar recorded only its output. An offline sweep
+/// could replay everything downstream of this function and nothing inside it.
+///
+/// Both the evaluated terms and their raw ingredients are carried, and the redundancy is the
+/// point. A clamped term has already had its gain applied and its headroom cut off at 1.0, so
+/// [`CENTROID_RISE_GAIN`] and [`ONSET_RISE_GAIN`] are *unrecoverable* from it — and those gains
+/// are the competing hypothesis for why the terms are small: three of the four are differences
+/// against slow EMAs, and a slow EMA that tracks its fast signal too closely collapses the
+/// difference regardless of weight (the shape of the `subbass_ref` defect, #2300). Keeping the
+/// ingredients lets a replay re-derive every term at any gain; keeping the terms lets it prove
+/// it re-derived them correctly.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BuildupTerms {
+    /// `f_loud` — `loudness_trend`, clamped. Already 0..1 at the source, so the clamp is a
+    /// no-op and this term has *no headroom*: its real gain is `TREND_RANGE_LU`, over in
+    /// `loudness.rs`, which is why `loud_s` is carried below.
+    pub f_loud: f32,
+    /// `f_centroid` — the centroid's excess over its slow EMA, gained and clamped.
+    pub f_centroid: f32,
+    /// `f_onset` — the fast onset EMA's excess over the slow one, gained and clamped.
+    pub f_onset: f32,
+    /// `f_subbass_gone` — how far sub-bass sits below its slow EMA, as a fraction of it.
+    pub f_subbass_gone: f32,
+
+    // --- raw ingredients, so the gains above are sweepable without another re-dump ---
+    /// `pre_norm.loudness_trend` before the clamp.
+    pub loud_trend: f32,
+    /// `pre_norm.loudness_s`. With `DropTrace::loud_m`, recovers `M − S` in LU as
+    /// `(loud_m - loud_s) * 60.0` — the input `TREND_RANGE_LU` divides, which the
+    /// already-clamped `loud_trend` has thrown away.
+    pub loud_s: f32,
+    /// `pre_norm.centroid`.
+    pub centroid: f32,
+    /// The centroid's [`SLOPE_SECONDS`] EMA.
+    pub centroid_slow: f32,
+    /// The [`ONSET_FAST_SECONDS`] onset-density EMA.
+    pub onset_fast: f32,
+    /// The [`SLOPE_SECONDS`] onset-density EMA.
+    pub onset_slow: f32,
+    /// The sub-bass [`SLOPE_SECONDS`] EMA (`DropTrace::sub_bass` is the level it is measured
+    /// against — note that is a different reference from `subbass_ref`, the peak-hold the
+    /// *fire* side uses).
+    pub subbass_slow: f32,
+}
+
 /// One tick of the drop state machine's internals, for the dev sidecar (#2211).
 ///
 /// The machine's decisive inputs are the **pre-normalization** `loudness_m` and `sub_bass`,
@@ -291,6 +349,8 @@ pub struct DropTrace {
     pub in_refractory: bool,
     /// Whether this tick fired a drop.
     pub fired: bool,
+    /// What went *into* `buildup` on this tick (#2370). See [`BuildupTerms`].
+    pub build: BuildupTerms,
 }
 
 /// How far in the past a confirmed boundary actually sits, seconds. The kernel's centring
@@ -328,6 +388,8 @@ pub struct StructureTracker {
     subbass_ref: f32,
     buildup_ema: f32,
     cur_buildup: f32,
+    /// This tick's logistic inputs, held for the trace `update_drop` assembles below (#2370).
+    build_terms: BuildupTerms,
 
     // Drop state machine (updated every tick).
     high_duration: f32,
@@ -389,6 +451,7 @@ impl StructureTracker {
             subbass_ref: 0.0,
             buildup_ema: 0.0,
             cur_buildup: 0.0,
+            build_terms: BuildupTerms::default(),
             high_duration: 0.0,
             loud_ring: VecDeque::new(),
             // Sized on the TICK rate, because `update_drop` — the only writer — runs on
@@ -474,7 +537,8 @@ impl StructureTracker {
         self.cur_novelty = (abs_novelty * NOVELTY_GAIN).clamp(0.0, 1.0);
 
         // --- buildup (logistic, EMA-smoothed at tick rate) ---
-        let build_raw = self.buildup_logistic(pre_norm);
+        let (build_raw, build_terms) = self.buildup_logistic(pre_norm);
+        self.build_terms = build_terms;
         let a = 1.0 - (-(1.0 / TICK_HZ) / BUILD_TAU).exp();
         self.buildup_ema += (build_raw - self.buildup_ema) * a;
         self.cur_buildup = self.buildup_ema;
@@ -574,7 +638,10 @@ impl StructureTracker {
         acc.max(0.0)
     }
 
-    fn buildup_logistic(&self, pre_norm: &AudioFeatures) -> f32 {
+    /// Returns `(σ(x), the terms that made x)`. The terms ride out to the dev sidecar so an
+    /// offline sweep can reach *inside* this function rather than only downstream of it
+    /// (#2370) — see [`BuildupTerms`] for why the raw ingredients travel with them.
+    fn buildup_logistic(&self, pre_norm: &AudioFeatures) -> (f32, BuildupTerms) {
         let f_loud = pre_norm.loudness_trend.clamp(0.0, 1.0);
         let f_centroid =
             ((pre_norm.centroid - self.centroid_slow) * CENTROID_RISE_GAIN).clamp(0.0, 1.0);
@@ -590,7 +657,20 @@ impl StructureTracker {
             + self.cfg.buildup_w_centroid * f_centroid
             + self.cfg.buildup_w_onset * f_onset
             + self.cfg.buildup_w_subbass * f_subbass_gone;
-        sigmoid(x)
+        let terms = BuildupTerms {
+            f_loud,
+            f_centroid,
+            f_onset,
+            f_subbass_gone,
+            loud_trend: pre_norm.loudness_trend,
+            loud_s: pre_norm.loudness_s,
+            centroid: pre_norm.centroid,
+            centroid_slow: self.centroid_slow,
+            onset_fast: self.onset_fast,
+            onset_slow: self.onset_slow,
+            subbass_slow: self.subbass_slow,
+        };
+        (sigmoid(x), terms)
     }
 
     /// Returns 1.0 on the tick a drop is detected.
@@ -648,6 +728,7 @@ impl StructureTracker {
             sub_returning: subbass_returning,
             in_refractory,
             fired,
+            build: self.build_terms,
         };
 
         if fired {
@@ -884,6 +965,111 @@ mod tests {
 
         let (with, _, _) = run(GAP_SECONDS + 1.0);
         assert_eq!(with, 1, "a hold spanning the cut must keep the drop");
+    }
+
+    /// The trace's four terms must reproduce the `buildup` they produced (#2370).
+    ///
+    /// This is the gate the offline sweep leans on: `bench/sweep_drop.py` rebuilds `buildup`
+    /// from these terms and refuses to move a weight until the rebuild matches the recorded
+    /// output, because a sweep on a reconstruction that has drifted is fiction. Proving the
+    /// arithmetic here means the Python side is checking a corpus against a contract, not
+    /// discovering the contract from the corpus — and it runs in CI, where `bench/out/` is
+    /// 37 GB of gitignored data that does not exist.
+    #[test]
+    fn trace_terms_reconstruct_the_buildup_they_produced() {
+        let cfg = StructureConfig::default();
+        let mut t = StructureTracker::new();
+        let mut clock = 0.0f64;
+        let dt = 1.0 / HOP as f64;
+        // The replay's own EMA, started from the 0.0 the tracker starts from.
+        let a = 1.0 - (-(1.0 / TICK_HZ) / BUILD_TAU).exp();
+        let mut ema = 0.0f32;
+        // A deliberately wrong rebuild, run alongside. Without it this test would pass
+        // vacuously on a scenario where every term sat at zero: two reconstructions of
+        // nothing agree perfectly.
+        let mut ema_wrong = 0.0f32;
+
+        let (mut last_tick, mut checked) = (0u64, 0usize);
+        let mut peak = [0.0f32; 4];
+        let (mut build_lo, mut build_hi) = (f32::INFINITY, 0.0f32);
+        let mut worst_wrong = 0.0f32;
+
+        let n = (30.0 * HOP) as usize;
+        for i in 0..n {
+            let s = i as f32 / HOP;
+            // 10 s steady, a 12 s riser (louder, brighter, denser, sub-bass swept out), then
+            // the drop. Every one of the four terms moves somewhere in that, which the
+            // scenario checks below insist on.
+            let p = ((s - 10.0) / 12.0).clamp(0.0, 1.0);
+            let (f, onset) = if s > 22.0 {
+                (feat_with(0.85, 0.9, 0.5, 0.1), 0.9)
+            } else {
+                (
+                    feat_with(0.45 + 0.3 * p, 0.6 - 0.45 * p, 0.35 + 0.3 * p, 0.75 * p),
+                    0.2 + 0.6 * p,
+                )
+            };
+            t.process(cfg, &f, &beat(onset), clock);
+            clock += dt;
+
+            let tr = t.drop_trace();
+            if tr.tick_index == last_tick {
+                // No tick this frame: the trace still describes the previous one, and
+                // folding it in again would advance the replay's EMA off the detector's grid.
+                continue;
+            }
+            last_tick = tr.tick_index;
+            let b = tr.build;
+
+            let x = cfg.buildup_bias
+                + cfg.buildup_w_loud * b.f_loud
+                + cfg.buildup_w_centroid * b.f_centroid
+                + cfg.buildup_w_onset * b.f_onset
+                + cfg.buildup_w_subbass * b.f_subbass_gone;
+            ema += (sigmoid(x) - ema) * a;
+            assert!(
+                (ema - tr.buildup).abs() < 1e-6,
+                "tick {}: rebuilt {ema} vs recorded {}",
+                tr.tick_index,
+                tr.buildup
+            );
+
+            ema_wrong += (sigmoid(x + 0.5 * b.f_loud) - ema_wrong) * a;
+            worst_wrong = worst_wrong.max((ema_wrong - tr.buildup).abs());
+
+            for (slot, v) in
+                peak.iter_mut()
+                    .zip([b.f_loud, b.f_centroid, b.f_onset, b.f_subbass_gone])
+            {
+                *slot = slot.max(v);
+            }
+            build_lo = build_lo.min(tr.buildup);
+            build_hi = build_hi.max(tr.buildup);
+            checked += 1;
+        }
+
+        // Scenario checks: the run above must actually exercise what it claims to.
+        assert!(
+            checked > 250,
+            "expected ~300 ticks over 30 s, checked {checked}"
+        );
+        for (name, v) in ["f_loud", "f_centroid", "f_onset", "f_subbass_gone"]
+            .iter()
+            .zip(peak)
+        {
+            assert!(
+                v > 0.05,
+                "scenario check: {name} never left zero (peaked {v})"
+            );
+        }
+        assert!(
+            build_hi - build_lo > 0.3,
+            "scenario check: build-up barely moved ({build_lo}..{build_hi})"
+        );
+        assert!(
+            worst_wrong > 1e-3,
+            "a perturbed weight must break the reconstruction, but drifted only {worst_wrong}"
+        );
     }
 
     #[test]

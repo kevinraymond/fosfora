@@ -26,7 +26,18 @@ const LUFS_MAX: f32 = 0.0;
 const SILENCE_LUFS: f32 = -70.0;
 /// `M − S` (in LU) that maps `loudness_trend` to 1.0. ~8 LU of momentary-over-short-term
 /// excess is a strong riser.
-const TREND_RANGE_LU: f32 = 8.0;
+///
+/// `pub` because it is the build-up logistic's *fifth* gain and the only one that lives
+/// outside `structure.rs`: `f_loud` is `loudness_trend` clamped, and `loudness_trend` has
+/// already been divided by this and clipped to 0..1 by the time the logistic sees it. So the
+/// term has no headroom, and this is the constant that decides where it saturates. The dev
+/// sidecar writes it into its meta line so an offline sweep can reach it (#2370).
+pub const TREND_RANGE_LU: f32 = 8.0;
+
+/// LU spanned by the 0..1 `loudness_m` / `loudness_s` mapping. A replay recovers `M − S` in
+/// LU as `(loudness_m - loudness_s) * LUFS_SPAN_LU` — the pre-clamp input this file divides
+/// by [`TREND_RANGE_LU`], which `loudness_trend` itself has thrown away.
+pub const LUFS_SPAN_LU: f32 = LUFS_MAX - LUFS_MIN;
 /// Momentary loudness below this (LUFS) counts as silence for gating (consumed by the
 /// onset detector, A6 #1457). −55 LUFS is well below any musical content.
 const SILENCE_GATE_LUFS: f32 = -55.0;
