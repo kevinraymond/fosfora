@@ -1103,30 +1103,6 @@ class TestLabelBundleRoundTrip(unittest.TestCase):
             self.assertEqual(final["not_drops"][0]["source"], "kevin:reject")
             self.assertEqual(final["not_drops"][0]["label"], "break")
 
-    def test_the_note_survives_a_resume(self):
-        # The one sentence on WHY a track was labelled the way it was (#2371). It is the
-        # only record of the target that is not a bare list of timestamps, and it fails the
-        # same way `source` did: silently, on the second save, with everything else intact.
-        with tempfile.TemporaryDirectory() as t:
-            td = Path(t)
-            first = self.round_trip(td, {"drops": [{"t": 10.0, "source": "click"}],
-                                         "not_drops": [],
-                                         "note": "  sub drops out, then everything hits  "})
-            self.assertEqual(first["note"], "sub drops out, then everything hits")
-            m = self.ld.load_marks("t", td)
-            self.assertEqual(m["note"], "sub drops out, then everything hits")
-            again = self.round_trip(td, {"drops": m["drops"], "not_drops": m["not_drops"],
-                                         "note": m["note"]})
-            self.assertEqual(again["note"], "sub drops out, then everything hits")
-
-    def test_a_bundle_without_a_note_round_trips_as_empty(self):
-        # The 14 bundles labelled before the field existed must keep loading.
-        with tempfile.TemporaryDirectory() as t:
-            td = Path(t)
-            self.assertEqual(self.round_trip(td, {"drops": [], "not_drops": []})["note"], "")
-            self.assertEqual(self.ld.load_marks("t", td)["note"], "")
-            self.assertEqual(self.ld.load_marks("nonexistent", td)["note"], "")
-
     def test_resume_preserves_times_labels_and_pred_time(self):
         with tempfile.TemporaryDirectory() as t:
             td = Path(t)

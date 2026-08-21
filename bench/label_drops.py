@@ -33,11 +33,6 @@ the listener would not actually punch is a NEGATIVE, not a missed positive.
 It also picks the corpus. A musicological target would want genre-balanced EDM;
 this one wants whatever Kevin actually plays (#2084).
 
-Each bundle carries a free-text `note`: one sentence on what made the listener
-press the button. Nothing in this repo recorded that before — only that a moment
-was marked, never why — and a target defined by a list of timestamps is a target
-nobody can check a later corpus against.
-
 Writes the SAME `fosfora-bench-annotation/v1` bundle annotate_drops.py writes, to
 the same bench/labels/, so it scores through the untouched score_dump.py path:
 
@@ -216,7 +211,7 @@ def bundle_path(stem: str, out_dir: Path) -> Path:
 
 def load_marks(stem: str, out_dir: Path) -> dict:
     """Existing bundle -> the mark lists, so a session can be resumed or revised."""
-    empty = {"drops": [], "not_drops": [], "predictions_visible": True, "note": ""}
+    empty = {"drops": [], "not_drops": [], "predictions_visible": True}
     p = bundle_path(stem, out_dir)
     if not p.exists():
         return empty
@@ -236,7 +231,6 @@ def load_marks(stem: str, out_dir: Path) -> dict:
         "predictions_visible": bool(
             (raw.get("provenance") or {}).get("predictions_visible", True)
         ),
-        "note": str(raw.get("note") or ""),
     }
 
 
@@ -285,13 +279,6 @@ def write_bundle(track: dict, body: dict, out_dir: Path) -> Path:
         "drops": marks(body.get("drops", []), with_label=False),
         # Additive: v1 readers ignore both the list and the per-mark label.
         "not_drops": marks(body.get("not_drops", []), with_label=True),
-        # One sentence, in the listener's own words, on what made them press the button
-        # (#2371). Nothing in this repo has ever recorded WHY a moment was marked, only
-        # that it was — and the labels are the sole ground truth for the whole drop
-        # workstream, so "the visuals should slam here" was an unwritten spec inferred from
-        # a list of timestamps. Free text on purpose: the moment it becomes a fixed
-        # vocabulary it stops recording what was actually heard.
-        "note": str(body.get("note") or "").strip(),
         "provenance": {
             "tool": "bench/label_drops.py",
             "method": "listen + click (waveform)",
@@ -407,7 +394,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "drops": body.get("drops", []),
             "not_drops": body.get("not_drops", []),
             "predictions_visible": bool(body.get("predictions_visible", True)),
-            "note": str(body.get("note") or "").strip(),
         }
         t["saved"] = True
         blind = "" if body.get("predictions_visible", True) else "  [blind]"
@@ -469,10 +455,6 @@ PAGE = r"""<!doctype html>
   #spec { padding:10px 20px 8px; color:var(--dim); font-size:12px; line-height:1.5;
           max-width:78ch; }
   #spec b { color:var(--fg); }
-  #noterow { padding:0 20px 12px; display:flex; gap:10px; align-items:center; }
-  #noterow label { color:var(--dim); font-size:12px; white-space:nowrap; }
-  #note { flex:1; background:#0f1115; color:var(--fg); border:1px solid var(--line);
-          border-radius:4px; padding:7px 9px; font:inherit; font-size:12px; }
   #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
            background:#2a3040; border:1px solid var(--line); padding:9px 16px;
            border-radius:6px; opacity:0; transition:opacity .2s; pointer-events:none; }
@@ -497,11 +479,6 @@ PAGE = r"""<!doctype html>
     <kbd>1</kbd>-<kbd>4</kbd> label negative (break/buildup/fill/other) ·
     <kbd>H</kbd> hide predictions · <kbd>S</kbd> save.
     Click to scrub; shift-click marks a drop, alt-click a not-a-drop.
-  </div>
-  <div id="noterow">
-    <label for="note">What made you press the button on this track?</label>
-    <input id="note" type="text" autocomplete="off" spellcheck="false"
-           placeholder="one sentence — saved with the labels, and it is the only record of why">
   </div>
   <div id="bar">
     <button id="play" class="pri">Play</button>
@@ -559,7 +536,6 @@ async function load(i) {
   drops = t.marks.drops.map(m => ({...m}));
   notDrops = t.marks.not_drops.map(m => ({...m}));
   showPred = t.marks.predictions_visible !== false;
-  $("#note").value = t.marks.note || "";
   dur = t.duration;
   $("#title").textContent = t.name;
   audio.src = "/audio/" + i;
@@ -770,13 +746,13 @@ async function save() {
   const r = await fetch("/api/save", {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({track: cur, drops, not_drops: notDrops,
-                          predictions_visible: showPred, note: $("#note").value}),
+                          predictions_visible: showPred}),
   });
   const j = await r.json();
   if (!r.ok) return toast("save failed: " + (j.error || r.status));
   tracks[cur].marks = {drops: drops.map(m => ({...m})),
                        not_drops: notDrops.map(m => ({...m})),
-                       predictions_visible: showPred, note: $("#note").value};
+                       predictions_visible: showPred};
   tracks[cur].saved = true; dirty = false;
   renderList(); sub(); toast("saved " + j.path);
 }
@@ -807,10 +783,6 @@ $("#mkN").onclick = () => add("not");
 $("#del").onclick = delNearest;
 $("#save").onclick = save;
 $("#blind").onclick = () => { showPred = !showPred; dirty = true; syncBlind(); draw(); };
-// So the beforeunload guard covers a typed-but-unsaved note too — losing the one sentence
-// explaining a track's labels is worse than losing a mark, because the marks can be
-// re-derived by listening again and the reasoning cannot.
-$("#note").oninput = () => { dirty = true; };
 audio.onplay = () => $("#play").textContent = "Pause";
 audio.onpause = () => $("#play").textContent = "Play";
 

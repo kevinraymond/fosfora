@@ -121,10 +121,8 @@ punching. And **a textbook drop the listener would not punch is a negative**, no
 missed positive. It also picks the corpus: a musicological target would want
 genre-balanced EDM, this one wants whatever actually gets played.
 
-Each bundle carries a free-text `note` — one sentence on what made the listener press
-the button. A target defined only by a list of timestamps is one no later corpus can
-be checked against. Raised as board #2371; `bench/label_drops.py` states the same
-spec on screen, which is where it actually has to be read.
+Raised as board #2371. `bench/label_drops.py` states the same spec on screen above
+the waveform, which is where it actually has to be read.
 
 ## Honesty rules (positioning guardrails, program addendum)
 
