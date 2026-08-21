@@ -603,6 +603,143 @@ mod tests {
         );
     }
 
+    /// #2349 end to end, the particle half of the story `frame_rate_independent_trails`
+    /// could not reach.
+    ///
+    /// That probe deliberately picks effects with no particle system, because
+    /// particles composite additively in Rust *after* the fragment passes, so
+    /// #1986 could only correct the retention `k` and not the source gain `a`.
+    /// Steady state is `a/(1-k)`, so the 15-odd `*_bg` effects settled at roughly
+    /// half their 60 fps brightness at 30 fps and double at 120. This walks a
+    /// member of that family at all three rates and asserts the plateau holds.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored frame_rate_independent_particle_composite
+    #[test]
+    #[ignore = "GPU"]
+    fn frame_rate_independent_particle_composite() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+
+        const WINDOW_SECS: f32 = 1.2;
+        let render = |effect: &str, fps: u32, decay: f32| -> Vec<u8> {
+            let spec = LoopSpec {
+                version: 1,
+                effect: effect.to_string(),
+                params: [(
+                    "trail_decay".to_string(),
+                    crate::params::ParamValue::Float(decay),
+                )]
+                .into_iter()
+                .collect(),
+                bpm: 120.0,
+                bars: 8,
+                fps,
+                resolution: [320, 180],
+                codec: crate::headless::loop_spec::LoopCodec::H264,
+                audio: LoopAudio::None,
+                audio_file: None,
+                background: LoopBackground::Opaque,
+            };
+            let mut session = LoopSession::create_with(
+                &spec,
+                BestEffort::TimeWrapped,
+                (*device).clone(),
+                (*queue).clone(),
+            )
+            .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"));
+            let last = (WINDOW_SECS * fps as f32).round() as u32;
+            let mut frame_bytes = Vec::new();
+            for f in 0..=last {
+                frame_bytes = session.render_frame_at(f).unwrap();
+            }
+            frame_bytes
+        };
+        let mean_luma = |px: &[u8]| -> f64 {
+            px.chunks_exact(4)
+                .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 765.0)
+                .sum::<f64>()
+                / (px.len() / 4) as f64
+        };
+        let spread = |v: &[f64]| -> f64 {
+            let (lo, hi) = v
+                .iter()
+                .fold((f64::MAX, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
+            (hi - lo) / hi.max(1e-9)
+        };
+
+        // Cascade exercises the compute-raster resolve, Ascend the billboard
+        // renderer — the gain is applied in two different shaders and a wiring
+        // bug in either would show only here.
+        //
+        // Deliberately NOT in this list, both measured and both for reasons that
+        // are about the effect rather than the fix:
+        //   Tide     — control spread 50.6%. Its ribbon trails advance one ring
+        //              slot per FRAME, so a 16-point trail is 533 ms at 30 fps
+        //              and 133 ms at 120 (#2351). Nothing about the composite is
+        //              measurable through that until #2351 lands.
+        //   Panorama — control is flat (0.3%) but trailed spread is 58.6%,
+        //              because panorama_bg adds `guide_color` INSIDE the shader
+        //              and that source term has its own uncorrected per-frame
+        //              gain. #1986 wrapped every retention but added frame_gain
+        //              at only four sites; eight *_bg shaders still add an
+        //              unwrapped source. Different bug, same family.
+        //
+        // Thresholds are set from measurement with headroom, not from theory.
+        // Cascade reads 47.7% with the gain forced to 1.0 and 5.9% with it live,
+        // so 15% is comfortably between the two: if composite_gain ever stops
+        // reaching the shader this fails, and it does not flap on GPU noise
+        // (run-to-run spread on the controls is 0.1-0.2%).
+        for (effect, ceiling) in [("Cascade", 0.15), ("Ascend", 0.20)] {
+            let sweep = |decay: f32| -> Vec<f64> {
+                [30u32, 60, 120]
+                    .iter()
+                    .map(|&fps| {
+                        let m = mean_luma(&render(effect, fps, decay));
+                        println!("PCOMP {effect} decay={decay:.2} fps={fps:<4} mean={m:.6}");
+                        m
+                    })
+                    .collect()
+            };
+            // CONTROL (#2348's rule): at decay 0 nothing accumulates, so there is
+            // no a/(1-k) steady state and the gain is exactly 1 at every rate. Any
+            // spread here is the effect's own content being rate-dependent, and
+            // bounds what the measurement below can claim.
+            let control = sweep(0.0);
+            assert!(
+                spread(&control) < 0.03,
+                "{effect}: control is not frame-rate flat ({:.1}%) — its own content \
+                 has become rate-dependent, so this probe can no longer isolate the \
+                 composite gain",
+                spread(&control) * 100.0,
+            );
+
+            let trailed = sweep(0.95);
+            assert!(
+                trailed.iter().all(|&m| m > control[1] * 1.3),
+                "{effect}: trail=0.95 ({trailed:?}) is barely above the no-trail \
+                 control ({control:?}) — nothing is accumulating, so a pass is vacuous",
+            );
+            println!(
+                "PCOMP {effect} SUMMARY control_spread={:.4} trailed_spread={:.4}",
+                spread(&control),
+                spread(&trailed),
+            );
+            assert!(
+                spread(&trailed) < ceiling,
+                "{effect}: particle brightness depends on frame rate — means {trailed:?} \
+                 across 30/60/120 fps spread {:.1}%, ceiling {:.0}%. The additive \
+                 composite's source gain is not tracking the background's retention \
+                 (#2349).",
+                spread(&trailed) * 100.0,
+                ceiling * 100.0,
+            );
+        }
+    }
+
     /// Synthetic accents are cycle-periodic (the golden guarantee extends to
     /// synthetic mode) and actually pulse on the beat.
     #[test]
