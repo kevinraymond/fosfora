@@ -14,7 +14,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // uv.y is down-screen, so sampling below lifts the echo. Faster when the
     // sound is bright, which is the direction the horizon is moving anyway.
-    let rise = 0.0008 + 0.0030 * clamp(u.rolloff, 0.0, 1.0);
+    //
+    // frame_steps() makes the rise a speed rather than a per-frame step (#2378):
+    // without it the wake climbs a fixed distance every frame, so it travelled
+    // twice as far per second at 120 fps as at 60. Exactly 1.0 at 60 fps.
+    let rise = (0.0008 + 0.0030 * clamp(u.rolloff, 0.0, 1.0)) * frame_steps();
     let prev = feedback(clamp(uv + vec2f(0.0, rise), vec2f(0.001), vec2f(0.999)));
 
     // Cool the wake as it ages so the live band stays the brightest, warmest
