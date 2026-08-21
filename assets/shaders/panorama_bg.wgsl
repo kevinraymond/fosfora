@@ -20,8 +20,15 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Outward advection: sample slightly toward the centre so echoes drift
     // away from it. Scales with the measured width, so a mono mix's afterglow
     // stays put and a wide one visibly spreads.
+    //
+    // frame_steps() makes the spread a speed rather than a per-frame step
+    // (#2378): without it the echo drifted twice as far per wall-clock second
+    // at 120 fps as at 60, smearing over more pixels and lifting mean luma.
+    // This is the residual that the source-gain fix (#2376) could not reach —
+    // guide_color maxes around 0.047, far too small to explain 33%. Exactly
+    // 1.0 at 60 fps.
     let from_centre = uv.x - 0.5;
-    let spread = (0.0006 + 0.0035 * u.stereo_width) * sign(from_centre);
+    let spread = (0.0006 + 0.0035 * u.stereo_width) * sign(from_centre) * frame_steps();
     let prev = feedback(clamp(uv - vec2f(spread, 0.0), vec2f(0.001), vec2f(0.999)));
 
     // Chromatic decay: blue survives longest, so older light cools. Keeps a

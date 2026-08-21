@@ -680,16 +680,32 @@ mod tests {
         // 120. That swamped everything else — its control read 50.6% and its
         // trailed spread 19.6%. On the 60 Hz ring they are 7.4% and 0.3%.
         //
+        // Ascend and Panorama additionally witness #2378, feedback ADVECTION in
+        // per-frame uv units: both resample the trail at an offset applied once
+        // per frame with no delta_time term, so the echo travelled twice as far
+        // per wall-clock second at 120 fps as at 60. Ascend is the family's clean
+        // case (no in-shader source term at all) and went 13.7% -> 1.2-3.4%.
+        // Panorama needed BOTH fixes and is the whole family in one effect:
+        // 58.5% as shipped, 32.9% with the source gain corrected (#2376), 0.7-1.0%
+        // with the advection corrected too. Its control is 0.1-0.3%, the flattest
+        // here, which is what makes it the best witness in the list.
+        //
         // Deliberately NOT in this list:
-        //   Panorama — control is flat (0.3%) but trailed spread is 58.6%,
-        //              because panorama_bg adds `guide_color` INSIDE the shader
-        //              and that source term has its own uncorrected per-frame
-        //              gain. #1986 wrapped every retention but added frame_gain
-        //              at only four sites; eight *_bg shaders still add an
-        //              unwrapped source. Different bug, same family (#2376).
         //   Vessel   — its retention is param `glow`, not `trail_decay`, so the
         //              knob this probe turns does not reach it and the trail
         //              never accumulates. Cleave and Tide already cover ribbons.
+        //   Chaos, Accretion, Mycelium — all three are clean advection sites on
+        //              paper (pure `trail = prev * frame_decay3(..)`, no in-shader
+        //              source) and all three FAIL the vacuity guard here: each
+        //              reads control ~0.0130 and trailed ~0.0133, so no trail
+        //              accumulates and any pass would be meaningless. Their sims
+        //              need audio to spawn and this harness runs LoopAudio::None.
+        //              Measuring their advection needs a driven harness, not this
+        //              one — do not add them back without fixing that first.
+        //   Storm, Frost, Drift — the other three #1986 frame_gain sites, so both
+        //              their terms are already correct and they would isolate
+        //              advection perfectly. None exposes a `trail_decay` param,
+        //              so this probe cannot turn the knob it needs.
         //
         // Thresholds are from measurement with headroom, not theory. Cascade
         // reads 47.7% with the composite gain forced to 1.0 and 6.2% with it
@@ -697,14 +713,26 @@ mod tests {
         // one. Each ceiling sits between the two, well above the 0.1-0.2%
         // run-to-run noise on the controls.
         //
+        // Ascend's 0.06 and Panorama's 0.05 were set the same way, by reverting
+        // the fix and measuring both sides: Ascend 13.16-14.20% bugged (n=4)
+        // against 1.15-3.77% fixed (n=9), Panorama 32.9% against 0.70-0.96%.
+        // Ascend's fixed reading is the noisiest number in this test because its
+        // trailed mean is only ~0.04, so absolute noise is large relative to it;
+        // 0.06 is ~1.6x its worst fixed reading and less than half its best
+        // bugged one. Neither residual is zero and neither should be: a corrected
+        // offset is sub-texel at 120 fps, so a higher frame rate means more
+        // bilinear taps along the same path, which is blur the correction cannot
+        // remove.
+        //
         // Tide's control does not reach the others' flatness because at 30 fps
         // the ring advances two slots and the writer backfills both with the
         // same current position rather than interpolating, which shortens the
         // ribbon's effective path slightly. Correct and stale-free, but not free.
         for (effect, control_ceiling, ceiling) in [
             ("Cascade", 0.05, 0.15),
-            ("Ascend", 0.05, 0.20),
+            ("Ascend", 0.05, 0.06),
             ("Tide", 0.12, 0.05),
+            ("Panorama", 0.05, 0.05),
         ] {
             let sweep = |decay: f32| -> Vec<f64> {
                 [30u32, 60, 120]
@@ -743,10 +771,13 @@ mod tests {
             );
             assert!(
                 spread(&trailed) < ceiling,
-                "{effect}: particle brightness depends on frame rate — means {trailed:?} \
-                 across 30/60/120 fps spread {:.1}%, ceiling {:.0}%. The additive \
-                 composite's source gain is not tracking the background's retention \
-                 (#2349).",
+                "{effect}: brightness depends on frame rate — means {trailed:?} \
+                 across 30/60/120 fps spread {:.1}%, ceiling {:.0}%. Two different \
+                 bugs reach this assertion: the additive composite's source gain is \
+                 not tracking the background's retention (#2349), or the shader \
+                 resamples its feedback at a per-frame uv offset instead of a \
+                 per-second one (#2378). The control above is flat, so it is one of \
+                 those and not the effect's own content.",
                 spread(&trailed) * 100.0,
                 ceiling * 100.0,
             );
