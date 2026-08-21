@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -907,6 +908,146 @@ class TestDropGate(unittest.TestCase):
         self.assertEqual(float(np.nanmax(vals)), 1.0)
 
 
+class TestBuildupReconstruction(unittest.TestCase):
+    """The build-up logistic, rebuilt from the terms schema v4 records (#2370).
+
+    The sweep this unlocks moves the five weights that decide `cur_buildup`, and the arm
+    conjunct reads nothing else. So a reconstruction that has drifted does not produce a
+    slightly wrong answer, it produces a confident one about a curve the detector never had.
+    `sweep_drop.py --validate` gates it against the real corpus; these tests gate the
+    arithmetic, synthetically, because `bench/out/` is 37 GB and gitignored.
+    """
+
+    def setUp(self):
+        self.sd = _sweep_drop()
+        n = 120
+        rng = np.random.default_rng(20370)
+        # Ingredients with the shapes the real ones have: a trend already clipped to 0..1 at
+        # the source, a centroid wandering around a slow EMA, onsets likewise, and a sub-bass
+        # that spends part of the run withdrawn below its slow reference.
+        self.x = {
+            "d_loud_trend": rng.uniform(0.0, 1.0, n),
+            "d_cent": 0.45 + rng.normal(0, 0.05, n),
+            "d_cent_slow": np.full(n, 0.45),
+            "d_onset_fast": 0.30 + rng.normal(0, 0.08, n),
+            "d_onset_slow": np.full(n, 0.30),
+            "d_sub_slow": np.full(n, 0.60),
+            "d_sub": rng.uniform(0.0, 0.9, n),
+            "d_loud_s": rng.uniform(0.0, 1.0, n),
+        }
+        self.consts = {"centroid_rise_gain": 6.0, "onset_rise_gain": 4.0, "build_tau": 0.5,
+                       "slope_seconds": 8.0, "onset_fast_seconds": 1.0, "trend_range_lu": 8.0,
+                       "lufs_span_lu": 60.0, "tick_hz": 10.0}
+        self.dump_cfg = {"buildup_bias": -2.2, "buildup_w_loud": 2.2,
+                         "buildup_w_centroid": 1.4, "buildup_w_onset": 1.2,
+                         "buildup_w_subbass": 1.6}
+
+    def scalar_reference(self, cfg) -> np.ndarray:
+        """An independent scalar port of structure.rs, written straight from the Rust.
+
+        Deliberately NOT sharing code with `rebuild_buildup`: a vectorized implementation
+        checked against itself proves only that numpy is deterministic.
+        """
+        c, d = self.consts, self.dump_cfg
+        def w(lever, dumped):
+            v = getattr(cfg, lever)
+            return float(v) if v is not None else float(d[dumped])
+        a = 1.0 - math.exp(-(1.0 / c["tick_hz"]) / c["build_tau"])
+        cg = cfg.centroid_gain if cfg.centroid_gain is not None else c["centroid_rise_gain"]
+        og = cfg.onset_gain if cfg.onset_gain is not None else c["onset_rise_gain"]
+        ema, out = 0.0, []
+        for i in range(len(self.x["d_loud_trend"])):
+            f_loud = min(max(self.x["d_loud_trend"][i], 0.0), 1.0)
+            f_cent = min(max((self.x["d_cent"][i] - self.x["d_cent_slow"][i]) * cg, 0.0), 1.0)
+            f_ons = min(max((self.x["d_onset_fast"][i] - self.x["d_onset_slow"][i]) * og,
+                            0.0), 1.0)
+            slow = self.x["d_sub_slow"][i]
+            f_sub = (min(max((slow - self.x["d_sub"][i]) / slow, 0.0), 1.0)
+                     if slow > 1e-6 else 0.0)
+            x = (w("buildup_bias", "buildup_bias")
+                 + w("w_loud", "buildup_w_loud") * f_loud
+                 + w("w_centroid", "buildup_w_centroid") * f_cent
+                 + w("w_onset", "buildup_w_onset") * f_ons
+                 + w("w_subbass", "buildup_w_subbass") * f_sub)
+            ema += (1.0 / (1.0 + math.exp(-x)) - ema) * a
+            out.append(ema)
+        return np.array(out)
+
+    def rebuild(self, cfg) -> np.ndarray:
+        terms = self.sd.rebuild_terms(self.x, self.consts, cfg)
+        return self.sd.rebuild_buildup(terms, self.consts, cfg, self.dump_cfg)
+
+    def test_matches_an_independent_scalar_port(self):
+        cfg = self.sd.DropCfg()
+        np.testing.assert_allclose(self.rebuild(cfg), self.scalar_reference(cfg), atol=1e-12)
+
+    def test_a_moved_weight_changes_the_curve_and_still_matches(self):
+        # Both halves matter: the sweep is worthless if a weight does nothing, and wrong if
+        # moving one takes the vectorized path out of step with the reference.
+        cfg = self.sd.replace(self.sd.DropCfg(), w_subbass=3.2)
+        moved = self.rebuild(cfg)
+        self.assertGreater(float(np.max(np.abs(moved - self.rebuild(self.sd.DropCfg())))), 0.01)
+        np.testing.assert_allclose(moved, self.scalar_reference(cfg), atol=1e-12)
+
+    def test_a_perturbed_weight_breaks_the_match(self):
+        # The guard on the guard. `--validate` passes only because the numbers agree; prove
+        # that disagreement is detectable at the tolerance the gate actually uses.
+        ref = self.scalar_reference(self.sd.DropCfg())
+        off = self.rebuild(self.sd.replace(self.sd.DropCfg(), w_loud=2.3))
+        self.assertGreater(float(np.max(np.abs(off - ref))), self.sd.RECON_TOL * 10)
+
+    def test_the_ema_starts_from_zero_not_from_the_first_sample(self):
+        # `buildup_ema` is initialized to 0.0 in StructureTracker::new, so the first tick is
+        # a*sigmoid(x0), not sigmoid(x0). Seeding a replay at steady state instead would put
+        # the whole track a few ticks out of phase with the arm timer.
+        cfg = self.sd.DropCfg()
+        a = 1.0 - math.exp(-(1.0 / self.consts["tick_hz"]) / self.consts["build_tau"])
+        first = self.rebuild(cfg)[0]
+        terms = self.sd.rebuild_terms(self.x, self.consts, cfg)
+        x0 = (self.dump_cfg["buildup_bias"]
+              + self.dump_cfg["buildup_w_loud"] * terms["d_f_loud"][0]
+              + self.dump_cfg["buildup_w_centroid"] * terms["d_f_cent"][0]
+              + self.dump_cfg["buildup_w_onset"] * terms["d_f_onset"][0]
+              + self.dump_cfg["buildup_w_subbass"] * terms["d_f_subgone"][0])
+        self.assertAlmostEqual(first, a / (1.0 + math.exp(-x0)), places=12)
+
+    def test_gains_are_swept_off_the_raw_difference_not_the_clamped_term(self):
+        # The whole reason v4 records ingredients as well as terms. Raising the centroid gain
+        # must change f_centroid; if the sweep were reading the recorded clamped term it
+        # could not move at all.
+        base = self.sd.rebuild_terms(self.x, self.consts, self.sd.DropCfg())
+        hi = self.sd.rebuild_terms(
+            self.x, self.consts, self.sd.replace(self.sd.DropCfg(), centroid_gain=12.0))
+        self.assertGreater(float(np.max(hi["d_f_cent"] - base["d_f_cent"])), 0.05)
+
+    def test_terms_are_clamped_to_the_unit_interval(self):
+        terms = self.sd.rebuild_terms(
+            self.x, self.consts, self.sd.replace(self.sd.DropCfg(), centroid_gain=500.0))
+        for k, v in terms.items():
+            self.assertGreaterEqual(float(np.min(v)), 0.0, k)
+            self.assertLessEqual(float(np.max(v)), 1.0, k)
+
+    def test_zero_subbass_reference_yields_zero_not_a_divide(self):
+        # structure.rs guards the divide at 1e-6 and returns 0.0 below it — which is the
+        # state every track opens in, before the slow EMA has seen any sub-bass at all.
+        x = dict(self.x)
+        x["d_sub_slow"] = np.zeros_like(x["d_sub_slow"])
+        terms = self.sd.rebuild_terms(x, self.consts, self.sd.DropCfg())
+        self.assertTrue(np.all(np.isfinite(terms["d_f_subgone"])))
+        self.assertEqual(float(np.max(np.abs(terms["d_f_subgone"]))), 0.0)
+
+    def test_buildup_moved_decides_whether_a_replay_reconstructs(self):
+        # `cfg_from_dump` must leave these None, or every historical number silently starts
+        # coming from a reconstruction that agrees only to float error.
+        self.assertFalse(self.sd.buildup_moved(self.sd.DropCfg()))
+        self.assertFalse(self.sd.buildup_moved(
+            self.sd.replace(self.sd.DropCfg(), arm_buildup=0.55, gate="perc_pre1_ratio")))
+        for lever in self.sd.BUILDUP_LEVERS:
+            with self.subTest(lever=lever):
+                self.assertTrue(self.sd.buildup_moved(
+                    self.sd.replace(self.sd.DropCfg(), **{lever: 1.0})))
+
+
 def _label_drops():
     """label_drops.py as a module — a uv script, loaded by path like sweep_drop."""
     import importlib.util
@@ -961,6 +1102,30 @@ class TestLabelBundleRoundTrip(unittest.TestCase):
             self.assertEqual(final["drops"][0]["source"], "kevin:confirm")
             self.assertEqual(final["not_drops"][0]["source"], "kevin:reject")
             self.assertEqual(final["not_drops"][0]["label"], "break")
+
+    def test_the_note_survives_a_resume(self):
+        # The one sentence on WHY a track was labelled the way it was (#2371). It is the
+        # only record of the target that is not a bare list of timestamps, and it fails the
+        # same way `source` did: silently, on the second save, with everything else intact.
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            first = self.round_trip(td, {"drops": [{"t": 10.0, "source": "click"}],
+                                         "not_drops": [],
+                                         "note": "  sub drops out, then everything hits  "})
+            self.assertEqual(first["note"], "sub drops out, then everything hits")
+            m = self.ld.load_marks("t", td)
+            self.assertEqual(m["note"], "sub drops out, then everything hits")
+            again = self.round_trip(td, {"drops": m["drops"], "not_drops": m["not_drops"],
+                                         "note": m["note"]})
+            self.assertEqual(again["note"], "sub drops out, then everything hits")
+
+    def test_a_bundle_without_a_note_round_trips_as_empty(self):
+        # The 14 bundles labelled before the field existed must keep loading.
+        with tempfile.TemporaryDirectory() as t:
+            td = Path(t)
+            self.assertEqual(self.round_trip(td, {"drops": [], "not_drops": []})["note"], "")
+            self.assertEqual(self.ld.load_marks("t", td)["note"], "")
+            self.assertEqual(self.ld.load_marks("nonexistent", td)["note"], "")
 
     def test_resume_preserves_times_labels_and_pred_time(self):
         with tempfile.TemporaryDirectory() as t:

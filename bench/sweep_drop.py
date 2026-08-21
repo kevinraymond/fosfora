@@ -9,17 +9,22 @@
     bench/sweep_drop.py --stage arm           # then sweep, tune half only
     bench/sweep_drop.py --stage combined --top 12
     bench/sweep_drop.py --local --gates       # candidate conjuncts, in-sample vs LOO (#2299)
+    bench/sweep_drop.py --local --terms       # inside the build-up logistic (#2370)
 
-Input is the v2 structure sidecar (`bench/dump_structure_sidecar.py`), which carries the
+Input is the structure sidecar (`bench/dump_structure_sidecar.py`), which carries the
 drop machine's exact per-tick inputs — the pre-normalization `loudness_m`/`sub_bass` the
 detector reads, not the wire proxies a dump exposes. That makes this replay *exact*
 rather than approximate: `--validate` requires it to reproduce the shipped binary's fired
 ticks bit-for-bit, and a mismatch is a hard failure. A replay that has drifted makes every
 sweep number a lie.
 
-Swept: everything `update_drop` reads except the build-up logistic's own weights (the
-logistic's inputs are not recorded; `cur_buildup` is, so the arm machine downstream of it
-is fully replayable).
+Swept: everything `update_drop` reads, and since schema v4 the build-up logistic that
+feeds it (#2370). The logistic's four terms and their raw ingredients are recorded, so its
+five weights and two hard-coded rise gains are all sweepable — `--validate` gates that by
+requiring the terms to rebuild the recorded `cur_buildup` before any of them may move.
+Note the default: a config that names no build-up lever replays the RECORDED `d_build`,
+which is what the binary actually armed on, so every number published before v4 stays
+reproducible to the bit.
 
 Scoring follows benchlib's drop convention: a hit is within +-1 bar of an annotated drop
 (bar length measured locally), greedy one-to-one by ascending |dt|; every unmatched
@@ -45,6 +50,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
+from scipy import signal, stats
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -105,6 +111,30 @@ class DropCfg:
     # for what each form means and which ones are disqualified.
     gate: str | None = None
     gate_thr: float = 0.0
+    # --- the build-up logistic's own levers (#2370), sweepable since schema v4 ---
+    # None = "leave the build-up alone and use the recorded `d_build`". That default is
+    # load-bearing: `cfg_from_dump` deliberately does NOT fill these, so every pre-v4 path
+    # keeps replaying the detector's own output rather than a reconstruction of it, and
+    # `--validate` and every published number stay bit-identical. The moment any one of
+    # them is set, `simulate_track` rebuilds `buildup` from the recorded terms instead.
+    buildup_bias: float | None = None
+    w_loud: float | None = None
+    w_centroid: float | None = None
+    w_onset: float | None = None
+    w_subbass: float | None = None
+    # The two rise gains are module constants in structure.rs, not live config. They are
+    # sweepable here only because v4 records the raw differences they scale (#2370).
+    centroid_gain: float | None = None
+    onset_gain: float | None = None
+
+
+# The seven levers above, in one place so "did the build-up move?" is asked once.
+BUILDUP_LEVERS = ("buildup_bias", "w_loud", "w_centroid", "w_onset", "w_subbass",
+                  "centroid_gain", "onset_gain")
+
+
+def buildup_moved(cfg: DropCfg) -> bool:
+    return any(getattr(cfg, k) is not None for k in BUILDUP_LEVERS)
 
 
 def simulate(t: np.ndarray, build: np.ndarray, loud: np.ndarray, sub: np.ndarray,
@@ -205,6 +235,78 @@ def check_integrity(tid: str, records: list[dict]) -> None:
 # the wrong corpus, rather than every v2 reader breaking at load.
 V3_COLS = ("d_kick", "d_perc", "d_hratio")
 
+# Schema v4 (#2370): the build-up logistic's own inputs. Optional for the same reason V3
+# is — the 374-track Harmonix corpus is v2 and nobody is re-dumping it.
+#
+# Both halves are recorded and the redundancy is the point. The four clamped TERMS are what
+# `buildup_logistic` actually evaluated; the RAW ingredients are what it evaluated them from.
+# A clamped term has had its gain applied and its headroom cut off at 1.0, so
+# CENTROID_RISE_GAIN / ONSET_RISE_GAIN are unrecoverable from it — and those gains are the
+# competing hypothesis for why the terms are small. Keeping the ingredients makes the gains
+# sweepable; keeping the terms proves the re-derivation is right before anything moves.
+V4_TERMS = ("d_f_loud", "d_f_cent", "d_f_onset", "d_f_subgone")
+V4_RAW = ("d_loud_trend", "d_loud_s", "d_cent", "d_cent_slow",
+          "d_onset_fast", "d_onset_slow", "d_sub_slow")
+V4_COLS = V4_TERMS + V4_RAW
+
+# Module constants of the detector, read from the dump's meta line rather than restated
+# here. There is deliberately NO Python fallback: a second copy of a number is what let
+# #2259's refractory sweep vary a lever around a config that had already moved and measure
+# nothing, and a reconstruction anchored on a stale gain would be wrong in exactly the way
+# this round exists to detect.
+CONST_KEYS = ("centroid_rise_gain", "onset_rise_gain", "build_tau", "slope_seconds",
+              "onset_fast_seconds", "trend_range_lu", "lufs_span_lu", "tick_hz")
+
+
+def rebuild_terms(x: dict[str, np.ndarray], consts: dict[str, float],
+                  cfg: DropCfg) -> dict[str, np.ndarray]:
+    """The four clamped terms, re-derived from their raw ingredients at `cfg`'s gains.
+
+    A direct port of `structure.rs::buildup_logistic`'s term half. `--validate` requires
+    this to reproduce the recorded `d_f_*` before any weight is allowed to move.
+    """
+    cg = cfg.centroid_gain if cfg.centroid_gain is not None else consts["centroid_rise_gain"]
+    og = cfg.onset_gain if cfg.onset_gain is not None else consts["onset_rise_gain"]
+    slow = x["d_sub_slow"]
+    return {
+        # `loudness_trend` arrives already clipped to 0..1 by loudness.rs, so this clamp is
+        # a no-op and the term has NO headroom: its real gain is TREND_RANGE_LU, which is
+        # why `d_loud_s` is recorded — see the gain audit in `report_terms`.
+        "d_f_loud": np.clip(x["d_loud_trend"], 0.0, 1.0),
+        "d_f_cent": np.clip((x["d_cent"] - x["d_cent_slow"]) * cg, 0.0, 1.0),
+        "d_f_onset": np.clip((x["d_onset_fast"] - x["d_onset_slow"]) * og, 0.0, 1.0),
+        # The detector guards the divide at 1e-6 and yields 0.0 below it, not a clamp.
+        "d_f_subgone": np.where(
+            slow > 1e-6,
+            np.clip((slow - x["d_sub"]) / np.where(slow > 1e-6, slow, 1.0), 0.0, 1.0),
+            0.0,
+        ),
+    }
+
+
+def rebuild_buildup(terms: dict[str, np.ndarray], consts: dict[str, float],
+                    cfg: DropCfg, dump_cfg: dict) -> np.ndarray:
+    """`cur_buildup` rebuilt from the four terms: `sigmoid(bias + sum wi*fi)`, EMA-smoothed.
+
+    Weights fall back to the DUMP's, not to DropCfg's defaults, so a partial override moves
+    only what it names. The EMA starts from 0.0 because the tracker's `buildup_ema` does,
+    and it runs at the detector's tick rate rather than at real elapsed time — `structure.rs`
+    uses a fixed `1.0 / TICK_HZ` step there, so this is exact rather than approximate.
+    """
+    def w(lever: str, dumped: str) -> float:
+        v = getattr(cfg, lever)
+        return float(v) if v is not None else float(dump_cfg[dumped])
+
+    x = (w("buildup_bias", "buildup_bias")
+         + w("w_loud", "buildup_w_loud") * terms["d_f_loud"]
+         + w("w_centroid", "buildup_w_centroid") * terms["d_f_cent"]
+         + w("w_onset", "buildup_w_onset") * terms["d_f_onset"]
+         + w("w_subbass", "buildup_w_subbass") * terms["d_f_subgone"])
+    raw = 1.0 / (1.0 + np.exp(-x))
+    a = 1.0 - np.exp(-(1.0 / consts["tick_hz"]) / consts["build_tau"])
+    # y[n] = a*raw[n] + (1-a)*y[n-1], y[-1] = 0 — the tracker's `ema += (raw - ema) * a`.
+    return signal.lfilter([a], [1.0, -(1.0 - a)], raw)
+
 
 # =================================================================================
 # Candidate conjuncts (#2299)
@@ -298,7 +400,7 @@ GATES: dict[str, tuple[bool, str, object]] = {
 class Track:
     __slots__ = ("tid", "t", "build", "loud", "sub", "sub_ref", "fired",
                  "refs", "negs", "beats", "downbeats", "duration", "shipped_ticks",
-                 "dump_cfg", "v3", "_gates")
+                 "dump_cfg", "dump_consts", "v3", "v4", "neg_labels", "_gates", "_rebuilt")
 
     def trio(self) -> dict[str, np.ndarray]:
         """The v3 columns, or a hard failure naming the track that lacks them."""
@@ -306,6 +408,38 @@ class Track:
             sys.exit(f"{self.tid}: schema v2 sidecar (no {V3_COLS[0]}) — re-dump with the "
                      f"v3 binary before asking for the HPSS trio")
         return self.v3
+
+    def terms(self) -> dict[str, np.ndarray]:
+        """The v4 columns plus `d_sub`, or a hard failure naming the track that lacks them.
+
+        `d_sub` rides along because `f_subbass_gone` is built from it and the v4 block would
+        otherwise be one ingredient short of self-contained.
+        """
+        if self.v4 is None:
+            sys.exit(f"{self.tid}: schema v3 or older sidecar (no {V4_TERMS[0]}) — re-dump "
+                     f"with the v4 binary before asking for the build-up terms")
+        return self.v4
+
+    def consts(self) -> dict[str, float]:
+        """The detector's own module constants, off the dump's meta line."""
+        missing = [k for k in CONST_KEYS if k not in self.dump_consts]
+        if missing:
+            sys.exit(f"{self.tid}: meta line has no consts.{missing[0]} — re-dump with the "
+                     f"v4 binary; there is deliberately no Python fallback for these")
+        return self.dump_consts
+
+    def rebuilt(self, cfg: DropCfg) -> np.ndarray:
+        """`buildup` reconstructed under `cfg`. Cached per weight-vector, not per config.
+
+        A sweep varies the arm around each weight vector, and rebuilding the logistic for
+        every arm row would recompute an identical array hundreds of times.
+        """
+        key = tuple(getattr(cfg, k) for k in BUILDUP_LEVERS)
+        if key not in self._rebuilt:
+            c = self.consts()
+            self._rebuilt[key] = rebuild_buildup(
+                rebuild_terms(self.terms(), c, cfg), c, cfg, self.dump_cfg)
+        return self._rebuilt[key]
 
     def gate(self, form: str) -> np.ndarray:
         """Per-tick value of candidate conjunct `form`. Computed once, then cached.
@@ -321,7 +455,9 @@ class Track:
 
     def __init__(self, tid: str, records: list[dict], ann: dict, meta: dict | None = None):
         self.dump_cfg = (meta or {}).get("cfg", {})
+        self.dump_consts = (meta or {}).get("consts", {})
         self._gates: dict[str, np.ndarray] = {}
+        self._rebuilt: dict[tuple, np.ndarray] = {}
         check_integrity(tid, records)
         self.tid = tid
         self.t = np.array([r["d_t"] for r in records], dtype=np.float64)
@@ -338,9 +474,21 @@ class Track:
             if all(k in records[0] for k in V3_COLS)
             else None
         )
+        self.v4 = (
+            {k: np.array([r[k] for r in records], dtype=np.float64) for k in V4_COLS}
+            | {"d_sub": self.sub}
+            if all(k in records[0] for k in V4_COLS)
+            else None
+        )
         self.refs = np.array([d["time"] for d in ann.get("drops", [])], dtype=np.float64)
         self.negs = np.array([d["time"] for d in ann.get("not_drops") or []],
                              dtype=np.float64)
+        # Kevin's class for each rejected moment (break / buildup / fill / other). A
+        # *rejected buildup* is the hardest negative there is — it is the one moment that
+        # looks like a drop's run-up to a build-up detector and is not one — so the classes
+        # have to survive loading, not be flattened into "negative".
+        self.neg_labels = [str(d.get("label") or "unlabelled")
+                           for d in ann.get("not_drops") or []]
         self.duration = float(ann["audio"]["duration_s"])
         db = ann.get("downbeats") or []
         bt = ann.get("beats") or []
@@ -573,8 +721,16 @@ def match(tr: Track, est: np.ndarray) -> tuple[set[int], set[int]]:
 
 
 def simulate_track(tr: Track, cfg: DropCfg) -> np.ndarray:
-    """`simulate` with this track's own ring capacity and gate array wired in."""
-    return simulate(tr.t, tr.build, tr.loud, tr.sub, tr.sub_ref, cfg, tr.shipped_ticks,
+    """`simulate` with this track's own ring capacity, gate array and build-up wired in.
+
+    `buildup` is the RECORDED `d_build` unless a build-up lever moved (#2370). That matters
+    for more than speed: the recorded array is what the binary actually armed on, so leaving
+    it alone keeps `--validate` and every number published before v4 bit-identical. A
+    reconstruction agrees with it only to float error, and silently swapping one for the
+    other would make every historical comparison a hair off for no reason.
+    """
+    build = tr.rebuilt(cfg) if buildup_moved(cfg) else tr.build
+    return simulate(tr.t, build, tr.loud, tr.sub, tr.sub_ref, cfg, tr.shipped_ticks,
                     tr.gate(cfg.gate) if cfg.gate else None)
 
 
@@ -648,12 +804,59 @@ def score_loo(tracks: list[Track], cfg: DropCfg, form: str, quantile: float = 0.
     return aggregate(out)
 
 
+# The reconstruction gate's ceiling. The sidecar prints 6 significant digits and the build-up
+# EMA is a contraction (a ~ 0.18), so rounding decays rather than accumulates and the observed
+# error should sit near 1e-6. Anything that is actually a formula error — a wrong gain, a
+# missing clamp, an EMA seeded at the wrong value — misses by orders of magnitude more than
+# this. The number to watch is the one printed, not the threshold.
+RECON_TOL = 1e-4
+
+
+def check_reconstruction(tracks: list[Track]) -> tuple[bool, list[str]]:
+    """Gate: the recorded build-up must be rebuildable from the recorded terms (#2370).
+
+    TWO checks, because they fail for different reasons and a single one would conflate them:
+
+      1. terms rebuilt from the RAW ingredients == the recorded `d_f_*`. This tests the term
+         formulas and the two rise gains — the half a weight sweep never touches but every
+         weight sweep stands on.
+      2. `buildup` rebuilt from those terms + the dumped weights + the EMA == recorded
+         `d_build`. This tests the logistic and its smoothing.
+
+    Both run at the DUMPED config, so this is a fidelity check and not a comparison. Without
+    it, a logistic sweep is fiction: it would be moving weights on a curve that never was the
+    detector's.
+    """
+    # Every build-up lever left None: the gains come from the dump's consts and the weights
+    # from its cfg, so this reconstructs what the binary ran rather than today's defaults.
+    lines, ok, dumped = [], True, DropCfg()
+    worst_t = worst_b = 0.0
+    for tr in tracks:
+        x, c = tr.terms(), tr.consts()
+        rebuilt = rebuild_terms(x, c, dumped)
+        e_terms = max(float(np.max(np.abs(rebuilt[k] - x[k]))) for k in V4_TERMS)
+        e_build = float(np.max(np.abs(
+            rebuild_buildup(rebuilt, c, dumped, tr.dump_cfg) - tr.build)))
+        worst_t, worst_b = max(worst_t, e_terms), max(worst_b, e_build)
+        if e_terms > RECON_TOL or e_build > RECON_TOL:
+            ok = False
+            lines.append(f"  DRIFT {tr.tid}: terms {e_terms:.2e}, buildup {e_build:.2e}")
+    lines.append(f"reconstruction: terms max {worst_t:.2e}, buildup max {worst_b:.2e} "
+                 f"across {len(tracks)} tracks (tol {RECON_TOL:.0e})")
+    return ok, lines
+
+
 def cfg_from_dump(tr: Track) -> DropCfg:
     """The config the binary held when this sidecar was written.
 
     Fields the writer did not record fall back to DropCfg's defaults, which is correct for
     the schema-v2 corpus: it predates drop_arm_hold and drop_baseline_seconds, and those
     defaults reproduce the behaviour it was dumped with.
+
+    The build-up levers (#2370) are deliberately NOT filled. Leaving them None means "use the
+    recorded `d_build`", which is what the binary armed on; filling them with the dump's own
+    weights would produce an identical-looking config that quietly routes every replay through
+    a reconstruction agreeing only to float error.
     """
     m = {"drop_arm_buildup": "arm_buildup", "drop_arm_sustain": "arm_sustain",
          "drop_loud_jump": "loud_jump", "drop_subbass_return": "subbass_return",
@@ -779,6 +982,290 @@ def report_gates(tracks: list[Track], args) -> int:
     return 0
 
 
+# The run-up window the terms are read over. 8 s deliberately: it is SLOPE_SECONDS, the
+# window the three difference terms measure themselves against, so a shorter one would ask
+# whether a signal separates over less history than the signal itself has.
+RUNUP_SECONDS = 8.0
+TERM_KEYS = ("d_f_loud", "d_f_cent", "d_f_onset", "d_f_subgone")
+TERM_NAMES = ("f_loud", "f_cent", "f_onset", "f_subgone")
+TERM_WEIGHTS = ("buildup_w_loud", "buildup_w_centroid", "buildup_w_onset",
+                "buildup_w_subbass")
+
+
+def _auc(pos: list[float], neg: list[float]) -> float:
+    """P(a random positive scores above a random negative), ties counted half.
+
+    0.500 is no signal at all. This is the number that decides #2370: if every term reads
+    ~0.5, the four inputs do not distinguish a drop's run-up from a rejected one, and no
+    reweighting of four uninformative terms produces an informative sum — the answer would
+    be a new FEATURE, not new weights.
+    """
+    pos, neg = np.asarray(pos, float), np.asarray(neg, float)
+    pos, neg = pos[np.isfinite(pos)], neg[np.isfinite(neg)]
+    if not len(pos) or not len(neg):
+        return float("nan")
+    r = stats.rankdata(np.concatenate([pos, neg]))
+    return float((r[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg)))
+
+
+# Background sampling: how far a sampled moment must sit from every labelled one, how far
+# into the track sampling starts (intros are not music the detector should reason about),
+# and the spacing between samples so their run-up windows do not overlap.
+BG_CLEARANCE_S = 12.0
+BG_START_S = 15.0
+BG_STRIDE_S = 10.0
+
+
+def _auc_p(pos: list[float], neg: list[float], n_perm: int = 20000) -> float:
+    """Two-sided permutation p for `_auc` differing from 0.500.
+
+    Not decoration. This round's corpus is 24 drops against 14 rejected buildups, and #2369
+    is a standing reminder of what a number selected at that n looks like when nobody asked
+    how far it could have drifted by chance. Seeded, so a rerun prints the same figure.
+    """
+    pos, neg = np.asarray(pos, float), np.asarray(neg, float)
+    pos, neg = pos[np.isfinite(pos)], neg[np.isfinite(neg)]
+    if len(pos) < 2 or len(neg) < 2:
+        return float("nan")
+    obs = abs(_auc(pos, neg) - 0.5)
+    pool = np.concatenate([pos, neg])
+    rng = np.random.default_rng(2370)
+    hits = 0
+    for _ in range(n_perm):
+        rng.shuffle(pool)
+        hits += abs(_auc(pool[:len(pos)], pool[len(pos):]) - 0.5) >= obs
+    return (hits + 1) / (n_perm + 1)
+
+
+def _events(tracks: list[Track]) -> dict[str, list[tuple[Track, float]]]:
+    """Labelled moments by population: `drop`, `neg:<class>`, and a `background` control.
+
+    The background matters more than it looks. Every recorded negative was seeded from a
+    fire the machine produced, so the negatives are *enriched for high build-up by
+    construction* while the drops are dominated by moments the machine missed. Comparing
+    those two populations alone measures the machine's own selection as much as the music.
+    The background is unselected: it says whether the terms carry any drop information at
+    all, separately from whether they carry it where the machine actually gets confused.
+    """
+    out: dict[str, list[tuple[Track, float]]] = {}
+    for tr in tracks:
+        for t0 in tr.refs:
+            out.setdefault("drop", []).append((tr, float(t0)))
+        for t0, lab in zip(tr.negs, tr.neg_labels):
+            out.setdefault(f"neg:{lab}", []).append((tr, float(t0)))
+        labelled = np.concatenate([tr.refs, tr.negs]) if len(tr.refs) or len(tr.negs) \
+            else np.zeros(0)
+        last = -np.inf
+        for t0 in tr.t[tr.t >= BG_START_S]:
+            if t0 - last < BG_STRIDE_S:
+                continue
+            if len(labelled) and np.min(np.abs(labelled - t0)) < BG_CLEARANCE_S:
+                continue
+            out.setdefault("background", []).append((tr, float(t0)))
+            last = float(t0)
+    return out
+
+
+def _runup_stats(tr: Track, t0: float, terms: dict[str, np.ndarray]) -> dict | None:
+    """Each term's mean and max over `[t0 - RUNUP_SECONDS, t0)`, plus x and buildup."""
+    w = (tr.t >= t0 - RUNUP_SECONDS) & (tr.t < t0)
+    if not w.any():
+        return None
+    row = {}
+    for key, name in zip(TERM_KEYS, TERM_NAMES):
+        row[f"{name}_mean"] = float(terms[key][w].mean())
+        row[f"{name}_max"] = float(terms[key][w].max())
+    x = np.full(w.sum(), float(tr.dump_cfg["buildup_bias"]))
+    for key, wt in zip(TERM_KEYS, TERM_WEIGHTS):
+        x = x + float(tr.dump_cfg[wt]) * terms[key][w]
+    row["x_max"] = float(x.max())
+    row["build_max"] = float(tr.build[w].max())
+    return row
+
+
+def report_terms(tracks: list[Track], args) -> int:
+    """What the build-up logistic's four inputs DO at a drop versus at a rejected buildup.
+
+    The cheap question #2370 insists on answering before any weight moves. #2369 established
+    that the arm conjunct blocks every measured miss on its own and that `cur_buildup` barely
+    reaches its own threshold — 0.38-0.70 over a real drop's run-up against an arm level of
+    0.40. This looks *inside* that number for the first time.
+
+    Read block C first. Everything else explains whatever C says.
+    """
+    if any(t.v4 is None for t in tracks):
+        sys.exit("--terms needs a schema-v4 corpus — re-dump with dump_structure_sidecar.py")
+    cfg0 = DropCfg()
+    consts = tracks[0].consts()
+    if len({json.dumps(t.dump_consts, sort_keys=True) for t in tracks}) > 1:
+        sys.exit("corpus was dumped under more than one set of constants — re-dump it")
+
+    # --- A. reconstruction -------------------------------------------------------------
+    ok, lines = check_reconstruction(tracks)
+    print("\n=== A. reconstruction (the gate every number below stands on)")
+    for line in lines:
+        print("  " + line)
+    if not ok:
+        print("  the terms do not rebuild the build-up — nothing below means anything")
+        return 1
+
+    per_track_terms = {t.tid: rebuild_terms(t.terms(), consts, cfg0) for t in tracks}
+    events = _events(tracks)
+    rows = {pop: [r for r in (_runup_stats(tr, t0, per_track_terms[tr.tid])
+                              for tr, t0 in evs) if r is not None]
+            for pop, evs in sorted(events.items())}
+
+    # --- B. run-up profile -------------------------------------------------------------
+    w_str = " / ".join(f"{float(tracks[0].dump_cfg[k]):.1f}" for k in TERM_WEIGHTS)
+    print(f"\n=== B. run-up profile — the {RUNUP_SECONDS:.0f} s before each labelled moment")
+    print(f"    weights {w_str}, bias {float(tracks[0].dump_cfg['buildup_bias']):.2f}; "
+          f"arm level {float(tracks[0].dump_cfg['drop_arm_buildup']):.2f}")
+    for stat in ("max", "mean"):
+        print(f"\n  mean over events of each term's {stat.upper()} in the window")
+        print(f"    {'population':16}{'n':>4}" + "".join(f"{n:>11}" for n in TERM_NAMES)
+              + f"{'x_max':>9}{'build_max':>11}")
+        for pop, rs in rows.items():
+            if not rs:
+                continue
+            cells = "".join(f"{np.mean([r[f'{n}_{stat}'] for r in rs]):>11.3f}"
+                            for n in TERM_NAMES)
+            print(f"    {pop:16}{len(rs):>4}{cells}"
+                  f"{np.mean([r['x_max'] for r in rs]):>9.2f}"
+                  f"{np.mean([r['build_max'] for r in rs]):>11.3f}")
+
+    print("\n  weighted contribution w*f at the same events (what actually moves x)")
+    print(f"    {'population':16}{'n':>4}" + "".join(f"{n:>11}" for n in TERM_NAMES)
+          + f"{'sum':>9}")
+    for pop, rs in rows.items():
+        if not rs:
+            continue
+        contrib = [float(tracks[0].dump_cfg[k]) * np.mean([r[f"{n}_max"] for r in rs])
+                   for k, n in zip(TERM_WEIGHTS, TERM_NAMES)]
+        print(f"    {pop:16}{len(rs):>4}"
+              + "".join(f"{c:>11.3f}" for c in contrib) + f"{sum(contrib):>9.3f}")
+
+    # --- C. separation -----------------------------------------------------------------
+    pos = rows.get("drop", [])
+    all_neg = [r for pop, rs in rows.items() if pop.startswith("neg:") for r in rs]
+    hard_neg = rows.get("neg:buildup", [])
+    bg = rows.get("background", [])
+    print("\n=== C. separation — AUC, drops vs each population (0.500 = no signal at all)")
+    print("    Below 0.500 means the term reads HIGHER before the negative than before the")
+    print("    drop: the logistic points the wrong way, and no positive weight fixes that.")
+    for stat in ("max", "mean"):
+        print(f"\n  over each term's {stat.upper()} in the run-up window")
+        print(f"    {'term':14}{f'vs all negs':>13}{'vs neg:buildup':>16}{'perm p':>9}"
+              f"{'vs background':>15}{'drop minus':>13}")
+        print(f"    {'':14}{f'(n={len(pos)}/{len(all_neg)})':>13}"
+              f"{f'(n={len(pos)}/{len(hard_neg)})':>16}{'':>9}"
+              f"{f'(n={len(pos)}/{len(bg)})':>15}{'buildup':>13}")
+        for name in (*TERM_NAMES, "x_max", "build_max"):
+            key = f"{name}_{stat}" if name in TERM_NAMES else name
+            p = [r[key] for r in pos]
+            hn = [r[key] for r in hard_neg]
+            gap = (np.mean(p) - np.mean(hn)) if hard_neg and p else float("nan")
+            print(f"    {name:14}{_auc(p, [r[key] for r in all_neg]):>13.3f}"
+                  f"{_auc(p, hn):>16.3f}{_auc_p(p, hn):>9.3f}"
+                  f"{_auc(p, [r[key] for r in bg]):>15.3f}{gap:>13.3f}")
+        if stat == "max":
+            sat = [f"{n} {np.mean([r[f'{n}_max'] for r in pos]):.2f}" for n in TERM_NAMES]
+            print(f"    (drops' mean run-up max: {', '.join(sat)} — a term whose 8 s max "
+                  f"sits at ~1.0\n     for every population cannot separate them, whatever "
+                  f"its weight)")
+
+    # --- D. clamp rates ----------------------------------------------------------------
+    print("\n=== D. clamp rates — fraction of all corpus ticks pinned at a rail")
+    print(f"    {'term':16}{'at 0.0':>10}{'at 1.0':>10}{'median':>10}{'p95':>10}")
+    for key, name in zip(TERM_KEYS, TERM_NAMES):
+        v = np.concatenate([per_track_terms[t.tid][key] for t in tracks])
+        print(f"    {name:16}{float((v <= 0.0).mean()):>10.3f}{float((v >= 1.0).mean()):>10.3f}"
+              f"{float(np.median(v)):>10.3f}{float(np.percentile(v, 95)):>10.3f}")
+
+    # --- E. gain audit -----------------------------------------------------------------
+    # Three of the four terms are a difference scaled by a hard-coded gain. If the raw
+    # difference never approaches 1/gain the term cannot approach 1 no matter what weight
+    # sits on it, and the lever is the gain, not the weight (#2300's shape).
+    print("\n=== E. gain audit — the raw difference each gain scales")
+    print(f"    {'difference':26}{'p50':>10}{'p90':>10}{'p99':>10}{'max':>10}"
+          f"{'reaches 1 at':>14}{'p99/that':>10}")
+    diffs = [
+        ("centroid - centroid_slow", "d_cent", "d_cent_slow", 1.0 / consts["centroid_rise_gain"]),
+        ("onset_fast - onset_slow", "d_onset_fast", "d_onset_slow",
+         1.0 / consts["onset_rise_gain"]),
+    ]
+    for label, a_k, b_k, need in diffs:
+        d = np.concatenate([t.terms()[a_k] - t.terms()[b_k] for t in tracks])
+        p99 = float(np.percentile(d, 99))
+        print(f"    {label:26}{float(np.percentile(d, 50)):>10.4f}"
+              f"{float(np.percentile(d, 90)):>10.4f}{p99:>10.4f}{float(d.max()):>10.4f}"
+              f"{need:>14.4f}{p99 / need:>10.2f}")
+    # f_loud's gain lives in loudness.rs and has already been applied and clipped by the time
+    # the logistic sees it, so it is read back off loudness_m - loudness_s instead.
+    lu = np.concatenate([(t.loud - t.terms()["d_loud_s"]) * consts["lufs_span_lu"]
+                         for t in tracks])
+    print(f"    {'(loud_m - loud_s), in LU':26}{float(np.percentile(lu, 50)):>10.4f}"
+          f"{float(np.percentile(lu, 90)):>10.4f}{float(np.percentile(lu, 99)):>10.4f}"
+          f"{float(lu.max()):>10.4f}{consts['trend_range_lu']:>14.4f}"
+          f"{float(np.percentile(lu, 99)) / consts['trend_range_lu']:>10.2f}")
+    railed = np.concatenate([((t.loud <= 0.0) | (t.loud >= 1.0)
+                              | (t.terms()["d_loud_s"] <= 0.0)
+                              | (t.terms()["d_loud_s"] >= 1.0)) for t in tracks])
+    print(f"    loudness rails clamp on {float(railed.mean()) * 100:.1f}% of ticks — above "
+          f"that fraction, M-S is not recoverable and TREND_RANGE_LU is not sweepable here")
+
+    # --- F. slow-EMA audit -------------------------------------------------------------
+    print("\n=== F. slow-EMA audit — does the reference track its own signal too closely?")
+    print(f"    {'pair':30}{'corr':>9}{'std(diff)/std(fast)':>22}")
+    for label, a_k, b_k in (("centroid vs centroid_slow", "d_cent", "d_cent_slow"),
+                            ("onset_fast vs onset_slow", "d_onset_fast", "d_onset_slow"),
+                            ("sub_bass vs subbass_slow", "d_sub", "d_sub_slow")):
+        fast = np.concatenate([t.terms()[a_k] for t in tracks])
+        slow = np.concatenate([t.terms()[b_k] for t in tracks])
+        r = float(np.corrcoef(fast, slow)[0, 1]) if fast.std() > 0 and slow.std() > 0 else float("nan")
+        ratio = float((fast - slow).std() / fast.std()) if fast.std() > 0 else float("nan")
+        print(f"    {label:30}{r:>9.3f}{ratio:>22.3f}")
+
+    # Can an offline SLOPE_SECONDS sweep be trusted? The production EMA runs per FRAME at
+    # ~86 Hz; a replay only has the 10 Hz decimation. Re-running the SHIPPED tau on the
+    # decimated signal and comparing to the recorded reference bounds that approximation.
+    errs = []
+    for t in tracks:
+        x = t.terms()
+        c, ref, dt = x["d_cent"], x["d_cent_slow"], np.diff(t.t, prepend=t.t[0] - 1.0 / consts["tick_hz"])
+        ema, sim = 0.0, np.empty(len(c))
+        for i in range(len(c)):
+            ema += (c[i] - ema) * (1.0 - np.exp(-dt[i] / consts["slope_seconds"]))
+            sim[i] = ema
+        errs.append(np.abs(sim - ref))
+    e = np.concatenate(errs)
+    print(f"    centroid_slow re-run at tau={consts['slope_seconds']:.0f}s from 10 Hz samples: "
+          f"median err {float(np.median(e)):.2e}, p99 {float(np.percentile(e, 99)):.2e}, "
+          f"max {float(e.max()):.2e}")
+    print("    (that error is the floor on any offline SLOPE_SECONDS sweep — production runs "
+          "this EMA per frame at ~86 Hz, a replay only has the tick grid)")
+
+    if args.json:
+        args.json.write_text(json.dumps({
+            "runup_seconds": RUNUP_SECONDS, "consts": consts,
+            "populations": {pop: {"n": len(rs), **{k: float(np.mean([r[k] for r in rs]))
+                                                   for k in rs[0]}}
+                            for pop, rs in rows.items() if rs},
+            "auc": {
+                f"{n}_{stat}": {
+                    against: _auc([r[k] for r in pos], [r[k] for r in other])
+                    for against, other in (("all_negatives", all_neg),
+                                           ("neg_buildup", hard_neg),
+                                           ("background", bg))
+                }
+                for n in (*TERM_NAMES, "x_max", "build_max")
+                for stat in ("max", "mean")
+                if (k := f"{n}_{stat}" if n in TERM_NAMES else n)
+            },
+        }, indent=2) + "\n")
+        print(f"\nwrote {args.json}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--dataset", type=Path, default=REPO / "bench" / "datasets" / "harmonix")
@@ -805,6 +1292,10 @@ def main() -> int:
     ap.add_argument("--gates", action="store_true",
                     help="report every candidate conjunct in GATES against this corpus, "
                          "in-sample and leave-one-track-out (#2299)")
+    ap.add_argument("--terms", action="store_true",
+                    help="report what the build-up logistic's four INPUTS do at a drop's "
+                         "run-up versus at a rejected buildup, and audit the gains behind "
+                         "them (#2370). Needs a schema-v4 corpus")
     ap.add_argument("--gate-quantile", type=float, default=0.0,
                     help="quantile of the right fires the gate threshold is fitted at; "
                          "0 = keep every right fire on the fit set")
@@ -865,6 +1356,22 @@ def main() -> int:
         if mismatched:
             print("\nreplay has drifted — every sweep number below it would be a lie")
             return 1
+
+        # The second gate (#2370): the arm machine above replays `d_build`; this replays what
+        # PRODUCED it. Skipped rather than failed on a pre-v4 corpus, because the 374 Harmonix
+        # sidecars are v2 and validating them is still worth doing.
+        if all(t.v4 is not None for t in tracks):
+            recon_ok, recon_lines = check_reconstruction(tracks)
+            for line in recon_lines:
+                print(line)
+            if not recon_ok:
+                print("\nthe build-up reconstruction has drifted — a logistic sweep on it "
+                      "would be fiction")
+                return 1
+        else:
+            n = sum(1 for t in tracks if t.v4 is None)
+            print(f"reconstruction: SKIPPED, {n}/{len(tracks)} sidecars predate schema v4 "
+                  f"(the build-up terms are not recorded there)")
         dumped = cfg_from_dump(tracks[0])
         s = score(tracks, dumped)
         print("as dumped: " + fmt(dumped, s))
@@ -888,8 +1395,11 @@ def main() -> int:
     if args.gates:
         return report_gates(tracks, args)
 
+    if args.terms:
+        return report_terms(tracks, args)
+
     if not args.stage:
-        ap.error("need --validate, --stage, --config or --gates")
+        ap.error("need --validate, --stage, --config, --gates or --terms")
 
     # The incumbent is whatever produced this corpus, not whatever the defaults say today.
     # It anchors every grid below, so a corpus dumped under two configs would silently

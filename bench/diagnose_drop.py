@@ -51,8 +51,14 @@ def load_sidecar(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
         if k not in rows[0]:
             sys.exit(f"{path}: schema v1 sidecar (no {k}) — re-dump with the v2 binary")
         cols[k] = np.array([r[k] for r in rows], dtype=np.float64)
-    # v3 (#2299): candidate conjuncts, optional — the Harmonix corpus is still v2.
-    for k in ("d_kick", "d_perc", "d_hratio"):
+    # v3 (#2299) candidate conjuncts and v4 (#2370) build-up logistic inputs, both optional
+    # — the Harmonix corpus is still v2, and a per-event attribution is worth having there
+    # too. `arm_mechanics` explains why the arm timer stalled; these say what the build-up
+    # it stalled on was made of.
+    for k in ("d_kick", "d_perc", "d_hratio",
+              "d_f_loud", "d_f_cent", "d_f_onset", "d_f_subgone",
+              "d_loud_trend", "d_loud_s", "d_cent", "d_cent_slow",
+              "d_onset_fast", "d_onset_slow", "d_sub_slow"):
         if k in rows[0]:
             cols[k] = np.array([r[k] for r in rows], dtype=np.float64)
     return meta, cols
