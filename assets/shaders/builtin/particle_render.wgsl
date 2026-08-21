@@ -14,7 +14,12 @@ struct RenderUniforms {
     trail_length: u32,
     trail_width: f32,
     spin_enabled: u32,   // pos_life.z is a spin angle only for the builtin sim
-    _pad: f32,
+    // Frame-rate correction for the source gain of the additive composite (#2349).
+    // 1.0 at 60 fps and for every effect with no feedback background. Applied to
+    // rgb only: under additive blending the contribution is rgb*a, so scaling rgb
+    // scales it exactly, while scaling `a` would also move coverage under the
+    // alpha-blend pipeline that shares this shader.
+    composite_gain: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
@@ -109,7 +114,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         if glow < 0.01 {
             discard;
         }
-        return vec4f(in.color.rgb * glow, in.color.a * glow);
+        return vec4f(in.color.rgb * glow * ru.composite_gain, in.color.a * glow);
     } else {
         // Mode 1/2: Sprite texture sampling
         // Map quad_uv from [-1,1] to [0,1]
@@ -131,6 +136,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         if final_color.a < 0.01 {
             discard;
         }
-        return final_color;
+        return vec4f(final_color.rgb * ru.composite_gain, final_color.a);
     }
 }

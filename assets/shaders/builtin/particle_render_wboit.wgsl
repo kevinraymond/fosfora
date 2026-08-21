@@ -14,7 +14,12 @@ struct RenderUniforms {
     trail_length: u32,
     trail_width: f32,
     spin_enabled: u32,   // pos_life.z is a spin angle only for the builtin sim
-    _pad: f32,
+    // Present for layout parity with ParticleRenderUniforms; deliberately unused.
+    // Weighted-blended OIT resolves as a coverage-weighted average, so scaling a
+    // fragment's rgb changes the average's colour rather than the light it adds —
+    // the #2349 correction has no meaning here. Genesis is the only wboit member
+    // of the feedback family and is excluded from the fix for this reason.
+    composite_gain: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;

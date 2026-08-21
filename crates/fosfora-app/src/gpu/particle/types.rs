@@ -378,7 +378,17 @@ pub struct ParticleRenderUniforms {
     /// in splat, projected z in chaos), so those effects were being rotated by a
     /// size or a depth in radians.
     pub spin_enabled: u32,
-    pub _pad: f32,
+    /// Frame-rate correction for the Rust-side additive composite (#2349).
+    ///
+    /// The `*_bg` family is `out = a*col + k*prev`, but particles are composited
+    /// in Rust *after* the fragment passes, so #1986 could only reach `k` — the
+    /// source gain `a` stayed per-frame. Steady state is `a/(1-k)`, so those
+    /// effects plateaued at 0.505–0.588 of their 60 fps brightness at 30 fps and
+    /// 1.837–1.990 at 120. This carries `(1-k')/(1-k)` so `a` tracks `k`.
+    ///
+    /// Exactly 1.0 at 60 fps and for every effect with no `composite_decay`
+    /// declaration, which is what keeps the shipped look bit-exact.
+    pub composite_gain: f32,
 }
 
 impl ParticleDef {
@@ -821,6 +831,97 @@ pub struct ParticleDef {
     /// Gaussian-splat scene playback (optional, Splat #1800)
     #[serde(default)]
     pub splat: Option<SplatDef>,
+
+    /// Where this effect's background pass gets its feedback retention `k`, so
+    /// the Rust-side additive composite can match it (#2349). Absent for every
+    /// effect without a feedback background, and absence means a gain of 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composite_decay: Option<CompositeDecay>,
+}
+
+/// How to recover the background pass's per-frame retention `k` from the effect's
+/// params, so `ParticleRenderUniforms::composite_gain` can correct the source gain
+/// that #1986 could not reach (#2349).
+///
+/// This deliberately restates a fact the shader already encodes. `k` appears in six
+/// different shapes across the 17 affected effects — a raw `param(0u)` for nine of
+/// them but a raw `param(7u)` for four, a `mix()` remap in Vessel, a hardcoded
+/// constant in Morph, and a beat-modulated clamp in Polycephalum — so there is no
+/// single expression Rust could evaluate instead. The duplication is pinned by
+/// `composite_decay_matches_shaders`, which parses every `*_bg.wgsl` and fails when
+/// the shader and this declaration disagree; do not edit one without the other.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompositeDecay {
+    /// Index into `effect_params[0..8]` — the same slot the shader reads as
+    /// `param(N u)`. Omitted when `constant` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub param: Option<u32>,
+    /// The `inputs[param].name` this index is expected to land on. Not read at
+    /// runtime; it exists so the guard test can prove the index still points at
+    /// the slider it was written for, and so a human reading the .pfx can tell.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub input: String,
+    /// `k = mix(lo, hi, param)` for shaders that remap the slider before decaying.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remap: Option<[f32; 2]>,
+    /// `k` is hardcoded in the shader and reachable from no param (Morph's 0.85).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<f32>,
+    /// A term of the shader's decay expression this declaration knowingly drops,
+    /// recorded so the guard test can accept the mismatch explicitly instead of
+    /// going quiet about it. Polycephalum's `beat_dip` is the only one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ignores: String,
+}
+
+impl CompositeDecay {
+    /// Resolve `k` from the live param values (`ParticleUniforms::effect_params`).
+    ///
+    /// Per-channel sites (`frame_decay3(vec3f(decay*0.97, decay*0.99, decay))`)
+    /// collapse to the base scalar. The tints span 0.90–1.02, so the residual
+    /// per-channel error is a few percent — against a bug that is 0.5× to 2×.
+    pub fn resolve(&self, effect_params: &[f32; 8]) -> f32 {
+        if let Some(k) = self.constant {
+            return k.clamp(0.0, 1.0);
+        }
+        let raw = self
+            .param
+            .and_then(|i| effect_params.get(i as usize).copied())
+            .unwrap_or(0.0);
+        let k = match self.remap {
+            Some([lo, hi]) => lo + (hi - lo) * raw,
+            None => raw,
+        };
+        k.clamp(0.0, 1.0)
+    }
+}
+
+/// Frame-rate correction for a source gain paired with retention `keep60`.
+///
+/// The Rust twin of `frame_gain` in `assets/shaders/lib/chronoflow.wgsl` and it
+/// must stay bit-identical to it: `frame_gain_matches_shader_helper` pins the two
+/// together. Both hold the steady state `a/(1-k)` fixed as the frame time moves.
+///
+/// The clamp ceiling of 2 is the lesson of the reverted 4b106dd (#1983): `dt` is
+/// already clamped to 0.05 upstream, and an unbounded exponent turned one stalled
+/// frame into a visible darkening on exactly the hitches this absorbs.
+pub fn frame_gain(gain60: f32, keep60: f32, delta_time: f32) -> f32 {
+    if delta_time <= 0.0 {
+        return gain60;
+    }
+    let n = (delta_time * 60.0).clamp(1e-4, 2.0);
+    // Bit-exact passthrough at 60 fps: f32 (1/60)*60 == 1.0 exactly, so the
+    // shipped look is untouched on the hardware every effect was authored on.
+    if n == 1.0 {
+        return gain60;
+    }
+    let k = keep60.clamp(0.0, 1.0);
+    let d = 1.0 - k;
+    // k -> 1 is a lossless integrator; the correction degenerates to n, continuously.
+    if d < 1e-5 {
+        return gain60 * n;
+    }
+    gain60 * (1.0 - k.powf(n)) / d
 }
 
 fn default_blend() -> String {

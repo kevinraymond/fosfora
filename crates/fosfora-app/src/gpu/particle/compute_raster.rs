@@ -29,7 +29,9 @@ struct ResolveUniforms {
     width: u32,
     height: u32,
     mode: u32, // 0 = additive, 1 = alpha, 2 = weighted-average OIT (Splat #1800)
-    _pad: u32,
+    /// Frame-rate correction for the additive composite's source gain (#2349).
+    /// Read by mode 0 only — see the shader for why the other two are excluded.
+    composite_gain: f32,
 }
 
 #[repr(C)]
@@ -676,6 +678,7 @@ impl ComputeRasterizer {
         queue: &Queue,
         target: &TextureView,
         blend_mode: &str,
+        composite_gain: f32,
     ) {
         let mode = match blend_mode {
             "alpha" => 1u32,
@@ -686,7 +689,7 @@ impl ComputeRasterizer {
             width: self.width,
             height: self.height,
             mode,
-            _pad: 0,
+            composite_gain,
         };
         queue.write_buffer(
             &self.resolve_uniform_buffer,

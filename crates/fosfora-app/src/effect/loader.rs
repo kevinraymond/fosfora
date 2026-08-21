@@ -755,6 +755,309 @@ impl EffectLoader {
 }
 
 #[cfg(test)]
+mod composite_decay_guard {
+    //! The guard under `ParticleDef::composite_decay` (#2349).
+    //!
+    //! `composite_decay` restates, in the `.pfx`, a fact the background shader
+    //! already encodes: which param holds the feedback retention `k`. That
+    //! duplication is only safe while something checks it, so this walks every
+    //! shipped effect and proves three-way agreement between the shader's
+    //! `frame_decay(param(N u))`, the effect's `inputs[N].name`, and the
+    //! declaration. Editing one side alone fails here.
+
+    use crate::effect::format::PfxEffect;
+    use crate::effect::loader::shipped_effects_for_test;
+    use std::path::Path;
+
+    fn shader_src(rel: &str) -> Option<String> {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/shaders")
+            .join(rel);
+        std::fs::read_to_string(p).ok()
+    }
+
+    /// The expression handed to `frame_decay`/`frame_decay3`, resolved through a
+    /// `let decay = ...;` binding when there is one. Returns the source text, not
+    /// a value — the assertions below are about which param it names.
+    fn decay_expr(src: &str) -> Option<String> {
+        let at = src
+            .find("frame_decay(")
+            .or_else(|| src.find("frame_decay3("))?;
+        let inner = &src[at..];
+        let open = inner.find('(')?;
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, c) in inner[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let arg = inner[open + 1..end?].trim().to_string();
+        // `frame_decay(decay)` / `frame_decay3(vec3f(decay*0.97, ...))` both point
+        // at a `let decay = ...` binding; resolve it so the param lookup sees the
+        // real expression rather than the identifier.
+        if arg.contains("decay") && !arg.contains("param(") {
+            if let Some(b) = src.find("let decay = ") {
+                let rest = &src[b + "let decay = ".len()..];
+                if let Some(semi) = rest.find(';') {
+                    return Some(rest[..semi].trim().to_string());
+                }
+            }
+        }
+        Some(arg)
+    }
+
+    fn param_index(expr: &str) -> Option<u32> {
+        let at = expr.find("param(")?;
+        let rest = &expr[at + 6..];
+        let end = rest.find('u')?;
+        rest[..end].trim().parse().ok()
+    }
+
+    /// The background pass shader carrying this effect's feedback decay, if any.
+    fn feedback_bg(effect: &PfxEffect) -> Option<(String, String)> {
+        effect.normalized_passes().into_iter().find_map(|p| {
+            let src = shader_src(&p.shader)?;
+            src.contains("frame_decay").then_some((p.shader, src))
+        })
+    }
+
+    #[test]
+    fn composite_decay_matches_shaders() {
+        let effects = shipped_effects_for_test();
+        let mut declared = 0usize;
+
+        for e in &effects {
+            let Some(particles) = e.particles.as_ref() else {
+                continue;
+            };
+            let Some((shader, src)) = feedback_bg(e) else {
+                assert!(
+                    particles.composite_decay.is_none(),
+                    "{}: declares composite_decay but no pass shader calls frame_decay — \
+                     the declaration corrects a steady state that does not exist",
+                    e.name,
+                );
+                continue;
+            };
+
+            // Only additive compositing has the independent source gain the
+            // correction scales. See compute_raster_resolve.wgsl for the algebra
+            // that rules out alpha (Morph, Raster) and wboit (Genesis).
+            let additive = particles.blend == "additive";
+            let Some(cd) = particles.composite_decay.as_ref() else {
+                assert!(
+                    !additive,
+                    "{} ({shader}): additive particles over a frame_decay background, \
+                     but no composite_decay — its source gain is still per-frame (#2349)",
+                    e.name,
+                );
+                continue;
+            };
+            assert!(
+                additive,
+                "{} ({shader}): composite_decay declared on blend={:?}. The correction \
+                 is only valid for additive compositing.",
+                e.name, particles.blend,
+            );
+            declared += 1;
+
+            let expr = decay_expr(&src)
+                .unwrap_or_else(|| panic!("{} ({shader}): no frame_decay argument", e.name));
+
+            match (cd.param, cd.constant) {
+                (Some(idx), None) => {
+                    let shader_idx = param_index(&expr).unwrap_or_else(|| {
+                        panic!(
+                            "{} ({shader}): declares param {idx}, shader reads no param: {expr}",
+                            e.name
+                        )
+                    });
+                    assert_eq!(
+                        idx, shader_idx,
+                        "{} ({shader}): declares param {idx}, shader decays by param({shader_idx}u): {expr}",
+                        e.name,
+                    );
+                    let name = e
+                        .inputs
+                        .get(idx as usize)
+                        .map(|p| p.name())
+                        .unwrap_or_else(|| {
+                            panic!("{}: composite_decay param {idx} is out of range", e.name)
+                        });
+                    assert_eq!(
+                        cd.input, name,
+                        "{}: composite_decay names {:?} but inputs[{idx}] is {name:?}",
+                        e.name, cd.input,
+                    );
+                    // Params above 7 never reach the particle system: only
+                    // effect_params[0..8] is forwarded.
+                    assert!(
+                        idx < 8,
+                        "{}: param {idx} is not forwarded to particles",
+                        e.name
+                    );
+                }
+                (None, Some(_)) => assert!(
+                    param_index(&expr).is_none(),
+                    "{} ({shader}): declares a constant, shader reads a param: {expr}",
+                    e.name,
+                ),
+                _ => panic!(
+                    "{}: composite_decay needs exactly one of `param` or `constant`",
+                    e.name
+                ),
+            }
+
+            // A `mix(lo, hi, ...)` in the shader must be mirrored, or `k` is read
+            // on the wrong scale entirely.
+            let shader_remap = expr.starts_with("mix(");
+            assert_eq!(
+                shader_remap,
+                cd.remap.is_some(),
+                "{} ({shader}): remap declared={:?} but shader expression is: {expr}",
+                e.name,
+                cd.remap,
+            );
+            if let Some([lo, hi]) = cd.remap {
+                assert!(
+                    expr.contains(&format!("{lo}")) && expr.contains(&format!("{hi}")),
+                    "{} ({shader}): declares remap [{lo}, {hi}], shader says: {expr}",
+                    e.name,
+                );
+            }
+
+            // Anything else modulating k must be named in `ignores`, so an
+            // approximation is a recorded decision rather than an oversight.
+            let audio_modulated =
+                expr.contains("u.beat") || expr.contains("u.rms") || expr.contains("u.buildup");
+            assert_eq!(
+                audio_modulated,
+                !cd.ignores.is_empty(),
+                "{} ({shader}): audio-modulated={audio_modulated}, ignores={:?}. \
+                 An untracked term must be declared.",
+                e.name,
+                cd.ignores,
+            );
+        }
+
+        // A count, so deleting the declarations does not turn this into a
+        // vacuous pass over zero effects.
+        assert_eq!(
+            declared, 14,
+            "expected the 14 additive members of the feedback family to declare \
+             composite_decay (Genesis is wboit, Morph and Raster are alpha)",
+        );
+    }
+
+    /// `frame_gain` must exactly cancel the plateau error each effect actually has.
+    ///
+    /// Derived per effect from its own declaration and default slider rather than
+    /// asserted against a fixed range: the steady state is `a/(1-k)`, so the error
+    /// at frame time `dt` is `(1-k)/(1-k^n)` and the gain has to be its reciprocal.
+    ///
+    /// Note for anyone reconciling this against #2349's note, which quotes
+    /// "0.505-0.588 at 30 fps and 1.837-1.990 at 120": that range does not
+    /// reproduce from the shipped defaults. The real spread over the 14 declared
+    /// effects is 0.526-0.625 and 1.775-1.949, because Cascade sits at k=0.60
+    /// (plateau 0.625) and Array at k=0.70. The board figures are the right
+    /// magnitude but were not derived from these defaults.
+    #[test]
+    fn frame_gain_cancels_each_effects_own_plateau_error() {
+        use crate::gpu::particle::types::frame_gain;
+
+        let effects = shipped_effects_for_test();
+        let mut checked = 0usize;
+        let (mut worst30, mut best30) = (f32::MAX, f32::MIN);
+
+        for e in &effects {
+            let Some(cd) = e
+                .particles
+                .as_ref()
+                .and_then(|p| p.composite_decay.as_ref())
+            else {
+                continue;
+            };
+            // Defaults as shipped, in the slots the particle system is handed.
+            let mut params = [0.0_f32; 8];
+            for (i, slot) in params.iter_mut().enumerate() {
+                *slot = match e.inputs.get(i) {
+                    Some(crate::params::types::ParamDef::Float { default, .. }) => *default,
+                    _ => 0.0,
+                };
+            }
+            let k = cd.resolve(&params);
+
+            for fps in [30.0_f32, 120.0] {
+                let dt = 1.0 / fps;
+                let n = (dt * 60.0).clamp(1e-4, 2.0);
+                let plateau = (1.0 - k) / (1.0 - k.powf(n));
+                let gain = frame_gain(1.0, k, dt);
+                assert!(
+                    (gain * plateau - 1.0).abs() < 1e-5,
+                    "{} at {fps} fps (k={k}): gain {gain} does not cancel plateau {plateau}",
+                    e.name,
+                );
+                if fps == 30.0 {
+                    worst30 = worst30.min(plateau);
+                    best30 = best30.max(plateau);
+                }
+            }
+            checked += 1;
+        }
+
+        assert_eq!(checked, 14, "expected 14 declared effects");
+        // Pin the magnitude so a declaration pointing at the wrong slider (which
+        // would still self-consistently cancel) shows up as an implausible error.
+        assert!(
+            (0.52..=0.63).contains(&worst30) && (0.52..=0.63).contains(&best30),
+            "30 fps plateau spread {worst30}..{best30} is not the ~0.53-0.63 measured \
+             across the family — a declaration probably points at the wrong param",
+        );
+    }
+
+    /// 60 fps must be untouched — every shipped look was authored there.
+    #[test]
+    fn frame_gain_is_identity_at_sixty() {
+        use crate::gpu::particle::types::frame_gain;
+        for k in [0.0_f32, 0.5, 0.82, 0.985, 1.0] {
+            assert_eq!(
+                frame_gain(1.0, k, 1.0 / 60.0),
+                1.0,
+                "k={k}: 60 fps must be bit-exact",
+            );
+        }
+        // dt <= 0 means "no frame time recorded" -> behave as authored, and in
+        // particular never 0.0, which would multiply every particle to black.
+        assert_eq!(frame_gain(1.0, 0.82, 0.0), 1.0);
+        assert_eq!(frame_gain(1.0, 0.82, -1.0), 1.0);
+    }
+
+    /// The bound of 2 normal frames is the lesson of the reverted 4b106dd
+    /// (#1983): an unbounded exponent made one stalled frame a visible artefact.
+    #[test]
+    fn frame_gain_is_bounded_on_a_stall() {
+        use crate::gpu::particle::types::frame_gain;
+        let at_clamp = frame_gain(1.0, 0.82, 2.0 / 60.0);
+        for dt in [0.05_f32, 0.2, 1.0, 10.0] {
+            assert_eq!(
+                frame_gain(1.0, 0.82, dt),
+                at_clamp,
+                "dt={dt}: must saturate at the 2-frame bound, not grow",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::gpu::test_gpu::{gpu_guard, test_gpu};

@@ -43,6 +43,9 @@ pub(crate) fn prepare_effect_layers(
                 // Forward first 8 effect params to compute shader
                 let p = e.uniforms.params;
                 ps.uniforms.effect_params = [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]];
+                // Must follow effect_params: the composite gain is derived from
+                // the same slider the background pass decays by (#2349).
+                ps.update_composite_gain(dt);
                 // Advance obstacle video playback
                 if ps.obstacle_source == "video" {
                     ps.advance_obstacle_video(device, queue, dt as f64);

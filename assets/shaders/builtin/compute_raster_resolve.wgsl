@@ -5,7 +5,17 @@ struct ResolveUniforms {
     width: u32,
     height: u32,
     mode: u32,       // 0 = additive (tonemap), 1 = alpha blend, 2 = weighted-average OIT (#1800)
-    _pad: u32,
+    // Frame-rate correction for the source gain of the additive composite (#2349).
+    // 1.0 at 60 fps and for every effect with no feedback background.
+    //
+    // ADDITIVE ONLY, deliberately. Additive compositing is out = a*col + k*prev
+    // with a and k independent, so holding the steady state a/(1-k) is exactly a
+    // scale on the source. Alpha blending is out = c*alpha + prev*k*(1-alpha):
+    // source and destination weights are coupled through alpha, its steady state
+    // is c*alpha/(1 - k*(1-alpha)), and no scale on c reproduces the correction.
+    // Mode 1 and mode 2 (Splat OIT) therefore ignore this rather than apply
+    // something that is wrong in a different direction.
+    composite_gain: f32,
 }
 
 // Mode 2 coverage: opacity from the accumulated weight sum. The sim folds an
@@ -59,8 +69,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     let a = f32(fb_a[idx]) * INV_PRECISION;
 
     if u.mode == 0u {
-        // Additive mode: Reinhard tonemap to prevent clipping
-        let color = vec3f(r, g, b);
+        // Additive mode: Reinhard tonemap to prevent clipping.
+        // The gain applies to the LINEAR accumulation, before the tonemap — it
+        // scales how much light this frame's particles contribute, and the
+        // tonemap is a display transform on the result. Applying it after would
+        // scale an already-compressed value. Note the correction is exact only
+        // while the tonemap is in its linear regime; where color >> 1 it
+        // saturates and a bright core moves less than the formula predicts.
+        let color = vec3f(r, g, b) * u.composite_gain;
         let mapped = color / (1.0 + color);
         return vec4f(mapped, clamp(a, 0.0, 1.0));
     } else if u.mode == 2u {

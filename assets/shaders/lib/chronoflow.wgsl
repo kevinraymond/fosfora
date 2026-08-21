@@ -87,8 +87,14 @@ fn frame_decay3(keep60: vec3f) -> vec3f {
 // Matching source gain, so the steady state a/(1-k) does not move with frame
 // rate. `keep60` MUST be the same value handed to frame_decay at this site.
 // Only meaningful where the source term is a linear blend inside the shader;
-// sites whose source is combined with max(), or added by the Rust-side particle
-// composite, cannot use it.
+// sites whose source is combined with max() cannot use it.
+//
+// The Rust-side particle composite used to be the other exception here. It is
+// now corrected too (#2349), but from Rust rather than from this helper — the
+// particles are added after the fragment passes, so the shader never sees them.
+// `ParticleDef::composite_decay` tells Rust which param holds this site's k, and
+// `frame_gain` in gpu/particle/types.rs is the twin of this function. If you
+// change the formula below, change that one, and vice versa.
 fn frame_gain(gain60: f32, keep60: f32) -> f32 {
     let k = clamp(keep60, 0.0, 1.0);
     let d = 1.0 - k;

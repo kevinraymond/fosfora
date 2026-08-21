@@ -13,7 +13,13 @@ struct RenderUniforms {
     frame_index: u32,
     trail_length: u32,
     trail_width: f32,
-    _pad: vec2f,
+    // This shader ignores spin (ribbon segments are oriented by the path, not by
+    // pos_life.z), but the slot still has to be here: the buffer is the shared
+    // ParticleRenderUniforms and the fields after it would otherwise shift.
+    spin_enabled: u32,
+    // Frame-rate correction for the source gain of the additive composite (#2349).
+    // See particle_render.wgsl for why it multiplies rgb and not alpha.
+    composite_gain: f32,
 }
 
 @group(0) @binding(0) var<storage, read> pos_life: array<vec4f>;
@@ -136,5 +142,5 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
     if in.color.a < 0.005 {
         discard;
     }
-    return in.color;
+    return vec4f(in.color.rgb * ru.composite_gain, in.color.a);
 }

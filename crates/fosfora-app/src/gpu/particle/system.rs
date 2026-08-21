@@ -1311,7 +1311,13 @@ impl ParticleSystem {
         Self {
             max_particles,
             uniforms: bytemuck::Zeroable::zeroed(),
-            render_uniforms: bytemuck::Zeroable::zeroed(),
+            // `zeroed()` would leave composite_gain at 0.0, which multiplies every
+            // particle to black. Any frame rendered before the first
+            // `update_composite_gain` must be a no-op correction, not a blackout.
+            render_uniforms: ParticleRenderUniforms {
+                composite_gain: 1.0,
+                ..bytemuck::Zeroable::zeroed()
+            },
             alive_count: 0,
             pos_life_buffers,
             vel_size_buffers,
@@ -1741,6 +1747,24 @@ impl ParticleSystem {
         // Same counter into the compute uniforms: trail_write's ring slot and
         // the trail renderer's head must agree for the same frame.
         self.uniforms.frame_index = self.frame_index;
+    }
+
+    /// Match the additive composite's source gain to the background pass's
+    /// retention, so `a/(1-k)` holds as the frame time moves (#2349).
+    ///
+    /// Separate from `update_uniforms` because it needs `effect_params`, which
+    /// `prepare_effect_layers` forwards *after* that call — reading them there
+    /// would silently use the previous frame's slider positions.
+    pub fn update_composite_gain(&mut self, dt: f32) {
+        self.render_uniforms.composite_gain = match self.def.composite_decay {
+            Some(ref cd) => {
+                let k = cd.resolve(&self.uniforms.effect_params);
+                super::types::frame_gain(1.0, k, dt)
+            }
+            // No feedback background: there is no steady state to hold, so the
+            // composite is already correct at every frame rate.
+            None => 1.0,
+        };
     }
 
     /// Copy audio features into particle uniforms.
@@ -2242,7 +2266,13 @@ impl ParticleSystem {
 
         // Compute raster path: resolve atomic framebuffer to render target
         if let Some(ref cr) = self.compute_raster {
-            cr.render_resolve(encoder, queue, target, &self.blend_mode);
+            cr.render_resolve(
+                encoder,
+                queue,
+                target,
+                &self.blend_mode,
+                self.render_uniforms.composite_gain,
+            );
             return;
         }
 
