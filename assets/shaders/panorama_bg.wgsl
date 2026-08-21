@@ -41,7 +41,17 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let guide = (centre * (0.35 + 0.9 * coh) + edges * (0.3 + 0.9 * u.stereo_width)) * grat;
     let guide_color = vec3f(0.35, 0.55, 0.85) * guide;
 
-    let result = min(trail + guide_color, vec3f(1.5)); // HDR clamp
+    // `guide_color` is the `a` of out = a*col + k*prev and was authored per frame
+    // just as `k` was (#2376). #1986 corrected every retention but only four
+    // sources, so this settled to a different brightness at every frame rate even
+    // after the particle composite was fixed. Exactly 1.0 at 60 fps.
+    //
+    // Panorama is the ONLY site this was applied to. The same wrap measured WORSE
+    // on Cascade and Cymatics, whose sources ride the 1.5 clamp; see #2376.
+    let result = min(
+        trail + guide_color * frame_gain3(vec3f(1.0), vec3f(decay * 0.94, decay * 0.965, decay)),
+        vec3f(1.5),
+    ); // HDR clamp
     let alpha = clamp(max(result.r, max(result.g, result.b)) * 2.0, 0.0, 1.0);
     return vec4f(result, alpha);
 }

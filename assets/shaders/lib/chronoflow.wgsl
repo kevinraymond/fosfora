@@ -124,6 +124,28 @@ fn frame_gain(gain60: f32, keep60: f32) -> f32 {
     return gain60 * (1.0 - frame_decay(k)) / d;
 }
 
+// Per-channel source gain, the partner of frame_decay3. Differential RGB decay is
+// three independent steady states, so a source added to a frame_decay3 trail needs
+// three gains — the scalar form would over-correct the fastest-decaying channel and
+// under-correct the slowest, tinting the source as the frame rate moves.
+//
+// SCOPE WARNING (#2376). This holds a LINEAR recurrence's steady state. Most *_bg
+// composites end in min(trail + src, vec3f(1.5)); where the source is large enough
+// to ride that clamp, the clamp sets the output and this correction overshoots —
+// measured, it made Cascade WORSE (5.6% -> 19.0% spread across 30/60/120 fps) and
+// Cymatics worse, while helping Panorama. Do not apply it to a new site without a
+// before/after number for that site. Reading the algebra is not enough; the failure
+// lives in the clamp regime.
+fn frame_gain3(gain60: vec3f, keep60: vec3f) -> vec3f {
+    let k = clamp(keep60, vec3f(0.0), vec3f(1.0));
+    let d = vec3f(1.0) - k;
+    let n = frame_steps();
+    let decayed = select(pow(k, vec3f(n)), k, n == 1.0);
+    // Same degenerate branch as the scalar form, per channel: k -> 1 integrates
+    // losslessly and the correction becomes n.
+    return gain60 * select((vec3f(1.0) - decayed) / d, vec3f(n), d < vec3f(1e-5));
+}
+
 // ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
 // compiling). Do not use in new code; may be removed in a future major release. ----
 
