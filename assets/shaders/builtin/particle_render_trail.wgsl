@@ -10,7 +10,7 @@ struct RenderUniforms {
     sprite_cols: u32,
     sprite_rows: u32,
     sprite_frames: u32,
-    frame_index: u32,
+    trail_head: u32,   // ribbon ring head, fixed 60 Hz clock (#2351)
     trail_length: u32,
     trail_width: f32,
     // This shader ignores spin (ribbon segments are oriented by the path, not by
@@ -71,7 +71,7 @@ fn vs_main(
     // Ring buffer head: current frame's write slot. Reads the same frame
     // counter the compute writer uses — deriving this from wall-clock time
     // desyncs from the ring on any frame hiccup and flashes stale segments.
-    let head_slot = ru.frame_index % trail_len;
+    let head_slot = ru.trail_head % trail_len;
 
     // Trail points: head is newest, iterate backward for older points
     // Point A (newer) and Point B (older) for this segment

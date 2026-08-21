@@ -158,8 +158,8 @@ struct ParticleUniforms {
     // fluid_velocity() below; the solver's own params live in fluid_sim.wgsl.
     fluid_enabled: f32,   // 0 or 1
     fluid_coupling: f32,  // how strongly particles relax toward the field (0..1)
-    _pad_fluid0: f32,
-    _pad_fluid1: f32,
+    trail_head: u32,   // ribbon ring head on a fixed 60 Hz clock (#2351)
+    trail_steps: u32,  // slots the head advanced this frame; writer fills them all
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).
@@ -449,14 +449,30 @@ fn trail_write(idx: u32, trail_point: vec4f) {
     if u.trail_length < 2u {
         return;
     }
-    // Ring buffer slot from the frame counter — NEVER wall-clock time: a
-    // compositor hiccup (e.g. focus change) jumps time several slots in one
-    // frame, so the head leaps past slots still holding quarter-second-stale
-    // points and every ribbon flashes a long segment to them (#1796).
-    // The renderer reads the same counter via RenderUniforms.frame_index.
-    let slot = u.frame_index % u.trail_length;
-    let base = idx * u.trail_length + slot;
-    trail_buffer[base] = trail_point;
+    // The ring advances on a fixed 60 Hz clock, not once per rendered frame
+    // (#2351): one point per frame made the trail's DURATION a function of frame
+    // rate, so a 16-point trail was 267 ms at 60 fps but 533 ms at 30 and 133 ms
+    // at 120. `trail_head` is now time-quantized upstream, and the renderer reads
+    // the same counter via RenderUniforms.trail_head.
+    //
+    // #1796's hazard is real and this is how it is answered. That note forbade
+    // deriving the slot from wall-clock time because a compositor hiccup leaps
+    // the head past slots still holding quarter-second-stale points, and every
+    // ribbon flashes a long segment to them. So the head is never merely
+    // *sampled* from the clock: `trail_steps` says how many slots it moved, and
+    // every one of them is filled here. Above 60 fps steps is 0 on some frames
+    // and the newest point simply refreshes the current slot; below 60 fps steps
+    // is 2 or more and the skipped slots are backfilled rather than left stale.
+    // A long stall is clamped upstream to a full ring, which rewrites everything.
+    let steps = max(u.trail_steps, 1u);
+    let head = u.trail_head % u.trail_length;
+    let base = idx * u.trail_length;
+    for (var s = 0u; s < steps; s++) {
+        // Modular step-back, never `head - s`: these are u32, and u32 wrap is
+        // only congruent mod trail_length when trail_length divides 2^32.
+        let slot = (head + u.trail_length - (s % u.trail_length)) % u.trail_length;
+        trail_buffer[base + slot] = trail_point;
+    }
 }
 
 // --- Spatial hash neighbor query (group 3, optional) ---

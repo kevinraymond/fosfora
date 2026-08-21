@@ -167,12 +167,16 @@ pub struct ParticleUniforms {
     pub percussive_energy: f32, // transient (percussive-masked) energy, dB-mapped 0-1
     pub harmonic_energy: f32,   // sustained (harmonic-masked) energy, dB-mapped 0-1
     pub harmonic_ratio: f32,    // harmonic vs percussive balance, 0-1
-    /// Frame counter for the trail ring-buffer head (wraps). MUST match the
-    /// value in `ParticleRenderUniforms.frame_index` for the same frame: the
-    /// writer (`trail_write`) and reader (trail renderer) index the ring with
-    /// it. Wall-clock time is NOT usable here — a compositor hiccup (focus
-    /// change) jumps time several slots in one frame and every ribbon draws
-    /// to a stale point: a full-screen white flash (#1796 live finding).
+    /// Render-frame counter (wraps). No longer the trail ring head — that moved
+    /// to `trail_head` in #2351, because one ring slot per rendered frame made a
+    /// trail's DURATION depend on frame rate.
+    ///
+    /// It stays a true per-frame counter, and must not be quantized to follow
+    /// `trail_head`, because `splat_sim` seeds `uhash(u.frame_index)` from it:
+    /// on a 60 Hz clock at 120 fps that hash would repeat on consecutive frames,
+    /// freezing the noise. That is the #1983 grain failure exactly — a
+    /// full-rate uncorrelated field is only smooth while it actually changes
+    /// every frame.
     pub frame_index: u32,
 
     // A18 structure (batched ABI bump for Vessel #1797).
@@ -222,8 +226,16 @@ pub struct ParticleUniforms {
     // particle sim only needs to know the field is live and how hard to follow it.
     pub fluid_enabled: f32,  // 0 or 1 — gates fluid_velocity()
     pub fluid_coupling: f32, // how strongly particles relax toward the field (0..1)
-    pub _pad_fluid0: f32,
-    pub _pad_fluid1: f32,
+    /// Ribbon-trail ring head, advanced on a fixed 60 Hz clock rather than once
+    /// per rendered frame (#2351). Took the `_pad_fluid0` spare, so no offset
+    /// moves. Distinct from `frame_index`, which stays a true render-frame
+    /// counter because `splat_sim` seeds a hash from it and would repeat the
+    /// same noise on consecutive frames above 60 fps if it were quantized.
+    pub trail_head: u32,
+    /// How many ring slots `trail_head` advanced this frame — 0 or 1 above
+    /// 60 fps, 2+ below it. The writer fills every slot it passed over; leaving
+    /// the skipped ones holding stale points is the ribbon flash of #1796.
+    pub trail_steps: u32,
     // Total = 960 bytes
 }
 
@@ -363,8 +375,12 @@ pub struct ParticleRenderUniforms {
     pub sprite_cols: u32,
     pub sprite_rows: u32,
     pub sprite_frames: u32,
-    /// Frame index for trail ring buffer head
-    pub frame_index: u32,
+    /// Ribbon-trail ring head, on a fixed 60 Hz clock (#2351). Read ONLY by
+    /// particle_render_trail.wgsl, to pick the newest slot; the other two render
+    /// shaders declare it for layout parity and never use it. It was
+    /// `frame_index` and carried the render-frame counter, which is what made a
+    /// 16-point trail 533 ms at 30 fps and 133 ms at 120.
+    pub trail_head: u32,
     /// Trail params
     pub trail_length: u32,
     pub trail_width: f32,

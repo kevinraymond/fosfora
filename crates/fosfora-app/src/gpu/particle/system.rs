@@ -152,6 +152,12 @@ pub struct ParticleSystem {
     trail_length: u32,
     trail_width: f32,
     frame_index: u32,
+    /// Ribbon ring head, advanced on a fixed 60 Hz clock (#2351) so a trail's
+    /// wall-clock duration is `trail_length / 60` s at any frame rate.
+    trail_head: u32,
+    /// Leftover time not yet worth a ring slot. Carried rather than dropped, or
+    /// the ring would run slow by up to one interval every frame.
+    trail_accum: f32,
     trail_render_pipeline: Option<RenderPipeline>,
     trail_render_bgl: Option<BindGroupLayout>,
     trail_render_bind_groups: Option<[BindGroup; 2]>,
@@ -1383,6 +1389,8 @@ impl ParticleSystem {
             trail_length: 0,
             trail_width: 0.005,
             frame_index: 0,
+            trail_head: 0,
+            trail_accum: 0.0,
             trail_render_pipeline: None,
             trail_render_bgl: None,
             trail_render_bind_groups: None,
@@ -1734,9 +1742,38 @@ impl ParticleSystem {
             );
         }
 
+        // Advance the ribbon ring on a fixed 60 Hz clock rather than once per
+        // rendered frame (#2351). One point per frame made the trail's DURATION
+        // a function of frame rate: a 16-point trail was 267 ms at 60 fps, 533 ms
+        // at 30 and 133 ms at 120. At 60 fps this steps exactly once per frame,
+        // so the shipped look is unchanged.
+        let steps = if self.trail_length >= 2 {
+            const RING_HZ: f32 = 60.0;
+            let interval = 1.0 / RING_HZ;
+            self.trail_accum += dt.max(0.0);
+            let mut steps = (self.trail_accum / interval).floor().max(0.0) as u32;
+            // A stall longer than the whole ring can only rewrite it once; without
+            // this the accumulator would bank the debt and the ribbon would race
+            // to catch up over the following frames.
+            if steps >= self.trail_length {
+                steps = self.trail_length;
+                self.trail_accum = 0.0;
+            } else {
+                self.trail_accum -= steps as f32 * interval;
+            }
+            self.trail_head = self.trail_head.wrapping_add(steps);
+            steps
+        } else {
+            0
+        };
+        self.uniforms.trail_head = self.trail_head;
+        self.uniforms.trail_steps = steps;
+
         self.render_uniforms.resolution = resolution;
         self.render_uniforms.time = time;
-        self.render_uniforms.frame_index = self.frame_index;
+        // The renderer's head and the writer's must be the same counter for the
+        // same frame, or the ribbon draws to slots the writer has not reached.
+        self.render_uniforms.trail_head = self.trail_head;
         self.render_uniforms.trail_length = self.trail_length;
         self.render_uniforms.trail_width = self.trail_width;
         // Quad spin is only meaningful when pos_life.z really is an angle: the

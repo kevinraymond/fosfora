@@ -10,7 +10,7 @@ struct RenderUniforms {
     sprite_cols: u32,
     sprite_rows: u32,
     sprite_frames: u32,
-    frame_index: u32,
+    trail_head: u32,   // ribbon ring head, fixed 60 Hz clock (#2351)
     trail_length: u32,
     trail_width: f32,
     spin_enabled: u32,   // pos_life.z is a spin angle only for the builtin sim

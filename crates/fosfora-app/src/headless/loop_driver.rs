@@ -675,25 +675,37 @@ mod tests {
         // renderer — the gain is applied in two different shaders and a wiring
         // bug in either would show only here.
         //
-        // Deliberately NOT in this list, both measured and both for reasons that
-        // are about the effect rather than the fix:
-        //   Tide     — control spread 50.6%. Its ribbon trails advance one ring
-        //              slot per FRAME, so a 16-point trail is 533 ms at 30 fps
-        //              and 133 ms at 120 (#2351). Nothing about the composite is
-        //              measurable through that until #2351 lands.
+        // Tide additionally witnesses #2351: its ribbon ring used to advance one
+        // slot per FRAME, making a 16-point trail 533 ms at 30 fps and 133 ms at
+        // 120. That swamped everything else — its control read 50.6% and its
+        // trailed spread 19.6%. On the 60 Hz ring they are 7.4% and 0.3%.
+        //
+        // Deliberately NOT in this list:
         //   Panorama — control is flat (0.3%) but trailed spread is 58.6%,
         //              because panorama_bg adds `guide_color` INSIDE the shader
         //              and that source term has its own uncorrected per-frame
         //              gain. #1986 wrapped every retention but added frame_gain
         //              at only four sites; eight *_bg shaders still add an
-        //              unwrapped source. Different bug, same family.
+        //              unwrapped source. Different bug, same family (#2376).
+        //   Vessel   — its retention is param `glow`, not `trail_decay`, so the
+        //              knob this probe turns does not reach it and the trail
+        //              never accumulates. Cleave and Tide already cover ribbons.
         //
-        // Thresholds are set from measurement with headroom, not from theory.
-        // Cascade reads 47.7% with the gain forced to 1.0 and 5.9% with it live,
-        // so 15% is comfortably between the two: if composite_gain ever stops
-        // reaching the shader this fails, and it does not flap on GPU noise
-        // (run-to-run spread on the controls is 0.1-0.2%).
-        for (effect, ceiling) in [("Cascade", 0.15), ("Ascend", 0.20)] {
+        // Thresholds are from measurement with headroom, not theory. Cascade
+        // reads 47.7% with the composite gain forced to 1.0 and 6.2% with it
+        // live; Tide reads 19.6% on a frame-counted ring and 0.3% on the timed
+        // one. Each ceiling sits between the two, well above the 0.1-0.2%
+        // run-to-run noise on the controls.
+        //
+        // Tide's control does not reach the others' flatness because at 30 fps
+        // the ring advances two slots and the writer backfills both with the
+        // same current position rather than interpolating, which shortens the
+        // ribbon's effective path slightly. Correct and stale-free, but not free.
+        for (effect, control_ceiling, ceiling) in [
+            ("Cascade", 0.05, 0.15),
+            ("Ascend", 0.05, 0.20),
+            ("Tide", 0.12, 0.05),
+        ] {
             let sweep = |decay: f32| -> Vec<f64> {
                 [30u32, 60, 120]
                     .iter()
@@ -710,11 +722,12 @@ mod tests {
             // bounds what the measurement below can claim.
             let control = sweep(0.0);
             assert!(
-                spread(&control) < 0.03,
-                "{effect}: control is not frame-rate flat ({:.1}%) — its own content \
-                 has become rate-dependent, so this probe can no longer isolate the \
-                 composite gain",
+                spread(&control) < control_ceiling,
+                "{effect}: control is not frame-rate flat ({:.1}%, ceiling {:.0}%) — its \
+                 own content has become rate-dependent, so this probe can no longer \
+                 isolate the composite gain",
                 spread(&control) * 100.0,
+                control_ceiling * 100.0,
             );
 
             let trailed = sweep(0.95);
