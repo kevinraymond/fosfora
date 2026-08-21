@@ -45,7 +45,14 @@ bench/
                          afterwards the chosen config, what was rejected with
                          the evidence, and the verdict against each target
   dump_<x>_sidecar.py    dev-only: re-run the binary with FOSFORA_<X>_SIDECAR set
-                         to dump one detector's raw per-hop inputs, TUNE HALF ONLY
+                         to dump one detector's raw per-hop inputs, TUNE HALF ONLY.
+                         The structure sidecar is at schema v4; every bump is
+                         ADDITIVE and readers ignore unknown fields, because the
+                         374-track Harmonix corpus is v2 and is not being re-dumped.
+                         Its meta line carries both the live config AND the
+                         detector's module constants, so a replay reads the
+                         binary's own numbers instead of a second copy in Python
+  labels/                CHECKED IN: hand-labelled drop ground truth (see below)
   sweep_<x>.py           replay that detector's back-end over those sidecars in
                          Python, so constants sweep in seconds instead of hours.
                          ALWAYS run --validate first: it replays the SHIPPED
@@ -94,6 +101,30 @@ byte-reproducible, so for those datasets the manifest pins the *track list*,
 the *annotations*, and the *acceptance gate*; the audio hashes live in
 status.json as observations. `verify` re-hashes everything recorded and
 reports drift.
+
+## What a "drop" is
+
+`bench/labels/` is hand-labelled by ear and is the sole ground truth for the drop
+workstream. The target it records is one sentence:
+
+> **Mark where the visuals should slam.**
+
+Deliberately not musicological. Fosfora is a VJ engine, so the operational question
+is whether the room should hit at this instant — and the listener cannot be wrong
+about that, being the one running the visuals. These labels are not an attempt to
+recover a genre convention; they are a direct recording of the product requirement.
+
+Two consequences that look like corpus bugs and are not. **Cross-genre inconsistency
+is expected** — "drop" is a well-defined moment in big-room and barely a concept
+elsewhere, and a track with no drops in that sense can still carry moments worth
+punching. And **a textbook drop the listener would not punch is a negative**, not a
+missed positive. It also picks the corpus: a musicological target would want
+genre-balanced EDM, this one wants whatever actually gets played.
+
+Each bundle carries a free-text `note` — one sentence on what made the listener press
+the button. A target defined only by a list of timestamps is one no later corpus can
+be checked against. Raised as board #2371; `bench/label_drops.py` states the same
+spec on screen, which is where it actually has to be read.
 
 ## Honesty rules (positioning guardrails, program addendum)
 
