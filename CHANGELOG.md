@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.35.0 — 2026-08-21
+
 ### Fixed
 - **Feedback backgrounds no longer change brightness with the frame rate.** The 14 effects
   that accumulate particles into a trail — Cascade, Tesla, Mycelium and others — settled at
