@@ -5,6 +5,18 @@
 
 ## Unreleased
 
+### Fixed
+- **Feedback backgrounds no longer change brightness with the frame rate.** The 14 effects
+  that accumulate particles into a trail — Cascade, Tesla, Mycelium and others — settled at
+  about half their intended brightness at 30 fps and double at 120. Measured on Cascade:
+  47.7% spread across 30/60/120 fps, now 6%. Nothing moves at 60 fps.
+- **Particle ribbon trails last the same time at any frame rate.** Cleave, Tide and Vessel
+  measured their trails in frames, so a trail running 267 ms at 60 fps stretched to 533 ms
+  at 30 and shrank to 133 ms at 120.
+- **Diffusion blur is measured in seconds now**, so Protea's bodies, Sumi's ink and
+  Polycephalum's network smooth at the same rate however fast the machine runs. Protea's
+  brightness spread across 30/60/120 fps drops from 41% to 18%.
+
 ## v1.34.0 — 2026-08-20
 
 ### Fixed
