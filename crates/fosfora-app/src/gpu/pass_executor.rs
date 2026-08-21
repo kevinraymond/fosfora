@@ -1395,11 +1395,14 @@ mod tests {
         let (device, queue) = test_gpu();
 
         // Real production preamble: uniform block + libs + injected input bindings.
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let loader = EffectLoader::for_test(&format!("{noise}\n{palette}\n{sdf}\n{tonemap}"));
+        // probe_libs(), not a hand-written list: these three probes kept their own
+        // and so were still on noise/palette/sdf/tonemap when v1.34.0 put
+        // frame_decay calls into sumi_velocity, protea_display and lumen_display.
+        // All three then failed to compile against a lib set production has —
+        // invisibly, because they are #[ignore]d and CI never runs them. That is
+        // the drift probe_libs_match_production exists to stop; it could not see
+        // these, because they never called probe_libs.
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
         let fmt = TextureFormat::Rgba16Float;
         // 16:9 so the probe reproduces the real window's aspect (a square target hides
         // whether the injection ring fills a wide frame).
@@ -1635,11 +1638,14 @@ mod tests {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let loader = EffectLoader::for_test(&format!("{noise}\n{palette}\n{sdf}\n{tonemap}"));
+        // probe_libs(), not a hand-written list: these three probes kept their own
+        // and so were still on noise/palette/sdf/tonemap when v1.34.0 put
+        // frame_decay calls into sumi_velocity, protea_display and lumen_display.
+        // All three then failed to compile against a lib set production has —
+        // invisibly, because they are #[ignore]d and CI never runs them. That is
+        // the drift probe_libs_match_production exists to stop; it could not see
+        // these, because they never called probe_libs.
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
         let fmt = TextureFormat::Rgba16Float;
         let (w, h) = (480u32, 270u32);
 
@@ -1911,11 +1917,14 @@ mod tests {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
 
-        let noise = include_str!("../../../../assets/shaders/lib/noise.wgsl");
-        let palette = include_str!("../../../../assets/shaders/lib/palette.wgsl");
-        let sdf = include_str!("../../../../assets/shaders/lib/sdf.wgsl");
-        let tonemap = include_str!("../../../../assets/shaders/lib/tonemap.wgsl");
-        let loader = EffectLoader::for_test(&format!("{noise}\n{palette}\n{sdf}\n{tonemap}"));
+        // probe_libs(), not a hand-written list: these three probes kept their own
+        // and so were still on noise/palette/sdf/tonemap when v1.34.0 put
+        // frame_decay calls into sumi_velocity, protea_display and lumen_display.
+        // All three then failed to compile against a lib set production has —
+        // invisibly, because they are #[ignore]d and CI never runs them. That is
+        // the drift probe_libs_match_production exists to stop; it could not see
+        // these, because they never called probe_libs.
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
         let fmt = TextureFormat::Rgba16Float;
         let (w, h) = (480u32, 270u32);
 
