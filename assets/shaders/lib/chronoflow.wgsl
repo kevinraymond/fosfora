@@ -84,6 +84,27 @@ fn frame_decay3(keep60: vec3f) -> vec3f {
     return pow(clamp(keep60, vec3f(0.0), vec3f(1.0)), vec3f(n));
 }
 
+// Explicit-Euler spatial diffusion on a 5-point stencil, per frame -> per second
+// (#2350). The step is v' = (1-D)*v + D*mean4; with mean4 locally constant the
+// deviation from it obeys e' = (1-D)*e, so (1-D) is a per-frame RETENTION and
+// compounds exactly like a trail decay. Blur therefore ran to different radii on
+// different hardware, the same class of bug as #1986 one dimension over.
+//
+// D' = 1 - frame_decay(1 - D) keeps the deviation's time constant fixed. It stays
+// in [0,1] for D in [0,1], so `blurred` remains a convex combination and cannot
+// overshoot into ringing.
+//
+// The n == 1 early return is NOT redundant with frame_decay's. Without it the
+// 60 fps path evaluates 1 - (1 - D), which is not D in f32 for any of the shipped
+// weights — 0.12 round-trips to 0.12000000476837158 and 0.16 to 0.15999996662139893.
+// Measured: it moved Polycephalum 0.7% at 60 fps before this was added, against a
+// contract that says 60 fps is untouched.
+fn frame_diffuse(rate60: f32) -> f32 {
+    let d = clamp(rate60, 0.0, 1.0);
+    if (frame_steps() == 1.0) { return d; }
+    return 1.0 - frame_decay(1.0 - d);
+}
+
 // Matching source gain, so the steady state a/(1-k) does not move with frame
 // rate. `keep60` MUST be the same value handed to frame_decay at this site.
 // Only meaningful where the source term is a linear blend inside the shader;

@@ -92,8 +92,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         }
     }
     // Light diffusion — keep bodies smooth, not speckled.
+    // Per-frame rate, so it is re-exponentiated for the real frame time (#2350):
+    // the deviation from the neighbour mean retains (1 - 0.16) per frame, and
+    // without this the bodies smoothed faster the faster the machine ran.
     avg /= max(navg, 1.0);
-    m = mix(m, avg, 0.16);
+    m = mix(m, avg, frame_diffuse(0.16));
 
     // --- growth: clump-gated with a carrying cap, driven by loudness ---
     // A gentle reaction timestep keeps explicit Euler stable (a raw m*growth step at dt=1

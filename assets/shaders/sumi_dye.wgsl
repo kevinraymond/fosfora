@@ -43,8 +43,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             + feedback(uv_back + vec2f(0.0, texel.y)).rgb
             + feedback(uv_back - vec2f(0.0, texel.y)).rgb);
     // The 0.12 weights the 4-neighbour mean of the SAME tap — spatial diffusion,
-    // not a temporal weight, so only dye_decay is frame-rate corrected.
-    var col = mix(feedback(uv_back).rgb, blur, 0.12) * frame_decay(dye_decay);
+    // not a temporal weight, so it takes frame_diffuse rather than frame_decay
+    // (#2350). It is still a per-frame rate: the deviation from the neighbour mean
+    // retains (1 - 0.12) each frame, so the dye blurred to a different radius on
+    // every frame rate. #1986 correctly ruled it out as a decay and left it.
+    var col = mix(feedback(uv_back).rgb, blur, frame_diffuse(0.12)) * frame_decay(dye_decay);
 
     // coloured injection on a screen-filling circle-of-fifths ring (wide ellipse, matching
     // sumi_velocity so each colour is born where its velocity splat pushes)
