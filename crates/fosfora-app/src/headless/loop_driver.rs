@@ -625,39 +625,37 @@ mod tests {
         }
 
         const WINDOW_SECS: f32 = 1.2;
-        let render = |effect: &str, fps: u32, decay: f32| -> Vec<u8> {
-            let spec = LoopSpec {
-                version: 1,
-                effect: effect.to_string(),
-                params: [(
-                    "trail_decay".to_string(),
-                    crate::params::ParamValue::Float(decay),
-                )]
-                .into_iter()
-                .collect(),
-                bpm: 120.0,
-                bars: 8,
-                fps,
-                resolution: [320, 180],
-                codec: crate::headless::loop_spec::LoopCodec::H264,
-                audio: LoopAudio::None,
-                audio_file: None,
-                background: LoopBackground::Opaque,
+        let render =
+            |effect: &str, param: &str, audio: LoopAudio, fps: u32, decay: f32| -> Vec<u8> {
+                let spec = LoopSpec {
+                    version: 1,
+                    effect: effect.to_string(),
+                    params: [(param.to_string(), crate::params::ParamValue::Float(decay))]
+                        .into_iter()
+                        .collect(),
+                    bpm: 120.0,
+                    bars: 8,
+                    fps,
+                    resolution: [320, 180],
+                    codec: crate::headless::loop_spec::LoopCodec::H264,
+                    audio,
+                    audio_file: None,
+                    background: LoopBackground::Opaque,
+                };
+                let mut session = LoopSession::create_with(
+                    &spec,
+                    BestEffort::TimeWrapped,
+                    (*device).clone(),
+                    (*queue).clone(),
+                )
+                .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"));
+                let last = (WINDOW_SECS * fps as f32).round() as u32;
+                let mut frame_bytes = Vec::new();
+                for f in 0..=last {
+                    frame_bytes = session.render_frame_at(f).unwrap();
+                }
+                frame_bytes
             };
-            let mut session = LoopSession::create_with(
-                &spec,
-                BestEffort::TimeWrapped,
-                (*device).clone(),
-                (*queue).clone(),
-            )
-            .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"));
-            let last = (WINDOW_SECS * fps as f32).round() as u32;
-            let mut frame_bytes = Vec::new();
-            for f in 0..=last {
-                frame_bytes = session.render_frame_at(f).unwrap();
-            }
-            frame_bytes
-        };
         let mean_luma = |px: &[u8]| -> f64 {
             px.chunks_exact(4)
                 .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 765.0)
@@ -669,6 +667,24 @@ mod tests {
                 .iter()
                 .fold((f64::MAX, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
             (hi - lo) / hi.max(1e-9)
+        };
+        // Mean absolute per-pixel difference against the 60 fps frame, in 8-bit
+        // levels. THIS, not the mean-luma spread above, is the primary guard.
+        //
+        // Mean luma is a scalar summary of a whole image, so two error modes of
+        // opposite sign cancel in it and a wrong render scores flat. Two sites
+        // here prove it: Array's joint fix makes its luma spread WORSE (6.8% ->
+        // 7.0%) while the image moves closer (1.34 -> 0.74 levels at 120 fps),
+        // and Tide read a near-perfect 0.3% luma spread for two releases while
+        // its 120 fps image sat 7.2 levels away from its 60 fps one. The contract
+        // is "the same effect at another frame rate lands on the same image", and
+        // a difference measures that directly.
+        let mad = |a: &[u8], b: &[u8]| -> f64 {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (x as f64 - y as f64).abs())
+                .sum::<f64>()
+                / a.len() as f64
         };
 
         // Cascade exercises the compute-raster resolve, Ascend the billboard
@@ -690,10 +706,46 @@ mod tests {
         // with the advection corrected too. Its control is 0.1-0.3%, the flattest
         // here, which is what makes it the best witness in the list.
         //
+        // #2376 added the remaining in-shader source sites and, with them, the
+        // per-pixel difference guard. Measured bugged -> fixed, max over the
+        // 30-vs-60 and 120-vs-60 differences, in 8-bit levels:
+        //   Tesla    12.14 -> 0.51   the largest frame-rate error in the family,
+        //                            and it had never been measured. Its field is
+        //                            a continuous source; its beat flash is a
+        //                            per-EVENT impulse and is deliberately left
+        //                            alone — wrapping that too reads 10.08.
+        //   Cascade   4.06 -> 2.24   source gain and advection are ONE fix here.
+        //                            Either alone is a regression (19.2% and
+        //                            21.9% luma spread against 5.8% shipped);
+        //                            the shipped number was two opposing errors
+        //                            cancelling.
+        //   Tide      7.20 -> 2.77   advection only. Its curtain source scales by
+        //                            u.harmonic_energy, which no harness mode
+        //                            raises above 0, so the source-gain half is
+        //                            unmeasurable here and was not applied.
+        //   Array     1.34 -> 1.03   joint, like Cascade. Guarded on the
+        //                            difference ONLY: its luma spread gets worse
+        //                            when the image gets better.
+        //   Vessel    1.50 -> 0.21   joint. Runs under Synthetic, not None: its
+        //                            floor glow scales by u.buildup, which is 0
+        //                            in the neutral vector, so under None the
+        //                            whole source term is identically zero and
+        //                            the trail never accumulates (ratio 1.06).
+        //                            That vacuity, not the param name, is why it
+        //                            used to be excluded.
+        //
         // Deliberately NOT in this list:
-        //   Vessel   — its retention is param `glow`, not `trail_decay`, so the
-        //              knob this probe turns does not reach it and the trail
-        //              never accumulates. Cleave and Tide already cover ribbons.
+        //   Cymatics — measured and NOT fixed. Three real bugs (an input clamp
+        //              and a 0.85 cap that bind in series, and a vignette that
+        //              multiplies the stored trail every frame, so it is a
+        //              spatially-varying per-frame retention rather than a
+        //              display mask). Correcting the vignette collapses its luma
+        //              spread 36.9% -> 7.7% but leaves the image no closer
+        //              (18.70/10.53 -> 16.17/12.91), so nothing was landed. Its
+        //              control difference is 5.8 levels, the highest here, which
+        //              says the dominant term is its own sim content (#2380).
+        //   Cleave   — measured and unmoved: 4.76/4.11 shipped against 4.61/4.54
+        //              with both corrections. Neither is its mechanism.
         //   Chaos, Accretion, Mycelium — all three are clean advection sites on
         //              paper (pure `trail = prev * frame_decay3(..)`, no in-shader
         //              source) and all three FAIL the vacuity guard here: each
@@ -728,27 +780,78 @@ mod tests {
         // the ring advances two slots and the writer backfills both with the
         // same current position rather than interpolating, which shortens the
         // ribbon's effective path slightly. Correct and stale-free, but not free.
-        for (effect, control_ceiling, ceiling) in [
-            ("Cascade", 0.05, 0.15),
-            ("Ascend", 0.05, 0.06),
-            ("Tide", 0.12, 0.05),
-            ("Panorama", 0.05, 0.05),
-        ] {
-            let sweep = |decay: f32| -> Vec<f64> {
-                [30u32, 60, 120]
+        // (effect, trail param, audio, control ceiling, luma-spread ceiling,
+        //  image-difference ceiling). A `None` luma ceiling means that statistic
+        //  is not usable at this site — see Array above.
+        struct Site {
+            effect: &'static str,
+            /// The effect input holding this site's feedback retention.
+            param: &'static str,
+            audio: LoopAudio,
+            /// Cap on the decay-0 control's own spread: how rate-dependent this
+            /// effect's content is, and so how much the reading below can claim.
+            control: f64,
+            /// Cap on the mean-luma spread, or `None` where that statistic is
+            /// not usable at this site (Array, Tide — see above).
+            luma: Option<f64>,
+            /// Cap on the per-pixel image difference. The primary guard.
+            mad: f64,
+            /// How far above the control the trailed mean must sit for a pass to
+            /// mean anything. `None` where there is no zero-trail control to
+            /// compare against — see Vessel.
+            vacuity: Option<f64>,
+        }
+        const N: LoopAudio = LoopAudio::None;
+        const S: LoopAudio = LoopAudio::Synthetic;
+        #[rustfmt::skip]
+        let sites = [
+            Site { effect: "Cascade",  param: "trail_decay", audio: N, control: 0.05, luma: Some(0.15), mad: 3.00, vacuity: Some(1.3) },
+            Site { effect: "Ascend",   param: "trail_decay", audio: N, control: 0.05, luma: Some(0.06), mad: 1.60, vacuity: Some(1.3) },
+            Site { effect: "Tide",     param: "trail_decay", audio: N, control: 0.12, luma: None,       mad: 4.00, vacuity: Some(1.3) },
+            Site { effect: "Panorama", param: "trail_decay", audio: N, control: 0.05, luma: Some(0.05), mad: 0.50, vacuity: Some(1.3) },
+            Site { effect: "Tesla",    param: "trail_decay", audio: N, control: 0.05, luma: Some(0.15), mad: 2.00, vacuity: Some(1.3) },
+            Site { effect: "Array",    param: "trail_decay", audio: N, control: 0.05, luma: None,       mad: 1.15, vacuity: Some(1.3) },
+            // Vessel's retention is `glow` remapped onto [0.78, 0.93], so glow=0
+            // is still a decay of 0.78 — a SHORTER trail, not no trail. Its luma
+            // "control" is therefore not a control, and the 1.3x ratio above it
+            // is unreachable by design (measured 1.35x, which would leave every
+            // pass one rounding away from a spurious failure). Non-vacuity comes
+            // from the image difference instead, where the separation is wide:
+            // control 0.09, fixed 0.21, and 1.50 with the bug reintroduced.
+            Site { effect: "Vessel",   param: "glow",        audio: S, control: 0.05, luma: Some(0.10), mad: 0.60, vacuity: None },
+        ];
+        for Site {
+            effect,
+            param,
+            audio,
+            control: control_ceiling,
+            luma: ceiling,
+            mad: mad_ceiling,
+            vacuity,
+        } in sites
+        {
+            let sweep = |decay: f32| -> (Vec<f64>, [f64; 2]) {
+                let frames: Vec<Vec<u8>> = [30u32, 60, 120]
                     .iter()
-                    .map(|&fps| {
-                        let m = mean_luma(&render(effect, fps, decay));
-                        println!("PCOMP {effect} decay={decay:.2} fps={fps:<4} mean={m:.6}");
-                        m
-                    })
-                    .collect()
+                    .map(|&fps| render(effect, param, audio, fps, decay))
+                    .collect();
+                let means: Vec<f64> = frames.iter().map(|px| mean_luma(px)).collect();
+                for (i, fps) in [30u32, 60, 120].iter().enumerate() {
+                    println!(
+                        "PCOMP {effect} decay={decay:.2} fps={fps:<4} mean={:.6}",
+                        means[i]
+                    );
+                }
+                (
+                    means,
+                    [mad(&frames[0], &frames[1]), mad(&frames[2], &frames[1])],
+                )
             };
             // CONTROL (#2348's rule): at decay 0 nothing accumulates, so there is
             // no a/(1-k) steady state and the gain is exactly 1 at every rate. Any
             // spread here is the effect's own content being rate-dependent, and
             // bounds what the measurement below can claim.
-            let control = sweep(0.0);
+            let (control, control_mad) = sweep(0.0);
             assert!(
                 spread(&control) < control_ceiling,
                 "{effect}: control is not frame-rate flat ({:.1}%, ceiling {:.0}%) — its \
@@ -758,28 +861,63 @@ mod tests {
                 control_ceiling * 100.0,
             );
 
-            let trailed = sweep(0.95);
-            assert!(
-                trailed.iter().all(|&m| m > control[1] * 1.3),
-                "{effect}: trail=0.95 ({trailed:?}) is barely above the no-trail \
-                 control ({control:?}) — nothing is accumulating, so a pass is vacuous",
-            );
+            let (trailed, trailed_mad) = sweep(0.95);
+            if let Some(vacuity) = vacuity {
+                assert!(
+                    trailed.iter().all(|&m| m > control[1] * vacuity),
+                    "{effect}: trail=0.95 ({trailed:?}) is barely above the no-trail \
+                     control ({control:?}) — nothing is accumulating, so a pass is vacuous",
+                );
+            } else {
+                // The image difference has to carry the non-vacuity argument on
+                // its own here, so require the trail to move the picture well
+                // clear of what the control already moves it.
+                assert!(
+                    trailed_mad[0].max(trailed_mad[1]) > control_mad[0].max(control_mad[1]) * 1.5,
+                    "{effect}: the trail barely changes the image relative to the control \
+                     ({trailed_mad:?} vs {control_mad:?}) — a pass would be vacuous",
+                );
+            }
+            let worst_mad = trailed_mad[0].max(trailed_mad[1]);
             println!(
-                "PCOMP {effect} SUMMARY control_spread={:.4} trailed_spread={:.4}",
+                "PCOMP {effect} SUMMARY control_spread={:.4} trailed_spread={:.4} \
+                 mad30={:.2} mad120={:.2} (control {:.2}/{:.2}) ceiling={mad_ceiling:.2}",
                 spread(&control),
                 spread(&trailed),
+                trailed_mad[0],
+                trailed_mad[1],
+                control_mad[0],
+                control_mad[1],
             );
+            if let Some(ceiling) = ceiling {
+                assert!(
+                    spread(&trailed) < ceiling,
+                    "{effect}: brightness depends on frame rate — means {trailed:?} \
+                     across 30/60/120 fps spread {:.1}%, ceiling {:.0}%. Several bugs \
+                     reach this assertion: the additive composite's source gain is not \
+                     tracking the background's retention (#2349), an in-shader source \
+                     term's gain is still per-frame (#2376), or the shader resamples \
+                     its feedback at a per-frame uv offset instead of a per-second one \
+                     (#2378). The control above is flat, so it is one of those and not \
+                     the effect's own content.",
+                    spread(&trailed) * 100.0,
+                    ceiling * 100.0,
+                );
+            }
+            // The primary guard. Unlike the spread above it cannot be satisfied
+            // by two errors cancelling, so it is the one to trust when the two
+            // disagree — and at Array and Tide they do.
             assert!(
-                spread(&trailed) < ceiling,
-                "{effect}: brightness depends on frame rate — means {trailed:?} \
-                 across 30/60/120 fps spread {:.1}%, ceiling {:.0}%. Two different \
-                 bugs reach this assertion: the additive composite's source gain is \
-                 not tracking the background's retention (#2349), or the shader \
-                 resamples its feedback at a per-frame uv offset instead of a \
-                 per-second one (#2378). The control above is flat, so it is one of \
-                 those and not the effect's own content.",
-                spread(&trailed) * 100.0,
-                ceiling * 100.0,
+                worst_mad < mad_ceiling,
+                "{effect}: the 30 and 120 fps renders do not land on the same image as \
+                 the 60 fps one — mean per-pixel difference {:.2}/{:.2} levels of 255 \
+                 (ceiling {mad_ceiling:.2}), against {:.2}/{:.2} for the no-trail \
+                 control. Something in this effect's feedback loop is still measured \
+                 in frames rather than seconds (#2376/#2378).",
+                trailed_mad[0],
+                trailed_mad[1],
+                control_mad[0],
+                control_mad[1],
             );
         }
     }

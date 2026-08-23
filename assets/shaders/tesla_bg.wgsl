@@ -63,10 +63,22 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let rotation = param(4u);
     let B = bg_total_field(p, u.time, mode, rotation);
     let field_vis = abs(B) * 0.005 * u.rms;
-    let field_color = vec3f(0.15, 0.25, 0.5) * field_vis;
+    // The field is a CONTINUOUS source: it is added once per frame, so its gain
+    // is a rate and has to track the retention or the steady state a/(1-k) moves
+    // with the frame rate (#2376). This was the largest single frame-rate error
+    // measured anywhere in the family — the trailed image differed from the
+    // 60 fps one by 12.1 levels of 255 at 120 fps, and by 0.45 with this wrap.
+    // Exactly 1.0 at 60 fps.
+    let field_color = vec3f(0.15, 0.25, 0.5) * field_vis * frame_gain(1.0, decay);
 
     let flip_sens = param(7u);
     let beat_flash = u.beat * flip_sens * 0.04;
+    // NOT wrapped, deliberately. `u.beat` is a one-frame pulse fired once per
+    // BEAT, not once per frame, so this is a per-event impulse: 30 fps and
+    // 120 fps inject it the same number of times per second, and its wall-clock
+    // integral a/(60*ln(1/k)) is already frame-rate independent. Correcting it
+    // would be a new bug, and measurably is one — wrapping this term as well
+    // takes the trailed image difference from 0.45 back up to 10.08.
     let flash_color = vec3f(0.5, 0.6, 0.8) * beat_flash;
 
     let result = min(trail + field_color + flash_color, vec3f(1.1));

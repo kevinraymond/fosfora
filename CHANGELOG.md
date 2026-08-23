@@ -5,6 +5,16 @@
 
 ## Unreleased
 
+### Fixed
+- **Array, Cascade, Tesla, Tide and Vessel now look the same at any frame rate.** Their
+  background glows were drawn at a fixed strength per frame and their trails drifted a fixed
+  distance per frame, so a 120 fps machine ran them brighter and smeared them further than a
+  60 fps one. Tesla was the worst in the set, at roughly 1.4x brightness. Nothing moves at
+  60 fps.
+- **Tide's falling afterglow travelled twice as far per second at 120 fps as at 60**, and the
+  effect passed its frame-rate check anyway: the check compared average brightness, which was
+  identical while the picture was not. It now compares the pictures.
+
 ## v1.35.0 — 2026-08-21
 
 ### Fixed

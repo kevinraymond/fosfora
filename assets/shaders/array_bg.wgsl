@@ -52,7 +52,10 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Feedback trail with slight center-pull warp
     let decay = param(0u);
     let warp = 0.002 + u.rms * 0.001;
-    let warped_uv = clamp(uv + (vec2f(0.5) - uv) * warp, vec2f(0.001), vec2f(0.999));
+    // Convergent warp — uv' = mix(uv, centre, w), so n frames compose to
+    // 1-(1-w)^n, which is what frame_diffuse returns (#2378). Exactly 1.0 at
+    // 60 fps.
+    let warped_uv = clamp(uv + (vec2f(0.5) - uv) * frame_diffuse(warp), vec2f(0.001), vec2f(0.999));
     let trail = feedback(warped_uv).rgb * frame_decay(decay);
 
     // Ring-shaped glow at each emitter position
@@ -69,7 +72,14 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         let ring_glow = exp(-dist_to_ring * dist_to_ring / (width * width)) * energy;
         glow += band_color(b) * ring_glow;
     }
-    glow *= glow_param * 0.1;
+    // Continuous source: added every frame, so its gain is a rate and has to
+    // track the retention (#2376). Paired with the warp correction above — as at
+    // Cascade the two are one fix, and the whole-frame image difference against
+    // the 60 fps render only improves when both are present (1.34 -> 0.74 levels
+    // of 255 at 120 fps). Judge this site on that difference, NOT on mean-luma
+    // spread: on mean luma the joint fix looks like a regression, because two
+    // opposite-sign errors cancel in a whole-frame average.
+    glow *= glow_param * 0.1 * frame_gain(1.0, decay);
 
     let result = min(trail + glow, vec3f(1.5));
     let alpha = clamp(max(result.r, max(result.g, result.b)) * 2.0, 0.0, 1.0);

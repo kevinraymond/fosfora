@@ -14,7 +14,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // This smears trails inward from each edge, reinforcing the wall flow
     let to_center = vec2f(0.5, 0.5) - uv;
     let warp_str = 0.002 + u.rms * 0.001;
-    let warped_uv = clamp(uv + to_center * warp_str, vec2f(0.001), vec2f(0.999));
+    // The warp is CONVERGENT — uv' = mix(uv, centre, w) — so n frames compose to
+    // 1-(1-w)^n, which is exactly what frame_diffuse returns (#2378). Without it
+    // the trail converged twice as far per wall-clock second at 120 fps as at 60.
+    // frame_steps() measures identically here (w <= 0.003, where 1-(1-w)^n ~ nw),
+    // but this is the form the shape actually has. Exactly 1.0 at 60 fps.
+    let warped_uv = clamp(uv + to_center * frame_diffuse(warp_str), vec2f(0.001), vec2f(0.999));
     let prev = feedback(warped_uv);
 
     let trail = prev.rgb * frame_decay(decay);
@@ -52,7 +57,16 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
                    + right_color * right_glow
                    + top_color * top_glow;
 
-    let glow = edge_color * edge_glow_param * 0.12;
+    // The edge glow is a CONTINUOUS source added every frame, so its gain is a
+    // rate and has to track the retention above (#2376).
+    //
+    // THIS AND THE WARP CORRECTION ABOVE ARE ONE FIX, NOT TWO. Cascade's
+    // as-shipped 5.8% brightness spread was a CANCELLATION of two opposing
+    // errors: correcting the source gain alone reads 19.2% (and inverts the
+    // sign), correcting the advection alone reads 21.9%, and correcting both
+    // reads 2.4%. Two earlier attempts landed one half each, measured a
+    // regression, and reverted. Do not remove either one on its own.
+    let glow = edge_color * edge_glow_param * 0.12 * frame_gain(1.0, decay);
 
     // --- Beat pulse (disabled) ---
     let flash_color = vec3f(0.0);

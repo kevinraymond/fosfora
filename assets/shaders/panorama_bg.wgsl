@@ -53,8 +53,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // sources, so this settled to a different brightness at every frame rate even
     // after the particle composite was fixed. Exactly 1.0 at 60 fps.
     //
-    // Panorama is the ONLY site this was applied to. The same wrap measured WORSE
-    // on Cascade and Cymatics, whose sources ride the 1.5 clamp; see #2376.
+    // Panorama was the first site this was applied to; Array, Cascade, Tesla and
+    // Vessel followed once it was established that the source gain and the
+    // advection above have to be corrected TOGETHER — correcting either alone is
+    // a regression wherever a site carries both. See #2376 and the scope note at
+    // frame_gain3's definition.
     let result = min(
         trail + guide_color * frame_gain3(vec3f(1.0), vec3f(decay * 0.94, decay * 0.965, decay)),
         vec3f(1.5),

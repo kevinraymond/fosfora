@@ -129,13 +129,29 @@ fn frame_gain(gain60: f32, keep60: f32) -> f32 {
 // three gains — the scalar form would over-correct the fastest-decaying channel and
 // under-correct the slowest, tinting the source as the frame rate moves.
 //
-// SCOPE WARNING (#2376). This holds a LINEAR recurrence's steady state. Most *_bg
-// composites end in min(trail + src, vec3f(1.5)); where the source is large enough
-// to ride that clamp, the clamp sets the output and this correction overshoots —
-// measured, it made Cascade WORSE (5.6% -> 19.0% spread across 30/60/120 fps) and
-// Cymatics worse, while helping Panorama. Do not apply it to a new site without a
-// before/after number for that site. Reading the algebra is not enough; the failure
-// lives in the clamp regime.
+// SCOPE (#2376), and the earlier warning here was WRONG about the cause. This
+// helper did make Cascade worse on its own (5.6% -> 19.0% spread across
+// 30/60/120 fps), and that was blamed on the min(trail + src, vec3f(1.5)) clamp
+// setting the output. It does not: raising that ceiling to 1e6 moves Cascade by
+// 0.15 pp, inside the noise floor. The real cause is that a source gain and a
+// per-frame feedback ADVECTION (#2378) are one fix — Cascade carried both, its
+// shipped 5.6% was the two errors cancelling, and correcting either alone
+// exposed the other (19.0% and 21.9%; both together, 2.4%).
+//
+// So before applying this, check whether the same shader also resamples
+// feedback() at a per-frame uv offset, and correct both or neither.
+//
+// Two things this does NOT apply to:
+//   - A PER-EVENT source. `u.beat` and `u.drop` are pulses fired once per event,
+//     not once per frame; their wall-clock contribution a/(60*ln(1/k)) is already
+//     rate-independent and scaling them is a new bug. Measured at Tesla: field
+//     alone takes the image difference to 0.45 levels, field plus beat flash to
+//     10.08.
+//   - A source that is combined with max() rather than added.
+//
+// And judge the result on the per-pixel image difference, not on mean-luma
+// spread: two opposite-sign errors cancel in a whole-frame average, so a wrong
+// render can score flat (Array, Tide — see loop_driver.rs).
 fn frame_gain3(gain60: vec3f, keep60: vec3f) -> vec3f {
     let k = clamp(keep60, vec3f(0.0), vec3f(1.0));
     let d = vec3f(1.0) - k;

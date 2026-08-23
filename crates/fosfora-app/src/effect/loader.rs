@@ -2628,6 +2628,26 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             }
             gain60 * (1.0 - frame_decay(k, dt)) / d
         }
+        // The per-channel gain (#2376) and the spatial-diffusion rate (#2350).
+        // Neither had a Rust mirror until Array/Cascade/Vessel started depending
+        // on them for their 60 fps identity.
+        fn frame_gain3(gain60: f32, keep60: f32, dt: f32) -> f32 {
+            let k = keep60.clamp(0.0, 1.0);
+            let d = 1.0 - k;
+            let n = frame_steps(dt);
+            let decayed = if n == 1.0 { k } else { k.powf(n) };
+            if d < 1e-5 {
+                return gain60 * n;
+            }
+            gain60 * (1.0 - decayed) / d
+        }
+        fn frame_diffuse(rate60: f32, dt: f32) -> f32 {
+            let d = rate60.clamp(0.0, 1.0);
+            if frame_steps(dt) == 1.0 {
+                return d;
+            }
+            1.0 - frame_decay(1.0 - d, dt)
+        }
 
         // 1. Exact identity at 60 fps, so every shipped look is preserved untouched.
         //    This relies on (1.0f32 / 60.0) * 60.0 being bit-exactly 1.0.
@@ -2644,6 +2664,37 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "60 fps must not change retention {k}"
             );
             assert_eq!(frame_gain(0.5, k, dt60), 0.5, "60 fps must not change gain");
+            assert_eq!(
+                frame_gain3(0.5, k, dt60),
+                0.5,
+                "60 fps must not change the per-channel gain"
+            );
+        }
+        // frame_diffuse guards its own identity with an explicit early return
+        // rather than evaluating 1-(1-d): that round trip is NOT the identity in
+        // f32 (0.12 comes back as 0.12000000476837158) and moved Polycephalum
+        // 0.7% at 60 fps before the guard was added.
+        for d in [0.0025f32, 0.12, 0.16, 0.4, 1.0] {
+            assert_eq!(
+                frame_diffuse(d, dt60),
+                d,
+                "60 fps must not change the diffusion rate {d}"
+            );
+        }
+        // A convergent warp uv' = mix(uv, c, w) composes as 1-(1-w)^n, so the
+        // displacement after one wall-clock second must not depend on the frame
+        // rate — the invariant Cascade's and Array's centre-pull now rely on.
+        for w in [0.0025f32, 0.01, 0.05] {
+            let reference = 1.0 - (1.0f32 - w).powi(60);
+            for fps in [30u32, 50, 120, 240] {
+                let dt = 1.0 / fps as f32;
+                let after = 1.0 - (1.0 - frame_diffuse(w, dt)).powi(fps as i32);
+                assert!(
+                    (after / reference - 1.0).abs() < 1e-3,
+                    "convergent warp w={w} reached {after} after 1 s at {fps} fps, \
+                     expected {reference}"
+                );
+            }
         }
 
         // 2. The point of the fix: the fraction surviving one WALL-CLOCK SECOND is the

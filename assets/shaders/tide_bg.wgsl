@@ -21,7 +21,19 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Refraction shimmer: fine x-only warp scrolling down.
     let wx = (fosfora_noise2(vec2f(uv.x * 40.0, uv.y * 8.0 - u.time * 1.5)) - 0.5)
         * 0.004 * param(6u) * (0.5 + u.presence);
-    let prev = feedback(clamp(uv + vec2f(wx, -fall), vec2f(0.001), vec2f(0.999)));
+    // frame_steps() makes the whole offset a speed rather than a per-frame step
+    // (#2378), so the falling echo travels the same distance per wall-clock
+    // second at every frame rate. Exactly 1.0 at 60 fps.
+    //
+    // This is Tide's ONLY frame-rate error. Its curtain source is multiplied by
+    // u.harmonic_energy, which the loop harness never raises above 0, so the
+    // source-gain half of #2376 is not measurable here and is deliberately not
+    // applied: an unmeasured correction is what this family keeps getting wrong.
+    let prev = feedback(clamp(
+        uv + vec2f(wx, -fall) * frame_steps(),
+        vec2f(0.001),
+        vec2f(0.999),
+    ));
 
     // Chromatic decay: red dies fastest -> aged light goes blue-green.
     var trail = prev.rgb * frame_decay3(vec3f(decay * 0.90, decay * 0.97, decay));
