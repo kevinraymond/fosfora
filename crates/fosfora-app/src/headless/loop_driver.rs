@@ -1373,12 +1373,25 @@ mod tests {
             "synth" => LoopAudio::Synthetic,
             _ => LoopAudio::None,
         };
+        // PSIM_RES / PSIM_PNG exist to JUDGE rather than to measure: 320x180 is
+        // fine for a statistic and useless for an eye. PSIM_TRAIL=default leaves
+        // the effect's shipped trail alone, which is the only configuration
+        // worth looking at when the question is what the effect looks like.
+        let res: u32 = std::env::var("PSIM_RES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(320);
+        let png_dir = std::env::var("PSIM_PNG").ok();
+        let want_trail_off = std::env::var("PSIM_TRAIL").unwrap_or_default() != "default";
+        if let Some(d) = &png_dir {
+            std::fs::create_dir_all(d).unwrap();
+        }
         for effect in only.split(',') {
             for fps in [30u32, 60, 120] {
                 let spec_for = |trail: bool| LoopSpec {
                     version: 1,
                     effect: effect.to_string(),
-                    params: trail
+                    params: (trail && want_trail_off)
                         .then(|| {
                             (
                                 "trail_decay".to_string(),
@@ -1390,7 +1403,7 @@ mod tests {
                     bpm: 120.0,
                     bars: 8,
                     fps,
-                    resolution: [320, 180],
+                    resolution: [res, res * 9 / 16],
                     codec: crate::headless::loop_spec::LoopCodec::H264,
                     audio,
                     audio_file: None,
@@ -1456,6 +1469,13 @@ mod tests {
                             maxp = ps.max_particles;
                         }
                     }
+                }
+                if let Some(d) = &png_dir {
+                    let (w, h) = (res, res * 9 / 16);
+                    let img = image::RgbaImage::from_raw(w, h, px.clone()).unwrap();
+                    let path = std::path::Path::new(d).join(format!("{effect}-{fps}fps.png"));
+                    img.save(&path).unwrap();
+                    println!("PNG {}", path.display());
                 }
                 let lum: Vec<f64> = px
                     .chunks_exact(4)
