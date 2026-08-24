@@ -335,7 +335,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Wrap the stored heading: the steer above already takes the shortest arc,
     // but flags.z persists across frames, so a bird that keeps circling one way
     // drifts past TAU and degrades the precision of that very sin/cos.
-    let new_heading = fract((heading + angle_delta * heading_smooth) / 6.2831853) * 6.2831853;
+    // heading_smooth is a per-FRAME blend weight, so (1 - heading_smooth) is a
+    // per-frame retention of the bird's heading error and compounds exactly like
+    // a trail decay — #1986's algebra in angle space (#2380). Uncorrected, a
+    // flock turned onto its target four times as fast per wall-clock second at
+    // 120 fps as at 30, which showed up as the same number of birds in
+    // systematically different places: block difference 3.87 levels against a
+    // 0.64 floor with mean brightness dead flat. frame_diffuse is bit-exact at
+    // 60 fps.
+    let new_heading = fract((heading + angle_delta * frame_diffuse(heading_smooth)) / 6.2831853) * 6.2831853;
 
     // --- Speed: base * centroid_mod * flux agitation * per-bird * beat pulse ---
     // Min/max speed clamping prevents stalling (blob collapse) and runaway

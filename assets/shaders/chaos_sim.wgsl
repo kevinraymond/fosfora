@@ -317,7 +317,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let dt_sim = dt_base * dt_mult;
 
     // --- RK4 integration ---
-    att_pos = rk4_step(att_pos, dt_sim, raw_type, bifurc, u.mid * audio_drive);
+    // SUB-STEP rather than scale the step (#2380). dt_sim is a fixed slice of
+    // attractor time per FRAME, so the orbit advanced four times as far per
+    // wall-clock second at 120 fps as at 30 — measured as a monotonic brightness
+    // ramp, inverted (slower traversal at 30 fps bunches particles and reads
+    // BRIGHTER: 4.35 / 3.77 / 3.48 levels across 30/60/120).
+    //
+    // The obvious correction, dt_sim * frame_steps(), is wrong twice over: it
+    // changes RK4's truncation error with the frame rate, so the attractor is a
+    // slightly different shape on different hardware, and on a stalled frame
+    // frame_steps() reaches 2 and it takes a DOUBLE step — the #1983 regime,
+    // where an integrator is least able to afford one. Running ceil(n) steps of
+    // dt_sim * n/ceil(n) keeps every step at or below the authored size: at
+    // 30 fps it is two steps of exactly dt_sim, reproducing the 60 fps
+    // trajectory rather than approximating it, and at 120 fps a single half
+    // step. n is bounded at 2 by frame_steps(), so this is at most two
+    // iterations.
+    let n_sub = frame_steps();
+    let sub_count = i32(ceil(n_sub));
+    let sub_dt = dt_sim * n_sub / f32(sub_count);
+    for (var s = 0; s < sub_count; s = s + 1) {
+        att_pos = rk4_step(att_pos, sub_dt, raw_type, bifurc, u.mid * audio_drive);
+    }
 
     // --- Spread: per-particle noise perturbation ---
     let spread_str = param(4u) * 0.001;

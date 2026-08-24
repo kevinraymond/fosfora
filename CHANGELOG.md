@@ -14,6 +14,10 @@
 - **Tide's falling afterglow travelled twice as far per second at 120 fps as at 60**, and the
   effect passed its frame-rate check anyway: the check compared average brightness, which was
   identical while the picture was not. It now compares the pictures.
+- **Chaos, Mycelium and Murmur now look the same at any frame rate.** Chaos's attractor traced
+  four times as much of its orbit per second at 120 fps as at 30, Mycelium's network skipped
+  half its branching opportunities below 60 fps and grew visibly sparser, and Murmur's flock
+  swung onto its heading faster the higher the frame rate. Nothing moves at 60 fps.
 
 ## v1.35.0 — 2026-08-21
 

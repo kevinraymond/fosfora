@@ -922,6 +922,390 @@ mod tests {
         }
     }
 
+    /// #2380, the sixth and last category of the frame-rate family: per-frame
+    /// temporal constants inside the particle SIM shaders.
+    ///
+    /// Every probe before this one measures a TRAIL. A sim bug does not change
+    /// the trail, it changes the CONTENT the trail is drawn from, so it shows up
+    /// in the sibling probe's decay-0 *control* reading and nowhere in its
+    /// headline number. That is why 27 `*_sim.wgsl` went unswept while five
+    /// rounds combed the `*_bg` shaders: nothing here ever failed.
+    ///
+    /// Three things this probe does differently, each of which cost an
+    /// experiment to learn:
+    ///
+    /// 1. WINDOW_SECS = 4.0, not the sibling's 1.2. These are growth sims —
+    ///    Mycelium builds a network, Chaos fills an attractor, Accretion forms a
+    ///    disc — and at 1.2 s they have barely started. Their contribution there
+    ///    is 1.2e-5..5e-4 of full scale, i.e. at or under the 8-bit readback
+    ///    floor, so every ratio computed in that regime is two noise numbers
+    ///    divided by each other. Two experiments returned null at 1.2 s and were
+    ///    contradicted at 4.0 (#2379).
+    ///
+    /// 2. The trail is turned OFF, not turned up. Zeroing the retention removes
+    ///    the `*_bg` feedback the sibling probe already guards and leaves the sim
+    ///    as the only thing that can move the image. Four effects here expose no
+    ///    such param and run at shipped defaults instead — their reading is
+    ///    therefore sim AND background, and is a ceiling on the sim rather than a
+    ///    measurement of it.
+    ///
+    /// 3. Per-site audio mode. A per-frame velocity kick scaled by `u.onset` or
+    ///    `u.flux` is identically zero under `LoopAudio::None`, so the whole term
+    ///    vanishes and the site measures nothing — the same vacuity that kept
+    ///    Vessel out of the sibling probe for two releases. Sites whose bug is
+    ///    level-gated run Synthetic.
+    ///
+    /// The statistic is the mean absolute per-pixel difference against the 60 fps
+    /// render, in 8-bit levels — NOT a mean-luma spread. A scalar summary of an
+    /// image cancels two opposite-sign errors and scores a wrong render flat;
+    /// Tide passed at 0.29% for two releases with its 120 fps image 7.2 levels
+    /// off (#2381). "The same effect at another frame rate lands on the same
+    /// image" is the contract, and a difference measures it directly.
+    ///
+    /// Run: cargo test -p fosfora-app --release -- --ignored frame_rate_independent_particle_sim
+    #[test]
+    #[ignore = "GPU"]
+    fn frame_rate_independent_particle_sim() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+
+        const WINDOW_SECS: f32 = 4.0;
+        let render =
+            |effect: &str, trail_param: Option<&str>, audio: LoopAudio, fps: u32| -> Vec<u8> {
+                let spec = LoopSpec {
+                    version: 1,
+                    effect: effect.to_string(),
+                    params: trail_param
+                        .map(|p| (p.to_string(), crate::params::ParamValue::Float(0.0)))
+                        .into_iter()
+                        .collect(),
+                    bpm: 120.0,
+                    bars: 8,
+                    fps,
+                    resolution: [320, 180],
+                    codec: crate::headless::loop_spec::LoopCodec::H264,
+                    audio,
+                    audio_file: None,
+                    background: LoopBackground::Opaque,
+                };
+                let mut session = LoopSession::create_with(
+                    &spec,
+                    BestEffort::TimeWrapped,
+                    (*device).clone(),
+                    (*queue).clone(),
+                )
+                .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"));
+                let last = (WINDOW_SECS * fps as f32).round() as u32;
+                let mut frame_bytes = Vec::new();
+                for f in 0..=last {
+                    frame_bytes = session.render_frame_at(f).unwrap();
+                }
+                frame_bytes
+            };
+        let mad = |a: &[u8], b: &[u8]| -> f64 {
+            a.iter()
+                .zip(b)
+                .map(|(&x, &y)| (x as f64 - y as f64).abs())
+                .sum::<f64>()
+                / a.len() as f64
+        };
+        let mean_luma = |px: &[u8]| -> f64 {
+            px.chunks_exact(4)
+                .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 765.0)
+                .sum::<f64>()
+                / (px.len() / 4) as f64
+        };
+
+        struct SimSite {
+            effect: &'static str,
+            /// The input holding this effect's feedback retention, zeroed so the
+            /// `*_bg` trail cannot contribute to the reading. `None` where the
+            /// effect exposes no such param — those run at shipped defaults, so
+            /// their number bounds the sim rather than isolating it.
+            trail_param: Option<&'static str>,
+            /// Synthetic wherever the suspect term is scaled by an audio LEVEL,
+            /// or the term is identically zero and the site is vacuous.
+            audio: LoopAudio,
+            /// Cap on the BLOCK-averaged difference against the 60 fps render.
+            /// The per-pixel figure is reported but not asserted: on stochastic
+            /// content it is dominated by which particles landed where, not by
+            /// whether the effect is right (Flux reads 27.6 per-pixel and 5.4
+            /// blocked, and the emitter's atomic claim accounts for the gap).
+            mad: f64,
+            /// What this site is here to witness. `None` marks a floor reference:
+            /// a sim already correct throughout, whose reading IS the noise floor
+            /// for the rest of the list.
+            witness: Option<&'static str>,
+        }
+        const N: LoopAudio = LoopAudio::None;
+        const S: LoopAudio = LoopAudio::Synthetic;
+        const T: Option<&'static str> = Some("trail_decay");
+        // THREE SITES ARE GUARDED — a ceiling set between a measured bugged and a
+        // measured fixed reading, with the bug reintroduced afterwards to watch
+        // this test fail. The rest are WATCHED: a loose ceiling that catches a
+        // gross regression but proves nothing, because no fix was landed there
+        // and there is no bugged/fixed pair to bracket. The distinction is in the
+        // comment on each row; do not tighten a watched ceiling to its measured
+        // value, because a ceiling nobody has seen fail is not a guard.
+        #[rustfmt::skip]
+        let sites = [
+            // FLOOR REFERENCES. Every damping in these three is already
+            // pow(k, dt*60) or 1-exp(-k*dt), so whatever they read is stochastic
+            // spawn scatter, not a bug. Nothing below their level is a claim.
+            // Morph is the true zero: it places particles from a target image and
+            // never touches u.seed, so it reads 0.00 on every statistic.
+            SimSite { effect: "Pegboard",     trail_param: None, audio: N, mad: 0.60, witness: None },
+            SimSite { effect: "Morph",        trail_param: None, audio: N, mad: 0.10, witness: None },
+            SimSite { effect: "Cleave",       trail_param: T,    audio: N, mad: 0.40, witness: None },
+            // GUARDED. Sub-stepping the RK4 integrator: 0.75 -> 0.06 blocked, and
+            // the brightness ramp across 30/60/120 went 4.35/3.77/3.48 (-20%) to
+            // 3.81/3.77/3.74 (-1.8%). 60 fps is unchanged at 3.77.
+            SimSite { effect: "Chaos",        trail_param: T,    audio: N, mad: 0.30, witness: Some("chaos_sim:317 fixed RK4 step") },
+            // GUARDED. Tick-accurate branch gate + frame_diffuse/frame_decay on
+            // the velocity blend and damping: 1.02 -> 0.83 blocked, level ramp
+            // +64% -> +43%. A PARTIAL fix and the ceiling is deliberately tight
+            // because the site is perfectly deterministic (self 0.00). With
+            // branching disabled the sim is EXACTLY rate-independent
+            // (3.32/3.32/3.32), so the whole residual is branch-driven growth and
+            // is recorded on the board rather than papered over here.
+            // GUARDED, and deliberately run under Synthetic. Under None its two
+            // velocity terms are INVISIBLE: u.bass and u.mid are 0, so `desired`
+            // barely moves and the velocity converges to it whatever the blend
+            // weight is — reverting both retention fixes there reads 0.83 against
+            // 0.83, a perfectly vacuous guard. Drive the target and the same two
+            // terms separate cleanly, 0.37 fixed against 0.49 bugged with a
+            // self-difference of 0.00. The branch gate shows up in either mode.
+            // Landed here: tick-accurate branch gate, plus frame_diffuse on the
+            // velocity blend and frame_decay on the damping.
+            //
+            // PARTIAL, and the residual is characterised rather than hidden: with
+            // branching disabled the sim is EXACTLY rate-independent at every
+            // rate (3.32/3.32/3.32), so what is left is entirely branch-driven
+            // growth. See the board before assuming it is one of these terms.
+            SimSite { effect: "Mycelium",     trail_param: T,    audio: S, mad: 0.44, witness: Some("mycelium_sim:109,161 + branch gate :248") },
+            // WATCHED. Its vel *= 0.90 is a real per-frame retention by reading,
+            // but at 1.06 against a 0.47 floor it is 2.2x noise and no fix was
+            // attempted; see the board.
+            SimSite { effect: "Reliquary",    trail_param: T,    audio: N, mad: 1.60, witness: Some("reliquary_sim:177 vel *= 0.90") },
+            // GUARDED. frame_diffuse on the heading low-pass: 3.87 -> 1.51
+            // blocked, with mean brightness flat throughout — the flock is the
+            // same size and was simply in the wrong places.
+            SimSite { effect: "Murmur",       trail_param: None, audio: N, mad: 2.50, witness: Some("murmur_sim:338 angular low-pass") },
+            // WATCHED, AND THIS ROW CANNOT ISOLATE ITS SIM. trail_decay has
+            // min 0.70 and polycephalum_bg floors it again at 0.5, so `trail_param`
+            // does NOT turn the trail off here and this reading is sim plus
+            // feedback. Forcing the bg decay to 0 in a scratch build drops it to
+            // 0.19 against a 0.19 floor — the sim is clean, the ramp is the
+            // feedback path, and two sim "fixes" measured exactly zero and were
+            // reverted. Do not treat this number as a sim measurement.
+            SimSite { effect: "Polycephalum", trail_param: T,    audio: N, mad: 2.40, witness: Some("polycephalum_sim: NOT isolatable, see comment") },
+            // WATCHED. The linearised drag at these three is real by reading and
+            // measured at NOTHING: swapping 1-(1-k)*n for pow(k,n) moved Flux
+            // 27.52 -> 27.26 per-pixel, because the shipped drag values are
+            // 0.995/0.97/0.997 where the two forms differ by ~2.5e-5 per frame.
+            // Worth replacing one day for the drag < 0.5 case, where the linear
+            // form goes NEGATIVE on a stalled frame and reverses velocity, but
+            // that is a latent hazard and not a measured defect.
+            SimSite { effect: "Cymatics",     trail_param: T,    audio: N, mad: 1.80, witness: Some("cymatics_sim:183 linearised drag") },
+            // WATCHED, DEFERRED WITH A KNOWN MECHANISM. Flux's population is
+            // frame-rate dependent: pinning alpha and size leaves the level ramp
+            // intact (+39%), so it is COUNT, and bypassing the per-frame emission
+            // budget both inverts the ramp and drops the self-difference to 0.00.
+            // Not fixed here because the mechanism lives in the emission path
+            // shared by all 55 effects and is not isolated to a term.
+            SimSite { effect: "Flux",         trail_param: T,    audio: N, mad: 7.00, witness: Some("flux_sim: emission-path population, deferred") },
+            SimSite { effect: "Phosphor",     trail_param: T,    audio: N, mad: 1.60, witness: Some("phosphor_sim: +9% level, no isolated term") },
+            // WATCHED. The u.onset/u.flux/u.zcr kicks are per-frame rates by
+            // reading (onset is a held, decayed LEVEL — beat.rs:1918 — not a
+            // one-frame pulse, so #2382 makes them rates). All four measure at or
+            // under their own noise on both statistics, so nothing was changed.
+            SimSite { effect: "Array",        trail_param: T,    audio: S, mad: 0.30, witness: Some("array_sim:206 u.onset kick") },
+            SimSite { effect: "Cascade",      trail_param: T,    audio: S, mad: 0.50, witness: Some("cascade_sim:184 u.onset kick") },
+            SimSite { effect: "Tesla",        trail_param: T,    audio: S, mad: 0.30, witness: Some("tesla_sim:394 u.onset kick") },
+            SimSite { effect: "Accretion",    trail_param: T,    audio: S, mad: 0.30, witness: Some("accretion_sim:363 u.flux kick") },
+            // WATCHED and UNMEASURABLE: its block self-difference (2.49) is its
+            // whole reading (2.20). Nothing can be concluded here at any effort
+            // without a different instrument.
+            SimSite { effect: "Symbiosis",    trail_param: None, audio: S, mad: 4.00, witness: Some("symbiosis_sim: self-difference = reading") },
+        ];
+
+        // Bisecting one site means editing its shader and re-reading it, and
+        // assets/ is read at RUNTIME, so a cell is a text edit plus a test run
+        // with no rebuild. Running all sixteen sites per cell would make that
+        // two minutes instead of five seconds. Unset, every site runs.
+        let only = std::env::var("PSIM_ONLY").unwrap_or_default();
+        // Audio mode override, for asking whether a site's verdict is a property
+        // of the effect or of the regime it was measured in. A per-frame blend
+        // weight toward an audio-driven target is invisible under None, because
+        // the target barely moves and the velocity converges to it whatever the
+        // weight is; the same term is live the moment the target changes every
+        // frame. A null result under one mode is not a null result.
+        let audio_override = match std::env::var("PSIM_AUDIO").unwrap_or_default().as_str() {
+            "synth" => Some(LoopAudio::Synthetic),
+            "none" => Some(LoopAudio::None),
+            _ => None,
+        };
+        let mut failures = Vec::new();
+        for SimSite {
+            effect,
+            trail_param,
+            audio,
+            mad: mad_ceiling,
+            witness,
+        } in sites
+        {
+            if !only.is_empty() && !only.split(',').any(|s| s.eq_ignore_ascii_case(effect)) {
+                continue;
+            }
+            let audio = audio_override.unwrap_or(audio);
+            // AVERAGE N RENDERS PER RATE, and compare the averages.
+            //
+            // `emit_claim()` is an atomicAdd (particle_lib.wgsl:587), so which
+            // dead slot wins which emission ticket depends on GPU workgroup
+            // scheduling and is not reproducible run to run. `emit_particle`
+            // then seeds position, colour and lifetime from the SLOT INDEX, so a
+            // different claim order is a different picture. Measured raw, that
+            // noise reaches 7.98 levels at Symbiosis — larger than most of the
+            // frame-rate differences this test is trying to detect.
+            //
+            // It is inherent to the emitter and cannot be switched off from a
+            // spec, so it gets averaged down instead: the systematic part of a
+            // frame-rate difference survives averaging, the scheduling noise
+            // falls as 1/sqrt(N). The 60 fps reference is rendered 2N times and
+            // split in half, so `self` below is the residual floor of exactly the
+            // same statistic as the two readings beside it — not a different one.
+            const N_RUNS: usize = 3;
+            let avg = |runs: &[Vec<u8>]| -> Vec<f64> {
+                let mut acc = vec![0.0f64; runs[0].len()];
+                for r in runs {
+                    for (a, &b) in acc.iter_mut().zip(r) {
+                        *a += b as f64;
+                    }
+                }
+                acc.iter().map(|a| a / runs.len() as f64).collect()
+            };
+            let mad_f = |a: &[f64], b: &[f64]| -> f64 {
+                a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum::<f64>() / a.len() as f64
+            };
+            let runs_at = |fps: u32, n: usize| -> Vec<Vec<u8>> {
+                (0..n)
+                    .map(|_| render(effect, trail_param, audio, fps))
+                    .collect()
+            };
+            let r60 = runs_at(60, N_RUNS * 2);
+            let a60 = avg(&r60[..N_RUNS]);
+            let b60 = avg(&r60[N_RUNS..]);
+            let a30 = avg(&runs_at(30, N_RUNS));
+            let a120 = avg(&runs_at(120, N_RUNS));
+            let frames = [r60[0].clone()];
+            let self_mad = mad_f(&a60, &b60);
+            let d30 = mad_f(&a30, &a60);
+            let d120 = mad_f(&a120, &a60);
+            let _ = &mad;
+
+            // BLOCK-AVERAGED DIFFERENCE, on a 16x9 grid of 20x20 blocks.
+            //
+            // A per-pixel difference cannot tell "the same content, redistributed"
+            // from "systematically different content", and both are frame-rate
+            // dependent for entirely different reasons. Particles advected through
+            // a spatially varying field on a first-order integrator take different
+            // trajectories at different dt — real, but the DISTRIBUTION is
+            // unchanged and no viewer could pick the two apart. A per-frame
+            // damping constant or a per-frame growth gate moves the distribution
+            // itself.
+            //
+            // Blocking separates them: a different draw from the same distribution
+            // averages toward the same block means, a systematically wrong one does
+            // not. This is the counterpart to #2381 — that finding says a scalar
+            // summary of a whole image CANCELS real errors, and this one says a
+            // per-pixel difference INVENTS them on stochastic content. Neither
+            // statistic is sufficient alone, so both are reported, each against its
+            // own same-rate floor.
+            const BW: usize = 20;
+            let blocks = |img: &[f64]| -> Vec<f64> {
+                let (w, h) = (320usize, 180usize);
+                let bx = w / BW;
+                let mut out = vec![0.0f64; bx * (h / BW) * 4];
+                for y in 0..h {
+                    for x in 0..w {
+                        let b = (y / BW) * bx + (x / BW);
+                        for c in 0..4 {
+                            out[b * 4 + c] += img[(y * w + x) * 4 + c];
+                        }
+                    }
+                }
+                let n = (BW * BW) as f64;
+                out.iter().map(|v| v / n).collect()
+            };
+            let (k30, k60, k120, k60b) = (blocks(&a30), blocks(&a60), blocks(&a120), blocks(&b60));
+            let b_self = mad_f(&k60, &k60b);
+            let b_worst = mad_f(&k30, &k60).max(mad_f(&k120, &k60));
+
+            // MEAN LEVEL PER RATE. The cheapest discriminator of the two, and it
+            // needs no grid: if the three rates agree on average brightness but
+            // differ per pixel, content moved around. If the mean itself moves,
+            // something is accumulating per frame instead of per second — a RATE,
+            // and genuinely wrong (#2382).
+            let lvl = |img: &[f64]| -> f64 {
+                img.chunks_exact(4)
+                    .map(|p| (p[0] + p[1] + p[2]) / 3.0)
+                    .sum::<f64>()
+                    / (img.len() / 4) as f64
+            };
+            let (l30, l60, l120) = (lvl(&a30), lvl(&a60), lvl(&a120));
+            let worst = d30.max(d120);
+            let luma = mean_luma(&frames[0]);
+            // Mean level of the 60 fps frame, so a difference can be read as a
+            // fraction of the signal that produced it. 0.95 levels on a frame
+            // averaging 3.8 is a quarter of the picture; 1.81 on one averaging 90
+            // is nothing. Ranking on the absolute column alone inverts those two.
+            let level = luma * 255.0;
+            let rel = if level > 1e-6 { worst / level } else { 0.0 };
+            let mode = match audio {
+                LoopAudio::Synthetic => "synth",
+                _ => "none",
+            };
+            println!(
+                "PSIM {effect:<13} px={worst:6.2}/{self_mad:<5.2} blk={b_worst:6.2}/{b_self:<5.2} \
+                 lvl={l30:6.2}/{l60:6.2}/{l120:6.2} rel={:4.0}% audio={mode} trail={} \
+                 ceiling={mad_ceiling:.2} :: {}",
+                rel * 100.0,
+                if trail_param.is_some() { "off" } else { "dflt" },
+                witness.unwrap_or("FLOOR REFERENCE"),
+            );
+            let _ = (d30, d120, level);
+
+            // A dark frame makes any difference small for the wrong reason. This
+            // is the vacuity guard the sibling probe learned to need at Vessel:
+            // a site that renders nothing passes every ceiling forever.
+            assert!(
+                luma > 1e-4,
+                "{effect}: the 60 fps frame is essentially black (mean luma {luma:.6}) — \
+                 nothing is being drawn, so any reading below is vacuous. Check that this \
+                 effect spawns under LoopAudio::{mode}.",
+            );
+            if b_worst >= mad_ceiling {
+                failures.push(format!(
+                    "{effect}: the 30 and 120 fps renders do not land on the same image as the \
+                     60 fps one — block difference {b_worst:.2} levels of 255 against a same-rate \
+                     floor of {b_self:.2}, ceiling {mad_ceiling:.2}. Mean level per rate was \
+                     {l30:.2}/{l60:.2}/{l120:.2}: if that ramps monotonically, something in this \
+                     sim accumulates per FRAME instead of per second. Witness: {}",
+                    witness.unwrap_or("(floor reference — this should never fire)"),
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "a particle sim is measuring time in frames rather than seconds (#2380):\n  {}",
+            failures.join("\n  "),
+        );
+    }
+
     /// Synthetic accents are cycle-periodic (the golden guarantee extends to
     /// synthetic mode) and actually pulse on the beat.
     #[test]

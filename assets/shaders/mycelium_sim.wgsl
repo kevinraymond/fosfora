@@ -105,8 +105,12 @@ fn update_tip(pos: vec2f, vel: vec2f, dt: f32) -> vec4f {
     let curl_intensity = 1.0 + u.mid * 1.5;
 
     let desired = normalize(curl * curl_intensity + vec2f(0.001)) * move_speed;
-    // Slow blending for smooth, persistent curves (not jittery)
-    let new_vel = mix(vel, desired, 0.08);
+    // Slow blending for smooth, persistent curves (not jittery). The 0.08 is a
+    // per-FRAME blend, so (1 - 0.08) is a per-frame retention of the velocity's
+    // distance from `desired` and compounds exactly like a trail decay — #1986's
+    // algebra in velocity space (#2380). frame_diffuse holds its time constant
+    // and is bit-exact at 60 fps.
+    let new_vel = mix(vel, desired, frame_diffuse(0.08));
     var new_pos = pos + new_vel * dt;
 
     // Soft containment — gentle nudge only past screen edge
@@ -158,7 +162,9 @@ fn update_follower(pos: vec2f, vel: vec2f, dt: f32, chain_start: u32, depth: u32
         }
     }
 
-    let new_vel = (vel + force * dt) * 0.90; // damping
+    // Damping is a per-frame retention (#2380); pow it into seconds the way
+    // accretion_sim and pegboard_sim already do. Exactly 0.90 at 60 fps.
+    let new_vel = (vel + force * dt) * frame_decay(0.90);
     var new_pos = pos + new_vel * dt;
 
     // Soft rectangular containment — no petri dish
@@ -245,9 +251,42 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             // INVERTED (pass = below the probability), so fract-sin's near-zero
             // band meant a fixed subset of chains branched every single frame
             // forever. 60 Hz re-roll tick preserved.
-            let h0 = uhash_f(chain_id + uhash(u32(u.time * 60.0)));
+            //
+            // The gate fires once per 60 Hz tick ACTUALLY CROSSED by this frame,
+            // not once per frame (#2380). A per-frame test against a per-tick hash
+            // was frame-rate dependent in both directions: below 60 fps whole
+            // re-roll ticks were never sampled, so the network stayed sparse, and
+            // above 60 fps the SAME tick's hash was drawn on consecutive frames,
+            // which is perfectly correlated and therefore does not raise the rate
+            // either. That second half is why the obvious correction fails —
+            // scaling branch_prob by frame_steps() measured 120 fps UNDERSHOOTING,
+            // because two draws of one hash at half probability halve the
+            // effective rate instead of doubling it. Counting ticks reproduces
+            // 60 Hz semantics exactly at every rate, and at 60 fps n_ticks is
+            // always 1, so this is bit-identical to the expression it replaces.
+            let tick_now = u32(u.time * 60.0);
+            let tick_prev = u32(max(u.time - u.delta_time, 0.0) * 60.0);
+            // Frame 0 has no predecessor to difference against; treat it as one
+            // tick so the first frame behaves exactly as it always has. The
+            // >= guard keeps a f32 rounding inversion from wrapping the u32.
+            var n_ticks = select(0u, tick_now - tick_prev, tick_now >= tick_prev);
+            n_ticks = select(n_ticks, 1u, u.time <= 0.0);
+            // Same bound as frame_steps(): a stalled frame must not become an
+            // unbounded burst of branching.
+            n_ticks = min(n_ticks, 2u);
+
             let branch_prob = branch_rate() * 0.002 * (1.0 + u.onset * 15.0);
-            if h0 > branch_prob {
+            var hit_tick = tick_now;
+            var branched = false;
+            for (var t = 0u; t < n_ticks; t = t + 1u) {
+                let tk = tick_now - t;
+                if uhash_f(chain_id + uhash(tk)) <= branch_prob {
+                    hit_tick = tk;
+                    branched = true;
+                    break;
+                }
+            }
+            if !branched {
                 write_particle(idx, p);
                 return;
             }
@@ -256,7 +295,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             // here meant the same few chains were always the parent, which is
             // half of why growth concentrated instead of spreading.
             let source_pool = min(num_chains, INITIAL_LEADERS * 5u);
-            let source_id = uhash(chain_id + uhash(u32(u.time * 60.0) ^ 0x85ebca6bu))
+            // `hit_tick`, not the current frame's tick: the branch belongs to the
+            // tick whose hash actually opened the gate, so its parent and its
+            // direction have to be drawn from that same tick or a branch fired on
+            // a backlogged tick would inherit a different chain's choices.
+            let source_id = uhash(chain_id + uhash(hit_tick ^ 0x85ebca6bu))
                 % max(source_pool, 1u);
             let source_start = source_id * MAX_CHAIN_DEPTH;
 
@@ -286,7 +329,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 tip_speed > 0.001
             );
             let branch_angle = 0.5 + u.brilliance * 0.5;
-            let sign_h = uhash_f(chain_id + uhash(u32(u.time * 60.0) ^ 0xc2b2ae35u));
+            let sign_h = uhash_f(chain_id + uhash(hit_tick ^ 0xc2b2ae35u));
             let angle_offset = select(-branch_angle, branch_angle, sign_h > 0.5);
             let new_angle = base_angle + angle_offset;
             let new_speed = BASE_SPEED * growth_speed() * 0.8;
