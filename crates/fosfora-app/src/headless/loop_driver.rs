@@ -1065,13 +1065,6 @@ mod tests {
             // the brightness ramp across 30/60/120 went 4.35/3.77/3.48 (-20%) to
             // 3.81/3.77/3.74 (-1.8%). 60 fps is unchanged at 3.77.
             SimSite { effect: "Chaos",        trail_param: T,    audio: N, mad: 0.30, witness: Some("chaos_sim:317 fixed RK4 step") },
-            // GUARDED. Tick-accurate branch gate + frame_diffuse/frame_decay on
-            // the velocity blend and damping: 1.02 -> 0.83 blocked, level ramp
-            // +64% -> +43%. A PARTIAL fix and the ceiling is deliberately tight
-            // because the site is perfectly deterministic (self 0.00). With
-            // branching disabled the sim is EXACTLY rate-independent
-            // (3.32/3.32/3.32), so the whole residual is branch-driven growth and
-            // is recorded on the board rather than papered over here.
             // GUARDED, and deliberately run under Synthetic. Under None its two
             // velocity terms are INVISIBLE: u.bass and u.mid are 0, so `desired`
             // barely moves and the velocity converges to it whatever the blend
@@ -1111,14 +1104,31 @@ mod tests {
             // form goes NEGATIVE on a stalled frame and reverses velocity, but
             // that is a latent hazard and not a measured defect.
             SimSite { effect: "Cymatics",     trail_param: T,    audio: N, mad: 1.80, witness: Some("cymatics_sim:183 linearised drag") },
-            // WATCHED, DEFERRED WITH A KNOWN MECHANISM. Flux's population is
-            // frame-rate dependent: pinning alpha and size leaves the level ramp
-            // intact (+39%), so it is COUNT, and bypassing the per-frame emission
-            // budget both inverts the ramp and drops the self-difference to 0.00.
-            // Not fixed here because the mechanism lives in the emission path
-            // shared by all 55 effects and is not isolated to a term.
-            SimSite { effect: "Flux",         trail_param: T,    audio: N, mad: 7.00, witness: Some("flux_sim: emission-path population, deferred") },
-            SimSite { effect: "Phosphor",     trail_param: T,    audio: N, mad: 1.60, witness: Some("phosphor_sim: +9% level, no isolated term") },
+            // WATCHED, MECHANISM ESTABLISHED, NOT FIXED (#2383). Two things this
+            // row used to claim are measured false, both by `psim_population`:
+            //
+            //  - It is NOT population. Flux's live count is 808466 / 805133 /
+            //    803466 at 30 / 60 / 120 — flat to 0.6% and sloping the wrong way
+            //    — while the level ramps +33%. "It is COUNT" was inferred from
+            //    level ~ count x alpha x size^2, never measured.
+            //  - `trail_param` does NOT turn Flux's trail off. `trail_decay` is
+            //    declared min 0.8 in flux.pfx, so the 0.0 above clamps to 0.8 and
+            //    this reading is sim AND feedback — the same trap already recorded
+            //    at Polycephalum, one row down. It happens not to matter here
+            //    (cutting the history pass to `col = bg` leaves the ramp fully
+            //    intact) but the row cannot be read as a sim measurement.
+            //
+            // What it actually is: emission is quantised to the frame, so the
+            // number of distinct spawn INSTANTS per second equals the frame rate.
+            // A concentrating flow collapses each spawn cohort onto a filament, so
+            // 30 fps draws 121 thick filaments where 120 fps draws 481 thin ones —
+            // same particles, less screen covered (empty pixels 14.4% vs 5.7%) —
+            // and the resolve's concave x/(1+x) turns that into mean level.
+            // Forcing 30 emission phases per second at every rate collapses the
+            // ramp from +33% to -4.4%; see the board for the full cell record.
+            SimSite { effect: "Flux",         trail_param: T,    audio: N, mad: 7.00, witness: Some("flux_sim: frame-quantised emission phase, deferred") },
+            // Same mechanism, ~a third the magnitude (+10% level, count flat).
+            SimSite { effect: "Phosphor",     trail_param: T,    audio: N, mad: 1.60, witness: Some("phosphor_sim: frame-quantised emission phase") },
             // WATCHED. The u.onset/u.flux/u.zcr kicks are per-frame rates by
             // reading (onset is a held, decayed LEVEL — beat.rs:1918 — not a
             // one-frame pulse, so #2382 makes them rates). All four measure at or
@@ -1304,6 +1314,188 @@ mod tests {
             "a particle sim is measuring time in frames rather than seconds (#2380):\n  {}",
             failures.join("\n  "),
         );
+    }
+
+    /// DIAGNOSTIC INSTRUMENT, not a guard (#2383). It asserts nothing; it prints
+    /// the numbers that decide which of several stories about a particle effect
+    /// is true. Every other probe in this file measures an IMAGE, and an image
+    /// statistic cannot tell "more particles" from "the same particles piled up".
+    ///
+    /// It reports, per frame rate: the live particle COUNT read off the GPU
+    /// counter (`system.rs` `alive_count`), the mean level, the level with the
+    /// resolve's `x/(1+x)` tonemap inverted per pixel, and a shape summary
+    /// (sd / p50 / p99 / empty / saturated).
+    ///
+    /// WHAT IT ESTABLISHED, and why each column exists:
+    ///
+    /// 1. `alive` REFUTED #2383's headline. Flux reads 808466 / 805133 / 803466
+    ///    at 30 / 60 / 120 fps — flat to 0.6%, and sloping the WRONG way (that
+    ///    residual is the 1-frame counter lag, worth 6681 particles at 30 fps and
+    ///    1670 at 120) — while the level ramps +33%. "Population scales with
+    ///    frame rate" was inferred from level ~ count x alpha x size^2 and never
+    ///    measured. The count is rate-independent.
+    ///
+    /// 2. `lin` separates redistribution from light. The resolve tonemaps with
+    ///    `x/(1+x)`, which is CONCAVE, so a clustered field resolves dimmer than
+    ///    a spread one carrying the same total. Inverting it recovers most of the
+    ///    gap: linearising the resolve took Flux's ramp from +33% to +10.9%.
+    ///
+    /// 3. `zero` / `p50` / `p99` name the mechanism where the mean cannot. Flux
+    ///    at 30 vs 120 fps: p50 15.0 -> 29.7 while p99 FALLS 145 -> 132, and
+    ///    empty pixels drop 14.4% -> 5.7%. Same particles, clumped at 30 and
+    ///    spread at 120. A mean alone reads that as "brighter".
+    ///
+    /// `PSIM_SECS` and `PSIM_FRAMES` are the two knobs that cracked it, because
+    /// they separate variables no single-window probe can. Sweeping `PSIM_SECS`
+    /// showed the ramp is not a per-frame constant at all: it is INVERTED at
+    /// 0.25 s (-23%), crosses zero near 0.75 s, and grows without bound
+    /// (+33% at 4 s, +53% at 8 s) — an accumulating divergence. `PSIM_FRAMES`
+    /// pins the dispatch count equal across rates so wall-clock and frame count
+    /// can be told apart; at a fixed 481 frames, 30 fps carries 2.5x MORE
+    /// particles than 120 and still renders DIMMER (28.00 vs 40.06).
+    ///
+    /// Run: PSIM_ONLY=Flux cargo test -p fosfora-app --release -- --ignored psim_population
+    #[test]
+    #[ignore = "GPU"]
+    fn psim_population() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        let window_secs: f32 = std::env::var("PSIM_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4.0);
+        let only = std::env::var("PSIM_ONLY").unwrap_or_else(|_| "Flux".into());
+        let audio = match std::env::var("PSIM_AUDIO").unwrap_or_default().as_str() {
+            "synth" => LoopAudio::Synthetic,
+            _ => LoopAudio::None,
+        };
+        for effect in only.split(',') {
+            for fps in [30u32, 60, 120] {
+                let spec_for = |trail: bool| LoopSpec {
+                    version: 1,
+                    effect: effect.to_string(),
+                    params: trail
+                        .then(|| {
+                            (
+                                "trail_decay".to_string(),
+                                crate::params::ParamValue::Float(0.0),
+                            )
+                        })
+                        .into_iter()
+                        .collect(),
+                    bpm: 120.0,
+                    bars: 8,
+                    fps,
+                    resolution: [320, 180],
+                    codec: crate::headless::loop_spec::LoopCodec::H264,
+                    audio,
+                    audio_file: None,
+                    background: LoopBackground::Opaque,
+                };
+                // Not every effect declares `trail_decay`, and one that does not
+                // rejects the spec outright (Pegboard). Fall back rather than
+                // panic, and say so, because a site running at shipped trail
+                // defaults reports sim AND feedback rather than the sim alone.
+                let mut session = match LoopSession::create_with(
+                    &spec_for(true),
+                    BestEffort::TimeWrapped,
+                    (*device).clone(),
+                    (*queue).clone(),
+                ) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        if fps == 30 {
+                            println!("POP {effect:<13} (no trail_decay param — shipped trail on)");
+                        }
+                        LoopSession::create_with(
+                            &spec_for(false),
+                            BestEffort::TimeWrapped,
+                            (*device).clone(),
+                            (*queue).clone(),
+                        )
+                        .unwrap_or_else(|e| panic!("{effect} @ {fps}fps: {e}"))
+                    }
+                };
+                // PSIM_FRAMES pins the DISPATCH COUNT equal across rates instead
+                // of the wall-clock window, which separates "per second" from
+                // "per frame": if a reading tracks the frame count it is the
+                // same at 30 and 120 fps here, and if it tracks seconds it is not.
+                let last = match std::env::var("PSIM_FRAMES")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                {
+                    Some(n) => n,
+                    None => (window_secs * fps as f32).round() as u32,
+                };
+                let mut px = Vec::new();
+                for f in 0..=last {
+                    px = session.render_frame_at(f).unwrap();
+                }
+                // Drain the readback so alive_count reflects a recent frame
+                // rather than whatever the last completed map happened to hold.
+                for _ in 0..4 {
+                    let _ = device.poll(wgpu::PollType::Poll);
+                    for layer in &mut session.sr.layer_stack.layers {
+                        if let Some(e) = layer.as_effect_mut() {
+                            if let Some(ps) = &mut e.pass_executor.particle_system {
+                                ps.poll_counter_readback();
+                            }
+                        }
+                    }
+                }
+                let mut alive = 0u32;
+                let mut maxp = 0u32;
+                for layer in &session.sr.layer_stack.layers {
+                    if let Some(e) = layer.as_effect() {
+                        if let Some(ps) = &e.pass_executor.particle_system {
+                            alive = ps.alive_count;
+                            maxp = ps.max_particles;
+                        }
+                    }
+                }
+                let lum: Vec<f64> = px
+                    .chunks_exact(4)
+                    .map(|p| (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0)
+                    .collect();
+                let n = lum.len() as f64;
+                let level = lum.iter().sum::<f64>() / n;
+                // Is it the SAME light redistributed, or MORE light? The resolve
+                // tonemaps with x/(1+x), which is concave, so a clustered field
+                // resolves dimmer than a spread one at equal total. Inverting it
+                // per pixel recovers the pre-tonemap sum: if `lin` is flat across
+                // rates and `lvl` is not, nothing is brighter — it moved.
+                let lin: f64 = lum
+                    .iter()
+                    .map(|&v| {
+                        let x = (v / 255.0).min(0.999);
+                        x / (1.0 - x)
+                    })
+                    .sum::<f64>()
+                    / n;
+                let mut s = lum.clone();
+                s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let pct = |q: f64| s[((s.len() - 1) as f64 * q) as usize];
+                let zero = lum.iter().filter(|&&v| v < 0.5).count() as f64 / n;
+                let sat = lum.iter().filter(|&&v| v > 250.0).count() as f64 / n;
+                let var = lum.iter().map(|v| (v - level).powi(2)).sum::<f64>() / n;
+                let frames = last + 1;
+                println!(
+                    "POP {effect:<13} fps={fps:<4} alive={alive:<9} lvl={level:6.2} \
+                     lin={lin:7.3} sd={:6.2} p50={:5.1} p99={:5.1} zero={:5.1}% sat={:5.2}% \
+                     frames={frames}",
+                    var.sqrt(),
+                    pct(0.50),
+                    pct(0.99),
+                    zero * 100.0,
+                    sat * 100.0,
+                );
+                let _ = maxp;
+            }
+        }
     }
 
     /// Synthetic accents are cycle-periodic (the golden guarantee extends to
