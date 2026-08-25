@@ -1088,10 +1088,13 @@ mod tests {
             // blocked, with mean brightness flat throughout — the flock is the
             // same size and was simply in the wrong places.
             SimSite { effect: "Murmur",       trail_param: None, audio: N, mad: 2.50, witness: Some("murmur_sim:338 angular low-pass") },
-            // WATCHED, AND THIS ROW CANNOT ISOLATE ITS SIM. trail_decay has
-            // min 0.70 and polycephalum_bg floors it again at 0.5, so `trail_param`
-            // does NOT turn the trail off here and this reading is sim plus
-            // feedback. Forcing the bg decay to 0 in a scratch build drops it to
+            // WATCHED, AND THIS ROW CANNOT ISOLATE ITS SIM. polycephalum_bg.wgsl:12
+            // floors the decay at 0.5 IN THE SHADER, so `trail_param` does NOT turn
+            // the trail off here and this reading is sim plus feedback. The shader
+            // floor is the whole reason; trail_decay's `min: 0.70` in the .pfx has
+            // nothing to do with it, because a declared min is a UI slider range
+            // that the headless path never applies (see the Flux row below).
+            // Forcing the bg decay to 0 in a scratch build drops it to
             // 0.19 against a 0.19 floor — the sim is clean, the ramp is the
             // feedback path, and two sim "fixes" measured exactly zero and were
             // reverted. Do not treat this number as a sim measurement.
@@ -1104,19 +1107,26 @@ mod tests {
             // form goes NEGATIVE on a stalled frame and reverses velocity, but
             // that is a latent hazard and not a measured defect.
             SimSite { effect: "Cymatics",     trail_param: T,    audio: N, mad: 1.80, witness: Some("cymatics_sim:183 linearised drag") },
-            // WATCHED, MECHANISM ESTABLISHED, NOT FIXED (#2383). Two things this
-            // row used to claim are measured false, both by `psim_population`:
+            // WATCHED, MECHANISM ESTABLISHED, NOT FIXED (#2383). What this row
+            // used to claim is measured false by `psim_population`: it is NOT
+            // population. Flux's live count is 808466 / 805133 / 803466 at
+            // 30 / 60 / 120 — flat to 0.6% and sloping the wrong way — while the
+            // level ramps +33%. "It is COUNT" was inferred from
+            // level ~ count x alpha x size^2, never measured.
             //
-            //  - It is NOT population. Flux's live count is 808466 / 805133 /
-            //    803466 at 30 / 60 / 120 — flat to 0.6% and sloping the wrong way
-            //    — while the level ramps +33%. "It is COUNT" was inferred from
-            //    level ~ count x alpha x size^2, never measured.
-            //  - `trail_param` does NOT turn Flux's trail off. `trail_decay` is
-            //    declared min 0.8 in flux.pfx, so the 0.0 above clamps to 0.8 and
-            //    this reading is sim AND feedback — the same trap already recorded
-            //    at Polycephalum, one row down. It happens not to matter here
-            //    (cutting the history pass to `col = bg` leaves the ramp fully
-            //    intact) but the row cannot be read as a sim measurement.
+            // This row DOES isolate the sim, unlike Polycephalum one row up. A
+            // 2026-08-24 note here claimed the opposite — that flux.pfx's
+            // `min: 0.8` clamps the 0.0 above and leaves the trail on — and that
+            // was wrong on both halves. `ParamStore::set` (params/store.rs:65) is
+            // a bare insert and `pack_to_buffer` does not clamp either, so a
+            // declared min is a UI slider range and nothing more; only the
+            // binding and UI paths remap into [min, max]. Measured directly:
+            // trail_decay 0.0 reads lvl 29.9/34.4/39.9 with 14.6/9.8/5.8% empty
+            // pixels, against 73.9/86.1/94.5 and 0.0% empty at the shipped 0.88.
+            // A clamp to 0.8 could not produce 2.5x. Polycephalum's floor is real
+            // because it is in the SHADER (polycephalum_bg.wgsl:12), which is the
+            // only place a floor can actually bind — and it is the only decay
+            // param in assets/shaders that has one.
             //
             // What it actually is: emission is quantised to the frame, so the
             // number of distinct spawn INSTANTS per second equals the frame rate.
