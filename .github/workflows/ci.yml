@@ -65,7 +65,17 @@ jobs:
           # ubuntu-22.04 has 13/14/15 — so point clang-sys at the newest one present
           # rather than fetching the package. Resolved at runtime, not pinned, so an
           # image bump cannot silently strand us on a version that went away.
-          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
+          #
+          # Fail loudly if a future image ships none: LIBCLANG_PATH is authoritative
+          # (clang-sys does NOT fall back to the system copy once it is set), so
+          # exporting an empty value would turn a missing-libclang into a confusing
+          # bindgen error several minutes later instead of a clear one here.
+          llvm_lib=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+          if [ -z "$llvm_lib" ]; then
+            echo "::error::no /usr/lib/llvm-*/lib on this image — reinstate libclang-dev (#2359)"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
@@ -109,7 +119,12 @@ jobs:
           sudo apt-get install -y -o Acquire::Retries=3 \
             ffmpeg libasound2-dev libudev-dev
           # libclang-dev deliberately absent — see the lint job (#2359).
-          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
+          llvm_lib=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+          if [ -z "$llvm_lib" ]; then
+            echo "::error::no /usr/lib/llvm-*/lib on this image — reinstate libclang-dev (#2359)"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - name: Test
@@ -188,7 +203,12 @@ jobs:
           # libclang-dev deliberately absent — see the lint job (#2359). This leg
           # is ubuntu-22.04 where the newest preinstalled LLVM is 15, not 18, which
           # is why the path is resolved rather than pinned.
-          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
+          llvm_lib=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+          if [ -z "$llvm_lib" ]; then
+            echo "::error::no /usr/lib/llvm-*/lib on this image — reinstate libclang-dev (#2359)"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
