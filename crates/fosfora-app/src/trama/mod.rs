@@ -34,6 +34,10 @@ pub enum RenderMode {
 pub struct TramaSystem {
     pub mode: RenderMode,
     pub canvas_open: bool,
+    /// Which chain the canvas is editing and the executor is running. Stage A
+    /// keeps the single pre-existing graph, so it is always `Master`; stage C
+    /// makes it follow the selected layer.
+    pub active_chain: node::ChainId,
     pub graph: graph::NodeGraph,
     pub registry: effect::TramaRegistry,
     pub canvas: ui::canvas::CanvasState,
@@ -65,6 +69,7 @@ impl TramaSystem {
         Self {
             mode: RenderMode::default(),
             canvas_open: false,
+            active_chain: node::ChainId::Master,
             graph,
             registry,
             canvas,
@@ -138,6 +143,7 @@ impl TramaSystem {
         // so the profiler panel shows both the trama total and the split.
         let mut scope = profiler.scope("trama", encoder);
         self.executor.execute(
+            self.active_chain,
             &mut self.graph,
             &self.registry,
             &self.frame_uniforms,

@@ -23,12 +23,15 @@ use crate::gpu::{GpuContext, ShaderPipeline, ShaderUniforms};
 
 use super::super::effect::TramaRegistry;
 use super::super::graph::NodeGraph;
-use super::super::node::{NodeId, NodeKind};
+use super::super::node::{ChainId, ChainNode, NodeId, NodeKind};
 use super::textures::TexturePool;
 
 const UNIFORM_SIZE: u64 = std::mem::size_of::<ShaderUniforms>() as u64;
-/// Arena capacity floor — grows at plan build if a graph outgrows it.
-const INITIAL_CAPACITY: u32 = 16;
+/// Per-chain arena slot floor — grows at plan build if a graph outgrows it.
+const INITIAL_SLOTS_PER_CHAIN: u32 = 16;
+/// Chain regions the arena starts with: `MAX_LAYERS` layer chains plus the
+/// master chain. Grows the same way `slots_per_chain` does.
+const INITIAL_CHAIN_CAPACITY: u32 = crate::bindings::catalog::MAX_LAYERS as u32 + 1;
 
 /// Passthrough fragment for [`StepKind::Copy`] steps. Effect-shaped: built
 /// against the standard 1-input ABI layout so copy steps reuse the same
@@ -68,6 +71,14 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 const PREVIEW_CADENCE: u64 = 3;
 
 /// Round `size` up to a multiple of `align` (a power of two).
+/// First arena slot owned by the chain at `chain_index`, given the current
+/// per-chain reservation. Factored pure — like `textures::select_free` — so
+/// the disjointness that keeps two chains from staging uniforms over each
+/// other is testable without a GPU.
+pub(crate) fn chain_slot_base(chain_index: u32, slots_per_chain: u32) -> u32 {
+    chain_index * slots_per_chain
+}
+
 pub(crate) fn aligned_stride(size: u64, align: u64) -> u64 {
     debug_assert!(align.is_power_of_two());
     size.div_ceil(align) * align
@@ -92,7 +103,7 @@ enum StepKind {
 }
 
 struct Step {
-    node: NodeId,
+    node: ChainNode,
     kind: StepKind,
     target: TargetSlot,
     uniform_offset: u64,
@@ -107,7 +118,7 @@ struct Step {
 /// One node's thumbnail blit: samples the node's output (per parity, same
 /// story as [`Step::bind_groups`]) into its persistent preview target.
 struct PreviewBlit {
-    node: NodeId,
+    node: ChainNode,
     bind_groups: [wgpu::BindGroup; 2],
 }
 
@@ -127,19 +138,34 @@ struct ExecPlan {
     previews: Vec<PreviewBlit>,
     /// False ⇒ nothing feeds Output; `execute` clears the output target.
     output_written: bool,
+    /// First arena slot this chain owns. Chains write their uniforms into
+    /// disjoint regions: every `queue.write_buffer` in the frame is staged
+    /// before any pass runs, so overlapping regions would have the last
+    /// chain's values render for all of them.
+    base_slot: u32,
 }
 
 pub struct TramaExecutor {
     arena: wgpu::Buffer,
     stride: u64,
-    capacity: u32,
+    /// Arena slots reserved for each chain. Chain regions are fixed rather
+    /// than packed, because a step's bind group embeds its absolute offset:
+    /// repacking would silently invalidate every other chain's bind groups.
+    /// Growth is a rare structural event and drops all plans (see
+    /// [`Self::ensure_slots`]).
+    slots_per_chain: u32,
+    /// How many chain regions the arena currently holds.
+    chain_capacity: u32,
     output: RenderTarget,
     pool: TexturePool,
-    plan: Option<ExecPlan>,
-    /// Ping-pong pairs OUTSIDE the plan, keyed by node: contents survive
-    /// replans, so a rewire elsewhere in the graph never clears an unrelated
-    /// echo. Synced (created/pruned) at plan build; cleared on resize.
-    feedback: HashMap<NodeId, PingPongTarget>,
+    /// One plan per chain, each keyed on its own graph version.
+    plans: HashMap<ChainId, ExecPlan>,
+    /// Ping-pong pairs OUTSIDE the plan, keyed by [`ChainNode`]: contents
+    /// survive replans, so a rewire elsewhere in the graph never clears an
+    /// unrelated echo. Keyed by the pair and not a bare `NodeId` because
+    /// every chain numbers its nodes from zero — see [`ChainNode`]. Synced
+    /// (created/pruned) at plan build; cleared on resize.
+    feedback: HashMap<ChainNode, PingPongTarget>,
     /// Global feedback parity (#1481): copy steps write `targets[parity]`,
     /// consumers read `targets[1 - parity]`. Advances ONLY in
     /// [`Self::begin_frame`] — the dissolve path executes twice per frame.
@@ -187,9 +213,14 @@ impl TramaExecutor {
             u64::from(device.limits().min_uniform_buffer_offset_alignment),
         );
         Self {
-            arena: create_arena(device, stride, INITIAL_CAPACITY),
+            arena: create_arena(
+                device,
+                stride,
+                INITIAL_SLOTS_PER_CHAIN * INITIAL_CHAIN_CAPACITY,
+            ),
             stride,
-            capacity: INITIAL_CAPACITY,
+            slots_per_chain: INITIAL_SLOTS_PER_CHAIN,
+            chain_capacity: INITIAL_CHAIN_CAPACITY,
             output: RenderTarget::new(
                 device,
                 width,
@@ -199,7 +230,7 @@ impl TramaExecutor {
                 "trama-output",
             ),
             pool: TexturePool::new(),
-            plan: None,
+            plans: HashMap::new(),
             feedback: HashMap::new(),
             parity: 0,
             feedback_generation: 0,
@@ -249,7 +280,25 @@ impl TramaExecutor {
         // Echo contents are meaningless at a new size; the next plan build
         // recreates pairs cleared at the new resolution.
         self.feedback.clear();
-        self.plan = None;
+        self.plans.clear();
+    }
+
+    /// Grow the arena so every chain region holds `needed` slots. Bind groups
+    /// embed absolute offsets, so a resize renumbers every region and all
+    /// plans must go — a rare structural event, never steady state (I8).
+    fn ensure_slots(&mut self, device: &wgpu::Device, chain: ChainId, needed: u32) {
+        let chains = (chain.index() + 1).max(self.chain_capacity);
+        if needed <= self.slots_per_chain && chains == self.chain_capacity {
+            return;
+        }
+        self.slots_per_chain = needed.max(self.slots_per_chain).next_power_of_two();
+        self.chain_capacity = chains;
+        self.arena = create_arena(
+            device,
+            self.stride,
+            self.slots_per_chain * self.chain_capacity,
+        );
+        self.plans.clear();
     }
 
     /// Once-per-frame advance, driven from `TramaSystem::update` — never
@@ -282,8 +331,16 @@ impl TramaExecutor {
     }
 
     /// The egui texture for a node's thumbnail, once registered.
-    pub fn preview_tex(&self, node: NodeId) -> Option<egui::TextureId> {
+    pub fn preview_tex(&self, node: ChainNode) -> Option<egui::TextureId> {
         self.previews.tex_of(node)
+    }
+
+    /// Forget everything belonging to `chain` — its layer was removed.
+    #[allow(dead_code)] // wired up by layer add/remove in stage C
+    pub fn drop_chain(&mut self, chain: ChainId) {
+        self.plans.remove(&chain);
+        self.feedback.retain(|id, _| id.chain != chain);
+        self.previews.drop_chain(chain);
     }
 
     /// Register new preview targets with egui, free dead ones. Called from
@@ -300,6 +357,7 @@ impl TramaExecutor {
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &mut self,
+        chain: ChainId,
         graph: &mut NodeGraph,
         registry: &TramaRegistry,
         template: &ShaderUniforms,
@@ -312,13 +370,13 @@ impl TramaExecutor {
     ) -> &RenderTarget {
         let version = graph.version();
         if self
-            .plan
-            .as_ref()
+            .plans
+            .get(&chain)
             .is_none_or(|p| p.version != version || p.previews_on != previews_on)
         {
-            match self.build_plan(graph, registry, device, queue, version, previews_on) {
+            match self.build_plan(chain, graph, registry, device, queue, version, previews_on) {
                 Ok(plan) => {
-                    self.plan = Some(plan);
+                    self.plans.insert(chain, plan);
                     *last_error = None;
                 }
                 Err(e) => {
@@ -326,28 +384,44 @@ impl TramaExecutor {
                     // keys so the failed build is not retried every frame;
                     // the next structural edit retries naturally.
                     *last_error = Some(e);
-                    match self.plan.as_mut() {
+                    let base_slot = chain_slot_base(chain.index(), self.slots_per_chain);
+                    match self.plans.get_mut(&chain) {
                         Some(p) => {
                             p.version = version;
                             p.previews_on = previews_on;
                         }
                         None => {
-                            self.plan = Some(ExecPlan {
-                                version,
-                                previews_on,
-                                steps: Vec::new(),
-                                previews: Vec::new(),
-                                output_written: false,
-                            });
+                            self.plans.insert(
+                                chain,
+                                ExecPlan {
+                                    version,
+                                    previews_on,
+                                    steps: Vec::new(),
+                                    previews: Vec::new(),
+                                    output_written: false,
+                                    base_slot,
+                                },
+                            );
                         }
                     }
                 }
             }
         }
-        let plan = self.plan.as_ref().expect("plan installed above");
+        let plan = self.plans.get(&chain).expect("plan installed above");
+        // Every step's uniform offset was baked against this region at plan
+        // build. If the arena grew without dropping plans, the regions have
+        // renumbered underneath them and chains would stage over each other
+        // again — silently, and only once two chains are populated.
+        debug_assert_eq!(
+            plan.base_slot,
+            chain_slot_base(chain.index(), self.slots_per_chain),
+            "stale arena region: growing the arena must clear every plan"
+        );
 
         for step in &plan.steps {
-            let node = graph.node(step.node).expect("plan nodes exist in graph");
+            let node = graph
+                .node(step.node.node)
+                .expect("plan nodes exist in graph");
             let mut u = *template;
             u.params = node.params.pack_to_buffer();
             // Overlay the modulation values resolved in `TramaSystem::update`
@@ -461,8 +535,10 @@ impl TramaExecutor {
         &self.output
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_plan(
         &mut self,
+        chain: ChainId,
         graph: &mut NodeGraph,
         registry: &TramaRegistry,
         device: &wgpu::Device,
@@ -471,6 +547,7 @@ impl TramaExecutor {
         previews_on: bool,
     ) -> Result<ExecPlan, String> {
         graph.validate().map_err(|e| e.to_string())?;
+        let key = move |node: NodeId| ChainNode::new(chain, node);
         // The execution set: nodes feeding Output — widened to every node
         // (orphans included) when previews are on, per handoff §9.1: orphan
         // subgraphs render only while someone can see their thumbnails.
@@ -561,11 +638,14 @@ impl TramaExecutor {
         // black) pairs for newly active feedback nodes. `new_cleared`
         // submits its own tiny encoder — replans are rare structural events,
         // so I8's steady-state clause is untouched.
-        self.feedback.retain(|id, _| graph.node(*id).is_some());
+        // Scoped to THIS chain: an unscoped retain would drop every other
+        // chain's pairs, because this graph has never heard of their nodes.
+        self.feedback
+            .retain(|id, _| id.chain != chain || graph.node(id.node).is_some());
         let (w, h) = (self.width, self.height);
         for &(fb, _) in &active_feedback {
             let generation = &mut self.feedback_generation;
-            self.feedback.entry(fb).or_insert_with(|| {
+            self.feedback.entry(key(fb)).or_insert_with(|| {
                 *generation += 1;
                 PingPongTarget::new_cleared(device, queue, w, h, GpuContext::hdr_format(), 1.0)
             });
@@ -575,7 +655,7 @@ impl TramaExecutor {
         // are freed at the next register call); create targets only while
         // previews are on. Both are plan-build-time mutations — the render
         // path below only reads (I8).
-        self.previews.prune(|id| graph.node(id).is_some());
+        self.previews.prune(chain, |id| graph.node(id).is_some());
         let previewed: Vec<NodeId> = if previews_on {
             step_nodes
                 .iter()
@@ -586,15 +666,17 @@ impl TramaExecutor {
             Vec::new()
         };
         for &id in &previewed {
-            self.previews.ensure(device, id);
+            self.previews.ensure(device, key(id));
         }
 
         let total_steps =
             step_nodes.len() + active_feedback.len() + usize::from(feedback_feeds_output);
-        if total_steps as u32 > self.capacity {
-            self.capacity = (total_steps as u32).next_power_of_two();
-            self.arena = create_arena(device, self.stride, self.capacity);
-        }
+        self.ensure_slots(device, chain, total_steps as u32);
+        let base_slot = chain_slot_base(chain.index(), self.slots_per_chain);
+        // Captured by value: the pool acquisitions below need `&mut self`, so
+        // this closure must not hold a borrow of it.
+        let stride = self.stride;
+        let slot_offset = move |slot: usize| (u64::from(base_slot) + slot as u64) * stride;
 
         // Pass 1: assign targets so pass 2 can resolve inputs to views.
         self.pool.release_all();
@@ -620,28 +702,29 @@ impl TramaExecutor {
         // active feedback producer resolves to its READ buffer —
         // `targets[1 - parity]`, written last frame. Everything else is
         // parity-independent.
-        let resolve =
-            |producer: Option<NodeId>, parity: usize| -> (&wgpu::TextureView, &wgpu::Sampler) {
-                let Some(p) = producer else {
-                    return (&self.prev_view, &self.prev_sampler);
-                };
-                if node_is_feedback(p) {
-                    if let (true, Some(pair)) = (is_active_feedback(p), self.feedback.get(&p)) {
-                        let rt = &pair.targets[1 - parity];
-                        return (&rt.view, &rt.sampler);
-                    }
-                    return (&self.prev_view, &self.prev_sampler);
-                }
-                match target_of(p) {
-                    Some(TargetSlot::Pool(i)) => {
-                        let rt = self.pool.get(i);
-                        (&rt.view, &rt.sampler)
-                    }
-                    Some(TargetSlot::Output) => (&self.output.view, &self.output.sampler),
-                    // Unwired (or a dead bypass chain): 1x1 black.
-                    Some(TargetSlot::FeedbackWrite) | None => (&self.prev_view, &self.prev_sampler),
-                }
+        let resolve = |producer: Option<NodeId>,
+                       parity: usize|
+         -> (&wgpu::TextureView, &wgpu::Sampler) {
+            let Some(p) = producer else {
+                return (&self.prev_view, &self.prev_sampler);
             };
+            if node_is_feedback(p) {
+                if let (true, Some(pair)) = (is_active_feedback(p), self.feedback.get(&key(p))) {
+                    let rt = &pair.targets[1 - parity];
+                    return (&rt.view, &rt.sampler);
+                }
+                return (&self.prev_view, &self.prev_sampler);
+            }
+            match target_of(p) {
+                Some(TargetSlot::Pool(i)) => {
+                    let rt = self.pool.get(i);
+                    (&rt.view, &rt.sampler)
+                }
+                Some(TargetSlot::Output) => (&self.output.view, &self.output.sampler),
+                // Unwired (or a dead bypass chain): 1x1 black.
+                Some(TargetSlot::FeedbackWrite) | None => (&self.prev_view, &self.prev_sampler),
+            }
+        };
 
         // Bind-group builder shared by effect and copy steps. Binding 0 is an
         // arena slice at a static offset — the reason
@@ -718,7 +801,7 @@ impl TramaExecutor {
                 .ok_or_else(|| format!("node references unknown effect `{}`", effect_id.0))?;
             let def = &registry.effects[effect_idx];
 
-            let uniform_offset = i as u64 * self.stride;
+            let uniform_offset = slot_offset(i);
             let producers: Vec<Option<NodeId>> = (0..def.inputs)
                 .map(|pin| graph.input_source(id, pin).and_then(effective))
                 .collect();
@@ -737,7 +820,7 @@ impl TramaExecutor {
             };
 
             steps.push(Step {
-                node: id,
+                node: key(id),
                 kind: StepKind::Effect { effect: effect_idx },
                 target: targets[i].1,
                 uniform_offset,
@@ -748,7 +831,7 @@ impl TramaExecutor {
         // Copy steps, appended after all effect passes (see ExecPlan.steps).
         let mut step_index = step_nodes.len();
         for &(fb, producer) in &active_feedback {
-            let uniform_offset = step_index as u64 * self.stride;
+            let uniform_offset = slot_offset(step_index);
             step_index += 1;
             let layout = &self.copy_pipeline.bind_group_layout;
             let bg0 = make_bind_group(layout, uniform_offset, &[resolve(Some(producer), 0)]);
@@ -762,7 +845,7 @@ impl TramaExecutor {
                 [bg0.clone(), bg0]
             };
             steps.push(Step {
-                node: fb,
+                node: key(fb),
                 kind: StepKind::Copy,
                 target: TargetSlot::FeedbackWrite,
                 uniform_offset,
@@ -771,11 +854,11 @@ impl TramaExecutor {
         }
         if feedback_feeds_output {
             let fp = final_producer.expect("checked by feedback_feeds_output");
-            let uniform_offset = step_index as u64 * self.stride;
+            let uniform_offset = slot_offset(step_index);
             let layout = &self.copy_pipeline.bind_group_layout;
             // Reads the pair's read buffer — parity-dependent by definition.
             steps.push(Step {
-                node: fp,
+                node: key(fp),
                 kind: StepKind::Copy,
                 target: TargetSlot::Output,
                 uniform_offset,
@@ -796,7 +879,7 @@ impl TramaExecutor {
             .map(|&id| {
                 let layout = &self.preview_pipeline.bind_group_layout;
                 PreviewBlit {
-                    node: id,
+                    node: key(id),
                     bind_groups: [
                         make_bind_group(layout, 0, &[resolve(Some(id), 0)]),
                         make_bind_group(layout, 0, &[resolve(Some(id), 1)]),
@@ -811,12 +894,13 @@ impl TramaExecutor {
             steps,
             previews,
             output_written,
+            base_slot,
         })
     }
 
     #[cfg(test)]
-    fn plan_version(&self) -> Option<u64> {
-        self.plan.as_ref().map(|p| p.version)
+    fn plan_version(&self, chain: ChainId) -> Option<u64> {
+        self.plans.get(&chain).map(|p| p.version)
     }
 
     #[cfg(test)]
@@ -825,8 +909,37 @@ impl TramaExecutor {
     }
 
     #[cfg(test)]
-    fn plan_step_count(&self) -> usize {
-        self.plan.as_ref().map_or(0, |p| p.steps.len())
+    fn plan_step_count(&self, chain: ChainId) -> usize {
+        self.plans.get(&chain).map_or(0, |p| p.steps.len())
+    }
+
+    /// Arena byte range chain `c` writes into — the guard against two chains
+    /// staging their uniforms over each other.
+    #[cfg(test)]
+    fn slot_span(&self, chain: ChainId) -> (u64, u64) {
+        let base = u64::from(chain_slot_base(chain.index(), self.slots_per_chain)) * self.stride;
+        (base, base + u64::from(self.slots_per_chain) * self.stride)
+    }
+
+    /// Every arena byte offset chain `c`'s steps write this frame.
+    #[cfg(test)]
+    fn step_offsets(&self, chain: ChainId) -> Vec<u64> {
+        self.plans
+            .get(&chain)
+            .map(|p| p.steps.iter().map(|s| s.uniform_offset).collect())
+            .unwrap_or_default()
+    }
+
+    /// Ping-pong pairs belonging to one chain — the H1 isolation guard.
+    #[cfg(test)]
+    fn feedback_count(&self, chain: ChainId) -> usize {
+        self.feedback.keys().filter(|k| k.chain == chain).count()
+    }
+
+    /// Preview targets belonging to one chain — the H1 isolation guard.
+    #[cfg(test)]
+    fn preview_count(&self, chain: ChainId) -> usize {
+        self.previews.count_in(chain)
     }
 }
 
@@ -848,12 +961,59 @@ mod tests {
     use crate::trama::graph::NodeGraph;
     use crate::trama::node::NodeKind;
 
+    /// The chain the pre-existing single-graph tests run on. Their behavior
+    /// must not depend on which one it is.
+    const TEST_CHAIN: ChainId = ChainId::Master;
+
     #[test]
     fn aligned_stride_rounds_448_up_to_alignment() {
         assert_eq!(aligned_stride(448, 256), 512);
         assert_eq!(aligned_stride(448, 64), 448);
         assert_eq!(aligned_stride(448, 32), 448);
         assert_eq!(aligned_stride(256, 256), 256);
+    }
+
+    /// Every chain writes its uniforms into its own arena region. Without
+    /// this, two chains stage over each other: `queue.write_buffer` calls all
+    /// land before any pass runs at submit, so the last writer's values would
+    /// render for every chain, not just its own.
+    #[test]
+    fn chain_slot_regions_never_overlap() {
+        const SLOTS: u32 = 16;
+        let chains = [
+            ChainId::Layer(0),
+            ChainId::Layer(1),
+            ChainId::Layer(7),
+            ChainId::Master,
+        ];
+        let mut spans: Vec<(u32, u32)> = chains
+            .iter()
+            .map(|c| {
+                let base = chain_slot_base(c.index(), SLOTS);
+                (base, base + SLOTS)
+            })
+            .collect();
+        spans.sort_unstable();
+        for w in spans.windows(2) {
+            assert!(
+                w[0].1 <= w[1].0,
+                "chain regions {:?} and {:?} overlap",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    /// Master sits above every layer slot, so adding a layer never renumbers
+    /// it — a renumber would silently invalidate its cached bind groups,
+    /// which embed absolute arena offsets.
+    #[test]
+    fn master_chain_indexes_above_every_layer() {
+        let max = crate::bindings::catalog::MAX_LAYERS as u32;
+        assert_eq!(ChainId::Master.index(), max);
+        for n in 0..max {
+            assert!(ChainId::Layer(n as u8).index() < ChainId::Master.index());
+        }
     }
 
     fn effects_dir() -> std::path::PathBuf {
@@ -968,6 +1128,7 @@ mod tests {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let _ = exec.execute(
+            TEST_CHAIN,
             &mut graph,
             &reg,
             &template,
@@ -982,7 +1143,7 @@ mod tests {
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
         assert!(last_error.is_none(), "{last_error:?}");
-        let v = exec.plan_version();
+        let v = exec.plan_version(TEST_CHAIN);
         let stats = exec.pool_stats();
         // noise renders to a pooled target; hue renders straight into the
         // output target — one pooled texture total.
@@ -992,6 +1153,7 @@ mod tests {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let _ = exec.execute(
+            TEST_CHAIN,
             &mut graph,
             &reg,
             &template,
@@ -1003,7 +1165,7 @@ mod tests {
             &mut last_error,
         );
         queue.submit([encoder.finish()]);
-        assert_eq!(exec.plan_version(), v, "plan reused");
+        assert_eq!(exec.plan_version(TEST_CHAIN), v, "plan reused");
         assert_eq!(exec.pool_stats(), stats, "no new pool targets");
     }
 
@@ -1045,6 +1207,139 @@ mod tests {
         f
     }
 
+    /// H1: two chains number their nodes from zero, so the same `NodeId`
+    /// names a different node in each. Every piece of executor state that
+    /// outlives a plan must be keyed by `(chain, node)`.
+    ///
+    /// The bug this guards is not hypothetical — it is what the code did
+    /// before the re-key. `build_plan` ran
+    /// `feedback.retain(|id, _| graph.node(*id).is_some())` and
+    /// `previews.prune(|id| graph.node(id).is_some())` against *only the
+    /// chain being planned*, so planning layer B tore down layer A's echo
+    /// buffers and thumbnails on the grounds that B's graph had never heard
+    /// of them. To watch it fail, drop the `id.chain != chain` guard from
+    /// either call: this asserts A keeps its pair across B's build.
+    // Run: cargo test -p fosfora-app -- --ignored trama_chains_do_not_share_node_keyed_state
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_chains_do_not_share_node_keyed_state() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let reg = registry(&device);
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+
+        // The two chains must be structurally DIFFERENT, or this test cannot
+        // fail: an unscoped `graph.node(id.node)` check would still find a
+        // node at chain A's id inside an identically-shaped chain B, and the
+        // prune would have nothing to delete. A is the 5-node motion echo; B
+        // is a bare noise → out. A's feedback node id does not exist in B.
+        let (a, b) = (ChainId::Layer(0), ChainId::Layer(3));
+        let mut graph_a = NodeGraph::new_with_output();
+        let fb_a = build_motion_echo(&reg, &mut graph_a);
+
+        let mut graph_b = NodeGraph::new_with_output();
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let n_b = graph_b.add_node(
+            NodeKind::Source {
+                effect: noise.id.clone(),
+            },
+            0,
+            &noise.params.clone(),
+        );
+        let out_b = graph_b.output_node();
+        graph_b.connect(n_b, out_b, 0).unwrap();
+
+        assert!(
+            graph_b.node(fb_a).is_none(),
+            "chain B must NOT contain a node at A's feedback id, or the \
+             unscoped-prune bug stays invisible here"
+        );
+        assert_eq!(
+            graph_a.output_node(),
+            graph_b.output_node(),
+            "both chains still number from zero — the collision is real"
+        );
+
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 256, 144);
+        let mut template = ShaderUniforms::zeroed();
+        template.resolution = [256.0, 144.0];
+        let mut last_error = None;
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut run = |exec: &mut TramaExecutor, chain, graph: &mut NodeGraph| {
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let _ = exec.execute(
+                chain,
+                graph,
+                &reg,
+                &template,
+                true, // previews on, so preview targets get created too
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+                &mut last_error,
+            );
+            queue.submit([encoder.finish()]);
+        };
+
+        exec.begin_frame();
+        run(&mut exec, a, &mut graph_a);
+        assert_eq!(exec.feedback_count(a), 1, "chain A has its echo pair");
+        let previews_a = exec.preview_count(a);
+        assert!(previews_a > 1, "chain A created preview targets");
+
+        // Planning B must not disturb A. Both assertions fail if either
+        // prune drops its `id.chain != chain` guard.
+        run(&mut exec, b, &mut graph_b);
+        assert_eq!(
+            exec.feedback_count(a),
+            1,
+            "chain A's echo pair survived chain B's plan build"
+        );
+        assert_eq!(
+            exec.preview_count(a),
+            previews_a,
+            "chain A's thumbnails survived chain B's plan build"
+        );
+        assert_eq!(exec.feedback_count(b), 0, "B has no feedback node");
+        assert_eq!(exec.preview_count(b), 1, "B previews its one source");
+        assert_eq!(
+            exec.preview_stats(),
+            previews_a + 1,
+            "the two chains' thumbnails coexist"
+        );
+
+        // And their uniforms land in disjoint arena regions.
+        let (a_lo, a_hi) = exec.slot_span(a);
+        let (b_lo, b_hi) = exec.slot_span(b);
+        assert!(a_hi <= b_lo || b_hi <= a_lo, "chain arena regions overlap");
+        for off in exec.step_offsets(a) {
+            assert!(
+                (a_lo..a_hi).contains(&off),
+                "chain A step at {off} is outside its region {a_lo}..{a_hi}"
+            );
+        }
+        for off in exec.step_offsets(b) {
+            assert!(
+                (b_lo..b_hi).contains(&off),
+                "chain B step at {off} is outside its region {b_lo}..{b_hi}"
+            );
+        }
+
+        // Dropping a chain takes only its own resources with it.
+        exec.drop_chain(a);
+        assert_eq!(exec.feedback_count(a), 0, "A's pair went with A");
+        assert_eq!(exec.preview_count(a), 0, "A's thumbnails went with A");
+        assert_eq!(exec.preview_count(b), 1, "B's thumbnails did not");
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored trama_feedback_motion_echo_steady_state
     #[test]
     #[ignore = "requires a GPU/software adapter"]
@@ -1074,6 +1369,7 @@ mod tests {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 let _ = exec.execute(
+                    TEST_CHAIN,
                     &mut graph,
                     &reg,
                     &template,
@@ -1089,7 +1385,7 @@ mod tests {
             *delta = allocs;
             assert!(last_error.is_none(), "frame {frame}: {last_error:?}");
             let state = (
-                exec.plan_version(),
+                exec.plan_version(TEST_CHAIN),
                 exec.pool_stats(),
                 exec.feedback_generation(),
             );
@@ -1105,7 +1401,11 @@ mod tests {
         // noise + transform pooled; mix writes Output; one copy step for the
         // feedback node = 4 steps total, one ping-pong pair.
         assert_eq!(exec.pool_stats(), (2, 2), "pool stats");
-        assert_eq!(exec.plan_step_count(), 4, "3 effect passes + 1 copy");
+        assert_eq!(
+            exec.plan_step_count(TEST_CHAIN),
+            4,
+            "3 effect passes + 1 copy"
+        );
         assert_eq!(exec.feedback_stats(), 1, "one ping-pong pair");
         assert_eq!(exec.feedback_generation(), 1, "pair created exactly once");
 
@@ -1150,6 +1450,7 @@ mod tests {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 let _ = exec.execute(
+                    TEST_CHAIN,
                     graph,
                     &reg,
                     &template,
@@ -1166,7 +1467,7 @@ mod tests {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         run_frame(&mut exec, &mut graph, &mut last_error);
         assert!(last_error.is_none(), "{last_error:?}");
-        let v0 = exec.plan_version();
+        let v0 = exec.plan_version(TEST_CHAIN);
         assert_eq!(exec.feedback_generation(), 1);
 
         // A structural edit elsewhere in the graph replans — but must not
@@ -1181,7 +1482,7 @@ mod tests {
         );
         run_frame(&mut exec, &mut graph, &mut last_error);
         assert!(last_error.is_none(), "{last_error:?}");
-        assert_ne!(exec.plan_version(), v0, "structural edit replans");
+        assert_ne!(exec.plan_version(TEST_CHAIN), v0, "structural edit replans");
         assert_eq!(exec.feedback_generation(), 1, "pair survives the replan");
         assert_eq!(exec.feedback_stats(), 1);
         let _ = orphan;
@@ -1230,6 +1531,7 @@ mod tests {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             let _ = exec.execute(
+                TEST_CHAIN,
                 graph,
                 &reg,
                 &template,
@@ -1247,7 +1549,11 @@ mod tests {
         // Canvas closed: the orphan is culled, no preview targets exist.
         run_frame(&mut exec, &mut graph, false, &mut last_error);
         assert!(last_error.is_none(), "{last_error:?}");
-        assert_eq!(exec.plan_step_count(), 4, "3 effects + 1 copy, no orphan");
+        assert_eq!(
+            exec.plan_step_count(TEST_CHAIN),
+            4,
+            "3 effects + 1 copy, no orphan"
+        );
         assert_eq!(exec.preview_stats(), 0);
         let version = graph.version();
 
@@ -1260,7 +1566,7 @@ mod tests {
         }
         assert!(last_error.is_none(), "{last_error:?}");
         assert_eq!(graph.version(), version, "toggle is not a graph edit");
-        assert_eq!(exec.plan_step_count(), 5, "orphan joined");
+        assert_eq!(exec.plan_step_count(TEST_CHAIN), 5, "orphan joined");
         assert_eq!(
             exec.preview_stats(),
             5,
@@ -1271,7 +1577,7 @@ mod tests {
         // doesn't recreate textures (stable identity for egui registration).
         run_frame(&mut exec, &mut graph, false, &mut last_error);
         assert!(last_error.is_none(), "{last_error:?}");
-        assert_eq!(exec.plan_step_count(), 4);
+        assert_eq!(exec.plan_step_count(TEST_CHAIN), 4);
         assert_eq!(exec.preview_stats(), 5, "targets persist across toggle");
 
         // Removing a node prunes its preview target.
@@ -1301,6 +1607,7 @@ mod tests {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let _ = exec.execute(
+            TEST_CHAIN,
             &mut graph,
             &reg,
             &template,

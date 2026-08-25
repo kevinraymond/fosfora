@@ -53,6 +53,9 @@ impl CanvasState {
 
 struct CanvasViewer<'a> {
     graph: &'a mut NodeGraph,
+    /// Which chain is on the canvas — thumbnails are keyed by
+    /// `(chain, node)`, since every chain numbers its nodes from zero.
+    chain: super::super::node::ChainId,
     registry: &'a TramaRegistry,
     /// Read-only: thumbnail texture lookups for node bodies.
     executor: &'a TramaExecutor,
@@ -219,7 +222,10 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         snarl: &mut Snarl<NodeId>,
     ) {
         let id = snarl[node];
-        match self.executor.preview_tex(id) {
+        match self
+            .executor
+            .preview_tex(super::super::node::ChainNode::new(self.chain, id))
+        {
             Some(tex) => {
                 ui.image((tex, PREVIEW_DISPLAY));
             }
@@ -328,8 +334,10 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         last_error,
         audio_view,
         executor,
+        active_chain,
         ..
     } = trama;
+    let active_chain = *active_chain;
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
     let selected = canvas.selected;
@@ -392,6 +400,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
                 canvas.last_origin = Some(origin);
                 let mut viewer = CanvasViewer {
                     graph,
+                    chain: active_chain,
                     registry,
                     executor: &*executor,
                     status: &mut canvas.status,

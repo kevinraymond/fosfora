@@ -10,8 +10,53 @@ use super::modulation::ParamMod;
 /// Ids come from a monotonic counter and are never reused within a graph's
 /// lifetime, so later features (serialization, undo) can reference nodes
 /// without ambiguity.
+///
+/// **Unique within ONE graph only.** Every [`super::graph::NodeGraph`] starts
+/// its counter at zero, so once there is a chain per layer, `NodeId(3)` names
+/// a different node in every one of them. Anything that outlives a single
+/// chain's plan must be keyed by [`ChainNode`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub u64);
+
+/// Which chain a graph is: one per layer, plus the master chain that runs on
+/// the composited frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ChainId {
+    /// Post-processes layer `n`'s rendered target, before compositing.
+    // Constructed by the frame-graph integration (stage C); until then only
+    // the tests build one.
+    #[allow(dead_code)]
+    Layer(u8),
+    /// Post-processes the composited frame, upstream of `PostProcessDef`.
+    Master,
+}
+
+impl ChainId {
+    /// Dense index, used to give each chain a disjoint arena region. Master
+    /// sits above every layer slot so adding a layer never renumbers it.
+    pub fn index(self) -> u32 {
+        match self {
+            ChainId::Layer(n) => u32::from(n),
+            ChainId::Master => crate::bindings::catalog::MAX_LAYERS as u32,
+        }
+    }
+}
+
+/// A node's identity across the whole system: the pair that is actually
+/// unique. Every piece of executor state that survives a plan rebuild —
+/// feedback ping-pong pairs, preview targets — is keyed by this, because
+/// [`NodeId`] alone would let one layer's chain claim another's resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChainNode {
+    pub chain: ChainId,
+    pub node: NodeId,
+}
+
+impl ChainNode {
+    pub fn new(chain: ChainId, node: NodeId) -> Self {
+        Self { chain, node }
+    }
+}
 
 /// What a node *is*. `Output` is a graph primitive, not an effect file.
 #[derive(Debug, Clone, PartialEq, Eq)]
