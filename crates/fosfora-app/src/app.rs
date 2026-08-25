@@ -3295,9 +3295,13 @@ impl App {
         let profiler = crate::gpu::profiler::ProfilerHandle::none();
 
         if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
-            let _ = self
-                .trama
-                .execute(&self.gpu.device, &self.gpu.queue, &mut encoder, profiler);
+            let _ = self.trama.execute(
+                None,
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                profiler,
+            );
         }
 
         // Compute the HDR source from layer execution + compositing — shared

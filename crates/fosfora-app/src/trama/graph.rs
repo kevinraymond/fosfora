@@ -42,6 +42,8 @@ pub enum GraphError {
     OutputImmortal,
     #[error("graph must contain exactly one Output node")]
     MissingOutput,
+    #[error("a chain may hold at most one ChainInput node")]
+    DuplicateChainInput,
     #[error("an input pin has more than one wire")]
     DuplicateWire,
 }
@@ -114,6 +116,16 @@ impl NodeGraph {
 
     pub fn node(&self, id: NodeId) -> Option<&NodeInstance> {
         self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// This chain's `ChainInput` node, if it has one. At most one exists
+    /// (`validate` enforces it), so the canvas can hide the menu entry once
+    /// it is placed rather than let a second one be created and refused.
+    pub fn chain_input(&self) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::ChainInput))
+            .map(|n| n.id)
     }
 
     #[cfg(test)]
@@ -374,6 +386,15 @@ impl NodeGraph {
             .count();
         if outputs != 1 || self.node(self.output).is_none() {
             return Err(GraphError::MissingOutput);
+        }
+        if self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::ChainInput))
+            .count()
+            > 1
+        {
+            return Err(GraphError::DuplicateChainInput);
         }
         let mut pins: HashSet<(NodeId, u8)> = HashSet::new();
         for w in &self.wires {

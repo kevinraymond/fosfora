@@ -78,7 +78,7 @@ pub(crate) fn execute_and_composite<'a>(
     if let Some(t) = trama {
         if t.mode == crate::trama::RenderMode::Trama {
             return (
-                t.execute(device, queue, encoder, profiler),
+                t.execute(None, device, queue, encoder, profiler),
                 PostProcessDef::default(),
             );
         }

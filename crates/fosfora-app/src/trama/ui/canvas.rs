@@ -82,6 +82,7 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         match self.graph.node(*node).map(|n| &n.kind) {
             Some(NodeKind::Output) => "Output".to_string(),
             Some(NodeKind::Feedback) => "Feedback".to_string(),
+            Some(NodeKind::ChainInput) => "Layer input".to_string(),
             Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
                 .registry
                 .get(effect)
@@ -276,6 +277,23 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
                 .clicked()
             {
                 let id = self.graph.add_node(NodeKind::Feedback, 1, &[]);
+                snarl.insert_node(pos, id);
+                ui.close();
+            }
+            // At most one per chain (graph.validate enforces it), so offer it
+            // only while this chain has none — a refused add would be a worse
+            // way to learn the rule.
+            let has_input = self.graph.chain_input().is_some();
+            if ui
+                .add_enabled(!has_input, egui::Button::new("Layer input"))
+                .on_hover_text(
+                    "The picture this chain was handed — the layer's own output, \
+                     or the composited frame on the master chain",
+                )
+                .on_disabled_hover_text("This chain already has its layer input")
+                .clicked()
+            {
+                let id = self.graph.add_node(NodeKind::ChainInput, 0, &[]);
                 snarl.insert_node(pos, id);
                 ui.close();
             }

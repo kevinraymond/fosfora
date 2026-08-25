@@ -134,6 +134,7 @@ impl TramaSystem {
     /// through a closed window.
     pub(crate) fn execute(
         &mut self,
+        input: Option<exec::executor::ChainInputSource<'_>>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
@@ -146,6 +147,7 @@ impl TramaSystem {
             self.active_chain,
             &mut self.graph,
             &self.registry,
+            input,
             &self.frame_uniforms,
             self.canvas_open,
             device,

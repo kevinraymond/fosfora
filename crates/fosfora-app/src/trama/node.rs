@@ -70,6 +70,15 @@ pub enum NodeKind {
     /// A wire INTO a Feedback node is not a dataflow edge for cycle purposes,
     /// which is what lets `mix → transform → feedback → mix` exist in a DAG.
     Feedback,
+    /// What this chain's host handed in: the layer's rendered target for a
+    /// layer chain, the composited frame for the master chain. 0 texture
+    /// inputs, no params — it is a source whose content comes from outside
+    /// the graph.
+    ///
+    /// Leaving it out (or leaving it unwired) is what keeps a chain a pure
+    /// generator, which is exactly how trama behaved before chains existed.
+    /// At most one per chain.
+    ChainInput,
     /// The single sink; whatever feeds its one input reaches the screen.
     Output,
 }

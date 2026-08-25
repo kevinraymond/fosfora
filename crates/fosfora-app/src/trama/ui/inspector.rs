@@ -95,6 +95,19 @@ pub fn draw_inspector(
             ));
             return;
         }
+        NodeKind::ChainInput => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Layer input").color(tc.text_primary));
+                ui.label(dim("from outside the chain"));
+            });
+            ui.label(dim(
+                "The picture this chain was handed: the layer's own output, or \
+                 the composited frame on the master chain. Wire it in to \
+                 process that picture; leave it out and the chain generates \
+                 from scratch instead. No parameters.",
+            ));
+            return;
+        }
         NodeKind::Source { effect } | NodeKind::Effect { effect } => match registry.get(effect) {
             Some(def) => {
                 ui.horizontal(|ui| {

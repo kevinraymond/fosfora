@@ -115,6 +115,46 @@ struct Step {
     bind_groups: [wgpu::BindGroup; 2],
 }
 
+/// The texture a chain's [`NodeKind::ChainInput`] node samples — the layer's
+/// rendered target for a layer chain, the composited frame for the master
+/// chain.
+///
+/// Supplied per feedback parity because a layer that ping-pongs returns a
+/// *different* target each frame (`pass_executor` writes
+/// `targets[flip_parity]`) while bind groups are built once, at plan time.
+/// `per_parity[p]` must be the target the host renders into on frames where
+/// the executor's parity is `p`; a source that never alternates passes the
+/// same view twice. The layer flip and [`TramaExecutor::begin_frame`] advance
+/// in lockstep (spike #2098), which is what makes a fixed pairing possible.
+#[derive(Clone, Copy)]
+pub struct ChainInputSource<'a> {
+    pub per_parity: [(&'a wgpu::TextureView, &'a wgpu::Sampler); 2],
+    /// Bumped by the host whenever the *identity* of either target changes —
+    /// layer rebuilt, effect swapped, output resized.
+    ///
+    /// This is part of the plan key, and it has to be: bind groups capture
+    /// the views at plan build, and none of those events touches the graph,
+    /// so nothing else would trigger a replan. Without it a rebuilt layer
+    /// keeps feeding its chain the picture from before the rebuild.
+    pub generation: u64,
+}
+
+impl<'a> ChainInputSource<'a> {
+    /// A source whose target identity never alternates with parity — a media
+    /// layer, or the composited frame the master chain reads.
+    #[allow(dead_code)] // used by the frame-graph integration in stage C
+    pub fn stable(
+        view: &'a wgpu::TextureView,
+        sampler: &'a wgpu::Sampler,
+        generation: u64,
+    ) -> Self {
+        Self {
+            per_parity: [(view, sampler), (view, sampler)],
+            generation,
+        }
+    }
+}
+
 /// One node's thumbnail blit: samples the node's output (per parity, same
 /// story as [`Step::bind_groups`]) into its persistent preview target.
 struct PreviewBlit {
@@ -138,6 +178,10 @@ struct ExecPlan {
     previews: Vec<PreviewBlit>,
     /// False ⇒ nothing feeds Output; `execute` clears the output target.
     output_written: bool,
+    /// Which host input this plan was built against: `None` for no input,
+    /// `Some(generation)` otherwise. Part of the plan key — see
+    /// [`ChainInputSource::generation`].
+    chain_input: Option<u64>,
     /// First arena slot this chain owns. Chains write their uniforms into
     /// disjoint regions: every `queue.write_buffer` in the frame is staged
     /// before any pass runs, so overlapping regions would have the last
@@ -360,6 +404,7 @@ impl TramaExecutor {
         chain: ChainId,
         graph: &mut NodeGraph,
         registry: &TramaRegistry,
+        input: Option<ChainInputSource<'_>>,
         template: &ShaderUniforms,
         previews_on: bool,
         device: &wgpu::Device,
@@ -369,12 +414,21 @@ impl TramaExecutor {
         last_error: &mut Option<String>,
     ) -> &RenderTarget {
         let version = graph.version();
-        if self
-            .plans
-            .get(&chain)
-            .is_none_or(|p| p.version != version || p.previews_on != previews_on)
-        {
-            match self.build_plan(chain, graph, registry, device, queue, version, previews_on) {
+        if self.plans.get(&chain).is_none_or(|p| {
+            p.version != version
+                || p.previews_on != previews_on
+                || p.chain_input != input.map(|i| i.generation)
+        }) {
+            match self.build_plan(
+                chain,
+                graph,
+                registry,
+                input,
+                device,
+                queue,
+                version,
+                previews_on,
+            ) {
                 Ok(plan) => {
                     self.plans.insert(chain, plan);
                     *last_error = None;
@@ -389,6 +443,7 @@ impl TramaExecutor {
                         Some(p) => {
                             p.version = version;
                             p.previews_on = previews_on;
+                            p.chain_input = input.map(|i| i.generation);
                         }
                         None => {
                             self.plans.insert(
@@ -396,6 +451,7 @@ impl TramaExecutor {
                                 ExecPlan {
                                     version,
                                     previews_on,
+                                    chain_input: input.map(|i| i.generation),
                                     steps: Vec::new(),
                                     previews: Vec::new(),
                                     output_written: false,
@@ -541,6 +597,7 @@ impl TramaExecutor {
         chain: ChainId,
         graph: &mut NodeGraph,
         registry: &TramaRegistry,
+        input: Option<ChainInputSource<'_>>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         version: u64,
@@ -564,7 +621,12 @@ impl TramaExecutor {
             .copied()
             .filter(|&id| {
                 let node = graph.node(id).expect("exec-set nodes exist");
-                !matches!(node.kind, NodeKind::Output | NodeKind::Feedback) && !node.bypass
+                !matches!(
+                    node.kind,
+                    // ChainInput runs no pass for the same reason Feedback
+                    // does not: its texture comes from outside the graph.
+                    NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput
+                ) && !node.bypass
             })
             .collect();
 
@@ -619,6 +681,17 @@ impl TramaExecutor {
             .collect();
         let is_active_feedback = |id: NodeId| active_feedback.iter().any(|&(f, _)| f == id);
 
+        let node_is_chain_input = |id: NodeId| {
+            graph
+                .node(id)
+                .is_some_and(|n| matches!(n.kind, NodeKind::ChainInput))
+        };
+        // A ChainInput is only a texture when the host actually handed one
+        // in. A master chain on a frame with no layers, or a chain whose
+        // host passed None, resolves to the 1x1 placeholder like any other
+        // unwired input.
+        let chain_input_live = input.is_some();
+
         let final_producer = graph
             .input_source(graph.output_node(), 0)
             .and_then(effective);
@@ -627,8 +700,14 @@ impl TramaExecutor {
         // Output must show deliberate black, not a stale frame.
         let feedback_feeds_output =
             final_producer.is_some_and(|id| node_is_feedback(id) && is_active_feedback(id));
+        // Same story for a ChainInput wired straight to Output: no pass runs
+        // for it, so the host's texture needs an explicit blit. This is the
+        // identity chain — the picture passes through untouched.
+        let chain_input_feeds_output =
+            final_producer.is_some_and(|id| node_is_chain_input(id) && chain_input_live);
         let output_written = match final_producer {
             Some(fp) if node_is_feedback(fp) => feedback_feeds_output,
+            Some(fp) if node_is_chain_input(fp) => chain_input_feeds_output,
             Some(_) => true,
             None => false,
         };
@@ -661,6 +740,10 @@ impl TramaExecutor {
                 .iter()
                 .copied()
                 .chain(active_feedback.iter().map(|&(fb, _)| fb))
+                // The chain input gets a thumbnail too, though it runs no
+                // pass: seeing what the layer handed in is most of the value
+                // of putting the node on the canvas at all.
+                .chain(graph.chain_input().filter(|_| chain_input_live))
                 .collect()
         } else {
             Vec::new()
@@ -669,8 +752,10 @@ impl TramaExecutor {
             self.previews.ensure(device, key(id));
         }
 
-        let total_steps =
-            step_nodes.len() + active_feedback.len() + usize::from(feedback_feeds_output);
+        let total_steps = step_nodes.len()
+            + active_feedback.len()
+            + usize::from(feedback_feeds_output)
+            + usize::from(chain_input_feeds_output);
         self.ensure_slots(device, chain, total_steps as u32);
         let base_slot = chain_slot_base(chain.index(), self.slots_per_chain);
         // Captured by value: the pool acquisitions below need `&mut self`, so
@@ -700,7 +785,8 @@ impl TramaExecutor {
 
         // Resolve one producer to (view, sampler) at a given parity. An
         // active feedback producer resolves to its READ buffer —
-        // `targets[1 - parity]`, written last frame. Everything else is
+        // `targets[1 - parity]`, written last frame. A ChainInput resolves to
+        // the host's texture for that parity. Everything else is
         // parity-independent.
         let resolve = |producer: Option<NodeId>,
                        parity: usize|
@@ -714,6 +800,17 @@ impl TramaExecutor {
                     return (&rt.view, &rt.sampler);
                 }
                 return (&self.prev_view, &self.prev_sampler);
+            }
+            if node_is_chain_input(p) {
+                // The host's texture for THIS parity. A layer that ping-pongs
+                // returns a different target each frame (`pass_executor`
+                // writes `targets[flip_parity]`), so the host supplies both
+                // and a bind group is prebuilt for each — the same
+                // `[BindGroup; 2]` idiom feedback already uses.
+                return match input {
+                    Some(src) => src.per_parity[parity],
+                    None => (&self.prev_view, &self.prev_sampler),
+                };
             }
             match target_of(p) {
                 Some(TargetSlot::Pool(i)) => {
@@ -792,7 +889,9 @@ impl TramaExecutor {
             let node = graph.node(id).expect("live nodes exist");
             let effect_id = match &node.kind {
                 NodeKind::Source { effect } | NodeKind::Effect { effect } => effect,
-                NodeKind::Output | NodeKind::Feedback => unreachable!("filtered above"),
+                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput => {
+                    unreachable!("filtered above")
+                }
             };
             let effect_idx = registry
                 .effects
@@ -852,6 +951,23 @@ impl TramaExecutor {
                 bind_groups,
             });
         }
+        if chain_input_feeds_output {
+            // The identity chain: host texture straight through to Output.
+            let fp = final_producer.expect("checked by chain_input_feeds_output");
+            let uniform_offset = slot_offset(step_index);
+            step_index += 1;
+            let layout = &self.copy_pipeline.bind_group_layout;
+            steps.push(Step {
+                node: key(fp),
+                kind: StepKind::Copy,
+                target: TargetSlot::Output,
+                uniform_offset,
+                bind_groups: [
+                    make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 0)]),
+                    make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 1)]),
+                ],
+            });
+        }
         if feedback_feeds_output {
             let fp = final_producer.expect("checked by feedback_feeds_output");
             let uniform_offset = slot_offset(step_index);
@@ -891,6 +1007,7 @@ impl TramaExecutor {
         Ok(ExecPlan {
             version,
             previews_on,
+            chain_input: input.map(|i| i.generation),
             steps,
             previews,
             output_written,
@@ -956,6 +1073,7 @@ fn create_arena(device: &wgpu::Device, stride: u64, capacity: u32) -> wgpu::Buff
 mod tests {
     use super::*;
     use crate::effect::loader::{EffectLoader, probe_libs};
+    use crate::gpu::fullscreen_quad::FULLSCREEN_TRIANGLE_VS;
     use crate::gpu::test_gpu::{gpu_guard, test_gpu};
     use crate::trama::effect::{EffectId, TramaRegistry};
     use crate::trama::graph::NodeGraph;
@@ -1131,6 +1249,7 @@ mod tests {
             TEST_CHAIN,
             &mut graph,
             &reg,
+            None,
             &template,
             false,
             &device,
@@ -1156,6 +1275,7 @@ mod tests {
             TEST_CHAIN,
             &mut graph,
             &reg,
+            None,
             &template,
             false,
             &device,
@@ -1205,6 +1325,395 @@ mod tests {
         graph.connect(f, m, 1).unwrap();
         graph.connect(m, out, 0).unwrap();
         f
+    }
+
+    /// Snapshot a render target's pixels as raw bytes.
+    ///
+    /// `RenderTarget` is created RENDER_ATTACHMENT | TEXTURE_BINDING with no
+    /// COPY_SRC, and adding that flag to every full-res HDR target in
+    /// production just to satisfy a test is the wrong trade — so this samples
+    /// the target through a throwaway pass into a texture the test owns, the
+    /// same shape as the compositor's probe tests.
+    ///
+    /// Bytes are compared undecoded: exact passthrough is a stronger claim
+    /// than a tolerance on decoded f16, and needs no float math.
+    fn snapshot(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        src: &wgpu::TextureView,
+        dim: u32,
+    ) -> Vec<u8> {
+        const BLIT_FS: &str = "
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@fragment
+fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    return textureLoad(src_tex, vec2i(pos.xy), 0);
+}";
+        let format = GpuContext::hdr_format();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("trama-test-snapshot"),
+            source: wgpu::ShaderSource::Wgsl(format!("{FULLSCREEN_TRIANGLE_VS}\n{BLIT_FS}").into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("trama-test-snapshot"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                targets: &[Some(format.into())],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let dst = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("trama-test-snapshot-dst"),
+            size: wgpu::Extent3d {
+                width: dim,
+                height: dim,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let dst_view = dst.create_view(&Default::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src),
+            }],
+        });
+
+        // dim x 8 bytes must be a multiple of the 256-byte row alignment
+        // `copy_texture_to_buffer` requires; 64 px gives 512.
+        let bpr = dim * 8;
+        assert_eq!(bpr % 256, 0, "snapshot needs a 256-byte-aligned row");
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("trama-test-readback"),
+            size: u64::from(bpr * dim),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("trama-test-snapshot-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dst_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &dst,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(dim),
+                },
+            },
+            wgpu::Extent3d {
+                width: dim,
+                height: dim,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+        let data = slice.get_mapped_range().to_vec();
+        readback.unmap();
+        data
+    }
+
+    /// Compare two snapshots, reporting the first difference rather than
+    /// dumping both buffers — a full 64x64 Rgba16Float pair is 64 KB of
+    /// noise in a panic message.
+    fn assert_same_image(got: &[u8], want: &[u8], msg: &str) {
+        assert_eq!(got.len(), want.len(), "{msg}: snapshot sizes differ");
+        if got == want {
+            return;
+        }
+        let at = got
+            .iter()
+            .zip(want)
+            .position(|(a, b)| a != b)
+            .expect("lengths match and buffers differ");
+        let end = (at + 8).min(got.len());
+        panic!(
+            "{msg}\n  first difference at byte {at}\n    got:  {:?}\n    want: {:?}",
+            &got[at..end],
+            &want[at..end]
+        );
+    }
+
+    /// A `ChainInput` wired straight to Output is the identity chain: the
+    /// host's picture reaches the screen untouched. It runs no effect pass,
+    /// so without an explicit blit step Output would clear to black and a
+    /// layer carrying a trivial chain would simply vanish — which is what
+    /// makes this the load-bearing test for stage B.
+    ///
+    /// It also pins the other half of the contract: handed no host input, the
+    /// same graph must fall back to deliberate black rather than to whatever
+    /// happened to be sitting in the target.
+    // Run: cargo test -p fosfora-app -- --ignored trama_chain_input_identity_passes_host_picture
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_chain_input_identity_passes_host_picture() {
+        const DIM: u32 = 64;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let reg = registry(&device);
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+
+        let mut graph = NodeGraph::new_with_output();
+        let ci = graph.add_node(NodeKind::ChainInput, 0, &[]);
+        let out = graph.output_node();
+        graph.connect(ci, out, 0).unwrap();
+        graph.validate().unwrap();
+        assert_eq!(graph.chain_input(), Some(ci));
+
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, DIM, DIM);
+        let mut template = ShaderUniforms::zeroed();
+        template.resolution = [DIM as f32, DIM as f32];
+        let mut last_error = None;
+
+        // Stand-in for a layer's rendered output: a target cleared to a
+        // distinctive color, so "passed through" is falsifiable.
+        let host = RenderTarget::new(
+            &device,
+            DIM,
+            DIM,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-host-layer",
+        );
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("host-fill"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &host.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.25,
+                        g: 0.5,
+                        b: 0.75,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        queue.submit([enc.finish()]);
+        let host_bytes = snapshot(&device, &queue, &host.view, DIM);
+        assert!(
+            host_bytes.iter().any(|&b| b != 0),
+            "the host picture must not be black, or this test proves nothing"
+        );
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Fed: the host picture reaches Output untouched.
+        exec.begin_frame();
+        let produced = {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let target = exec.execute(
+                TEST_CHAIN,
+                &mut graph,
+                &reg,
+                Some(ChainInputSource::stable(&host.view, &host.sampler, 1)),
+                &template,
+                false,
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+                &mut last_error,
+            );
+            // The blit has to reach the GPU before the copy-to-buffer that
+            // reads it; `encoder` is independent of the borrow on `exec`.
+            queue.submit([encoder.finish()]);
+            snapshot(&device, &queue, &target.view, DIM)
+        };
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(
+            exec.plan_step_count(TEST_CHAIN),
+            1,
+            "one blit step: ChainInput runs no effect pass, but must still \
+             reach Output"
+        );
+        assert_same_image(
+            &produced,
+            &host_bytes,
+            "identity chain must pass the host picture through unchanged",
+        );
+
+        // A REBUILT host at the same graph version. Nothing about the graph
+        // changed, so only the input generation can force the replan — and
+        // the cached bind group still points at the old texture until it
+        // does. Drop the `chain_input` term from the plan key and this reads
+        // back `host_bytes`, the picture from before the rebuild.
+        let host2 = RenderTarget::new(
+            &device,
+            DIM,
+            DIM,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-host-layer-rebuilt",
+        );
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("host2-fill"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &host2.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.9,
+                        g: 0.1,
+                        b: 0.2,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        queue.submit([enc.finish()]);
+        let host2_bytes = snapshot(&device, &queue, &host2.view, DIM);
+        assert_ne!(
+            host2_bytes, host_bytes,
+            "the two host pictures must differ, or the replan is untestable"
+        );
+
+        exec.begin_frame();
+        let after_rebuild = {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let target = exec.execute(
+                TEST_CHAIN,
+                &mut graph,
+                &reg,
+                Some(ChainInputSource::stable(&host2.view, &host2.sampler, 2)),
+                &template,
+                false,
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+                &mut last_error,
+            );
+            queue.submit([encoder.finish()]);
+            snapshot(&device, &queue, &target.view, DIM)
+        };
+        assert_same_image(
+            &after_rebuild,
+            &host2_bytes,
+            "a rebuilt host texture must replan; the chain is still showing \
+             the picture from before the rebuild",
+        );
+
+        // Unfed: deliberate black, never a stale frame.
+        exec.begin_frame();
+        let blank = {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let target = exec.execute(
+                TEST_CHAIN,
+                &mut graph,
+                &reg,
+                None,
+                &template,
+                false,
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+                &mut last_error,
+            );
+            queue.submit([encoder.finish()]);
+            snapshot(&device, &queue, &target.view, DIM)
+        };
+        assert_eq!(
+            exec.plan_step_count(TEST_CHAIN),
+            0,
+            "nothing to blit without a host texture"
+        );
+        assert!(
+            blank.iter().all(|&b| b == 0),
+            "an unfed chain input must clear to black, not keep the last frame"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
     }
 
     /// H1: two chains number their nodes from zero, so the same `NodeId`
@@ -1275,6 +1784,7 @@ mod tests {
                 chain,
                 graph,
                 &reg,
+                None,
                 &template,
                 true, // previews on, so preview targets get created too
                 &device,
@@ -1372,6 +1882,7 @@ mod tests {
                     TEST_CHAIN,
                     &mut graph,
                     &reg,
+                    None,
                     &template,
                     false,
                     &device,
@@ -1453,6 +1964,7 @@ mod tests {
                     TEST_CHAIN,
                     graph,
                     &reg,
+                    None,
                     &template,
                     false,
                     &device,
@@ -1534,6 +2046,7 @@ mod tests {
                 TEST_CHAIN,
                 graph,
                 &reg,
+                None,
                 &template,
                 previews_on,
                 &device,
@@ -1610,6 +2123,7 @@ mod tests {
             TEST_CHAIN,
             &mut graph,
             &reg,
+            None,
             &template,
             false,
             &device,
