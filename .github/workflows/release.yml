@@ -33,9 +33,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # libclang-dev deliberately absent (#2359). It is a bindgen dep and this job
+      # does need a libclang — it builds webcam/depth/v4l2 — but not a downloaded
+      # one: this leg is ubuntu-22.04, the same image CI's Linux build leg runs on,
+      # which ships llvm-13/14/15 with /usr/lib/llvm-15/lib/libclang.so.1. Pointing
+      # clang-sys at it avoids a 28.8 MB fetch that has repeatedly stalled at the
+      # mirror's ~130 kB/s. That matters more here than in CI, because this step has
+      # no timeout, so a degraded mirror hangs a release rather than failing it.
+      #
+      # Resolved at runtime rather than pinned (the images disagree — CI's
+      # ubuntu-24 jobs land on 18, this one on 15) and guarded, because
+      # LIBCLANG_PATH is authoritative: clang-sys does NOT fall back to a system
+      # copy once it is set, so an empty value is worse than an unset one.
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libclang-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+          llvm_lib=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+          if [ -z "$llvm_lib" ]; then
+            echo "::error::no /usr/lib/llvm-*/lib on this image — reinstate libclang-dev (#2359)"
+            exit 1
+          fi
+          echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
