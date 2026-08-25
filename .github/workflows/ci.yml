@@ -54,22 +54,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # TEMPORARY DIAGNOSTIC (#2359) — remove once the question is answered.
-      # Asks what libclang the runner image already ships, BEFORE apt installs
-      # any. If a usable one is present we can set LIBCLANG_PATH and stop
-      # downloading libclang-dev (28.8 MB) on every Linux job, which is what
-      # actually times this step out. Reports only; changes nothing.
-      - name: Probe preinstalled libclang
-        run: |
-          echo "image: ${ImageOS:-?} ${ImageVersion:-?}"
-          find /usr/lib /usr/local/lib -name 'libclang*.so*' 2>/dev/null | sort || true
-          echo "--- clang packages ---"
-          dpkg -l | grep -iE 'libclang|clang' || echo "(none)"
       - name: Install system deps
         timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
+          # See the note in the bench-fixture job: libclang-dev is a 28.8 MB
+          # download and is what times this step out (#2359). Both runner images
+          # already ship a libclang bindgen can dlopen — ubuntu-24 has llvm-16/17/18,
+          # ubuntu-22.04 has 13/14/15 — so point clang-sys at the newest one present
+          # rather than fetching the package. Resolved at runtime, not pinned, so an
+          # image bump cannot silently strand us on a version that went away.
+          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy
@@ -103,14 +99,17 @@ jobs:
       # Same 15-minute cap as every other apt step. These normally run in 5-83 s (measured
       # across six healthy runs), so the cap only ever fires on a genuinely bad mirror day —
       # it is here to bound a hang, not to police throughput. Two tighter values were tried
-      # and both killed work that was progressing: ffmpeg's ~100-package codec tree and
-      # libclang-dev's LLVM tree are each well past 6 minutes when the mirror is degraded.
+      # and both killed work that was progressing: ffmpeg's ~100-package codec tree is well
+      # past 6 minutes when the mirror is degraded, and it is still the long pole here now
+      # that libclang-dev is gone (#2359).
       - name: Install system deps
         timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y -o Acquire::Retries=3 \
-            ffmpeg libasound2-dev libudev-dev libclang-dev
+            ffmpeg libasound2-dev libudev-dev
+          # libclang-dev deliberately absent — see the lint job (#2359).
+          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - name: Test
@@ -180,22 +179,16 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
-      # TEMPORARY DIAGNOSTIC (#2359) — remove with the one in the lint job. This
-      # leg is ubuntu-22.04 while the others are ubuntu-latest, so it can answer
-      # differently; both images have to be checked before dropping the package.
-      - name: Probe preinstalled libclang
-        if: runner.os == 'Linux'
-        run: |
-          echo "image: ${ImageOS:-?} ${ImageVersion:-?}"
-          find /usr/lib /usr/local/lib -name 'libclang*.so*' 2>/dev/null | sort || true
-          echo "--- clang packages ---"
-          dpkg -l | grep -iE 'libclang|clang' || echo "(none)"
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
+          # libclang-dev deliberately absent — see the lint job (#2359). This leg
+          # is ubuntu-22.04 where the newest preinstalled LLVM is 15, not 18, which
+          # is why the path is resolved rather than pinned.
+          echo "LIBCLANG_PATH=$(ls -d /usr/lib/llvm-*/lib | sort -V | tail -1)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
