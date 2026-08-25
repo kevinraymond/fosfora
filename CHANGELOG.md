@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+## v1.36.0 — 2026-08-25
+
 ### Fixed
 - **Array, Cascade, Tesla, Tide and Vessel now look the same at any frame rate.** Their
   background glows were drawn at a fixed strength per frame and their trails drifted a fixed
