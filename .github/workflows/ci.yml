@@ -54,6 +54,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # TEMPORARY DIAGNOSTIC (#2359) — remove once the question is answered.
+      # Asks what libclang the runner image already ships, BEFORE apt installs
+      # any. If a usable one is present we can set LIBCLANG_PATH and stop
+      # downloading libclang-dev (28.8 MB) on every Linux job, which is what
+      # actually times this step out. Reports only; changes nothing.
+      - name: Probe preinstalled libclang
+        run: |
+          echo "image: ${ImageOS:-?} ${ImageVersion:-?}"
+          find /usr/lib /usr/local/lib -name 'libclang*.so*' 2>/dev/null | sort || true
+          echo "--- clang packages ---"
+          dpkg -l | grep -iE 'libclang|clang' || echo "(none)"
       - name: Install system deps
         timeout-minutes: 15
         run: |
@@ -122,11 +133,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No libclang-dev here on purpose (#2359). It is a bindgen dep, and bindgen
+      # only enters the graph via rusty_link (feature `link`) or v4l2-sys-mit
+      # (features `webcam`/`depth`/`v4l2`). This job builds `--features analyze`
+      # only, which pulls neither — `cargo tree --features analyze` shows zero
+      # bindgen. Dropping it removes a 28.8 MB download that was timing this job
+      # out at the mirror's ~130 kB/s.
       - name: Install system deps
         timeout-minutes: 15
         run: |
           sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev libclang-dev
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
@@ -163,6 +180,16 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+      # TEMPORARY DIAGNOSTIC (#2359) — remove with the one in the lint job. This
+      # leg is ubuntu-22.04 while the others are ubuntu-latest, so it can answer
+      # differently; both images have to be checked before dropping the package.
+      - name: Probe preinstalled libclang
+        if: runner.os == 'Linux'
+        run: |
+          echo "image: ${ImageOS:-?} ${ImageVersion:-?}"
+          find /usr/lib /usr/local/lib -name 'libclang*.so*' 2>/dev/null | sort || true
+          echo "--- clang packages ---"
+          dpkg -l | grep -iE 'libclang|clang' || echo "(none)"
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 15
