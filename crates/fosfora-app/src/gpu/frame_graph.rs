@@ -222,6 +222,33 @@ pub(crate) fn execute_and_composite<'a>(
     let Some(t) = trama else {
         return (source, postprocess);
     };
+
+    // A chain whose layer is disabled never reached the loop above, so its
+    // thumbnails would freeze the moment you selected that layer. Run it for
+    // previews only — its host target still holds the last picture the layer
+    // rendered — and throw the result away.
+    if t.canvas_open {
+        if let Some(layer) = layer_stack.layers.iter().enumerate().find_map(|(i, l)| {
+            let chain = l.chain.as_deref()?;
+            (chain.id == t.active_chain && !enabled.contains(&i)).then_some(l)
+        }) {
+            let chain = layer.chain.as_deref().expect("found by having a chain");
+            if chain_targets.has(chain.id) {
+                t.execute_chain(
+                    chain.id,
+                    &chain.graph,
+                    Some(layer.chain_input_source(t.parity())),
+                    chain_targets.get(chain.id),
+                    chain_targets.generation(chain.id),
+                    device,
+                    queue,
+                    encoder,
+                    profiler,
+                );
+            }
+        }
+    }
+
     if !t.master.contributes() || !chain_targets.has(ChainId::Master) {
         return (source, postprocess);
     }
@@ -319,6 +346,7 @@ mod tests {
     fn scene(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        layers: usize,
     ) -> (
         LayerStack,
         Compositor,
@@ -357,18 +385,19 @@ mod tests {
         // the same picture every time it is asked. A feedback effect
         // accumulates and would drift between runs for reasons that have
         // nothing to do with chains.
-        let mut layer =
-            crate::gpu::layer_builder::new_default_layer(&ctx, "host".into()).expect("layer");
-        // Zeroed uniforms mean resolution 0, and most shaders divide by it —
-        // the picture comes back all-NaN, which compares equal to itself and
-        // would let every assertion below pass vacuously.
-        if let Some(e) = layer.as_effect_mut() {
-            e.uniforms.resolution = [DIM as f32, DIM as f32];
-            e.uniforms.time = 1.0;
-        }
-
         let mut stack = LayerStack::new();
-        stack.layers.push(layer);
+        for i in 0..layers {
+            let mut layer = crate::gpu::layer_builder::new_default_layer(&ctx, format!("host{i}"))
+                .expect("layer");
+            // Zeroed uniforms mean resolution 0, and most shaders divide by it
+            // — the picture comes back all-NaN, which compares equal to itself
+            // and would let every assertion below pass vacuously.
+            if let Some(e) = layer.as_effect_mut() {
+                e.uniforms.resolution = [DIM as f32, DIM as f32];
+                e.uniforms.time = 1.0;
+            }
+            stack.layers.push(layer);
+        }
         let compositor = Compositor::new(device, GpuContext::hdr_format(), DIM, DIM);
         let trama =
             crate::trama::TramaSystem::new(device, None, &loader, &placeholder, &audio, DIM, DIM);
@@ -389,7 +418,7 @@ mod tests {
     fn chain_post_processes_its_own_layer() {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
-        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue);
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
 
         let run = |stack: &mut LayerStack,
                    compositor: &mut Compositor,
@@ -506,5 +535,70 @@ mod tests {
 
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored chains_travel_with_their_layers
+    //
+    // The reason chains live ON the layer and hold an ALLOCATED slot rather
+    // than the stack index. Executor state that outlives a replan — feedback
+    // ping-pong pairs, preview thumbnails, the uniform arena region — is keyed
+    // by that slot, so if the slot were the position, dragging a layer would
+    // hand it another layer's echo buffer.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn chains_travel_with_their_layers() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, _compositor, mut trama, mut targets) = scene(&device, &queue, 3);
+
+        // Chains on the outer two only, so the middle layer is a hole in the
+        // slot map and the gap-filling half of the allocator is exercised.
+        let top = stack.ensure_chain(0).expect("slot");
+        let bottom = stack.ensure_chain(2).expect("slot");
+        assert_eq!(top, ChainId::Layer(0));
+        assert_eq!(bottom, ChainId::Layer(1), "lowest free slot, not the index");
+        assert_ne!(top, bottom);
+
+        let sync = |stack: &LayerStack,
+                    trama: &mut crate::trama::TramaSystem,
+                    targets: &mut ChainTargets| {
+            let master_live = trama.master.contributes();
+            targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
+        };
+        sync(&stack, &mut trama, &mut targets);
+        assert!(targets.has(top) && targets.has(bottom));
+        assert_eq!(targets.resident(), 2, "no target for the chainless layer");
+        let (top_gen, bottom_gen) = (targets.generation(top), targets.generation(bottom));
+
+        // Drag the bottom layer to the top. Both chains keep their slots, stay
+        // attached to the layers they were created on, and — the point — their
+        // output targets are not reallocated, so nothing replans.
+        stack.move_layer(2, 0);
+        assert_eq!(stack.layers[0].name, "host2");
+        assert_eq!(
+            stack.layers[0].chain.as_deref().map(|c| c.id),
+            Some(bottom),
+            "the chain moved with its layer"
+        );
+        assert_eq!(stack.layers[1].chain.as_deref().map(|c| c.id), Some(top));
+        assert!(
+            stack.layers[2].chain.is_none(),
+            "the chainless layer stays so"
+        );
+
+        sync(&stack, &mut trama, &mut targets);
+        assert_eq!(targets.generation(top), top_gen, "reorder must not realloc");
+        assert_eq!(targets.generation(bottom), bottom_gen);
+
+        // Removing a layer takes its chain with it, and the slot comes back.
+        stack.remove_layer(1);
+        sync(&stack, &mut trama, &mut targets);
+        assert!(!targets.has(top), "the removed layer's target is released");
+        assert!(targets.has(bottom), "the survivor keeps its own");
+        assert_eq!(
+            stack.alloc_chain_slot(),
+            Some(0),
+            "the freed slot is available again"
+        );
     }
 }
