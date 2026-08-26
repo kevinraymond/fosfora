@@ -609,7 +609,7 @@ impl TramaExecutor {
         // (orphans included) when previews are on, per handoff §9.1: orphan
         // subgraphs render only while someone can see their thumbnails.
         let exec_set: Vec<NodeId> = if previews_on {
-            graph.topo_order().to_vec()
+            graph.topo_order()
         } else {
             graph.live_set()
         };
