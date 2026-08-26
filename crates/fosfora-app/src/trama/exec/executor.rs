@@ -355,6 +355,13 @@ impl TramaExecutor {
         }
     }
 
+    /// This frame's feedback parity. The frame graph needs it to pair a
+    /// layer's two ping-pong targets with the executor's, since a chain's
+    /// bind groups are built once and the layer's target alternates.
+    pub fn parity(&self) -> usize {
+        self.parity
+    }
+
     /// `(in_use, total)` pooled targets — the canvas debug line.
     pub fn pool_stats(&self) -> (usize, usize) {
         self.pool.stats()
@@ -376,7 +383,6 @@ impl TramaExecutor {
     }
 
     /// Forget everything belonging to `chain` — its layer was removed.
-    #[allow(dead_code)] // wired up by layer add/remove in stage C
     pub fn drop_chain(&mut self, chain: ChainId) {
         self.plans.remove(&chain);
         self.feedback.retain(|id, _| id.chain != chain);
@@ -1083,7 +1089,7 @@ fn create_arena(device: &wgpu::Device, stride: u64, capacity: u32) -> wgpu::Buff
 mod tests {
     use super::*;
     use crate::effect::loader::{EffectLoader, probe_libs};
-    use crate::gpu::fullscreen_quad::FULLSCREEN_TRIANGLE_VS;
+    use crate::gpu::test_gpu::snapshot;
     use crate::gpu::test_gpu::{gpu_guard, test_gpu};
     use crate::trama::effect::{EffectId, TramaRegistry};
     use crate::trama::graph::NodeGraph;
@@ -1348,165 +1354,6 @@ mod tests {
         graph.connect(f, m, 1).unwrap();
         graph.connect(m, out, 0).unwrap();
         f
-    }
-
-    /// Snapshot a render target's pixels as raw bytes.
-    ///
-    /// `RenderTarget` is created RENDER_ATTACHMENT | TEXTURE_BINDING with no
-    /// COPY_SRC, and adding that flag to every full-res HDR target in
-    /// production just to satisfy a test is the wrong trade — so this samples
-    /// the target through a throwaway pass into a texture the test owns, the
-    /// same shape as the compositor's probe tests.
-    ///
-    /// Bytes are compared undecoded: exact passthrough is a stronger claim
-    /// than a tolerance on decoded f16, and needs no float math.
-    fn snapshot(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        src: &wgpu::TextureView,
-        dim: u32,
-    ) -> Vec<u8> {
-        const BLIT_FS: &str = "
-@group(0) @binding(0) var src_tex: texture_2d<f32>;
-@fragment
-fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    return textureLoad(src_tex, vec2i(pos.xy), 0);
-}";
-        let format = GpuContext::hdr_format();
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("trama-test-snapshot"),
-            source: wgpu::ShaderSource::Wgsl(format!("{FULLSCREEN_TRIANGLE_VS}\n{BLIT_FS}").into()),
-        });
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("trama-test-snapshot"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                targets: &[Some(format.into())],
-                compilation_options: Default::default(),
-            }),
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let dst = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("trama-test-snapshot-dst"),
-            size: wgpu::Extent3d {
-                width: dim,
-                height: dim,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let dst_view = dst.create_view(&Default::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(src),
-            }],
-        });
-
-        // dim x 8 bytes must be a multiple of the 256-byte row alignment
-        // `copy_texture_to_buffer` requires; 64 px gives 512.
-        let bpr = dim * 8;
-        assert_eq!(bpr % 256, 0, "snapshot needs a 256-byte-aligned row");
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("trama-test-readback"),
-            size: u64::from(bpr * dim),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("trama-test-snapshot-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &dst_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &dst,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bpr),
-                    rows_per_image: Some(dim),
-                },
-            },
-            wgpu::Extent3d {
-                width: dim,
-                height: dim,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit(std::iter::once(encoder.finish()));
-
-        let slice = readback.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .expect("poll");
-        let data = slice.get_mapped_range().to_vec();
-        readback.unmap();
-        data
     }
 
     /// Compare two snapshots, reporting the first difference rather than

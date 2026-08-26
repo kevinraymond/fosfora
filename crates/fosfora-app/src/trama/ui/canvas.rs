@@ -336,7 +336,11 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
 
 /// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
 /// same hosting pattern as the shader editor — `draw_panels` stays untouched.
-pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
+pub fn draw_trama_window(
+    ctx: &egui::Context,
+    trama: &mut TramaSystem,
+    layer_stack: &mut crate::gpu::layer::LayerStack,
+) {
     if !trama.canvas_open {
         return;
     }
@@ -345,8 +349,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
     let preview_targets = trama.executor.preview_stats();
     let mut open = trama.canvas_open;
     let TramaSystem {
-        mode,
-        graph,
+        master,
         registry,
         canvas,
         last_error,
@@ -356,6 +359,33 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         ..
     } = trama;
     let active_chain = *active_chain;
+    // The canvas edits the selected layer's chain. `App::update` materialized
+    // it and set `active_chain` before this frame rendered, so the two agree;
+    // the master chain is the fallback when there is no layer to select.
+    let host = layer_stack
+        .layers
+        .iter()
+        .position(|l| l.chain.as_ref().is_some_and(|c| c.id == active_chain));
+    let editing = match host {
+        Some(i) => layer_stack.layers[i]
+            .custom_name
+            .clone()
+            .unwrap_or_else(|| {
+                let name = layer_stack.layers[i].name.clone();
+                format!("{name} (layer {})", i + 1)
+            }),
+        None => "Master".to_string(),
+    };
+    let graph = match host {
+        Some(i) => {
+            &mut layer_stack.layers[i]
+                .chain
+                .as_deref_mut()
+                .expect("host was found by having a chain")
+                .graph
+        }
+        None => master,
+    };
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
     let selected = canvas.selected;
@@ -364,8 +394,7 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(mode, super::super::RenderMode::Layers, "Layers");
-                ui.selectable_value(mode, super::super::RenderMode::Trama, "Trama");
+                ui.label(format!("editing: {editing}"));
                 ui.separator();
                 ui.weak(format!(
                     "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
@@ -390,13 +419,12 @@ pub fn draw_trama_window(ctx: &egui::Context, trama: &mut TramaSystem) {
             if let Some(err) = last_error.as_deref().or(canvas.status.as_deref()) {
                 ui.colored_label(ui.visuals().error_fg_color, err);
             }
-            if *mode == super::super::RenderMode::Trama
-                && graph.input_source(graph.output_node(), 0).is_none()
-            {
+            if !graph.contributes() {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "Nothing reaches Output — the screen stays black. Right-click the \
-                     canvas to add nodes; drag from a pin to wire them.",
+                    "Nothing reaches Output — this chain is inactive and its host's \
+                     picture passes through untouched. Right-click the canvas to add \
+                     nodes; drag from a pin to wire them.",
                 );
             }
             ui.separator();

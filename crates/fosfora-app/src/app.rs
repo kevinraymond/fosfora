@@ -1332,8 +1332,23 @@ impl App {
         // `latest_features` consumes a single-consumer pulse latch and must
         // not be called again.
         let trama_audio = self.latest_audio.unwrap_or_default();
-        self.trama
-            .update(dt, &self.uniforms, &trama_audio, self.audio.latest_mel());
+        // The canvas edits the SELECTED layer's chain, so opening it on a
+        // layer is what brings that layer's chain into existence. A fresh
+        // chain holds only its Output node, reaches nothing, and therefore
+        // changes nothing about what the layer renders.
+        if self.trama.canvas_open {
+            let active = self.layer_stack.active_layer;
+            if let Some(id) = self.layer_stack.ensure_chain(active) {
+                self.trama.active_chain = id;
+            }
+        }
+        self.trama.update(
+            &mut self.layer_stack,
+            dt,
+            &self.uniforms,
+            &trama_audio,
+            self.audio.latest_mel(),
+        );
 
         // Update each layer's uniforms from global template + per-layer params.
         // The body lives in gpu/frame_prep.rs so the headless renderer runs the
@@ -3305,25 +3320,17 @@ impl App {
         #[cfg(not(feature = "profiling"))]
         let profiler = crate::gpu::profiler::ProfilerHandle::none();
 
-        // The chain output targets have to exist before anything can render
-        // into them, and they are the caller's (see `gpu::chain_targets`).
-        // `ensure` is idempotent at a stable size, so this costs nothing per
-        // frame and never moves a generation (I8).
-        self.chain_targets
-            .ensure(&self.gpu.device, crate::trama::node::ChainId::Master);
-
-        if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
-            let chain = crate::trama::node::ChainId::Master;
-            self.trama.execute(
-                None,
-                self.chain_targets.get(chain),
-                self.chain_targets.generation(chain),
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                profiler,
-            );
-        }
+        // Match the resident chain output targets to the chains that exist,
+        // and let the executor forget any chain whose layer went away. Driven
+        // off the layer stack rather than from remove_layer/move_layer,
+        // because several sites mutate `layers` directly. Free when nothing
+        // moved (I8). There is no preview-only execute any more: every live
+        // chain runs as part of the frame.
+        let master_live = self.trama.master.contributes();
+        let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
+        targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
+            trama.drop_chain(chain);
+        });
 
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
@@ -3365,10 +3372,14 @@ impl App {
             let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
             #[cfg(not(feature = "profiling"))]
             let profiler = crate::gpu::profiler::ProfilerHandle::none();
-            // The preset load above replaced the layer stack, so re-`ensure`
-            // before the second render rather than trusting the first pass.
-            self.chain_targets
-                .ensure(&self.gpu.device, crate::trama::node::ChainId::Master);
+            // The preset load above replaced the layer stack, so the first
+            // pass's sync is stale: chains went away with their layers and the
+            // new ones have no targets yet.
+            let master_live = self.trama.master.contributes();
+            let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
+            targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
+                trama.drop_chain(chain);
+            });
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,

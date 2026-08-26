@@ -909,7 +909,11 @@ impl ApplicationHandler for FosforaApp {
                     // TextureIds; dead ones are freed on the same call.
                     app.trama
                         .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
-                    crate::trama::ui::canvas::draw_trama_window(&ctx, &mut app.trama);
+                    crate::trama::ui::canvas::draw_trama_window(
+                        &ctx,
+                        &mut app.trama,
+                        &mut app.layer_stack,
+                    );
 
                     // Check if sidebar "Matrix" button was clicked
                     let matrix_open_requested = ctx.data_mut(|d| {

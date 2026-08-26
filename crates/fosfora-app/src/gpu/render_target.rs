@@ -1,4 +1,9 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use wgpu::{Device, Queue, Sampler, Texture, TextureFormat, TextureView};
+
+/// Hands every target a distinct `id`. See [`RenderTarget::id`].
+static NEXT_TARGET_ID: AtomicU64 = AtomicU64::new(1);
 
 /// An off-screen render target with texture, view, and sampler.
 pub struct RenderTarget {
@@ -10,6 +15,25 @@ pub struct RenderTarget {
     pub width: u32,
     pub height: u32,
     pub scale: f32,
+    /// Distinct per created target, never reused.
+    ///
+    /// A trama chain binds its host's texture once, at plan build, so it has
+    /// to notice when that texture is replaced — a resize, an effect swap, a
+    /// shader rebuild, a preset load, media loaded onto the layer. Carrying
+    /// the stamp on the target itself means the chain reads identity from the
+    /// thing that actually changed, at the one place every target is born,
+    /// instead of from a counter that a dozen call sites have to remember to
+    /// bump. Missing one of those bumps shows the picture from before the
+    /// rebuild, silently.
+    pub id: u64,
+}
+
+/// Fold two targets into one identity stamp for
+/// [`crate::trama::exec::executor::ChainInputSource`], which carries a single
+/// `u64` but names a texture per feedback parity. Ids are small and monotonic,
+/// so rotate-and-xor separates distinct pairs without a hash.
+pub fn pair_id(a: &RenderTarget, b: &RenderTarget) -> u64 {
+    a.id.rotate_left(32) ^ b.id
 }
 
 impl RenderTarget {
@@ -58,6 +82,7 @@ impl RenderTarget {
             width: w,
             height: h,
             scale,
+            id: NEXT_TARGET_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 

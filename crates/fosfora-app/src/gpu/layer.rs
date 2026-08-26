@@ -210,7 +210,6 @@ pub enum LayerContent {
 /// that survives a replan — feedback ping-pong pairs, preview thumbnails, the
 /// uniform arena region — is keyed by it, so tying it to position would hand
 /// layer 5's echo buffer to whatever layer got dragged into slot 5.
-#[allow(dead_code)] // read by the frame-graph integration in stage C4
 pub struct LayerChain {
     pub id: crate::trama::node::ChainId,
     pub graph: crate::trama::graph::NodeGraph,
@@ -244,7 +243,6 @@ pub struct Layer {
     /// the canvas on this layer; a chain that exists but reaches nothing is
     /// inactive and the layer's own picture passes through
     /// (`NodeGraph::contributes`).
-    #[allow(dead_code)] // read by the frame-graph integration in stage C4
     pub chain: Option<Box<LayerChain>>,
 }
 
@@ -363,7 +361,6 @@ impl Layer {
     /// `(written this frame, the other one)` — see
     /// [`PassExecutor::final_targets`]. A media layer blits into one fixed
     /// target, so both are the same.
-    #[allow(dead_code)] // used by the frame-graph integration in stage C4
     pub fn final_targets(&self) -> (&RenderTarget, &RenderTarget) {
         match &self.content {
             LayerContent::Effect(e) => e.pass_executor.final_targets(),
@@ -378,11 +375,13 @@ impl Layer {
     /// right now, and the other slot gets its partner; both counters advance
     /// once per frame in lockstep, so the pairing holds for the life of the
     /// plan.
-    #[allow(dead_code)] // used by the frame-graph integration in stage C4
+    ///
+    /// The generation comes from the targets themselves, so an effect swap, a
+    /// shader rebuild, a resize or media loaded onto this layer all replan the
+    /// chain without anyone having to remember to say so.
     pub fn chain_input_source(
         &self,
         parity: usize,
-        generation: u64,
     ) -> crate::trama::exec::executor::ChainInputSource<'_> {
         let (current, other) = self.final_targets();
         let mut per_parity = [
@@ -392,7 +391,7 @@ impl Layer {
         per_parity[1 - parity] = (&other.view, &other.sampler);
         crate::trama::exec::executor::ChainInputSource {
             per_parity,
-            generation,
+            generation: crate::gpu::render_target::pair_id(current, other),
         }
     }
 
@@ -562,7 +561,6 @@ impl LayerStack {
     /// so it cannot drift out of sync with reality — the same reason chains
     /// live on their layers. `None` when every slot is taken, which cannot
     /// happen below the 8-layer cap.
-    #[allow(dead_code)] // called from the canvas in stage C4
     pub fn alloc_chain_slot(&self) -> Option<u8> {
         lowest_free_chain_slot(|n| {
             let slot = crate::trama::node::ChainId::Layer(n);
@@ -577,7 +575,6 @@ impl LayerStack {
     /// Called when the canvas opens on a layer. A fresh chain holds only its
     /// Output node, so it reaches nothing, contributes nothing, and the
     /// layer's own picture keeps passing through untouched.
-    #[allow(dead_code)] // called from the canvas in stage C4
     pub fn ensure_chain(&mut self, index: usize) -> Option<crate::trama::node::ChainId> {
         if let Some(existing) = self.layers.get(index).and_then(|l| l.chain.as_ref()) {
             return Some(existing.id);

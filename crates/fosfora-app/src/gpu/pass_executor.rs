@@ -426,7 +426,6 @@ impl PassExecutor {
     /// convention to get backwards.
     ///
     /// A last pass without feedback never flips, so both are the same target.
-    #[allow(dead_code)] // reached through Layer::final_targets in stage C4
     pub fn final_targets(&self) -> (&RenderTarget, &RenderTarget) {
         let pass = self
             .passes

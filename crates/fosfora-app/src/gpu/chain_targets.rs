@@ -30,6 +30,15 @@ use crate::trama::node::ChainId;
 /// One slot per layer chain plus the master chain.
 const SLOTS: usize = MAX_LAYERS + 1;
 
+/// Inverse of [`ChainId::index`].
+fn chain_of_index(i: usize) -> ChainId {
+    if i == MAX_LAYERS {
+        ChainId::Master
+    } else {
+        ChainId::Layer(i as u8)
+    }
+}
+
 struct Slot {
     rt: RenderTarget,
     /// Identity stamp. Bind groups built during a plan can *sample* the output
@@ -87,12 +96,49 @@ impl ChainTargets {
     /// Drop this chain's output target — its layer lost its chain, or went
     /// away. The executor's own per-chain state is dropped separately, by
     /// `TramaExecutor::drop_chain`.
-    #[allow(dead_code)] // driven by the layer-stack sync in stage C3/C5
     pub fn release(&mut self, chain: ChainId) {
         self.slots[Self::index(chain)] = None;
     }
 
-    #[allow(dead_code)] // driven by the layer-stack sync in stage C3/C5
+    /// Match the resident targets to the chains that actually exist: allocate
+    /// for chains that gained one, drop the ones whose layer is gone, and hand
+    /// each dropped chain to `on_release` so the executor can forget its
+    /// feedback pairs and thumbnails too.
+    ///
+    /// Driven off the layer stack rather than from `remove_layer`/`move_layer`,
+    /// because six sites mutate `layers` directly and bypass those wrappers.
+    /// Reordering shows up here as nothing at all — a chain's slot travels
+    /// with its layer, so the live set is unchanged.
+    ///
+    /// Runs every frame and must be free when nothing moved: it allocates and
+    /// bumps generations only on an actual change (I8).
+    pub fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        stack: &crate::gpu::layer::LayerStack,
+        master_live: bool,
+        mut on_release: impl FnMut(ChainId),
+    ) {
+        let mut live = [false; SLOTS];
+        for layer in &stack.layers {
+            if let Some(chain) = layer.chain.as_deref() {
+                live[Self::index(chain.id)] = true;
+            }
+        }
+        live[Self::index(ChainId::Master)] = master_live;
+
+        for (i, &wanted) in live.iter().enumerate() {
+            match (wanted, self.slots[i].is_some()) {
+                (true, false) => self.ensure(device, chain_of_index(i)),
+                (false, true) => {
+                    self.release(chain_of_index(i));
+                    on_release(chain_of_index(i));
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn has(&self, chain: ChainId) -> bool {
         self.slots[Self::index(chain)].is_some()
     }
