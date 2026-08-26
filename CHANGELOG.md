@@ -5,6 +5,13 @@
 
 ## Unreleased
 
+### Changed
+- **trama node chains now run on your layers instead of replacing them.** The Layers/Trama
+  switch is gone: select a layer, open trama, and the chain you build post-processes that
+  layer — wire its Layer input into an effect and watch Panorama change while the rest of the
+  stack keeps running. A chain that doesn't reach its Output node is inactive and the layer
+  renders as usual, so adding a node before wiring it no longer blanks anything.
+
 ## v1.36.0 — 2026-08-25
 
 ### Fixed
