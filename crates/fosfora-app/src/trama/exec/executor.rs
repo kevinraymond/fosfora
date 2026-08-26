@@ -182,6 +182,12 @@ struct ExecPlan {
     /// `Some(generation)` otherwise. Part of the plan key — see
     /// [`ChainInputSource::generation`].
     chain_input: Option<u64>,
+    /// Which output target this plan was built against. Part of the plan key
+    /// for the same reason `chain_input` is: the plan-time `resolve` closure
+    /// SAMPLES the output target (a preview blit of the final producer does
+    /// exactly that), so a recreated target leaves stale bind groups reading a
+    /// dropped texture, and nothing about that event touches the graph.
+    out_generation: u64,
     /// First arena slot this chain owns. Chains write their uniforms into
     /// disjoint regions: every `queue.write_buffer` in the frame is staged
     /// before any pass runs, so overlapping regions would have the last
@@ -200,7 +206,6 @@ pub struct TramaExecutor {
     slots_per_chain: u32,
     /// How many chain regions the arena currently holds.
     chain_capacity: u32,
-    output: RenderTarget,
     pool: TexturePool,
     /// One plan per chain, each keyed on its own graph version.
     plans: HashMap<ChainId, ExecPlan>,
@@ -220,6 +225,11 @@ pub struct TramaExecutor {
     /// holds still while echoes survive replans.
     #[allow(dead_code)] // read from tests
     feedback_generation: u64,
+    /// Successful plan builds, ever. The direct observable for "did the plan
+    /// key do its job": tests assert it moves when a key term moves and holds
+    /// still when nothing did (which is also I8's steady state).
+    #[allow(dead_code)] // read from tests
+    plans_built: u64,
     copy_pipeline: ShaderPipeline,
     preview_pipeline: ShaderPipeline,
     /// Persistent thumbnail targets, outside the plan for the same reason as
@@ -265,19 +275,12 @@ impl TramaExecutor {
             stride,
             slots_per_chain: INITIAL_SLOTS_PER_CHAIN,
             chain_capacity: INITIAL_CHAIN_CAPACITY,
-            output: RenderTarget::new(
-                device,
-                width,
-                height,
-                GpuContext::hdr_format(),
-                1.0,
-                "trama-output",
-            ),
             pool: TexturePool::new(),
             plans: HashMap::new(),
             feedback: HashMap::new(),
             parity: 0,
             feedback_generation: 0,
+            plans_built: 0,
             // Baked-in constant shaders: failure here is a programming bug,
             // not an authoring error, so I4's keep-last-good doesn't apply.
             copy_pipeline: ShaderPipeline::new(device, GpuContext::hdr_format(), COPY_FS, cache, 1)
@@ -304,22 +307,15 @@ impl TramaExecutor {
         }
     }
 
-    /// Output-resolution change: recreate the output target, drop the pool,
-    /// force a replan. No-op when the size is unchanged.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+    /// Output-resolution change: drop the pool, force a replan. No-op when the
+    /// size is unchanged. The output targets are the caller's now
+    /// (`gpu::chain_targets`), and it drops its own on the same event.
+    pub fn resize(&mut self, width: u32, height: u32) {
         if width == self.width && height == self.height {
             return;
         }
         self.width = width;
         self.height = height;
-        self.output = RenderTarget::new(
-            device,
-            width,
-            height,
-            GpuContext::hdr_format(),
-            1.0,
-            "trama-output",
-        );
         self.pool.clear();
         // Echo contents are meaningless at a new size; the next plan build
         // recreates pairs cleared at the new resolution.
@@ -402,9 +398,11 @@ impl TramaExecutor {
     pub fn execute(
         &mut self,
         chain: ChainId,
-        graph: &mut NodeGraph,
+        graph: &NodeGraph,
         registry: &TramaRegistry,
         input: Option<ChainInputSource<'_>>,
+        out: &RenderTarget,
+        out_generation: u64,
         template: &ShaderUniforms,
         previews_on: bool,
         device: &wgpu::Device,
@@ -412,18 +410,21 @@ impl TramaExecutor {
         encoder: &mut wgpu::CommandEncoder,
         profiler: crate::gpu::profiler::ProfilerHandle<'_>,
         last_error: &mut Option<String>,
-    ) -> &RenderTarget {
+    ) {
         let version = graph.version();
         if self.plans.get(&chain).is_none_or(|p| {
             p.version != version
                 || p.previews_on != previews_on
                 || p.chain_input != input.map(|i| i.generation)
+                || p.out_generation != out_generation
         }) {
             match self.build_plan(
                 chain,
                 graph,
                 registry,
                 input,
+                out,
+                out_generation,
                 device,
                 queue,
                 version,
@@ -431,6 +432,7 @@ impl TramaExecutor {
             ) {
                 Ok(plan) => {
                     self.plans.insert(chain, plan);
+                    self.plans_built += 1;
                     *last_error = None;
                 }
                 Err(e) => {
@@ -444,6 +446,7 @@ impl TramaExecutor {
                             p.version = version;
                             p.previews_on = previews_on;
                             p.chain_input = input.map(|i| i.generation);
+                            p.out_generation = out_generation;
                         }
                         None => {
                             self.plans.insert(
@@ -452,6 +455,7 @@ impl TramaExecutor {
                                     version,
                                     previews_on,
                                     chain_input: input.map(|i| i.generation),
+                                    out_generation,
                                     steps: Vec::new(),
                                     previews: Vec::new(),
                                     output_written: false,
@@ -490,7 +494,7 @@ impl TramaExecutor {
         for step in &plan.steps {
             let view = match step.target {
                 TargetSlot::Pool(i) => &self.pool.get(i).view,
-                TargetSlot::Output => &self.output.view,
+                TargetSlot::Output => &out.view,
                 TargetSlot::FeedbackWrite => {
                     &self
                         .feedback
@@ -540,7 +544,7 @@ impl TramaExecutor {
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("trama-output-clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.output.view,
+                    view: &out.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -587,17 +591,17 @@ impl TramaExecutor {
                 pass.draw(0..3, 0..1);
             }
         }
-
-        &self.output
     }
 
     #[allow(clippy::too_many_arguments)]
     fn build_plan(
         &mut self,
         chain: ChainId,
-        graph: &mut NodeGraph,
+        graph: &NodeGraph,
         registry: &TramaRegistry,
         input: Option<ChainInputSource<'_>>,
+        out: &RenderTarget,
+        out_generation: u64,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         version: u64,
@@ -817,7 +821,7 @@ impl TramaExecutor {
                     let rt = self.pool.get(i);
                     (&rt.view, &rt.sampler)
                 }
-                Some(TargetSlot::Output) => (&self.output.view, &self.output.sampler),
+                Some(TargetSlot::Output) => (&out.view, &out.sampler),
                 // Unwired (or a dead bypass chain): 1x1 black.
                 Some(TargetSlot::FeedbackWrite) | None => (&self.prev_view, &self.prev_sampler),
             }
@@ -1008,6 +1012,7 @@ impl TramaExecutor {
             version,
             previews_on,
             chain_input: input.map(|i| i.generation),
+            out_generation,
             steps,
             previews,
             output_written,
@@ -1018,6 +1023,11 @@ impl TramaExecutor {
     #[cfg(test)]
     fn plan_version(&self, chain: ChainId) -> Option<u64> {
         self.plans.get(&chain).map(|p| p.version)
+    }
+
+    #[cfg(test)]
+    fn plans_built(&self) -> u64 {
+        self.plans_built
     }
 
     #[cfg(test)]
@@ -1237,6 +1247,15 @@ mod tests {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 256, 144);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            256,
+            144,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
 
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [256.0, 144.0];
@@ -1245,11 +1264,13 @@ mod tests {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let _ = exec.execute(
+        exec.execute(
             TEST_CHAIN,
-            &mut graph,
+            &graph,
             &reg,
             None,
+            &out,
+            1,
             &template,
             false,
             &device,
@@ -1271,11 +1292,13 @@ mod tests {
         // Second frame with unchanged topology: same plan, no new targets.
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let _ = exec.execute(
+        exec.execute(
             TEST_CHAIN,
-            &mut graph,
+            &graph,
             &reg,
             None,
+            &out,
+            1,
             &template,
             false,
             &device,
@@ -1536,6 +1559,15 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, DIM, DIM);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            DIM,
+            DIM,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [DIM as f32, DIM as f32];
         let mut last_error = None;
@@ -1584,11 +1616,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         exec.begin_frame();
         let produced = {
             let mut encoder = device.create_command_encoder(&Default::default());
-            let target = exec.execute(
+            exec.execute(
                 TEST_CHAIN,
-                &mut graph,
+                &graph,
                 &reg,
                 Some(ChainInputSource::stable(&host.view, &host.sampler, 1)),
+                &out,
+                1,
                 &template,
                 false,
                 &device,
@@ -1600,7 +1634,7 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             // The blit has to reach the GPU before the copy-to-buffer that
             // reads it; `encoder` is independent of the borrow on `exec`.
             queue.submit([encoder.finish()]);
-            snapshot(&device, &queue, &target.view, DIM)
+            snapshot(&device, &queue, &out.view, DIM)
         };
         assert!(last_error.is_none(), "{last_error:?}");
         assert_eq!(
@@ -1659,11 +1693,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         exec.begin_frame();
         let after_rebuild = {
             let mut encoder = device.create_command_encoder(&Default::default());
-            let target = exec.execute(
+            exec.execute(
                 TEST_CHAIN,
-                &mut graph,
+                &graph,
                 &reg,
                 Some(ChainInputSource::stable(&host2.view, &host2.sampler, 2)),
+                &out,
+                1,
                 &template,
                 false,
                 &device,
@@ -1673,7 +1709,7 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 &mut last_error,
             );
             queue.submit([encoder.finish()]);
-            snapshot(&device, &queue, &target.view, DIM)
+            snapshot(&device, &queue, &out.view, DIM)
         };
         assert_same_image(
             &after_rebuild,
@@ -1686,11 +1722,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         exec.begin_frame();
         let blank = {
             let mut encoder = device.create_command_encoder(&Default::default());
-            let target = exec.execute(
+            exec.execute(
                 TEST_CHAIN,
-                &mut graph,
+                &graph,
                 &reg,
                 None,
+                &out,
+                1,
                 &template,
                 false,
                 &device,
@@ -1700,7 +1738,7 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 &mut last_error,
             );
             queue.submit([encoder.finish()]);
-            snapshot(&device, &queue, &target.view, DIM)
+            snapshot(&device, &queue, &out.view, DIM)
         };
         assert_eq!(
             exec.plan_step_count(TEST_CHAIN),
@@ -1772,6 +1810,15 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 256, 144);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            256,
+            144,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [256.0, 144.0];
         let mut last_error = None;
@@ -1780,11 +1827,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let mut run = |exec: &mut TramaExecutor, chain, graph: &mut NodeGraph| {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            let _ = exec.execute(
+            exec.execute(
                 chain,
                 graph,
                 &reg,
                 None,
+                &out,
+                1,
                 &template,
                 true, // previews on, so preview targets get created too
                 &device,
@@ -1864,6 +1913,15 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 256, 144);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            256,
+            144,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [256.0, 144.0];
         let mut last_error = None;
@@ -1878,11 +1936,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             let (allocs, ()) = crate::test_alloc::count_allocs(|| {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-                let _ = exec.execute(
+                exec.execute(
                     TEST_CHAIN,
-                    &mut graph,
+                    &graph,
                     &reg,
                     None,
+                    &out,
+                    1,
                     &template,
                     false,
                     &device,
@@ -1952,6 +2012,15 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 128, 72);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            128,
+            72,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [128.0, 72.0];
         let mut last_error = None;
@@ -1960,11 +2029,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 exec.begin_frame();
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-                let _ = exec.execute(
+                exec.execute(
                     TEST_CHAIN,
                     graph,
                     &reg,
                     None,
+                    &out,
+                    1,
                     &template,
                     false,
                     &device,
@@ -2032,6 +2103,15 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 128, 72);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            128,
+            72,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let mut template = ShaderUniforms::zeroed();
         template.resolution = [128.0, 72.0];
         let mut last_error = None;
@@ -2042,11 +2122,13 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             exec.begin_frame();
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            let _ = exec.execute(
+            exec.execute(
                 TEST_CHAIN,
                 graph,
                 &reg,
                 None,
+                &out,
+                1,
                 &template,
                 previews_on,
                 &device,
@@ -2102,6 +2184,102 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored trama_output_target_identity_is_a_plan_key
+    //
+    // The output target moved out of the executor and into the caller, which
+    // means its identity can now change under a cached plan. That matters
+    // because `build_plan`'s `resolve` closure SAMPLES the output target: a
+    // feedback node whose input is the final producer binds it in a copy step,
+    // and every preview blit of the final producer binds it too. Nothing about
+    // recreating a target touches the graph, so `out_generation` is the only
+    // thing that can force the replan — exactly the role `chain_input` plays
+    // for the host input, and the same bug that shipped in stage B's first
+    // draft.
+    //
+    // Delete `|| p.out_generation != out_generation` from the plan key and the
+    // third assertion here goes red.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_output_target_identity_is_a_plan_key() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let reg = registry(&device);
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+
+        // noise → mix ← feedback(mix), mix → Output. `mix` is the final
+        // producer, so its target IS the output target, and the feedback copy
+        // step samples it — a real render path, not just a thumbnail.
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let mix = reg.get(&EffectId("mix".into())).unwrap();
+        let (noise_id, noise_params) = (noise.id.clone(), noise.params.clone());
+        let (mix_id, mix_params) = (mix.id.clone(), mix.params.clone());
+
+        let mut graph = NodeGraph::new_with_output();
+        let n = graph.add_node(NodeKind::Source { effect: noise_id }, 0, &noise_params);
+        let m = graph.add_node(NodeKind::Effect { effect: mix_id }, 2, &mix_params);
+        let f = graph.add_node(NodeKind::Feedback, 1, &[]);
+        let out_node = graph.output_node();
+        graph.connect(n, m, 0).unwrap();
+        graph.connect(m, f, 0).unwrap();
+        graph.connect(f, m, 1).unwrap();
+        graph.connect(m, out_node, 0).unwrap();
+
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+        let make_target =
+            |label| RenderTarget::new(&device, 64, 64, GpuContext::hdr_format(), 1.0, label);
+        let out_a = make_target("test-chain-output-a");
+        let out_b = make_target("test-chain-output-b");
+
+        let mut template = ShaderUniforms::zeroed();
+        template.resolution = [64.0, 64.0];
+        let mut last_error = None;
+        let mut run = |exec: &mut TramaExecutor, target: &RenderTarget, generation: u64| {
+            exec.begin_frame();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            exec.execute(
+                TEST_CHAIN,
+                &graph,
+                &reg,
+                None,
+                target,
+                generation,
+                &template,
+                false,
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+                &mut last_error,
+            );
+            queue.submit([encoder.finish()]);
+        };
+
+        run(&mut exec, &out_a, 1);
+        assert_eq!(exec.plans_built(), 1, "first frame plans");
+
+        // Steady state: nothing moved, so nothing replans. Without this the
+        // test would pass against an executor that rebuilt every frame, which
+        // is the failure mode `out_generation` could easily introduce (I8).
+        for _ in 0..3 {
+            run(&mut exec, &out_a, 1);
+        }
+        assert_eq!(exec.plans_built(), 1, "steady state must not replan");
+
+        // A different target under the same graph version. The graph did not
+        // change and neither did the host input, so only `out_generation` can
+        // catch this.
+        run(&mut exec, &out_b, 2);
+        assert_eq!(
+            exec.plans_built(),
+            2,
+            "a recreated output target must replan, or the feedback copy step \
+             keeps sampling the target that was dropped"
+        );
+        assert!(last_error.is_none(), "{last_error:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored trama_executor_black_on_unwired_output
     #[test]
     #[ignore = "requires a GPU/software adapter"]
@@ -2109,21 +2287,32 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
         let reg = registry(&device);
-        let mut graph = NodeGraph::new_with_output();
+        let graph = NodeGraph::new_with_output();
         let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
         let audio = AudioTextures::new(&device, &queue);
         let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+        // The output target is the caller's now; the executor renders into it.
+        let out = RenderTarget::new(
+            &device,
+            64,
+            64,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
         let template = ShaderUniforms::zeroed();
         let mut last_error = None;
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        let _ = exec.execute(
+        exec.execute(
             TEST_CHAIN,
-            &mut graph,
+            &graph,
             &reg,
             None,
+            &out,
+            1,
             &template,
             false,
             &device,

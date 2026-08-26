@@ -9,11 +9,13 @@
 use wgpu::{CommandEncoder, Device, Queue};
 
 use crate::effect::format::{PfxEffect, PostProcessDef};
+use crate::gpu::chain_targets::ChainTargets;
 use crate::gpu::compositor::{Compositor, LayerComposite};
 use crate::gpu::layer::LayerStack;
 use crate::gpu::postprocess::AlphaMode;
 use crate::gpu::render_target::RenderTarget;
 use crate::settings::AlphaOutputMode;
+use crate::trama::node::ChainId;
 
 /// Resolve the frame's output-alpha mode (overlay initiative; docs/alpha.md).
 ///
@@ -62,10 +64,12 @@ pub(crate) fn resolve_output_alpha(
 /// accumulator with default postprocess; a single fully-opaque layer skips
 /// compositing; otherwise bottom-first composite with the list reversed so the
 /// top of the UI list renders visually on top.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_and_composite<'a>(
     layer_stack: &'a LayerStack,
     compositor: &'a mut Compositor,
     trama: Option<&'a mut crate::trama::TramaSystem>,
+    chain_targets: &'a ChainTargets,
     device: &Device,
     queue: &Queue,
     encoder: &mut CommandEncoder,
@@ -77,10 +81,21 @@ pub(crate) fn execute_and_composite<'a>(
     // Headless passes `None` in M0 and stays Layers-only.
     if let Some(t) = trama {
         if t.mode == crate::trama::RenderMode::Trama {
-            return (
-                t.execute(None, device, queue, encoder, profiler),
-                PostProcessDef::default(),
+            // The output target is the caller's, so it outlives this borrow of
+            // `t` — which is what lets a chain run inside the composite loop
+            // later (stage C4) rather than only in place of it.
+            let chain = ChainId::Master;
+            let out = chain_targets.get(chain);
+            t.execute(
+                None,
+                out,
+                chain_targets.generation(chain),
+                device,
+                queue,
+                encoder,
+                profiler,
             );
+            return (out, PostProcessDef::default());
         }
     }
 

@@ -113,8 +113,8 @@ impl TramaSystem {
         }
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        self.executor.resize(device, width, height);
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.executor.resize(width, height);
     }
 
     /// `(in_use, total)` pooled targets — the canvas debug line.
@@ -127,27 +127,38 @@ impl TramaSystem {
         self.executor.feedback_stats()
     }
 
-    /// Execute the graph and return the Output node's target. Called from
+    /// Execute the graph into the caller's `out` target. Called from
     /// `execute_and_composite` when `mode == Trama`, and from `App::render`
     /// for preview-only execution while patching in Layers mode. Previews
     /// (and orphan execution) follow the canvas: no one can see a thumbnail
     /// through a closed window.
+    ///
+    /// Returns nothing on purpose. The output target belongs to the caller
+    /// (`gpu::chain_targets`), so `&mut TramaSystem` can be re-borrowed freely
+    /// inside a loop that is simultaneously holding shared references to the
+    /// targets earlier iterations wrote — which is exactly what the layer
+    /// composite loop does.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute(
         &mut self,
         input: Option<exec::executor::ChainInputSource<'_>>,
+        out: &RenderTarget,
+        out_generation: u64,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         profiler: crate::gpu::profiler::ProfilerHandle<'_>,
-    ) -> &RenderTarget {
+    ) {
         // Parent timing scope: the executor's per-node scopes nest under it,
         // so the profiler panel shows both the trama total and the split.
         let mut scope = profiler.scope("trama", encoder);
         self.executor.execute(
             self.active_chain,
-            &mut self.graph,
+            &self.graph,
             &self.registry,
             input,
+            out,
+            out_generation,
             &self.frame_uniforms,
             self.canvas_open,
             device,
@@ -155,7 +166,7 @@ impl TramaSystem {
             scope.encoder(),
             profiler,
             &mut self.last_error,
-        )
+        );
     }
 
     /// Register freshly created preview targets with egui and free the dead

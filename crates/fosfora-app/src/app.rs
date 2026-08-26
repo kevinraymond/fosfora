@@ -136,6 +136,10 @@ pub struct App {
     pub shader_editor: ShaderEditorState,
     // Trama node-graph system (M0) — graph, registry, executor, canvas state
     pub trama: crate::trama::TramaSystem,
+    /// Chain output targets, owned here rather than by the executor: the
+    /// composite loop holds shared references to them across iterations while
+    /// re-borrowing `&mut trama` on each one.
+    pub chain_targets: crate::gpu::chain_targets::ChainTargets,
     // Binding matrix modal
     pub binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState,
     // Quit confirmation
@@ -467,6 +471,11 @@ impl App {
             gpu.surface_config.height,
         );
 
+        let chain_targets = crate::gpu::chain_targets::ChainTargets::new(
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
+
         #[cfg(feature = "profiling")]
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
@@ -527,6 +536,7 @@ impl App {
             recording,
             shader_editor: ShaderEditorState::default(),
             trama,
+            chain_targets,
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
             quit_requested: false,
             status_error: None,
@@ -592,7 +602,8 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
-        self.trama.resize(&self.gpu.device, width, height);
+        self.trama.resize(width, height);
+        self.chain_targets.resize(width, height);
         self.egui_overlay
             .resize(width, height, self.window.scale_factor() as f32);
         if let Some(ref mut tr) = self.transition_renderer {
@@ -3294,9 +3305,19 @@ impl App {
         #[cfg(not(feature = "profiling"))]
         let profiler = crate::gpu::profiler::ProfilerHandle::none();
 
+        // The chain output targets have to exist before anything can render
+        // into them, and they are the caller's (see `gpu::chain_targets`).
+        // `ensure` is idempotent at a stable size, so this costs nothing per
+        // frame and never moves a generation (I8).
+        self.chain_targets
+            .ensure(&self.gpu.device, crate::trama::node::ChainId::Master);
+
         if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
-            let _ = self.trama.execute(
+            let chain = crate::trama::node::ChainId::Master;
+            self.trama.execute(
                 None,
+                self.chain_targets.get(chain),
+                self.chain_targets.generation(chain),
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
@@ -3310,6 +3331,7 @@ impl App {
             &self.layer_stack,
             &mut self.compositor,
             Some(&mut self.trama),
+            &self.chain_targets,
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -3343,10 +3365,15 @@ impl App {
             let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
             #[cfg(not(feature = "profiling"))]
             let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            // The preset load above replaced the layer stack, so re-`ensure`
+            // before the second render rather than trusting the first pass.
+            self.chain_targets
+                .ensure(&self.gpu.device, crate::trama::node::ChainId::Master);
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
                 Some(&mut self.trama),
+                &self.chain_targets,
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
