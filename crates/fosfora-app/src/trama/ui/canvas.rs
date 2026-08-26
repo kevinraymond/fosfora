@@ -21,14 +21,49 @@ use super::super::node::{NodeId, NodeKind};
 /// crisp on hidpi and nodes stay compact. Tune by eye in play-tests.
 const PREVIEW_DISPLAY: egui::Vec2 = egui::vec2(96.0, 54.0);
 
-pub struct CanvasState {
+/// One chain's view state. Kept per chain rather than once for the canvas:
+/// every graph numbers its nodes from zero, so a `NodeId` from another chain
+/// either names the wrong node or names nothing at all. Sharing one snarl left
+/// the previous layer's nodes sitting on the canvas as unresolvable "?" boxes
+/// the moment you selected a different layer.
+pub struct ChainView {
     /// Snarl payload is the trama [`NodeId`] itself — the index map for free.
-    /// Positions live here (M3 serializes them via snarl's serde feature).
+    /// Positions live here (M3 serializes them via snarl's serde feature),
+    /// which is why switching chains swaps this rather than rebuilding it:
+    /// a rebuild would lose every node's position.
     pub snarl: Snarl<NodeId>,
     /// The inspected node. Ours, not egui-snarl's: snarl 0.9 only selects on
     /// shift/cmd-click or a rect-drag (owner play-test: "the inspector never
     /// shows any content"), so a plain press on a node selects here instead.
     pub selected: Option<NodeId>,
+}
+
+impl ChainView {
+    /// Seed from the graph as it stands. Today a chain is born holding only
+    /// its Output node, but laying out whatever is there keeps this honest
+    /// once M3 can load a chain off disk.
+    fn new(graph: &NodeGraph) -> Self {
+        let mut snarl = Snarl::new();
+        snarl.insert_node(egui::pos2(480.0, 200.0), graph.output_node());
+        let mut y = 200.0;
+        for id in graph.topo_order() {
+            if id == graph.output_node() {
+                continue;
+            }
+            snarl.insert_node(egui::pos2(120.0, y), id);
+            y += 160.0;
+        }
+        Self {
+            snarl,
+            selected: None,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CanvasState {
+    /// One view per chain, created on first sight of that chain.
+    views: std::collections::HashMap<super::super::node::ChainId, ChainView>,
     /// Last refused edit, shown under the header until the next accepted one.
     pub status: Option<String>,
     /// Where the canvas widget sat last frame. egui-snarl persists its
@@ -39,15 +74,16 @@ pub struct CanvasState {
 }
 
 impl CanvasState {
-    pub fn new(graph: &NodeGraph) -> Self {
-        let mut snarl = Snarl::new();
-        snarl.insert_node(egui::pos2(480.0, 200.0), graph.output_node());
-        Self {
-            snarl,
-            selected: None,
-            status: None,
-            last_origin: None,
-        }
+    /// Forget a chain's view. Slots are reused once a layer is removed, so
+    /// without this the next chain to land on that slot would inherit the
+    /// removed one's nodes — the same cross-wiring, one level up.
+    pub fn drop_chain(&mut self, chain: super::super::node::ChainId) {
+        self.views.remove(&chain);
+    }
+
+    #[cfg(test)]
+    fn view_count(&self) -> usize {
+        self.views.len()
     }
 }
 
@@ -386,9 +422,20 @@ pub fn draw_trama_window(
         }
         None => master,
     };
+    // Per-chain view: the snarl holds NodeIds, and every graph numbers its
+    // nodes from zero, so one shared snarl shows the previous chain's ids as
+    // unresolvable nodes.
+    let CanvasState {
+        views,
+        status,
+        last_origin,
+    } = canvas;
+    let view = views
+        .entry(active_chain)
+        .or_insert_with(|| ChainView::new(graph));
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
-    let selected = canvas.selected;
+    let selected = view.selected;
     egui::Window::new("trama")
         .default_size([1020.0, 520.0])
         .open(&mut open)
@@ -416,7 +463,7 @@ pub fn draw_trama_window(
                     );
                 }
             });
-            if let Some(err) = last_error.as_deref().or(canvas.status.as_deref()) {
+            if let Some(err) = last_error.as_deref().or(status.as_deref()) {
                 ui.colored_label(ui.visuals().error_fg_color, err);
             }
             if !graph.contributes() {
@@ -442,20 +489,20 @@ pub fn draw_trama_window(
                 });
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let origin = ui.next_widget_position();
-                let translate = canvas.last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
-                canvas.last_origin = Some(origin);
+                let translate = last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
+                *last_origin = Some(origin);
                 let mut viewer = CanvasViewer {
                     graph,
                     chain: active_chain,
                     registry,
                     executor: &*executor,
-                    status: &mut canvas.status,
-                    selected: &mut canvas.selected,
+                    status,
+                    selected: &mut view.selected,
                     pointer_on_node: false,
                     translate,
                 };
                 let background = SnarlWidget::new().id_salt("trama-canvas").show(
-                    &mut canvas.snarl,
+                    &mut view.snarl,
                     &mut viewer,
                     ui,
                 );
@@ -468,4 +515,81 @@ pub fn draw_trama_window(
             });
         });
     trama.canvas_open = open;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trama::node::ChainId;
+
+    /// Stand-in for what `draw_trama_window` does at the top of a frame.
+    fn open_on<'a>(
+        canvas: &'a mut CanvasState,
+        chain: ChainId,
+        graph: &NodeGraph,
+    ) -> &'a mut ChainView {
+        canvas
+            .views
+            .entry(chain)
+            .or_insert_with(|| ChainView::new(graph))
+    }
+
+    #[test]
+    fn each_chain_keeps_its_own_nodes_and_positions() {
+        // Every graph numbers its nodes from zero, so a NodeId means a
+        // different node in each chain. One shared snarl left the previous
+        // layer's nodes on the canvas as unresolvable "?" boxes the moment a
+        // different layer was selected.
+        let mut a = NodeGraph::new_with_output();
+        let b = NodeGraph::new_with_output();
+
+        let mut canvas = CanvasState::default();
+        // Placing a node goes through the canvas, which adds it to the graph
+        // and the snarl together — `show_graph_menu`'s shape.
+        let view_a = open_on(&mut canvas, ChainId::Layer(0), &a);
+        let ci = a.add_node(NodeKind::ChainInput, 0, &[]);
+        view_a.snarl.insert_node(egui::pos2(10.0, 20.0), ci);
+        view_a.selected = Some(ci);
+        let a_nodes: Vec<NodeId> = view_a.snarl.node_ids().map(|(_, &id)| id).collect();
+        assert_eq!(a_nodes.len(), 2, "Output plus the node just placed");
+
+        // Switching to a chain that has only its Output must show only that.
+        let view_b = open_on(&mut canvas, ChainId::Layer(1), &b);
+        let b_nodes: Vec<NodeId> = view_b.snarl.node_ids().map(|(_, &id)| id).collect();
+        assert_eq!(b_nodes, vec![b.output_node()], "no leftovers from chain A");
+        assert_eq!(view_b.selected, None, "selection does not follow either");
+
+        // …and switching back finds chain A exactly as it was left, positions
+        // included. That is why the view is retained rather than rebuilt from
+        // the graph: positions live only here.
+        let view_a = open_on(&mut canvas, ChainId::Layer(0), &a);
+        assert_eq!(view_a.selected, Some(ci));
+        let placed = view_a
+            .snarl
+            .node_ids()
+            .find(|&(_, &id)| id == ci)
+            .map(|(n, _)| view_a.snarl.get_node_info(n).unwrap().pos);
+        assert_eq!(placed, Some(egui::pos2(10.0, 20.0)), "position survived");
+    }
+
+    #[test]
+    fn a_dropped_chain_leaves_no_view_for_the_next_one() {
+        // Slots are reused when a layer is removed. A view left behind would
+        // reappear under whatever chain lands on that slot next — the same
+        // cross-wiring, one level up from the executor's.
+        let mut a = NodeGraph::new_with_output();
+        let mut canvas = CanvasState::default();
+        let view = open_on(&mut canvas, ChainId::Layer(0), &a);
+        let ci = a.add_node(NodeKind::ChainInput, 0, &[]);
+        view.snarl.insert_node(egui::pos2(10.0, 20.0), ci);
+        assert_eq!(canvas.view_count(), 1);
+
+        canvas.drop_chain(ChainId::Layer(0));
+        assert_eq!(canvas.view_count(), 0);
+
+        let fresh = NodeGraph::new_with_output();
+        let view = open_on(&mut canvas, ChainId::Layer(0), &fresh);
+        let ids: Vec<NodeId> = view.snarl.node_ids().map(|(_, &id)| id).collect();
+        assert_eq!(ids, vec![fresh.output_node()], "reused slot starts clean");
+    }
 }

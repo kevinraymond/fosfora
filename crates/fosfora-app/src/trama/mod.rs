@@ -61,7 +61,7 @@ impl TramaSystem {
         let registry =
             effect::TramaRegistry::load(device, cache, loader, &effect::trama_effects_dir());
         let master = graph::NodeGraph::new_with_output();
-        let canvas = ui::canvas::CanvasState::new(&master);
+        let canvas = ui::canvas::CanvasState::default();
         Self {
             canvas_open: false,
             active_chain: node::ChainId::Master,
@@ -128,9 +128,13 @@ impl TramaSystem {
         self.executor.parity()
     }
 
-    /// Forget everything the executor holds for a chain whose layer is gone.
+    /// Forget everything held for a chain whose layer is gone: the executor's
+    /// feedback pairs and thumbnails, and the canvas's node positions. Slots
+    /// are reused, so a view left behind would reappear under the next chain
+    /// to land on that slot.
     pub fn drop_chain(&mut self, chain: node::ChainId) {
         self.executor.drop_chain(chain);
+        self.canvas.drop_chain(chain);
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
