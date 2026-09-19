@@ -24,6 +24,9 @@ Press **D** to toggle all UI panels. Press **F** for fullscreen.
 |------------------|-----------------------------|
 | D                | Toggle UI overlay           |
 | F                | Fullscreen                  |
+| B                | Binding matrix              |
+| G                | trama node canvas           |
+| [ / ]            | Previous / next layer       |
 | Esc              | Quit                        |
 | Tab / Shift+Tab  | Next / previous widget      |
 | F6               | Cycle panels                |

@@ -900,6 +900,140 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored a_shrunk_layer_reveals_the_layer_beneath
+    //
+    // The picture-in-picture recipe in docs/TUTORIALS.md, as a probe. Transform
+    // writes TRANSPARENT where it pulls from outside its input, and the
+    // compositor weights a layer by its alpha — so shrinking the top layer has
+    // to show the layer under it around the edges, not a black border. Make
+    // transform.wgsl return opaque black outside and the corner assertion goes
+    // red.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_shrunk_layer_reveals_the_layer_beneath() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        // Tell the two layers apart. Both hosts render the same picture (the
+        // default layer ignores `time`), so the one beneath gets a fixed hue
+        // rotation from a chain of its own.
+        stack.ensure_chain(1).expect("a slot is free");
+        {
+            let graph = &mut stack.layers[1].chain.as_deref_mut().unwrap().graph;
+            let tail = hue_chain(graph, &trama.registry, &[0.5]);
+            let out = graph.output_node();
+            graph.connect(tail, out, 0).unwrap();
+        }
+        // Half size about the center leaves the middle half of each axis
+        // covered; stay a few pixels clear of that edge on both sides, where
+        // bilinear filtering blends the two.
+        let differing = |a: &[u8], b: &[u8], inside: bool| -> usize {
+            let (lo, hi) = (DIM / 4, DIM * 3 / 4);
+            let mut n = 0;
+            for y in 0..DIM {
+                for x in 0..DIM {
+                    let within = |m: u32| x >= lo + m && x < hi - m && y >= lo + m && y < hi - m;
+                    let wanted = if inside {
+                        within(3)
+                    } else {
+                        !(x + 3 >= lo && x < hi + 3 && y + 3 >= lo && y < hi + 3)
+                    };
+                    let i = ((y * DIM + x) * 8) as usize;
+                    if wanted && a[i..i + 8] != b[i..i + 8] {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // The layer beneath, alone: what the border must show afterwards. Taken
+        // on the SECOND frame — a chain that exists on the first frame ever
+        // rendered comes out transparent black for that one frame (board
+        // #2680, unreachable in the app until presets carry chains).
+        stack.layers[0].enabled = false;
+        let mut beneath = Vec::new();
+        for _ in 0..2 {
+            beneath = frame(
+                &device,
+                &queue,
+                &mut stack,
+                &mut compositor,
+                &mut trama,
+                &mut targets,
+            );
+        }
+        assert!(
+            beneath.iter().any(|&b| b != 0),
+            "the reference must be a picture, or every comparison below is empty"
+        );
+        stack.layers[0].enabled = true;
+        let full = frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+        assert!(
+            differing(&full, &beneath, false) > 100,
+            "unchained, the opaque top layer must cover the border with a \
+             DIFFERENT picture, or the border assertion below proves nothing"
+        );
+
+        // Top layer: Layer input -> Transform (half size) -> Output.
+        stack.ensure_chain(0).expect("a slot is free");
+        {
+            let transform = trama
+                .registry
+                .get(&EffectId("transform".into()))
+                .expect("transform ships");
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+            let t = graph.add_node(
+                NodeKind::Effect {
+                    effect: transform.id.clone(),
+                },
+                1,
+                &transform.params,
+            );
+            graph
+                .params_mut(t)
+                .expect("just added")
+                .params
+                .set("scale", crate::params::ParamValue::Float(0.5));
+            let out = graph.output_node();
+            graph.connect(input, t, 0).unwrap();
+            graph.connect(t, out, 0).unwrap();
+        }
+        let mut shrunk = Vec::new();
+        for _ in 0..2 {
+            shrunk = frame(
+                &device,
+                &queue,
+                &mut stack,
+                &mut compositor,
+                &mut trama,
+                &mut targets,
+            );
+        }
+        assert_eq!(
+            differing(&shrunk, &beneath, false),
+            0,
+            "outside the shrunk picture, the layer beneath shows through"
+        );
+        assert!(
+            differing(&shrunk, &beneath, true) > 100,
+            "inside it, the top layer still covers"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored master_chain_survives_being_unwired
     //
     // The master chain's output target comes and goes with whether anything

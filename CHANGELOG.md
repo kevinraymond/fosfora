@@ -17,7 +17,8 @@
   switch is gone: select a layer, open trama, and the chain you build post-processes that
   layer — wire its Layer input into an effect and watch Panorama change while the rest of the
   stack keeps running. A chain that doesn't reach its Output node is inactive and the layer
-  renders as usual, so adding a node before wiring it no longer blanks anything.
+  renders as usual, so adding a node before wiring it no longer blanks anything. Recipes — picture-in-picture, pump to the kick,
+  echo trails on one layer — are in the new trama chapter of `docs/TUTORIALS.md`.
 
 ### Fixed
 - **The trama canvas opened zoomed to 2×, so a three-node patch filled the window.** Nodes now

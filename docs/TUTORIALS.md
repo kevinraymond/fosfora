@@ -13,17 +13,18 @@ A comprehensive guide to using Fosfora — a real-time particle and shader engin
 3. [Audio Reactivity](#audio-reactivity)
 4. [Parameters](#parameters)
 5. [Layers](#layers)
-6. [Presets](#presets)
-7. [Scenes](#scenes)
-8. [Obstacles](#obstacles)
-9. [Volumetric](#volumetric)
-10. [Binding Matrix](#binding-matrix)
-11. [Post-Processing](#post-processing)
-12. [MIDI](#midi)
-13. [OSC](#osc)
-14. [Web Control Surface](#web-control-surface)
-15. [Outputs](#outputs)
-16. [Global](#global)
+6. [trama: node chains](#trama-node-chains)
+7. [Presets](#presets)
+8. [Scenes](#scenes)
+9. [Obstacles](#obstacles)
+10. [Volumetric](#volumetric)
+11. [Binding Matrix](#binding-matrix)
+12. [Post-Processing](#post-processing)
+13. [MIDI](#midi)
+14. [OSC](#osc)
+15. [Web Control Surface](#web-control-surface)
+16. [Outputs](#outputs)
+17. [Global](#global)
 
 ---
 
@@ -596,6 +597,70 @@ Media layers support:
 
 - **[** — Select previous layer
 - **]** — Select next layer
+
+---
+
+## trama: node chains
+
+trama is a small node graph that post-processes a layer's picture *after* the layer has rendered it. Every layer can carry its own chain, and one more — the **master** chain — runs on the whole composited frame. Move, scale or spin one layer without touching the rest; hue-cycle just the background; put echo trails on a video; then do the same to everything at once.
+
+### Quick Start
+
+1. Select a layer and press **G** to open the trama canvas. The **Layer: _name_** tab is that layer's chain
+2. Right-click the canvas → **Utility → Layer input**. That node is the layer's own picture
+3. Right-click → **Effects → Transform**
+4. Drag from **Layer input**'s output pin to Transform's input, then from Transform to **Output**
+5. Click the Transform node and move **scale** in the inspector — the layer shrinks and the layers beneath show around it
+
+Nothing happens until a chain reaches its **Output** node. A chain that doesn't is *inactive*: the layer renders as usual, so you can place and wire nodes without blanking anything. Hover a wire and click the **×** to remove it.
+
+Layer rows show a diamond and a node count for any layer with a chain — **filled** when the chain is active, **hollow** when nothing reaches its Output. Click it to jump to that chain. Chains travel with their layer when you reorder the stack.
+
+### The Nodes
+
+| Node | What it does | Parameters |
+|------|--------------|------------|
+| **Layer input** (Utility) | The picture this chain was handed — the layer's output, or the whole frame on the Master tab | — |
+| **Transform** | Scale, rotate and slide the picture about the center. Pixels pulled from outside read transparent | `scale` 0.25–4 · `rotate` ±0.5 turns · `translate_x` / `translate_y` ±0.5 of the frame |
+| **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
+| **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
+| **Noise Field** (Source) | Drifting palette-colored noise — a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
+| **Feedback** (Utility) | Last frame of whatever is wired into it — the building block for echo loops | — |
+
+Every Float parameter can be driven: open the **mod** row under its slider and pick an oscillator (sine, saw, square, triangle, sample & hold, random walk; in Hz or beat-synced) or the music (**rms**, **onset**, **bass** / **mid** / **high**, a single **band**, **beat phase**, **bpm**). **amount** sets the depth, **mode** how it combines with the slider, **smoothing** how quickly it follows. A bright tick on the slider shows the live value.
+
+### Recipes
+
+**Picture-in-picture.** On the top layer: `Layer input → Transform → Output`, with `scale` 0.4 and `translate_x` / `translate_y` pushed toward a corner. The rest of the stack fills the frame behind it. Works on media layers too — a video in the corner of a particle effect.
+
+**Pump to the kick.** Same chain, `scale` at 1.0, and on its **mod** row pick **bass** with a small **amount** (0.05–0.15). The layer breathes with the low end while everything else holds still. Swap bass for **onset** for a sharper punch.
+
+**One layer slowly spinning.** Transform's `rotate` with a **Saw** oscillator at a low rate, mode **Repl**, **amount** 1.0, **smoothing** 0. That sweeps the whole range, which is one full turn end to end, so the saw's wrap-around is seamless. Beat-sync the rate and the spin locks to the bar.
+
+**Color-cycle only the background.** On the bottom layer: `Layer input → Hue Drift → Output`, `speed` around 0.05. The foreground layers keep their colors.
+
+**Echo trails on one layer.** A feedback loop:
+
+```
+Layer input ─→ Mix (input 0) ─→ Output
+                 ↑                │
+        (input 1)│                ↓
+              Feedback ←── Transform
+```
+
+Wire Mix's output to both **Output** and **Transform**, Transform into **Feedback**, and Feedback back into Mix's second input. Mix `amount` is the echo strength (start near 0.5); a Transform a whisker off identity — `scale` 1.02, `rotate` 0.005 — turns the echo into a spiral tunnel. A `scale` just under 1 (0.98) pulls the trails inward instead.
+
+**A ghost double.** `Layer input` into both Mix inputs, with a Transform on the way to input 1 (`translate_x` 0.05, or a slow oscillator on it). `amount` 0.5 gives a displaced twin that drifts apart and back.
+
+**Everything at once.** Switch to the **Master** tab and build the same chains there: they run on the composited frame, before tonemapping and the other post effects. A master Transform with **bass** on `scale` makes the entire output pump; a master echo loop smears the whole stack.
+
+### Good to Know
+
+- **Chains are not saved yet.** They last for the session; presets and scenes don't store them. Saving is the next milestone.
+- **Transparency is real.** Transform leaves transparent pixels where it has nothing to show. With layers beneath, they show through; on a single layer the frame is black there. For transparent *output* (NDI, Spout, Syphon), see [Output alpha](alpha.md#output-alpha-modes) — **Auto** follows the layers' own overlay tags and doesn't look inside chains, so pick **Passthrough** if a chain is what creates the transparency.
+- **The master chain is easy to forget.** With the canvas closed nothing in the main window shows that one is active — if the whole output looks processed and no layer explains it, check the Master tab.
+- **Cost** is small: a 10-node chain at 1080p measures under 1 ms of GPU time per frame on an RTX 4090. Each chain that exists holds one full-resolution buffer; the working buffers inside chains are shared between all of them.
+- Offline rendering (`--render-scene`) does not run chains yet.
 
 ---
 
