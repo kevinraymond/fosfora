@@ -1849,7 +1849,13 @@ mod tests {
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut first = (None, (0, 0), 0);
-        const FRAMES: usize = 10;
+        // Long enough that each half sees wgpu's LOW allocation regime at
+        // least once: its per-frame count wanders between ~93 and ~109 for
+        // stretches of several frames, and with ten frames and four-frame
+        // windows this test failed four runs in ten on unchanged code
+        // (`[451, 107, 109, 96, 93, 96, 105, 107, 107, 107]` — no accumulation
+        // anywhere, the late window simply never saw a 93).
+        const FRAMES: usize = 60;
         let mut alloc_deltas = [0u64; FRAMES];
         for (frame, delta) in alloc_deltas.iter_mut().enumerate() {
             // Parity flips once per frame, as TramaSystem::update drives it.
@@ -1911,8 +1917,8 @@ mod tests {
         // noise in our favor. Constant per-frame costs in trama-owned CPU
         // code are held to a hard zero by
         // `steady_state_frame_cpu_work_allocates_nothing`.
-        let early_floor = alloc_deltas[1..5].iter().min();
-        let late_floor = alloc_deltas[FRAMES - 4..].iter().min();
+        let early_floor = alloc_deltas[1..FRAMES / 2].iter().min();
+        let late_floor = alloc_deltas[FRAMES / 2..].iter().min();
         assert!(
             late_floor <= early_floor,
             "steady-state allocation floor rose: {alloc_deltas:?}"
