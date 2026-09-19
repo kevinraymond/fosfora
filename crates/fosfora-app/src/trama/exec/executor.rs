@@ -1032,7 +1032,7 @@ impl TramaExecutor {
     }
 
     #[cfg(test)]
-    fn plans_built(&self) -> u64 {
+    pub(crate) fn plans_built(&self) -> u64 {
         self.plans_built
     }
 

@@ -11,11 +11,11 @@
 use egui_snarl::ui::{PinInfo, SnarlPin, SnarlViewer, SnarlWidget};
 use egui_snarl::{InPin, OutPin, Snarl};
 
-use super::super::TramaSystem;
 use super::super::effect::{EffectKind, TramaRegistry};
 use super::super::exec::executor::TramaExecutor;
 use super::super::graph::NodeGraph;
 use super::super::node::{NodeId, NodeKind};
+use super::super::{CanvasTarget, TramaSystem};
 
 /// Thumbnail display size — half the 192×108 preview texture, so it stays
 /// crisp on hidpi and nodes stay compact. Tune by eye in play-tests.
@@ -53,6 +53,25 @@ impl ChainView {
             snarl.insert_node(egui::pos2(120.0, y), id);
             y += 160.0;
         }
+        // Wires too, or a rebuilt view shows a patch that looks disconnected
+        // and still renders connected.
+        let at = |id: NodeId, snarl: &Snarl<NodeId>| {
+            snarl.node_ids().find(|&(_, &n)| n == id).map(|(s, _)| s)
+        };
+        for w in graph.wires() {
+            if let (Some(from), Some(to)) = (at(w.from, &snarl), at(w.to, &snarl)) {
+                snarl.connect(
+                    egui_snarl::OutPinId {
+                        node: from,
+                        output: 0,
+                    },
+                    egui_snarl::InPinId {
+                        node: to,
+                        input: usize::from(w.to_input),
+                    },
+                );
+            }
+        }
         Self {
             snarl,
             selected: None,
@@ -77,13 +96,37 @@ impl CanvasState {
     /// Forget a chain's view. Slots are reused once a layer is removed, so
     /// without this the next chain to land on that slot would inherit the
     /// removed one's nodes — the same cross-wiring, one level up.
+    ///
+    /// The master chain is the exception. It is "dropped" only because its
+    /// output target was released — nothing reaches Output and nobody is
+    /// looking — while its graph, a field of `TramaSystem`, lives on. Its view
+    /// holds the only copy of the node positions, so it stays.
     pub fn drop_chain(&mut self, chain: super::super::node::ChainId) {
-        self.views.remove(&chain);
+        if chain != super::super::node::ChainId::Master {
+            self.views.remove(&chain);
+        }
     }
 
     #[cfg(test)]
     fn view_count(&self) -> usize {
         self.views.len()
+    }
+
+    /// Stand-in for what `draw_trama_window` does at the top of a frame.
+    #[cfg(test)]
+    pub(crate) fn open_view(
+        &mut self,
+        chain: super::super::node::ChainId,
+        graph: &NodeGraph,
+    ) -> &mut ChainView {
+        self.views
+            .entry(chain)
+            .or_insert_with(|| ChainView::new(graph))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_view(&self, chain: super::super::node::ChainId) -> bool {
+        self.views.contains_key(&chain)
     }
 }
 
@@ -392,6 +435,7 @@ pub fn draw_trama_window(
         audio_view,
         executor,
         active_chain,
+        canvas_target,
         ..
     } = trama;
     let active_chain = *active_chain;
@@ -402,15 +446,25 @@ pub fn draw_trama_window(
         .layers
         .iter()
         .position(|l| l.chain.as_ref().is_some_and(|c| c.id == active_chain));
-    let editing = match host {
-        Some(i) => layer_stack.layers[i]
-            .custom_name
-            .clone()
-            .unwrap_or_else(|| {
-                let name = layer_stack.layers[i].name.clone();
-                format!("{name} (layer {})", i + 1)
-            }),
-        None => "Master".to_string(),
+    // The layer tab names the SELECTED layer even while the master tab is
+    // showing, so it always says where a click on it will take you.
+    let selected = layer_stack.active_layer;
+    let layer_tab = match layer_stack.layers.get(selected) {
+        Some(l) => {
+            let name = l
+                .custom_name
+                .clone()
+                .unwrap_or_else(|| format!("{} (layer {})", l.name, selected + 1));
+            format!("Layer: {name}")
+        }
+        None => "Layer: (none)".to_string(),
+    };
+    // A master chain post-processes every frame whether or not anyone is
+    // looking at it, so its tab carries the count — the one place a forgotten
+    // master patch announces itself.
+    let master_tab = match master.placed_nodes() {
+        0 => "Master".to_string(),
+        n => format!("Master ({n})"),
     };
     let graph = match host {
         Some(i) => {
@@ -441,7 +495,30 @@ pub fn draw_trama_window(
         .open(&mut open)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("editing: {editing}"));
+                // Tabs say what they are in words; the selected one is
+                // marked by egui's fill and strong text, not by hue.
+                for (target, text, tip) in [
+                    (
+                        CanvasTarget::SelectedLayer,
+                        &layer_tab,
+                        "The selected layer's chain — post-processes that layer \
+                         only, and follows the layer panel's selection",
+                    ),
+                    (
+                        CanvasTarget::Master,
+                        &master_tab,
+                        "The master chain — post-processes the composited frame, \
+                         before tonemapping",
+                    ),
+                ] {
+                    if ui
+                        .selectable_label(*canvas_target == target, text)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        *canvas_target = target;
+                    }
+                }
                 ui.separator();
                 ui.weak(format!(
                     "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
@@ -522,16 +599,55 @@ mod tests {
     use super::*;
     use crate::trama::node::ChainId;
 
-    /// Stand-in for what `draw_trama_window` does at the top of a frame.
     fn open_on<'a>(
         canvas: &'a mut CanvasState,
         chain: ChainId,
         graph: &NodeGraph,
     ) -> &'a mut ChainView {
-        canvas
-            .views
-            .entry(chain)
-            .or_insert_with(|| ChainView::new(graph))
+        canvas.open_view(chain, graph)
+    }
+
+    #[test]
+    fn a_view_seeded_from_a_wired_graph_draws_its_wires() {
+        // A view is rebuilt from its graph whenever it was dropped while the
+        // graph lived on. Laying out the nodes but not the wires shows a patch
+        // that LOOKS disconnected and still renders connected.
+        let mut g = NodeGraph::new_with_output();
+        let input = g.add_node(NodeKind::ChainInput, 0, &[]);
+        let delay = g.add_node(NodeKind::Feedback, 1, &[]);
+        g.connect(input, delay, 0).unwrap();
+        g.connect(delay, g.output_node(), 0).unwrap();
+
+        let view = ChainView::new(&g);
+        let drawn: Vec<(NodeId, NodeId, usize)> = view
+            .snarl
+            .wires()
+            .map(|(o, i)| (view.snarl[o.node], view.snarl[i.node], i.input))
+            .collect();
+        assert_eq!(drawn.len(), g.wires().len(), "every graph wire is drawn");
+        for w in g.wires() {
+            assert!(
+                drawn.contains(&(w.from, w.to, usize::from(w.to_input))),
+                "missing {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_master_view_outlives_its_output_target() {
+        // A layer chain is dropped because its layer — and so its graph — is
+        // gone. The master chain is dropped only because its output target was
+        // released (nothing reaches Output any more); its graph is a field of
+        // `TramaSystem` and never goes away. Forgetting the view there throws
+        // away every node position the moment you pull the last wire.
+        let mut master = NodeGraph::new_with_output();
+        let mut canvas = CanvasState::default();
+        let view = canvas.open_view(ChainId::Master, &master);
+        let ci = master.add_node(NodeKind::ChainInput, 0, &[]);
+        view.snarl.insert_node(egui::pos2(10.0, 20.0), ci);
+
+        canvas.drop_chain(ChainId::Master);
+        assert!(canvas.has_view(ChainId::Master));
     }
 
     #[test]

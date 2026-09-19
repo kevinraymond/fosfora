@@ -249,7 +249,11 @@ pub(crate) fn execute_and_composite<'a>(
         }
     }
 
-    if !t.master.contributes() || !chain_targets.has(ChainId::Master) {
+    // Same two-part rule as a layer's chain: an inactive master chain passes
+    // the composite through untouched, but still RUNS while it is the chain on
+    // the canvas, because its thumbnails have to update as the patch is built.
+    let contributes = t.master.contributes();
+    if (!contributes && !t.master_on_screen()) || !chain_targets.has(ChainId::Master) {
         return (source, postprocess);
     }
     let out = chain_targets.get(ChainId::Master);
@@ -271,7 +275,7 @@ pub(crate) fn execute_and_composite<'a>(
         encoder,
         profiler,
     );
-    (out, postprocess)
+    (if contributes { out } else { source }, postprocess)
 }
 
 /// Run `layer`'s chain and return the target that should be composited for it:
@@ -435,7 +439,7 @@ mod tests {
                 &crate::audio::features::AudioFeatures::default(),
                 &[],
             );
-            let master_live = trama.master.contributes();
+            let master_live = trama.master_live();
             targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
             let mut encoder = device.create_command_encoder(&Default::default());
             let (source, _) = execute_and_composite(
@@ -562,7 +566,7 @@ mod tests {
         let sync = |stack: &LayerStack,
                     trama: &mut crate::trama::TramaSystem,
                     targets: &mut ChainTargets| {
-            let master_live = trama.master.contributes();
+            let master_live = trama.master_live();
             targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
         };
         sync(&stack, &mut trama, &mut targets);
@@ -599,6 +603,163 @@ mod tests {
             stack.alloc_chain_slot(),
             Some(0),
             "the freed slot is available again"
+        );
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored master_chain_passes_through_until_wired
+    //
+    // The layer probe above, for the master chain. An unwired master patch on
+    // the canvas has to RUN (its thumbnails are drawing) without replacing the
+    // composited frame with its cleared output.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn master_chain_passes_through_until_wired() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+
+        let run = |stack: &mut LayerStack,
+                   compositor: &mut Compositor,
+                   trama: &mut crate::trama::TramaSystem,
+                   targets: &mut ChainTargets| {
+            let template = stack.layers[0]
+                .as_effect()
+                .map(|e| e.uniforms)
+                .unwrap_or_else(crate::gpu::ShaderUniforms::zeroed);
+            trama.update(
+                stack,
+                1.0 / 60.0,
+                &template,
+                &crate::audio::features::AudioFeatures::default(),
+                &[],
+            );
+            let master_live = trama.master_live();
+            targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let (source, _) = execute_and_composite(
+                stack,
+                compositor,
+                Some(trama),
+                targets,
+                &device,
+                &queue,
+                &mut encoder,
+                crate::gpu::profiler::ProfilerHandle::none(),
+            );
+            let view = source.view.clone();
+            queue.submit([encoder.finish()]);
+            snapshot(&device, &queue, &view, DIM)
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // The floor first, or every equality below measures the host's drift.
+        let bare = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let bare_again = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(bare, bare_again, "unchained host must be reproducible");
+        assert!(
+            bare.iter().any(|&b| b != 0),
+            "the host must render something"
+        );
+
+        // An unwired patch, off screen: skipped outright.
+        let input = trama.master.add_node(NodeKind::ChainInput, 0, &[]);
+        let before = trama.plans_built();
+        let off_screen = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(off_screen, bare);
+        assert_eq!(trama.plans_built(), before, "idle and unseen: not run");
+
+        // The same patch with the Master tab open. It must RUN — that is the
+        // half an "unchanged picture" assertion cannot see on its own — and
+        // the frame must still be the composite, not the chain's cleared
+        // output. Return `out` unconditionally and this goes red.
+        trama.canvas_open = true;
+        trama.active_chain = ChainId::Master;
+        let on_screen = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            trama.plans_built() > before,
+            "the chain on the canvas runs so its thumbnails stay live"
+        );
+        assert_eq!(
+            on_screen, bare,
+            "an inactive master chain must not blank the frame while you patch it"
+        );
+
+        // Wired straight through: the identity chain reproduces the frame.
+        let out = trama.master.output_node();
+        trama.master.connect(input, out, 0).unwrap();
+        let identity = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(identity, bare, "identity master chain reproduces the frame");
+
+        // A real effect changes it.
+        let hue = trama
+            .registry
+            .get(&EffectId("hue_drift".into()))
+            .expect("hue_drift ships");
+        let (hue_id, hue_params) = (hue.id.clone(), hue.params.clone());
+        let h = trama
+            .master
+            .add_node(NodeKind::Effect { effect: hue_id }, 1, &hue_params);
+        trama.master.connect(input, h, 0).unwrap();
+        trama.master.connect(h, out, 0).unwrap();
+        let processed = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_ne!(processed, bare, "a wired master chain changes the frame");
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored master_chain_survives_being_unwired
+    //
+    // The master chain's output target comes and goes with whether anything
+    // reaches Output, and releasing a target tells trama to forget the chain.
+    // For a layer chain that is right — the layer is gone. The master GRAPH
+    // never goes away, so forgetting its canvas view threw away every node
+    // position the moment the last wire was pulled.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn master_chain_survives_being_unwired() {
+        let _guard = gpu_guard();
+        let (device, _queue) = test_gpu();
+        let (stack, _compositor, mut trama, mut targets) = scene(&device, &_queue, 1);
+
+        let sync = |trama: &mut crate::trama::TramaSystem, targets: &mut ChainTargets| {
+            let master_live = trama.master_live();
+            targets.sync(&device, &stack, master_live, |c| trama.drop_chain(c));
+        };
+
+        // Master tab open on a patch that reaches Output.
+        trama.canvas_open = true;
+        trama.active_chain = ChainId::Master;
+        let input = trama.master.add_node(NodeKind::ChainInput, 0, &[]);
+        let out = trama.master.output_node();
+        trama.master.connect(input, out, 0).unwrap();
+        trama.canvas.open_view(ChainId::Master, &trama.master);
+        sync(&mut trama, &mut targets);
+        assert!(targets.has(ChainId::Master));
+
+        // Pull the wire while still looking at the master canvas. The chain is
+        // on screen, so it must keep a target (its thumbnails are still
+        // drawing) and keep its view.
+        trama.master.disconnect(out, 0);
+        sync(&mut trama, &mut targets);
+        assert!(
+            targets.has(ChainId::Master),
+            "the chain on screen keeps running for its thumbnails"
+        );
+        assert!(trama.canvas.has_view(ChainId::Master));
+
+        // Look away. Now the target really is released — and the view must
+        // survive that, because the graph did.
+        trama.active_chain = ChainId::Layer(0);
+        sync(&mut trama, &mut targets);
+        assert!(
+            !targets.has(ChainId::Master),
+            "idle and off screen: released"
+        );
+        assert!(
+            trama.canvas.has_view(ChainId::Master),
+            "the master graph outlives its target, so its view must too"
         );
     }
 }

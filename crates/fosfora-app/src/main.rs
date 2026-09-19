@@ -3753,6 +3753,21 @@ impl ApplicationHandler for FosforaApp {
                     }
                 }
 
+                // A layer row's trama badge: select that layer and put the
+                // canvas on its chain (not the master tab it may have been on).
+                let open_trama: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("open_trama_on_layer")));
+                if let Some(idx) = open_trama {
+                    if idx < app.layer_stack.layers.len() {
+                        app.layer_stack.active_layer = idx;
+                        app.sync_active_layer();
+                        app.trama.canvas_target = crate::trama::CanvasTarget::SelectedLayer;
+                        app.trama.canvas_open = true;
+                    }
+                }
+
                 // Handle lock/pin toggles
                 let toggle_lock: Option<(usize, bool)> = app
                     .egui_overlay

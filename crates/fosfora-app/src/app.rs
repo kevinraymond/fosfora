@@ -1336,11 +1336,19 @@ impl App {
         // layer is what brings that layer's chain into existence. A fresh
         // chain holds only its Output node, reaches nothing, and therefore
         // changes nothing about what the layer renders.
+        //
+        // No layer to select falls back to the master chain rather than
+        // leaving last frame's id in place: that id may name a layer that is
+        // gone, and the canvas would file the master graph under it.
         if self.trama.canvas_open {
             let active = self.layer_stack.active_layer;
-            if let Some(id) = self.layer_stack.ensure_chain(active) {
-                self.trama.active_chain = id;
-            }
+            self.trama.active_chain = match self.trama.canvas_target {
+                crate::trama::CanvasTarget::Master => crate::trama::node::ChainId::Master,
+                crate::trama::CanvasTarget::SelectedLayer => self
+                    .layer_stack
+                    .ensure_chain(active)
+                    .unwrap_or(crate::trama::node::ChainId::Master),
+            };
         }
         self.trama.update(
             &mut self.layer_stack,
@@ -3326,7 +3334,7 @@ impl App {
         // because several sites mutate `layers` directly. Free when nothing
         // moved (I8). There is no preview-only execute any more: every live
         // chain runs as part of the frame.
-        let master_live = self.trama.master.contributes();
+        let master_live = self.trama.master_live();
         let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
         targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
             trama.drop_chain(chain);
@@ -3375,7 +3383,7 @@ impl App {
             // The preset load above replaced the layer stack, so the first
             // pass's sync is stale: chains went away with their layers and the
             // new ones have no targets yet.
-            let master_live = self.trama.master.contributes();
+            let master_live = self.trama.master_live();
             let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
             targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
                 trama.drop_chain(chain);

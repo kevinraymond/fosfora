@@ -19,6 +19,16 @@ use crate::gpu::audio_textures::AudioTextures;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::render_target::RenderTarget;
 
+/// Which chain the canvas is pointed at. A choice, not a chain id: "the
+/// selected layer" keeps following the layer panel, and the chain it names is
+/// resolved once per frame in `App::update`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CanvasTarget {
+    #[default]
+    SelectedLayer,
+    Master,
+}
+
 /// The app-facing façade: registry + executor + UI state + the master chain,
 /// owned by `App` the way `shader_editor` is.
 ///
@@ -29,8 +39,11 @@ use crate::gpu::render_target::RenderTarget;
 /// frame across every chain.
 pub struct TramaSystem {
     pub canvas_open: bool,
-    /// Which chain the canvas is editing. Follows the selected layer; falls
-    /// back to the master chain when that layer has none.
+    /// The canvas tab: the selected layer's chain, or the master chain.
+    pub canvas_target: CanvasTarget,
+    /// Which chain the canvas is editing — `canvas_target` resolved against
+    /// this frame's layer selection. The master chain when there is no layer
+    /// to select.
     pub active_chain: node::ChainId,
     /// The chain that post-processes the composited frame, upstream of
     /// `PostProcessDef` (which keeps ownership of tonemapping).
@@ -64,6 +77,7 @@ impl TramaSystem {
         let canvas = ui::canvas::CanvasState::default();
         Self {
             canvas_open: false,
+            canvas_target: CanvasTarget::default(),
             active_chain: node::ChainId::Master,
             master,
             registry,
@@ -135,6 +149,26 @@ impl TramaSystem {
     pub fn drop_chain(&mut self, chain: node::ChainId) {
         self.executor.drop_chain(chain);
         self.canvas.drop_chain(chain);
+    }
+
+    /// Does the master chain need an output target this frame? Yes while it
+    /// reaches its Output, and also while it is the chain on the canvas: a
+    /// patch being built has to keep its thumbnails running before the last
+    /// wire lands, the same rule `run_layer_chain` applies to a layer's.
+    pub fn master_live(&self) -> bool {
+        self.master.contributes() || self.master_on_screen()
+    }
+
+    /// Is the canvas open on the master chain?
+    pub fn master_on_screen(&self) -> bool {
+        self.canvas_open && self.active_chain == node::ChainId::Master
+    }
+
+    /// How many plans the executor has built — proof that a chain actually
+    /// ran, for probes whose expected picture is "unchanged".
+    #[cfg(test)]
+    pub(crate) fn plans_built(&self) -> u64 {
+        self.executor.plans_built()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

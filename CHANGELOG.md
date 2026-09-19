@@ -5,6 +5,13 @@
 
 ## Unreleased
 
+### Added
+- **trama has a Master tab that post-processes the whole frame.** Switch the canvas between
+  the selected layer's chain and the master chain, which runs on the composited picture
+  before tonemapping. Layer rows now show a diamond and node count for any layer with a
+  chain — filled when it is active, hollow when nothing reaches its Output — and clicking it
+  opens that chain.
+
 ### Changed
 - **trama node chains now run on your layers instead of replacing them.** The Layers/Trama
   switch is gone: select a layer, open trama, and the chain you build post-processes that

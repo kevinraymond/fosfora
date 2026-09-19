@@ -135,7 +135,7 @@ impl NodeGraph {
             .map(|n| n.id)
     }
 
-    #[cfg(test)]
+    /// Every wire, for a canvas view being rebuilt from the graph.
     pub fn wires(&self) -> &[Wire] {
         &self.wires
     }
@@ -386,13 +386,18 @@ impl NodeGraph {
             .collect()
     }
 
+    /// How many nodes the user has placed — everything but the Output node a
+    /// chain is born with. Zero means there is nothing to tell anyone about.
+    pub fn placed_nodes(&self) -> usize {
+        self.nodes.len() - 1
+    }
+
     /// Does anything reach `Output`? A chain that answers `false` is inactive:
     /// its host's picture passes through untouched, rather than being replaced
     /// by a cleared black frame. (That was the right call while trama replaced
     /// the whole frame; it is the wrong one now that a chain post-processes a
     /// layer, where it would blank the layer the moment you place a node and
     /// before you wire it.)
-    #[allow(dead_code)] // consulted by the frame-graph integration in stage C4
     pub fn contributes(&self) -> bool {
         self.input_source(self.output, 0).is_some()
     }

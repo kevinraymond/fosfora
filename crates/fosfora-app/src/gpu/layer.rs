@@ -224,6 +224,45 @@ impl LayerChain {
     }
 }
 
+/// What the layer panel says about a layer's chain: how much is in it, and
+/// whether it is doing anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainBadge {
+    /// Nodes the user placed (the Output node a chain is born with excluded).
+    pub nodes: usize,
+    /// Does the chain reach its Output? If not, the layer renders as if the
+    /// chain were not there.
+    pub active: bool,
+}
+
+impl ChainBadge {
+    /// `None` for a chain holding only its Output node. Opening the canvas on
+    /// a layer is what creates its chain, so every layer you have so much as
+    /// looked at has one — a badge on all of them would say nothing.
+    pub fn of(graph: &crate::trama::graph::NodeGraph) -> Option<Self> {
+        let nodes = graph.placed_nodes();
+        (nodes > 0).then(|| Self {
+            nodes,
+            active: graph.contributes(),
+        })
+    }
+
+    pub fn tooltip(self) -> String {
+        let nodes = match self.nodes {
+            1 => "1 node".to_string(),
+            n => format!("{n} nodes"),
+        };
+        if self.active {
+            format!("trama chain: {nodes}, active — click to edit")
+        } else {
+            format!(
+                "trama chain: {nodes}, INACTIVE — nothing reaches Output, so this \
+                 layer renders as usual. Click to edit"
+            )
+        }
+    }
+}
+
 /// A single compositing layer. Owns its own rendering pipeline and parameters.
 pub struct Layer {
     pub name: String,
@@ -469,6 +508,8 @@ pub struct LayerInfo {
     #[allow(dead_code)]
     pub media_is_video: bool,
     pub media_is_live: bool,
+    /// The layer's trama chain, when it has one worth mentioning.
+    pub chain: Option<ChainBadge>,
 }
 
 /// Manages an ordered stack of layers.
@@ -550,6 +591,7 @@ impl LayerStack {
                     media_is_animated,
                     media_is_video,
                     media_is_live,
+                    chain: l.chain.as_deref().and_then(|c| ChainBadge::of(&c.graph)),
                 }
             })
             .collect()
@@ -627,6 +669,29 @@ pub fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chain_badge_reports_what_was_placed_and_whether_it_runs() {
+        use crate::trama::graph::NodeGraph;
+        use crate::trama::node::NodeKind;
+
+        // Opening the canvas on a layer creates its chain, so a chain holding
+        // only its Output is the normal state of any layer you have looked
+        // at. It gets no badge, or every row would wear one.
+        let mut g = NodeGraph::new_with_output();
+        assert_eq!(ChainBadge::of(&g), None);
+
+        // Placed but not wired: there, and visibly not doing anything.
+        let input = g.add_node(NodeKind::ChainInput, 0, &[]);
+        let badge = ChainBadge::of(&g).expect("a placed node earns a badge");
+        assert_eq!((badge.nodes, badge.active), (1, false));
+        assert!(badge.tooltip().contains("INACTIVE"), "says so in words");
+
+        g.connect(input, g.output_node(), 0).unwrap();
+        let badge = ChainBadge::of(&g).unwrap();
+        assert_eq!((badge.nodes, badge.active), (1, true));
+        assert!(!badge.tooltip().contains("INACTIVE"));
+    }
 
     #[test]
     fn chain_slots_fill_the_lowest_gap_and_are_reused() {
