@@ -47,6 +47,15 @@ as glow spilling onto the content beneath). **Grain** adds noise into transparen
 regions and is disabled in the shipped overlay effects; enabling it on an overlay
 produces a faint full-frame noise-glow. **Tonemap** applies to RGB only.
 
+trama chains and Auto: Auto looks only at each enabled layer's `alpha` tag and does
+not look inside chains. A chain is treated as post-processing that carries coverage
+through, and the shipped trama effects do: `hue_drift` keeps its input's alpha,
+`mix` blends all four channels, `transform` writes transparent outside the frame,
+`noise_field` writes 1.0. So an overlay layer stays an overlay with a chain on it,
+and a chain that fills the frame simply comes out opaque. The one case Auto will not
+notice is a chain that *creates* transparency on an ordinary layer (a `transform`
+shrinking it) — pick **Passthrough** by hand for that.
+
 ## Sink alpha matrix
 
 | Sink | Format on the wire | Alpha carried? | Notes |

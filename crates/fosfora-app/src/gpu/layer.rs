@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::bindings::catalog::MAX_LAYERS;
 use crate::effect::format::PostProcessDef;
 use crate::gpu::ShaderUniforms;
 use crate::gpu::audio_textures::AudioTextures;
@@ -196,6 +197,72 @@ pub enum LayerContent {
     Media(Box<MediaLayer>),
 }
 
+/// A trama chain attached to one layer: the graph the user authored, plus the
+/// slot that names it to the executor.
+///
+/// The chain lives *on* the layer rather than in a `Vec` beside the layer
+/// stack, so it travels with its layer through add, remove, reorder and preset
+/// load with nothing to keep in sync — six sites push/remove/clear
+/// `layer_stack.layers` directly, bypassing the wrappers that remap binding
+/// targets, and a parallel array would silently desync at every one of them.
+///
+/// `id` is an *allocated* slot, not the layer's stack position. Executor state
+/// that survives a replan — feedback ping-pong pairs, preview thumbnails, the
+/// uniform arena region — is keyed by it, so tying it to position would hand
+/// layer 5's echo buffer to whatever layer got dragged into slot 5.
+pub struct LayerChain {
+    pub id: crate::trama::node::ChainId,
+    pub graph: crate::trama::graph::NodeGraph,
+}
+
+impl LayerChain {
+    fn new(id: crate::trama::node::ChainId) -> Self {
+        Self {
+            id,
+            graph: crate::trama::graph::NodeGraph::new_with_output(),
+        }
+    }
+}
+
+/// What the layer panel says about a layer's chain: how much is in it, and
+/// whether it is doing anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainBadge {
+    /// Nodes the user placed (the Output node a chain is born with excluded).
+    pub nodes: usize,
+    /// Does the chain reach its Output? If not, the layer renders as if the
+    /// chain were not there.
+    pub active: bool,
+}
+
+impl ChainBadge {
+    /// `None` for a chain holding only its Output node. Opening the canvas on
+    /// a layer is what creates its chain, so every layer you have so much as
+    /// looked at has one — a badge on all of them would say nothing.
+    pub fn of(graph: &crate::trama::graph::NodeGraph) -> Option<Self> {
+        let nodes = graph.placed_nodes();
+        (nodes > 0).then(|| Self {
+            nodes,
+            active: graph.contributes(),
+        })
+    }
+
+    pub fn tooltip(self) -> String {
+        let nodes = match self.nodes {
+            1 => "1 node".to_string(),
+            n => format!("{n} nodes"),
+        };
+        if self.active {
+            format!("trama chain: {nodes}, active — click to edit")
+        } else {
+            format!(
+                "trama chain: {nodes}, INACTIVE — nothing reaches Output, so this \
+                 layer renders as usual. Click to edit"
+            )
+        }
+    }
+}
+
 /// A single compositing layer. Owns its own rendering pipeline and parameters.
 pub struct Layer {
     pub name: String,
@@ -211,6 +278,11 @@ pub struct Layer {
     pub locked: bool,
     pub pinned: bool,
     pub postprocess: PostProcessDef,
+    /// This layer's trama chain, if it has one. `None` until the user opens
+    /// the canvas on this layer; a chain that exists but reaches nothing is
+    /// inactive and the layer's own picture passes through
+    /// (`NodeGraph::contributes`).
+    pub chain: Option<Box<LayerChain>>,
 }
 
 impl Layer {
@@ -228,6 +300,7 @@ impl Layer {
             locked: false,
             pinned: false,
             postprocess: PostProcessDef::default(),
+            chain: None,
         }
     }
 
@@ -245,6 +318,7 @@ impl Layer {
             locked: false,
             pinned: false,
             postprocess: PostProcessDef::default(),
+            chain: None,
         }
     }
 
@@ -322,6 +396,36 @@ impl Layer {
         }
     }
 
+    /// The two targets this layer's output alternates between, as
+    /// `(written this frame, the other one)` — see
+    /// [`PassExecutor::final_targets`]. A media layer blits into one fixed
+    /// target, so both are the same.
+    pub fn final_targets(&self) -> (&RenderTarget, &RenderTarget) {
+        match &self.content {
+            LayerContent::Effect(e) => e.pass_executor.final_targets(),
+            LayerContent::Media(m) => (&m.output_target, &m.output_target),
+        }
+    }
+
+    /// This layer's picture, as a trama chain's `ChainInput`.
+    ///
+    /// `parity` is the executor's parity for the frame the pairing is observed
+    /// on. `per_parity[parity]` is therefore the target the layer is writing
+    /// right now, and the other slot gets its partner; both counters advance
+    /// once per frame in lockstep, so the pairing holds for the life of the
+    /// plan.
+    ///
+    /// The generation comes from the targets themselves, so an effect swap, a
+    /// shader rebuild, a resize or media loaded onto this layer all replan the
+    /// chain without anyone having to remember to say so.
+    pub fn chain_input_source(
+        &self,
+        parity: usize,
+    ) -> crate::trama::exec::executor::ChainInputSource<'_> {
+        let (current, other) = self.final_targets();
+        crate::trama::exec::executor::ChainInputSource::paired(current, other, parity)
+    }
+
     /// Flip ping-pong targets for next frame.
     pub fn flip(&mut self) {
         match &mut self.content {
@@ -396,6 +500,8 @@ pub struct LayerInfo {
     #[allow(dead_code)]
     pub media_is_video: bool,
     pub media_is_live: bool,
+    /// The layer's trama chain, when it has one worth mentioning.
+    pub chain: Option<ChainBadge>,
 }
 
 /// Manages an ordered stack of layers.
@@ -477,9 +583,39 @@ impl LayerStack {
                     media_is_animated,
                     media_is_video,
                     media_is_live,
+                    chain: l.chain.as_deref().and_then(|c| ChainBadge::of(&c.graph)),
                 }
             })
             .collect()
+    }
+
+    /// The lowest chain slot no layer is holding.
+    ///
+    /// Derived from the stack every time rather than kept as allocator state,
+    /// so it cannot drift out of sync with reality — the same reason chains
+    /// live on their layers. `None` when every slot is taken, which cannot
+    /// happen below the 8-layer cap.
+    pub fn alloc_chain_slot(&self) -> Option<u8> {
+        lowest_free_chain_slot(|n| {
+            let slot = crate::trama::node::ChainId::Layer(n);
+            self.layers
+                .iter()
+                .any(|l| l.chain.as_ref().is_some_and(|c| c.id == slot))
+        })
+    }
+
+    /// Give layer `index` a chain if it has none, and return its slot.
+    ///
+    /// Called when the canvas opens on a layer. A fresh chain holds only its
+    /// Output node, so it reaches nothing, contributes nothing, and the
+    /// layer's own picture keeps passing through untouched.
+    pub fn ensure_chain(&mut self, index: usize) -> Option<crate::trama::node::ChainId> {
+        if let Some(existing) = self.layers.get(index).and_then(|l| l.chain.as_ref()) {
+            return Some(existing.id);
+        }
+        let slot = crate::trama::node::ChainId::Layer(self.alloc_chain_slot()?);
+        self.layers.get_mut(index)?.chain = Some(Box::new(LayerChain::new(slot)));
+        Some(slot)
     }
 
     /// Number of enabled layers.
@@ -487,6 +623,13 @@ impl LayerStack {
     pub fn enabled_count(&self) -> usize {
         self.layers.iter().filter(|l| l.enabled).count()
     }
+}
+
+/// Lowest chain slot for which `taken` is false — factored pure so the
+/// allocation rule tests without a GPU, the way `select_free` and
+/// `adjusted_active_after_*` already do.
+pub(crate) fn lowest_free_chain_slot(taken: impl Fn(u8) -> bool) -> Option<u8> {
+    (0..MAX_LAYERS as u8).find(|&n| !taken(n))
 }
 
 /// Compute adjusted active layer index after removing a layer.
@@ -518,6 +661,64 @@ pub fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chain_badge_reports_what_was_placed_and_whether_it_runs() {
+        use crate::trama::graph::NodeGraph;
+        use crate::trama::node::NodeKind;
+
+        // Opening the canvas on a layer creates its chain, so a chain holding
+        // only its Output is the normal state of any layer you have looked
+        // at. It gets no badge, or every row would wear one.
+        let mut g = NodeGraph::new_with_output();
+        assert_eq!(ChainBadge::of(&g), None);
+
+        // Placed but not wired: there, and visibly not doing anything.
+        let input = g.add_node(NodeKind::ChainInput, 0, &[]);
+        let badge = ChainBadge::of(&g).expect("a placed node earns a badge");
+        assert_eq!((badge.nodes, badge.active), (1, false));
+        assert!(badge.tooltip().contains("INACTIVE"), "says so in words");
+
+        g.connect(input, g.output_node(), 0).unwrap();
+        let badge = ChainBadge::of(&g).unwrap();
+        assert_eq!((badge.nodes, badge.active), (1, true));
+        assert!(!badge.tooltip().contains("INACTIVE"));
+    }
+
+    #[test]
+    fn chain_slots_fill_the_lowest_gap_and_are_reused() {
+        // The allocator is derived from the stack every call rather than kept
+        // as state, so the only rule to pin down is which slot it picks.
+        assert_eq!(lowest_free_chain_slot(|_| false), Some(0), "empty stack");
+        assert_eq!(lowest_free_chain_slot(|n| n < 3), Some(3), "first free");
+
+        // A freed slot in the middle is reused before a fresh one is taken —
+        // slots are a bounded resource (MAX_LAYERS of them) and the arena
+        // reserves a uniform region per slot, so leaking them is not free.
+        assert_eq!(
+            lowest_free_chain_slot(|n| n != 2 && n < 6),
+            Some(2),
+            "a hole is filled before extending"
+        );
+
+        // Every slot taken: refuse rather than alias onto another layer's
+        // feedback buffers. Unreachable below the 8-layer cap, but it must not
+        // wrap around to 0.
+        assert_eq!(lowest_free_chain_slot(|_| true), None);
+    }
+
+    #[test]
+    fn chain_slots_stay_inside_the_arena() {
+        // ChainId::Master indexes at MAX_LAYERS, so a layer slot that reached
+        // it would collide with the master chain's arena region and its
+        // feedback pairs.
+        let last = lowest_free_chain_slot(|n| n < MAX_LAYERS as u8 - 1).unwrap();
+        assert_eq!(usize::from(last), MAX_LAYERS - 1);
+        assert!(
+            u32::from(last) < crate::trama::node::ChainId::Master.index(),
+            "layer slots must stay below the master chain's slot"
+        );
+    }
 
     #[test]
     fn blend_mode_all_count() {

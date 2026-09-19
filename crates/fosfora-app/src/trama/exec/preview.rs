@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use crate::gpu::render_target::RenderTarget;
 
-use super::super::node::NodeId;
+use super::super::node::{ChainId, ChainNode, NodeId};
 
 pub const PREVIEW_W: u32 = 192;
 pub const PREVIEW_H: u32 = 108;
@@ -33,7 +33,10 @@ struct PreviewEntry {
 
 #[derive(Default)]
 pub struct PreviewSet {
-    entries: HashMap<NodeId, PreviewEntry>,
+    /// Keyed by [`ChainNode`], never bare `NodeId`: every chain numbers its
+    /// nodes from zero, so a bare key would have one layer's chain read and
+    /// free another layer's thumbnails.
+    entries: HashMap<ChainNode, PreviewEntry>,
     /// TextureIds owed a `free_texture`, drained on the next `register`.
     dead: Vec<egui::TextureId>,
 }
@@ -41,7 +44,7 @@ pub struct PreviewSet {
 impl PreviewSet {
     /// Create the target for `node` if it doesn't exist yet. Plan-build only
     /// (I8: no texture creation in steady state).
-    pub fn ensure(&mut self, device: &wgpu::Device, node: NodeId) {
+    pub fn ensure(&mut self, device: &wgpu::Device, node: ChainNode) {
         self.entries.entry(node).or_insert_with(|| PreviewEntry {
             target: RenderTarget::new(
                 device,
@@ -55,12 +58,16 @@ impl PreviewSet {
         });
     }
 
-    /// Drop entries whose node no longer exists; their egui textures are
-    /// freed on the next `register`.
-    pub fn prune(&mut self, mut alive: impl FnMut(NodeId) -> bool) {
+    /// Drop entries of `chain` whose node no longer exists; their egui
+    /// textures are freed on the next `register`.
+    ///
+    /// Scoped to one chain on purpose: a plan build only knows about its own
+    /// graph, so an unscoped prune would delete every *other* chain's
+    /// thumbnails on the grounds that this graph has never heard of them.
+    pub fn prune(&mut self, chain: ChainId, mut alive: impl FnMut(NodeId) -> bool) {
         let dead = &mut self.dead;
         self.entries.retain(|&id, entry| {
-            let keep = alive(id);
+            let keep = id.chain != chain || alive(id.node);
             if !keep && let Some(tex) = entry.tex_id.take() {
                 dead.push(tex);
             }
@@ -68,18 +75,31 @@ impl PreviewSet {
         });
     }
 
+    /// Drop every entry belonging to `chain` — the chain itself is gone (its
+    /// layer was deleted).
+    #[allow(dead_code)] // wired up by layer add/remove in stage C
+    pub fn drop_chain(&mut self, chain: ChainId) {
+        self.prune(chain, |_| false);
+    }
+
     /// The render-attachment view for `node`'s thumbnail, if one exists.
-    pub fn view_of(&self, node: NodeId) -> Option<&wgpu::TextureView> {
+    pub fn view_of(&self, node: ChainNode) -> Option<&wgpu::TextureView> {
         self.entries.get(&node).map(|e| &e.target.view)
     }
 
     /// The egui texture for `node`'s thumbnail, once registered.
-    pub fn tex_of(&self, node: NodeId) -> Option<egui::TextureId> {
+    pub fn tex_of(&self, node: ChainNode) -> Option<egui::TextureId> {
         self.entries.get(&node).and_then(|e| e.tex_id)
     }
 
     pub fn count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Thumbnails belonging to one chain — the H1 isolation guard.
+    #[cfg(test)]
+    pub fn count_in(&self, chain: ChainId) -> usize {
+        self.entries.keys().filter(|k| k.chain == chain).count()
     }
 
     /// Register new targets with egui and free dead ones. Called from the

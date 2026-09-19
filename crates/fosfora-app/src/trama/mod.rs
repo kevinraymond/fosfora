@@ -19,22 +19,35 @@ use crate::gpu::audio_textures::AudioTextures;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::render_target::RenderTarget;
 
-/// Which pipeline produces the frame: the 8-layer stack or the trama graph.
+/// Which chain the canvas is pointed at. A choice, not a chain id: "the
+/// selected layer" keeps following the layer panel, and the chain it names is
+/// resolved once per frame in `App::update`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RenderMode {
+pub enum CanvasTarget {
     #[default]
-    Layers,
-    Trama,
+    SelectedLayer,
+    Master,
 }
 
-/// The app-facing façade: graph + registry + executor + UI state, owned by
-/// `App` the way `shader_editor` is. `execute_and_composite` consumes it in
-/// `Trama` mode; `mode` defaults to `Layers`, so constructing the system is
-/// behaviorally inert until the canvas flips the switch.
+/// The app-facing façade: registry + executor + UI state + the master chain,
+/// owned by `App` the way `shader_editor` is.
+///
+/// The per-layer chains are NOT here — each lives on its `Layer`
+/// (`gpu::layer::LayerChain`), so it travels with its layer and keeps a slot
+/// id that reordering cannot disturb. What is here is everything shared:
+/// one registry, one executor, one audio view, one modulation resolve per
+/// frame across every chain.
 pub struct TramaSystem {
-    pub mode: RenderMode,
     pub canvas_open: bool,
-    pub graph: graph::NodeGraph,
+    /// The canvas tab: the selected layer's chain, or the master chain.
+    pub canvas_target: CanvasTarget,
+    /// Which chain the canvas is editing — `canvas_target` resolved against
+    /// this frame's layer selection. The master chain when there is no layer
+    /// to select.
+    pub active_chain: node::ChainId,
+    /// The chain that post-processes the composited frame, upstream of
+    /// `PostProcessDef` (which keeps ownership of tonemapping).
+    pub master: graph::NodeGraph,
     pub registry: effect::TramaRegistry,
     pub canvas: ui::canvas::CanvasState,
     /// Most recent plan-build failure, if any — shown in the canvas window.
@@ -60,12 +73,13 @@ impl TramaSystem {
     ) -> Self {
         let registry =
             effect::TramaRegistry::load(device, cache, loader, &effect::trama_effects_dir());
-        let graph = graph::NodeGraph::new_with_output();
-        let canvas = ui::canvas::CanvasState::new(&graph);
+        let master = graph::NodeGraph::new_with_output();
+        let canvas = ui::canvas::CanvasState::default();
         Self {
-            mode: RenderMode::default(),
             canvas_open: false,
-            graph,
+            canvas_target: CanvasTarget::default(),
+            active_chain: node::ChainId::Master,
+            master,
             registry,
             canvas,
             last_error: None,
@@ -91,8 +105,13 @@ impl TramaSystem {
     /// frame cannot double-advance oscillators, and the canvas (drawn after
     /// `execute` has borrowed the system) reads the same values for the
     /// inspector's ghost indicators.
+    ///
+    /// Resolves EVERY chain, not just the one on screen: an oscillator whose
+    /// phase went cold while another layer was selected would jump the moment
+    /// you looked at it. Same reason orphan nodes resolve.
     pub fn update(
         &mut self,
+        layer_stack: &mut crate::gpu::layer::LayerStack,
         dt: f32,
         template: &ShaderUniforms,
         features: &AudioFeatures,
@@ -103,13 +122,57 @@ impl TramaSystem {
         self.executor.begin_frame();
         self.frame_uniforms = *template;
         self.audio_view.update(dt, features, mel);
-        for node in self.graph.params_iter_mut() {
+        for layer in &mut layer_stack.layers {
+            let Some(chain) = layer.chain.as_deref_mut() else {
+                continue;
+            };
+            for node in chain.graph.params_iter_mut() {
+                modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
+            }
+        }
+        for node in self.master.params_iter_mut() {
             modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
         }
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
-        self.executor.resize(device, width, height);
+    /// The executor's feedback parity for this frame. The frame graph pairs a
+    /// layer's two ping-pong targets against it when handing the layer's
+    /// picture to its chain.
+    pub fn parity(&self) -> usize {
+        self.executor.parity()
+    }
+
+    /// Forget everything held for a chain whose layer is gone: the executor's
+    /// feedback pairs and thumbnails, and the canvas's node positions. Slots
+    /// are reused, so a view left behind would reappear under the next chain
+    /// to land on that slot.
+    pub fn drop_chain(&mut self, chain: node::ChainId) {
+        self.executor.drop_chain(chain);
+        self.canvas.drop_chain(chain);
+    }
+
+    /// Does the master chain need an output target this frame? Yes while it
+    /// reaches its Output, and also while it is the chain on the canvas: a
+    /// patch being built has to keep its thumbnails running before the last
+    /// wire lands, the same rule `run_layer_chain` applies to a layer's.
+    pub fn master_live(&self) -> bool {
+        self.master.contributes() || self.master_on_screen()
+    }
+
+    /// Is the canvas open on the master chain?
+    pub fn master_on_screen(&self) -> bool {
+        self.canvas_open && self.active_chain == node::ChainId::Master
+    }
+
+    /// How many plans the executor has built — proof that a chain actually
+    /// ran, for probes whose expected picture is "unchanged".
+    #[cfg(test)]
+    pub(crate) fn plans_built(&self) -> u64 {
+        self.executor.plans_built()
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.executor.resize(width, height);
     }
 
     /// `(in_use, total)` pooled targets — the canvas debug line.
@@ -122,32 +185,86 @@ impl TramaSystem {
         self.executor.feedback_stats()
     }
 
-    /// Execute the graph and return the Output node's target. Called from
-    /// `execute_and_composite` when `mode == Trama`, and from `App::render`
-    /// for preview-only execution while patching in Layers mode. Previews
-    /// (and orphan execution) follow the canvas: no one can see a thumbnail
-    /// through a closed window.
-    pub(crate) fn execute(
+    /// Execute the master chain into the caller's `out` target.
+    ///
+    /// Separate from [`Self::execute_chain`] only because the master graph is
+    /// a field here: `&mut self` and `&self.master` are disjoint field borrows
+    /// inside the impl, and nothing outside it can spell that.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_master(
         &mut self,
+        input: Option<exec::executor::ChainInputSource<'_>>,
+        out: &RenderTarget,
+        out_generation: u64,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         profiler: crate::gpu::profiler::ProfilerHandle<'_>,
-    ) -> &RenderTarget {
-        // Parent timing scope: the executor's per-node scopes nest under it,
-        // so the profiler panel shows both the trama total and the split.
+    ) {
         let mut scope = profiler.scope("trama", encoder);
+        let chain = node::ChainId::Master;
+        let previews_on = self.canvas_open && chain == self.active_chain;
         self.executor.execute(
-            &mut self.graph,
+            chain,
+            &self.master,
             &self.registry,
+            input,
+            out,
+            out_generation,
             &self.frame_uniforms,
-            self.canvas_open,
+            previews_on,
             device,
             queue,
             scope.encoder(),
             profiler,
             &mut self.last_error,
-        )
+        );
+    }
+
+    /// Execute one chain into the caller's `out` target.
+    ///
+    /// Returns nothing on purpose. The output target belongs to the caller
+    /// (`gpu::chain_targets`), so `&mut TramaSystem` can be re-borrowed freely
+    /// inside a loop that is simultaneously holding shared references to the
+    /// targets earlier iterations wrote — which is exactly what the layer
+    /// composite loop does.
+    ///
+    /// Previews (and orphan execution) run for the chain on screen only: no
+    /// one can see a thumbnail through a closed window, or for a layer they
+    /// are not looking at, and running orphans everywhere would burn GPU
+    /// rendering invisible content in every chain at once.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_chain(
+        &mut self,
+        chain: node::ChainId,
+        graph: &graph::NodeGraph,
+        input: Option<exec::executor::ChainInputSource<'_>>,
+        out: &RenderTarget,
+        out_generation: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        profiler: crate::gpu::profiler::ProfilerHandle<'_>,
+    ) {
+        // Parent timing scope: the executor's per-node scopes nest under it,
+        // so the profiler panel shows both the trama total and the split.
+        let mut scope = profiler.scope("trama", encoder);
+        let previews_on = self.canvas_open && chain == self.active_chain;
+        self.executor.execute(
+            chain,
+            graph,
+            &self.registry,
+            input,
+            out,
+            out_generation,
+            &self.frame_uniforms,
+            previews_on,
+            device,
+            queue,
+            scope.encoder(),
+            profiler,
+            &mut self.last_error,
+        );
     }
 
     /// Register freshly created preview targets with egui and free the dead

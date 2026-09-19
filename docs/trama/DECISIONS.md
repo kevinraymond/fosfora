@@ -168,3 +168,89 @@ Owner reads this instead of diffs when reviewing direction.
   it), particle dispatch runs 2× during a dissolve (inherited from the
   Layers path), and the real M4 work is registry/hot-reload bridging, not
   rendering.
+- **2026-08-25 — trama is per-layer post-processing, not a rival pipeline;
+  `RenderMode` deleted.** (Owner call.) The M0 seam returned early from
+  `execute_and_composite` before any layer work ran, so the switch showed the
+  layer stack *or* the graph and no chain could be pointed at an effect. Every
+  layer now owns an optional chain that post-processes it in place, plus a master
+  chain on the composited frame, still upstream of `PostProcessDef`. The M0 seam
+  decision (2026-08-07) and INTEGRATION §2 are superseded.
+- **2026-08-25 — a chain lives ON its `Layer`, holding an ALLOCATED slot.** The
+  alternative was a `Vec` in `TramaSystem` indexed by stack position, mirrored
+  from `App::remove_layer`/`move_layer` the way binding targets are. Rejected on
+  two counts: six sites mutate `layer_stack.layers` directly and bypass those
+  wrappers, so a parallel array desyncs at every one; and `ChainId` would then be
+  the position, while feedback pairs, thumbnails and the arena region are keyed by
+  it — reordering would hand one layer's echo to another. The allocator is derived
+  from the stack on every call rather than kept as state, and freed slots are
+  reused.
+- **2026-08-25 — an inactive chain passes its host's picture through.**
+  Supersedes the 2026-08-09 rule that nothing-feeds-Output means deliberate
+  cleared black. That was right while trama replaced the whole frame, where
+  falling back to the layer stack would have hidden a mistake; post-processing one
+  layer is a different job, and blanking it the moment a node is placed and before
+  it is wired is not a useful signal. An inactive chain still *runs* when it is
+  the one on screen, so thumbnails stay live, but its output goes nowhere. The
+  canvas keeps warning, reworded.
+- **2026-08-25 — chain output targets are owned by the CALLER
+  (`gpu::chain_targets`), not the executor.** Two problems, one fix. The
+  executor's single `output: RenderTarget` meant chain B would overwrite chain A's
+  picture before the compositor read it — the real blocker, ahead of the borrow.
+  And the composite loop accumulates `LayerComposite`s holding `&RenderTarget`
+  while re-borrowing `&mut TramaSystem` on each iteration, which only works if the
+  target is not reached through the executor. Same separation `Compositor` already
+  uses for its accumulator.
+- **2026-08-25 — interior targets stay pooled and SHARED across chains; the
+  planned "plan all chains in one pass" was unnecessary.** `build_plan` already
+  calls `pool.release_all()` before acquiring and pool indices are stable until
+  `clear()`, so transients already alias across chains — and that is already
+  sound, because chains run as one contiguous sequential run of passes, a chain's
+  interior is dead once its output is written, and no chain reads another's.
+  Preview blits already fire inside each chain's own `execute`. Only the outputs
+  needed separating, which is what keeps VRAM near one chain's worth rather than
+  the sum.
+- **2026-08-25 — target identity is carried by `RenderTarget.id`, not by an
+  app-level epoch counter.** A chain binds its host's texture once, at plan build,
+  so it must notice a resize, effect swap, shader rebuild, preset load or media
+  load. The first design threaded a `layer_epoch` that a dozen call sites had to
+  remember to bump, where missing one shows the picture from before the rebuild,
+  silently. Stamping every target at the single place targets are created removes
+  the whole class. It also removed a discriminant the master chain needed:
+  `Compositor::composite` returns `targets[read_idx]` where `read_idx` depends on
+  the layer count, and toggling `enabled` changes it without adding or removing
+  anything.
+- **2026-08-25 — `NodeGraph`'s topo cache moved behind `RefCell`.** The chain's
+  graph lives on its layer and the frame graph plans it out of the `&LayerStack`
+  it holds for the whole frame, so the read side has to work through a shared
+  borrow. Both callers are replan-only paths, so the owned copy never lands in a
+  steady-state frame (I8).
+- **2026-09-19 — the pooled-transients prediction was MEASURED, and holds.**
+  `chain_transients_alias_across_chains` (GPU): one 3-effect chain alone takes 2
+  pool targets; the same chain on four layers plus the master takes 2; stretching
+  one of them to five effects takes 4. The pool follows the longest chain, not the
+  sum. What does sum, by design: one full-resolution output per chain that
+  *exists* (`ChainTargets` — wired or not, so opening the canvas on a layer costs
+  a target from then on), and feedback ping-pong pairs, which hold last frame and
+  cannot alias. The pool is a high-water mark — it never shrinks short of a
+  resize.
+- **2026-09-19 — a chain's input generation names its two targets in PARITY
+  order, not `(current, other)` order.** A layer whose last pass has feedback
+  writes alternate targets on alternate frames, so `(current, other)` swaps every
+  frame; the generation built from it moved every frame, and every layer chain on
+  such a layer — and the master chain over a solo layer — replanned on every
+  frame, rebuilding every bind group (I8). Nothing on screen showed it. The
+  frame-graph probes could not see it either, because their harness never flipped
+  the layers the way `App::render` does: they only ever tested the frame a plan
+  was built on. `ChainInputSource::paired` is now the one place the pairing and
+  its generation are built, and the shared test `frame` helper flips.
+- **2026-09-19 — Auto output-alpha does not look inside chains (Kevin's call).**
+  `resolve_output_alpha` keeps reasoning from each enabled layer's `.pfx` `alpha`
+  tag alone. All four shipped trama effects are alpha-honest (`hue_drift` keeps
+  `c.a`, `mix` lerps all four channels, `transform` writes transparent outside,
+  `noise_field` writes 1.0), so under Passthrough the alpha that reaches the
+  output is the alpha the chain really wrote, and the failure mode is truthful
+  rather than wrong. Ruled out: "any chained layer is not an overlay" (a hue shift
+  would silently kill an overlay's transparency) and a per-effect `alpha` manifest
+  field with a graph walk (real machinery for four effects). A chain that creates
+  transparency on an untagged layer needs Passthrough chosen by hand; documented
+  in `docs/alpha.md`.

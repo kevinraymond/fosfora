@@ -157,6 +157,48 @@ fn pin_button(ui: &mut Ui, id: &str, pinned: bool, color: Color32) -> egui::Resp
     })
 }
 
+/// Width of [`chain_button`], so the row can reserve it before the label.
+const CHAIN_BADGE_WIDTH: f32 = 28.0;
+
+/// trama chain badge — a diamond plus the node count. FILLED when the chain
+/// reaches its Output, HOLLOW when it does not: the state is carried by shape,
+/// never by color, and the tooltip says it in words.
+fn chain_button(
+    ui: &mut Ui,
+    badge: crate::gpu::layer::ChainBadge,
+    color: Color32,
+) -> egui::Response {
+    let size = Vec2::new(CHAIN_BADGE_WIDTH, 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let c = if response.hovered() {
+        Color32::WHITE
+    } else {
+        color
+    };
+    let center = egui::pos2(rect.left() + 6.0, rect.center().y);
+    let r = 4.5;
+    let diamond = vec![
+        egui::pos2(center.x, center.y - r),
+        egui::pos2(center.x + r, center.y),
+        egui::pos2(center.x, center.y + r),
+        egui::pos2(center.x - r, center.y),
+    ];
+    let painter = ui.painter();
+    if badge.active {
+        painter.add(egui::Shape::convex_polygon(diamond, c, Stroke::NONE));
+    } else {
+        painter.add(egui::Shape::closed_line(diamond, Stroke::new(1.2_f32, c)));
+    }
+    painter.text(
+        egui::pos2(rect.left() + 14.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        badge.nodes.min(99),
+        egui::FontId::proportional(SMALL_SIZE),
+        c,
+    );
+    response
+}
+
 /// Find which slot (0..=num_layers) the pointer is closest to, based on card rects.
 /// Slot i means "insert before card i"; slot num_layers means "insert at end".
 fn find_drop_slot(pos_y: f32, card_rects: &[Rect]) -> usize {
@@ -421,7 +463,10 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                 let is_renaming = rename_idx == Some(i);
 
                                 // Reserve space for type badge + delete button on right
-                                let right_btns_width = if num_layers > 1 { 46.0 } else { 28.0 };
+                                let mut right_btns_width = if num_layers > 1 { 46.0 } else { 28.0 };
+                                if layer.chain.is_some() {
+                                    right_btns_width += CHAIN_BADGE_WIDTH + 3.0;
+                                }
                                 let label_width =
                                     (ui.available_width() - right_btns_width).max(20.0);
 
@@ -538,6 +583,18 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                                         });
                                     }
                                     label.on_hover_text(&display);
+                                }
+
+                                // trama chain badge. Clicking it selects this
+                                // layer and opens the canvas on its chain.
+                                if let Some(badge) = layer.chain {
+                                    let resp = chain_button(ui, badge, title_color);
+                                    if resp.clicked() {
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(egui::Id::new("open_trama_on_layer"), i);
+                                        });
+                                    }
+                                    resp.on_hover_text(badge.tooltip());
                                 }
 
                                 // Type badge (FX/MD/WC)

@@ -10,6 +10,7 @@
 //! executor keys its plan on `version()`, which is what makes "rewire updates
 //! the output next frame" fall out for free.
 
+use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 
 use crate::params::{ParamDef, ParamStore};
@@ -42,6 +43,8 @@ pub enum GraphError {
     OutputImmortal,
     #[error("graph must contain exactly one Output node")]
     MissingOutput,
+    #[error("a chain may hold at most one ChainInput node")]
+    DuplicateChainInput,
     #[error("an input pin has more than one wire")]
     DuplicateWire,
 }
@@ -72,7 +75,12 @@ pub struct NodeGraph {
     output: NodeId,
     next_id: u64,
     /// Cached Kahn order over all nodes; `None` after any structural edit.
-    topo: Option<Vec<NodeId>>,
+    ///
+    /// Interior-mutable so the whole read side of the graph is reachable
+    /// through a shared borrow: a chain's graph lives on its `Layer` and the
+    /// frame graph plans it out of `&LayerStack`, which it holds for the whole
+    /// frame while `layer_outputs` accumulates.
+    topo: RefCell<Option<Vec<NodeId>>>,
     /// Bumped by every structural edit (including bypass toggles — they change
     /// the execution plan). The executor replans when this moves.
     version: u64,
@@ -94,14 +102,15 @@ impl NodeGraph {
             wires: Vec::new(),
             output,
             next_id: 1,
-            topo: None,
+            topo: RefCell::new(None),
             version: 0,
         }
     }
 
     fn touch(&mut self) {
         self.version += 1;
-        self.topo = None;
+        // `&mut self` here, so no runtime borrow is needed.
+        *self.topo.get_mut() = None;
     }
 
     pub fn version(&self) -> u64 {
@@ -116,7 +125,17 @@ impl NodeGraph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
-    #[cfg(test)]
+    /// This chain's `ChainInput` node, if it has one. At most one exists
+    /// (`validate` enforces it), so the canvas can hide the menu entry once
+    /// it is placed rather than let a second one be created and refused.
+    pub fn chain_input(&self) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::ChainInput))
+            .map(|n| n.id)
+    }
+
+    /// Every wire, for a canvas view being rebuilt from the graph.
     pub fn wires(&self) -> &[Wire] {
         &self.wires
     }
@@ -300,8 +319,12 @@ impl NodeGraph {
     /// the result is deterministic. Delay edges (wires into Feedback nodes)
     /// don't count (I9): a Feedback node orders as a source — its consumers
     /// read the buffer written last frame, so no same-frame dependency exists.
-    pub fn topo_order(&mut self) -> &[NodeId] {
-        if self.topo.is_none() {
+    ///
+    /// Takes `&self` and hands back an owned copy: both callers
+    /// (`build_plan`, `live_set`) are replan-only paths, so the copy never
+    /// lands in a steady-state frame (I8).
+    pub fn topo_order(&self) -> Vec<NodeId> {
+        if self.topo.borrow().is_none() {
             let mut indegree: Vec<usize> = self
                 .nodes
                 .iter()
@@ -338,16 +361,16 @@ impl NodeGraph {
             // `connect` refuses cycles, so a partial order here would mean a
             // broken invariant, not user input.
             debug_assert_eq!(order.len(), self.nodes.len(), "cycle in wire graph");
-            self.topo = Some(order);
+            *self.topo.borrow_mut() = Some(order);
         }
-        self.topo.as_deref().expect("just filled")
+        self.topo.borrow().clone().expect("just filled")
     }
 
     /// The nodes that actually feed the Output, in topological order. Orphan
     /// subgraphs are legal to author but excluded from execution — unless
     /// previews are on (canvas open), where the executor widens its step set
     /// to `topo_order()` so orphan thumbnails stay alive (handoff §9.1).
-    pub fn live_set(&mut self) -> Vec<NodeId> {
+    pub fn live_set(&self) -> Vec<NodeId> {
         let mut live: HashSet<NodeId> = HashSet::from([self.output]);
         let mut queue = VecDeque::from([self.output]);
         while let Some(n) = queue.pop_front() {
@@ -358,10 +381,25 @@ impl NodeGraph {
             }
         }
         self.topo_order()
-            .iter()
-            .copied()
+            .into_iter()
             .filter(|id| live.contains(id))
             .collect()
+    }
+
+    /// How many nodes the user has placed — everything but the Output node a
+    /// chain is born with. Zero means there is nothing to tell anyone about.
+    pub fn placed_nodes(&self) -> usize {
+        self.nodes.len() - 1
+    }
+
+    /// Does anything reach `Output`? A chain that answers `false` is inactive:
+    /// its host's picture passes through untouched, rather than being replaced
+    /// by a cleared black frame. (That was the right call while trama replaced
+    /// the whole frame; it is the wrong one now that a chain post-processes a
+    /// layer, where it would blank the layer the moment you place a node and
+    /// before you wire it.)
+    pub fn contributes(&self) -> bool {
+        self.input_source(self.output, 0).is_some()
     }
 
     /// Defensive re-check of the by-construction invariants, for the executor
@@ -374,6 +412,15 @@ impl NodeGraph {
             .count();
         if outputs != 1 || self.node(self.output).is_none() {
             return Err(GraphError::MissingOutput);
+        }
+        if self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::ChainInput))
+            .count()
+            > 1
+        {
+            return Err(GraphError::DuplicateChainInput);
         }
         let mut pins: HashSet<(NodeId, u8)> = HashSet::new();
         for w in &self.wires {
@@ -433,7 +480,7 @@ impl NodeGraph {
 
     #[cfg(test)]
     fn topo_cached(&self) -> bool {
-        self.topo.is_some()
+        self.topo.borrow().is_some()
     }
 }
 
@@ -538,7 +585,7 @@ mod tests {
         g.validate().unwrap();
         // Every node topo-sorts (the loop is broken by the delay edge), and
         // the feedback node's OUTPUT edge is real: consumers order after it.
-        let order: Vec<NodeId> = g.topo_order().to_vec();
+        let order: Vec<NodeId> = g.topo_order();
         assert_eq!(order.len(), 5, "all nodes ordered, no cycle leftover");
         let pos = |id| order.iter().position(|&n| n == id).unwrap();
         assert!(pos(s) < pos(mix));
@@ -655,6 +702,26 @@ mod tests {
     }
 
     #[test]
+    fn contributes_only_once_something_reaches_output() {
+        let mut g = NodeGraph::new_with_output();
+        let out = g.output_node();
+        // A bare chain, and a chain that has nodes but no wire home, are both
+        // inactive: the host's picture passes through untouched.
+        assert!(!g.contributes(), "bare Output graph");
+        let ci = g.add_node(NodeKind::ChainInput, 0, &[]);
+        let e = eff(&mut g, 1);
+        g.connect(ci, e, 0).unwrap();
+        assert!(!g.contributes(), "nodes placed but nothing wired to Output");
+
+        g.connect(e, out, 0).unwrap();
+        assert!(g.contributes());
+
+        // …and disconnecting the last hop takes it back out of the frame.
+        g.disconnect(out, 0);
+        assert!(!g.contributes());
+    }
+
+    #[test]
     fn orphan_subgraph_validates_but_excluded_from_live_set() {
         let mut g = NodeGraph::new_with_output();
         let s = src(&mut g);
@@ -701,9 +768,9 @@ mod tests {
         let out = g.output_node();
         g.connect(s, out, 0).unwrap();
         assert!(!g.topo_cached());
-        let first: Vec<NodeId> = g.topo_order().to_vec();
+        let first: Vec<NodeId> = g.topo_order();
         assert!(g.topo_cached());
-        assert_eq!(g.topo_order(), first.as_slice());
+        assert_eq!(g.topo_order(), first);
         g.disconnect(out, 0);
         assert!(!g.topo_cached());
     }

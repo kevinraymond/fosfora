@@ -1,4 +1,5 @@
 pub mod audio_textures;
+pub mod chain_targets;
 pub mod compositor;
 pub mod context;
 pub mod frame_capture;

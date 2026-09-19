@@ -413,6 +413,31 @@ impl PassExecutor {
         final_target
     }
 
+    /// The final pass's two ping-pong targets as `(written this frame, the
+    /// other one)`.
+    ///
+    /// A trama chain that samples this layer binds its texture once, at plan
+    /// build, but `execute` hands back `targets[current]` and a feedback pass
+    /// flips `current` every frame — so the chain needs a bind group for each
+    /// and has to know which is which. Pairing them against the *observed*
+    /// current target rather than deriving an offset from the two parity
+    /// counters is deliberate: they advance in lockstep (spike #2098), so the
+    /// pairing captured at plan build stays correct, and there is no sign
+    /// convention to get backwards.
+    ///
+    /// A last pass without feedback never flips, so both are the same target.
+    pub fn final_targets(&self) -> (&RenderTarget, &RenderTarget) {
+        let pass = self
+            .passes
+            .last()
+            .expect("pipeline always has at least one pass");
+        if pass.has_feedback {
+            (pass.target.write_target(), pass.target.read_target())
+        } else {
+            (pass.target.write_target(), pass.target.write_target())
+        }
+    }
+
     /// Flip all feedback-enabled passes for next frame, and advance the global
     /// parity in lockstep so cross-pass reads stay aligned.
     pub fn flip(&mut self) {

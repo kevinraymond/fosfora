@@ -46,6 +46,10 @@ pub struct SceneRenderer {
     pub effect_loader: EffectLoader,
     pub layer_stack: LayerStack,
     pub compositor: Compositor,
+    /// Empty here: headless passes `None` for trama, so no chain ever runs and
+    /// no slot is ever allocated. It exists because `execute_and_composite`
+    /// takes the targets from its caller.
+    pub chain_targets: crate::gpu::chain_targets::ChainTargets,
     pub post_process: PostProcessChain,
     pub capture: FrameCapture,
     pub placeholder: PlaceholderTexture,
@@ -107,6 +111,7 @@ impl SceneRenderer {
             effect_loader,
             layer_stack: LayerStack::new(),
             compositor,
+            chain_targets: crate::gpu::chain_targets::ChainTargets::new(width, height),
             post_process,
             capture,
             placeholder,
@@ -606,7 +611,10 @@ impl SceneRenderer {
             &mut self.compositor,
             // Headless is Layers-only in M0; M3 (graph persistence) upgrades
             // this to construct a TramaSystem for scene files that carry one.
+            // With `None` here, a layer that carries a chain has it SKIPPED —
+            // headless renders the unchained picture until #2063 lands.
             None,
+            &self.chain_targets,
             &self.device,
             &self.queue,
             &mut encoder,

@@ -136,6 +136,10 @@ pub struct App {
     pub shader_editor: ShaderEditorState,
     // Trama node-graph system (M0) — graph, registry, executor, canvas state
     pub trama: crate::trama::TramaSystem,
+    /// Chain output targets, owned here rather than by the executor: the
+    /// composite loop holds shared references to them across iterations while
+    /// re-borrowing `&mut trama` on each one.
+    pub chain_targets: crate::gpu::chain_targets::ChainTargets,
     // Binding matrix modal
     pub binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState,
     // Quit confirmation
@@ -467,6 +471,11 @@ impl App {
             gpu.surface_config.height,
         );
 
+        let chain_targets = crate::gpu::chain_targets::ChainTargets::new(
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+        );
+
         #[cfg(feature = "profiling")]
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
@@ -527,6 +536,7 @@ impl App {
             recording,
             shader_editor: ShaderEditorState::default(),
             trama,
+            chain_targets,
             binding_matrix: crate::ui::panels::binding_matrix::BindingMatrixState::new(),
             quit_requested: false,
             status_error: None,
@@ -592,7 +602,8 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
-        self.trama.resize(&self.gpu.device, width, height);
+        self.trama.resize(width, height);
+        self.chain_targets.resize(width, height);
         self.egui_overlay
             .resize(width, height, self.window.scale_factor() as f32);
         if let Some(ref mut tr) = self.transition_renderer {
@@ -1321,8 +1332,31 @@ impl App {
         // `latest_features` consumes a single-consumer pulse latch and must
         // not be called again.
         let trama_audio = self.latest_audio.unwrap_or_default();
-        self.trama
-            .update(dt, &self.uniforms, &trama_audio, self.audio.latest_mel());
+        // The canvas edits the SELECTED layer's chain, so opening it on a
+        // layer is what brings that layer's chain into existence. A fresh
+        // chain holds only its Output node, reaches nothing, and therefore
+        // changes nothing about what the layer renders.
+        //
+        // No layer to select falls back to the master chain rather than
+        // leaving last frame's id in place: that id may name a layer that is
+        // gone, and the canvas would file the master graph under it.
+        if self.trama.canvas_open {
+            let active = self.layer_stack.active_layer;
+            self.trama.active_chain = match self.trama.canvas_target {
+                crate::trama::CanvasTarget::Master => crate::trama::node::ChainId::Master,
+                crate::trama::CanvasTarget::SelectedLayer => self
+                    .layer_stack
+                    .ensure_chain(active)
+                    .unwrap_or(crate::trama::node::ChainId::Master),
+            };
+        }
+        self.trama.update(
+            &mut self.layer_stack,
+            dt,
+            &self.uniforms,
+            &trama_audio,
+            self.audio.latest_mel(),
+        );
 
         // Update each layer's uniforms from global template + per-layer params.
         // The body lives in gpu/frame_prep.rs so the headless renderer runs the
@@ -3294,11 +3328,17 @@ impl App {
         #[cfg(not(feature = "profiling"))]
         let profiler = crate::gpu::profiler::ProfilerHandle::none();
 
-        if self.trama.canvas_open && self.trama.mode == crate::trama::RenderMode::Layers {
-            let _ = self
-                .trama
-                .execute(&self.gpu.device, &self.gpu.queue, &mut encoder, profiler);
-        }
+        // Match the resident chain output targets to the chains that exist,
+        // and let the executor forget any chain whose layer went away. Driven
+        // off the layer stack rather than from remove_layer/move_layer,
+        // because several sites mutate `layers` directly. Free when nothing
+        // moved (I8). There is no preview-only execute any more: every live
+        // chain runs as part of the frame.
+        let master_live = self.trama.master_live();
+        let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
+        targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
+            trama.drop_chain(chain);
+        });
 
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
@@ -3306,6 +3346,7 @@ impl App {
             &self.layer_stack,
             &mut self.compositor,
             Some(&mut self.trama),
+            &self.chain_targets,
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -3339,10 +3380,19 @@ impl App {
             let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
             #[cfg(not(feature = "profiling"))]
             let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            // The preset load above replaced the layer stack, so the first
+            // pass's sync is stale: chains went away with their layers and the
+            // new ones have no targets yet.
+            let master_live = self.trama.master_live();
+            let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
+            targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
+                trama.drop_chain(chain);
+            });
             let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
                 Some(&mut self.trama),
+                &self.chain_targets,
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,

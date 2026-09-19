@@ -909,7 +909,11 @@ impl ApplicationHandler for FosforaApp {
                     // TextureIds; dead ones are freed on the same call.
                     app.trama
                         .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
-                    crate::trama::ui::canvas::draw_trama_window(&ctx, &mut app.trama);
+                    crate::trama::ui::canvas::draw_trama_window(
+                        &ctx,
+                        &mut app.trama,
+                        &mut app.layer_stack,
+                    );
 
                     // Check if sidebar "Matrix" button was clicked
                     let matrix_open_requested = ctx.data_mut(|d| {
@@ -3746,6 +3750,21 @@ impl ApplicationHandler for FosforaApp {
                     if idx < app.layer_stack.layers.len() {
                         app.layer_stack.active_layer = idx;
                         app.sync_active_layer();
+                    }
+                }
+
+                // A layer row's trama badge: select that layer and put the
+                // canvas on its chain (not the master tab it may have been on).
+                let open_trama: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("open_trama_on_layer")));
+                if let Some(idx) = open_trama {
+                    if idx < app.layer_stack.layers.len() {
+                        app.layer_stack.active_layer = idx;
+                        app.sync_active_layer();
+                        app.trama.canvas_target = crate::trama::CanvasTarget::SelectedLayer;
+                        app.trama.canvas_open = true;
                     }
                 }
 

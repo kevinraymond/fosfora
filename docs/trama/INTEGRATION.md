@@ -54,13 +54,24 @@ The already-extracted chokepoint is **`frame_graph::execute_and_composite`**
 the dissolve re-render in `App::render`, and the headless scene renderer — and its
 module doc records that it exists to stop those copies drifting.
 
-**Chosen seam:** a `RenderMode { Layers, Trama }` switch inside
+**Chosen seam (M0; SUPERSEDED 2026-08-25, see below):** a `RenderMode { Layers,
+Trama }` switch inside
 `execute_and_composite`. In Trama mode the graph executes and the Output node's
 target is returned as `source`. One edit covers live, dissolve, and headless;
 dissolve crossfades between Layers-scenes and Trama-scenes work for free because
 `TransitionRenderer::crossfade` consumes `source` textures. Trama outputs
 `Rgba16Float` linear like every layer; **postprocess keeps ownership of
 tonemapping** — the handoff §9.7 "final blit with sRGB handling" already exists.
+
+**What replaced it (2026-08-25, #2391).** The mode switch made trama a *rival*
+pipeline: the early return fired before any layer work ran, so you saw the layer
+stack **or** the graph, and no chain could ever be pointed at Panorama. It was
+the cheapest seam at M0, not a considered product decision. Now every layer owns
+an optional chain that post-processes that layer in place, plus a master chain on
+the composited frame — still upstream of postprocess, so the tonemapping rule
+below is unchanged. `RenderMode` is deleted. The escape hatch named at the end of
+this section, `LayerContent::Graph`, was *not* the route taken: a chain augments
+a layer rather than replacing one.
 
 Rejected: the `app.rs` source-swap between crossfade and postprocess (re-opens the
 dissolve-tail duplication as two edit sites); replacing the postprocess blit (trama
@@ -192,7 +203,8 @@ off-thread compile; Appendix-A.1 fallback editor; §12 manifest-merge.
   validation + topo sort; scene-level executor (uniform arena, per-node bind
   groups, texture pool); registry loading trama-manifest `.wgsl` from
   `assets/trama/effects/` (3 built-ins: `noise_field`, `hue_drift`, Output);
-  `execute_and_composite` seam + `RenderMode`; egui-snarl canvas. Params at
+  `execute_and_composite` seam + `RenderMode` (both superseded — see the
+  per-layer re-architecture note in §2); egui-snarl canvas. Params at
   manifest defaults. Accept criteria unchanged (60 fps @1080p, live rewire, unit
   tests for topo/cycle/manifest). **Risk (retired 2026-08-07):** egui-snarl 0.9.0
   declares `egui = "^0.33"` (verified on crates.io) — pin `0.9`; 0.10/0.11 target
@@ -227,6 +239,7 @@ group, `PhosphorUniforms`, prepended preamble); §7 contract retired.
 
 1. Seam = `execute_and_composite` + per-scene `RenderMode { Layers, Trama }`
    (escape hatch: later `LayerContent::Graph`). — §2
+   **Superseded 2026-08-25:** `RenderMode` is deleted; chains are per-layer.
 2. 16 param slots per node in v1; batched ABI-v4 append if it pinches. — §7 D1
 3. 32 bands derived from 64-mel adjacent pairs (mel-spaced, not strictly log),
    modulation-only, zero ABI churn. — §3
