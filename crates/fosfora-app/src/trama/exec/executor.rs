@@ -811,6 +811,12 @@ impl TramaExecutor {
             targets.iter().find(|(n, _)| *n == id).map(|(_, s)| *s)
         };
 
+        // Does `resolve` give this producer a different texture per parity?
+        // Every consumer asks this one question, so that a new kind of
+        // parity-dependent producer cannot be added to `resolve` and forgotten
+        // at a call site — which is how the chain input was.
+        let reads_per_parity = |p: NodeId| is_active_feedback(p) || node_is_chain_input(p);
+
         // Resolve one producer to (view, sampler) at a given parity. An
         // active feedback producer resolves to its READ buffer —
         // `targets[1 - parity]`, written last frame. A ChainInput resolves to
@@ -932,8 +938,14 @@ impl TramaExecutor {
             let producers: Vec<Option<NodeId>> = (0..def.inputs)
                 .map(|pin| graph.input_source(id, pin).and_then(effective))
                 .collect();
-            // Only an active feedback input makes resolution parity-dependent.
-            let parity_dependent = producers.iter().any(|p| p.is_some_and(is_active_feedback));
+            // Two kinds of producer resolve differently per parity: an active
+            // feedback node (its read buffer alternates) and the chain input
+            // (a layer whose last pass has feedback WRITES alternate targets).
+            // Leaving the second one out handed such a step the parity-0 bind
+            // group twice: every other frame it read the picture the layer had
+            // rendered the frame before, and on the first frame ever it read a
+            // target nothing had written yet.
+            let parity_dependent = producers.iter().any(|p| p.is_some_and(reads_per_parity));
 
             let inputs0: Vec<_> = producers.iter().map(|&p| resolve(p, 0)).collect();
             let bg0 = make_bind_group(&def.pipeline.bind_group_layout, uniform_offset, &inputs0);
@@ -962,8 +974,10 @@ impl TramaExecutor {
             step_index += 1;
             let layout = &self.copy_pipeline.bind_group_layout;
             let bg0 = make_bind_group(layout, uniform_offset, &[resolve(Some(producer), 0)]);
-            let bind_groups = if is_active_feedback(producer) {
-                // Chained feedback: this copy reads another pair's read side.
+            let bind_groups = if reads_per_parity(producer) {
+                // Chained feedback reads another pair's read side; a feedback
+                // node fed straight from the chain input reads whichever
+                // target the host wrote this frame.
                 [
                     bg0,
                     make_bind_group(layout, uniform_offset, &[resolve(Some(producer), 1)]),

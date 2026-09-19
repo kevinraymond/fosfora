@@ -900,6 +900,102 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored a_chain_reads_the_frame_its_layer_just_rendered
+    //
+    // A chain must sample the picture its layer rendered THIS frame — from the
+    // first frame ever, and on every frame after. A layer whose last pass has
+    // feedback writes alternate targets on alternate frames, so every step fed
+    // by the Layer input needs a bind group per parity. When only feedback
+    // inputs counted as parity-dependent, such a step carried the parity-0 bind
+    // group twice: on every other frame it read the target the layer had
+    // written the frame BEFORE (the layer ran at half rate inside its chain),
+    // and on the first frame ever it read a target nothing had written yet —
+    // one frame of transparent black (#2680), which is what loading a preset
+    // that carries chains would have flashed.
+    //
+    // A static host hides all of it after frame one, because both of its
+    // targets end up holding the same picture. This host moves.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_chain_reads_the_frame_its_layer_just_rendered() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        // Layer 0 is left alone: `frame` takes the chain's uniform template
+        // from it, and the host's own uniforms are about to be abused.
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        const HOST: usize = 1;
+
+        // Layer input -> Transform at its defaults -> Output. An identity that
+        // is still an EFFECT step, which is the kind that was mis-paired (a
+        // bare Layer input -> Output is a copy step, and was always right).
+        let id = stack.ensure_chain(HOST).expect("a slot is free");
+        {
+            let transform = trama
+                .registry
+                .get(&EffectId("transform".into()))
+                .expect("transform ships");
+            let graph = &mut stack.layers[HOST].chain.as_deref_mut().unwrap().graph;
+            let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+            let t = graph.add_node(
+                NodeKind::Effect {
+                    effect: transform.id.clone(),
+                },
+                1,
+                &transform.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, t, 0).unwrap();
+            graph.connect(t, out, 0).unwrap();
+        }
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let mut previous: Option<Vec<u8>> = None;
+        for k in 1..=6u32 {
+            // The default layer draws a gradient of `uv = pos / resolution`
+            // and ignores time, so stretching its resolution is what makes it
+            // render a different picture every frame.
+            if let Some(e) = stack.layers[HOST].as_effect_mut() {
+                e.uniforms.resolution = [(DIM * (k + 1)) as f32, DIM as f32];
+            }
+            frame(
+                &device,
+                &queue,
+                &mut stack,
+                &mut compositor,
+                &mut trama,
+                &mut targets,
+            );
+            // `frame` has flipped the layer: what it rendered is now `other`.
+            let (_, rendered) = stack.layers[HOST].final_targets();
+            let host = snapshot(&device, &queue, &rendered.view, DIM);
+            let chain = snapshot(&device, &queue, &targets.get(id).view, DIM);
+
+            assert!(host.iter().any(|&b| b != 0), "frame {k}: the host rendered");
+            if let Some(previous) = &previous {
+                assert!(
+                    *previous != host,
+                    "frame {k}: the host must move, or a stale read is invisible"
+                );
+            }
+            assert!(
+                chain == host,
+                "frame {k}: the chain did not read the picture its layer rendered \
+                 this frame (first byte off at {:?})",
+                chain.iter().zip(&host).position(|(a, b)| a != b)
+            );
+            previous = Some(host);
+        }
+        assert_eq!(
+            trama.plans_built(),
+            1,
+            "and it never had to replan to do it"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored a_shrunk_layer_reveals_the_layer_beneath
     //
     // The picture-in-picture recipe in docs/TUTORIALS.md, as a probe. Transform
@@ -949,22 +1045,18 @@ mod tests {
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-        // The layer beneath, alone: what the border must show afterwards. Taken
-        // on the SECOND frame — a chain that exists on the first frame ever
-        // rendered comes out transparent black for that one frame (board
-        // #2680, unreachable in the app until presets carry chains).
+        // The layer beneath, alone: what the border must show afterwards. This
+        // is the first frame ever rendered, with a chain already on the layer —
+        // what loading a preset that carries chains looks like.
         stack.layers[0].enabled = false;
-        let mut beneath = Vec::new();
-        for _ in 0..2 {
-            beneath = frame(
-                &device,
-                &queue,
-                &mut stack,
-                &mut compositor,
-                &mut trama,
-                &mut targets,
-            );
-        }
+        let beneath = frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
         assert!(
             beneath.iter().any(|&b| b != 0),
             "the reference must be a picture, or every comparison below is empty"
