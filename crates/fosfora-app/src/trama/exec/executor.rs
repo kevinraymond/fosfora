@@ -2358,6 +2358,193 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored trama_hot_reload_swaps_live_and_never_blanks
+    //
+    // Handoff §12, end to end against real files in a scratch directory:
+    // an edit swaps in live and replans exactly once; a file that stops
+    // compiling leaves the LAST-GOOD picture on screen (I4 — a typo must never
+    // blank the output), flags the effect, and clears the flag when fixed; a
+    // changed manifest reaches the live node; a deleted file turns its node
+    // into a placeholder and restoring the file brings the picture back.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_hot_reload_swaps_live_and_never_blanks() {
+        use crate::trama::effect::Reloaded;
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let dir = std::env::temp_dir().join(format!("fosfora-trama-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in ["noise_field.wgsl", "hue_drift.wgsl"] {
+            std::fs::copy(effects_dir().join(file), dir.join(file)).unwrap();
+        }
+        let hue_path = dir.join("hue_drift.wgsl");
+        let original = std::fs::read_to_string(&hue_path).unwrap();
+        let body = "return vec4f(fosfora_hue_shift(c.rgb, param(0u) + u.time * param(1u)), c.a);";
+        assert!(
+            original.contains(body),
+            "hue_drift.wgsl moved on; update this test"
+        );
+        let inverted = original.replace(body, "return vec4f(vec3f(1.0) - c.rgb, c.a);");
+        let broken = inverted.replace("let c = input0(uv);", "let c = input0(uv)");
+        assert!(
+            broken != inverted,
+            "hue_drift.wgsl moved on; update this test"
+        );
+
+        let loader = EffectLoader::for_test(&probe_libs());
+        let mut reg = TramaRegistry::load(&device, None, &loader, &dir);
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+        let hue_id = EffectId("hue_drift".into());
+
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+        let out = RenderTarget::new(&device, 64, 64, GpuContext::hdr_format(), 1.0, "test-out");
+        let mut last_error = None;
+        let mut graph = NodeGraph::new_with_output();
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let n = graph.add_node(
+            NodeKind::Source {
+                effect: noise.id.clone(),
+            },
+            0,
+            &noise.params.clone(),
+        );
+        let hue = reg.get(&hue_id).unwrap();
+        let h = graph.add_node(
+            NodeKind::Effect {
+                effect: hue.id.clone(),
+            },
+            1,
+            &hue.params.clone(),
+        );
+        graph
+            .params_mut(h)
+            .unwrap()
+            .params
+            .set("shift", crate::params::ParamValue::Float(0.4));
+        let out_node = graph.output_node();
+        graph.connect(n, h, 0).unwrap();
+        graph.connect(h, out_node, 0).unwrap();
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        macro_rules! render {
+            () => {
+                render_once(
+                    &device,
+                    &queue,
+                    &mut exec,
+                    &reg,
+                    &graph,
+                    &out,
+                    &mut last_error,
+                )
+            };
+        }
+        let before = render!();
+        assert_eq!(exec.plans_built(), 1);
+
+        // 1. An edit swaps in live.
+        std::fs::write(&hue_path, &inverted).unwrap();
+        assert_eq!(
+            reg.reload_file(&device, None, &loader, &hue_path),
+            Reloaded::Swapped {
+                id: hue_id.clone(),
+                manifest_changed: false
+            }
+        );
+        let swapped = render!();
+        render!();
+        assert!(swapped != before, "the edited shader is the one rendering");
+        assert_eq!(exec.plans_built(), 2, "one replan for one reload");
+
+        // 2. A typo: last good keeps rendering, the effect is flagged.
+        std::fs::write(&hue_path, &broken).unwrap();
+        assert_eq!(
+            reg.reload_file(&device, None, &loader, &hue_path),
+            Reloaded::Failed(hue_id.clone())
+        );
+        assert!(
+            render!() == swapped,
+            "a file that does not compile never blanks the output"
+        );
+        assert_eq!(exec.plans_built(), 2, "and costs no replan");
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert!(
+            reg.get(&hue_id).unwrap().error.is_some(),
+            "every instance gets its badge"
+        );
+        assert_eq!(reg.errors.len(), 1);
+
+        // 3. Fixed: the flag clears.
+        std::fs::write(&hue_path, &inverted).unwrap();
+        reg.reload_file(&device, None, &loader, &hue_path);
+        assert!(reg.get(&hue_id).unwrap().error.is_none());
+        assert!(reg.errors.is_empty(), "{:?}", reg.errors);
+        assert!(
+            render!() == swapped,
+            "the fixed file renders what it did before the typo"
+        );
+
+        // 4. The manifest grows a parameter; the live node gets it, and keeps
+        // the value it already had.
+        let grown = inverted.replace(
+            r#"{ "type": "Float", "name": "speed","#,
+            r#"{ "type": "Float", "name": "extra", "default": 0.75, "min": 0.0, "max": 1.0 },
+    { "type": "Float", "name": "speed","#,
+        );
+        assert!(
+            grown != inverted,
+            "hue_drift's manifest moved on; update this test"
+        );
+        std::fs::write(&hue_path, &grown).unwrap();
+        assert_eq!(
+            reg.reload_file(&device, None, &loader, &hue_path),
+            Reloaded::Swapped {
+                id: hue_id.clone(),
+                manifest_changed: true
+            }
+        );
+        let def = reg.get(&hue_id).unwrap();
+        assert!(
+            graph
+                .sync_manifest(&hue_id, def.inputs, &def.params)
+                .is_empty()
+        );
+        let node = graph.node(h).unwrap();
+        assert!(
+            matches!(node.params.get("extra"), Some(crate::params::ParamValue::Float(v)) if *v == 0.75)
+        );
+        assert!(
+            matches!(node.params.get("shift"), Some(crate::params::ParamValue::Float(v)) if *v == 0.4)
+        );
+        render!();
+
+        // 5. The file is deleted: a placeholder, not a frozen chain. Put it
+        // back and the picture returns.
+        std::fs::remove_file(&hue_path).unwrap();
+        assert_eq!(
+            reg.reload_file(&device, None, &loader, &hue_path),
+            Reloaded::Removed(hue_id.clone())
+        );
+        let gone = render!();
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert!(
+            gone.chunks_exact(8)
+                .all(|px| px[..2] == [0x00, 0x3c] && px[2..4] == [0, 0]),
+            "the node renders the magenta placeholder"
+        );
+        std::fs::write(&hue_path, &inverted).unwrap();
+        reg.reload_file(&device, None, &loader, &hue_path);
+        assert!(render!() == swapped, "and comes back when its file does");
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored trama_registry_generation_is_a_plan_key
     //
     // A step caches a positional index into `registry.effects` and bind groups

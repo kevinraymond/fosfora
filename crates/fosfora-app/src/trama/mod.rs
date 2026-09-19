@@ -197,6 +197,73 @@ impl TramaSystem {
         }
     }
 
+    /// Effect files changed on disk (or, with `all`, the shared shader library
+    /// did): reload them, and bring every live node of a changed effect in
+    /// line with its new manifest — in every layer's chain and the master.
+    ///
+    /// Compiles on the calling thread. A fullscreen effect is a few tens of
+    /// milliseconds, paid once per save of a file being edited live; the layer
+    /// side compiles off-thread because its shaders are far heavier.
+    pub fn reload_effects(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        loader: &EffectLoader,
+        paths: &[std::path::PathBuf],
+        all: bool,
+        layer_stack: &mut crate::gpu::layer::LayerStack,
+    ) {
+        let mut outcomes: Vec<effect::Reloaded> = paths
+            .iter()
+            .map(|p| self.registry.reload_file(device, cache, loader, p))
+            .collect();
+        if all {
+            outcomes.extend(self.registry.reload_all(
+                device,
+                cache,
+                loader,
+                &effect::trama_effects_dir(),
+            ));
+        }
+        for outcome in outcomes {
+            let effect::Reloaded::Swapped {
+                id,
+                manifest_changed: true,
+            } = outcome
+            else {
+                continue;
+            };
+            let Some(def) = self.registry.get(&id) else {
+                continue;
+            };
+            let (inputs, params) = (def.inputs, def.params.clone());
+            let mut sync = |chain: node::ChainId, graph: &mut graph::NodeGraph| {
+                let version = graph.version();
+                let notes = graph.sync_manifest(&id, inputs, &params);
+                for note in &notes {
+                    log::warn!("trama: reload: {note}");
+                }
+                // Pins moved, so wires may have gone: the canvas view holds its
+                // own copy of the wire set and has to be rebuilt from the graph,
+                // where its nodes are.
+                if graph.version() != version {
+                    let layout = graph
+                        .nodes()
+                        .iter()
+                        .filter_map(|n| Some((n.id, self.canvas.position(chain, n.id)?)))
+                        .collect();
+                    self.canvas.replace_chain(chain, layout);
+                }
+            };
+            for layer in &mut layer_stack.layers {
+                if let Some(chain) = layer.chain.as_deref_mut() {
+                    sync(chain.id, &mut chain.graph);
+                }
+            }
+            sync(node::ChainId::Master, &mut self.master);
+        }
+    }
+
     /// Was a chain edited since this was last asked? For the preset's
     /// "unsaved" marker.
     pub fn take_edited(&mut self) -> bool {

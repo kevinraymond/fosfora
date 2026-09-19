@@ -1452,13 +1452,27 @@ impl App {
 
         // Shader hot-reload — submit changed shaders for background compilation
         let changes = self.shader_watcher.drain_changes();
+        let trama_changes = self.shader_watcher.drain_trama_changes();
+        let lib_changed = changes
+            .iter()
+            .any(|p| p.to_string_lossy().contains("/lib/"));
+        if lib_changed {
+            self.effect_loader.reload_library();
+        }
+        // trama effects have their own directory and their own registry. A
+        // library change reloads all of them: every one is compiled with the
+        // library prepended. After `reload_library`, so they see the new text.
+        if lib_changed || !trama_changes.is_empty() {
+            self.trama.reload_effects(
+                &self.gpu.device,
+                self.gpu.pipeline_cache.as_ref(),
+                &self.effect_loader,
+                &trama_changes,
+                lib_changed,
+                &mut self.layer_stack,
+            );
+        }
         if !changes.is_empty() {
-            let lib_changed = changes
-                .iter()
-                .any(|p| p.to_string_lossy().contains("/lib/"));
-            if lib_changed {
-                self.effect_loader.reload_library();
-            }
             let hdr_format = GpuContext::hdr_format();
 
             // Layers whose last load failed: the executor still belongs to the

@@ -900,6 +900,154 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored a_reloaded_manifest_reaches_every_chain
+    //
+    // The glue between the registry and the graphs: when an effect's manifest
+    // changes on disk, EVERY live node of it is brought in line — in each
+    // layer's chain and in the master — and a chain whose pins moved has its
+    // canvas view rebuilt from the graph, since the view keeps its own copy of
+    // the wire set and would go on drawing a wire the graph no longer has.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_reloaded_manifest_reaches_every_chain() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        let loader = crate::effect::loader::EffectLoader::new();
+
+        // A scratch effect, outside the shipped set: two inputs, one param.
+        let dir = std::env::temp_dir().join(format!("fosfora-trama-glue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scratch_blend.wgsl");
+        let file = |inputs: u8, body: &str| {
+            format!(
+                "/*! trama\n{{ \"name\": \"Scratch\", \"id\": \"scratch_blend\", \"kind\": \"effect\", \
+                 \"inputs\": {inputs}, \"params\": [ {{ \"type\": \"Float\", \"name\": \"amount\", \
+                 \"default\": 0.5, \"min\": 0.0, \"max\": 1.0 }} ] }}\n*/\n\
+                 @fragment\nfn fs_main(@builtin(position) p: vec4f) -> @location(0) vec4f {{\n\
+                 let uv = p.xy / u.resolution;\n{body}\n}}\n"
+            )
+        };
+        std::fs::write(
+            &path,
+            file(2, "return mix(input0(uv), input1(uv), param(0u));"),
+        )
+        .unwrap();
+        trama.reload_effects(
+            &device,
+            None,
+            &loader,
+            std::slice::from_ref(&path),
+            false,
+            &mut stack,
+        );
+        assert!(
+            trama.registry.errors.is_empty(),
+            "{:?}",
+            trama.registry.errors
+        );
+        let scratch = EffectId("scratch_blend".into());
+
+        // Layer input into BOTH pins of a scratch node, on a layer and on the master.
+        let wire_up = |graph: &mut crate::trama::graph::NodeGraph,
+                       registry: &crate::trama::effect::TramaRegistry| {
+            let def = registry.get(&scratch).expect("just loaded");
+            let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+            let node = graph.add_node(
+                NodeKind::Effect {
+                    effect: def.id.clone(),
+                },
+                def.inputs,
+                &def.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, node, 0).unwrap();
+            graph.connect(input, node, 1).unwrap();
+            graph.connect(node, out, 0).unwrap();
+            node
+        };
+        let id = stack.ensure_chain(1).expect("a slot is free");
+        let on_layer = wire_up(
+            &mut stack.layers[1].chain.as_deref_mut().unwrap().graph,
+            &trama.registry,
+        );
+        let on_master = wire_up(&mut trama.master, &trama.registry);
+        trama
+            .canvas
+            .open_view(id, &stack.layers[1].chain.as_deref().unwrap().graph);
+        let placed = trama
+            .canvas
+            .position(id, on_layer)
+            .expect("the view knows it");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+
+        // The effect loses its second input.
+        std::fs::write(&path, file(1, "return input0(uv) * param(0u);")).unwrap();
+        trama.reload_effects(
+            &device,
+            None,
+            &loader,
+            std::slice::from_ref(&path),
+            false,
+            &mut stack,
+        );
+
+        let layer_graph = &stack.layers[1].chain.as_deref().unwrap().graph;
+        for (graph, node, whose) in [
+            (layer_graph, on_layer, "layer"),
+            (&trama.master, on_master, "master"),
+        ] {
+            assert_eq!(
+                graph.node(node).unwrap().inputs,
+                1,
+                "{whose}: pin count follows the manifest"
+            );
+            assert_eq!(
+                graph.wires().len(),
+                2,
+                "{whose}: the wire into the lost pin is gone"
+            );
+            graph.validate().unwrap_or_else(|e| panic!("{whose}: {e}"));
+        }
+        assert!(!trama.canvas.has_view(id), "the stale view was thrown away");
+        assert_eq!(
+            trama.canvas.position(id, on_layer),
+            Some(placed),
+            "and the node stays where it was put"
+        );
+        // It still renders, against the new pipeline and the new pin count.
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored chains_survive_a_save_and_a_load
     //
     // M3's acceptance, on the per-layer shape: save every chain of a stack,

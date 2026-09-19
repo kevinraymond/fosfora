@@ -292,3 +292,19 @@ Owner reads this instead of diffs when reviewing direction.
   (`chains_survive_a_save_and_a_load`). Preset and chain files are now written
   atomically (`paths::write_atomic`), and non-finite values never reach a file
   (serde_json writes NaN as `null`, which does not read back).
+- **2026-09-19 (M3) — hot reload: a third watcher root routed by LOCATION, last-good
+  per effect, and the manifest synced into every chain.** A trama effect is a
+  `.wgsl` like any layer shader, and the watcher routed by extension, so its
+  changes fell into the layer-stack consumer, which matched them against no pass
+  and dropped them silently; `route()` now asks where a file lives first. A file
+  that fails at any step leaves the last-good `EffectDef` rendering with the
+  diagnostic on `EffectDef::error` — every instance is titled `· ERROR` (words,
+  not hue) and the inspector shows the text; `registry.generation` does not move,
+  so a typo costs no replan. A deleted file removes the effect and its nodes
+  become the same `missing:` placeholders an unknown id in a loaded patch does,
+  which `NodeGraph::sync_manifest` revives when the file returns. That function
+  is also what keeps `NodeInstance.inputs` and `EffectDef.inputs` from drifting
+  apart on an arity change (the executor binds one, the graph validates wires
+  against the other). Compiles happen on the calling thread — tens of
+  milliseconds for a fullscreen effect, once per save; not worth the layer side's
+  background compiler. The trama watch failing is a warning, not a startup error.

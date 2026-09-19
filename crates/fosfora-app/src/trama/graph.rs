@@ -143,6 +143,79 @@ impl NodeGraph {
         Ok(graph)
     }
 
+    /// An effect's manifest changed under a running app (hot reload), or an
+    /// effect that was missing has appeared. Bring every node of that effect
+    /// in line, by NAME (handoff §12): a value survives if the effect still
+    /// has a parameter of that name and type, new parameters get their
+    /// defaults, removed ones go — and take their modulation with them. A
+    /// changed input count drops the wires into pins that no longer exist.
+    /// Returns what was dropped, in words; nothing goes silently.
+    ///
+    /// The pin count matters as much as the parameters. The executor binds
+    /// `def.inputs` textures while the graph validates wires against
+    /// `node.inputs`, so left alone the two drift apart on the first reload
+    /// that changes arity, and the plan binds a different number of inputs
+    /// than the canvas shows.
+    pub fn sync_manifest(
+        &mut self,
+        effect: &super::effect::EffectId,
+        inputs: u8,
+        defs: &[ParamDef],
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        let mut shrunk: Vec<(NodeId, u8)> = Vec::new();
+        let mut structural = false;
+        for node in &mut self.nodes {
+            let matches = match &node.kind {
+                NodeKind::Source { effect: e } | NodeKind::Effect { effect: e } => e == effect,
+                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput => false,
+            };
+            if !matches {
+                continue;
+            }
+            for name in node.params.values.keys() {
+                if !defs.iter().any(|d| d.name() == name) {
+                    notes.push(format!(
+                        "{}: `{name}` is no longer a parameter; its value was dropped",
+                        effect.0
+                    ));
+                }
+            }
+            node.params.merge_from_defs(defs);
+            node.mods.retain(|m| {
+                let kept = defs.iter().any(|d| d.name() == m.param);
+                if !kept {
+                    notes.push(format!(
+                        "{}: the modulation on `{}` went with its parameter",
+                        effect.0, m.param
+                    ));
+                }
+                kept
+            });
+            if node.inputs != inputs {
+                if inputs < node.inputs {
+                    shrunk.push((node.id, inputs));
+                }
+                node.inputs = inputs;
+                structural = true;
+            }
+        }
+        for (id, pins) in shrunk {
+            let before = self.wires.len();
+            self.wires.retain(|w| !(w.to == id && w.to_input >= pins));
+            for _ in self.wires.len()..before {
+                notes.push(format!(
+                    "{}: a wire was dropped — the effect no longer has that input",
+                    effect.0
+                ));
+            }
+        }
+        if structural {
+            self.touch();
+        }
+        notes
+    }
+
     /// Every node, in insertion order — for serialization.
     pub fn nodes(&self) -> &[NodeInstance] {
         &self.nodes
@@ -825,6 +898,78 @@ mod tests {
             mode: ModMode::Add,
             smoothing: 0.0,
         }
+    }
+
+    #[test]
+    fn a_changed_manifest_is_merged_into_live_nodes_by_name() {
+        use crate::params::ParamValue;
+        use crate::trama::audio::AudioFeature;
+        use crate::trama::effect::EffectId;
+        use crate::trama::modulation::{ModMode, ModSource, Modulation};
+        let float = |name: &str, default: f32| -> ParamDef {
+            serde_json::from_value(serde_json::json!({
+                "type": "Float", "name": name, "default": default, "min": 0.0, "max": 4.0
+            }))
+            .unwrap()
+        };
+        let wobble = Modulation {
+            source: ModSource::Audio(AudioFeature::Bass),
+            amount: 0.5,
+            mode: ModMode::Add,
+            smoothing: 0.0,
+        };
+        let fx = EffectId("warp".into());
+        let kind = || NodeKind::Effect { effect: fx.clone() };
+        let other = NodeKind::Effect {
+            effect: EffectId("other".into()),
+        };
+
+        let mut g = NodeGraph::new_with_output();
+        let src = g.add_node(other.clone(), 0, &[float("keep", 1.0)]);
+        let a = g.add_node(kind(), 2, &[float("keep", 1.0), float("gone", 2.0)]);
+        g.params_mut(a)
+            .unwrap()
+            .params
+            .set("keep", ParamValue::Float(3.5));
+        g.set_modulation(a, "keep", Some(wobble)).unwrap();
+        g.set_modulation(a, "gone", Some(wobble)).unwrap();
+        let out = g.output_node();
+        g.connect(src, a, 0).unwrap();
+        g.connect(src, a, 1).unwrap();
+        g.connect(a, out, 0).unwrap();
+        let version = g.version();
+
+        // Same parameters, same pins: nothing to say and nothing replans.
+        assert!(
+            g.sync_manifest(&fx, 2, &[float("keep", 1.0), float("gone", 2.0)])
+                .is_empty()
+        );
+        assert_eq!(g.version(), version);
+
+        // `gone` removed, `fresh` added, and the second input dropped.
+        let notes = g.sync_manifest(&fx, 1, &[float("keep", 1.0), float("fresh", 9.0)]);
+        let node = g.node(a).unwrap();
+        assert!(matches!(node.params.get("keep"), Some(ParamValue::Float(v)) if *v == 3.5));
+        assert!(matches!(node.params.get("fresh"), Some(ParamValue::Float(v)) if *v == 9.0));
+        assert!(node.params.get("gone").is_none());
+        assert_eq!(node.mods.len(), 1, "the modulation on `keep` stays");
+        assert_eq!(node.mods[0].param, "keep");
+        assert_eq!(node.inputs, 1);
+        assert_eq!(
+            g.wires().len(),
+            2,
+            "the wire into pin 1 went; the other two stay"
+        );
+        assert_eq!(
+            notes.len(),
+            3,
+            "value, modulation, wire — each one said: {notes:#?}"
+        );
+        assert!(g.version() > version, "a pin change is structural");
+        g.validate().expect("still a valid graph");
+
+        // The other effect's node was never touched.
+        assert!(g.node(src).unwrap().params.get("keep").is_some());
     }
 
     #[test]

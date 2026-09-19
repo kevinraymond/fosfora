@@ -163,6 +163,10 @@ pub struct EffectDef {
     pub inputs: u8,
     pub params: Vec<ParamDef>,
     pub pipeline: ShaderPipeline,
+    /// The file on disk no longer compiles, and this is the LAST-GOOD version
+    /// still rendering (I4). Holds the full diagnostic; every node of this
+    /// effect wears a badge while it is set.
+    pub error: Option<String>,
 }
 
 pub struct TramaRegistry {
@@ -229,6 +233,112 @@ impl TramaRegistry {
     pub fn get(&self, id: &EffectId) -> Option<&EffectDef> {
         self.effects.iter().find(|e| &e.id == id)
     }
+
+    /// One effect file changed on disk: reload it (handoff §12).
+    ///
+    /// A file that fails at ANY step — read, manifest, naga, pipeline — leaves
+    /// the last-good definition rendering and records the diagnostic on it;
+    /// output never blanks because someone saved a typo. A file that is gone
+    /// takes its effect with it, and its nodes become `missing:` placeholders
+    /// that keep their wires and values until the file comes back.
+    pub fn reload_file(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        loader: &EffectLoader,
+        path: &Path,
+    ) -> Reloaded {
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let file = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let id = EffectId(stem);
+        self.errors.retain(|(f, _)| *f != file);
+
+        if !path.exists() {
+            let before = self.effects.len();
+            self.effects.retain(|e| e.id != id);
+            if self.effects.len() == before {
+                return Reloaded::Unchanged;
+            }
+            self.generation += 1;
+            log::info!("trama: {file} is gone; its nodes are placeholders until it returns");
+            return Reloaded::Removed(id);
+        }
+
+        match load_one(device, cache, loader, path) {
+            Ok(def) => {
+                let manifest_changed = self
+                    .get(&id)
+                    .is_none_or(|old| old.inputs != def.inputs || old.params != def.params);
+                self.effects.retain(|e| e.id != id);
+                self.effects.push(def);
+                self.effects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+                self.generation += 1;
+                log::info!("trama: reloaded {file}");
+                Reloaded::Swapped {
+                    id,
+                    manifest_changed,
+                }
+            }
+            Err(e) => {
+                log::warn!("trama: {file} failed to reload, keeping the last good version: {e}");
+                let text = e.to_string();
+                if let Some(old) = self.effects.iter_mut().find(|e| e.id == id) {
+                    old.error = Some(text.clone());
+                }
+                self.errors.push((file, text));
+                Reloaded::Failed(id)
+            }
+        }
+    }
+
+    /// Every effect file again — the shared shader library changed, and every
+    /// effect is compiled with it prepended.
+    pub fn reload_all(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        loader: &EffectLoader,
+        dir: &Path,
+    ) -> Vec<Reloaded> {
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "wgsl"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        paths.sort();
+        paths
+            .iter()
+            .map(|p| self.reload_file(device, cache, loader, p))
+            .collect()
+    }
+}
+
+/// What [`TramaRegistry::reload_file`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reloaded {
+    /// A new pipeline is in. `manifest_changed` means the inputs or parameters
+    /// differ (or the effect is new), so live nodes need
+    /// [`super::graph::NodeGraph::sync_manifest`].
+    Swapped {
+        id: EffectId,
+        manifest_changed: bool,
+    },
+    /// The file does not compile; the last-good version keeps rendering.
+    Failed(EffectId),
+    /// The file is gone and the effect with it.
+    Removed(EffectId),
+    /// Nothing to do — a deleted file that was never an effect.
+    Unchanged,
 }
 
 fn load_one(
@@ -265,6 +375,7 @@ fn load_one(
         inputs: manifest.inputs,
         params: manifest.params,
         pipeline,
+        error: None,
     })
 }
 

@@ -301,7 +301,16 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
                 .get(effect)
                 // Words, not just the magenta the executor paints: the node
                 // says what it is waiting for.
-                .map_or_else(|| format!("missing: {}", effect.0), |def| def.name.clone()),
+                .map_or_else(
+                    || format!("missing: {}", effect.0),
+                    // The file on disk does not compile and the last good
+                    // version is still running: every instance says so, in
+                    // words. The diagnostic itself is in the inspector.
+                    |def| match def.error {
+                        Some(_) => format!("{} · ERROR", def.name),
+                        None => def.name.clone(),
+                    },
+                ),
             None => "?".to_string(),
         }
     }
