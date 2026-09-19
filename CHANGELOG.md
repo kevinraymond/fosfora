@@ -19,6 +19,12 @@
   stack keeps running. A chain that doesn't reach its Output node is inactive and the layer
   renders as usual, so adding a node before wiring it no longer blanks anything.
 
+### Fixed
+- **The trama canvas opened zoomed to 2×, so a three-node patch filled the window.** Nodes now
+  open at 1:1 with tighter frames and pins on the node's edge. Pressing a node's title drags
+  the node instead of selecting its text, the selected node is marked by a bright frame that
+  no longer covers its pins, and hovering a wire shows an × that removes it.
+
 ## v1.36.0 — 2026-08-25
 
 ### Fixed
