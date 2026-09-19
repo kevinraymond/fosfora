@@ -10,6 +10,8 @@ pub mod exec;
 pub mod graph;
 pub mod modulation;
 pub mod node;
+pub mod persist;
+pub mod ser;
 pub mod ui;
 
 use crate::audio::features::AudioFeatures;
@@ -59,7 +61,18 @@ pub struct TramaSystem {
     frame_uniforms: ShaderUniforms,
     /// This frame's modulation-source snapshot, advanced in [`Self::update`].
     audio_view: audio::AudioView,
+    /// The Export / Import file dialogs, and imports waiting to be applied.
+    pub io: persist::ChainIo,
+    /// Has the chain on the canvas been edited since it was last looked at?
+    edit_watch: persist::EditWatch,
+    frames_since_edit_poll: u32,
+    edited: bool,
 }
+
+/// How often the open canvas is checked for edits, in frames. An edit only
+/// has to light the "unsaved" marker, so half a second at 60 fps is prompt
+/// enough and keeps a document capture out of the per-frame path.
+const EDIT_POLL_FRAMES: u32 = 30;
 
 impl TramaSystem {
     pub fn new(
@@ -93,6 +106,10 @@ impl TramaSystem {
             ),
             frame_uniforms: ShaderUniforms::zeroed(),
             audio_view: audio::AudioView::default(),
+            io: persist::ChainIo::default(),
+            edit_watch: persist::EditWatch::default(),
+            frames_since_edit_poll: 0,
+            edited: false,
         }
     }
 
@@ -133,6 +150,57 @@ impl TramaSystem {
         for node in self.master.params_iter_mut() {
             modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
         }
+
+        // A `.fio.json` picked in the import dialog, on whichever frame the
+        // dialog thread finished. It names the chain that asked, which may
+        // have gone away while the dialog was open.
+        for imported in self.io.drain() {
+            let outcome = imported
+                .result
+                .and_then(|doc| persist::load_into(layer_stack, self, imported.chain, &doc));
+            match outcome {
+                Ok(notes) => {
+                    for note in &notes {
+                        log::warn!("trama: import: {note}");
+                    }
+                    // Loaded over whatever was there: that IS an edit.
+                    self.edited = true;
+                    self.canvas.status = (!notes.is_empty())
+                        .then(|| format!("imported, with {} repair(s) — see the log", notes.len()));
+                }
+                Err(e) => {
+                    log::error!("trama: import failed: {e}");
+                    self.canvas.status = Some(format!("import failed: {e}"));
+                }
+            }
+        }
+
+        // Chains are only edited through the canvas, so only look while it is
+        // open, and not every frame.
+        self.frames_since_edit_poll += 1;
+        if self.canvas_open && self.frames_since_edit_poll >= EDIT_POLL_FRAMES {
+            self.frames_since_edit_poll = 0;
+            let chain = self.active_chain;
+            let graph = match chain {
+                node::ChainId::Master => Some(&self.master),
+                node::ChainId::Layer(_) => layer_stack
+                    .layers
+                    .iter()
+                    .filter_map(|l| l.chain.as_deref())
+                    .find(|c| c.id == chain)
+                    .map(|c| &c.graph),
+            };
+            if let Some(graph) = graph {
+                let doc = ser::ChainDoc::capture(graph, |n| self.canvas.position(chain, n));
+                self.edited |= self.edit_watch.observe(chain, doc);
+            }
+        }
+    }
+
+    /// Was a chain edited since this was last asked? For the preset's
+    /// "unsaved" marker.
+    pub fn take_edited(&mut self) -> bool {
+        std::mem::take(&mut self.edited)
     }
 
     /// The executor's feedback parity for this frame. The frame graph pairs a
@@ -149,6 +217,16 @@ impl TramaSystem {
     pub fn drop_chain(&mut self, chain: node::ChainId) {
         self.executor.drop_chain(chain);
         self.canvas.drop_chain(chain);
+    }
+
+    /// A chain's graph was REPLACED (a preset or a `.fio.json` was loaded into
+    /// it): forget everything cached for the slot — plan, bind groups, echo
+    /// buffers, thumbnails, and its canvas view, the master's included — and
+    /// remember the layout the new graph was saved with.
+    pub fn reset_chain(&mut self, chain: node::ChainId, layout: Vec<(node::NodeId, [f32; 2])>) {
+        self.executor.drop_chain(chain);
+        self.canvas.replace_chain(chain, layout);
+        self.edit_watch.forget();
     }
 
     /// Does the master chain need an output target this frame? Yes while it

@@ -87,6 +87,20 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Write a file so that it is either the old contents or the new, never a
+/// torn mix: a sibling temp file, then a rename over the target. A plain
+/// `fs::write` that is interrupted leaves half a JSON document, which does
+/// not parse, which loses the patch it was meant to save.
+pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +174,21 @@ mod tests {
             b"b"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_atomic_write_replaces_the_file_and_leaves_no_temp_behind() {
+        let dir = std::env::temp_dir().join(format!("fosfora-fio-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("patch.fio.json");
+        write_atomic(&path, "first").unwrap();
+        write_atomic(&path, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("patch.fio.json")]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

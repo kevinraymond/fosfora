@@ -47,6 +47,8 @@ pub enum GraphError {
     DuplicateChainInput,
     #[error("an input pin has more than one wire")]
     DuplicateWire,
+    #[error("two nodes share an id")]
+    DuplicateNode,
 }
 
 /// Projection of one node's *non-structural* state: the manual base values
@@ -105,6 +107,45 @@ impl NodeGraph {
             topo: RefCell::new(None),
             version: 0,
         }
+    }
+
+    /// Rebuild a graph from saved parts, KEEPING the saved node ids.
+    ///
+    /// Ids are kept rather than re-allocated through `add_node` because other
+    /// things are keyed by them: canvas positions, and every modulation's
+    /// runtime state, which is seeded from `(node, param)` so that a sample &
+    /// hold or a random walk replays the same after a reload. A graph with
+    /// gaps from removed nodes would renumber, and a patch would come back
+    /// subtly different from the one that was saved.
+    ///
+    /// Nothing about the input is trusted: it is a file. Everything `validate`
+    /// checks is checked, plus the one invariant `add_node` gave for free.
+    pub fn from_parts(nodes: Vec<NodeInstance>, wires: Vec<Wire>) -> Result<Self, GraphError> {
+        let mut seen = HashSet::new();
+        if !nodes.iter().all(|n| seen.insert(n.id)) {
+            return Err(GraphError::DuplicateNode);
+        }
+        let output = nodes
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::Output))
+            .map(|n| n.id)
+            .ok_or(GraphError::MissingOutput)?;
+        let next_id = nodes.iter().map(|n| n.id.0).max().unwrap_or(0) + 1;
+        let graph = Self {
+            nodes,
+            wires,
+            output,
+            next_id,
+            topo: RefCell::new(None),
+            version: 0,
+        };
+        graph.validate()?;
+        Ok(graph)
+    }
+
+    /// Every node, in insertion order — for serialization.
+    pub fn nodes(&self) -> &[NodeInstance] {
+        &self.nodes
     }
 
     fn touch(&mut self) {

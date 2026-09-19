@@ -1016,6 +1016,11 @@ impl App {
         if self.binding_bus.take_preset_scope_dirty() {
             self.preset_store.mark_dirty();
         }
+        // Same for a trama chain: it is saved with the preset, and editing one
+        // touches no layer parameter.
+        if self.trama.take_edited() {
+            self.preset_store.mark_dirty();
+        }
 
         // Drain async preset decode results
         if let Some(result) = self.preset_loader.try_recv() {
@@ -2163,11 +2168,14 @@ impl App {
     }
 
     pub fn save_preset(&mut self, name: &str) {
+        let mut chains = crate::trama::persist::capture(&self.layer_stack, &self.trama);
+        let mut layer_chains = std::mem::take(&mut chains.layers).into_iter();
         let layer_presets: Vec<LayerPreset> = self
             .layer_stack
             .layers
             .iter()
             .map(|l| {
+                let chain = layer_chains.next().flatten();
                 let effect_name = l
                     .effect_index()
                     .and_then(|i| self.effect_loader.effects.get(i))
@@ -2293,6 +2301,7 @@ impl App {
                     lattice,
                     helix,
                     particle_sim,
+                    chain,
                 }
             })
             .collect();
@@ -2317,6 +2326,7 @@ impl App {
             self.layer_stack.active_layer,
             &postprocess,
             volumetric,
+            chains.master,
         ) {
             Ok(idx) => {
                 log::info!("Saved preset '{}' at index {}", name, idx);
@@ -2422,6 +2432,12 @@ impl App {
         while self.layer_stack.layers.len() < preset.layers.len() {
             self.add_layer();
         }
+
+        // A layer locked NOW is skipped below and keeps everything it has, its
+        // trama chain included. Taken before the loop: a layer that is loaded
+        // takes its `locked` flag from the preset, and must not be mistaken
+        // afterwards for one that was skipped.
+        let kept_layers: Vec<bool> = self.layer_stack.layers.iter().map(|l| l.locked).collect();
 
         // Load each layer (skip locked layers)
         for (i, lp) in preset.layers.iter().enumerate() {
@@ -2987,6 +3003,26 @@ impl App {
             self.volumetric_params = vol.params;
         } else {
             self.volumetric_enabled = false;
+        }
+        // trama chains: REPLACE, for the same reason as volumetric above — a
+        // preset saved without a chain must not inherit the last preset's.
+        let layer_chains: Vec<Option<crate::trama::ser::ChainDoc>> =
+            preset.layers.iter().map(|lp| lp.chain.clone()).collect();
+        let notes = crate::trama::persist::apply(
+            &mut self.layer_stack,
+            &mut self.trama,
+            &layer_chains,
+            preset.master_chain.as_ref(),
+            |i| kept_layers.get(i).copied().unwrap_or(false),
+        );
+        for note in &notes {
+            log::warn!("trama: preset load: {note}");
+        }
+        if !notes.is_empty() {
+            self.trama.canvas.status = Some(format!(
+                "{} thing(s) repaired while loading chains — see the log",
+                notes.len()
+            ));
         }
         self.preset_store.current_preset = Some(index);
         self.preset_store.dirty = false;

@@ -23,7 +23,8 @@ const BAND_RELEASE: f32 = 0.200;
 /// Audio-feature modulation sources. `Bpm` is the normalized 0..1 field
 /// (bpm/300) — correct as a *signal*; anything doing time math must go
 /// through `AudioFeatures::raw_bpm` instead (#2054).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AudioFeature {
     Rms,
     Onset,

@@ -6,6 +6,11 @@
 ## Unreleased
 
 ### Added
+- **trama chains are saved with your presets.** A preset now stores every layer's chain and the
+  master chain, down to where the nodes sit on the canvas, and scenes that cue presets restore
+  them too. **Export…** and **Import…** in the canvas header move a single chain as a `.fio.json`
+  file; an effect you don't have installed comes in as a magenta `missing:` node with its wires
+  and values intact. Loading a preset used to leave the previous preset's chains attached.
 - **trama has a Master tab that post-processes the whole frame.** Switch the canvas between
   the selected layer's chain and the master chain, which runs on the composited picture
   before tonemapping. Layer rows now show a diamond and node count for any layer with a

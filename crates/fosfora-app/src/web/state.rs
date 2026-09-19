@@ -509,6 +509,7 @@ mod tests {
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         store.presets.push(("Crucible".into(), empty.clone()));
         store.presets.push(("My Preset".into(), empty));
