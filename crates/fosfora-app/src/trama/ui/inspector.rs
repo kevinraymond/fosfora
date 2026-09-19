@@ -119,7 +119,11 @@ pub fn draw_inspector(
                 });
             }
             None => {
-                ui.label(RichText::new(format!("{} (missing effect)", effect.0)).color(tc.warning));
+                ui.label(RichText::new(format!("missing: {}", effect.0)).color(tc.warning));
+                ui.label(dim(
+                    "This effect is not installed, so the node renders magenta. \
+                     Its parameters and wires are kept; add the effect file and it comes back.",
+                ));
             }
         },
     }

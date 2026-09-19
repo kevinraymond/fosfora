@@ -253,7 +253,9 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
                 .registry
                 .get(effect)
-                .map_or_else(|| effect.0.clone(), |def| def.name.clone()),
+                // Words, not just the magenta the executor paints: the node
+                // says what it is waiting for.
+                .map_or_else(|| format!("missing: {}", effect.0), |def| def.name.clone()),
             None => "?".to_string(),
         }
     }

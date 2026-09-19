@@ -100,6 +100,11 @@ enum StepKind {
     /// Executor-owned passthrough pipeline: a Feedback node's input→write
     /// copy, or its read→Output blit when a Feedback node feeds Output.
     Copy,
+    /// The node names an effect the registry does not have — a patch from
+    /// someone else's file, or an effect file deleted under a running app.
+    /// Clears its target to [`MISSING_EFFECT_COLOR`] and draws nothing, so
+    /// the hole is visible in the picture while the rest of the chain runs.
+    Missing,
 }
 
 struct Step {
@@ -110,10 +115,21 @@ struct Step {
     /// Indexed by the executor's global `parity` at execute time — the
     /// pass_executor #1481 idiom: a step reading a feedback node's output
     /// binds its *read* buffer, which alternates every frame, so both
-    /// variants are prebuilt. Steps with no feedback input carry two clones
-    /// of one bind group (wgpu handles are Arc-backed; the clone is free).
-    bind_groups: [wgpu::BindGroup; 2],
+    /// variants are prebuilt. Steps with no parity-dependent input carry two
+    /// clones of one bind group (wgpu handles are Arc-backed; the clone is
+    /// free). `None` for a [`StepKind::Missing`] step, which draws nothing.
+    bind_groups: Option<[wgpu::BindGroup; 2]>,
 }
+
+/// What a node whose effect is missing renders: opaque magenta. Not the
+/// signal on its own — the canvas names the node `missing: <id>` — but it
+/// keeps the hole from reading as an intentional black.
+const MISSING_EFFECT_COLOR: wgpu::Color = wgpu::Color {
+    r: 1.0,
+    g: 0.0,
+    b: 1.0,
+    a: 1.0,
+};
 
 /// The texture a chain's [`NodeKind::ChainInput`] node samples — the layer's
 /// rendered target for a layer chain, the composited frame for the master
@@ -181,6 +197,9 @@ struct PreviewBlit {
 }
 
 struct ExecPlan {
+    /// The `TramaRegistry::generation` this plan's effect indices and bind
+    /// groups were built against.
+    registry_generation: u64,
     /// The `NodeGraph::version()` this plan was built for.
     version: u64,
     /// The second plan key: whether orphans execute and previews blit
@@ -438,6 +457,7 @@ impl TramaExecutor {
         let version = graph.version();
         if self.plans.get(&chain).is_none_or(|p| {
             p.version != version
+                || p.registry_generation != registry.generation
                 || p.previews_on != previews_on
                 || p.chain_input != input.map(|i| i.generation)
                 || p.out_generation != out_generation
@@ -468,6 +488,7 @@ impl TramaExecutor {
                     match self.plans.get_mut(&chain) {
                         Some(p) => {
                             p.version = version;
+                            p.registry_generation = registry.generation;
                             p.previews_on = previews_on;
                             p.chain_input = input.map(|i| i.generation);
                             p.out_generation = out_generation;
@@ -476,6 +497,7 @@ impl TramaExecutor {
                             self.plans.insert(
                                 chain,
                                 ExecPlan {
+                                    registry_generation: registry.generation,
                                     version,
                                     previews_on,
                                     chain_input: input.map(|i| i.generation),
@@ -534,6 +556,11 @@ impl TramaExecutor {
             let label = match step.kind {
                 StepKind::Effect { effect } => registry.effects[effect].id.0.as_str(),
                 StepKind::Copy => "feedback-copy",
+                StepKind::Missing => "missing-effect",
+            };
+            let clear = match step.kind {
+                StepKind::Missing => MISSING_EFFECT_COLOR,
+                StepKind::Effect { .. } | StepKind::Copy => wgpu::Color::TRANSPARENT,
             };
             let mut step_scope = profiler.scope(label, encoder);
             let mut pass = step_scope
@@ -545,7 +572,7 @@ impl TramaExecutor {
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load: wgpu::LoadOp::Clear(clear),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -556,9 +583,15 @@ impl TramaExecutor {
             let pipeline = match step.kind {
                 StepKind::Effect { effect } => &registry.effects[effect].pipeline.pipeline,
                 StepKind::Copy => &self.copy_pipeline.pipeline,
+                // The clear above is the whole step.
+                StepKind::Missing => continue,
             };
+            let bind_groups = step
+                .bind_groups
+                .as_ref()
+                .expect("every step that draws was planned with bind groups");
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &step.bind_groups[self.parity], &[]);
+            pass.set_bind_group(0, &bind_groups[self.parity], &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -927,14 +960,22 @@ impl TramaExecutor {
                     unreachable!("filtered above")
                 }
             };
-            let effect_idx = registry
-                .effects
-                .iter()
-                .position(|e| &e.id == effect_id)
-                .ok_or_else(|| format!("node references unknown effect `{}`", effect_id.0))?;
+            let uniform_offset = slot_offset(i);
+            // An effect the registry does not have is a placeholder step, not
+            // a failed plan: failing here froze the WHOLE chain on its
+            // last-good plan and stopped every other node updating.
+            let Some(effect_idx) = registry.effects.iter().position(|e| &e.id == effect_id) else {
+                steps.push(Step {
+                    node: key(id),
+                    kind: StepKind::Missing,
+                    target: targets[i].1,
+                    uniform_offset,
+                    bind_groups: None,
+                });
+                continue;
+            };
             let def = &registry.effects[effect_idx];
 
-            let uniform_offset = slot_offset(i);
             let producers: Vec<Option<NodeId>> = (0..def.inputs)
                 .map(|pin| graph.input_source(id, pin).and_then(effective))
                 .collect();
@@ -963,7 +1004,7 @@ impl TramaExecutor {
                 kind: StepKind::Effect { effect: effect_idx },
                 target: targets[i].1,
                 uniform_offset,
-                bind_groups,
+                bind_groups: Some(bind_groups),
             });
         }
 
@@ -990,7 +1031,7 @@ impl TramaExecutor {
                 kind: StepKind::Copy,
                 target: TargetSlot::FeedbackWrite,
                 uniform_offset,
-                bind_groups,
+                bind_groups: Some(bind_groups),
             });
         }
         if chain_input_feeds_output {
@@ -1004,10 +1045,10 @@ impl TramaExecutor {
                 kind: StepKind::Copy,
                 target: TargetSlot::Output,
                 uniform_offset,
-                bind_groups: [
+                bind_groups: Some([
                     make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 0)]),
                     make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 1)]),
-                ],
+                ]),
             });
         }
         if feedback_feeds_output {
@@ -1020,10 +1061,10 @@ impl TramaExecutor {
                 kind: StepKind::Copy,
                 target: TargetSlot::Output,
                 uniform_offset,
-                bind_groups: [
+                bind_groups: Some([
                     make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 0)]),
                     make_bind_group(layout, uniform_offset, &[resolve(Some(fp), 1)]),
-                ],
+                ]),
             });
         }
 
@@ -1047,6 +1088,7 @@ impl TramaExecutor {
             .collect();
 
         Ok(ExecPlan {
+            registry_generation: registry.generation,
             version,
             previews_on,
             chain_input: input.map(|i| i.generation),
@@ -2157,6 +2199,227 @@ mod tests {
              keeps sampling the target that was dropped"
         );
         assert!(last_error.is_none(), "{last_error:?}");
+    }
+
+    /// One frame of `graph` on a fresh 64x64 output; returns the raw
+    /// Rgba16Float bytes and leaves the plan error in `last_error`.
+    #[allow(clippy::too_many_arguments)]
+    fn render_once(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        exec: &mut TramaExecutor,
+        reg: &TramaRegistry,
+        graph: &NodeGraph,
+        out: &RenderTarget,
+        last_error: &mut Option<String>,
+    ) -> Vec<u8> {
+        let mut template = ShaderUniforms::zeroed();
+        template.resolution = [64.0, 64.0];
+        exec.begin_frame();
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        exec.execute(
+            TEST_CHAIN,
+            graph,
+            reg,
+            None,
+            out,
+            1,
+            &template,
+            false,
+            device,
+            queue,
+            &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
+            last_error,
+        );
+        queue.submit([encoder.finish()]);
+        snapshot(device, queue, &out.view, 64)
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored trama_missing_effect_is_a_placeholder
+    //
+    // A node whose effect is not installed — a patch loaded from someone
+    // else's file, or an effect file deleted under a running app — must not
+    // fail the plan. It did: `build_plan` returned Err on the first unknown
+    // id, so the WHOLE chain froze on its last-good plan (or cleared to black
+    // if it had none) and every other node stopped updating. The node now runs
+    // a placeholder step that clears its target to magenta, and everything
+    // around it keeps rendering. Magenta is not the signal on its own (the
+    // canvas names the node "missing: <id>"); it is what makes the hole
+    // visible in the picture rather than silently black.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_missing_effect_is_a_placeholder() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let reg = registry(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+        let out = RenderTarget::new(
+            &device,
+            64,
+            64,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
+        let mut last_error = None;
+        let ghost_kind = || NodeKind::Effect {
+            effect: EffectId("no_such_effect".into()),
+        };
+        // 1.0 and 0.0 as f16, little-endian: opaque magenta.
+        const MAGENTA: [u8; 8] = [0x00, 0x3c, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x3c];
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // The missing node alone, straight into Output.
+        let mut graph = NodeGraph::new_with_output();
+        let ghost = graph.add_node(ghost_kind(), 1, &[]);
+        let out_node = graph.output_node();
+        graph.connect(ghost, out_node, 0).unwrap();
+        let shot = render_once(
+            &device,
+            &queue,
+            &mut exec,
+            &reg,
+            &graph,
+            &out,
+            &mut last_error,
+        );
+        assert!(
+            last_error.is_none(),
+            "a missing effect is not a plan error: {last_error:?}"
+        );
+        assert!(
+            shot.chunks_exact(8).all(|px| px == MAGENTA),
+            "the placeholder fills its target with magenta, got {:?}",
+            &shot[..8]
+        );
+
+        // The missing node as ONE input of a mix: the rest of the chain keeps
+        // running, so the picture is neither the placeholder nor black.
+        let mut graph = NodeGraph::new_with_output();
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let mix = reg.get(&EffectId("mix".into())).unwrap();
+        let n = graph.add_node(
+            NodeKind::Source {
+                effect: noise.id.clone(),
+            },
+            0,
+            &noise.params,
+        );
+        let ghost = graph.add_node(ghost_kind(), 1, &[]);
+        let m = graph.add_node(
+            NodeKind::Effect {
+                effect: mix.id.clone(),
+            },
+            2,
+            &mix.params,
+        );
+        let out_node = graph.output_node();
+        graph.connect(n, m, 0).unwrap();
+        graph.connect(ghost, m, 1).unwrap();
+        graph.connect(m, out_node, 0).unwrap();
+        let before = exec.plans_built();
+        let shot = render_once(
+            &device,
+            &queue,
+            &mut exec,
+            &reg,
+            &graph,
+            &out,
+            &mut last_error,
+        );
+        assert!(last_error.is_none(), "{last_error:?}");
+        assert_eq!(
+            exec.plans_built(),
+            before + 1,
+            "the new topology was planned"
+        );
+        assert!(
+            shot.chunks_exact(8).any(|px| px != MAGENTA),
+            "the noise side of the mix must still be rendering"
+        );
+        assert!(
+            shot.chunks_exact(8)
+                .all(|px| px[..2] != [0, 0] && px[4..6] != [0, 0]),
+            "and the placeholder side must be in the blend: red and blue everywhere"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored trama_registry_generation_is_a_plan_key
+    //
+    // A step caches a positional index into `registry.effects` and bind groups
+    // built against that effect's bind-group layout. A hot reload changes both
+    // without touching the graph, so the registry's generation has to be in
+    // the plan key — the same bug shape as the output target's identity and
+    // the chain input's, third time. Drop the key term and the second count
+    // below stays at 1.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_registry_generation_is_a_plan_key() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let mut reg = registry(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, GpuContext::hdr_format());
+        let audio = AudioTextures::new(&device, &queue);
+        let mut exec = TramaExecutor::new(&device, None, &placeholder, &audio, 64, 64);
+        let out = RenderTarget::new(
+            &device,
+            64,
+            64,
+            GpuContext::hdr_format(),
+            1.0,
+            "test-chain-output",
+        );
+        let mut last_error = None;
+        let mut graph = NodeGraph::new_with_output();
+        let noise = reg.get(&EffectId("noise_field".into())).unwrap();
+        let n = graph.add_node(
+            NodeKind::Source {
+                effect: noise.id.clone(),
+            },
+            0,
+            &noise.params.clone(),
+        );
+        let out_node = graph.output_node();
+        graph.connect(n, out_node, 0).unwrap();
+
+        for _ in 0..3 {
+            render_once(
+                &device,
+                &queue,
+                &mut exec,
+                &reg,
+                &graph,
+                &out,
+                &mut last_error,
+            );
+        }
+        assert_eq!(exec.plans_built(), 1, "steady state: one plan");
+
+        reg.generation += 1;
+        for _ in 0..3 {
+            render_once(
+                &device,
+                &queue,
+                &mut exec,
+                &reg,
+                &graph,
+                &out,
+                &mut last_error,
+            );
+        }
+        assert_eq!(
+            exec.plans_built(),
+            2,
+            "a reloaded registry replans, exactly once"
+        );
     }
 
     // Run: cargo test -p fosfora-app -- --ignored trama_executor_black_on_unwired_output

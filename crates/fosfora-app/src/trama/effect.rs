@@ -170,6 +170,12 @@ pub struct TramaRegistry {
     pub effects: Vec<EffectDef>,
     /// `(file name, error)` per failed file; surfaced in the canvas window.
     pub errors: Vec<(String, String)>,
+    /// Moves whenever `effects` changes — a reload swapped a pipeline, added
+    /// or removed an effect, or re-sorted the list. An executor plan caches a
+    /// POSITION in `effects` plus bind groups built against that effect's
+    /// layout, and none of those events touches a graph, so this is part of
+    /// every chain's plan key.
+    pub generation: u64,
 }
 
 /// Production effect directory. A separate root from `assets/effects/` (which
@@ -213,7 +219,11 @@ impl TramaRegistry {
             }
         }
         effects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
-        Self { effects, errors }
+        Self {
+            effects,
+            errors,
+            generation: 0,
+        }
     }
 
     pub fn get(&self, id: &EffectId) -> Option<&EffectDef> {
