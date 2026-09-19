@@ -423,15 +423,7 @@ impl Layer {
         parity: usize,
     ) -> crate::trama::exec::executor::ChainInputSource<'_> {
         let (current, other) = self.final_targets();
-        let mut per_parity = [
-            (&current.view, &current.sampler),
-            (&current.view, &current.sampler),
-        ];
-        per_parity[1 - parity] = (&other.view, &other.sampler);
-        crate::trama::exec::executor::ChainInputSource {
-            per_parity,
-            generation: crate::gpu::render_target::pair_id(current, other),
-        }
+        crate::trama::exec::executor::ChainInputSource::paired(current, other, parity)
     }
 
     /// Flip ping-pong targets for next frame.

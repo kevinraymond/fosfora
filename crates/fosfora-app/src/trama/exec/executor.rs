@@ -140,6 +140,24 @@ pub struct ChainInputSource<'a> {
 }
 
 impl<'a> ChainInputSource<'a> {
+    /// A source that alternates between two targets: `current` is the one the
+    /// host wrote on this frame, where the executor's parity is `parity`.
+    ///
+    /// The generation names the pair in PARITY order, not `(current, other)`
+    /// order. Those two swap roles every frame, so a generation that followed
+    /// them moved every frame and replanned the chain every frame — every bind
+    /// group rebuilt, against I8, with nothing on screen to show for it. In
+    /// parity order it holds still for as long as the lockstep does, and moves
+    /// — forcing a re-pair — the moment the lockstep breaks.
+    pub fn paired(current: &'a RenderTarget, other: &'a RenderTarget, parity: usize) -> Self {
+        let mut targets = [current, current];
+        targets[1 - parity] = other;
+        Self {
+            per_parity: targets.map(|t| (&t.view, &t.sampler)),
+            generation: crate::gpu::render_target::pair_id(targets[0], targets[1]),
+        }
+    }
+
     /// A source whose target identity never alternates with parity — a media
     /// layer, or the composited frame the master chain reads.
     #[allow(dead_code)] // used by the frame-graph integration in stage C

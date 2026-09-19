@@ -224,3 +224,22 @@ Owner reads this instead of diffs when reviewing direction.
   it holds for the whole frame, so the read side has to work through a shared
   borrow. Both callers are replan-only paths, so the owned copy never lands in a
   steady-state frame (I8).
+- **2026-09-19 — the pooled-transients prediction was MEASURED, and holds.**
+  `chain_transients_alias_across_chains` (GPU): one 3-effect chain alone takes 2
+  pool targets; the same chain on four layers plus the master takes 2; stretching
+  one of them to five effects takes 4. The pool follows the longest chain, not the
+  sum. What does sum, by design: one full-resolution output per chain that
+  *exists* (`ChainTargets` — wired or not, so opening the canvas on a layer costs
+  a target from then on), and feedback ping-pong pairs, which hold last frame and
+  cannot alias. The pool is a high-water mark — it never shrinks short of a
+  resize.
+- **2026-09-19 — a chain's input generation names its two targets in PARITY
+  order, not `(current, other)` order.** A layer whose last pass has feedback
+  writes alternate targets on alternate frames, so `(current, other)` swaps every
+  frame; the generation built from it moved every frame, and every layer chain on
+  such a layer — and the master chain over a solo layer — replanned on every
+  frame, rebuilding every bind group (I8). Nothing on screen showed it. The
+  frame-graph probes could not see it either, because their harness never flipped
+  the layers the way `App::render` does: they only ever tested the frame a plan
+  was built on. `ChainInputSource::paired` is now the one place the pairing and
+  its generation are built, and the shared test `frame` helper flips.

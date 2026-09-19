@@ -32,6 +32,10 @@ pub struct RenderTarget {
 /// [`crate::trama::exec::executor::ChainInputSource`], which carries a single
 /// `u64` but names a texture per feedback parity. Ids are small and monotonic,
 /// so rotate-and-xor separates distinct pairs without a hash.
+///
+/// Order matters, on purpose: `(a, b)` and `(b, a)` are different pairings. Pass
+/// the targets in PARITY order — see `ChainInputSource::paired` for what
+/// happened when they were passed in written-this-frame order instead.
 pub fn pair_id(a: &RenderTarget, b: &RenderTarget) -> u64 {
     a.id.rotate_left(32) ^ b.id
 }

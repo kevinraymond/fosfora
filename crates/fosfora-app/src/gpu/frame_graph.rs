@@ -258,16 +258,12 @@ pub(crate) fn execute_and_composite<'a>(
     }
     let out = chain_targets.get(ChainId::Master);
     let parity = t.parity();
-    let mut per_parity = [
-        (&master_in.current.view, &master_in.current.sampler),
-        (&master_in.current.view, &master_in.current.sampler),
-    ];
-    per_parity[1 - parity] = (&master_in.other.view, &master_in.other.sampler);
     t.execute_master(
-        Some(crate::trama::exec::executor::ChainInputSource {
-            per_parity,
-            generation: crate::gpu::render_target::pair_id(master_in.current, master_in.other),
-        }),
+        Some(crate::trama::exec::executor::ChainInputSource::paired(
+            master_in.current,
+            master_in.other,
+            parity,
+        )),
         out,
         chain_targets.generation(ChainId::Master),
         device,
@@ -409,6 +405,56 @@ mod tests {
         (stack, compositor, trama, targets)
     }
 
+    /// One frame, driven the way `App::render` drives it: update trama, sync
+    /// the chain targets, execute and composite, flip every layer. Returns the
+    /// composited picture.
+    ///
+    /// The flip is not optional. A layer whose last pass has feedback writes
+    /// alternate targets on alternate frames, and a chain pairs its bind groups
+    /// against that alternation. A harness that never flips only ever sees the
+    /// frame a plan was built on: it hid a chain that replanned on every frame
+    /// of the live app, and one frame later the chain was sampling a target
+    /// the layer never wrote.
+    fn frame(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        stack: &mut LayerStack,
+        compositor: &mut Compositor,
+        trama: &mut crate::trama::TramaSystem,
+        targets: &mut ChainTargets,
+    ) -> Vec<u8> {
+        let template = stack.layers[0]
+            .as_effect()
+            .map(|e| e.uniforms)
+            .unwrap_or_else(crate::gpu::ShaderUniforms::zeroed);
+        trama.update(
+            stack,
+            1.0 / 60.0,
+            &template,
+            &crate::audio::features::AudioFeatures::default(),
+            &[],
+        );
+        let master_live = trama.master_live();
+        targets.sync(device, stack, master_live, |c| trama.drop_chain(c));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let (source, _) = execute_and_composite(
+            stack,
+            compositor,
+            Some(trama),
+            targets,
+            device,
+            queue,
+            &mut encoder,
+            crate::gpu::profiler::ProfilerHandle::none(),
+        );
+        let view = source.view.clone();
+        queue.submit([encoder.finish()]);
+        for layer in &mut stack.layers {
+            layer.flip();
+        }
+        snapshot(device, queue, &view, DIM)
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored chain_post_processes_its_own_layer
     //
     // The three states a layer chain can be in, against one real layer:
@@ -428,33 +474,7 @@ mod tests {
                    compositor: &mut Compositor,
                    trama: &mut crate::trama::TramaSystem,
                    targets: &mut ChainTargets| {
-            let template = stack.layers[0]
-                .as_effect()
-                .map(|e| e.uniforms)
-                .unwrap_or_else(crate::gpu::ShaderUniforms::zeroed);
-            trama.update(
-                stack,
-                1.0 / 60.0,
-                &template,
-                &crate::audio::features::AudioFeatures::default(),
-                &[],
-            );
-            let master_live = trama.master_live();
-            targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
-            let mut encoder = device.create_command_encoder(&Default::default());
-            let (source, _) = execute_and_composite(
-                stack,
-                compositor,
-                Some(trama),
-                targets,
-                &device,
-                &queue,
-                &mut encoder,
-                crate::gpu::profiler::ProfilerHandle::none(),
-            );
-            let view = source.view.clone();
-            queue.submit([encoder.finish()]);
-            snapshot(&device, &queue, &view, DIM)
+            frame(&device, &queue, stack, compositor, trama, targets)
         };
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -622,33 +642,7 @@ mod tests {
                    compositor: &mut Compositor,
                    trama: &mut crate::trama::TramaSystem,
                    targets: &mut ChainTargets| {
-            let template = stack.layers[0]
-                .as_effect()
-                .map(|e| e.uniforms)
-                .unwrap_or_else(crate::gpu::ShaderUniforms::zeroed);
-            trama.update(
-                stack,
-                1.0 / 60.0,
-                &template,
-                &crate::audio::features::AudioFeatures::default(),
-                &[],
-            );
-            let master_live = trama.master_live();
-            targets.sync(&device, stack, master_live, |c| trama.drop_chain(c));
-            let mut encoder = device.create_command_encoder(&Default::default());
-            let (source, _) = execute_and_composite(
-                stack,
-                compositor,
-                Some(trama),
-                targets,
-                &device,
-                &queue,
-                &mut encoder,
-                crate::gpu::profiler::ProfilerHandle::none(),
-            );
-            let view = source.view.clone();
-            queue.submit([encoder.finish()]);
-            snapshot(&device, &queue, &view, DIM)
+            frame(&device, &queue, stack, compositor, trama, targets)
         };
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -691,6 +685,22 @@ mod tests {
         let identity = run(&mut stack, &mut compositor, &mut trama, &mut targets);
         assert_eq!(identity, bare, "identity master chain reproduces the frame");
 
+        // And again, one frame on. A solo layer takes the fast path, so the
+        // master samples the layer's own ping-pong pair: the layer has flipped
+        // since the plan was built, and the chain must follow it to the other
+        // target WITHOUT replanning.
+        let planned = trama.plans_built();
+        let steady = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(
+            steady, bare,
+            "the pairing holds on the frame after the plan"
+        );
+        assert_eq!(
+            trama.plans_built(),
+            planned,
+            "a layer flipping its targets is not a reason to replan"
+        );
+
         // A real effect changes it.
         let hue = trama
             .registry
@@ -704,6 +714,181 @@ mod tests {
         trama.master.connect(h, out, 0).unwrap();
         let processed = run(&mut stack, &mut compositor, &mut trama, &mut targets);
         assert_ne!(processed, bare, "a wired master chain changes the frame");
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    /// `ChainInput -> hue_drift (one per shift) -> Output`, left UNWIRED at the
+    /// Output so the caller decides when the chain goes live. `speed` is zeroed:
+    /// the default drifts with time, and the probe below compares pictures
+    /// taken on different frames.
+    fn hue_chain(
+        graph: &mut crate::trama::graph::NodeGraph,
+        registry: &crate::trama::effect::TramaRegistry,
+        shifts: &[f32],
+    ) -> crate::trama::node::NodeId {
+        let hue = registry
+            .get(&EffectId("hue_drift".into()))
+            .expect("hue_drift ships");
+        let mut prev = graph.add_node(NodeKind::ChainInput, 0, &[]);
+        for &shift in shifts {
+            let h = graph.add_node(
+                NodeKind::Effect {
+                    effect: hue.id.clone(),
+                },
+                1,
+                &hue.params,
+            );
+            let p = graph.params_mut(h).expect("just added");
+            p.params
+                .set("shift", crate::params::ParamValue::Float(shift));
+            p.params.set("speed", crate::params::ParamValue::Float(0.0));
+            graph.connect(prev, h, 0).unwrap();
+            prev = h;
+        }
+        prev
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored chain_transients_alias_across_chains
+    //
+    // The stage-E VRAM checkpoint, and H3's falsifiable prediction: the
+    // executor's transient pool sits at the LARGEST single chain, not the sum
+    // over chains. Every plan build starts with `pool.release_all()`, so each
+    // chain re-acquires the same targets from index 0 — sound because chains
+    // run one after another and no chain reads another's interior. Delete that
+    // `release_all()` and the pool total here reads 10, not 2.
+    //
+    // What DOES sum, by design, and is asserted next to it so nobody reads the
+    // flat pool as "chains are free":
+    // - one full-resolution OUTPUT per chain that exists (`ChainTargets`) —
+    //   wired or not, a chain holding only its ChainInput still has one;
+    // - feedback ping-pong pairs, which hold last frame and cannot alias.
+    //
+    // The second half checks the aliasing is harmless: every layer chain's
+    // output with all five running is byte-identical to the same chain running
+    // alone. Point `ChainTargets::get` at one slot for every chain (H2's
+    // original bug) and that half goes red.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn chain_transients_alias_across_chains() {
+        const LAYERS: usize = 4;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, LAYERS);
+
+        let run = |stack: &mut LayerStack,
+                   compositor: &mut Compositor,
+                   trama: &mut crate::trama::TramaSystem,
+                   targets: &mut ChainTargets| {
+            frame(&device, &queue, stack, compositor, trama, targets)
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Three hue_drifts per chain: two interior targets from the pool, the
+        // third writes the chain's output. Shifts differ per chain so that one
+        // chain's picture cannot stand in for another's below.
+        let shifts =
+            |i: usize| -> [f32; 3] { std::array::from_fn(|k| 0.07 * (i * 3 + k + 1) as f32) };
+        let mut tails = Vec::new();
+        for i in 0..LAYERS {
+            let id = stack.ensure_chain(i).expect("a slot is free");
+            let graph = &mut stack.layers[i].chain.as_deref_mut().unwrap().graph;
+            tails.push((id, hue_chain(graph, &trama.registry, &shifts(i))));
+        }
+        let wire = |stack: &mut LayerStack, i: usize, tail, on: bool| {
+            let graph = &mut stack.layers[i].chain.as_deref_mut().unwrap().graph;
+            let out = graph.output_node();
+            if on {
+                graph.connect(tail, out, 0).unwrap();
+            } else {
+                graph.disconnect(out, 0);
+            }
+        };
+
+        // Each chain ALONE: the pool reading, and the reference picture.
+        let mut solo = Vec::new();
+        for (i, &(id, tail)) in tails.iter().enumerate() {
+            wire(&mut stack, i, tail, true);
+            let before = trama.plans_built();
+            run(&mut stack, &mut compositor, &mut trama, &mut targets);
+            run(&mut stack, &mut compositor, &mut trama, &mut targets);
+            assert_eq!(
+                trama.plans_built(),
+                before + 1,
+                "chain {i} ran, planned once"
+            );
+            assert_eq!(trama.pool_stats().1, 2, "P1: one 3-effect chain, alone");
+            solo.push(snapshot(&device, &queue, &targets.get(id).view, DIM));
+            wire(&mut stack, i, tail, false);
+        }
+        assert!(
+            solo[0] != solo[1],
+            "distinct shifts must give distinct pictures"
+        );
+
+        // All four layers plus the master, together.
+        for (i, &(_, tail)) in tails.iter().enumerate() {
+            wire(&mut stack, i, tail, true);
+        }
+        let master_tail = hue_chain(&mut trama.master, &trama.registry, &shifts(LAYERS));
+        let master_out = trama.master.output_node();
+        trama.master.connect(master_tail, master_out, 0).unwrap();
+
+        let before = trama.plans_built();
+        run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(
+            trama.plans_built(),
+            before + 5,
+            "all five chains ran, each planned once"
+        );
+        assert_eq!(
+            trama.pool_stats().1,
+            2,
+            "P5 == P1: transients alias across chains instead of summing"
+        );
+        assert_eq!(targets.resident(), 5, "outputs DO sum: one per chain");
+        assert_eq!(trama.feedback_stats(), 0, "no feedback node, no pairs");
+        for (i, &(id, _)) in tails.iter().enumerate() {
+            let together = snapshot(&device, &queue, &targets.get(id).view, DIM);
+            assert!(
+                together == solo[i],
+                "chain {i}'s picture changed when the other chains ran beside it"
+            );
+        }
+
+        // Lengthen ONE chain to five effects: the pool follows that chain
+        // (four interiors), not the total node count.
+        {
+            let graph = &mut stack.layers[2].chain.as_deref_mut().unwrap().graph;
+            let hue = trama
+                .registry
+                .get(&EffectId("hue_drift".into()))
+                .expect("hue_drift ships");
+            let out = graph.output_node();
+            let mut prev = tails[2].1;
+            for _ in 0..2 {
+                let h = graph.add_node(
+                    NodeKind::Effect {
+                        effect: hue.id.clone(),
+                    },
+                    1,
+                    &hue.params,
+                );
+                graph.connect(prev, h, 0).unwrap();
+                prev = h;
+            }
+            graph.connect(prev, out, 0).unwrap();
+        }
+        run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(
+            trama.pool_stats().1,
+            4,
+            "the pool follows the longest chain"
+        );
 
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
