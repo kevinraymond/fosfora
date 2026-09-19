@@ -243,3 +243,14 @@ Owner reads this instead of diffs when reviewing direction.
   the layers the way `App::render` does: they only ever tested the frame a plan
   was built on. `ChainInputSource::paired` is now the one place the pairing and
   its generation are built, and the shared test `frame` helper flips.
+- **2026-09-19 — Auto output-alpha does not look inside chains (Kevin's call).**
+  `resolve_output_alpha` keeps reasoning from each enabled layer's `.pfx` `alpha`
+  tag alone. All four shipped trama effects are alpha-honest (`hue_drift` keeps
+  `c.a`, `mix` lerps all four channels, `transform` writes transparent outside,
+  `noise_field` writes 1.0), so under Passthrough the alpha that reaches the
+  output is the alpha the chain really wrote, and the failure mode is truthful
+  rather than wrong. Ruled out: "any chained layer is not an overlay" (a hue shift
+  would silently kill an overlay's transparency) and a per-effect `alpha` manifest
+  field with a graph walk (real machinery for four effects). A chain that creates
+  transparency on an untagged layer needs Passthrough chosen by hand; documented
+  in `docs/alpha.md`.

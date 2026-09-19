@@ -27,6 +27,12 @@ use crate::trama::node::ChainId;
 /// underneath is the picture, so the frame stays opaque). Otherwise the NDI
 /// "Alpha from brightness" checkbox keeps selecting the legacy luma key —
 /// existing setups see no change.
+///
+/// Auto deliberately does not look inside trama chains (decided 2026-09-19): a
+/// chain is post-processing that carries coverage through, which every shipped
+/// trama effect does, so the layer's own tag still describes the scene. A chain
+/// that *creates* transparency on an untagged layer is the user's to flag, by
+/// choosing Passthrough.
 pub(crate) fn resolve_output_alpha(
     setting: AlphaOutputMode,
     layer_stack: &LayerStack,
