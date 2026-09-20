@@ -44,6 +44,12 @@ pub struct TramaManifest {
     pub inputs: u8,
     #[serde(default)]
     pub params: Vec<ParamDef>,
+    /// Float parameters that are RATES — a speed, a drift. The shader is given
+    /// each one's running integral (`∫ value dt`) in its slot instead of the
+    /// value, so it writes `phase` where it would have written `u.time *
+    /// speed`. See [`super::node::RatePhase`] for what the latter does.
+    #[serde(default)]
+    pub rates: Vec<String>,
 }
 
 /// Scalar slots available to one node's params — the ABI v3 ceiling
@@ -64,6 +70,8 @@ pub enum EffectLoadError {
     KindInputs(String),
     #[error("duplicate param name `{0}`")]
     DuplicateParam(String),
+    #[error("`rates` names `{0}`, which is not a Float parameter of this effect")]
+    BadRate(String),
     #[error("params need {needed} scalar slots; the ABI caps a node at {cap}")]
     ParamOverflow { needed: usize, cap: usize },
     #[error("manifest id `{id}` does not match file stem `{stem}`")]
@@ -111,6 +119,15 @@ fn check_manifest(m: &TramaManifest) -> Result<(), EffectLoadError> {
     for def in &m.params {
         if !names.insert(def.name()) {
             return Err(EffectLoadError::DuplicateParam(def.name().to_string()));
+        }
+    }
+    for rate in &m.rates {
+        let is_float = m
+            .params
+            .iter()
+            .any(|d| d.name() == rate && matches!(d, ParamDef::Float { .. }));
+        if !is_float {
+            return Err(EffectLoadError::BadRate(rate.clone()));
         }
     }
     let needed: usize = m
@@ -162,6 +179,8 @@ pub struct EffectDef {
     pub kind: EffectKind,
     pub inputs: u8,
     pub params: Vec<ParamDef>,
+    /// Names of the Float parameters delivered as running integrals.
+    pub rates: Vec<String>,
     pub pipeline: ShaderPipeline,
     /// The file on disk no longer compiles, and this is the LAST-GOOD version
     /// still rendering (I4). Holds the full diagnostic; every node of this
@@ -275,6 +294,8 @@ impl TramaRegistry {
                 let manifest_changed = self
                     .get(&id)
                     .is_none_or(|old| old.inputs != def.inputs || old.params != def.params);
+                // (`rates` needs no node sync: it is read from the registry
+                // every frame, and a stale phase entry is simply never applied.)
                 self.effects.retain(|e| e.id != id);
                 self.effects.push(def);
                 self.effects.sort_by(|a, b| a.id.0.cmp(&b.id.0));
@@ -374,6 +395,7 @@ fn load_one(
         kind: manifest.kind,
         inputs: manifest.inputs,
         params: manifest.params,
+        rates: manifest.rates,
         pipeline,
         error: None,
     })
@@ -393,6 +415,58 @@ mod tests {
         parse_effect_file(&format!(
             "/*! trama\n{json}\n*/\n@fragment fn fs_main() {{}}"
         ))
+    }
+
+    // `rates` is an ABI promise — that slot carries an integral, not a value
+    // — so a name that is not a Float parameter is a load error, not a no-op.
+    #[test]
+    fn manifest_rates_must_name_float_params() {
+        let with = |rates: &str| {
+            manifest(&format!(
+                r#"{{ "name": "X", "id": "x", "kind": "effect", "inputs": 1,
+                     "params": [
+                       {{ "type": "Float", "name": "speed", "default": 0.1, "min": 0.0, "max": 1.0 }},
+                       {{ "type": "Bool", "name": "invert", "default": false }}
+                     ],
+                     "rates": {rates} }}"#
+            ))
+        };
+        assert_eq!(with(r#"["speed"]"#).unwrap().rates, ["speed"]);
+        assert!(matches!(with(r#"["sped"]"#), Err(EffectLoadError::BadRate(n)) if n == "sped"));
+        assert!(matches!(with(r#"["invert"]"#), Err(EffectLoadError::BadRate(n)) if n == "invert"));
+        // Absent means none: every effect written before this still loads.
+        assert!(
+            manifest(r#"{ "name": "X", "id": "x", "kind": "source", "inputs": 0 }"#)
+                .unwrap()
+                .rates
+                .is_empty()
+        );
+    }
+
+    // The shipped effects, as a guard on the PATTERN: a trama shader that
+    // multiplies by `u.time` multiplies every change in that factor by the
+    // app's uptime. Kevin saw it as a strobe on Hue Drift with `speed` driven
+    // by the music. Declare the parameter in "rates" and use its integral.
+    #[test]
+    fn no_shipped_effect_multiplies_a_parameter_by_absolute_time() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/trama/effects");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "wgsl") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in source.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(
+                    !(code.contains("u.time") && code.contains("param(")),
+                    "{}:{}: `u.time` and `param(` on one line — use \"rates\" instead:\n{line}",
+                    path.display(),
+                    n + 1
+                );
+            }
+        }
     }
 
     #[test]

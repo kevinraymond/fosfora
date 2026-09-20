@@ -534,6 +534,9 @@ impl TramaExecutor {
             // — this only reads cached state, so the dissolve path's second
             // execute per frame sees identical values (no double-advance).
             super::super::modulation::apply_resolved(&mut u.params, &node.mods);
+            // A rate parameter's slot carries its running integral, not its
+            // value — advanced in `TramaSystem::update`, only read here.
+            super::super::modulation::apply_phases(&mut u.params, &node.params, &node.phases);
             queue.write_buffer(&self.arena, step.uniform_offset, bytemuck::bytes_of(&u));
         }
 
@@ -2381,7 +2384,7 @@ mod tests {
         }
         let hue_path = dir.join("hue_drift.wgsl");
         let original = std::fs::read_to_string(&hue_path).unwrap();
-        let body = "return vec4f(fosfora_hue_shift(c.rgb, param(0u) + u.time * param(1u)), c.a);";
+        let body = "return vec4f(fosfora_hue_shift(c.rgb, param(0u) + param(1u)), c.a);";
         assert!(
             original.contains(body),
             "hue_drift.wgsl moved on; update this test"

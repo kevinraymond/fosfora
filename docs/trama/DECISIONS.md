@@ -308,3 +308,23 @@ Owner reads this instead of diffs when reviewing direction.
   against the other). Compiles happen on the calling thread — tens of
   milliseconds for a fullscreen effect, once per save; not worth the layer side's
   background compiler. The trama watch failing is a warning, not a startup error.
+- **2026-09-20 — RATE parameters are integrated by the engine (`"rates"` in the
+  manifest).** Kevin, live: Hue Drift with `speed` on mod: high strobed, and
+  stopped when the music calmed. The shader computed `shift + u.time * speed`, so
+  every CHANGE in speed was multiplied by the app's uptime — at 310 s a wobble of
+  0.05 moved the hue 15 turns between frames (measured: 97x the steady per-frame
+  change). It passed M1's "speed driven by bass" acceptance because with the clock
+  near zero it is invisible. A stateless fragment shader cannot integrate, so the
+  engine does: an effect lists its rate parameters, `TramaSystem::update` advances
+  `phase += value · dt` per node once per frame (the modulated value when there is
+  one; never per execute, so a dissolve's second execute cannot run the clock
+  twice), and the executor writes the phase into that parameter's slot INSTEAD of
+  the value. After: 1.12x, which is just the ratio of the mean speeds. Phases are
+  runtime-only `f64`, not serialized. A manifest-level list rather than a flag on
+  `ParamDef`, which is shared with `.pfx` and matched on all over the app. A unit
+  test refuses any shipped trama effect with `u.time` and `param(` on one line.
+  Ruled out first: the layer-to-chain pairing. Every shipped layer effect was
+  rendered with and without an identity chain, and the pictures were
+  byte-identical on every frame — though only the 14 effects whose picture
+  actually moves in that harness (no particles, no audio) make that a finding
+  rather than a null result.

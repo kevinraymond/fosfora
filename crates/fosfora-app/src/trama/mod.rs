@@ -145,10 +145,12 @@ impl TramaSystem {
             };
             for node in chain.graph.params_iter_mut() {
                 modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
+                integrate(&self.registry, node, dt);
             }
         }
         for node in self.master.params_iter_mut() {
             modulation::resolve_node(node.params, node.mods, dt, &self.audio_view);
+            integrate(&self.registry, node, dt);
         }
 
         // A `.fio.json` picked in the import dialog, on whichever frame the
@@ -417,5 +419,19 @@ impl TramaSystem {
     /// egui renderer lives.
     pub fn register_previews(&mut self, device: &wgpu::Device, renderer: &mut egui_wgpu::Renderer) {
         self.executor.register_previews(device, renderer);
+    }
+}
+
+/// Advance one node's rate integrals by this frame's `dt`. Here, beside the
+/// modulation resolve, for the same reason: once per frame, never per execute.
+fn integrate(registry: &effect::TramaRegistry, node: graph::NodeParamsMut<'_>, dt: f32) {
+    let (node::NodeKind::Source { effect } | node::NodeKind::Effect { effect }) = node.kind else {
+        return;
+    };
+    let Some(def) = registry.get(effect) else {
+        return;
+    };
+    if !def.rates.is_empty() {
+        modulation::integrate_rates(node.params, node.mods, node.phases, &def.rates, dt);
     }
 }

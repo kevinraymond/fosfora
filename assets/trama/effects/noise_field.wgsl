@@ -9,17 +9,22 @@
     { "type": "Float", "name": "speed",    "default": 0.35, "min": 0.0,  "max": 2.0 },
     { "type": "Float", "name": "octaves",  "default": 4.0,  "min": 1.0,  "max": 6.0 },
     { "type": "Float", "name": "contrast", "default": 1.0,  "min": 0.25, "max": 4.0 }
-  ]
+  ],
+  "rates": ["speed"]
 }
 */
 // Noise Field — drifting palette-colored fBM, the trama hello-world source.
+//
+// `speed` is a RATE (see "rates" above): param(1u) arrives as its running
+// integral — how far the field has drifted — not as the slider value. Never
+// write `u.time * speed`; see hue_drift.wgsl for what that does.
 
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let res = u.resolution;
     let uv = frag_coord.xy / res;
     let p = (uv - 0.5) * vec2f(res.x / res.y, 1.0);
-    let n = fosfora_fbm3(vec3f(p * param(0u), u.time * param(1u)), i32(param(2u)), 0.5);
+    let n = fosfora_fbm3(vec3f(p * param(0u), param(1u)), i32(param(2u)), 0.5);
     let t = pow(clamp(n * 0.5 + 0.5, 0.0, 1.0), param(3u));
     // IQ cosine palette over the field value: brightness AND hue vary with t,
     // so the structure reads even where color differences don't — and a

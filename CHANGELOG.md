@@ -32,6 +32,11 @@
   echo trails on one layer — are in the new trama chapter of `docs/TUTORIALS.md`.
 
 ### Fixed
+- **Hue Drift and Noise Field strobed when their `speed` was modulated or dragged.** The hue
+  jumped to an unrelated color on every frame the speed changed, and got worse the longer the
+  app had been running; when the music calmed, it stopped. Speed now changes how fast the
+  effect moves from that moment on. Effect authors: declare such parameters under `"rates"` in
+  the manifest rather than multiplying by `u.time`.
 - **The trama canvas opened zoomed to 2×, so a three-node patch filled the window.** Nodes now
   open at 1:1 with tighter frames and pins on the node's edge. Pressing a node's title drags
   the node instead of selecting its text, the selected node is marked by a bright frame that
