@@ -900,6 +900,334 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored a_reloaded_manifest_reaches_every_chain
+    //
+    // The glue between the registry and the graphs: when an effect's manifest
+    // changes on disk, EVERY live node of it is brought in line — in each
+    // layer's chain and in the master — and a chain whose pins moved has its
+    // canvas view rebuilt from the graph, since the view keeps its own copy of
+    // the wire set and would go on drawing a wire the graph no longer has.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_reloaded_manifest_reaches_every_chain() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        let loader = crate::effect::loader::EffectLoader::new();
+
+        // A scratch effect, outside the shipped set: two inputs, one param.
+        let dir = std::env::temp_dir().join(format!("fosfora-trama-glue-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scratch_blend.wgsl");
+        let file = |inputs: u8, body: &str| {
+            format!(
+                "/*! trama\n{{ \"name\": \"Scratch\", \"id\": \"scratch_blend\", \"kind\": \"effect\", \
+                 \"inputs\": {inputs}, \"params\": [ {{ \"type\": \"Float\", \"name\": \"amount\", \
+                 \"default\": 0.5, \"min\": 0.0, \"max\": 1.0 }} ] }}\n*/\n\
+                 @fragment\nfn fs_main(@builtin(position) p: vec4f) -> @location(0) vec4f {{\n\
+                 let uv = p.xy / u.resolution;\n{body}\n}}\n"
+            )
+        };
+        std::fs::write(
+            &path,
+            file(2, "return mix(input0(uv), input1(uv), param(0u));"),
+        )
+        .unwrap();
+        trama.reload_effects(
+            &device,
+            None,
+            &loader,
+            std::slice::from_ref(&path),
+            false,
+            &mut stack,
+        );
+        assert!(
+            trama.registry.errors.is_empty(),
+            "{:?}",
+            trama.registry.errors
+        );
+        let scratch = EffectId("scratch_blend".into());
+
+        // Layer input into BOTH pins of a scratch node, on a layer and on the master.
+        let wire_up = |graph: &mut crate::trama::graph::NodeGraph,
+                       registry: &crate::trama::effect::TramaRegistry| {
+            let def = registry.get(&scratch).expect("just loaded");
+            let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+            let node = graph.add_node(
+                NodeKind::Effect {
+                    effect: def.id.clone(),
+                },
+                def.inputs,
+                &def.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, node, 0).unwrap();
+            graph.connect(input, node, 1).unwrap();
+            graph.connect(node, out, 0).unwrap();
+            node
+        };
+        let id = stack.ensure_chain(1).expect("a slot is free");
+        let on_layer = wire_up(
+            &mut stack.layers[1].chain.as_deref_mut().unwrap().graph,
+            &trama.registry,
+        );
+        let on_master = wire_up(&mut trama.master, &trama.registry);
+        trama
+            .canvas
+            .open_view(id, &stack.layers[1].chain.as_deref().unwrap().graph);
+        let placed = trama
+            .canvas
+            .position(id, on_layer)
+            .expect("the view knows it");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+
+        // The effect loses its second input.
+        std::fs::write(&path, file(1, "return input0(uv) * param(0u);")).unwrap();
+        trama.reload_effects(
+            &device,
+            None,
+            &loader,
+            std::slice::from_ref(&path),
+            false,
+            &mut stack,
+        );
+
+        let layer_graph = &stack.layers[1].chain.as_deref().unwrap().graph;
+        for (graph, node, whose) in [
+            (layer_graph, on_layer, "layer"),
+            (&trama.master, on_master, "master"),
+        ] {
+            assert_eq!(
+                graph.node(node).unwrap().inputs,
+                1,
+                "{whose}: pin count follows the manifest"
+            );
+            assert_eq!(
+                graph.wires().len(),
+                2,
+                "{whose}: the wire into the lost pin is gone"
+            );
+            graph.validate().unwrap_or_else(|e| panic!("{whose}: {e}"));
+        }
+        assert!(!trama.canvas.has_view(id), "the stale view was thrown away");
+        assert_eq!(
+            trama.canvas.position(id, on_layer),
+            Some(placed),
+            "and the node stays where it was put"
+        );
+        // It still renders, against the new pipeline and the new pin count.
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+        frame(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored chains_survive_a_save_and_a_load
+    //
+    // M3's acceptance, on the per-layer shape: save every chain of a stack,
+    // push the documents through JSON TEXT (what a preset file is), load them
+    // into a scene that has never seen them — a restart — and the picture is
+    // byte-identical. Then the two ways loading over a LIVE stack goes wrong:
+    //
+    // - Slots are reused and a restored graph starts at version 0 like the last
+    //   restored graph did, so the plan key sees nothing change. Without
+    //   forgetting the slot first, the executor keeps running the OLD chain's
+    //   plan. Make `TramaSystem::reset_chain` skip `executor.drop_chain` and
+    //   the "second preset" assertion goes red.
+    // - A preset saved WITHOUT a chain must leave the layer without one.
+    //   Before presets carried chains, the previous preset's stayed attached.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn chains_survive_a_save_and_a_load() {
+        use crate::trama::persist;
+        use crate::trama::ser::ChainDoc;
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let render = |stack: &mut LayerStack,
+                      compositor: &mut Compositor,
+                      trama: &mut crate::trama::TramaSystem,
+                      targets: &mut ChainTargets| {
+            let mut shot = Vec::new();
+            for _ in 0..2 {
+                shot = frame(&device, &queue, stack, compositor, trama, targets);
+            }
+            shot
+        };
+        // Layer 0: Layer input -> hue_drift(shift) -> Output. Master: Layer
+        // input -> Transform at half size -> Output, so the two are told apart
+        // in the picture and neither can stand in for the other.
+        let author = |stack: &mut LayerStack, trama: &mut crate::trama::TramaSystem, shift: f32| {
+            let id = stack.ensure_chain(0).expect("a slot is free");
+            {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let tail = hue_chain(graph, &trama.registry, &[shift]);
+                let out = graph.output_node();
+                graph.connect(tail, out, 0).unwrap();
+            }
+            let transform = trama
+                .registry
+                .get(&EffectId("transform".into()))
+                .expect("transform ships");
+            let (kind, params) = (
+                NodeKind::Effect {
+                    effect: transform.id.clone(),
+                },
+                transform.params.clone(),
+            );
+            let input = trama.master.add_node(NodeKind::ChainInput, 0, &[]);
+            let t = trama.master.add_node(kind, 1, &params);
+            trama
+                .master
+                .params_mut(t)
+                .unwrap()
+                .params
+                .set("scale", crate::params::ParamValue::Float(0.5));
+            let out = trama.master.output_node();
+            trama.master.connect(input, t, 0).unwrap();
+            trama.master.connect(t, out, 0).unwrap();
+            id
+        };
+        let through_text = |saved: &persist::SavedChains| {
+            let reread = |d: &ChainDoc| ChainDoc::from_json(&d.to_json()).expect("reads back");
+            (
+                saved
+                    .layers
+                    .iter()
+                    .map(|d| d.as_ref().map(reread))
+                    .collect::<Vec<_>>(),
+                saved.master.as_ref().map(reread),
+            )
+        };
+
+        // Author, render, save.
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        let bare = render(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let id = author(&mut stack, &mut trama, 0.37);
+        // A view, as if the canvas had been opened — positions live there.
+        trama
+            .canvas
+            .open_view(id, &stack.layers[0].chain.as_deref().unwrap().graph);
+        let authored = render(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            authored != bare,
+            "the chains must show, or nothing is proved"
+        );
+        let saved = persist::capture(&stack, &trama);
+        assert!(saved.layers[0].is_some() && saved.layers[1].is_none() && saved.master.is_some());
+        let (layer_docs, master_doc) = through_text(&saved);
+
+        // "Restart": a scene that has never seen them.
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        let notes = persist::apply(
+            &mut stack,
+            &mut trama,
+            &layer_docs,
+            master_doc.as_ref(),
+            |_| false,
+        );
+        assert_eq!(notes, Vec::<String>::new(), "nothing needed repair");
+        let reloaded = render(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            reloaded == authored,
+            "a reloaded patch renders the same picture"
+        );
+        // Saved again WITHOUT the canvas ever opening, the layout survives.
+        let resaved = persist::capture(&stack, &trama);
+        assert_eq!(resaved.layers, saved.layers, "positions kept with no view");
+        assert_eq!(resaved.master, saved.master);
+
+        // A second preset over the live stack, landing on the same slots — with
+        // a different TOPOLOGY on both chains. A different parameter value
+        // would prove nothing: values are re-read every frame, so a stale plan
+        // renders them correctly. What it is compared against is the same
+        // preset rendered in a scene of its own.
+        let (mut other_stack, mut other_comp, mut other_trama, mut other_targets) =
+            scene(&device, &queue, 2);
+        {
+            other_stack.ensure_chain(0).expect("a slot is free");
+            let graph = &mut other_stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let tail = hue_chain(graph, &other_trama.registry, &[0.2, 0.3]);
+            let out = graph.output_node();
+            graph.connect(tail, out, 0).unwrap();
+            let tail = hue_chain(&mut other_trama.master, &other_trama.registry, &[0.45]);
+            let out = other_trama.master.output_node();
+            other_trama.master.connect(tail, out, 0).unwrap();
+        }
+        let expected = render(
+            &mut other_stack,
+            &mut other_comp,
+            &mut other_trama,
+            &mut other_targets,
+        );
+        assert!(
+            expected != reloaded,
+            "the second preset must look different"
+        );
+        let second = persist::capture(&other_stack, &other_trama);
+        let (layer_docs, master_doc) = through_text(&second);
+        persist::apply(
+            &mut stack,
+            &mut trama,
+            &layer_docs,
+            master_doc.as_ref(),
+            |_| false,
+        );
+        let replaced = render(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            replaced == expected,
+            "the second preset's chains must be the ones running, not the first's plans"
+        );
+
+        // And a preset with no chains at all clears them.
+        // A LOCKED layer is skipped by a preset load and keeps what it has.
+        let kept = persist::apply(&mut stack, &mut trama, &[None, None], None, |i| i == 0);
+        assert!(kept.is_empty());
+        assert!(
+            stack.layers[0].chain.is_some(),
+            "a locked layer keeps its chain"
+        );
+        persist::apply(&mut stack, &mut trama, &[None, None], None, |_| false);
+        assert!(stack.layers.iter().all(|l| l.chain.is_none()));
+        assert_eq!(trama.master.placed_nodes(), 0);
+        let cleared = render(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            cleared == bare,
+            "no chain left behind from the preset before"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored a_chain_reads_the_frame_its_layer_just_rendered
     //
     // A chain must sample the picture its layer rendered THIS frame — from the

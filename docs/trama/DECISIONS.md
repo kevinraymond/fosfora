@@ -254,3 +254,57 @@ Owner reads this instead of diffs when reviewing direction.
   field with a graph walk (real machinery for four effects). A chain that creates
   transparency on an untagged layer needs Passthrough chosen by hand; documented
   in `docs/alpha.md`.
+- **2026-09-19 (M3) — a `.fio.json` is ONE chain, and a preset embeds them.**
+  `ser::ChainDoc` is the complete authored state of a single chain and carries its
+  own `trama_version`. It is the standalone export file, the `chain` field of a
+  `LayerPreset`, and the `master_chain` field of a `Preset` — so a chain means the
+  same thing wherever it is stored, and scenes (which cue presets by name) restore
+  chains for free. The document types are NOT the runtime types; only the small
+  modulation config enums are shared, and `the_written_format_is_pinned` fixes their
+  spelling (a one-word serde rename fails three tests while the round trip still
+  passes — which is the argument for pinning the writer).
+- **2026-09-19 (M3) — saved node ids are KEPT (`NodeGraph::from_parts`).** Canvas
+  positions are keyed by them and every modulation's runtime state is seeded from
+  `(node, param)`, so re-allocating ids through `add_node` would bring a patch with
+  gaps back subtly different. Positions are saved through `CanvasState::position`,
+  not snarl's serde feature, which would write the wire set a second time.
+- **2026-09-19 (M3) — loading repairs what it can and says so; nothing is dropped
+  silently.** An effect that is not installed becomes a placeholder node with its
+  saved pin count, values and modulations kept verbatim (pin count is recorded per
+  node for exactly this), and the executor renders it as `StepKind::Missing` —
+  magenta, titled `missing: <id>` — instead of failing the whole plan. A changed
+  manifest is merged by name. Every repair is a line in `Restored::notes`. A
+  document that is not a valid graph is refused and the chain left alone.
+- **2026-09-19 (M3) — a preset load REPLACES chains, and forgets each slot first.**
+  A preset saved without a chain clears the one that was there (before M3 the
+  previous preset's chains stayed attached to surviving layers); a locked layer is
+  exempt, as it is from the rest of the load. Slots are reused and a restored graph
+  starts at version 0 like the last restored graph did, so without
+  `TramaSystem::reset_chain` the plan key sees nothing change and the executor goes
+  on running the old chain's plan. `TramaRegistry::generation` joined the plan key
+  for the same reason on the hot-reload side.
+- **2026-09-19 (M3) — no session autosave; "kill/restart restores the patch" is met
+  through presets.** The handoff wrote that criterion for one global graph. The app
+  restores nothing at startup — not the layer stack, not the last preset — so
+  restoring per-layer chains without their layers would be incoherent, and restoring
+  the whole session is a product decision beyond trama. What is delivered: a saved
+  preset reloads byte-identical in a scene that has never seen it
+  (`chains_survive_a_save_and_a_load`). Preset and chain files are now written
+  atomically (`paths::write_atomic`), and non-finite values never reach a file
+  (serde_json writes NaN as `null`, which does not read back).
+- **2026-09-19 (M3) — hot reload: a third watcher root routed by LOCATION, last-good
+  per effect, and the manifest synced into every chain.** A trama effect is a
+  `.wgsl` like any layer shader, and the watcher routed by extension, so its
+  changes fell into the layer-stack consumer, which matched them against no pass
+  and dropped them silently; `route()` now asks where a file lives first. A file
+  that fails at any step leaves the last-good `EffectDef` rendering with the
+  diagnostic on `EffectDef::error` — every instance is titled `· ERROR` (words,
+  not hue) and the inspector shows the text; `registry.generation` does not move,
+  so a typo costs no replan. A deleted file removes the effect and its nodes
+  become the same `missing:` placeholders an unknown id in a loaded patch does,
+  which `NodeGraph::sync_manifest` revives when the file returns. That function
+  is also what keeps `NodeInstance.inputs` and `EffectDef.inputs` from drifting
+  apart on an arity change (the executor binds one, the graph validates wires
+  against the other). Compiles happen on the calling thread — tens of
+  milliseconds for a fullscreen effect, once per save; not worth the layer side's
+  background compiler. The trama watch failing is a warning, not a startup error.

@@ -64,9 +64,11 @@ fn canvas_style(style: &egui::Style) -> SnarlStyle {
 /// the moment you selected a different layer.
 pub struct ChainView {
     /// Snarl payload is the trama [`NodeId`] itself — the index map for free.
-    /// Positions live here (M3 serializes them via snarl's serde feature),
-    /// which is why switching chains swaps this rather than rebuilding it:
-    /// a rebuild would lose every node's position.
+    /// Positions live here and nowhere else, which is why switching chains
+    /// swaps this rather than rebuilding it: a rebuild would lose every
+    /// node's position. They are saved through [`CanvasState::position`], not
+    /// through snarl's serde feature — that would write the wire set a second
+    /// time, against `NodeGraph` being the one source of truth for wires.
     pub snarl: Snarl<NodeId>,
     /// The inspected node. Ours, not egui-snarl's: snarl 0.9 only selects on
     /// shift/cmd-click or a rect-drag (owner play-test: "the inspector never
@@ -75,18 +77,25 @@ pub struct ChainView {
 }
 
 impl ChainView {
-    /// Seed from the graph as it stands. Today a chain is born holding only
-    /// its Output node, but laying out whatever is there keeps this honest
-    /// once M3 can load a chain off disk.
-    fn new(graph: &NodeGraph) -> Self {
+    /// Seed from the graph as it stands. `layout` holds the positions a
+    /// loaded chain was saved with; any node it does not name (and every node
+    /// of a chain that was never saved) gets the automatic column layout.
+    fn new(graph: &NodeGraph, layout: &[(NodeId, [f32; 2])]) -> Self {
         let mut snarl = Snarl::new();
-        snarl.insert_node(egui::pos2(480.0, 200.0), graph.output_node());
+        let saved = |id: NodeId| {
+            layout
+                .iter()
+                .find(|(n, _)| *n == id)
+                .map(|(_, p)| egui::pos2(p[0], p[1]))
+        };
+        let out = graph.output_node();
+        snarl.insert_node(saved(out).unwrap_or(egui::pos2(480.0, 200.0)), out);
         let mut y = 200.0;
         for id in graph.topo_order() {
-            if id == graph.output_node() {
+            if id == out {
                 continue;
             }
-            snarl.insert_node(egui::pos2(120.0, y), id);
+            snarl.insert_node(saved(id).unwrap_or(egui::pos2(120.0, y)), id);
             y += 160.0;
         }
         // Wires too, or a rebuilt view shows a patch that looks disconnected
@@ -119,6 +128,12 @@ impl ChainView {
 pub struct CanvasState {
     /// One view per chain, created on first sight of that chain.
     views: std::collections::HashMap<super::super::node::ChainId, ChainView>,
+    /// Saved node positions for a chain that was LOADED and has not been shown
+    /// yet. A view is only built when its chain is first drawn, so until then
+    /// this is the only copy — it seeds the view, and answers [`Self::position`]
+    /// so that saving a preset again before ever opening the canvas does not
+    /// flatten the layout it was loaded with.
+    layouts: std::collections::HashMap<super::super::node::ChainId, Vec<(NodeId, [f32; 2])>>,
     /// Last refused edit, shown under the header until the next accepted one.
     pub status: Option<String>,
     /// Where the canvas widget sat last frame. egui-snarl persists its
@@ -140,7 +155,37 @@ impl CanvasState {
     pub fn drop_chain(&mut self, chain: super::super::node::ChainId) {
         if chain != super::super::node::ChainId::Master {
             self.views.remove(&chain);
+            self.layouts.remove(&chain);
         }
+    }
+
+    /// A chain's graph was REPLACED — a preset or a `.fio.json` was loaded
+    /// into it. Whatever view it had describes nodes that no longer exist, the
+    /// master's included, so it goes; the next draw rebuilds it from `layout`.
+    pub fn replace_chain(
+        &mut self,
+        chain: super::super::node::ChainId,
+        layout: Vec<(NodeId, [f32; 2])>,
+    ) {
+        self.views.remove(&chain);
+        self.layouts.insert(chain, layout);
+    }
+
+    /// Where a node sits on the canvas, for saving: from the live view if the
+    /// chain has been shown, otherwise from the layout it was loaded with.
+    pub fn position(&self, chain: super::super::node::ChainId, node: NodeId) -> Option<[f32; 2]> {
+        if let Some(view) = self.views.get(&chain) {
+            return view
+                .snarl
+                .nodes_pos_ids()
+                .find(|(_, _, n)| **n == node)
+                .map(|(_, pos, _)| [pos.x, pos.y]);
+        }
+        self.layouts
+            .get(&chain)?
+            .iter()
+            .find(|(n, _)| *n == node)
+            .map(|(_, p)| *p)
     }
 
     #[cfg(test)]
@@ -155,9 +200,10 @@ impl CanvasState {
         chain: super::super::node::ChainId,
         graph: &NodeGraph,
     ) -> &mut ChainView {
+        let layout = self.layouts.remove(&chain).unwrap_or_default();
         self.views
             .entry(chain)
-            .or_insert_with(|| ChainView::new(graph))
+            .or_insert_with(|| ChainView::new(graph, &layout))
     }
 
     #[cfg(test)]
@@ -253,7 +299,18 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
                 .registry
                 .get(effect)
-                .map_or_else(|| effect.0.clone(), |def| def.name.clone()),
+                // Words, not just the magenta the executor paints: the node
+                // says what it is waiting for.
+                .map_or_else(
+                    || format!("missing: {}", effect.0),
+                    // The file on disk does not compile and the last good
+                    // version is still running: every instance says so, in
+                    // words. The diagnostic itself is in the inspector.
+                    |def| match def.error {
+                        Some(_) => format!("{} · ERROR", def.name),
+                        None => def.name.clone(),
+                    },
+                ),
             None => "?".to_string(),
         }
     }
@@ -638,6 +695,7 @@ pub fn draw_trama_window(
         executor,
         active_chain,
         canvas_target,
+        io,
         ..
     } = trama;
     let active_chain = *active_chain;
@@ -683,12 +741,15 @@ pub fn draw_trama_window(
     // unresolvable nodes.
     let CanvasState {
         views,
+        layouts,
         status,
         last_origin,
     } = canvas;
-    let view = views
-        .entry(active_chain)
-        .or_insert_with(|| ChainView::new(graph));
+    let view = views.entry(active_chain).or_insert_with(|| {
+        // The view owns the positions from here on.
+        let layout = layouts.remove(&active_chain).unwrap_or_default();
+        ChainView::new(graph, &layout)
+    });
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
     let selected = view.selected;
@@ -720,6 +781,26 @@ pub fn draw_trama_window(
                     {
                         *canvas_target = target;
                     }
+                }
+                ui.separator();
+                if ui
+                    .small_button("Export…")
+                    .on_hover_text("Save this chain as a .fio.json file")
+                    .clicked()
+                {
+                    io.export(crate::trama::ser::ChainDoc::capture(graph, |node| {
+                        view.snarl
+                            .nodes_pos_ids()
+                            .find(|(_, _, n)| **n == node)
+                            .map(|(_, pos, _)| [pos.x, pos.y])
+                    }));
+                }
+                if ui
+                    .small_button("Import…")
+                    .on_hover_text("Replace this chain with one from a .fio.json file")
+                    .clicked()
+                {
+                    io.import(active_chain);
                 }
                 ui.separator();
                 ui.weak(format!(
@@ -896,7 +977,7 @@ mod tests {
         g.connect(input, delay, 0).unwrap();
         g.connect(delay, g.output_node(), 0).unwrap();
 
-        let view = ChainView::new(&g);
+        let view = ChainView::new(&g, &[]);
         let drawn: Vec<(NodeId, NodeId, usize)> = view
             .snarl
             .wires()

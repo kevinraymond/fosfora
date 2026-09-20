@@ -15,11 +15,14 @@
 
 use crate::params::{ParamDef, ParamStore, ParamValue};
 
+use serde::{Deserialize, Serialize};
+
 use super::audio::{AudioFeature, AudioView};
 use super::node::NodeId;
 
 /// How a modulation signal combines with the manual base value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModMode {
     /// `base + signal · amount · span` — bipolar wobble around the slider.
     Add,
@@ -33,7 +36,8 @@ pub enum ModMode {
     Replace,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OscShape {
     Sine,
     Saw,
@@ -60,7 +64,8 @@ impl OscShape {
 /// Musical divisions for beat-synced rates. 4/4 is assumed in v1 (the bar
 /// clock exists for a later meter-aware upgrade); `beats()` is the cycle
 /// length in beats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BeatDiv {
     FourBars,
     TwoBars,
@@ -107,7 +112,8 @@ impl BeatDiv {
     ];
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OscRate {
     Hz(f32),
     /// Phase derived from the continuous beat clock; freezes with it when
@@ -116,7 +122,7 @@ pub enum OscRate {
     BeatSync(BeatDiv),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Osc {
     pub shape: OscShape,
     pub rate: OscRate,
@@ -124,14 +130,15 @@ pub struct Osc {
     pub phase: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModSource {
     Oscillator(Osc),
     Audio(AudioFeature),
 }
 
 /// One parameter's modulation slot — the serializable configuration.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Modulation {
     pub source: ModSource,
     /// Depth, -1..=1, scaling into the parameter's `(max - min)` span.

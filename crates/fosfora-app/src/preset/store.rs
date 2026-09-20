@@ -126,6 +126,12 @@ pub struct LayerPreset {
     /// `None` for old presets; restored over the `.pfx` defaults on load.
     #[serde(default)]
     pub particle_sim: Option<ParticleSimPreset>,
+    /// This layer's trama chain — nodes, wires, values, modulations and canvas
+    /// positions, as a self-versioned `.fio.json` document. `None` for a layer
+    /// without one and for every preset written before chains were saved;
+    /// skipped when empty, so those presets also re-save byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<crate::trama::ser::ChainDoc>,
 }
 
 /// The six particle-sim knobs exposed by the contextual particle panel, grouped
@@ -194,6 +200,10 @@ pub struct Preset {
     /// per-layer property. `None` for old presets.
     #[serde(default)]
     pub volumetric: Option<VolumetricPreset>,
+    /// The master trama chain, which runs on the composited frame. Preset
+    /// scope, like `postprocess` — it belongs to no layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_chain: Option<crate::trama::ser::ChainDoc>,
 }
 
 #[derive(Default)]
@@ -354,6 +364,7 @@ impl PresetStore {
         active_layer: usize,
         postprocess: &PostProcessDef,
         volumetric: Option<VolumetricPreset>,
+        master_chain: Option<crate::trama::ser::ChainDoc>,
     ) -> Result<usize> {
         let name = Self::sanitize_name(name);
         if name.is_empty() {
@@ -374,11 +385,12 @@ impl PresetStore {
             active_layer,
             postprocess: postprocess.clone(),
             volumetric,
+            master_chain,
         };
 
         let path = dir.join(format!("{name}.json"));
         let json = serde_json::to_string_pretty(&preset)?;
-        std::fs::write(&path, json)?;
+        crate::paths::write_atomic(&path, &json)?;
         log::info!("Saved preset '{}' to {}", name, path.display());
 
         self.scan();
@@ -444,7 +456,7 @@ impl PresetStore {
 
         let path = dir.join(format!("{new_name}.json"));
         let json = serde_json::to_string_pretty(&preset)?;
-        std::fs::write(&path, json)?;
+        crate::paths::write_atomic(&path, &json)?;
         log::info!("Copied preset to '{}'", new_name);
 
         self.scan();
@@ -517,6 +529,7 @@ mod tests {
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         s.presets.push(("Test Preset".into(), preset));
         s.current_preset = Some(0);
@@ -664,10 +677,12 @@ mod tests {
                 lattice: None,
                 helix: None,
                 particle_sim: None,
+                chain: None,
             }],
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         let json = serde_json::to_string(&preset).unwrap();
         let p2: Preset = serde_json::from_str(&json).unwrap();
@@ -896,6 +911,7 @@ mod tests {
             lattice: Some(lat),
             helix: None,
             particle_sim: None,
+            chain: None,
         };
         let json = serde_json::to_string(&lp).unwrap();
         let lp2: LayerPreset = serde_json::from_str(&json).unwrap();
@@ -958,6 +974,7 @@ mod tests {
                 enabled: true,
                 params,
             }),
+            master_chain: None,
         };
         let json = serde_json::to_string(&preset).unwrap();
         let p2: Preset = serde_json::from_str(&json).unwrap();
@@ -1065,6 +1082,7 @@ mod tests {
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         s.presets.push(("Crucible".into(), empty_preset.clone()));
         s.presets
@@ -1086,6 +1104,7 @@ mod tests {
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         s.presets.push(("Crucible".into(), empty_preset));
 
@@ -1103,15 +1122,30 @@ mod tests {
             active_layer: 0,
             postprocess: PostProcessDef::default(),
             volumetric: None,
+            master_chain: None,
         };
         s.presets.push(("Crucible".into(), empty_preset));
 
-        let result = s.save("Crucible", vec![], 0, &PostProcessDef::default(), None);
+        let result = s.save(
+            "Crucible",
+            vec![],
+            0,
+            &PostProcessDef::default(),
+            None,
+            None,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("built-in"));
 
         // Case-insensitive check
-        let result2 = s.save("crucible", vec![], 0, &PostProcessDef::default(), None);
+        let result2 = s.save(
+            "crucible",
+            vec![],
+            0,
+            &PostProcessDef::default(),
+            None,
+            None,
+        );
         assert!(result2.is_err());
     }
 }

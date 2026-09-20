@@ -117,9 +117,25 @@ pub fn draw_inspector(
                         EffectKind::Effect => "effect",
                     }));
                 });
+                if let Some(error) = &def.error {
+                    ui.label(
+                        RichText::new("ERROR — the file does not compile; the last good version is still running")
+                            .color(tc.warning),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("trama-effect-error", id.0))
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(error).monospace().size(SMALL_SIZE));
+                        });
+                }
             }
             None => {
-                ui.label(RichText::new(format!("{} (missing effect)", effect.0)).color(tc.warning));
+                ui.label(RichText::new(format!("missing: {}", effect.0)).color(tc.warning));
+                ui.label(dim(
+                    "This effect is not installed, so the node renders magenta. \
+                     Its parameters and wires are kept; add the effect file and it comes back.",
+                ));
             }
         },
     }
