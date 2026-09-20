@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -45,15 +46,73 @@ fn route(path: &std::path::Path) -> Route {
     }
 }
 
+/// A file's modification time and size, or `None` if it does not exist. Read
+/// with `stat`, which — unlike opening the file — is not itself an event.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp(path: &std::path::Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Record the stamp of every file under `dir`, so that the reads the app does
+/// while STARTING (loading every shader and effect it is about to watch) are
+/// recognized as reads.
+fn seed(dir: &std::path::Path, recursive: bool, seen: &mut HashMap<PathBuf, Stamp>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for path in entries.filter_map(Result::ok).map(|e| e.path()) {
+        if path.is_dir() {
+            if recursive {
+                seed(&path, true, seen);
+            }
+        } else if route(&path) != Route::Ignore {
+            seen.insert(path.clone(), stamp(&path));
+        }
+    }
+}
+
 pub struct ShaderWatcher {
     _debouncer: Debouncer<notify::RecommendedWatcher>,
     receiver: Receiver<PathBuf>,
     pfx_receiver: Receiver<PathBuf>,
     trama_receiver: Receiver<PathBuf>,
+    /// The stamp each file had when it was last reported. notify subscribes
+    /// to inotify OPEN and the mini-debouncer flattens every event to
+    /// "changed", so merely READING a watched file is reported as a change —
+    /// and a consumer that reloads on change reads the file. An event whose
+    /// stamp has not moved is a read, and is dropped here for all three
+    /// routes.
+    seen: HashMap<PathBuf, Stamp>,
 }
 
 impl ShaderWatcher {
     pub fn new() -> Result<Self> {
+        Self::watching(
+            &assets_dir().join("shaders"),
+            &assets_dir().join("effects"),
+            &crate::trama::effect::trama_effects_dir(),
+        )
+    }
+
+    /// The watcher over explicit directories, so a test can point it at a
+    /// scratch tree instead of the real assets.
+    fn watching(
+        shader_dir: &std::path::Path,
+        effects_dir: &std::path::Path,
+        trama_dir: &std::path::Path,
+    ) -> Result<Self> {
+        // Absolute, all three. In the dev workflow `assets_dir()` is the
+        // RELATIVE path `assets`, while notify reports absolute paths — so
+        // stamps seeded under the relative spelling were never found, and
+        // every file the app read while starting was reported once as new.
+        let absolute = |p: &std::path::Path| std::path::absolute(p).unwrap_or(p.to_path_buf());
+        let (shader_dir, effects_dir, trama_dir) = (
+            &absolute(shader_dir),
+            &absolute(effects_dir),
+            &absolute(trama_dir),
+        );
         let (tx, rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (pfx_tx, pfx_rx): (Sender<PathBuf>, Receiver<PathBuf>) = crossbeam_channel::unbounded();
         let (trama_tx, trama_rx): (Sender<PathBuf>, Receiver<PathBuf>) =
@@ -79,31 +138,28 @@ impl ShaderWatcher {
         )?;
 
         // Watch assets/shaders for .wgsl changes
-        let shader_dir = assets_dir().join("shaders");
         if shader_dir.exists() {
             debouncer
                 .watcher()
-                .watch(&shader_dir, notify::RecursiveMode::Recursive)?;
+                .watch(shader_dir, notify::RecursiveMode::Recursive)?;
             log::info!("Watching {} for shader changes", shader_dir.display());
         }
 
         // Watch assets/effects for .pfx changes
-        let effects_dir = assets_dir().join("effects");
         if effects_dir.exists() {
             debouncer
                 .watcher()
-                .watch(&effects_dir, notify::RecursiveMode::Recursive)?;
+                .watch(effects_dir, notify::RecursiveMode::Recursive)?;
             log::info!("Watching {} for .pfx changes", effects_dir.display());
         }
 
         // trama effect files. NOT fatal if it cannot be watched: hot reload is
         // a convenience, and the two watches above taking the whole app down
         // when they fail is its own bug.
-        let trama_dir = crate::trama::effect::trama_effects_dir();
         if trama_dir.exists() {
             match debouncer
                 .watcher()
-                .watch(&trama_dir, notify::RecursiveMode::NonRecursive)
+                .watch(trama_dir, notify::RecursiveMode::NonRecursive)
             {
                 Ok(()) => log::info!("Watching {} for trama effects", trama_dir.display()),
                 Err(e) => log::warn!(
@@ -113,52 +169,132 @@ impl ShaderWatcher {
             }
         }
 
+        let mut seen = HashMap::new();
+        seed(shader_dir, true, &mut seen);
+        seed(effects_dir, true, &mut seen);
+        seed(trama_dir, false, &mut seen);
+
         Ok(Self {
             _debouncer: debouncer,
             receiver: rx,
             pfx_receiver: pfx_rx,
             trama_receiver: trama_rx,
+            seen,
         })
     }
 
-    /// Drain all pending .wgsl change events and return the unique paths.
-    pub fn drain_changes(&self) -> Vec<PathBuf> {
+    /// Unique paths from `receiver` whose file really changed: created,
+    /// written, replaced or deleted since it was last reported.
+    fn drain(receiver: &Receiver<PathBuf>, seen: &mut HashMap<PathBuf, Stamp>) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        while let Ok(path) = self.receiver.try_recv() {
-            if !paths.contains(&path) {
+        while let Ok(path) = receiver.try_recv() {
+            if paths.contains(&path) {
+                continue;
+            }
+            let now = stamp(&path);
+            // A path never seen before is a new file. (If notify ever spells
+            // a path differently from the seeding walk, the cost is one
+            // spurious report per file, not a loop.)
+            if seen.insert(path.clone(), now) != Some(now) {
                 paths.push(path);
             }
         }
         paths
     }
 
-    /// Drain all pending trama effect file changes and return the unique paths.
-    pub fn drain_trama_changes(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-        while let Ok(path) = self.trama_receiver.try_recv() {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        paths
+    /// Changed layer-stack shaders (`.wgsl` under `assets/shaders`).
+    pub fn drain_changes(&mut self) -> Vec<PathBuf> {
+        Self::drain(&self.receiver, &mut self.seen)
     }
 
-    /// Drain all pending .pfx change events and return the unique paths.
-    pub fn drain_pfx_changes(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-        while let Ok(path) = self.pfx_receiver.try_recv() {
-            if !paths.contains(&path) {
-                paths.push(path);
-            }
-        }
-        paths
+    /// Changed trama effect files.
+    pub fn drain_trama_changes(&mut self) -> Vec<PathBuf> {
+        Self::drain(&self.trama_receiver, &mut self.seen)
+    }
+
+    /// Changed `.pfx` effect definitions.
+    pub fn drain_pfx_changes(&mut self) -> Vec<PathBuf> {
+        Self::drain(&self.pfx_receiver, &mut self.seen)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Route, route};
+    use super::{Route, ShaderWatcher, route};
     use std::path::Path;
+
+    // Run: cargo test -p fosfora-app -- reading_a_watched_file_is_not_a_change
+    //
+    // notify subscribes to inotify OPEN, and the mini-debouncer flattens every
+    // event to "changed" — so READING a watched file reports a change. A
+    // consumer that reloads on change reads the file, which reports a change:
+    // the first build of trama hot reload recompiled all four effects every
+    // 100 ms from launch, forever, lit by the registry's own initial load.
+    // Linux only: that is where OPEN is an event.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reading_a_watched_file_is_not_a_change() {
+        let root = std::env::temp_dir().join(format!("fosfora-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (shaders, effects, trama) = (
+            root.join("shaders"),
+            root.join("effects"),
+            root.join("trama/effects"),
+        );
+        for d in [&shaders, &effects, &trama] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let file = trama.join("hue_drift.wgsl");
+        std::fs::write(&file, "one").unwrap();
+        // Reach the tree through a RELATIVE path, as the dev workflow does
+        // (`assets/…`): notify reports absolute paths, and stamps seeded under
+        // any other spelling are never found.
+        let up: std::path::PathBuf = std::env::current_dir()
+            .unwrap()
+            .components()
+            .skip(1)
+            .map(|_| "..")
+            .collect();
+        let relative = |abs: &Path| up.join(abs.strip_prefix("/").unwrap());
+        assert!(relative(&trama).is_relative() && relative(&trama).is_dir());
+        let mut w =
+            ShaderWatcher::watching(&relative(&shaders), &relative(&effects), &relative(&trama))
+                .unwrap();
+
+        // Poll the way the app does. `quiet` waits out the whole window (the
+        // debounce is 100 ms); `next` returns as soon as something arrives.
+        let mut poll = |ms: u64, stop_early: bool| {
+            let mut seen = Vec::new();
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+            while std::time::Instant::now() < until && (seen.is_empty() || !stop_early) {
+                seen.extend(w.drain_trama_changes());
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            seen
+        };
+        let none = Vec::<std::path::PathBuf>::new();
+
+        // What the registry does at startup, and what every reload does.
+        for _ in 0..3 {
+            std::fs::read_to_string(&file).unwrap();
+        }
+        assert_eq!(poll(400, false), none, "a read is not a change");
+
+        std::fs::write(&file, "two, and longer").unwrap();
+        let reported = poll(3000, true);
+        assert_eq!(reported.len(), 1, "a write is: {reported:?}");
+        assert!(reported[0].ends_with("trama/effects/hue_drift.wgsl"));
+        std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            poll(400, false),
+            none,
+            "reading it back is not, and the write is not reported twice"
+        );
+
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(poll(3000, true).len(), 1, "a delete is a change");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn a_trama_effect_is_routed_by_where_it_lives() {
