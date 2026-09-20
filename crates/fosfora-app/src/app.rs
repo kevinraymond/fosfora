@@ -3102,6 +3102,14 @@ impl App {
         self.layer_stack.layer_infos(&self.effect_loader.effects)
     }
 
+    /// The master chain's badge for the layer panel — `None` while the master
+    /// chain holds nothing, by the same rule as a layer row's. Without it a
+    /// master patch left running post-processes the whole output with nothing
+    /// in the main window to say so: its tab only shows with the canvas open.
+    pub fn master_chain_badge(&self) -> Option<crate::gpu::layer::ChainBadge> {
+        crate::gpu::layer::ChainBadge::of(&self.trama.master)
+    }
+
     /// Get the current postprocess def from active layer.
     pub fn current_postprocess(&self) -> PostProcessDef {
         self.layer_stack

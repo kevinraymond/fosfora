@@ -247,6 +247,26 @@ impl ChainBadge {
         })
     }
 
+    /// The same badge on the MASTER chain, which runs on the whole composited
+    /// frame — so "inactive" means the frame, not a layer, is left alone.
+    pub fn master_tooltip(self) -> String {
+        let nodes = match self.nodes {
+            1 => "1 node".to_string(),
+            n => format!("{n} nodes"),
+        };
+        if self.active {
+            format!(
+                "Master trama chain: {nodes}, active — it is post-processing the \
+                 whole output. Click to edit"
+            )
+        } else {
+            format!(
+                "Master trama chain: {nodes}, INACTIVE — nothing reaches Output, so \
+                 the output is unchanged. Click to edit"
+            )
+        }
+    }
+
     pub fn tooltip(self) -> String {
         let nodes = match self.nodes {
             1 => "1 node".to_string(),
@@ -661,6 +681,25 @@ pub fn adjusted_active_after_move(active: usize, from: usize, to: usize) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_master_badge_speaks_about_the_output_not_a_layer() {
+        let active = ChainBadge {
+            nodes: 3,
+            active: true,
+        };
+        let idle = ChainBadge {
+            nodes: 1,
+            active: false,
+        };
+        // Words carry the state, never hue: the inactive case says so in caps,
+        // and neither mentions a layer — the master chain belongs to none.
+        assert!(active.master_tooltip().contains("3 nodes, active"));
+        assert!(active.master_tooltip().contains("whole output"));
+        assert!(idle.master_tooltip().contains("1 node, INACTIVE"));
+        assert!(!idle.master_tooltip().contains("layer"));
+        assert!(!active.master_tooltip().contains("layer"));
+    }
 
     #[test]
     fn a_chain_badge_reports_what_was_placed_and_whether_it_runs() {

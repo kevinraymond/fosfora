@@ -20,7 +20,8 @@
   the selected layer's chain and the master chain, which runs on the composited picture
   before tonemapping. Layer rows now show a diamond and node count for any layer with a
   chain — filled when it is active, hollow when nothing reaches its Output — and clicking it
-  opens that chain.
+  opens that chain. A **Master** row appears under the
+  layer list whenever the master chain holds nodes, so a forgotten one is never silent.
 
 ### Changed
 - **trama node chains now run on your layers instead of replacing them.** The Layers/Trama
