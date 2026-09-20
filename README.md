@@ -7,6 +7,7 @@
 [![CI](https://github.com/kevinraymond/fosfora/actions/workflows/ci.yml/badge.svg)](https://github.com/kevinraymond/fosfora/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/kevinraymond/fosfora?label=download)](https://github.com/kevinraymond/fosfora/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![Wiki](https://img.shields.io/badge/wiki-the%20picture--first%20tour-8a2be2)](https://github.com/kevinraymond/fosfora/wiki)
 
 <img src="assets/media/hero.webp" alt="Fosfora reacting to music" width="100%" />
 
@@ -64,6 +65,10 @@ setups you can build from the panels, each one a preset you can save and recall:
 
 **→ [How to build these](docs/TUTORIALS.md)** · the presets behind them are in
 [`scripts/capture/demos/`](scripts/capture/demos)
+
+**→ [Take the tour on the wiki](https://github.com/kevinraymond/fosfora/wiki)**: what Fosfora can look like and how to get there, with a
+clip for every recipe. It starts with [trama node chains](https://github.com/kevinraymond/fosfora/wiki/trama-node-chains), which move, spin
+and echo a single layer or the whole frame.
 
 ## Your first 60 seconds
 
@@ -171,6 +176,7 @@ tablet on the same network. Multiple people can connect at once.
 
 | | |
 |---|---|
+| [**Wiki**](https://github.com/kevinraymond/fosfora/wiki) | The picture-first tour: clips, recipes and demo presets to load |
 | [**Gallery**](docs/GALLERY.md) | Every effect, in motion |
 | [**Tutorials**](docs/TUTORIALS.md) | The full guide — effects, audio, layers, scenes, MIDI, OSC |
 | [**Quick reference**](docs/QUICK-REFERENCE.md) | Shortcuts, blend modes, OSC addresses, config files |
