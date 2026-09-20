@@ -106,7 +106,7 @@ def caption(text: str) -> str:
 TRAMA = [
     ("trama_pip", "Picture-in-picture", "Astrolabe shrunk into a corner with a Transform node, over Murmur."),
     ("trama_pump", "Pump to the kick", "Prism's scale driven by the bass; Drift shows around it."),
-    ("trama_spin", "One layer spinning", "Reticle on a beat-synced saw, over Symbiosis — the rest holds still."),
+    ("trama_spin", "One layer spinning", "Reticle on a beat-synced saw, over Symbiosis while the rest holds still."),
     ("trama_twin", "One effect, twice", "Two Astrolabes placed left and right by hand, over Polycephalum."),
     ("trama_echo", "Echo trails", "A Feedback loop through Mix and a Transform a whisker off identity, on Beam."),
     ("trama_master", "Master chain", "An echo loop into a slow hue drift, on the whole composited frame."),

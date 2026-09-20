@@ -1,6 +1,6 @@
 # Fosfora Tutorials
 
-A comprehensive guide to using Fosfora — a real-time particle and shader engine for live VJ performance.
+A comprehensive guide to using Fosfora, a real-time particle and shader engine for live VJ performance.
 
 ---
 
@@ -32,11 +32,11 @@ A comprehensive guide to using Fosfora — a real-time particle and shader engin
 
 **Goal: go from a fresh launch to music-reactive visuals on your screen.** No setup, no accounts, and you can't break anything.
 
-1. **Open Fosfora.** A visual starts running right away. After a couple of seconds the control UI fades in on its own — or press **D** any time to show/hide it.
-2. **Play some music** — anything your computer can hear. The visuals start reacting immediately using your default input device. (Hearing nothing react? See [Audio → Choosing an Input](#audio).)
+1. **Open Fosfora.** A visual starts running right away. After a couple of seconds the control UI fades in on its own, or you can press **D** any time to show/hide it.
+2. **Play some music**: anything your computer can hear. The visuals start reacting immediately using your default input device. (Hearing nothing react? See [Audio → Choosing an Input](#audio).)
 3. **Pick a look.** In the **Effects** panel on the left, click any effect to load it onto the active layer. Try Aurora, Storm, or Tesla to feel the range.
 4. **Go big.** Press **F** for borderless fullscreen. Press **F** again (or **Esc**) to come back.
-5. **Make it yours.** Drag the sliders in the right panel to reshape the effect — every one is audio-mappable later. When something looks great, save it as a preset.
+5. **Make it yours.** Drag the sliders in the right panel to reshape the effect. Every one is audio-mappable later. When something looks great, save it as a preset.
 
 That's the whole loop: **open → play music → pick an effect → fullscreen**. Everything below goes deeper on each piece.
 
@@ -51,22 +51,22 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 1. The UI fades in automatically after a couple seconds (or press **D** to toggle it)
 2. The **Effects** panel on the left lists all available effects
 3. Click any effect name to load it onto the active layer
-4. The visuals update immediately — no restart needed
+4. The visuals update immediately, with no restart needed
 
 ### Built-In Effects
 
 Fosfora ships with **55 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
 intro visual you see at startup, and a rasterizer stress test).
 
-**Shaders** (11) — pure fragment shaders, no particles:
+**Shaders** (11): pure fragment shaders, no particles.
 Aurora · Beam · Drift · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
 
-**Particle simulations** (20) — GPU compute, from a few thousand particles to two million:
+**Particle simulations** (20): GPU compute, from a few thousand particles to two million:
 Accretion · Array · Cascade · Chaos · Cleave · Cymatics · Flux · Genesis · Morph · Murmur ·
 Mycelium · Polycephalum · Raster · Reliquary · Splat · Symbiosis · Tesla · Tide · Turing ·
 Vessel
 
-**Lattice** (8) — one 3D cellular-automata engine, eight rules, ray-marched as a volume:
+**Lattice** (8): one 3D cellular-automata engine, eight rules, ray-marched as a volume:
 445 · Brain · Builder · Chunky · Clouds · Pulse · Pyroclastic · Shells
 
 The browser groups these into **Built-in** and **User** sections, with a search box and type
@@ -83,75 +83,75 @@ of those layers and the Parameters panel grows a source row:
 
 | Source | Needs | Notes |
 |--------|-------|-------|
-| **Built-in** | — | The shipped `assets/images/` art — a bright subject on black |
-| **Image…** | — | A still, GIF or animated WebP |
+| **Built-in** | none | The shipped `assets/images/` art: a bright subject on black |
+| **Image…** | none | A still, GIF or animated WebP |
 | **Video…** | `video` feature, ffmpeg | Plays back with transport controls |
-| **Model…** | — | A 3D model: `.glb`/`.gltf` mesh or `.ply`/`.splat` capture |
+| **Model…** | none | A 3D model: `.glb`/`.gltf` mesh or `.ply`/`.splat` capture |
 
 A **model** is rendered to a frame and then sampled exactly like a picture, so it works in
-every one of these effects — your own mesh or scanned capture comes out as pegs, as scratched
+every one of these effects: your own mesh or scanned capture comes out as pegs, as scratched
 aluminium, or as two million springy pixels. Meshes are shaded from their own surface normals;
 splat captures keep the colour they were captured with. Four controls set how it is framed:
 
-- **Yaw** / **Pitch** — turn the model, a full turn on each axis. It is re-sampled when you let
-  go of the slider. Models often arrive lying on their back or facing away — glTF is Y-up but
-  Blender exports Z-up — so expect to reach for these first on your own files.
-- **Zoom** — crop in for detail, or pull back to fit more in.
-- **Ambient** — how far the shadowed side is lifted off black. Raise it if the dark side of
+- **Yaw** / **Pitch**: turn the model, a full turn on each axis. It is re-sampled when you let
+  go of the slider. Models often arrive lying on their back or facing away (glTF is Y-up but
+  Blender exports Z-up), so expect to reach for these first on your own files.
+- **Zoom**: crop in for detail, or pull back to fit more in.
+- **Ambient**: how far the shadowed side is lifted off black. Raise it if the dark side of
   your model is coming out as a flat void; lower it for more contrast between faces.
 
-Unlike a video, a model is a **still** — it is sampled once and stays put until you move one
+Unlike a video, a model is a **still**: it is sampled once and stays put until you move one
 of those controls.
 
 ### Lighting a model from the inside
 
-Five more controls put a light *anywhere* in the model, including inside it — a skull lit
+Five more controls put a light *anywhere* in the model, including inside it, such as a skull lit
 from within, glowing out through the eye sockets and trailing shafts of light.
 
-- **Light mix** — crossfades from the default fixed key light (`0.00`) to the movable light
+- **Light mix**: crossfades from the default fixed key light (`0.00`) to the movable light
   alone (`1.00`). At `0.00` nothing below has any effect, which is how a model looks until
   you reach for these.
-- **Light X / Y / Z** — where the light sits. `0, 0, 0` is dead centre — inside a hollow
+- **Light X / Y / Z**: where the light sits. `0, 0, 0` is dead centre, inside a hollow
   form. The model spans roughly ±1, so values past that put the light outside it.
-- **Rays** — how strongly light escaping the openings scatters into shafts.
+- **Rays**: how strongly light escaping the openings scatters into shafts.
 
 The light is **one-sided**, which is what makes "inside" mean anything: a surface facing away
 from it stays dark. So a light inside a skull leaves the outer bone unlit and picks out only
 what faces the cavity, and the shafts stream out of the sockets rather than off the whole
-silhouette. Turning **Rays** up on a model with no interior light does nothing — only genuinely
+silhouette. Turning **Rays** up on a model with no interior light does nothing; only genuinely
 bright surfaces scatter.
 
 Rays are sampled into particles like everything else, so the shafts are *made of* particles
 and pick up whatever the effect does with them. A high **Rays** setting spends a real share of
 the particle budget on the beams; turn it down if the model itself is losing definition.
 
-Because a model is a still, the shafts are fixed once sampled — they do not pulse with the
+Because a model is a still, the shafts are fixed once sampled and do not pulse with the
 music. What the effect does with those particles still reacts as usual.
 
 **Use Reliquary to see this.** It is the effect built for lit forms: it splits your source in
 two and gives each half its own behaviour. Solid surface holds still, so the form reads; the
-light escaping it — the shafts, which arrive translucent — streams outward, fades and returns,
+light escaping it (the shafts, which arrive translucent) streams outward, fades and returns,
 several times brighter than it came in. The shafts are *moving* particles rather than a static
 halo, which is the whole difference.
 
 Its own controls decide where the split falls and what the escaping half does:
 
-- **Shed** — how much of the surface gives up light. At `0.00` only genuinely translucent
+- **Shed**: how much of the surface gives up light. At `0.00` only genuinely translucent
   parts stream, so the form stays crisp; wind it up and more and more of the subject dissolves
   into the flow. Past about `0.70` the form is gone entirely, which is a look of its own.
-- **Stream speed** / **Stream length** — how fast the light travels and how far it gets before
+- **Stream speed** / **Stream length**: how fast the light travels and how far it gets before
   it fades out and starts again. Speed rises with the music, and onsets kick it (**Surge**).
-- **Shaft gain** — how much brighter escaping light is than it arrived. Shafts come out of the
+- **Shaft gain**: how much brighter escaping light is than it arrived. Shafts come out of the
   raster dim by nature; this is what makes them read as light.
 
-Reliquary works on any source, not just models — on an ordinary picture the brightest areas
+Reliquary works on any source, not just models. On an ordinary picture the brightest areas
 are the ones that shed. Raster also works for a lit model and keeps the tone intact, it just
 leaves the shafts sitting where they are. Pegboard and Etch are the wrong place to judge a
 light: they re-make your source in a medium with a handful of levels, so the gradient from
 bright cavity to unlit bone collapses into two or three peg brightnesses or scan bands. Worth
 trying for the graphic look, not for this.
 
-**In Morph**, a model is always a morph *target* rather than the base source — Morph blends
+**In Morph**, a model is always a morph *target* rather than the base source. Morph blends
 between four shapes, so there is nothing for a single source to replace. Use the **Model**
 button in the target row (select a slot first to choose where it lands, or let it take the
 next empty one), then blend to it like any other target. The main **Model…** button does the
@@ -160,12 +160,12 @@ same thing on a Morph layer.
 Models are saved with presets, pose included.
 
 **Tip:** the bundled art is all bright-subject-on-black, which is what these effects are tuned
-for. A photograph with a dark subject on a light ground comes out inverted — Pegboard and Etch
+for. A photograph with a dark subject on a light ground comes out inverted. Pegboard and Etch
 have a **Polarity** parameter that flips which end of the tonal range gets inked.
 
 ### Creating Your Own Effects
 
-Effects are defined by `.pfx` files — JSON manifests that reference WGSL shaders.
+Effects are defined by `.pfx` files, JSON manifests that reference WGSL shaders.
 
 **Create from scratch:**
 1. In the Effects panel, click the **+ New** button
@@ -177,7 +177,7 @@ Effects are defined by `.pfx` files — JSON manifests that reference WGSL shade
 **Copy a built-in effect:**
 1. Select a built-in effect
 2. Click **Copy Shader** in the Effects panel
-3. Enter a name — Fosfora copies the shader files to your user effects directory
+3. Enter a name, and Fosfora copies the shader files to your user effects directory
 4. Edit the copy freely without affecting the original
 
 ### The .pfx Format
@@ -238,7 +238,7 @@ Fosfora includes a built-in WGSL shader editor with live hot-reload:
 1. Click the **Edit** button next to the active effect name (only available for user effects)
 2. The editor opens as a full-screen overlay
 3. Edit the WGSL code directly
-4. Press **Ctrl+S** to save — the shader recompiles instantly
+4. Press **Ctrl+S** to save, and the shader recompiles instantly
 5. If there's an error, it appears in the status bar with a dismiss button
 6. Press **Esc** to close the editor
 
@@ -249,22 +249,22 @@ The editor supports syntax highlighting and shows compilation errors inline.
 Fosfora auto-prepends a WGSL shader library to every effect. You can use these functions without any imports:
 
 **Noise:**
-- `fosfora_noise2(p)` / `fosfora_noise3(p)` — Perlin gradient noise (0–1)
-- `fosfora_hash2(p)` / `fosfora_hash3(p)` — Fast hash without sin (0–1)
+- `fosfora_noise2(p)` / `fosfora_noise3(p)`: Perlin gradient noise (0–1)
+- `fosfora_hash2(p)` / `fosfora_hash3(p)`: Fast hash without sin (0–1)
 
 **Color:**
-- `fosfora_palette(t, a, b, c, d)` — IQ cosine palette
-- `fosfora_audio_palette(t, centroid, phase)` — Warm-to-cool audio palette
-- `fosfora_hue_shift(color, amount)` — Hue rotation
+- `fosfora_palette(t, a, b, c, d)`: IQ cosine palette
+- `fosfora_audio_palette(t, centroid, phase)`: Warm-to-cool audio palette
+- `fosfora_hue_shift(color, amount)`: Hue rotation
 
 **SDF (Signed Distance Functions):**
 - `fosfora_sd_sphere(p, r)`, `fosfora_sd_box(p, b)`, `fosfora_sd_torus(p, t)`, `fosfora_sd_cylinder(p, h, r)`
-- `fosfora_op_union`, `fosfora_op_subtract`, `fosfora_op_intersect` — Boolean operations
-- `fosfora_smin(a, b, k)`, `fosfora_smax(a, b, k)` — Smooth min/max
+- `fosfora_op_union`, `fosfora_op_subtract`, `fosfora_op_intersect`: Boolean operations
+- `fosfora_smin(a, b, k)`, `fosfora_smax(a, b, k)`: Smooth min/max
 
 **Tonemapping:**
-- `fosfora_aces_tonemap(color)` — ACES filmic HDR→SDR
-- `fosfora_linear_to_srgb(color)` — Linear to sRGB gamma
+- `fosfora_aces_tonemap(color)`: ACES filmic HDR→SDR
+- `fosfora_linear_to_srgb(color)`: Linear to sRGB gamma
 
 **Parameter access in shaders:**
 - Use `param(0u)` through `param(15u)` to read your effect's parameters
@@ -274,8 +274,8 @@ Fosfora auto-prepends a WGSL shader library to every effect. You can use these f
 - Call `feedback(uv)` to sample the previous frame (when feedback is enabled in the .pfx)
 
 **Tips:**
-- Avoid `atan2` in palettes — it creates a visible seam at ±π. Use `sin(angle * N)` instead.
-- Never multiply `time * audio_value` for position — it causes jitter. Use constant speed and apply audio to other properties.
+- Avoid `atan2` in palettes, because it creates a visible seam at ±π. Use `sin(angle * N)` instead.
+- Never multiply `time * audio_value` for position, because it causes jitter. Use constant speed and apply audio to other properties.
 - For feedback effects, use `mix()` not `max()` for blending, and clamp output to prevent blowout.
 
 ---
@@ -304,9 +304,9 @@ On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of syst
 
 ### What Gets Detected
 
-Fosfora extracts **74 audio features** from multi-resolution FFT analysis. The list below is a quick index — for what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+Fosfora extracts **74 audio features** from multi-resolution FFT analysis. The list below is a quick index. For what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
-The core set below is joined by eight detector groups — loudness, key, downbeat, stereo, structure, harmonic/percussive split, pitch, and spectral contrast — that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
+The core set below is joined by eight detector groups (loudness, key, downbeat, stereo, structure, harmonic/percussive split, pitch, and spectral contrast) that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
 
 **7 Frequency Bands** (normalized 0–1):
 | Band | Range | Typical Content |
@@ -320,41 +320,41 @@ The core set below is joined by eight detector groups — loudness, key, downbea
 | brilliance | 6000+ Hz | Air, sparkle |
 
 **Aggregates:**
-- **rms** — Overall energy level
-- **kick** — Dedicated 30–120 Hz spectral flux for beat-driving
+- **rms**: Overall energy level
+- **kick**: Dedicated 30–120 Hz spectral flux for beat-driving
 
 **Spectral Shape:**
-- **centroid** — Brightness (0=dark/bassy, 1=bright/trebly)
-- **flux** — Rate of spectral change
-- **flatness** — Tonal vs. noisy (0=tonal peaks, 1=flat noise)
-- **rolloff** — Frequency below which 85% of energy lies
-- **bandwidth** — Spectral spread
-- **zcr** — Zero-crossing rate
+- **centroid**: Brightness (0=dark/bassy, 1=bright/trebly)
+- **flux**: Rate of spectral change
+- **flatness**: Tonal vs. noisy (0=tonal peaks, 1=flat noise)
+- **rolloff**: Frequency below which 85% of energy lies
+- **bandwidth**: Spectral spread
+- **zcr**: Zero-crossing rate
 
 **Beat Detection (3-stage pipeline):**
-- **onset** — Transient attacks (0–1)
-- **beat** — Beat trigger (0 or 1 on each beat)
-- **beat_phase** — Sawtooth wave 0→1 at detected tempo
-- **bpm** — Detected BPM (normalized, multiply by 300 for actual BPM)
-- **beat_strength** — Detection confidence (0–1)
+- **onset**: Transient attacks (0–1)
+- **beat**: Beat trigger (0 or 1 on each beat)
+- **beat_phase**: Sawtooth wave 0→1 at detected tempo
+- **bpm**: Detected BPM (normalized, multiply by 300 for actual BPM)
+- **beat_strength**: Detection confidence (0–1)
 
 <a name="reserved-features"></a>
 **Detector features:** Eight detector groups fill the reserved tail of the shader ABI. The first five are live as of the A13 stereo detector (they read `0.0` in earlier builds while each detector was still in progress):
-- **loudness_m / loudness_s / loudness_trend** — perceptual loudness envelope
-- **key_class / key_is_minor / key_confidence** — musical key estimate
-- **downbeat / bar_phase / beat_in_bar** — bar-level clock
-- **pan / stereo_width / stereo_corr** — stereo field
-- **section_novelty / buildup / drop** — song-structure cues
+- **loudness_m / loudness_s / loudness_trend**: perceptual loudness envelope
+- **key_class / key_is_minor / key_confidence**: musical key estimate
+- **downbeat / bar_phase / beat_in_bar**: bar-level clock
+- **pan / stereo_width / stereo_corr**: stereo field
+- **section_novelty / buildup / drop**: song-structure cues
 
 The remaining three groups fill the shader ABI v3 tail. All three are live as of the A14, A15 and A16 detectors:
-- **percussive_energy / harmonic_energy / harmonic_ratio** — harmonic/percussive split (A14): drum-vs-tone energy and their 0–1 balance, for routing transients to strobes and sustained tones to color washes
-- **pitch / pitch_confidence** — monophonic pitch estimate (A15): YIN fundamental frequency over five octaves, plus a voiced/unvoiced confidence to gate it
-- **contrast_0 … contrast_5 / contrast_mean / timbre_flux** — spectral contrast + timbre dynamics (A16): per-octave peak-vs-valley tonality, plus a volume-independent measure of timbre change
+- **percussive_energy / harmonic_energy / harmonic_ratio**: harmonic/percussive split (A14): drum-vs-tone energy and their 0–1 balance, for routing transients to strobes and sustained tones to color washes
+- **pitch / pitch_confidence**: monophonic pitch estimate (A15): YIN fundamental frequency over five octaves, plus a voiced/unvoiced confidence to gate it
+- **contrast_0 … contrast_5 / contrast_mean / timbre_flux**: spectral contrast + timbre dynamics (A16): per-octave peak-vs-valley tonality, plus a volume-independent measure of timbre change
 
-Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls — sample them with the built-in helpers:
-- **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x` — a min/max-decimated, zero-crossing-triggered scope trace.
-- **`spectrum(x)`** → `f32` log-frequency magnitude (0–1) at `x` — spectrum-bar heights.
-- **`spectrogram(uv)`** → `f32` mel energy (0–1); `uv.x` is time (0 = oldest, 1 = newest), `uv.y` is frequency (mel) — a scrolling waterfall.
+Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls. Sample them with the built-in helpers:
+- **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x`: a min/max-decimated, zero-crossing-triggered scope trace.
+- **`spectrum(x)`** → `f32` log-frequency magnitude (0–1) at `x`, for spectrum-bar heights.
+- **`spectrogram(uv)`** → `f32` mel energy (0–1); `uv.x` is time (0 = oldest, 1 = newest), `uv.y` is frequency (mel), for a scrolling waterfall.
 
 ### Adaptive Normalization
 
@@ -364,13 +364,13 @@ Features are auto-leveled so you never touch a gain knob. Energy-like features (
 - The system adapts over a few seconds to changing input levels
 - One loud spike can't flatten everything after it
 
-Not every feature is auto-leveled — spectral shape features are already on a meaningful scale, MFCCs are centered on their own average, and detector outputs like key, pitch and the beat group are passed through untouched. See [How the Numbers Are Tamed](AUDIO-FEATURES.md#how-the-numbers-are-tamed) for the full picture.
+Not every feature is auto-leveled: spectral shape features are already on a meaningful scale, MFCCs are centered on their own average, and detector outputs like key, pitch and the beat group are passed through untouched. See [How the Numbers Are Tamed](AUDIO-FEATURES.md#how-the-numbers-are-tamed) for the full picture.
 
 ---
 
 ## Audio Reactivity
 
-This is where the magic happens — audio features drive every aspect of the visuals.
+This is where the magic happens: audio features drive every aspect of the visuals.
 
 ### How It Works
 
@@ -413,7 +413,7 @@ dominant_chroma       // Strongest pitch class, normalized 0–1
 mfcc(i)               // 13 MFCC timbral coefficients, i = 0..12
 chroma_val(i)         // 12 chroma pitch-class energies, i = 0..11 (C, C#, D … B)
 
-// Detector features — the reserved tail (first five groups live)
+// Detector features: the reserved tail (first five groups live)
 loudness_m, loudness_s, loudness_trend        // perceptual loudness
 key_class, key_is_minor, key_confidence       // musical key estimate
 downbeat, bar_phase, beat_in_bar              // bar-level clock
@@ -426,13 +426,13 @@ pitch, pitch_confidence                             // monophonic pitch (A15)
 contrast_0, contrast_1, contrast_2, contrast_3,     // spectral contrast (A16)
 contrast_4, contrast_5, contrast_mean, timbre_flux
 
-// Audio textures — read the signal directly
+// Audio textures: read the signal directly
 waveform(x)           // vec2f min/max of the PCM waveform at x = 0..1
 spectrum(x)           // magnitude at log-frequency x = 0..1
 spectrogram(uv)       // scrolling mel-band history
 ```
 
-The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 28 detector scalars (listed above) are the full set of **74 audio features** — all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 28 detector scalars (listed above) are the full set of **74 audio features**, all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 Not sure what one of these means, or which to reach for? Every field is explained in plain English in [AUDIO-FEATURES.md](AUDIO-FEATURES.md), including a [pick-by-what-you-want table](AUDIO-FEATURES.md#pick-a-feature-by-what-you-want).
 
@@ -481,7 +481,7 @@ Each effect defines up to 16 parameters that you can tweak in real time.
 
 1. Load an effect
 2. The **Parameters** panel on the right shows all available sliders and controls
-3. Drag sliders, toggle checkboxes, pick colors — changes are instant
+3. Drag sliders, toggle checkboxes, pick colors. Changes are instant
 4. Parameters are saved in presets
 
 ### Parameter Types
@@ -520,49 +520,49 @@ Fosfora supports up to 8 layers, each running its own effect (or media), composi
 ### Layer Controls
 
 Each layer card shows:
-- **Drag handle** (≡) — Reorder layers by dragging (top layer renders last/on top)
-- **Enable checkbox** — Toggle layer visibility
-- **Lock icon** (🔒) — Prevent all changes (params, effects, preset loading)
-- **Pin icon** (📌) — Prevent drag reordering
-- **Layer name** — Click to select, double-click to rename
-- **Delete button** (×) — Remove the layer
+- **Drag handle** (≡): Reorder layers by dragging (top layer renders last/on top)
+- **Enable checkbox**: Toggle layer visibility
+- **Lock icon** (🔒): Prevent all changes (params, effects, preset loading)
+- **Pin icon** (📌): Prevent drag reordering
+- **Layer name**: Click to select, double-click to rename
+- **Delete button** (×): Remove the layer
 
 Below the layer list:
-- **Blend mode** dropdown — How this layer combines with layers below
-- **Opacity** slider — Layer transparency (0–1)
+- **Blend mode** dropdown: how this layer combines with layers below
+- **Opacity** slider: layer transparency (0–1)
 
 ### Blend Modes
 
 | Mode | Description |
 |------|-------------|
 | **Normal** | Replaces background with foreground |
-| **Add** | Brightens — adds colors together (great for glow, fire) |
-| **Screen** | Lightens — like projecting two slides together |
-| **Color Dodge** | Intense brighten — burns through to white |
-| **Multiply** | Darkens — like stacking two transparencies |
-| **Overlay** | Contrast boost — darks darker, lights lighter |
-| **Hard Light** | Strong contrast — like Overlay from the other side |
-| **Difference** | Inverts where bright — psychedelic color shifts |
-| **Exclusion** | Softer Difference — grays out similar colors |
-| **Subtract** | Darkens — removes foreground color from background |
+| **Add** | Brightens: adds colors together (great for glow, fire) |
+| **Screen** | Lightens: like projecting two slides together |
+| **Color Dodge** | Intense brighten: burns through to white |
+| **Multiply** | Darkens: like stacking two transparencies |
+| **Overlay** | Contrast boost: darks darker, lights lighter |
+| **Hard Light** | Strong contrast: like Overlay from the other side |
+| **Difference** | Inverts where bright: psychedelic color shifts |
+| **Exclusion** | Softer Difference: grays out similar colors |
+| **Subtract** | Darkens: removes foreground color from background |
 
 ### Displacement Modes
 
 The last three modes in the dropdown work differently. Instead of mixing colors,
-they read the layer as a **warp field** — its bright and dark areas bend the
+they read the layer as a **warp field**: its bright and dark areas bend the
 image underneath, and the layer itself becomes invisible.
 
 | Mode | Description |
 |------|-------------|
-| **Displace** | Edges shove what's beneath — shockwaves, heat haze |
+| **Displace** | Edges shove what's beneath: shockwaves, heat haze |
 | **Refract** | Bright areas bend like thick glass, splitting color |
-| **Lens** | Bright areas magnify what's beneath — a breathing zoom |
+| **Lens** | Bright areas magnify what's beneath: a breathing zoom |
 
 Displace and Refract are driven by different things, which is what makes them
 look different. Displace reacts to *edges*: wherever the layer's brightness
 changes sharply, it shoves. A ring effect gives you ripples spreading across the
 whole frame. Refract reacts to *brightness itself*, so a bright shape carries the
-image sideways throughout its whole body like a lump of glass — a compact,
+image sideways throughout its whole body like a lump of glass: a compact,
 colour-fringed bulge rather than frame-wide ripples.
 
 Pick one and a **Displace** slider appears under Opacity to set how far the warp
@@ -572,7 +572,7 @@ breathes with the track.
 
 Two things to know. They need something below them to warp, so they do nothing
 on the bottom layer. And if you want to see the layer *and* its warp, duplicate
-it — one copy on Displace, one on Add.
+it, with one copy on Displace and one on Add.
 
 ### Media Layers
 
@@ -595,14 +595,14 @@ Media layers support:
 
 ### Keyboard Shortcuts
 
-- **[** — Select previous layer
-- **]** — Select next layer
+- **[**: Select previous layer
+- **]**: Select next layer
 
 ---
 
 ## trama: node chains
 
-trama is a small node graph that post-processes a layer's picture *after* the layer has rendered it. Every layer can carry its own chain, and one more — the **master** chain — runs on the whole composited frame. Move, scale or spin one layer without touching the rest; hue-cycle just the background; put echo trails on a video; then do the same to everything at once.
+trama is a small node graph that post-processes a layer's picture *after* the layer has rendered it. Every layer can carry its own chain, and one more, the **master** chain, runs on the whole composited frame. Move, scale or spin one layer without touching the rest; hue-cycle just the background; put echo trails on a video; then do the same to everything at once.
 
 ### Quick Start
 
@@ -610,30 +610,30 @@ trama is a small node graph that post-processes a layer's picture *after* the la
 2. Right-click the canvas → **Utility → Layer input**. That node is the layer's own picture
 3. Right-click → **Effects → Transform**
 4. Drag from **Layer input**'s output pin to Transform's input, then from Transform to **Output**
-5. Click the Transform node and move **scale** in the inspector — the layer shrinks and the layers beneath show around it
+5. Click the Transform node and move **scale** in the inspector: the layer shrinks and the layers beneath show around it
 
 Nothing happens until a chain reaches its **Output** node. A chain that doesn't is *inactive*: the layer renders as usual, so you can place and wire nodes without blanking anything. Hover a wire and click the **×** to remove it.
 
-Layer rows show a diamond and a node count for any layer with a chain — **filled** when the chain is active, **hollow** when nothing reaches its Output. Click it to jump to that chain. Chains travel with their layer when you reorder the stack. The master chain gets the same badge on a **Master** row under the layer list.
+Layer rows show a diamond and a node count for any layer with a chain. It is **filled** when the chain is active and **hollow** when nothing reaches its Output. Click it to jump to that chain. Chains travel with their layer when you reorder the stack. The master chain gets the same badge on a **Master** row under the layer list.
 
 ### The Nodes
 
 | Node | What it does | Parameters |
 |------|--------------|------------|
-| **Layer input** (Utility) | The picture this chain was handed — the layer's output, or the whole frame on the Master tab | — |
+| **Layer input** (Utility) | The picture this chain was handed: the layer's output, or the whole frame on the Master tab | none |
 | **Transform** | Scale, rotate and slide the picture about the center. Pixels pulled from outside read transparent | `scale` 0.25–4 · `rotate` ±0.5 turns · `translate_x` / `translate_y` ±0.5 of the frame |
 | **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
 | **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
-| **Noise Field** (Source) | Drifting palette-colored noise — a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
-| **Feedback** (Utility) | Last frame of whatever is wired into it — the building block for echo loops | — |
+| **Noise Field** (Source) | Drifting palette-colored noise, a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
+| **Feedback** (Utility) | Last frame of whatever is wired into it. The building block for echo loops | none |
 
 Every Float parameter can be driven: open the **mod** row under its slider and pick an oscillator (sine, saw, square, triangle, sample & hold, random walk; in Hz or beat-synced) or the music (**rms**, **onset**, **bass** / **mid** / **high**, a single **band**, **beat phase**, **bpm**). **amount** sets the depth, **mode** how it combines with the slider, **smoothing** how quickly it follows. A bright tick on the slider shows the live value.
 
 ### Recipes
 
-The clips are filmed from the running app; their presets are in `scripts/capture/demos/` (`Trama *.json`) if you want to load one and look inside. One thing they teach: to *place* a layer cleanly, it needs real transparency — the overlay effects (Astrolabe, Reticle, Limn…) have it. A particle effect's "black" is a dim haze, so shrinking one leaves a visible box whatever blend mode you pick; use it as the backdrop instead.
+The clips are filmed from the running app; their presets are in `scripts/capture/demos/` (`Trama *.json`) if you want to load one and look inside. One thing they teach: to *place* a layer cleanly, it needs real transparency, which the overlay effects (Astrolabe, Reticle, Limn…) have. A particle effect's "black" is a dim haze, so shrinking one leaves a visible box whatever blend mode you pick; use it as the backdrop instead.
 
-**Picture-in-picture.** On the top layer: `Layer input → Transform → Output`, with `scale` 0.4 and `translate_x` / `translate_y` pushed toward a corner. The rest of the stack fills the frame behind it. Works on media layers too — a video in the corner of a particle effect.
+**Picture-in-picture.** On the top layer: `Layer input → Transform → Output`, with `scale` 0.4 and `translate_x` / `translate_y` pushed toward a corner. The rest of the stack fills the frame behind it. It works on media layers too, such as a video in the corner of a particle effect.
 
 <img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pip.webp" width="480" alt="Astrolabe placed in a corner over Murmur">
 
@@ -656,7 +656,7 @@ Layer input ─→ Mix (input 0) ─→ Output
               Feedback ←── Transform
 ```
 
-Wire Mix's output to both **Output** and **Transform**, Transform into **Feedback**, and Feedback back into Mix's second input. Mix `amount` is the echo strength (start near 0.5); a Transform a whisker off identity — `scale` 1.02, `rotate` 0.005 — turns the echo into a spiral tunnel. A `scale` just under 1 (0.98) pulls the trails inward instead.
+Wire Mix's output to both **Output** and **Transform**, Transform into **Feedback**, and Feedback back into Mix's second input. Mix `amount` is the echo strength (start near 0.5); a Transform a whisker off identity (`scale` 1.02, `rotate` 0.005) turns the echo into a spiral tunnel. A `scale` just under 1 (0.98) pulls the trails inward instead.
 
 <img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_echo.webp" width="480" alt="Echo trails on Beam">
 
@@ -670,12 +670,12 @@ Wire Mix's output to both **Output** and **Transform**, Transform into **Feedbac
 
 ### Good to Know
 
-- **Chains are saved with presets.** Saving a preset stores every layer's chain and the master chain — nodes, wires, values, modulations and where each node sits on the canvas — and loading it puts them back, so scenes that cue presets restore chains too. A preset saved without a chain clears the one that was there, and a locked layer keeps its chain like everything else. Editing a chain lights the preset's unsaved marker.
-- **Share a single chain** with **Export…** / **Import…** in the canvas header: a `.fio.json` file holding just that chain. Import replaces the chain on the canvas. If a file uses an effect you don't have, its node comes in titled `missing: <id>` and renders magenta, with its wires and values kept — install the effect and it comes back.
-- **Effect files reload while you work.** trama effects are plain `.wgsl` files in `assets/trama/effects/`, each starting with a small JSON manifest. Save one and every node using it picks up the new shader on the next frame. Save a typo and nothing blanks: the last version that compiled keeps rendering, the node's title reads `· ERROR`, and the inspector shows the compiler's message until you fix it. Change the manifest and live nodes follow it by name — surviving parameters keep their values, new ones get defaults, removed ones (and wires into removed inputs) go, and the log says which. Delete the file and its nodes turn into `missing:` placeholders until it comes back.
-- **Writing an effect with a speed?** Don't multiply by `u.time`. `u.time * speed` multiplies every *change* in speed by how long the app has been running, so a modulated speed strobes. List the parameter under `"rates"` in the manifest — `"rates": ["speed"]` — and the shader receives its running total (`speed × dt`, summed every frame) in that parameter's slot instead of the slider value: write `param(1u)` where you would have written `u.time * param(1u)`. `hue_drift.wgsl` and `noise_field.wgsl` are the examples.
-- **Transparency is real.** Transform leaves transparent pixels where it has nothing to show. With layers beneath, they show through; on a single layer the frame is black there. For transparent *output* (NDI, Spout, Syphon), see [Output alpha](alpha.md#output-alpha-modes) — **Auto** follows the layers' own overlay tags and doesn't look inside chains, so pick **Passthrough** if a chain is what creates the transparency.
-- **The master chain announces itself.** Whenever it holds nodes, a **Master** row appears under the layer list with the same diamond and node count as a layer's badge — filled and *chain on output* when it is processing the frame, hollow and *chain, inactive* when nothing reaches its Output. Click the diamond to open the canvas on the Master tab.
+- **Chains are saved with presets.** Saving a preset stores every layer's chain and the master chain (nodes, wires, values, modulations and where each node sits on the canvas), and loading it puts them back, so scenes that cue presets restore chains too. A preset saved without a chain clears the one that was there, and a locked layer keeps its chain like everything else. Editing a chain lights the preset's unsaved marker.
+- **Share a single chain** with **Export…** / **Import…** in the canvas header: a `.fio.json` file holding just that chain. Import replaces the chain on the canvas. If a file uses an effect you don't have, its node comes in titled `missing: <id>` and renders magenta, with its wires and values kept. Install the effect and it comes back.
+- **Effect files reload while you work.** trama effects are plain `.wgsl` files in `assets/trama/effects/`, each starting with a small JSON manifest. Save one and every node using it picks up the new shader on the next frame. Save a typo and nothing blanks: the last version that compiled keeps rendering, the node's title reads `· ERROR`, and the inspector shows the compiler's message until you fix it. Change the manifest and live nodes follow it by name: surviving parameters keep their values, new ones get defaults, removed ones (and wires into removed inputs) go, and the log says which. Delete the file and its nodes turn into `missing:` placeholders until it comes back.
+- **Writing an effect with a speed?** Don't multiply by `u.time`. `u.time * speed` multiplies every *change* in speed by how long the app has been running, so a modulated speed strobes. List the parameter under `"rates"` in the manifest (`"rates": ["speed"]`) and the shader receives its running total (`speed × dt`, summed every frame) in that parameter's slot instead of the slider value: write `param(1u)` where you would have written `u.time * param(1u)`. `hue_drift.wgsl` and `noise_field.wgsl` are the examples.
+- **Transparency is real.** Transform leaves transparent pixels where it has nothing to show. With layers beneath, they show through; on a single layer the frame is black there. For transparent *output* (NDI, Spout, Syphon), see [Output alpha](alpha.md#output-alpha-modes). **Auto** follows the layers' own overlay tags and doesn't look inside chains, so pick **Passthrough** if a chain is what creates the transparency.
+- **The master chain announces itself.** Whenever it holds nodes, a **Master** row appears under the layer list with the same diamond and node count as a layer's badge: filled and *chain on output* when it is processing the frame, hollow and *chain, inactive* when nothing reaches its Output. Click the diamond to open the canvas on the Master tab.
 - **Cost** is small: a 10-node chain at 1080p measures under 1 ms of GPU time per frame on an RTX 4090. Each chain that exists holds one full-resolution buffer; the working buffers inside chains are shared between all of them.
 - Offline rendering (`--render-scene`) does not run chains yet.
 
@@ -683,7 +683,7 @@ Wire Mix's output to both **Output** and **Transform**, Transform into **Feedbac
 
 ## Presets
 
-Presets save and restore your entire visual setup — all layers, effects, parameters, blend modes, and post-processing settings.
+Presets save and restore your entire visual setup: all layers, effects, parameters, blend modes, and post-processing settings.
 
 ### Quick Start
 
@@ -709,15 +709,15 @@ A preset captures:
 
 ### Preset Management
 
-- **Save** — Creates or overwrites a preset
-- **Delete** — Click the × next to a preset name
-- **Copy** — Right-click a preset to duplicate it
-- **MIDI cycling** — Map NextPreset/PrevPreset triggers to MIDI buttons
-- **Dirty indicator** — An asterisk (*) appears when the current preset has unsaved changes
+- **Save**: Creates or overwrites a preset
+- **Delete**: Click the × next to a preset name
+- **Copy**: Right-click a preset to duplicate it
+- **MIDI cycling**: Map NextPreset/PrevPreset triggers to MIDI buttons
+- **Dirty indicator**: An asterisk (*) appears when the current preset has unsaved changes
 
 ### Locked Layers
 
-Locked layers (🔒) are skipped during preset loading. This lets you "freeze" a layer while cycling through presets — useful for keeping a background layer constant while swapping foreground effects.
+Locked layers (🔒) are skipped during preset loading. This lets you "freeze" a layer while cycling through presets, which is useful for keeping a background layer constant while swapping foreground effects.
 
 ### Storage
 
@@ -727,13 +727,13 @@ Presets are stored as JSON files in `~/.config/fosfora/presets/`. You can share 
 
 ## Scenes
 
-Scenes let you sequence presets into a cue list with timed or beat-synced transitions — turning a collection of presets into an automated show.
+Scenes let you sequence presets into a cue list with timed or beat-synced transitions, turning a collection of presets into an automated show.
 
 ### Quick Start
 
 1. Open the **Scenes** panel in the left sidebar
 2. Click **+ New Scene** and enter a name
-3. Add cues by clicking **+ Cue** — each cue references a saved preset
+3. Add cues by clicking **+ Cue**. Each cue references a saved preset
 4. Set transition type and duration for each cue
 5. Press **Space** or click the play button to start the timeline
 6. Press **T** to toggle the timeline on/off
@@ -742,11 +742,11 @@ Scenes let you sequence presets into a cue list with timed or beat-synced transi
 
 Each cue in a scene references a preset and defines how to transition to it:
 
-- **Preset** — Which saved preset to load (selected from your preset list)
-- **Transition** — How to get there: Cut, Dissolve, or Morph
-- **Transition duration** — How long the transition takes (in seconds, ignored for Cut)
-- **Hold time** — How long to stay on this cue before advancing (used in Timer mode)
-- **Label** — Optional display name override
+- **Preset**: Which saved preset to load (selected from your preset list)
+- **Transition**: How to get there: Cut, Dissolve, or Morph
+- **Transition duration**: How long the transition takes (in seconds, ignored for Cut)
+- **Hold time**: How long to stay on this cue before advancing (used in Timer mode)
+- **Label**: Optional display name override
 
 Cues can be reordered, edited, and deleted from the scene panel. Changes are auto-saved.
 
@@ -754,11 +754,11 @@ Cues can be reordered, edited, and deleted from the scene panel. Changes are aut
 
 | Type | Description |
 |------|-------------|
-| **Cut** | Instant switch — no transition, immediately loads the next preset |
+| **Cut** | Instant switch: no transition, immediately loads the next preset |
 | **Dissolve** | GPU crossfade between outgoing and incoming visuals over the transition duration |
 | **Morph** | Interpolates all parameters and layer opacities smoothly over the transition duration |
 
-**Dissolve** creates a true visual crossfade — both the old and new states render simultaneously and blend together. **Morph** keeps the current effects running and smoothly slides their parameters toward the target preset's values, which works best when consecutive cues use the same effects with different parameter settings.
+**Dissolve** creates a true visual crossfade: both the old and new states render simultaneously and blend together. **Morph** keeps the current effects running and smoothly slides their parameters toward the target preset's values, which works best when consecutive cues use the same effects with different parameter settings.
 
 ### Advance Modes
 
@@ -774,9 +774,9 @@ Set the advance mode in the scene panel. In Beat Sync mode, you can configure th
 
 When a MIDI controller or DAW sends MIDI clock, Fosfora follows the external transport automatically:
 
-- **Start/Continue** (MIDI 0xFA/0xFB) — starts the timeline if it has cues but is idle
-- **Stop** (MIDI 0xFC) — stops the timeline if it is active
-- **Timing ticks** (MIDI 0xF8, 24 per quarter note) — used for BPM and beat-phase tracking
+- **Start/Continue** (MIDI 0xFA/0xFB): starts the timeline if it has cues but is idle
+- **Stop** (MIDI 0xFC): stops the timeline if it is active
+- **Timing ticks** (MIDI 0xF8, 24 per quarter note): used for BPM and beat-phase tracking
 
 In **Beat Sync** advance mode, MIDI clock beats take priority over the internal audio beat detector. If MIDI clock is not playing, Beat Sync falls back to audio-detected beats.
 
@@ -795,9 +795,9 @@ Scenes can be controlled via OSC (default RX port 9000):
 | `/fosfora/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
 
 **Trigger actions** (via `/fosfora/trigger/{action}`):
-- `scene_go_next` — advance to the next cue
-- `scene_go_prev` — go to the previous cue
-- `toggle_timeline` — start/stop the timeline
+- `scene_go_next`: advance to the next cue
+- `scene_go_prev`: go to the previous cue
+- `toggle_timeline`: start/stop the timeline
 
 **Outbound timeline state** (TX, sent at the configured rate when TX is enabled):
 
@@ -827,44 +827,44 @@ Scenes are stored as JSON files in `~/.config/fosfora/scenes/`. You can share sc
 
 ## Obstacles
 
-Particles can collide with a shape you supply — a photo, a video, a live webcam silhouette, or a rotating 3D model. This is what makes water part around a body, pour over a skull, or a crowd of particles pile up on someone's shoulders.
+Particles can collide with a shape you supply: a photo, a video, a live webcam silhouette, or a rotating 3D model. This is what makes water part around a body, pour over a skull, or a crowd of particles pile up on someone's shoulders.
 
 ### Quick Start
 
-1. Select a **particle** layer (obstacles do nothing on a pure shader effect — see the list below)
+1. Select a **particle** layer (obstacles do nothing on a pure shader effect; see the list below)
 2. Open the **Obstacle** section of the Parameters panel
 3. Click **Image…** and pick a picture with a clear bright subject on a dark background
 4. Turn **Enabled** on
 
-The shape is read from the image's alpha channel. If the image has no alpha — most photos don't — brightness is used instead, so a light subject on a dark background works out of the box.
+The shape is read from the image's alpha channel. If the image has no alpha (most photos don't), brightness is used instead, so a light subject on a dark background works out of the box.
 
 ### Sources
 
 | Source | Needs | Notes |
 |--------|-------|-------|
-| **Image** | — | PNG, JPEG, WebP. The shipped `assets/images/` pictures all work |
-| **Model** | — | A 3D model (`.glb`/`.gltf` mesh or `.ply`/`.splat` cloud). Rendered as a rotating near-surface depth field, so particles pool over its form in 2.5-D. The spin speeds up with the music and tilts with the bass |
+| **Image** | none | PNG, JPEG, WebP. The shipped `assets/images/` pictures all work |
+| **Model** | none | A 3D model (`.glb`/`.gltf` mesh or `.ply`/`.splat` cloud). Rendered as a rotating near-surface depth field, so particles pool over its form in 2.5-D. The spin speeds up with the music and tilts with the bass |
 | **Video** | `video` feature, ffmpeg | The shape animates with the footage |
 | **Webcam** | `webcam` feature | Live silhouette, thresholded by brightness |
-| **Depth** | `depth` feature | Monocular depth estimate from the webcam — near surfaces block, far ones don't |
+| **Depth** | `depth` feature | Monocular depth estimate from the webcam: near surfaces block, far ones don't |
 
 ### Controls
 
-- **Threshold** (0–1) — how bright a pixel must be to count as solid. Raise it if background texture is catching particles; lower it if the shape has holes.
-- **Elasticity** (0–1) — how much speed survives a bounce. 0 is a dead stop, 1 is a perfect rebound.
-- **Fit** — how the image is mapped onto a 16:9 canvas. **Fill** (default) crops to cover; **Fit** letterboxes the whole image; **Stretch** distorts it.
-- **Mode** — what happens on contact:
+- **Threshold** (0–1): how bright a pixel must be to count as solid. Raise it if background texture is catching particles; lower it if the shape has holes.
+- **Elasticity** (0–1): how much speed survives a bounce. 0 is a dead stop, 1 is a perfect rebound.
+- **Fit**: how the image is mapped onto a 16:9 canvas. **Fill** (default) crops to cover; **Fit** letterboxes the whole image; **Stretch** distorts it.
+- **Mode**: what happens on contact:
 
 | Mode | Behaviour |
 |------|-----------|
 | **Bounce** | Reflects off the surface |
 | **Stick** | Stops dead where it lands, building up a crust |
-| **Flow** | Slides along the surface instead of stopping — best for water |
+| **Flow** | Slides along the surface instead of stopping: best for water |
 | **Contain** | Traps particles *inside* the shape instead of outside |
 
 ### Which effects support it
 
-Accretion, Array, Cascade, Chaos, Cleave, Cymatics, Flux, Genesis, Morph, Murmur, Mycelium, Raster, Splat, Symbiosis, Tesla, Tide, Turing and Vessel. **Tide** and **Vessel** were built around it — Tide parts and pools, Vessel fills the shape and bursts on the drop. Splat is the odd one out: it carves the obstacle out of the splat cloud rather than bouncing anything off it.
+Accretion, Array, Cascade, Chaos, Cleave, Cymatics, Flux, Genesis, Morph, Murmur, Mycelium, Raster, Splat, Symbiosis, Tesla, Tide, Turing and Vessel. **Tide** and **Vessel** were built around it: Tide parts and pools, Vessel fills the shape and bursts on the drop. Splat is the odd one out: it carves the obstacle out of the splat cloud rather than bouncing anything off it.
 
 ### Automation
 
@@ -877,7 +877,7 @@ Per-layer OSC:
 | `/fosfora/layer/{n}/obstacle/threshold` | float (0–1) | |
 | `/fosfora/layer/{n}/obstacle/elasticity` | float (0–1) | |
 
-In the [binding matrix](#binding-matrix) the targets are `particle.obstacle_enabled`, `_mode`, `_threshold` and `_elasticity` — note these apply to **all** layers at once, and take a normalized 0–1 value. Breathing the threshold on `audio.rms` makes the silhouette seem to inhale.
+In the [binding matrix](#binding-matrix) the targets are `particle.obstacle_enabled`, `_mode`, `_threshold` and `_elasticity`. Note that these apply to **all** layers at once, and take a normalized 0–1 value. Breathing the threshold on `audio.rms` makes the silhouette seem to inhale.
 
 The image path is saved in the preset, so a whole obstacle setup recalls with everything else.
 
@@ -885,24 +885,24 @@ The image path is saved in the preset, so a whole obstacle setup recalls with ev
 
 ## Volumetric
 
-Any particle layer can be rendered as ray-marched fog instead of discrete points: the same simulation, made of smoke. Turn it on in the **Volumetric** section of the Parameters panel — it applies to the **selected layer**.
+Any particle layer can be rendered as ray-marched fog instead of discrete points: the same simulation, made of smoke. Turn it on in the **Volumetric** section of the Parameters panel. It applies to the **selected layer**.
 
 ### What it does
 
 Particles are deposited into a 3D voxel grid, which is then ray-marched with a camera you control. Depth is synthesized per particle, so a flat 2D simulation gains a stable thickness rather than staying a sheet.
 
-**This shapes what looks good.** An effect whose particles fill the frame evenly becomes a featureless glowing ball, because a uniformly full volume has no internal structure to see. Effects with a *sparse, structured* footprint — Chaos's strange attractors, Mycelium's tendrils, Polycephalum's networks — keep their shape as fog. If you get a blob, lower **Density gain** until it turns translucent, and try a cube envelope instead of a sphere.
+**This shapes what looks good.** An effect whose particles fill the frame evenly becomes a featureless glowing ball, because a uniformly full volume has no internal structure to see. Effects with a *sparse, structured* footprint (Chaos's strange attractors, Mycelium's tendrils, Polycephalum's networks) keep their shape as fog. If you get a blob, lower **Density gain** until it turns translucent, and try a cube envelope instead of a sphere.
 
 ### Controls
 
-- **March steps** (16–160) — samples per ray. More is smoother and slower.
-- **Absorption** — how fast the fog swallows light. Higher is denser and more contrasty.
-- **Density gain** (0.02–1) — saturation. This is the first knob to reach for when everything reads as a solid mass.
-- **Volume depth** — how far the synthesized depth spreads. Low values give a glowing sheet, high values a thick cloud.
-- **Detail scale / strength** — noise breaking up the fog.
-- **Camera** — yaw, pitch, distance, orbit speed and field of view.
-- **Envelope** — cube (edge fade) or sphere. The sphere fades to a ball at the edges, which is flattering on structured content and merciless on full ones.
-- **Palette hue**, **Emission gain** — colour and glow.
+- **March steps** (16–160): samples per ray. More is smoother and slower.
+- **Absorption**: how fast the fog swallows light. Higher is denser and more contrasty.
+- **Density gain** (0.02–1): saturation. This is the first knob to reach for when everything reads as a solid mass.
+- **Volume depth**: how far the synthesized depth spreads. Low values give a glowing sheet, high values a thick cloud.
+- **Detail scale / strength**: noise breaking up the fog.
+- **Camera**: yaw, pitch, distance, orbit speed and field of view.
+- **Envelope**: cube (edge fade) or sphere. The sphere fades to a ball at the edges, which is flattering on structured content and merciless on full ones.
+- **Palette hue**, **Emission gain**: colour and glow.
 
 ### Automation
 
@@ -928,18 +928,18 @@ Press **B** for a full-screen patch bay: drag a line from any source to any targ
 ### Quick Start
 
 1. Press **B**
-2. Pick a source on the left — start with **Audio · Bands → Bass**
-3. Pick a target on the right — any parameter of any layer
+2. Pick a source on the left. Start with **Audio · Bands → Bass**
+3. Pick a target on the right: any parameter of any layer
 4. Play something. The cable animates when signal is flowing.
 
 The **Templates** dropdown wires up a whole set at once against the layer you have selected. **Audio Reactive** maps kick, level, brightness and beat phase onto whichever of the current effect's parameters best match; **Spectral Bands** puts the seven frequency bands on the first seven parameters.
 
 ### Sources
 
-- **Audio** — all 74 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
-- **MIDI** — any CC on any channel. The **Learn** button captures the next knob you touch.
-- **OSC** — any address the app receives, whether or not it is one of Fosfora's own.
-- **Bridges** — hand, face and body tracking over WebSocket. See [bridges/README.md](../bridges/README.md).
+- **Audio**: all 74 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
+- **MIDI**: any CC on any channel. The **Learn** button captures the next knob you touch.
+- **OSC**: any address the app receives, whether or not it is one of Fosfora's own.
+- **Bridges**: hand, face and body tracking over WebSocket. See [bridges/README.md](../bridges/README.md).
 
 ### Targets
 
@@ -952,14 +952,14 @@ Each binding runs an ordered chain, so a raw feature can be shaped into somethin
 | Transform | Use |
 |-----------|-----|
 | **Remap** | Rescale an input range onto an output range |
-| **Smooth** | Exponential smoothing — the difference between a twitch and a swell |
+| **Smooth** | Exponential smoothing: the difference between a twitch and a swell |
 | **Curve** | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `log`, `exp` |
 | **Gate** | Everything above a threshold becomes 1, below becomes 0 |
 | **Deadzone** | Ignore the middle, rescale the edges |
 | **Quantize** | Snap to N steps |
 | **Invert**, **Scale**, **Offset**, **Clamp** | The arithmetic |
 
-Order matters. A one-frame trigger like `audio.drop` is invisible bound raw — smooth it heavily, scale it up, then clamp, and it becomes a flare with a tail.
+Order matters. A one-frame trigger like `audio.drop` is invisible bound raw. Smooth it heavily, scale it up, then clamp, and it becomes a flare with a tail.
 
 ### Scope and storage
 
@@ -982,17 +982,17 @@ Post-processing applies screen-space effects after all layers are composited.
 
 ### Effects
 
-**Bloom** — Extracts bright areas and adds a soft glow
+**Bloom**: extracts bright areas and adds a soft glow
 - *Threshold* (0.0–1.5): Brightness cutoff. Lower = more glow
 - *Intensity* (0.0–2.0): Glow strength
 
-**Vignette** — Darkens the screen edges for a cinematic look
+**Vignette**: darkens the screen edges for a cinematic look
 - *Amount* (0.0–1.0): Edge darkness
 
-**Chromatic Aberration** — Shifts RGB channels apart for a lens distortion look
+**Chromatic Aberration**: shifts RGB channels apart for a lens distortion look
 - *Intensity* (0.0–1.0): Channel separation amount
 
-**Film Grain** — Adds animated noise texture for a filmic feel
+**Film Grain**: adds animated noise texture for a filmic feel
 - *Intensity* (0.0–1.0): Noise strength
 - *Rate (Hz)* (0–60): How often the grain re-randomises. Real film grain changes
   at the film's frame rate, not the projector's, and running it slower than your
@@ -1034,7 +1034,7 @@ To map a MIDI control to a parameter:
 1. Click the **M** button next to any parameter slider or trigger
 2. The button highlights, showing "learning..."
 3. Move a knob or press a button on your MIDI controller
-4. The binding is created — a badge shows the CC number (e.g., "CC 14")
+4. The binding is created, and a badge shows the CC number (e.g., "CC 14")
 5. Your MIDI mappings are saved to `~/.config/fosfora/midi.json`
 
 To remove a binding, click the badge.
@@ -1043,7 +1043,7 @@ To remove a binding, click the badge.
 
 - **Float parameters**: CC value 0–127 is scaled to the parameter's min–max range
 - **Bool parameters**: CC ≥ 64 = true, CC < 64 = false
-- **Channel**: Channel 0 means "omni" — responds to all MIDI channels
+- **Channel**: Channel 0 means "omni": it responds to all MIDI channels
 
 ### Trigger Actions
 
@@ -1076,13 +1076,13 @@ Fosfora polls for MIDI devices every 2 seconds:
 
 ## OSC
 
-Open Sound Control (OSC) enables communication with other software — DAWs, lighting controllers, TouchDesigner, and more.
+Open Sound Control (OSC) enables communication with other software: DAWs, lighting controllers, TouchDesigner, and more.
 
 ### Quick Start
 
 1. Open the **OSC** panel in the left sidebar
 2. OSC receive (RX) is on by default on port **9000**
-3. OSC transmit (TX) is off by default — enable it and set port **9001** if needed
+3. OSC transmit (TX) is off by default. Enable it and set port **9001** if needed
 4. Send OSC messages to control Fosfora from external software
 
 ### Receiving OSC (RX)
@@ -1159,31 +1159,31 @@ oscdump 9001
 
 ## Web Control Surface
 
-Fosfora includes a built-in web-based touch control surface — perfect for controlling visuals from a phone or tablet.
+Fosfora includes a built-in web-based touch control surface, perfect for controlling visuals from a phone or tablet.
 
 ### Quick Start
 
 1. Open the **Web** panel in the left sidebar
 2. Enable the WebSocket server (default port: **9002**)
 3. The panel shows two URLs:
-   - **localhost** — for the same machine
-   - **LAN IP** — for other devices on your network
+   - **localhost**: for the same machine
+   - **LAN IP**: for other devices on your network
 4. Open the URL in any web browser on your phone/tablet
 5. The touch UI connects automatically
 
 ### Features
 
 The web control surface provides:
-- **Audio spectrum** — Real-time 7-band frequency display
-- **Effect grid** — Tap any effect to load it
-- **Parameter sliders** — All active effect parameters
-- **Layer cards** — Select layers, adjust opacity and blend mode
-- **Preset list** — Tap to load presets
-- **Trigger buttons** — Next/prev effect, preset, layer, etc.
+- **Audio spectrum**: Real-time 7-band frequency display
+- **Effect grid**: Tap any effect to load it
+- **Parameter sliders**: All active effect parameters
+- **Layer cards**: Select layers, adjust opacity and blend mode
+- **Preset list**: Tap to load presets
+- **Trigger buttons**: Next/prev effect, preset, layer, etc.
 
 ### Multi-Client
 
-Multiple devices can connect simultaneously. All clients receive real-time state updates — great for collaborative VJ sessions or letting the audience interact.
+Multiple devices can connect simultaneously. All clients receive real-time state updates, which is great for collaborative VJ sessions or letting the audience interact.
 
 ### Technical Details
 
@@ -1199,10 +1199,10 @@ Multiple devices can connect simultaneously. All clients receive real-time state
 
 ### NDI Output
 
-NDI (Network Device Interface) lets you send Fosfora's output to other software over the network — OBS, vMix, Resolume, TouchDesigner, and any NDI-compatible receiver.
+NDI (Network Device Interface) lets you send Fosfora's output to other software over the network: OBS, vMix, Resolume, TouchDesigner, and any NDI-compatible receiver.
 
 **Requirements:**
-- **Official release downloads** (macOS/Windows/Linux): NDI is already built in — you only need the NDI runtime.
+- **Official release downloads** (macOS/Windows/Linux): NDI is already built in, so you only need the NDI runtime.
 - **Building from source:** add `--features ndi` (e.g. `cargo run --release --features ndi`).
 - Install the NDI runtime from [ndi.video](https://ndi.video). Fosfora loads it dynamically at startup; if it's missing, the NDI panel lists the locations it searched and a download link.
 
@@ -1215,7 +1215,7 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 
 **Alpha channel:** Effects that write meaningful alpha (particles, transparent backgrounds) preserve it through post-processing and deliver it to NDI for downstream compositing. Enable "Alpha from Luma" if you want brightness-based alpha instead.
 
-**Performance:** NDI capture runs on a separate thread with GPU readback. Frames are dropped gracefully if the sender falls behind — VJ performance always takes priority over NDI output.
+**Performance:** NDI capture runs on a separate thread with GPU readback. Frames are dropped gracefully if the sender falls behind. VJ performance always takes priority over NDI output.
 
 ---
 
@@ -1270,13 +1270,13 @@ cargo run --features webcam        # Webcam input
 The bottom status bar shows at a glance:
 - **Shader errors** (with dismiss button) or keyboard hints
 - **BPM** with beat flash indicator
-- **SCN** — Scene indicator with cue counter (e.g., "2/5") when a scene is active
-- **PTL** — Particle count (when active)
-- **MIDI** — Green dot when receiving
-- **OSC** — Green dot when receiving
-- **WEB** — Blue dot when clients connected
-- **NDI** — Green dot when streaming
-- **FPS** — Smoothed frame rate
+- **SCN**: Scene indicator with cue counter (e.g., "2/5") when a scene is active
+- **PTL**: Particle count (when active)
+- **MIDI**: Green dot when receiving
+- **OSC**: Green dot when receiving
+- **WEB**: Blue dot when clients connected
+- **NDI**: Green dot when streaming
+- **FPS**: Smoothed frame rate
 
 ### Priority Order
 

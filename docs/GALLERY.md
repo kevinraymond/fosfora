@@ -139,7 +139,7 @@ Not effects but what you can do *to* them: a chain of nodes post-processing one 
 <tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pip.webp" width="100%" alt="Picture-in-picture"><br><b>Picture-in-picture</b><br><sub>Astrolabe shrunk into a corner with a Transform node, over Murmur.</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pump.webp" width="100%" alt="Pump to the kick"><br><b>Pump to the kick</b><br><sub>Prism's scale driven by the bass; Drift shows around it.</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_spin.webp" width="100%" alt="One layer spinning"><br><b>One layer spinning</b><br><sub>Reticle on a beat-synced saw, over Symbiosis — the rest holds still.</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_spin.webp" width="100%" alt="One layer spinning"><br><b>One layer spinning</b><br><sub>Reticle on a beat-synced saw, over Symbiosis while the rest holds still.</sub></td>
 </tr>
 <tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_twin.webp" width="100%" alt="One effect, twice"><br><b>One effect, twice</b><br><sub>Two Astrolabes placed left and right by hand, over Polycephalum.</sub></td>

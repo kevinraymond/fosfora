@@ -17,12 +17,12 @@
   wire `Layer input → Transform → Output`: that layer moves, scales or spins while the rest of
   the stack keeps running. Nodes so far are Transform, Hue Drift, Mix, Noise Field and Feedback
   (for echo loops), and every slider can be driven by an oscillator or the music. A chain that
-  doesn't reach its Output is inactive, so building one never blanks a layer. Recipes —
-  picture-in-picture, pump to the kick, echo trails — are in the new trama chapter of
+  doesn't reach its Output is inactive, so building one never blanks a layer. Recipes for
+  picture-in-picture, pump to the kick and echo trails are in the new trama chapter of
   `docs/TUTORIALS.md`.
 - **A master chain for the whole frame.** The canvas's **Master** tab runs a chain on the
   composited picture, before tonemapping. Layer rows show a diamond and node count for any
-  layer with a chain — filled when active, hollow when nothing reaches its Output — and a
+  layer with a chain, filled when active and hollow when nothing reaches its Output, and a
   **Master** row appears under the layer list whenever the master chain holds nodes, so a
   forgotten one is never silent. Click a diamond to open that chain.
 - **trama chains are saved with your presets.** A preset stores every layer's chain and the
@@ -38,7 +38,7 @@
 
 ### Changed
 - **If you had found trama early** (the **G** key has opened a prototype since v1.33.0): the
-  Layers/Trama switch is gone. trama no longer replaces the layer stack — chains run on your
+  Layers/Trama switch is gone. trama no longer replaces the layer stack. Chains run on your
   layers and on the master output instead.
 
 ### Fixed
