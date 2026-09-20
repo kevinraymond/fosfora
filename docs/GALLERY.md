@@ -10,35 +10,50 @@ by MIDI, OSC, a phone or a webcam.
 
 **55 effects.**
 
-## Shaders (15)
+## Shaders (22)
 
 Pure fragment shaders — no particles, just math evaluated per pixel, every frame.
 
 <table>
 <tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/astrolabe.webp" width="100%" alt="Astrolabe"><br><b>Astrolabe</b><br><sub>A full-frame targeting instrument that assembles ring by ring across the cycle — degree ticks, counter-rotating sweep arms, orbiting target diamonds — with a…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/aurora.webp" width="100%" alt="Aurora"><br><b>Aurora</b><br><sub>Horizontal flowing curtain bands driven by 7 frequency bands — a spectrogram disguised as northern lights</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/beam.webp" width="100%" alt="Beam"><br><b>Beam</b><br><sub>Vector-CRT oscilloscope — draws the audio waveform as a glowing, over-focused beam with phosphor persistence. Scope and radial modes.</sub></td>
+</tr>
+<tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/bezel.webp" width="100%" alt="Bezel"><br><b>Bezel</b><br><sub>Border chrome: corner brackets, edge rules, tick marks and drifting scanlines hugging the frame, with a subtle pulse on the beat — the always-on overlay that…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/chromatica.webp" width="100%" alt="Chromatica"><br><b>Chromatica</b><br><sub>Chord mandala: twelve orbital rings on the circle of fifths bloom with the chord being played, the whole palette tinted by the song's detected key. A Consonance…</sub></td>
-</tr>
-<tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/drift.webp" width="100%" alt="Drift"><br><b>Drift</b><br><sub>Fluid smoke via triple domain-warped FBM noise with advected feedback</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/frost.webp" width="100%" alt="Frost"><br><b>Frost</b><br><sub>Spectral-flatness material dissolution: tonal sound freezes into faceted crystal, noisy sound melts it into drifting sand</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/iris.webp" width="100%" alt="Iris"><br><b>Iris</b><br><sub>Spinning dot with fading feedback trails — circular pattern resembles an iris</sub></td>
 </tr>
 <tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fenestra.webp" width="100%" alt="Fenestra"><br><b>Fenestra</b><br><sub>GUI panels snapping into place across the bar — staggered brackets and scrims arriving with a white flash, settling into palette color, gone by the next cycle.…</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/frost.webp" width="100%" alt="Frost"><br><b>Frost</b><br><sub>Spectral-flatness material dissolution: tonal sound freezes into faceted crystal, noisy sound melts it into drifting sand</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/intarsia.webp" width="100%" alt="Intarsia"><br><b>Intarsia</b><br><sub>Inlay-work over the layers beneath: a low-res analysis pass finds the color patches of whatever is playing under it, and tiles trade in and out on the bar clock…</sub></td>
+</tr>
+<tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/iris.webp" width="100%" alt="Iris"><br><b>Iris</b><br><sub>Spinning dot with fading feedback trails — circular pattern resembles an iris</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/limn.webp" width="100%" alt="Limn"><br><b>Limn</b><br><sub>A living edge-tracer: outlines whatever plays on the layers beneath it, dashes marching along every contour in time with the bars. Layer it over anything — solo…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/lumen.webp" width="100%" alt="Lumen"><br><b>Lumen</b><br><sub>Real-time global illumination by radiance cascades — a swarm of coloured fireflies lights a soft breathing silhouette, and every light casts long soft-edged…</sub></td>
+</tr>
+<tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/prism.webp" width="100%" alt="Prism"><br><b>Prism</b><br><sub>Kaleidoscopic N-fold mirror symmetry over FBM and geometric patterns</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/protea.webp" width="100%" alt="Protea"><br><b>Protea</b><br><sub>A mass-conserving Flow Lenia ecosystem — three species of amoebae with membranes and organelles that hunt, merge, and divide, fed by the music itself. Loudness…</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/pulse.webp" width="100%" alt="Pulse"><br><b>Pulse</b><br><sub>Concentric expanding rings synced to beat with light feedback trails</sub></td>
 </tr>
 <tr>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/pulse.webp" width="100%" alt="Pulse"><br><b>Pulse</b><br><sub>Concentric expanding rings synced to beat with light feedback trails</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/reticle.webp" width="100%" alt="Reticle"><br><b>Reticle</b><br><sub>Crosshairs acquiring targets: each reticle re-positions every bar and locks on with a contracting bracket keyed to the beat. Snap between targets or glide.</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/shards.webp" width="100%" alt="Shards"><br><b>Shards</b><br><sub>Animated Voronoi cells with glowing fracture edges</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/storm.webp" width="100%" alt="Storm"><br><b>Storm</b><br><sub>Billowing dark clouds lit from within by flashes of lightning</sub></td>
 </tr>
 <tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/strata.webp" width="100%" alt="Strata"><br><b>Strata</b><br><sub>Spectral canyon — a heightfield flythrough over the last ~8 seconds of the mel-spectrogram. Ridges are loud moments, chasms are quiet ones; the terrain scrolls…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/sumi.webp" width="100%" alt="Sumi"><br><b>Sumi</b><br><sub>Ink drops bloom in water on every onset — a real incompressible fluid (advection, a Jacobi pressure solve, vorticity confinement) whose twelve dye colours are…</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tessera.webp" width="100%" alt="Tessera"><br><b>Tessera</b><br><sub>A grid of tiles revealing in beat-locked waves — hash scatter, row sweep, or center-out. In punch mode a dark scrim covers the frame and revealed tiles knock…</sub></td>
+</tr>
+<tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tunnel.webp" width="100%" alt="Tunnel"><br><b>Tunnel</b><br><sub>Raymarched infinite cylindrical flythrough with twist, ribs, and glow</sub></td>
+<td width="33%"></td>
+<td width="33%"></td>
 </tr>
 </table>
 
@@ -116,31 +131,25 @@ One engine, eight rules: a 3D cellular automaton evolving inside a volume and re
 </tr>
 </table>
 
+## trama: node chains (6)
 
----
-
-## Overlay (7)
-
-HUD chrome with a real alpha channel — transparent backgrounds end to end, built to be layered
-*over* other content: another Fosfora layer, or someone else's visuals via Spout, Syphon or NDI
-with **Output alpha → Passthrough** (see [alpha.md](alpha.md)). Motion is locked to the beat and
-bar clock, not the wall clock, so every pattern lands on the music at any tempo.
+Not effects but what you can do *to* them: a chain of nodes post-processing one layer, or the whole frame. Recipes for each are in the [trama chapter of the tutorial](TUTORIALS.md#trama-node-chains).
 
 <table>
 <tr>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tessera.webp" width="100%" alt="Tessera"><br><b>Tessera</b><br><sub>A grid of tiles revealing in beat-locked waves — hash scatter, row sweep, or center-out. Punch mode knocks revealed tiles through a dark scrim, uncovering whatever sits beneath</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fenestra.webp" width="100%" alt="Fenestra"><br><b>Fenestra</b><br><sub>GUI panels snapping into place across the bar — staggered brackets and scrims arriving with a white flash, settling into palette color. Latin for "window"</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/reticle.webp" width="100%" alt="Reticle"><br><b>Reticle</b><br><sub>Crosshairs acquiring targets: each reticle re-positions every bar and locks on with a contracting bracket keyed to the beat</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pip.webp" width="100%" alt="Picture-in-picture"><br><b>Picture-in-picture</b><br><sub>Astrolabe shrunk into a corner with a Transform node, over Murmur.</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pump.webp" width="100%" alt="Pump to the kick"><br><b>Pump to the kick</b><br><sub>Prism's scale driven by the bass; Drift shows around it.</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_spin.webp" width="100%" alt="One layer spinning"><br><b>One layer spinning</b><br><sub>Reticle on a beat-synced saw, over Symbiosis — the rest holds still.</sub></td>
 </tr>
 <tr>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/astrolabe.webp" width="100%" alt="Astrolabe"><br><b>Astrolabe</b><br><sub>A full-frame targeting instrument assembling ring by ring across the cycle — degree ticks, counter-rotating sweep arms, orbiting target diamonds, a center lock slamming on every downbeat</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/bezel.webp" width="100%" alt="Bezel"><br><b>Bezel</b><br><sub>Border chrome: corner brackets, edge rules, tick marks and drifting scanlines with a subtle pulse on the beat — the always-on overlay</sub></td>
-</tr>
-<tr>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/limn.webp" width="100%" alt="Limn"><br><b>Limn</b><br><sub>A living edge-tracer: outlines whatever plays on the layers beneath it, dashes marching along every contour in time with the bars. Solo it sees nothing — layer it</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/intarsia.webp" width="100%" alt="Intarsia"><br><b>Intarsia</b><br><sub>Inlay-work over the layers beneath: beat-revealed mosaic tiles fill in the color patches of the content they cover, taking its colors as their own</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_twin.webp" width="100%" alt="One effect, twice"><br><b>One effect, twice</b><br><sub>Two Astrolabes placed left and right by hand, over Polycephalum.</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_echo.webp" width="100%" alt="Echo trails"><br><b>Echo trails</b><br><sub>A Feedback loop through Mix and a Transform a whisker off identity, on Beam.</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_master.webp" width="100%" alt="Master chain"><br><b>Master chain</b><br><sub>An echo loop into a slow hue drift, on the whole composited frame.</sub></td>
 </tr>
 </table>
+
+
+---
 
 Clips were captured from the running app by [`scripts/capture/`](../scripts/capture), which
 drives real playback through the production render pipeline — post-processing and all — rather

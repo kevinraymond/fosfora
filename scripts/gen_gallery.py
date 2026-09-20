@@ -103,6 +103,16 @@ def caption(text: str) -> str:
     return text
 
 
+TRAMA = [
+    ("trama_pip", "Picture-in-picture", "Astrolabe shrunk into a corner with a Transform node, over Murmur."),
+    ("trama_pump", "Pump to the kick", "Prism's scale driven by the bass; Drift shows around it."),
+    ("trama_spin", "One layer spinning", "Reticle on a beat-synced saw, over Symbiosis — the rest holds still."),
+    ("trama_twin", "One effect, twice", "Two Astrolabes placed left and right by hand, over Polycephalum."),
+    ("trama_echo", "Echo trails", "A Feedback loop through Mix and a Transform a whisker off identity, on Beam."),
+    ("trama_master", "Master chain", "An echo loop into a slow hue drift, on the whole composited frame."),
+]
+
+
 def render(base: str) -> str:
     effects = load()
     parts = [HEADER]
@@ -126,6 +136,25 @@ def render(base: str) -> str:
                 parts.append('<td width="33%"></td>\n')
             parts.append("</tr>\n")
         parts.append("</table>\n\n")
+
+    # trama chains are not effects, so they are not discovered from .pfx files: these
+    # are the capture demos in scripts/capture/demos (Trama *.json), filmed by
+    # capture_advanced.sh. Kept here so the generated file and its --check agree.
+    parts.append(
+        "## trama: node chains (6)\n\n"
+        "Not effects but what you can do *to* them: a chain of nodes post-processing one "
+        "layer, or the whole frame. Recipes for each are in the "
+        "[trama chapter of the tutorial](TUTORIALS.md#trama-node-chains).\n\n<table>\n"
+    )
+    for i in range(0, len(TRAMA), 3):
+        parts.append("<tr>\n")
+        for slug, name, text in TRAMA[i : i + 3]:
+            parts.append(
+                f'<td width="33%"><img src="{base}/{slug}.webp" width="100%" '
+                f'alt="{name}"><br><b>{name}</b><br><sub>{text}</sub></td>\n'
+            )
+        parts.append("</tr>\n")
+    parts.append("</table>\n\n")
 
     assert total == len(effects), f"grouping lost effects: {total} != {len(effects)}"
     parts.insert(1, f"**{len(effects)} effects.**\n\n")
