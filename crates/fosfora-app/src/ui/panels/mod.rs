@@ -74,6 +74,7 @@ pub fn draw_panels(
     preset_store: &PresetStore,
     layers: &[LayerInfo],
     active_layer: usize,
+    master_chain: Option<crate::gpu::layer::ChainBadge>,
     media_info: Option<media_panel::MediaInfo>,
     webcam_info: Option<webcam_panel::WebcamInfo>,
     particle_info: Option<particle_panel::ParticleInfo>,
@@ -258,7 +259,7 @@ pub fn draw_panels(
                 // Layers section
                 let layer_badge = format!("{}/{}", layers.len(), 8);
                 widgets::section(ui, "sec_layers", "Layers", Some(&layer_badge), true, |ui| {
-                    layer_panel::draw_layer_panel(ui, layers, active_layer);
+                    layer_panel::draw_layer_panel(ui, layers, active_layer, master_chain);
                 });
 
                 // Presets section

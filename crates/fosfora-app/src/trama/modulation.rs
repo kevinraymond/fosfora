@@ -274,6 +274,48 @@ pub fn apply_resolved(buf: &mut [f32; 16], mods: &[ParamMod]) {
     }
 }
 
+/// Advance the running integral of each RATE parameter by `value · dt`, where
+/// the value is what the shader would otherwise have been given: the resolved
+/// modulation if the parameter has one, the slider otherwise. Call after
+/// [`resolve_node`], once per frame — never per execute, or a dissolve's second
+/// execute would run the clock twice. Allocates only the first time a rate is
+/// seen.
+pub fn integrate_rates(
+    params: &ParamStore,
+    mods: &[ParamMod],
+    phases: &mut Vec<super::node::RatePhase>,
+    rates: &[String],
+    dt: f32,
+) {
+    for rate in rates {
+        let Some((_, _, _, base)) = locate_float(params, rate) else {
+            continue;
+        };
+        let value = mods
+            .iter()
+            .find(|m| m.param == *rate && m.state.slot.is_some())
+            .map_or(base, |m| m.state.resolved);
+        let step = f64::from(value) * f64::from(dt);
+        match phases.iter_mut().find(|p| p.param == *rate) {
+            Some(p) => p.phase += step,
+            None => phases.push(super::node::RatePhase {
+                param: rate.clone(),
+                phase: step,
+            }),
+        }
+    }
+}
+
+/// Overlay the rate integrals onto a packed buffer: each rate parameter's slot
+/// carries its running phase instead of its value. After [`apply_resolved`].
+pub fn apply_phases(buf: &mut [f32; 16], params: &ParamStore, phases: &[super::node::RatePhase]) {
+    for p in phases {
+        if let Some((slot, ..)) = locate_float(params, &p.param) {
+            buf[slot as usize] = p.phase as f32;
+        }
+    }
+}
+
 /// Find a Float param by name: its scalar slot in the packed buffer
 /// (declaration order, same walk as `ParamStore::pack_to_buffer`), range,
 /// and current base value.
@@ -391,6 +433,79 @@ fn seed_for(node: NodeId, param: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A rate is handed to the shader as its running integral. The value that
+    // is integrated is the one the shader would have been given — the
+    // modulated one when there is a modulation — and a change in it moves the
+    // phase by `change · dt`, never by `change · uptime`.
+    #[test]
+    fn a_rate_integrates_what_the_shader_would_have_seen() {
+        use crate::trama::node::RatePhase;
+        let defs: Vec<ParamDef> = ["shift", "speed"]
+            .iter()
+            .map(|n| ParamDef::Float {
+                name: (*n).into(),
+                default: 0.5,
+                min: 0.0,
+                max: 4.0,
+            })
+            .collect();
+        let mut params = ParamStore::new();
+        params.load_from_defs(&defs);
+        params.set("speed", ParamValue::Float(2.0));
+        let rates = vec!["speed".to_string()];
+        let mut phases: Vec<RatePhase> = Vec::new();
+
+        // The slider alone: 2.0 for half a second of 60 fps frames.
+        for _ in 0..30 {
+            integrate_rates(&params, &[], &mut phases, &rates, 1.0 / 60.0);
+        }
+        assert_eq!(phases.len(), 1, "one entry, made once");
+        assert!((phases[0].phase - 1.0).abs() < 1e-6, "{}", phases[0].phase);
+
+        // A jump in speed moves the phase by speed·dt from HERE — not by the
+        // jump times everything that came before.
+        params.set("speed", ParamValue::Float(4.0));
+        integrate_rates(&params, &[], &mut phases, &rates, 1.0 / 60.0);
+        assert!((phases[0].phase - (1.0 + 4.0 / 60.0)).abs() < 1e-6);
+
+        // A modulation's resolved value wins over the slider.
+        let mut m = ParamMod::new(
+            NodeId(1),
+            "speed",
+            Modulation {
+                source: ModSource::Audio(AudioFeature::High),
+                amount: 1.0,
+                mode: ModMode::Add,
+                smoothing: 0.0,
+            },
+        );
+        m.state.slot = Some(1);
+        m.state.resolved = 0.0;
+        let before = phases[0].phase;
+        integrate_rates(
+            &params,
+            std::slice::from_ref(&m),
+            &mut phases,
+            &rates,
+            1.0 / 60.0,
+        );
+        assert_eq!(
+            phases[0].phase, before,
+            "resolved speed 0: the phase holds still"
+        );
+
+        // And the shader gets the PHASE in speed's slot; shift is untouched.
+        let mut buf = params.pack_to_buffer();
+        assert_eq!(buf[1], 4.0);
+        apply_phases(&mut buf, &params, &phases);
+        assert!((f64::from(buf[1]) - before).abs() < 1e-6);
+        assert_eq!(buf[0], 0.5);
+
+        // A name that is not a parameter (a manifest that moved on) is ignored.
+        integrate_rates(&params, &[], &mut phases, &["gone".to_string()], 1.0);
+        assert_eq!(phases.len(), 1);
+    }
     use crate::audio::features::AudioFeatures;
 
     fn float_store(name: &str, default: f32, min: f32, max: f32) -> ParamStore {

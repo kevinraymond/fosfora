@@ -261,6 +261,7 @@ impl ApplicationHandler for FosforaApp {
 
                 // Collect layer info snapshots before UI (avoids borrow conflicts)
                 let layer_infos = app.layer_infos();
+                let master_chain = app.master_chain_badge();
                 let active_layer = app.layer_stack.active_layer;
 
                 // Auto-show panels after startup delay
@@ -873,6 +874,7 @@ impl ApplicationHandler for FosforaApp {
                                 &app.preset_store,
                                 &layer_infos,
                                 active_layer,
+                                master_chain,
                                 media_info,
                                 webcam_info,
                                 particle_info,
@@ -3751,6 +3753,16 @@ impl ApplicationHandler for FosforaApp {
                         app.layer_stack.active_layer = idx;
                         app.sync_active_layer();
                     }
+                }
+
+                // The Master row's badge: the canvas, on the master tab.
+                let open_master: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("open_trama_on_master")));
+                if open_master == Some(true) {
+                    app.trama.canvas_target = crate::trama::CanvasTarget::Master;
+                    app.trama.canvas_open = true;
                 }
 
                 // A layer row's trama badge: select that layer and put the

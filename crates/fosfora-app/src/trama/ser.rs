@@ -354,6 +354,7 @@ impl ChainDoc {
                 params,
                 mods,
                 bypass: nd.bypass,
+                phases: Vec::new(),
             });
         }
 

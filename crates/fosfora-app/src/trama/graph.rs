@@ -57,16 +57,22 @@ pub enum GraphError {
 /// without going through the version-bumping structural API.
 pub struct NodeParamsMut<'a> {
     pub id: NodeId,
+    /// Read-only: which effect this is, for per-frame passes that need the
+    /// manifest (rate integration).
+    pub kind: &'a NodeKind,
     pub params: &'a mut ParamStore,
     pub mods: &'a mut Vec<ParamMod>,
+    pub phases: &'a mut Vec<super::node::RatePhase>,
 }
 
 impl<'a> NodeParamsMut<'a> {
     fn of(node: &'a mut NodeInstance) -> Self {
         Self {
             id: node.id,
+            kind: &node.kind,
             params: &mut node.params,
             mods: &mut node.mods,
+            phases: &mut node.phases,
         }
     }
 }
@@ -100,6 +106,7 @@ impl NodeGraph {
                 params: crate::params::ParamStore::new(),
                 mods: Vec::new(),
                 bypass: false,
+                phases: Vec::new(),
             }],
             wires: Vec::new(),
             output,
@@ -268,6 +275,7 @@ impl NodeGraph {
             params,
             mods: Vec::new(),
             bypass: false,
+            phases: Vec::new(),
         });
         self.touch();
         id

@@ -900,6 +900,95 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored a_changing_rate_does_not_make_the_picture_jump
+    //
+    // Kevin, live: after touching Hue Drift's `speed` (and then modulating it)
+    // the output strobed. The shader computed `shift + u.time * speed`, so any
+    // CHANGE in speed was multiplied by how long the app had been running: at
+    // five minutes, a wobble of 0.05 throws the hue 15 turns between frames —
+    // a random hue every frame, worse the longer the app runs. A rate has to be
+    // INTEGRATED: the phase advances by `speed * dt`, and a change in speed
+    // changes how fast it moves from here, not where it has been.
+    //
+    // The clock here starts at 310 s. With the clock at zero the bug is
+    // invisible, which is how it passed M1's "speed driven by bass" check.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn a_changing_rate_does_not_make_the_picture_jump() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        // Mean absolute change per channel between consecutive frames of the
+        // chain's output, for a given speed on each frame.
+        let mean_step = |speeds: &[f32]| -> f32 {
+            let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+            let id = stack.ensure_chain(0).expect("a slot is free");
+            let hue = {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let tail = hue_chain(graph, &trama.registry, &[0.0]);
+                let out = graph.output_node();
+                graph.connect(tail, out, 0).unwrap();
+                tail
+            };
+            let half = |lo: u8, hi: u8| -> f32 {
+                let h = u16::from_le_bytes([lo, hi]);
+                let (e, m) = (i32::from((h >> 10) & 0x1f), f32::from(h & 0x3ff));
+                let v = if e == 0 {
+                    m * 2f32.powi(-24)
+                } else {
+                    (1.0 + m / 1024.0) * 2f32.powi(e - 15)
+                };
+                if h & 0x8000 == 0 { v } else { -v }
+            };
+            let mut previous: Option<Vec<f32>> = None;
+            let mut steps = Vec::new();
+            for (k, &speed) in speeds.iter().enumerate() {
+                if let Some(e) = stack.layers[0].as_effect_mut() {
+                    e.uniforms.time = 310.0 + k as f32 / 60.0;
+                }
+                stack.layers[0]
+                    .chain
+                    .as_deref_mut()
+                    .unwrap()
+                    .graph
+                    .params_mut(hue)
+                    .unwrap()
+                    .params
+                    .set("speed", crate::params::ParamValue::Float(speed));
+                frame(
+                    &device,
+                    &queue,
+                    &mut stack,
+                    &mut compositor,
+                    &mut trama,
+                    &mut targets,
+                );
+                let shot = snapshot(&device, &queue, &targets.get(id).view, DIM);
+                let now: Vec<f32> = shot.chunks_exact(2).map(|b| half(b[0], b[1])).collect();
+                if let Some(before) = &previous {
+                    let total: f32 = now.iter().zip(before).map(|(a, b)| (a - b).abs()).sum();
+                    steps.push(total / now.len() as f32);
+                }
+                previous = Some(now);
+            }
+            // Skip the first step: it includes the chain's first frame.
+            steps[1..].iter().sum::<f32>() / (steps.len() - 1) as f32
+        };
+
+        let steady = mean_step(&[0.2; 10]);
+        let wobbling = mean_step(&[0.2, 0.25, 0.2, 0.25, 0.2, 0.25, 0.2, 0.25, 0.2, 0.25]);
+        assert!(
+            steady > 0.0,
+            "the hue must be drifting, or nothing is measured"
+        );
+        assert!(
+            wobbling < steady * 3.0,
+            "a speed that wobbles by 0.05 must not make the picture jump: \
+             steady step {steady:.6}, wobbling step {wobbling:.6} ({:.0}x)",
+            wobbling / steady
+        );
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored a_reloaded_manifest_reaches_every_chain
     //
     // The glue between the registry and the graphs: when an effect's manifest

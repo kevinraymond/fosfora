@@ -98,4 +98,24 @@ pub struct NodeInstance {
     /// A bypassed effect forwards its input 0; the executor resolves the
     /// aliasing at plan build, so no pass runs for it.
     pub bypass: bool,
+    /// Running integrals of this node's RATE parameters (the effect
+    /// manifest's `rates`). Runtime-only, like modulation state: never
+    /// serialized, starts at zero.
+    pub phases: Vec<RatePhase>,
+}
+
+/// The running integral of one rate parameter: `phase += value · dt`, once per
+/// frame. The shader is handed this in the parameter's slot INSTEAD of the
+/// value.
+///
+/// Why it exists: a shader that computes `u.time * speed` multiplies every
+/// CHANGE in speed by how long the app has been running. Five minutes in, a
+/// modulation wobbling speed by 0.05 moved Hue Drift's hue 15 turns between
+/// frames — a strobe, and worse with every minute of uptime. Integrated, a
+/// change in speed changes how fast the phase moves from here on, and nothing
+/// about where it has been. `f64`, because it only ever grows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RatePhase {
+    pub param: String,
+    pub phase: f64,
 }

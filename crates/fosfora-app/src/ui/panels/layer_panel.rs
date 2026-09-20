@@ -241,7 +241,12 @@ fn with_alpha(c: Color32, a: f32) -> Color32 {
 }
 
 /// Draw the layer management panel.
-pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) {
+pub fn draw_layer_panel(
+    ui: &mut Ui,
+    layers: &[LayerInfo],
+    active_layer: usize,
+    master_chain: Option<crate::gpu::layer::ChainBadge>,
+) {
     let tc = theme_colors(ui.ctx());
     let max_layers = 8;
     let num_layers = layers.len();
@@ -929,6 +934,46 @@ pub fn draw_layer_panel(ui: &mut Ui, layers: &[LayerInfo], active_layer: usize) 
                 }
             }
         }
+    }
+
+    // The master trama chain, under the stack it post-processes. Only while
+    // it holds something — the same rule as a layer row's badge — so the row
+    // appearing IS the announcement: with the canvas closed, nothing else in
+    // the main window says the whole output is going through a chain.
+    if let Some(badge) = master_chain {
+        egui::Frame::new()
+            .fill(tc.card_bg)
+            .stroke(Stroke::new(1.0_f32, tc.card_border))
+            .corner_radius(CornerRadius::same(4))
+            .inner_margin(egui::Margin::symmetric(6, 3))
+            .outer_margin(egui::Margin::symmetric(0, 1))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Master")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_primary),
+                    );
+                    ui.label(
+                        RichText::new(if badge.active {
+                            "chain on output"
+                        } else {
+                            "chain, inactive"
+                        })
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let resp = chain_button(ui, badge, tc.text_primary);
+                        if resp.clicked() {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("open_trama_on_master"), true);
+                            });
+                        }
+                        resp.on_hover_text(badge.master_tooltip());
+                    });
+                });
+            });
     }
 
     // Add Layer / Add Media buttons
