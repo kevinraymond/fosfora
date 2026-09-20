@@ -189,6 +189,7 @@ Default ports: **RX 9000**, **TX 9001**
 | `/fosfora/layer/{n}/enabled`       | bool  | Layer enabled state          |
 | `/fosfora/trigger/{action}`        | float | Fire trigger action          |
 | `/fosfora/postprocess/enabled`     | bool  | Toggle post-processing       |
+| `/fosfora/overlay/visible`         | bool  | Show / hide the UI (a set)   |
 | `/fosfora/scene/goto_cue`          | int   | Jump to cue index            |
 | `/fosfora/scene/load`              | int/s | Load scene by index or name  |
 | `/fosfora/scene/loop_mode`         | bool  | Set loop mode                |

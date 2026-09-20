@@ -31,6 +31,7 @@ pub struct OscFrameResult {
     pub layer_obstacle_threshold: Vec<(usize, f32)>,
     pub layer_obstacle_elasticity: Vec<(usize, f32)>,
     pub postprocess_enabled: Option<bool>,
+    pub overlay_visible: Option<bool>,
     pub volumetric_enabled: Option<bool>,
     pub volumetric_params: Vec<(String, f32)>,
     // Scene control
@@ -55,6 +56,7 @@ impl OscFrameResult {
             layer_obstacle_threshold: Vec::new(),
             layer_obstacle_elasticity: Vec::new(),
             postprocess_enabled: None,
+            overlay_visible: None,
             volumetric_enabled: None,
             volumetric_params: Vec::new(),
             scene_goto_cue: None,
@@ -305,6 +307,9 @@ impl OscSystem {
                 OscInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
                 }
+                OscInMessage::OverlayVisible(visible) => {
+                    result.overlay_visible = Some(visible);
+                }
                 OscInMessage::VolumetricEnabled(enabled) => {
                     result.volumetric_enabled = Some(enabled);
                 }
@@ -429,6 +434,9 @@ impl OscSystem {
                 OscInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
                 }
+                OscInMessage::OverlayVisible(visible) => {
+                    result.overlay_visible = Some(visible);
+                }
                 OscInMessage::VolumetricEnabled(enabled) => {
                     result.volumetric_enabled = Some(enabled);
                 }
@@ -519,6 +527,7 @@ fn msg_value(msg: &OscInMessage) -> Option<f32> {
         OscInMessage::LayerEnabled { value, .. }
         | OscInMessage::LayerObstacleEnabled { value, .. }
         | OscInMessage::PostProcessEnabled(value)
+        | OscInMessage::OverlayVisible(value)
         | OscInMessage::VolumetricEnabled(value)
         | OscInMessage::SceneLoopMode(value) => Some(if *value { 1.0 } else { 0.0 }),
         OscInMessage::SceneGotoCue(v) | OscInMessage::SceneLoadIndex(v) => Some(*v as f32),
@@ -551,6 +560,7 @@ fn msg_address(msg: &OscInMessage) -> String {
             format!("/fosfora/layer/{layer}/obstacle/elasticity")
         }
         OscInMessage::PostProcessEnabled(_) => "/fosfora/postprocess/enabled".to_string(),
+        OscInMessage::OverlayVisible(_) => "/fosfora/overlay/visible".to_string(),
         OscInMessage::VolumetricEnabled(_) => "/fosfora/volumetric/enabled".to_string(),
         OscInMessage::VolumetricParam { name, .. } => format!("/fosfora/volumetric/{name}"),
         OscInMessage::SceneGotoCue(_) => "/fosfora/scene/goto_cue".to_string(),
