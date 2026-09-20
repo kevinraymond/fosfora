@@ -1,7 +1,7 @@
 {
   "layers": [
     {
-      "effect_name": "Tunnel",
+      "effect_name": "Astrolabe",
       "params": {},
       "blend_mode": "Normal",
       "opacity": 1.0,
@@ -43,7 +43,7 @@
               "params": [
                 {
                   "name": "scale",
-                  "value": 0.42
+                  "value": 0.45
                 },
                 {
                   "name": "rotate",
@@ -51,11 +51,11 @@
                 },
                 {
                   "name": "translate_x",
-                  "value": 0.27
+                  "value": 0.26
                 },
                 {
                   "name": "translate_y",
-                  "value": -0.27
+                  "value": -0.24
                 }
               ]
             }
@@ -86,7 +86,7 @@
       }
     },
     {
-      "effect_name": "Aurora",
+      "effect_name": "Murmur",
       "params": {},
       "blend_mode": "Normal",
       "opacity": 1.0,

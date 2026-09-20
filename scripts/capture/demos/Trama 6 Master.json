@@ -1,14 +1,14 @@
 {
   "layers": [
     {
-      "effect_name": "Pulse",
+      "effect_name": "Symbiosis",
       "params": {},
       "blend_mode": "Add",
-      "opacity": 0.5,
+      "opacity": 1.0,
       "enabled": true
     },
     {
-      "effect_name": "Tunnel",
+      "effect_name": "Drift",
       "params": {},
       "blend_mode": "Normal",
       "opacity": 1.0,
@@ -38,7 +38,7 @@
           "kind": "output",
           "inputs": 1,
           "pos": [
-            760.0,
+            900.0,
             200.0
           ],
           "bypass": false
@@ -56,8 +56,8 @@
         {
           "id": 2,
           "kind": "effect",
-          "effect": "hue_drift",
-          "inputs": 1,
+          "effect": "mix",
+          "inputs": 2,
           "pos": [
             300.0,
             200.0
@@ -65,12 +65,8 @@
           "bypass": false,
           "params": [
             {
-              "name": "shift",
-              "value": 0.0
-            },
-            {
-              "name": "speed",
-              "value": 0.06
+              "name": "amount",
+              "value": 0.7
             }
           ]
         },
@@ -81,25 +77,17 @@
           "inputs": 1,
           "pos": [
             520.0,
-            200.0
+            380.0
           ],
           "bypass": false,
           "params": [
             {
               "name": "scale",
-              "value": 1.0,
-              "mod": {
-                "source": {
-                  "audio": "bass"
-                },
-                "amount": 0.05,
-                "mode": "add",
-                "smoothing": 0.2
-              }
+              "value": 1.02
             },
             {
               "name": "rotate",
-              "value": 0.0
+              "value": 0.003
             },
             {
               "name": "translate_x",
@@ -108,6 +96,37 @@
             {
               "name": "translate_y",
               "value": 0.0
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "kind": "feedback",
+          "inputs": 1,
+          "pos": [
+            300.0,
+            380.0
+          ],
+          "bypass": false
+        },
+        {
+          "id": 5,
+          "kind": "effect",
+          "effect": "hue_drift",
+          "inputs": 1,
+          "pos": [
+            640.0,
+            200.0
+          ],
+          "bypass": false,
+          "params": [
+            {
+              "name": "shift",
+              "value": 0.0
+            },
+            {
+              "name": "speed",
+              "value": 0.05
             }
           ]
         }
@@ -136,6 +155,36 @@
         {
           "from": [
             3,
+            0
+          ],
+          "to": [
+            4,
+            0
+          ]
+        },
+        {
+          "from": [
+            4,
+            0
+          ],
+          "to": [
+            2,
+            1
+          ]
+        },
+        {
+          "from": [
+            2,
+            0
+          ],
+          "to": [
+            5,
+            0
+          ]
+        },
+        {
+          "from": [
+            5,
             0
           ],
           "to": [

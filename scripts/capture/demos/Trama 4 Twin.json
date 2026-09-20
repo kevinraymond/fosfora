@@ -1,7 +1,7 @@
 {
   "layers": [
     {
-      "effect_name": "Reticle",
+      "effect_name": "Astrolabe",
       "params": {},
       "blend_mode": "Normal",
       "opacity": 1.0,
@@ -43,29 +43,15 @@
               "params": [
                 {
                   "name": "scale",
-                  "value": 0.8
+                  "value": 0.6
                 },
                 {
                   "name": "rotate",
-                  "value": 0.0,
-                  "mod": {
-                    "source": {
-                      "oscillator": {
-                        "shape": "saw",
-                        "rate": {
-                          "beat_sync": "four_bars"
-                        },
-                        "phase": 0.0
-                      }
-                    },
-                    "amount": 1.0,
-                    "mode": "replace",
-                    "smoothing": 0.0
-                  }
+                  "value": 0.0
                 },
                 {
                   "name": "translate_x",
-                  "value": 0.0
+                  "value": -0.22
                 },
                 {
                   "name": "translate_y",
@@ -100,7 +86,92 @@
       }
     },
     {
-      "effect_name": "Symbiosis",
+      "effect_name": "Astrolabe",
+      "params": {},
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "enabled": true,
+      "chain": {
+        "trama_version": 1,
+        "graph": {
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "output",
+              "inputs": 1,
+              "pos": [
+                620.0,
+                200.0
+              ],
+              "bypass": false
+            },
+            {
+              "id": 1,
+              "kind": "layer_input",
+              "inputs": 0,
+              "pos": [
+                60.0,
+                200.0
+              ],
+              "bypass": false
+            },
+            {
+              "id": 2,
+              "kind": "effect",
+              "effect": "transform",
+              "inputs": 1,
+              "pos": [
+                320.0,
+                200.0
+              ],
+              "bypass": false,
+              "params": [
+                {
+                  "name": "scale",
+                  "value": 0.6
+                },
+                {
+                  "name": "rotate",
+                  "value": 0.5
+                },
+                {
+                  "name": "translate_x",
+                  "value": 0.22
+                },
+                {
+                  "name": "translate_y",
+                  "value": 0.0
+                }
+              ]
+            }
+          ],
+          "wires": [
+            {
+              "from": [
+                1,
+                0
+              ],
+              "to": [
+                2,
+                0
+              ]
+            },
+            {
+              "from": [
+                2,
+                0
+              ],
+              "to": [
+                0,
+                0
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "effect_name": "Polycephalum",
       "params": {},
       "blend_mode": "Normal",
       "opacity": 1.0,

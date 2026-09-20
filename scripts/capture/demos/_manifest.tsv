@@ -11,6 +11,6 @@ adv_pegboard	7	Magic Tree Peg+Protea
 trama_pip	8	Trama 1 Picture in Picture	trama: restored 1 layer chain
 trama_pump	9	Trama 2 Pump	trama: restored 1 layer chain
 trama_spin	10	Trama 3 Spin	trama: restored 1 layer chain
-trama_hue	11	Trama 4 Hue Cycle	trama: restored 1 layer chain
+trama_twin	11	Trama 4 Twin	trama: restored 2 layer chain
 trama_echo	12	Trama 5 Echo	trama: restored 1 layer chain
 trama_master	13	Trama 6 Master	trama: restored 0 layer chain\(s\) and the master chain

@@ -61,9 +61,9 @@
       "label": "trama: one layer spinning"
     },
     {
-      "preset_name": "Trama 4 Hue Cycle",
+      "preset_name": "Trama 4 Twin",
       "transition": "Cut",
-      "label": "trama: color-cycle the background"
+      "label": "trama: one effect, twice, placed by hand"
     },
     {
       "preset_name": "Trama 5 Echo",
