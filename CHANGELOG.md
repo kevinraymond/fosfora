@@ -5,31 +5,36 @@
 
 ## Unreleased
 
+## v1.37.0 — 2026-09-20
+
 ### Added
-- **trama chains are saved with your presets.** A preset now stores every layer's chain and the
+- **trama: a node graph that post-processes your layers.** Select a layer, press **G**, and
+  wire `Layer input → Transform → Output`: that layer moves, scales or spins while the rest of
+  the stack keeps running. Nodes so far are Transform, Hue Drift, Mix, Noise Field and Feedback
+  (for echo loops), and every slider can be driven by an oscillator or the music. A chain that
+  doesn't reach its Output is inactive, so building one never blanks a layer. Recipes —
+  picture-in-picture, pump to the kick, echo trails — are in the new trama chapter of
+  `docs/TUTORIALS.md`.
+- **A master chain for the whole frame.** The canvas's **Master** tab runs a chain on the
+  composited picture, before tonemapping. Layer rows show a diamond and node count for any
+  layer with a chain — filled when active, hollow when nothing reaches its Output — and a
+  **Master** row appears under the layer list whenever the master chain holds nodes, so a
+  forgotten one is never silent. Click a diamond to open that chain.
+- **trama chains are saved with your presets.** A preset stores every layer's chain and the
   master chain, down to where the nodes sit on the canvas, and scenes that cue presets restore
   them too. **Export…** and **Import…** in the canvas header move a single chain as a `.fio.json`
   file; an effect you don't have installed comes in as a magenta `missing:` node with its wires
-  and values intact. Loading a preset used to leave the previous preset's chains attached.
+  and values intact.
 - **trama effect files hot-reload.** Edit a `.wgsl` in `assets/trama/effects/` and every node
   using it updates on the next frame. A file that stops compiling never blanks the output: the
   last good version keeps running, the node is flagged `· ERROR`, and the inspector shows the
   compiler's message. Manifest changes reach live nodes by parameter name, and a deleted effect
   leaves `missing:` placeholders rather than a frozen chain.
-- **trama has a Master tab that post-processes the whole frame.** Switch the canvas between
-  the selected layer's chain and the master chain, which runs on the composited picture
-  before tonemapping. Layer rows now show a diamond and node count for any layer with a
-  chain — filled when it is active, hollow when nothing reaches its Output — and clicking it
-  opens that chain. A **Master** row appears under the
-  layer list whenever the master chain holds nodes, so a forgotten one is never silent.
 
 ### Changed
-- **trama node chains now run on your layers instead of replacing them.** The Layers/Trama
-  switch is gone: select a layer, open trama, and the chain you build post-processes that
-  layer — wire its Layer input into an effect and watch Panorama change while the rest of the
-  stack keeps running. A chain that doesn't reach its Output node is inactive and the layer
-  renders as usual, so adding a node before wiring it no longer blanks anything. Recipes — picture-in-picture, pump to the kick,
-  echo trails on one layer — are in the new trama chapter of `docs/TUTORIALS.md`.
+- **If you had found trama early** (the **G** key has opened a prototype since v1.33.0): the
+  Layers/Trama switch is gone. trama no longer replaces the layer stack — chains run on your
+  layers and on the master output instead.
 
 ### Fixed
 - **Hue Drift and Noise Field strobed when their `speed` was modulated or dragged.** The hue
