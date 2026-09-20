@@ -116,9 +116,21 @@ pub fn apply(
         Some(r) => (r.graph, r.positions),
         None => (NodeGraph::new_with_output(), Vec::new()),
     };
+    let has_master = graph.placed_nodes() > 0;
     trama.master = graph;
     trama.reset_chain(ChainId::Master, layout);
 
+    let layer_chains = stack.layers.iter().filter(|l| l.chain.is_some()).count();
+    if layer_chains > 0 || has_master {
+        log::info!(
+            "trama: restored {layer_chains} layer chain(s){}",
+            if has_master {
+                " and the master chain"
+            } else {
+                ""
+            }
+        );
+    }
     notes
 }
 
@@ -263,6 +275,99 @@ impl EditWatch {
 mod tests {
     use super::*;
     use crate::trama::node::NodeKind;
+
+    // The capture demos (scripts/capture/demos/*.json) are what the gallery and
+    // the tutorial clips are filmed from, and a bad one fails SILENTLY: a chain
+    // that needs repair, or does not reach its Output, films the plain layer
+    // and quietly lies about what it shows. The Python demo checker would have
+    // to re-implement the chain format to notice, and it has drifted from the
+    // app's grammar before — so ask the app's own loader instead, against the
+    // real effect manifests.
+    #[test]
+    fn every_capture_demo_chain_loads_clean_and_does_something() {
+        use crate::params::{ParamDef, ParamValue};
+        use crate::preset::Preset;
+        use crate::trama::effect::{TramaManifest, parse_effect_file};
+        use crate::trama::ser::EffectShape;
+
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifests: Vec<TramaManifest> = std::fs::read_dir(repo.join("assets/trama/effects"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
+            .map(|p| parse_effect_file(&std::fs::read_to_string(&p).unwrap()).unwrap())
+            .collect();
+        let lookup = |id: &crate::trama::effect::EffectId| {
+            manifests
+                .iter()
+                .find(|m| m.id == id.0)
+                .map(|m| EffectShape {
+                    inputs: m.inputs,
+                    params: &m.params,
+                })
+        };
+
+        let mut chains = 0;
+        for entry in std::fs::read_dir(repo.join("scripts/capture/demos")).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let is_json = path
+                .extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("json"));
+            // `_scene.json` is not a preset, and `*.bindings.json` is a sidecar.
+            if !is_json || name.starts_with('_') || name.contains(".bindings.") {
+                continue;
+            }
+            let preset: Preset = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|e| panic!("{name}: not a preset: {e}"));
+            let docs = preset
+                .layers
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| Some((format!("layer {}", i + 1), l.chain.as_ref()?)))
+                .chain(
+                    preset
+                        .master_chain
+                        .as_ref()
+                        .map(|d| ("master".to_string(), d)),
+                );
+            for (whose, doc) in docs {
+                chains += 1;
+                let r = doc
+                    .restore(lookup)
+                    .unwrap_or_else(|e| panic!("{name}, {whose}: {e}"));
+                assert!(
+                    r.notes.is_empty(),
+                    "{name}, {whose}: needed repair: {:#?}",
+                    r.notes
+                );
+                assert!(
+                    r.graph.contributes(),
+                    "{name}, {whose}: nothing reaches Output, so the clip would show the plain picture"
+                );
+                // A declared range is a slider hint, not a clamp: a value
+                // outside it reaches the shader as written.
+                for node in r.graph.nodes() {
+                    for def in &node.params.defs {
+                        if let (
+                            ParamDef::Float {
+                                name: p, min, max, ..
+                            },
+                            Some(ParamValue::Float(v)),
+                        ) = (def, node.params.get(def.name()))
+                        {
+                            assert!(
+                                (*min..=*max).contains(v),
+                                "{name}, {whose}: `{p}` = {v} is outside {min}..={max}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Zero chains would mean this test has stopped looking at anything.
+        assert!(chains >= 1, "no capture demo carries a trama chain");
+    }
 
     #[test]
     fn only_a_change_to_the_same_chain_counts_as_an_edit() {
