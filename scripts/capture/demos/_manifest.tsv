@@ -8,3 +8,9 @@ adv_bindings	3	Advanced 4 Bindings	Loaded 5 bindings
 adv_media	4	Advanced 5 Media	loaded media
 adv_cue	5	Advanced 6a Cue
 adv_pegboard	7	Magic Tree Peg+Protea
+trama_pip	8	Trama 1 Picture in Picture	trama: restored 1 layer chain
+trama_pump	9	Trama 2 Pump	trama: restored 1 layer chain
+trama_spin	10	Trama 3 Spin	trama: restored 1 layer chain
+trama_twin	11	Trama 4 Twin	trama: restored 2 layer chain
+trama_echo	12	Trama 5 Echo	trama: restored 1 layer chain
+trama_master	13	Trama 6 Master	trama: restored 0 layer chain\(s\) and the master chain

@@ -19,7 +19,7 @@
 # BEFORE launch — PresetStore::scan and SceneStore::scan each run once, at startup.
 #
 # Usage:  scripts/capture/capture_advanced.sh [-o OUTDIR] [--dry-run] [--stills-only]
-#                                             [--only SLUG] [--no-listen] [--no-strict]
+#                                             [--only SLUG[,SLUG…]] [--no-listen] [--no-strict]
 
 set -Eeuo pipefail
 
@@ -72,6 +72,9 @@ cleanup() {
   # Unload only the modules we loaded, monitor first — never touch the default sink.
   [[ -n $LOOPBACK_MOD ]] && pactl unload-module "$LOOPBACK_MOD" 2>/dev/null || true
   [[ -n $SINK_MOD     ]] && pactl unload-module "$SINK_MOD"     2>/dev/null || true
+  # Here, not only at the end of a clean run: an abort is exactly when the log is
+  # needed, and the abort message promises it is in $OUT.
+  mkdir -p "$OUT" && cp "$WORK/app.log" "$OUT/app.log" 2>/dev/null || true
   rm -rf "$WORK"
   exit $rc
 }
@@ -160,8 +163,12 @@ xdotool windowactivate --sync "$WIN"; sleep 0.6
 osc() { oscsend localhost 9000 "$@"; }
 
 # Hide the UI via OSC rather than the `d` key: xdotool key events do not reliably reach
-# this window, whereas the OSC trigger goes straight into the same handler.
-osc /fosfora/trigger/toggle_overlay f 1.0; sleep 1.5
+# this window. And SET it rather than toggle it: a toggle is only right until something
+# else flips the panels back — one run was filmed through them because keystrokes meant
+# for a terminal landed in the focused app window (`D` toggles the UI). hide_ui is sent
+# again at the top of every slot, so a stray flip costs part of one clip, not the run.
+hide_ui() { osc /fosfora/overlay/visible f 0.0; }
+hide_ui; sleep 1.5
 
 # Canvas detection needs something animating edge to edge, and boot lands on Phosphor
 # (hidden) -> Array (a dark centre column on black, which under-reports the canvas by a
@@ -186,7 +193,7 @@ k=0
 SCENE_LOADED=0
 for row in "${ROWS[@]}"; do
   IFS=$'\t' read -r slug cue preset want <<<"$row"
-  if [[ -n $ONLY && $ONLY != "$slug" ]]; then k=$((k+1)); continue; fi
+  if [[ -n $ONLY && ",$ONLY," != *",$slug,"* ]]; then k=$((k+1)); continue; fi
 
   S=$(python3 -c "print(($PASS0+$k)*$LOOP_SECS)")
   printf '\033[36m[advanced]\033[0m %d/%d  %-16s' $((k+1)) "$N" "$slug" >&2
@@ -195,6 +202,7 @@ for row in "${ROWS[@]}"; do
   # 1.0s tolerance: the previous slot's recording ends exactly on this boundary, so
   # arriving a fraction late is structural. The record window below keeps tolerance 0.
   cap_wait_until "$PLAY_T0" "$S" 1.0
+  hide_ui
   # x11grab films a screen REGION, not a window, so anything raised over the app lands
   # in the clip: one rehearsal run caught a terminal across the bottom third of the media
   # demo. Re-raise every slot so a transient focus steal costs at most part of one clip.

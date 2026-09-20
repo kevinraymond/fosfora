@@ -1,0 +1,110 @@
+{
+  "layers": [
+    {
+      "effect_name": "Astrolabe",
+      "params": {},
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "enabled": true,
+      "chain": {
+        "trama_version": 1,
+        "graph": {
+          "nodes": [
+            {
+              "id": 0,
+              "kind": "output",
+              "inputs": 1,
+              "pos": [
+                620.0,
+                200.0
+              ],
+              "bypass": false
+            },
+            {
+              "id": 1,
+              "kind": "layer_input",
+              "inputs": 0,
+              "pos": [
+                60.0,
+                200.0
+              ],
+              "bypass": false
+            },
+            {
+              "id": 2,
+              "kind": "effect",
+              "effect": "transform",
+              "inputs": 1,
+              "pos": [
+                320.0,
+                200.0
+              ],
+              "bypass": false,
+              "params": [
+                {
+                  "name": "scale",
+                  "value": 0.45
+                },
+                {
+                  "name": "rotate",
+                  "value": 0.0
+                },
+                {
+                  "name": "translate_x",
+                  "value": 0.26
+                },
+                {
+                  "name": "translate_y",
+                  "value": -0.24
+                }
+              ]
+            }
+          ],
+          "wires": [
+            {
+              "from": [
+                1,
+                0
+              ],
+              "to": [
+                2,
+                0
+              ]
+            },
+            {
+              "from": [
+                2,
+                0
+              ],
+              "to": [
+                0,
+                0
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "effect_name": "Murmur",
+      "params": {},
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "enabled": true
+    }
+  ],
+  "active_layer": 0,
+  "postprocess": {
+    "enabled": true,
+    "bloom_threshold": 0.8,
+    "bloom_intensity": 0.25,
+    "vignette": 0.45,
+    "ca_intensity": 0.25,
+    "grain_intensity": 0.3,
+    "bloom_enabled": true,
+    "ca_enabled": true,
+    "vignette_enabled": true,
+    "grain_enabled": true,
+    "tonemap": "aces"
+  }
+}

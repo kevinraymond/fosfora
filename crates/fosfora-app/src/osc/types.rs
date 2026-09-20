@@ -37,6 +37,11 @@ pub enum OscInMessage {
     LayerObstacleElasticity { layer: usize, value: f32 },
     /// Toggle post-processing: /fosfora/postprocess/enabled
     PostProcessEnabled(bool),
+    /// SET the UI overlay's visibility: /fosfora/overlay/visible. A set, where
+    /// the `toggle_overlay` trigger is a flip — a capture run that hides the
+    /// panels with a toggle has them back for good the moment anything else
+    /// flips them (a stray `D` in the focused window was enough).
+    OverlayVisible(bool),
     /// Toggle volumetric mode: /fosfora/volumetric/enabled
     VolumetricEnabled(bool),
     /// Set a volumetric param: /fosfora/volumetric/{name}

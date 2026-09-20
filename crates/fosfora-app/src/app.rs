@@ -834,6 +834,9 @@ impl App {
                     ps.obstacle_elasticity = value;
                 }
             }
+            if let Some(visible) = osc_result.overlay_visible {
+                self.egui_overlay.visible = visible;
+            }
             if let Some(pp_enabled) = osc_result.postprocess_enabled {
                 self.post_process.enabled = pp_enabled;
                 if let Some(layer) = self.layer_stack.active_mut() {

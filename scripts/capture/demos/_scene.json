@@ -44,6 +44,36 @@
       "preset_name": "Magic Tree Peg+Protea",
       "transition": "Cut",
       "label": "Pegboard over Protea"
+    },
+    {
+      "preset_name": "Trama 1 Picture in Picture",
+      "transition": "Cut",
+      "label": "trama: picture-in-picture"
+    },
+    {
+      "preset_name": "Trama 2 Pump",
+      "transition": "Cut",
+      "label": "trama: pump to the kick"
+    },
+    {
+      "preset_name": "Trama 3 Spin",
+      "transition": "Cut",
+      "label": "trama: one layer spinning"
+    },
+    {
+      "preset_name": "Trama 4 Twin",
+      "transition": "Cut",
+      "label": "trama: one effect, twice, placed by hand"
+    },
+    {
+      "preset_name": "Trama 5 Echo",
+      "transition": "Cut",
+      "label": "trama: echo trails"
+    },
+    {
+      "preset_name": "Trama 6 Master",
+      "transition": "Cut",
+      "label": "trama: master chain"
     }
   ]
 }

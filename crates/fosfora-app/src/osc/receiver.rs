@@ -226,6 +226,12 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
             Some(OscInMessage::Trigger(action))
         }
 
+        // /fosfora/overlay/visible
+        "overlay" if parts.len() >= 4 && parts[3] == "visible" => {
+            let value = first_float(&msg.args)?;
+            Some(OscInMessage::OverlayVisible(value > 0.5))
+        }
+
         // /fosfora/postprocess/enabled
         "postprocess" if parts.len() >= 4 && parts[3] == "enabled" => {
             let value = first_float(&msg.args)?;
@@ -386,6 +392,20 @@ mod tests {
         match parse_osc_message(&msg) {
             Some(OscInMessage::Trigger(TriggerAction::NextEffect)) => {}
             other => panic!("expected Trigger(NextEffect), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_overlay_visible_is_a_set_not_a_toggle() {
+        for (arg, want) in [(1.0, true), (0.0, false), (0.0, false)] {
+            let msg = OscMessage {
+                addr: "/fosfora/overlay/visible".into(),
+                args: vec![OscType::Float(arg)],
+            };
+            match parse_osc_message(&msg) {
+                Some(OscInMessage::OverlayVisible(v)) => assert_eq!(v, want),
+                other => panic!("expected OverlayVisible, got {:?}", other),
+            }
         }
     }
 

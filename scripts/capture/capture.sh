@@ -245,7 +245,7 @@ xdotool windowactivate --sync "$WIN"; sleep 0.6
 # Hide the UI overlay via OSC rather than the `d` key: xdotool key events do not reliably reach
 # this window (the first smoke run captured a full set of panels), whereas the OSC trigger goes
 # straight into the same handler the keyboard would have.
-oscsend localhost 9000 /fosfora/trigger/toggle_overlay f 1.0; sleep 1.5
+oscsend localhost 9000 /fosfora/overlay/visible f 0.0; sleep 1.5   # a SET, not a toggle — see capture_advanced.sh
 
 step() { oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0; }
 

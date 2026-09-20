@@ -1,0 +1,198 @@
+{
+  "layers": [
+    {
+      "effect_name": "Symbiosis",
+      "params": {},
+      "blend_mode": "Add",
+      "opacity": 1.0,
+      "enabled": true
+    },
+    {
+      "effect_name": "Drift",
+      "params": {},
+      "blend_mode": "Normal",
+      "opacity": 1.0,
+      "enabled": true
+    }
+  ],
+  "active_layer": 0,
+  "postprocess": {
+    "enabled": true,
+    "bloom_threshold": 0.8,
+    "bloom_intensity": 0.25,
+    "vignette": 0.45,
+    "ca_intensity": 0.25,
+    "grain_intensity": 0.3,
+    "bloom_enabled": true,
+    "ca_enabled": true,
+    "vignette_enabled": true,
+    "grain_enabled": true,
+    "tonemap": "aces"
+  },
+  "master_chain": {
+    "trama_version": 1,
+    "graph": {
+      "nodes": [
+        {
+          "id": 0,
+          "kind": "output",
+          "inputs": 1,
+          "pos": [
+            900.0,
+            200.0
+          ],
+          "bypass": false
+        },
+        {
+          "id": 1,
+          "kind": "layer_input",
+          "inputs": 0,
+          "pos": [
+            60.0,
+            200.0
+          ],
+          "bypass": false
+        },
+        {
+          "id": 2,
+          "kind": "effect",
+          "effect": "mix",
+          "inputs": 2,
+          "pos": [
+            300.0,
+            200.0
+          ],
+          "bypass": false,
+          "params": [
+            {
+              "name": "amount",
+              "value": 0.7
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "kind": "effect",
+          "effect": "transform",
+          "inputs": 1,
+          "pos": [
+            520.0,
+            380.0
+          ],
+          "bypass": false,
+          "params": [
+            {
+              "name": "scale",
+              "value": 1.02
+            },
+            {
+              "name": "rotate",
+              "value": 0.003
+            },
+            {
+              "name": "translate_x",
+              "value": 0.0
+            },
+            {
+              "name": "translate_y",
+              "value": 0.0
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "kind": "feedback",
+          "inputs": 1,
+          "pos": [
+            300.0,
+            380.0
+          ],
+          "bypass": false
+        },
+        {
+          "id": 5,
+          "kind": "effect",
+          "effect": "hue_drift",
+          "inputs": 1,
+          "pos": [
+            640.0,
+            200.0
+          ],
+          "bypass": false,
+          "params": [
+            {
+              "name": "shift",
+              "value": 0.0
+            },
+            {
+              "name": "speed",
+              "value": 0.05
+            }
+          ]
+        }
+      ],
+      "wires": [
+        {
+          "from": [
+            1,
+            0
+          ],
+          "to": [
+            2,
+            0
+          ]
+        },
+        {
+          "from": [
+            2,
+            0
+          ],
+          "to": [
+            3,
+            0
+          ]
+        },
+        {
+          "from": [
+            3,
+            0
+          ],
+          "to": [
+            4,
+            0
+          ]
+        },
+        {
+          "from": [
+            4,
+            0
+          ],
+          "to": [
+            2,
+            1
+          ]
+        },
+        {
+          "from": [
+            2,
+            0
+          ],
+          "to": [
+            5,
+            0
+          ]
+        },
+        {
+          "from": [
+            5,
+            0
+          ],
+          "to": [
+            0,
+            0
+          ]
+        }
+      ]
+    }
+  }
+}

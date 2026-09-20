@@ -5,6 +5,11 @@
 
 ## Unreleased
 
+### Added
+- **`/fosfora/overlay/visible` sets the UI shown or hidden over OSC.** The existing
+  `toggle_overlay` trigger only flips it, so a show controller or capture script could never be
+  sure which state it left the panels in.
+
 ## v1.37.0 — 2026-09-20
 
 ### Added

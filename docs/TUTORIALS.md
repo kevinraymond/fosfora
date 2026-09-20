@@ -631,11 +631,19 @@ Every Float parameter can be driven: open the **mod** row under its slider and p
 
 ### Recipes
 
+The clips are filmed from the running app; their presets are in `scripts/capture/demos/` (`Trama *.json`) if you want to load one and look inside. One thing they teach: to *place* a layer cleanly, it needs real transparency — the overlay effects (Astrolabe, Reticle, Limn…) have it. A particle effect's "black" is a dim haze, so shrinking one leaves a visible box whatever blend mode you pick; use it as the backdrop instead.
+
 **Picture-in-picture.** On the top layer: `Layer input → Transform → Output`, with `scale` 0.4 and `translate_x` / `translate_y` pushed toward a corner. The rest of the stack fills the frame behind it. Works on media layers too — a video in the corner of a particle effect.
+
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pip.webp" width="480" alt="Astrolabe placed in a corner over Murmur">
 
 **Pump to the kick.** Same chain, `scale` at 1.0, and on its **mod** row pick **bass** with a small **amount** (0.05–0.15). The layer breathes with the low end while everything else holds still. Swap bass for **onset** for a sharper punch.
 
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_pump.webp" width="480" alt="Prism pumping on the bass over Drift">
+
 **One layer slowly spinning.** Transform's `rotate` with a **Saw** oscillator at a low rate, mode **Repl**, **amount** 1.0, **smoothing** 0. That sweeps the whole range, which is one full turn end to end, so the saw's wrap-around is seamless. Beat-sync the rate and the spin locks to the bar.
+
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_spin.webp" width="480" alt="Reticle spinning over Symbiosis">
 
 **Color-cycle only the background.** On the bottom layer: `Layer input → Hue Drift → Output`, `speed` around 0.05. The foreground layers keep their colors.
 
@@ -650,9 +658,15 @@ Layer input ─→ Mix (input 0) ─→ Output
 
 Wire Mix's output to both **Output** and **Transform**, Transform into **Feedback**, and Feedback back into Mix's second input. Mix `amount` is the echo strength (start near 0.5); a Transform a whisker off identity — `scale` 1.02, `rotate` 0.005 — turns the echo into a spiral tunnel. A `scale` just under 1 (0.98) pulls the trails inward instead.
 
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_echo.webp" width="480" alt="Echo trails on Beam">
+
 **A ghost double.** `Layer input` into both Mix inputs, with a Transform on the way to input 1 (`translate_x` 0.05, or a slow oscillator on it). `amount` 0.5 gives a displaced twin that drifts apart and back.
 
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_twin.webp" width="480" alt="Two Astrolabes placed by hand over Polycephalum">
+
 **Everything at once.** Switch to the **Master** tab and build the same chains there: they run on the composited frame, before tonemapping and the other post effects. A master Transform with **bass** on `scale` makes the entire output pump; a master echo loop smears the whole stack.
+
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trama_master.webp" width="480" alt="A master chain on the whole frame">
 
 ### Good to Know
 
