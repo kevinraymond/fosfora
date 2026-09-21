@@ -175,7 +175,9 @@ impl NodeGraph {
         for node in &mut self.nodes {
             let matches = match &node.kind {
                 NodeKind::Source { effect: e } | NodeKind::Effect { effect: e } => e == effect,
-                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput => false,
+                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput | NodeKind::Anchor => {
+                    false
+                }
             };
             if !matches {
                 continue;
@@ -510,8 +512,15 @@ impl NodeGraph {
 
     /// How many nodes the user has placed — everything but the Output node a
     /// chain is born with. Zero means there is nothing to tell anyone about.
+    /// How many nodes this chain has placed, not counting the Output it was
+    /// born with — and not counting [`NodeKind::Anchor`], which is routing
+    /// and does no work. This feeds the layer row's badge, so bending a wire
+    /// to make a patch readable must not make the layer look busier.
     pub fn placed_nodes(&self) -> usize {
-        self.nodes.len() - 1
+        self.nodes
+            .iter()
+            .filter(|n| !matches!(n.kind, NodeKind::Output | NodeKind::Anchor))
+            .count()
     }
 
     /// Does anything reach `Output`? A chain that answers `false` is inactive:
@@ -841,6 +850,41 @@ mod tests {
         // …and disconnecting the last hop takes it back out of the frame.
         g.disconnect(out, 0);
         assert!(!g.contributes());
+    }
+
+    // An Anchor is routing, not work. It wires like any other one-input node
+    // and takes part in cycle checks and topo order — what it must NOT do is
+    // show up in the layer row's badge, or tidying a patch would read as the
+    // layer doing more.
+    #[test]
+    fn anchors_wire_like_nodes_but_are_not_counted_as_ones() {
+        let mut g = NodeGraph::new_with_output();
+        let out = g.output_node();
+        let ci = g.add_node(NodeKind::ChainInput, 0, &[]);
+        let e = eff(&mut g, 1);
+        g.connect(ci, e, 0).unwrap();
+        g.connect(e, out, 0).unwrap();
+        assert_eq!(g.placed_nodes(), 2, "layer input + effect");
+
+        // Route the last hop through two anchors. Same picture, same count.
+        let a1 = g.add_node(NodeKind::Anchor, 1, &[]);
+        let a2 = g.add_node(NodeKind::Anchor, 1, &[]);
+        g.connect(e, a1, 0).unwrap();
+        g.connect(a1, a2, 0).unwrap();
+        g.connect(a2, out, 0).unwrap();
+        assert_eq!(
+            g.placed_nodes(),
+            2,
+            "anchors are routing; the badge counts work"
+        );
+        assert!(g.contributes(), "and the chain still reaches Output");
+        // Ordinary dataflow otherwise: in topo order, and a loop through one
+        // is still a loop (unlike a Feedback edge, which is a delay).
+        let order = g.topo_order();
+        let at = |id| order.iter().position(|&n| n == id).expect("in order");
+        assert!(at(e) < at(a1) && at(a1) < at(a2) && at(a2) < at(out));
+        assert_eq!(g.connect(a2, a1, 0), Err(GraphError::Cycle));
+        g.validate().expect("anchors are a valid graph");
     }
 
     #[test]

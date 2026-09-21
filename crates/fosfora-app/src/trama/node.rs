@@ -79,6 +79,21 @@ pub enum NodeKind {
     /// generator, which is exactly how trama behaved before chains existed.
     /// At most one per chain.
     ChainInput,
+    /// A routing waypoint: 1 texture input, no params, and it forwards that
+    /// input unchanged. Purely to bend a wire around something so a patch
+    /// reads, which is why it costs nothing — the executor resolves it at
+    /// plan build exactly like a bypassed effect, so no pass runs and no
+    /// target is allocated for it.
+    ///
+    /// It has to be a real node. egui-snarl 0.9 draws every wire pin-to-pin
+    /// and offers no hook to route one through a point (`show_wire_widget` is
+    /// declared in its viewer trait and never called), so a waypoint that
+    /// lived only in the view could not bend anything.
+    ///
+    /// Not counted by [`super::graph::NodeGraph::placed_nodes`], which feeds
+    /// the layer row's badge: tidying a patch's routing must not read as the
+    /// layer doing more work.
+    Anchor,
     /// The single sink; whatever feeds its one input reaches the screen.
     Output,
 }

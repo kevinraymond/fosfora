@@ -1,0 +1,3 @@
+[alias]
+# Repository chores. `cargo xtask new-effect <id>` scaffolds a trama effect.
+xtask = "run --quiet --package xtask --"

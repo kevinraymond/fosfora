@@ -84,6 +84,18 @@ pub fn draw_inspector(
             ui.label(dim("The output node has no parameters."));
             return;
         }
+        NodeKind::Anchor => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Anchor").color(tc.text_primary));
+                ui.label(dim("routing only"));
+            });
+            ui.label(dim(
+                "Passes its input straight through, to bend a wire around \
+                 something so the patch reads. Costs nothing to render and \
+                 is not counted in the layer's node badge. No parameters.",
+            ));
+            return;
+        }
         NodeKind::Feedback => {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Feedback").color(tc.text_primary));

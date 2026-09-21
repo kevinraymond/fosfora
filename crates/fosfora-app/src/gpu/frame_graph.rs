@@ -1543,6 +1543,487 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored key_keys_a_dark_layer_out_of_the_composite
+    //
+    // Why Key exists. Filming the showcase clips found that a particle layer
+    // cannot be the placed layer: Murmur and Symbiosis do not render to pure
+    // black, they render a faint OPAQUE haze, and every blend mode composites
+    // that haze as a visible rectangle over the layer beneath. The default
+    // test host is the same shape of picture — a dark gradient at alpha 1 —
+    // so it reproduces the box exactly.
+    //
+    // Two-sided on purpose: keying above the haze must remove the box, and
+    // keying BELOW it must leave the box alone. A Key that simply blanked its
+    // input would pass the first assertion and fail the second.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn key_keys_a_dark_layer_out_of_the_composite() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        // Give the layer beneath a hue rotation so the two hosts render
+        // different pictures — otherwise "the box is gone" is unfalsifiable.
+        stack.ensure_chain(1).expect("a slot is free");
+        {
+            let graph = &mut stack.layers[1].chain.as_deref_mut().unwrap().graph;
+            let tail = hue_chain(graph, &trama.registry, &[0.5]);
+            let out = graph.output_node();
+            graph.connect(tail, out, 0).unwrap();
+        }
+
+        let differing =
+            |a: &[u8], b: &[u8]| a.chunks(8).zip(b.chunks(8)).filter(|(p, q)| p != q).count();
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let shot = |stack: &mut LayerStack,
+                    compositor: &mut Compositor,
+                    trama: &mut crate::trama::TramaSystem,
+                    targets: &mut ChainTargets| {
+            // Twice: the second frame is the steady state, after any target
+            // the chain needed has been allocated and planned.
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(&device, &queue, stack, compositor, trama, targets);
+            }
+            out
+        };
+
+        stack.layers[0].enabled = false;
+        let beneath = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            beneath.iter().any(|&b| b != 0),
+            "the reference must be a picture, or every comparison below is empty"
+        );
+
+        stack.layers[0].enabled = true;
+        let boxed = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let covered = differing(&boxed, &beneath);
+        assert!(
+            covered > (DIM * DIM) as usize / 2,
+            "the hazy top layer must cover most of the frame unkeyed \
+             ({covered} of {} pixels), or there is no box to remove",
+            DIM * DIM
+        );
+
+        // Layer input -> Key -> Output on the top layer. The host's brightest
+        // pixel is around luma 0.03, so the shipped default threshold of 0.08
+        // is above all of it: the whole layer keys out.
+        stack.ensure_chain(0).expect("a slot is free");
+        let key_node = {
+            let key = trama
+                .registry
+                .get(&EffectId("key".into()))
+                .expect("key ships");
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+            let k = graph.add_node(
+                NodeKind::Effect {
+                    effect: key.id.clone(),
+                },
+                1,
+                &key.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, k, 0).unwrap();
+            graph.connect(k, out, 0).unwrap();
+            k
+        };
+        let keyed = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert_eq!(
+            differing(&keyed, &beneath),
+            0,
+            "keyed above the haze, the top layer is gone and the layer \
+             beneath shows through everywhere"
+        );
+
+        // Now key BELOW the haze: every pixel is brighter than the threshold,
+        // so the key passes it all and the box comes back.
+        {
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let p = graph.params_mut(key_node).expect("still there");
+            p.params
+                .set("threshold", crate::params::ParamValue::Float(0.0));
+            p.params
+                .set("softness", crate::params::ParamValue::Float(0.0));
+        }
+        let passed = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            differing(&passed, &beneath) > (DIM * DIM) as usize / 2,
+            "keyed below the haze, Key is a passthrough and the box is back — \
+             a Key that just blanked its input would not get here"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored every_shipped_effect_renders_a_finite_picture
+    //
+    // naga says an effect COMPILES. It does not say the effect divides by a
+    // parameter somebody can set to zero, or raises a negative to a power, or
+    // calls atan2(0, 0) at the exact center pixel. Those come back as NaN or
+    // Inf, and a single NaN in a chain's output poisons everything downstream
+    // of it in the composite — so this renders every shipped effect, at every
+    // extreme of every parameter, and reads the half-float bits back.
+    //
+    // The range swept is deliberately WIDER than the declared min/max: a .pfx
+    // declared range is a UI slider hint and `ParamStore::set` does not
+    // enforce it, so a binding or an oscillator can and does drive a parameter
+    // past both ends. An effect that only stays finite inside its slider range
+    // is an effect that breaks the moment it is modulated.
+    //
+    // KNOWN BLIND SPOT, found by trying to fool this test: `clamp()` launders
+    // NaN — max(NaN, 0.0) returns 0.0 — so a NaN produced upstream of a
+    // clamped texture coordinate never reaches the output and this probe
+    // cannot see it. That is fine for the picture and a real hole in the
+    // coverage, so do not read a pass here as "no effect computes a NaN".
+    // The second thing it cannot see: the shader compiler constant-folds
+    // `0.0 / x` to `0.0`, so an injected fault has to have a non-constant
+    // numerator or it will not reproduce at all.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn every_shipped_effect_renders_a_finite_picture() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+
+        // Rgba16Float: a half with every exponent bit set is Inf or NaN.
+        let first_nonfinite = |frame: &[u8]| -> Option<usize> {
+            frame
+                .chunks_exact(2)
+                .position(|h| u16::from_le_bytes([h[0], h[1]]) & 0x7C00 == 0x7C00)
+        };
+
+        let effects: Vec<(EffectId, u8, Vec<crate::params::ParamDef>)> = trama
+            .registry
+            .effects
+            .iter()
+            .map(|e| (e.id.clone(), e.inputs, e.params.clone()))
+            .collect();
+        assert!(
+            effects.len() >= 16,
+            "the registry loaded only {} effects — a file that fails to load \
+             is SKIPPED with a log line, so a broken one would silently not \
+             be swept here",
+            effects.len()
+        );
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        for (id, inputs, params) in &effects {
+            // One chain per effect: Layer input -> effect -> Output, or just
+            // effect -> Output for a source.
+            let slot = stack.ensure_chain(0).expect("a slot is free");
+            let node = {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let n = graph.add_node(NodeKind::Effect { effect: id.clone() }, *inputs, params);
+                if *inputs > 0 {
+                    let input = graph.add_node(NodeKind::ChainInput, 0, &[]);
+                    graph.connect(input, n, 0).unwrap();
+                }
+                let out = graph.output_node();
+                graph.connect(n, out, 0).unwrap();
+                n
+            };
+
+            // Every setting worth trying, as (what we changed, the values).
+            // Defaults first, then each parameter alone at both extremes and
+            // well past them.
+            let mut cases: Vec<(String, Vec<(String, crate::params::ParamValue)>)> =
+                vec![("defaults".into(), Vec::new())];
+            for def in params {
+                use crate::params::{ParamDef, ParamValue};
+                let name = def.name().to_string();
+                let mut push = |what: &str, v: ParamValue| {
+                    cases.push((format!("{name} = {what}"), vec![(name.clone(), v)]));
+                };
+                match def {
+                    ParamDef::Float { min, max, .. } => {
+                        let span = (max - min).abs().max(1.0);
+                        for (what, v) in [
+                            ("min", *min),
+                            ("max", *max),
+                            ("zero", 0.0),
+                            ("below min", min - span),
+                            ("above max", max + span),
+                        ] {
+                            push(what, ParamValue::Float(v));
+                        }
+                    }
+                    ParamDef::Bool { .. } => {
+                        push("false", ParamValue::Bool(false));
+                        push("true", ParamValue::Bool(true));
+                    }
+                    ParamDef::Color { .. } => {
+                        push("transparent", ParamValue::Color([0.0; 4]));
+                        push("white", ParamValue::Color([1.0; 4]));
+                        push("lit but uncovered", ParamValue::Color([1.0, 1.0, 1.0, 0.0]));
+                    }
+                    ParamDef::Point2D { min, max, .. } => {
+                        push("min", ParamValue::Point2D(*min));
+                        push("max", ParamValue::Point2D(*max));
+                    }
+                }
+            }
+
+            for (what, settings) in &cases {
+                {
+                    let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                    let p = graph.params_mut(node).expect("just added");
+                    for def in params {
+                        p.params.set(def.name(), def.default_value());
+                    }
+                    for (name, value) in settings {
+                        p.params.set(name, value.clone());
+                    }
+                }
+                // Twice: a rate parameter's integral only starts moving on the
+                // frame after it is set, so the first frame would sweep the
+                // rate slot at zero however extreme the value.
+                let mut out = Vec::new();
+                for _ in 0..2 {
+                    out = frame(
+                        &device,
+                        &queue,
+                        &mut stack,
+                        &mut compositor,
+                        &mut trama,
+                        &mut targets,
+                    );
+                }
+                if let Some(half) = first_nonfinite(&out) {
+                    let px = half / 4;
+                    panic!(
+                        "{}: {what} rendered NaN or Inf at pixel ({}, {}), channel {}",
+                        id.0,
+                        px as u32 % DIM,
+                        px as u32 / DIM,
+                        half % 4
+                    );
+                }
+            }
+
+            stack.layers[0].chain = None;
+            trama.drop_chain(slot);
+        }
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored an_anchor_is_invisible_to_the_picture_and_to_vram
+    //
+    // An Anchor is a bend in a wire. Owner request: right-click "add anchor"
+    // so a patch can route around a node. It has to be a real graph node —
+    // egui-snarl draws wires pin to pin and offers no hook to route one
+    // through a point — so the thing worth proving is that being real costs
+    // NOTHING: same picture, byte for byte, and not one more target in the
+    // pool. Make the executor treat `NodeKind::Anchor` as an ordinary pass
+    // and both halves go red at once.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn an_anchor_is_invisible_to_the_picture_and_to_vram() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+
+        let shot = |stack: &mut LayerStack,
+                    compositor: &mut Compositor,
+                    trama: &mut crate::trama::TramaSystem,
+                    targets: &mut ChainTargets| {
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(&device, &queue, stack, compositor, trama, targets);
+            }
+            out
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Layer input -> hue_drift -> Output.
+        stack.ensure_chain(0).expect("a slot is free");
+        let (tail, out) = {
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let tail = hue_chain(graph, &trama.registry, &[0.25]);
+            let out = graph.output_node();
+            graph.connect(tail, out, 0).unwrap();
+            (tail, out)
+        };
+        let plain = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            plain.iter().any(|&b| b != 0),
+            "the chain must render something, or equality below is vacuous"
+        );
+        let (_, pool_plain) = trama.pool_stats();
+
+        // Now route that last hop through two anchors instead.
+        {
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            graph.disconnect(out, 0);
+            let a1 = graph.add_node(NodeKind::Anchor, 1, &[]);
+            let a2 = graph.add_node(NodeKind::Anchor, 1, &[]);
+            graph.connect(tail, a1, 0).unwrap();
+            graph.connect(a1, a2, 0).unwrap();
+            graph.connect(a2, out, 0).unwrap();
+        }
+        let anchored = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let (_, pool_anchored) = trama.pool_stats();
+
+        assert_eq!(
+            anchored,
+            plain,
+            "an anchor forwards its input: the picture must be identical \
+             (first byte off at {:?})",
+            anchored.iter().zip(&plain).position(|(a, b)| a != b)
+        );
+        assert_eq!(
+            pool_anchored,
+            pool_plain,
+            "two anchors allocated {} extra target(s) — routing must be free",
+            pool_anchored.saturating_sub(pool_plain)
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored pixelates_grid_is_the_same_cell_everywhere
+    //
+    // Owner play-test: Pixelate "looks more like graph paper with major/minor
+    // lines" at various size + gap combinations. That is not a gap that is too
+    // strong, it is ALIASING. Laying the grid out in UV space gives cells of a
+    // fractional pixel width, so cell boundaries land at a different sub-pixel
+    // offset all the way across the frame and the gap rounds to one pixel here
+    // and two there. The eye reads the alternation as two rule weights.
+    //
+    // Fed a CONSTANT picture the output is then a pure grid, and a correct one
+    // is exactly periodic: snapping the cell to whole pixels means pixel
+    // (x, y) depends only on (x mod cell, y mod cell). Non-periodic output IS
+    // the bug, so that is what this measures. Restore `let cells = vec2f(n *
+    // res.x / res.y, n)` addressing and it goes red.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn pixelates_grid_is_the_same_cell_everywhere() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+
+        let pixel = |f: &[u8], x: u32, y: u32| {
+            let i = ((y * DIM + x) * 8) as usize;
+            f[i..i + 8].to_vec()
+        };
+
+        // Solid -> Pixelate -> Output. A flat input, so every difference in
+        // the result is the grid and nothing else.
+        stack.ensure_chain(0).expect("a slot is free");
+        let node = {
+            let solid = trama
+                .registry
+                .get(&EffectId("solid".into()))
+                .expect("solid ships");
+            let pix = trama
+                .registry
+                .get(&EffectId("pixelate".into()))
+                .expect("pixelate ships");
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let s = graph.add_node(
+                NodeKind::Source {
+                    effect: solid.id.clone(),
+                },
+                0,
+                &solid.params,
+            );
+            let p = graph.add_node(
+                NodeKind::Effect {
+                    effect: pix.id.clone(),
+                },
+                1,
+                &pix.params,
+            );
+            let out = graph.output_node();
+            graph.connect(s, p, 0).unwrap();
+            graph.connect(p, out, 0).unwrap();
+            p
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Sizes that do NOT divide the frame are the point: 64/10 and 64/12
+        // are 6.4 and 5.33 pixels, exactly where UV-space addressing starts
+        // alternating gap widths. Plus a tight cell and a wide gap. NOT
+        // size 32 at gap 0.5: that is a two-pixel cell with half a cell of
+        // gap on each side, which correctly leaves nothing at all — a
+        // degenerate corner of the parameter's own meaning, not a grid.
+        for (size, gap) in [
+            (10.0_f32, 0.25_f32),
+            (12.0, 0.3),
+            (7.0, 0.15),
+            (16.0, 0.25),
+            (5.0, 0.4),
+        ] {
+            {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let p = graph.params_mut(node).expect("just added");
+                p.params.set("size", crate::params::ParamValue::Float(size));
+                p.params.set("gap", crate::params::ParamValue::Float(gap));
+            }
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(
+                    &device,
+                    &queue,
+                    &mut stack,
+                    &mut compositor,
+                    &mut trama,
+                    &mut targets,
+                );
+            }
+
+            let cell = (DIM as f32 / size).floor().max(1.0) as u32;
+            assert!(cell >= 2, "size {size} must give a cell worth testing");
+            // A grid at all: a flat input through a gap must produce at least
+            // two distinct pixel values, or periodicity is trivially true.
+            // Over the whole cell BLOCK, not one row — row 0 lies inside the
+            // horizontal gap band, so it is uniformly transparent and says
+            // nothing either way.
+            let distinct = (0..cell)
+                .flat_map(|y| (0..cell).map(move |x| (x, y)))
+                .map(|(x, y)| pixel(&out, x, y))
+                .collect::<std::collections::HashSet<_>>();
+            assert!(
+                distinct.len() > 1,
+                "size {size} gap {gap}: no grid was drawn, so periodicity proves nothing"
+            );
+
+            for y in 0..DIM {
+                for x in 0..DIM {
+                    if x + cell < DIM {
+                        assert_eq!(
+                            pixel(&out, x, y),
+                            pixel(&out, x + cell, y),
+                            "size {size} gap {gap}: column {x} and {} differ — the cell \
+                             grid is not the same width everywhere, which is what reads \
+                             as major and minor rules",
+                            x + cell
+                        );
+                    }
+                    if y + cell < DIM {
+                        assert_eq!(
+                            pixel(&out, x, y),
+                            pixel(&out, x, y + cell),
+                            "size {size} gap {gap}: row {y} and {} differ",
+                            y + cell
+                        );
+                    }
+                }
+            }
+        }
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored master_chain_survives_being_unwired
     //
     // The master chain's output target comes and goes with whether anything

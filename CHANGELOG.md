@@ -6,9 +6,38 @@
 ## Unreleased
 
 ### Added
+- **trama Anchor node, for routing.** Right-click → Utility → Anchor drops a bend in a wire so
+  a patch can route around a node instead of crossing it. It draws as a small bead on the
+  wire, passes its input straight through, costs no render target, and is left out of the
+  layer row's node count — tidying a patch shouldn't make the layer look busier.
+- **Eleven new trama nodes, taking the library to sixteen.** Levels, Blur, Mirror,
+  Kaleidoscope, Pixelate, Chromatic Aberration, Scanlines, Edge and Palette Map, plus two new
+  sources, Gradient and Solid. Every Float on them modulates like the rest.
+- **`cargo xtask new-effect <id>` scaffolds a trama node.** Writes a file that already
+  compiles and already does something visible, with `--inputs 2` and `--source` for the other
+  two shapes. The app picks up a newly created file without a restart, so a new node is in the
+  palette by the time you switch windows.
+- **trama Key node: dark becomes transparent.** A particle layer's "black" is a faint haze, so
+  placing one over another layer left a visible rectangle whatever blend mode you picked. Wire
+  `Layer input → Key → Output` and the box is gone; `invert` keys out the bright end instead,
+  which makes the node a matte.
 - **`/fosfora/overlay/visible` sets the UI shown or hidden over OSC.** The existing
   `toggle_overlay` trigger only flips it, so a show controller or capture script could never be
   sure which state it left the panels in.
+
+### Changed
+- **Layer input moved from Utility to Sources in the trama add-node menu.** It takes no input
+  and hands the chain a picture, which is what a source is, and it's the first thing a new
+  chain needs.
+- **trama canvas wires are easier to hit.** Wires were drawn barely a pixel wide, which also
+  set how close the pointer had to come to grab one; they are now 4px and thicken on hover,
+  right-click removes a hovered wire and the canvas says so, and pins catch a dropped wire
+  from twice as far without the dots growing. The old on-wire "×" button is gone.
+
+### Fixed
+- **Shards could blow the whole frame out to white.** Its `edge_glow` slider reads 0–1, but a
+  binding or oscillator can drive a parameter past the range the slider shows, and anything
+  below zero sent the edge term to infinity.
 
 ## v1.37.0 — 2026-09-20
 

@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# No dependencies on purpose. This runs before anybody has a reason to wait on
+# a build, and `cargo xtask new-effect` pulling a command-line parser down
+# would be the slowest part of the five minutes it is supposed to cost.
+[dependencies]
+
+[lints]
+workspace = true
