@@ -57,10 +57,30 @@ DATASET_NOTES = {
     "harmonix": (
         "Context: audio is re-fetched from YouTube and admitted only by the "
         "alignment gate (subsequence mel-DTW vs the authors' distributed "
-        "original-audio spectrograms + onset refinement) — the coverage table "
-        "counts every exclusion. Published rows are 8-fold cross-validation on "
-        "the full 912; ours is zero-shot on the gated subset. Not the same "
-        "test bed — both facts stated."
+        "original-audio spectrograms + onset refinement); every track it turns "
+        "away is counted by reason under [Exclusions](#exclusions). Published "
+        "rows are 8-fold cross-validation on the full 912; ours is zero-shot on "
+        "the gated subset. Not the same test bed — both facts stated."
+    ),
+}
+
+# The dataset's own sources, cited whenever its section is rendered.
+DATASET_REFS = {
+    "ballroom": ["gouyon2006tempo", "krebs2013ballroom", "sturm2014ballroom"],
+    "smc": ["holzapfel2012smc"],
+    "giantsteps_tempo": ["knees2015giantsteps", "schreiber2018giantsteps"],
+    "giantsteps_key": ["knees2015giantsteps"],
+    "harmonix": ["nieto2019harmonix"],
+}
+
+# Datasets scored by different binaries, and what separates them. Keyed on the
+# exact set of binaries, so the sentence disappears the moment a re-run
+# changes either one rather than going on describing builds nobody used.
+BINARY_NOTES = {
+    frozenset({"e51584239d5f8f58", "5fd9e79dad4c7df9"}): (
+        "Two binaries: Harmonix was re-scored after a change to the `/drop` "
+        "detector, which the other datasets do not score. Everything they do "
+        "score is unchanged between the two."
     ),
 }
 
@@ -70,6 +90,8 @@ def fmt(x, digits=3):
 
 
 def load_results(root: Path) -> dict[str, dict]:
+    """Each dataset's summary.json, plus the binary that produced it and —
+    from the local status.json — why every other track was not scored."""
     out = {}
     for summary in sorted(root.glob("bench/out/results/*/summary.json")):
         ds = summary.parent.name
@@ -84,6 +106,10 @@ def load_results(root: Path) -> dict[str, dict]:
             with track.open(encoding="utf-8") as f:
                 data["_binary"] = json.load(f)["dump"].get("binary_sha256", "")[:16]
             break
+        status_path = dl.dataset_dirs(ds).status
+        if status_path.is_file():
+            with status_path.open(encoding="utf-8") as f:
+                data["_not_scored"] = dl.not_scored(json.load(f))
         out[ds] = data
     return out
 
@@ -98,14 +124,16 @@ def baseline_rows(baselines: dict, dataset: str) -> list[dict]:
 
 
 def used_refs(baselines: dict, datasets: list[str]) -> list[str]:
+    """Baselines cited in the tables, then the sources of the datasets that
+    were actually scored — never a dataset the report does not show."""
     keys = []
     for e in baselines["entries"]:
         if e["dataset"] in datasets and e.get("ref") and e["ref"] not in keys:
             keys.append(e["ref"])
-    for extra in ("sturm2014ballroom", "krebs2013ballroom", "gouyon2006tempo",
-                  "holzapfel2012smc", "knees2015giantsteps", "schreiber2018giantsteps"):
-        if extra in baselines["refs"] and extra not in keys:
-            keys.append(extra)
+    for ds in datasets:
+        for extra in DATASET_REFS.get(ds, []):
+            if extra in baselines["refs"] and extra not in keys:
+                keys.append(extra)
     return keys
 
 
@@ -196,8 +224,9 @@ def predict_drop_table(summary: dict) -> list[str]:
         "",
         "Truth tier: **chorus-onset proxies** on the Dance/Electronic subset "
         "(Harmonix has no drop labels). Proxies undercount real drop-scale "
-        "events, so the false-alarm rate is an upper bound; the hand-annotated "
-        "local set (C13) carries the headline lead-time number.",
+        "events, so the false-alarm rate is an upper bound. No lead time "
+        "against hand-labeled drops is published yet; these rows are the only "
+        "lead-time numbers there are.",
         "",
         "| Tier | Coverage | Median lead (beats) | p25–p75 lead |",
         "|---|---|---|---|",
@@ -212,8 +241,7 @@ def predict_drop_table(summary: dict) -> list[str]:
     rows.append("")
     rows.append(
         f"False alarms {fmt(pd.get('false_alarms_per_min'), 2)}/min pooled over all "
-        f"{pd.get('n_tracks', '?')} tracks (≈⅓ of off-genre alarms are the predictor "
-        f"correctly anticipating a chorus landing). `/drop` detection event: "
+        f"{pd.get('n_tracks', '?')} tracks. `/drop` detection event: "
         f"hit rate {fmt(dp.get('hit_rate'))} vs the same proxies, "
         f"{fmt(dp.get('false_drops_per_min'), 2)} false/min. It fires on loudness+sub-bass "
         f"impact and these proxies are chorus onsets, so most of what it finds is not "
@@ -263,7 +291,7 @@ def structure_table(summary: dict) -> list[str]:
         f"{fmt(mean(summary, 'structure', 'n_ref_segments'), 1)} annotated.",
         "",
         "The first two rows subtract each event's own reported age — a fixed "
-        "property of the detector (a centred novelty kernel plus a peak "
+        "property of the detector (a centered novelty kernel plus a peak "
         "confirmation delay), published on the wire precisely so a consumer can "
         "do this. The third row is what a consumer sees if it ignores that "
         "argument and treats every cue as happening now; the gap between them is "
@@ -275,23 +303,90 @@ def structure_table(summary: dict) -> list[str]:
     return rows
 
 
+def expected_tracks(ds: str):
+    try:
+        return (dl.load_manifest(ds).get("expected") or {}).get("tracks")
+    except Exception:
+        return None
+
+
+def reconcile(ds: str, summary: dict) -> None:
+    """Every expected track is either scored, a dump failure, or excluded for
+    a named reason. A report that cannot account for a track refuses to
+    render rather than publish a coverage row that quietly does not add up."""
+    not_scored = summary.get("_not_scored")
+    expected = expected_tracks(ds)
+    if not_scored is None or expected is None:
+        return
+    cov = summary.get("coverage", {})
+    scored = summary.get("n_tracks", 0)
+    failures = len(cov.get("dump_failures", []))
+    excluded = sum(not_scored.values())
+    if scored + failures + excluded != expected:
+        raise SystemExit(
+            f"{ds}: {scored} scored + {failures} dump failures + {excluded} "
+            f"excluded = {scored + failures + excluded}, but {expected} expected "
+            "— the results and status.json disagree; re-run before reporting"
+        )
+
+
 def coverage_table(results: dict[str, dict]) -> list[str]:
     rows = [
-        "| Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |",
+        "| Dataset | Expected | Scored | Not scored | Dump failures | Binary |",
         "|---|---|---|---|---|---|",
     ]
     for ds, summary in results.items():
-        try:
-            manifest = dl.load_manifest(ds)
-            expected = (manifest.get("expected") or {}).get("tracks", "—")
-            excluded = len(manifest.get("exclusions") or [])
-        except Exception:
-            expected, excluded = "—", 0
+        reconcile(ds, summary)
+        expected = expected_tracks(ds)
+        not_scored = summary.get("_not_scored")
         cov = summary.get("coverage", {})
         rows.append(
-            f"| {ds} | {expected} | {summary.get('n_tracks', '—')} | {excluded} | "
+            f"| {ds} | {expected if expected is not None else '—'} | "
+            f"{summary.get('n_tracks', '—')} | "
+            f"{sum(not_scored.values()) if not_scored is not None else '—'} | "
             f"{len(cov.get('dump_failures', []))} | `{summary.get('_binary', '?')}` |"
         )
+    note = BINARY_NOTES.get(frozenset(s.get("_binary") for s in results.values()))
+    if note:
+        rows += ["", note]
+    return rows
+
+
+def exclusions_appendix(results: dict[str, dict]) -> list[str]:
+    """Why each unscored track was left out, by dataset and reason."""
+    rows = [
+        "## Exclusions",
+        "",
+        "Every track a dataset lists but this card does not score, by reason. "
+        "Nothing is dropped for scoring badly: a track is excluded before it "
+        "is run, or not at all.",
+        "",
+    ]
+    for ds, summary in results.items():
+        not_scored = summary.get("_not_scored")
+        if not_scored is None:
+            rows += [f"**{ds}**: per-track status not available on this machine.", ""]
+            continue
+        if not not_scored:
+            rows += [f"**{ds}**: none.", ""]
+            continue
+        rows += [
+            f"**{ds}** ({sum(not_scored.values())} of {expected_tracks(ds)})",
+            "",
+            "| Reason | Tracks |",
+            "|---|---|",
+        ]
+        rows += [f"| {reason} | {n} |" for reason, n in not_scored.items()]
+        rows.append("")
+        if ds == "harmonix":
+            gate = (dl.load_manifest(ds).get("gate") or {})
+            if not gate.get("calibrated", True):
+                rows += [
+                    "The gate's thresholds were set from a pilot run and have not "
+                    "yet been confirmed by listening to the borderline cases, so a "
+                    "few tracks on either side of them may be misjudged.",
+                    "",
+                ]
     return rows
 
 
@@ -363,6 +458,8 @@ def render(root: Path) -> str:
         if (metrics.get("predict_drop") or {}).get("0.5", {}).get("coverage") is not None:
             L.extend(predict_drop_table(summary))
             L.append("")
+
+    L.extend(exclusions_appendix(results))
 
     L.append("## References")
     L.append("")

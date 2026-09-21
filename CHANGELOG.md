@@ -20,6 +20,10 @@
 - **Particle uniforms grow from 960 to 992 bytes**, so particle compute shaders can read
   params 8–15 through `param()`. The new block is appended after the last field, so no
   offset moves and custom sims keep working unchanged.
+- **The benchmark report now accounts for every track it does not score.** A new Exclusions
+  section lists them by reason: for Harmonix, 538 of 912, mostly YouTube audio that does not
+  match the annotated recording or videos that are gone. A drop-prediction claim that had not
+  been measured on the current predictor was removed.
 
 ### Fixed
 - **Ten effects jumped when a binding or a drag moved their speed after the app had been

@@ -735,6 +735,33 @@ class TestDatasetlib(unittest.TestCase):
         with self.assertRaises(dl.DatasetError):
             dl.source(dl.load_manifest("ballroom"), "nope")
 
+    def test_every_unscored_track_has_a_named_reason(self):
+        # The report's Exclusions appendix is built from these. The real
+        # status.json strings, one per shape the four scored datasets produce.
+        status = {"tracks": {
+            "ok": {"fetch": "ok", "prep": "ok"},
+            "dup": {"fetch": "ok", "prep": "excluded: exact replica of Albums-Fire-08, cross-genre ChaChaCha/Samba"},
+            "rec": {"fetch": "ok", "prep": "excluded: recording replica of Media-103402, speed variation"},
+            "gt0": {"fetch": "ok", "prep": "v2 tempo 0.0 (unusable per upstream)"},
+            "res": {"fetch": "ok", "prep": "gate: reject:dtw_residual (45604ms)"},
+            "res2": {"fetch": "ok", "prep": "gate: reject:dtw_residual (901ms)"},
+            "line": {"fetch": "ok", "prep": "gate: reject:dtw_on_line (0.63)"},
+            "403": {"fetch": "unavailable: ERROR: unable to download video data: HTTP Error 403: Forbidden", "prep": None},
+            "gone": {"fetch": "unavailable: ERROR: [youtube] A0fYKguHFcQ: Video unavailable", "prep": None},
+            "new": {"fetch": "ok", "prep": "gate: reject:refine_disagrees (fine +0.40s vs dtw +0.10s)"},
+            "odd": {"fetch": "ok", "prep": "something nobody has named"},
+        }}
+        self.assertIsNone(dl.exclusion_reason(status["tracks"]["ok"]))
+        counts = dl.not_scored(status)
+        self.assertEqual(sum(counts.values()), len(status["tracks"]) - 1, counts)
+        # Two residual rejects with different numbers are ONE reason.
+        self.assertEqual(counts[dl.GATE_REASONS["dtw_residual"]], 2)
+        self.assertEqual(counts["audio download refused (HTTP 403)"], 1)
+        # Unnamed reasons are shown as they are, never folded into another bucket.
+        self.assertIn("alignment gate: refine_disagrees", counts)
+        self.assertIn("something nobody has named", counts)
+        self.assertEqual(list(counts.values()), sorted(counts.values(), reverse=True))
+
     def test_check_pins(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "f.bin"

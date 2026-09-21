@@ -408,6 +408,56 @@ def coverage_report(manifest: dict, status: Status, stage: str) -> str:
     return "\n".join(lines)
 
 
+# Plain-language reasons for the alignment gate's reject stages
+# (align_harmonix.py), as they appear in the public report.
+GATE_REASONS = {
+    "dtw_residual": "alignment gate: the YouTube audio does not match the annotated recording",
+    "dtw_on_line": "alignment gate: only part of it matches (an edit or a different version)",
+    "duration_short": "alignment gate: the YouTube audio is shorter than the annotated span",
+    "offset_negative": "alignment gate: the YouTube audio is missing the start of the song",
+    "coverage": "alignment gate: the YouTube audio ends before the annotated span does",
+}
+
+
+def exclusion_reason(track: dict) -> str | None:
+    """Why a track with this status.json record was not scored, in words a
+    reader of the report can follow — or None if it reached scoring. A reason
+    nobody has named yet is passed through verbatim, never folded into
+    another bucket."""
+    fetch, prep = track.get("fetch"), track.get("prep")
+    if fetch != "ok":
+        if fetch is None:
+            return "never fetched"
+        if "HTTP Error 403" in fetch:
+            return "audio download refused (HTTP 403)"
+        if "[youtube]" in fetch:
+            return "YouTube video gone (removed, private, blocked or age-restricted)"
+        return f"fetch failed: {fetch}"
+    if prep == "ok":
+        return None
+    prep = prep or "never prepared"
+    if prep.startswith("excluded: exact replica"):
+        return "duplicate: an exact copy of another excerpt (Sturm 2014)"
+    if prep.startswith("excluded: recording replica"):
+        return "duplicate: the same recording as another excerpt (Sturm 2014)"
+    if prep.startswith("v2 tempo 0.0"):
+        return "no usable ground truth (annotated tempo is 0.0)"
+    if prep.startswith("gate: reject:"):
+        stage = prep.removeprefix("gate: reject:").split(" ", 1)[0]
+        return GATE_REASONS.get(stage, f"alignment gate: {stage}")
+    return prep
+
+
+def not_scored(status: dict) -> dict[str, int]:
+    """Count of tracks per exclusion reason, most common first."""
+    counts: dict[str, int] = {}
+    for track in status.get("tracks", {}).values():
+        reason = exclusion_reason(track)
+        if reason is not None:
+            counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 # --------------------------------------------------------------------------- verify
 
 

@@ -15,12 +15,14 @@ headline beat numbers adopt the literature's 5 s trim.
 
 ## Coverage
 
-| Dataset | Expected | Scored | Excluded (manifest) | Dump failures | Binary |
+| Dataset | Expected | Scored | Not scored | Dump failures | Binary |
 |---|---|---|---|---|---|
 | ballroom | 698 | 685 | 13 | 0 | `e51584239d5f8f58` |
 | giantsteps_key | 604 | 604 | 0 | 0 | `e51584239d5f8f58` |
-| giantsteps_tempo | 664 | 661 | 0 | 0 | `e51584239d5f8f58` |
-| harmonix | 912 | 374 | 0 | 0 | `5fd9e79dad4c7df9` |
+| giantsteps_tempo | 664 | 661 | 3 | 0 | `e51584239d5f8f58` |
+| harmonix | 912 | 374 | 538 | 0 | `5fd9e79dad4c7df9` |
+
+Two binaries: Harmonix was re-scored after a change to the `/drop` detector, which the other datasets do not score. Everything they do score is unchanged between the two.
 
 ## Ballroom (698 x 30 s, dance genres)
 
@@ -69,7 +71,7 @@ Causal extras: mean lock time 25.9 s (earliest instant after which every later e
 
 ## Harmonix Set (pop/EDM, YouTube-sourced audio)
 
-Context: audio is re-fetched from YouTube and admitted only by the alignment gate (subsequence mel-DTW vs the authors' distributed original-audio spectrograms + onset refinement) — the coverage table counts every exclusion. Published rows are 8-fold cross-validation on the full 912; ours is zero-shot on the gated subset. Not the same test bed — both facts stated.
+Context: audio is re-fetched from YouTube and admitted only by the alignment gate (subsequence mel-DTW vs the authors' distributed original-audio spectrograms + onset refinement); every track it turns away is counted by reason under [Exclusions](#exclusions). Published rows are 8-fold cross-validation on the full 912; ours is zero-shot on the gated subset. Not the same test bed — both facts stated.
 
 | System | Mode | Beat F | CMLt | AMLt | Downbeat F |
 |---|---|---|---|---|---|
@@ -97,18 +99,51 @@ No published causal baseline exists for this task, and the offline structure sys
 
 Estimated 12.1 segments per track against 12.3 annotated.
 
-The first two rows subtract each event's own reported age — a fixed property of the detector (a centred novelty kernel plus a peak confirmation delay), published on the wire precisely so a consumer can do this. The third row is what a consumer sees if it ignores that argument and treats every cue as happening now; the gap between them is the honest price of hearing the song once, in order. Neither is the lag-compensated variant the results files carry and this card omits — that one shifts by a constant the *scorer* picked, where these use a latency the detector states about itself.
+The first two rows subtract each event's own reported age — a fixed property of the detector (a centered novelty kernel plus a peak confirmation delay), published on the wire precisely so a consumer can do this. The third row is what a consumer sees if it ignores that argument and treats every cue as happening now; the gap between them is the honest price of hearing the song once, in order. Neither is the lag-compensated variant the results files carry and this card omits — that one shifts by a constant the *scorer* picked, where these use a latency the detector states about itself.
 
 ### Drop prediction (`/fosfora/v1/predict/drop`)
 
-Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix has no drop labels). Proxies undercount real drop-scale events, so the false-alarm rate is an upper bound; the hand-annotated local set (C13) carries the headline lead-time number.
+Truth tier: **chorus-onset proxies** on the Dance/Electronic subset (Harmonix has no drop labels). Proxies undercount real drop-scale events, so the false-alarm rate is an upper bound. No lead time against hand-labeled drops is published yet; these rows are the only lead-time numbers there are.
 
 | Tier | Coverage | Median lead (beats) | p25–p75 lead |
 |---|---|---|---|
 | ≥ 0.5 | 0.482 | 18.2 | 9.9–27.3 |
 | ≥ 0.8 | 0.312 | 11.2 | 4.3–24.9 |
 
-False alarms 2.30/min pooled over all 374 tracks (≈⅓ of off-genre alarms are the predictor correctly anticipating a chorus landing). `/drop` detection event: hit rate 0.121 vs the same proxies, 0.47 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
+False alarms 2.30/min pooled over all 374 tracks. `/drop` detection event: hit rate 0.121 vs the same proxies, 0.47 false/min. It fires on loudness+sub-bass impact and these proxies are chorus onsets, so most of what it finds is not annotated here and most of what is annotated is not a drop — the hit rate is a floor and the false rate a ceiling, both against the wrong target.
+
+## Exclusions
+
+Every track a dataset lists but this card does not score, by reason. Nothing is dropped for scoring badly: a track is excluded before it is run, or not at all.
+
+**ballroom** (13 of 698)
+
+| Reason | Tracks |
+|---|---|
+| duplicate: the same recording as another excerpt (Sturm 2014) | 9 |
+| duplicate: an exact copy of another excerpt (Sturm 2014) | 4 |
+
+**giantsteps_key**: none.
+
+**giantsteps_tempo** (3 of 664)
+
+| Reason | Tracks |
+|---|---|
+| no usable ground truth (annotated tempo is 0.0) | 3 |
+
+**harmonix** (538 of 912)
+
+| Reason | Tracks |
+|---|---|
+| alignment gate: the YouTube audio does not match the annotated recording | 254 |
+| alignment gate: only part of it matches (an edit or a different version) | 116 |
+| YouTube video gone (removed, private, blocked or age-restricted) | 72 |
+| alignment gate: the YouTube audio is shorter than the annotated span | 50 |
+| audio download refused (HTTP 403) | 41 |
+| alignment gate: the YouTube audio is missing the start of the song | 4 |
+| alignment gate: the YouTube audio ends before the annotated span does | 1 |
+
+The gate's thresholds were set from a pilot run and have not yet been confirmed by listening to the borderline cases, so a few tracks on either side of them may be misjudged.
 
 ## References
 
@@ -118,9 +153,9 @@ False alarms 2.30/min pooled over all 374 tracks (≈⅓ of off-genre alarms are
 - **schreiber2018cnn** — Schreiber & Müller, "A Single-Step Approach to Musical Tempo Estimation Using a Convolutional Neural Network", ISMIR 2018. <https://www.tagtraum.com/download/2018_schreiber_tempo_cnn.pdf>
 - **korzeniowski2018key** — Korzeniowski & Widmer, "Genre-Agnostic Key Classification with Convolutional Neural Networks", ISMIR 2018. <https://arxiv.org/abs/1808.05340>
 - **kim2023allinone** — Kim & Nam, "All-In-One Metrical and Functional Structure Analysis with Neighborhood Attentions on Demixed Audio", WASPAA 2023. <https://arxiv.org/abs/2307.16425>
-- **sturm2014ballroom** — Sturm, "Faults in the Ballroom dataset" (duplicate list), 2014. <https://highnoongmt.wordpress.com/2014/01/23/ballroom_dataset/>
-- **krebs2013ballroom** — Krebs, Böck & Widmer, "Rhythmic Pattern Modeling for Beat and Downbeat Tracking in Musical Audio", ISMIR 2013 (Ballroom beat/downbeat annotations). <https://github.com/CPJKU/BallroomAnnotations>
 - **gouyon2006tempo** — Gouyon et al., "An Experimental Comparison of Audio Tempo Induction Algorithms", IEEE TASLP 2006 (the ISMIR 2004 Ballroom distribution). <http://mtg.upf.edu/ismir2004/contest/tempoContest/>
-- **holzapfel2012smc** — Holzapfel et al., "Selective Sampling for Beat Tracking Evaluation", IEEE TASLP 2012 (SMC_MIREX). <http://smc.inescporto.pt/research/data-2/>
+- **krebs2013ballroom** — Krebs, Böck & Widmer, "Rhythmic Pattern Modeling for Beat and Downbeat Tracking in Musical Audio", ISMIR 2013 (Ballroom beat/downbeat annotations). <https://github.com/CPJKU/BallroomAnnotations>
+- **sturm2014ballroom** — Sturm, "Faults in the Ballroom dataset" (duplicate list), 2014. <https://highnoongmt.wordpress.com/2014/01/23/ballroom_dataset/>
 - **knees2015giantsteps** — Knees et al., "Two Data Sets for Tempo Estimation and Key Detection in Electronic Dance Music Annotated from User Corrections", ISMIR 2015. <https://github.com/GiantSteps>
 - **schreiber2018giantsteps** — Schreiber & Müller, "A Crowdsourced Experiment for Tempo Estimation of Electronic Dance Music", ISMIR 2018 (the annotations_v2 ground truth). <https://www.tagtraum.com/download/2018_schreiber_tempo_giantsteps.pdf>
+- **nieto2019harmonix** — Nieto et al., "The Harmonix Set: Beats, Downbeats, and Functional Segment Annotations of Western Popular Music", ISMIR 2019. <https://github.com/urinieto/harmonixset>
