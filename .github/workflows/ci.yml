@@ -94,6 +94,11 @@ jobs:
         run: cargo clippy --all-targets --features link -- -D warnings
       - name: Clippy (output sinks)
         run: cargo clippy --all-targets --features "ndi,v4l2,spout,syphon" -- -D warnings
+      # The exact set the release downloads ship. release.yml only runs on a
+      # version bump, so without this a broken `release` feature (a typo, or two
+      # features that clash only in combination) would first fail at release time.
+      - name: Clippy (release bundle)
+        run: cargo clippy --all-targets --features release -- -D warnings
 
   test:
     name: Test
