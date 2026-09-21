@@ -5,6 +5,12 @@
 
 ## Unreleased
 
+### Fixed
+- **Frost's crystals jumped instead of wandering once the app had been running a while.**
+  Their drift speed follows the music, and every change in it was multiplied by the app's
+  uptime, so a few minutes in, each shift in the sound threw the cells to new places. They
+  now drift smoothly however long the app has been up.
+
 ## v1.38.0 — 2026-09-21
 
 ### Added

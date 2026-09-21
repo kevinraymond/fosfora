@@ -40,7 +40,13 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     var closest_id = vec2f(0.0);
     var cvec = vec2f(0.0);
 
-    let agitation = 0.15 + m * (0.6 + zcr_x * 2.0); // wander rate: calm ice, fizzing sand
+    // Wander phase, integrated by the `phase` pass as `agitation * dt` (#2984).
+    // It used to be spent here as `t * agitation`, which multiplies every change
+    // in the rate — and the rate is audio-driven — by the app's uptime, so the
+    // cells jumped instead of wandering. `frost_phase.wgsl` carries the rate
+    // formula and why the value arrives in three parts.
+    let ph = input0(vec2f(0.5, 0.5));
+    let wander = ph.r + ph.g + ph.b;
     let amp = 0.25 + m * 0.45;                      // wander radius grows as it melts
     let shatter = u.onset * 0.35;
 
@@ -51,7 +57,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
             let h = fosfora_hash2(cell_id);
             let h2 = fosfora_hash2(cell_id + vec2f(7.13, 3.71));
-            let ang = h * 6.2831 + t * agitation;
+            let ang = h * 6.2831 + wander;
             var center = neighbor + 0.5 + amp * vec2f(sin(ang), cos(ang * 1.31 + h2 * 6.2831));
 
             // Onset shatter kick

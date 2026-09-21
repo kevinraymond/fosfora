@@ -722,6 +722,15 @@ mod tests {
     /// and write it out. Lets a probe pull an executor target (which is only
     /// TEXTURE_BINDING) into a FrameCapture texture (which is COPY_SRC).
     fn blit_pipeline(device: &Device) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+        blit_pipeline_to(device, FMT)
+    }
+
+    /// [`blit_pipeline`] into any target format — `Rgba32Float` to read an HDR
+    /// target's values back exactly instead of clamped to 8 bits.
+    fn blit_pipeline_to(
+        device: &Device,
+        target: TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("probe-blit-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -764,7 +773,7 @@ mod tests {
                 module: &module,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: FMT,
+                    format: target,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -2930,5 +2939,385 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             "trail frame is blowing out ({:.0}% near-white)",
             hot * 100.0
         );
+    }
+
+    // #2984: Frost's crystal cells wander at a rate the music sets, and the
+    // shader used to spend it as `t * agitation` — every change in the rate
+    // multiplied by uptime, so the cells jumped whenever the music moved, on
+    // ordinary playback with no binding involved. The fix integrates the rate in
+    // a small `phase` feedback pass. This drives the SHIPPED two-pass graph the
+    // way App::render does (execute, then flip) and checks both halves:
+    //
+    //  1. The strobe is gone. Same statistic as the census reproduction
+    //     (pfx_rate_params_strobe_at_a_large_clock): a 0.01 move in u.zcr at a
+    //     300 s clock, block-averaged, against one frame of ordinary motion and a
+    //     same-uniforms self-difference as the floor.
+    //  2. Nothing else moved. With steady audio the integral IS agitation * T, so
+    //     the accumulated phase must track that. Read back from the phase pass's
+    //     own three parts, at half-float precision, over a long run, which is
+    //     where a naive running total would have stopped registering the step.
+    //
+    // Run: cargo test -p fosfora-app -- --ignored --nocapture frost_wander_is_integrated
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn frost_wander_is_integrated_not_multiplied_by_uptime() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
+        let fmt = TextureFormat::Rgba16Float;
+        let (w, h) = (256u32, 256u32);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+
+        let ubuf = UniformBuffer::new(&device);
+        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
+        let audio = AudioTextures::new(&device, &queue);
+        let (blit, blit_bgl) = blit_pipeline(&device);
+
+        // The wiring comes from the shipped .pfx, so this cannot pass against a
+        // graph the app does not build.
+        let frost = crate::effect::loader::shipped_effects_for_test()
+            .into_iter()
+            .find(|e| e.name == "Frost")
+            .expect("frost.pfx");
+        let defs = frost.normalized_passes();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["phase", "main"], "frost.pfx pass order changed");
+        assert!(defs[0].feedback, "the phase pass must carry its own state");
+        assert_eq!(defs[1].inputs, ["phase"], "main must read the phase pass");
+
+        // The graph below is assembled by hand, which skips the loader. Build it
+        // once the way the app does too, so a wrong shader filename or pass
+        // name in frost.pfx fails here and not first on Kevin's screen. The
+        // loader resolves assets CWD-relative (same move as golden_loop).
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        PassExecutor::new(
+            &device,
+            fmt,
+            w,
+            h,
+            &defs,
+            &loader,
+            &ubuf,
+            &placeholder,
+            &audio,
+            &queue,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("the app cannot build frost.pfx: {e}"));
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(
+            err.is_none(),
+            "frost.pfx built with a validation error: {err:?}"
+        );
+
+        let build = |defs: &[PassDef]| {
+            let specs: Vec<PassSpec> = defs
+                .iter()
+                .map(|d| {
+                    let src = std::fs::read_to_string(root.join("shaders").join(&d.shader))
+                        .expect("shader source");
+                    let pipe = ShaderPipeline::new(
+                        &device,
+                        fmt,
+                        &loader.prepend_library_with_inputs(&src, d.input_count()),
+                        None,
+                        d.input_count(),
+                    )
+                    .unwrap_or_else(|e| panic!("frost {}: pipeline: {e}", d.name));
+                    let inputs = d
+                        .inputs
+                        .iter()
+                        .map(|n| InputSrc::Pass {
+                            pass: defs.iter().position(|x| &x.name == n).expect("input"),
+                            prev: false,
+                        })
+                        .collect();
+                    (
+                        d.name.as_str(),
+                        pipe,
+                        d.feedback,
+                        inputs,
+                        d.iterations,
+                        d.scale,
+                    )
+                })
+                .collect();
+            assemble(
+                &device,
+                &queue,
+                w,
+                h,
+                fmt,
+                &ubuf,
+                &placeholder,
+                &audio,
+                specs,
+            )
+        };
+
+        const DT: f32 = 1.0 / 60.0;
+        let base = |time: f32, zcr: f32| {
+            let mut u = crate::gpu::ShaderUniforms::zeroed();
+            u.resolution = [w as f32, h as f32];
+            let mut store = crate::params::ParamStore::new();
+            store.load_from_defs(&frost.inputs);
+            u.params = store.pack_to_buffer();
+            u.time = time;
+            u.delta_time = DT;
+            u.frame_index = time / DT;
+            u.beat_phase = (time * 2.0).fract();
+            u.rms = 0.4;
+            u.bass = 0.3;
+            u.sub_bass = 0.25;
+            u.centroid = 0.5;
+            u.flatness = 0.5;
+            u.zcr = zcr;
+            u
+        };
+
+        // One app frame: execute every pass, capture main, then flip — the step
+        // the chain probes once skipped and so only ever tested one frame (#2670).
+        let frame = |ex: &mut PassExecutor, u: &crate::gpu::ShaderUniforms| {
+            let px = capture_pass_rgba(&device, &queue, &ubuf, &blit, &blit_bgl, ex, u, 1, w, h);
+            ex.flip();
+            px
+        };
+
+        let block_diff = |a: &[u8], b: &[u8]| -> f64 {
+            const BK: u32 = 16;
+            let (mut total, mut blocks) = (0.0f64, 0.0f64);
+            for by in (0..h).step_by(BK as usize) {
+                for bx in (0..w).step_by(BK as usize) {
+                    let (mut sa, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64);
+                    for y in by..(by + BK).min(h) {
+                        for x in bx..(bx + BK).min(w) {
+                            let i = ((y * w + x) * 4) as usize;
+                            for c in 0..3 {
+                                sa += f64::from(a[i + c]);
+                                sb += f64::from(b[i + c]);
+                                n += 1.0;
+                            }
+                        }
+                    }
+                    total += ((sa - sb) / n).abs();
+                    blocks += 1.0;
+                }
+            }
+            total / blocks / 255.0
+        };
+
+        // ---- 1. The strobe ------------------------------------------------
+        // Two identical graphs warmed identically, then split on one frame:
+        // one sees the audio hold, the other sees it nudged. `u.time` sits at
+        // 300 s for all of it — the fix makes the wander independent of it, so
+        // a large clock must no longer amplify anything.
+        const T: f32 = 300.0;
+        const WARM: u32 = 30;
+        let warm = |ex: &mut PassExecutor| {
+            let mut last = Vec::new();
+            for f in 0..WARM {
+                last = frame(ex, &base(T + f as f32 * DT, 0.2));
+            }
+            last
+        };
+        let t_next = T + WARM as f32 * DT;
+
+        let mut held = build(&defs);
+        let a = warm(&mut held);
+        let motion_px = frame(&mut held, &base(t_next, 0.2));
+
+        let mut nudged = build(&defs);
+        let a2 = warm(&mut nudged);
+        let nudged_px = frame(&mut nudged, &base(t_next, 0.21));
+
+        let floor = block_diff(&a, &a2);
+        let motion = block_diff(&a, &motion_px);
+        let jump = block_diff(&a, &nudged_px);
+        eprintln!(
+            "frost at t={T}s: floor {floor:.5}  motion {motion:.5}  nudged {jump:.5}  \
+             excess {:.5}",
+            (jump - motion).max(0.0)
+        );
+        assert!(
+            floor < 1e-9,
+            "two graphs driven identically differ by {floor} — the comparison below is noise"
+        );
+        // Before the fix this read .00730 against .00038 of motion (19x), with an
+        // excess 176x the fresh-clock one. Integrated, a 0.01 move in the rate
+        // changes one frame's step by 0.01 * dt — indistinguishable from motion.
+        assert!(
+            jump < motion * 2.0 + 1e-4,
+            "a 0.01 move in u.zcr at a {T} s clock still jumps the picture: nudged {jump:.5} \
+             vs one frame of motion {motion:.5} — the wander is multiplying uptime again"
+        );
+
+        // ---- 2. Nothing else moved ----------------------------------------
+        // Steady audio for a long run: the phase must equal agitation * elapsed,
+        // wrapped at 200*PI. Read the phase pass directly — its r/g halves come
+        // back through the RGBA8 blit, so decode from a raw readback instead.
+        let mut ex = build(&defs);
+        let frames = 3600u32; // one minute at 60 fps
+        for f in 0..frames {
+            let u = base(f as f32 * DT, 0.2);
+            let _ = frame(&mut ex, &u);
+        }
+        // Default params, flatness 0.5, zcr 0.2 -> the shader's own formula.
+        let mut store = crate::params::ParamStore::new();
+        store.load_from_defs(&frost.inputs);
+        let p = store.pack_to_buffer();
+        let (morph_bias, reactivity) = (p[1], p[7]);
+        let zcr_x = (0.2f32 * 2.5).min(1.0);
+        let m = (0.5 + (0.5 - 0.5) * reactivity + morph_bias).clamp(0.0, 1.0);
+        let agitation = 0.15 + m * (0.6 + zcr_x * 2.0);
+        let wrap = 200.0 * std::f64::consts::PI;
+        let want = (f64::from(agitation) * f64::from(DT) * f64::from(frames)) % wrap;
+
+        let got = read_phase(&device, &queue, &ex);
+        eprintln!(
+            "frost phase after {frames} steady frames: got {got:.4}  want {want:.4} \
+             (agitation {agitation:.4})"
+        );
+        let err = (got - want).abs().min(wrap - (got - want).abs());
+        assert!(
+            err < 0.05,
+            "steady-audio phase drifted by {err:.4} rad over {frames} frames — the \
+             f16 storage is biasing the step (got {got:.4}, want {want:.4})"
+        );
+
+        // ---- 3. The census's second Frost site: dunes, `drift_dir * t` -----
+        // MEASUREMENT ONLY, deliberately not asserted yet. Same split as part 1,
+        // nudging drift.x (param slot 8) by 0.01 instead of the audio. When this
+        // was written it read, block-averaged:
+        //
+        //   t=0    motion .00119  nudged .00119  excess .00000
+        //   t=300  motion .00179  nudged .01825  excess .01645   (10x motion)
+        //
+        // So dragging the drift pad at a large clock jumps the dunes. It is NOT
+        // the playback bug fixed above: nothing moves `drift` unless a person or
+        // a binding does, which puts it in the same class as the other eight
+        // census effects, and `drift` is a Point2D, which trama's `rates` does
+        // not accept. It lands with that batch (#2984); make this an assertion
+        // when it does.
+        for &t0 in &[0.0f32, T] {
+            let run = |dx: f32| {
+                let mut ex = build(&defs);
+                let mut last = Vec::new();
+                for f in 0..WARM {
+                    last = frame(&mut ex, &base(t0 + f as f32 * DT, 0.2));
+                }
+                let mut u = base(t0 + WARM as f32 * DT, 0.2);
+                u.params[8] += dx;
+                (last, frame(&mut ex, &u))
+            };
+            let (a, held) = run(0.0);
+            let (_, pushed) = run(0.01);
+            let motion = block_diff(&a, &held);
+            let jump = block_diff(&a, &pushed);
+            eprintln!(
+                "frost drift.x +0.01 at t={t0}s: motion {motion:.5}  nudged {jump:.5}  \
+                 excess {:.5}",
+                (jump - motion).max(0.0)
+            );
+        }
+    }
+
+    /// Read the Frost phase pass's accumulated value, `r + g + b`, from the target
+    /// the NEXT frame's feedback() will sample. Blitted into an `Rgba32Float`
+    /// target first: executor targets are not COPY_SRC, and the RGBA8 blit used
+    /// everywhere else would clamp the integer half to 1.0. f16 -> f32 is exact.
+    fn read_phase(device: &Device, queue: &Queue, ex: &PassExecutor) -> f64 {
+        let src = ex.passes[0].target.read_target();
+        let (tw, th) = (src.texture.width(), src.texture.height());
+        let fmt = TextureFormat::Rgba32Float;
+        let (blit, bgl) = blit_pipeline_to(device, fmt);
+        let dst = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frost-phase-f32"),
+            size: wgpu::Extent3d {
+                width: tw,
+                height: th,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: fmt,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let dst_view = dst.create_view(&Default::default());
+        let row = (tw * 16).div_ceil(256) * 256;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frost-phase-readback"),
+            size: u64::from(row * th),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frost-phase-blit-bg"),
+            layout: &bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&src.view),
+            }],
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("frost-phase-blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &dst_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&blit);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        enc.copy_texture_to_buffer(
+            dst.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(th),
+                },
+            },
+            wgpu::Extent3d {
+                width: tw,
+                height: th,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
+        let data = buf.slice(..).get_mapped_range();
+        let f = |i: usize| {
+            f64::from(f32::from_le_bytes([
+                data[i],
+                data[i + 1],
+                data[i + 2],
+                data[i + 3],
+            ]))
+        };
+        f(0) + f(4) + f(8)
     }
 }

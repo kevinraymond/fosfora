@@ -2851,6 +2851,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "Flow Lenia mass field is conserved, not decayed",
             ),
             (
+                "frost_phase.wgsl",
+                "an integrator, not an image: adds rate * delta_time, which is already \
+                 frame-time correct, and nothing decays",
+            ),
+            (
                 "sumi_pressure.wgsl",
                 "feedback is the previous Jacobi iterate, not frame history",
             ),
@@ -2963,19 +2968,38 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn frost_shaders_compile() {
-        let frost = include_str!("../../../../assets/shaders/frost.wgsl");
+        // Two passes since #2984: `phase` integrates the wander rate and `main`
+        // reads it as input0, so main needs one input binding to compile.
+        let loader = EffectLoader::for_test(&probe_libs());
+        let sources = [
+            (
+                "frost_phase.wgsl",
+                loader.prepend_library_with_inputs(
+                    include_str!("../../../../assets/shaders/frost_phase.wgsl"),
+                    0,
+                ),
+            ),
+            (
+                "frost.wgsl",
+                loader.prepend_library_with_inputs(
+                    include_str!("../../../../assets/shaders/frost.wgsl"),
+                    1,
+                ),
+            ),
+        ];
 
         let _guard = gpu_guard();
         let (device, _queue) = test_gpu();
 
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let src = probe_preamble(frost);
-        let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("frost-probe"),
-            source: wgpu::ShaderSource::Wgsl(src.into()),
-        });
-        let err = pollster::block_on(device.pop_error_scope());
-        assert!(err.is_none(), "frost.wgsl failed validation: {err:?}");
+        for (name, src) in sources {
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let _ = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("frost-probe"),
+                source: wgpu::ShaderSource::Wgsl(src.into()),
+            });
+            let err = pollster::block_on(device.pop_error_scope());
+            assert!(err.is_none(), "{name} failed validation: {err:?}");
+        }
     }
 
     // Offscreen render probe for Frost's two material states: run the real
@@ -2994,14 +3018,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
 
-        // Production concatenation: uniform block + libs + effect fragment.
+        // Production concatenation: uniform block + libs + effect fragment, with
+        // the one input the main pass reads since #2984 — the wander phase.
         let frost = include_str!("../../../../assets/shaders/frost.wgsl");
-        let fragment_source = probe_preamble(frost);
+        let fragment_source =
+            EffectLoader::for_test(&probe_libs()).prepend_library_with_inputs(frost, 1);
 
         let (w, h) = (960u32, 540u32);
         let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
         let pipeline =
-            ShaderPipeline::new(&device, fmt, &fragment_source, None, 0).expect("frost pipeline");
+            ShaderPipeline::new(&device, fmt, &fragment_source, None, 1).expect("frost pipeline");
 
         // Ping-pong pair for the feedback loop.
         let mk_target = |label: &str| {
@@ -3046,6 +3072,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let waveform = mk_audio("frost-waveform", wgpu::TextureFormat::Rg16Float);
         let spectrum = mk_audio("frost-spectrum", wgpu::TextureFormat::R16Float);
         let spectrogram = mk_audio("frost-spectrogram", wgpu::TextureFormat::R8Unorm);
+        // The `phase` pass's output, zeroed: the cells hold still at phase 0.
+        // This probe is about the crystal/sand material states, not the wander,
+        // which frost_wander_is_integrated_not_multiplied_by_uptime covers
+        // through the real two-pass graph.
+        let phase = mk_audio("frost-phase", wgpu::TextureFormat::Rgba16Float);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -3065,7 +3096,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                     &spectrum,
                     &spectrogram,
                     &sampler,
-                    &[],
+                    &[(&phase, &sampler)],
                 )
             })
             .collect();
@@ -4661,13 +4692,6 @@ fn cs_main() {
             slot: usize,
             base: f32,
             params: [f32; 16],
-            /// Nudge a live AUDIO feature instead of a param. Frost builds its
-            /// rate as `0.15 + m * (0.6 + zcr_x * 2.0)`, where `m` mixes
-            /// `u.flatness` with two params and `zcr_x` is `u.zcr` — so the
-            /// multiplier on `t` moves every frame the music moves, with no
-            /// binding involved at all. If that strobes, Frost is not a
-            /// "would break if someone bound it" case, it breaks on playback.
-            audio_nudge: bool,
         }
         let mut defaults = [0.5f32; 16];
         defaults[8] = 0.0;
@@ -4679,7 +4703,6 @@ fn cs_main() {
                 slot: 1,
                 base: 0.5,
                 params: defaults,
-                audio_nudge: false,
             },
             Case {
                 label: "Cymatics.rotation",
@@ -4687,7 +4710,6 @@ fn cs_main() {
                 slot: 4,
                 base: 0.5,
                 params: defaults,
-                audio_nudge: false,
             },
             Case {
                 label: "Tunnel.speed",
@@ -4695,16 +4717,11 @@ fn cs_main() {
                 slot: 1,
                 base: 0.5,
                 params: defaults,
-                audio_nudge: false,
             },
-            Case {
-                label: "Frost.zcr (AUDIO)",
-                shader: include_str!("../../../../assets/shaders/frost.wgsl"),
-                slot: 7, // audio_reactivity, held; the nudge goes to u.zcr
-                base: 0.5,
-                params: defaults,
-                audio_nudge: true,
-            },
+            // Frost was the fourth case here, nudging u.zcr, and measured 176x
+            // before its fix. Its wander now arrives from a `phase` pass, so the
+            // shader no longer renders alone — the two-pass graph is probed by
+            // frost_wander_is_integrated_not_multiplied_by_uptime (pass_executor.rs).
         ];
 
         // The nudge a binding applies between two frames. Small enough that at
@@ -4800,7 +4817,6 @@ fn cs_main() {
             // One render at (time, param) -> RGBA bytes. Feedback-free: each
             // frame is a pure function of the uniforms, which is what lets a
             // single frame at T stand in for an app that has been up for T.
-            let audio_nudge = case.audio_nudge;
             let shot = |time: f32, pval: f32| -> Vec<u8> {
                 let mut u = ShaderUniforms::zeroed();
                 u.resolution = [w as f32, h as f32];
@@ -4809,9 +4825,7 @@ fn cs_main() {
                 u.frame_index = time / DT;
                 u.beat_phase = (time * 2.0).fract();
                 u.params = case.params;
-                if !audio_nudge {
-                    u.params[case.slot] = pval;
-                }
+                u.params[case.slot] = pval;
                 // A little steady audio so an audio-gated effect draws at all.
                 u.rms = 0.4;
                 u.bass = 0.3;
@@ -4819,11 +4833,6 @@ fn cs_main() {
                 u.centroid = 0.5;
                 u.flatness = 0.5;
                 u.zcr = 0.2;
-                if audio_nudge {
-                    // The nudge rides on the audio feature instead. 0.01 of
-                    // zcr is far less than one frame of real music moves.
-                    u.zcr = 0.2 + (pval - case.base);
-                }
                 u.feedback_decay = 0.0;
 
                 let mut fc = FrameCapture::new(&device, w, h, fmt, "rate-probe");

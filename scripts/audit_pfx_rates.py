@@ -275,7 +275,13 @@ def main():
     print(f"# clean:                               {len(clean)}\n")
 
     for stem, name, hits, targets, unresolved in sorted(rows, key=lambda r: (-len(r[3]), r[0])):
-        tag = "BINDABLE" if any(t[2] == "Float" for t in targets) else "slot unresolved"
+        if any(t[2] == "Float" for t in targets):
+            tag = "BINDABLE"
+        elif targets:
+            # Resolved, just not a Float: trama's `rates` cannot take it as-is.
+            tag = "non-Float slot (" + ", ".join(sorted({t[2] for t in targets})) + ")"
+        else:
+            tag = "slot unresolved"
         print(f"## {name} ({stem}.pfx) — {tag}")
         for i, pname, kind in targets:
             print(f"     param({i}) {pname}  [{kind}]")
