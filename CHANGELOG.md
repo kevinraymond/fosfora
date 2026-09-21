@@ -12,6 +12,9 @@
   finds shaders that still multiply by `u.time`.
 
 ### Changed
+- **`fosfora --help` now explains itself.** Each mode says what it is for, the optional
+  features are listed with the ones your build has marked and how to build the rest, and it
+  shows where your settings live.
 - **Particle uniforms grow from 960 to 992 bytes**, so particle compute shaders can read
   params 8–15 through `param()`. The new block is appended after the last field, so no
   offset moves and custom sims keep working unchanged.

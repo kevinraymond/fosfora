@@ -4137,20 +4137,129 @@ const KNOWN_FLAGS: &[(&str, Option<&str>, bool)] = &[
     ("--dense", Some("analyze"), cfg!(feature = "analyze")),
 ];
 
-const USAGE: &str = "\
-fosfora — audio-reactive VJ engine
+/// `--help`. Written for someone who downloaded a build, not for someone reading
+/// the source: what each mode is for, which optional features this binary has,
+/// and how to get the ones it lacks.
+fn usage() -> String {
+    use std::fmt::Write as _;
 
-USAGE:
-  fosfora                       launch the app
-  fosfora --signal [--host H] [--port N] [--rate HZ] [--feat-bus] [--no-stems] [--device NAME]
-  fosfora --audio-test
-  fosfora --render-loop <spec.loop.json> [--out F] [--crossfade-bars N] [--warmup-bars N] [--allow-non-loop]
-  fosfora --analyze <audio> [--out F] [--dense]                                    (feature: analyze)
-  fosfora --signal-dump <audio> [--out F|-] [--rate HZ] [--feat-bus] [--no-stems]  (feature: analyze)
-  fosfora --dump-schema [--out F]                                                  (feature: analyze)
-  fosfora --render-scene <dir> --song <audio> [--out D] [--res WxH] [--quality Q]  (feature: analyze)
-  fosfora --validate <dir>                                                         (feature: analyze)
-  fosfora --caps | --version | --help";
+    // (feature, what it gives a user, compiled into this binary)
+    let features: [(&str, &str, bool); 10] = [
+        (
+            "video",
+            "video files as layers (needs ffmpeg on PATH)",
+            cfg!(feature = "video"),
+        ),
+        ("ndi", "NDI output", cfg!(feature = "ndi")),
+        (
+            "webcam",
+            "live camera as a layer, particle source or obstacle",
+            cfg!(feature = "webcam"),
+        ),
+        (
+            "depth",
+            "camera depth estimate (includes webcam)",
+            cfg!(feature = "depth"),
+        ),
+        (
+            "v4l2",
+            "virtual camera output (Linux)",
+            cfg!(feature = "v4l2"),
+        ),
+        (
+            "spout",
+            "Spout texture sharing (Windows)",
+            cfg!(feature = "spout"),
+        ),
+        (
+            "syphon",
+            "Syphon texture sharing (macOS)",
+            cfg!(feature = "syphon"),
+        ),
+        (
+            "analyze",
+            "the ANALYSIS commands above",
+            cfg!(feature = "analyze"),
+        ),
+        (
+            "link",
+            "Ableton Link sync (makes the binary GPL-licensed)",
+            cfg!(feature = "link"),
+        ),
+        (
+            "profiling",
+            "logs GPU timings every 5 s",
+            cfg!(feature = "profiling"),
+        ),
+    ];
+    let mut feature_rows = String::new();
+    for (name, what, on) in &features {
+        let mark = if *on { "yes" } else { "   " };
+        let _ = writeln!(feature_rows, "  {mark}  {name:<10} {what}");
+    }
+    let none_note = if features.iter().any(|f| f.2) {
+        ""
+    } else {
+        "  This build has none of them.\n"
+    };
+    let settings = crate::paths::config_root();
+    let analyze_note = if cfg!(feature = "analyze") {
+        ""
+    } else {
+        "  (not in this build: see OPTIONAL FEATURES)\n"
+    };
+
+    format!(
+        "\
+fosfora {version}: audio-reactive visuals that follow the music
+
+  fosfora                    Open the app. Everything below is for scripts and rigs.
+
+HEADLESS
+  --signal                   Broadcast live audio analysis over OSC, no window or GPU.
+      --host H --port N          where to send (default 127.0.0.1:9010)
+      --rate HZ                  messages per second
+      --device NAME              audio input by name (default: the app's saved input)
+      --feat-bus                 also send the raw feature bus
+      --no-stems                 leave out the stem/* addresses
+  --render-loop SPEC.loop.json
+                             Render a seamless, beat-locked loop to a video file
+                             (needs ffmpeg). [--out F] [--crossfade-bars N]
+                             [--warmup-bars N] [--allow-non-loop]
+  --audio-test               Check audio capture and show what it hears (Linux).
+
+ANALYSIS
+{analyze_note}  --analyze AUDIO            Offline song analysis: tempo, key, sections.
+                             [--out F] [--dense]
+  --signal-dump AUDIO        What --signal would send for a file, as JSON lines.
+                             [--out F|-] [--rate HZ] [--feat-bus] [--no-stems]
+  --dump-schema              Write the Signal address and feature schema. [--out F]
+  --render-scene DIR --song AUDIO
+                             Render a scene to frames without a window. [--out D]
+                             [--res WxH] [--quality low|medium|high] [--window-secs N]
+  --validate DIR             Check a generated scene before loading it.
+
+INFO
+  --caps                     List the optional features in this build.
+  --version                  Print the version.
+  --help, -h                 This text.
+
+OPTIONAL FEATURES
+  Chosen when the binary is built. \"yes\" marks the ones this build has:
+{feature_rows}{none_note}
+  Release downloads include video, ndi, webcam, depth and their platform's sharing
+  output. From source, name the ones you want:
+      cargo build --release --features \"video,ndi,analyze\"
+
+LOGS AND FILES
+  RUST_LOG=debug fosfora     more log detail (default: info)
+  FOSFORA_AUDIO_DEBUG=1      verbose audio capture diagnostics (Linux)
+  Settings, presets, bindings:  {settings}
+  Guides: docs/ in the source, and https://github.com/kevinraymond/fosfora/wiki",
+        version = env!("CARGO_PKG_VERSION"),
+        settings = settings.display(),
+    )
+}
 
 fn compiled_features() -> String {
     let on: Vec<&str> = [
@@ -4218,7 +4327,7 @@ fn main() -> Result<()> {
     {
         let args: Vec<String> = std::env::args().collect();
         if args.iter().any(|a| a == "--help" || a == "-h") {
-            println!("{USAGE}");
+            println!("{}", usage());
             return Ok(());
         }
         if args.iter().any(|a| a == "--version") {
@@ -4230,7 +4339,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if let Err(e) = validate_args_against(&args, KNOWN_FLAGS) {
-            eprintln!("{e}\n\n{USAGE}");
+            eprintln!("{e}\n\n{}", usage());
             std::process::exit(2);
         }
     }
