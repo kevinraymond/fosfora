@@ -44,7 +44,6 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let edges_master = param(7u); // continuous overlay opacity, not a toggle
     let consonance_gain = 0.3 + param(8u) * 1.2;
     let glow = 0.2 + param(9u) * 1.0;
-    let edge_spin = (param(10u) - 0.5) * 2.0; // -1..1, independent graph rotation
     let edge_breath = param(11u);             // expand/contract amount
 
     // Key-locked global hue + major/minor geometry warp.
@@ -56,7 +55,10 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     let r = length(p);
     let ang = atan2(p.y, p.x);
-    let base_rot = u.beat_phase * TAU * rot_speed * 0.25 + t * 0.03 * rot_speed;
+    // param(12) and param(13) are integrals of rotation_speed and edge_spin's source,
+    // kept by the engine (`"rates"` in the .pfx, #2984). rot_speed stays a value: the
+    // beat term uses it as a gain.
+    let base_rot = u.beat_phase * TAU * rot_speed * 0.25 + param(12u) * 0.03;
 
     var col = vec3f(0.0);
 
@@ -65,7 +67,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     var node_amp: array<f32, 12>;
     // The consonance graph moves on its own: an independent spin, and an audio-driven breath
     // (idle sway + swell with loudness + punch out on kicks) that expands/contracts the ring.
-    let node_rot = t * edge_spin * 0.6;
+    let node_rot = (param(13u) * 2.0 - t) * 0.6; // integral of (p10 - 0.5) * 2
     let breath = 0.12 * sin(t * 0.6) + u.rms * 0.15 + u.kick * 0.18;
     let node_ring_r = 0.34 * (1.0 + edge_breath * breath);
     var total = 0.0;

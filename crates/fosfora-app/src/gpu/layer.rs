@@ -189,6 +189,9 @@ pub struct EffectLayer {
     /// into the previous effect's executor — the bind-group layouts do not match,
     /// so every attempt fails and the failure repeats on every file change.
     pub pending_rebuild: bool,
+    /// Running integrals of the effect's `"rates"` params (#2984). Reset on
+    /// every effect load; advanced once a frame in `frame_prep`.
+    pub rates: crate::effect::rates::RateState,
 }
 
 /// Content type for a layer.

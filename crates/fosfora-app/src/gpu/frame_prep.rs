@@ -36,6 +36,9 @@ pub(crate) fn prepare_effect_layers(
         if let LayerContent::Effect(ref mut e) = layer.content {
             e.uniforms = *global;
             e.uniforms.params = layer.param_store.pack_to_buffer();
+            // `"rates"` params: integrate this frame's (bound, dragged or
+            // morphed) value and hand the shader the running total (#2984).
+            e.rates.advance(&mut e.uniforms.params, dt);
 
             // Update particle systems
             if let Some(ref mut ps) = e.pass_executor.particle_system {

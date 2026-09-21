@@ -23,11 +23,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Isotropic screen space (y is the reference axis) so blobs stay round.
     let p = vec2f((uv.x - 0.5) * aspect, uv.y - 0.5);
 
-    let motion = 0.15 + 1.1 * param(0u);      // p0 drift/orbit speed
     let count_p = param(1u);                  // p1 firefly count
     let occ_size = param(4u);                 // p4 silhouette size
     let warmth = param(7u);                   // p7 palette warmth
-    let t = u.time * motion;
+    // Scene clock = integral of the drift/orbit speed (0.15 + 1.1 * p0): param(10) is
+    // an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984).
+    let t = u.time * 0.15 + param(10u) * 1.1;
 
     let n = i32(6.0 + f32(MAX_FIRE - 6) * count_p);
     // A global flash: every light pulses on kick, sparks on onset.

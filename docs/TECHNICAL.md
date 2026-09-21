@@ -270,6 +270,12 @@ All fields with types and defaults:
         }
     ],
 
+    "rates": [string],                 // Params the shader spends as a speed (optional,
+                                       // Float or Point2D). Each one's running integral
+                                       // is written to the slots after the packed params,
+                                       // in this order; the param's own slot keeps its
+                                       // value. Use it instead of u.time * param.
+
     "passes": [                        // Multi-pass pipeline (optional)
         {
             "name": string,            // Pass name

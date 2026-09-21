@@ -5,7 +5,16 @@
 
 ## Unreleased
 
+### Added
+- **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
+  one's running total in a slot after your parameters, so a shader never has to multiply a
+  parameter by `u.time`. `scripts/audit_pfx_rates.py` finds shaders that still do.
+
 ### Fixed
+- **Nine effects jumped when a binding or a drag moved their speed after the app had been
+  running a while:** Aurora, Chromatica, Cymatics, Drift, Lumen, Prism, Storm, Tunnel, and
+  Frost's dunes. The change in speed was multiplied by the uptime; it now changes only how
+  fast they move from that moment on.
 - **Frost's crystals jumped instead of wandering once the app had been running a while.**
   Their drift speed follows the music, and every change in it was multiplied by the app's
   uptime, so a few minutes in, each shift in the sound threw the cells to new places. They

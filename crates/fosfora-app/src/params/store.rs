@@ -84,6 +84,26 @@ impl ParamStore {
         }
     }
 
+    /// Where each def lands in [`Self::pack_to_buffer`]'s output, in def order
+    /// (`None`: it did not fit in the 16 slots), plus the first slot left free.
+    /// Mirrors pack_to_buffer's rule for a store whose every def has a value,
+    /// which `load_from_defs` guarantees; `packed_offsets_match_pack_to_buffer`
+    /// holds the two together over every shipped effect.
+    pub fn packed_offsets(defs: &[ParamDef]) -> (Vec<Option<usize>>, usize) {
+        let mut out = Vec::with_capacity(defs.len());
+        let mut offset = 0;
+        for def in defs {
+            let count = def.default_value().float_count();
+            if offset < 16 && offset + count <= 16 {
+                out.push(Some(offset));
+                offset += count;
+            } else {
+                out.push(None);
+            }
+        }
+        (out, offset)
+    }
+
     /// Pack all param values into a fixed-size f32 array in definition order.
     pub fn pack_to_buffer(&self) -> [f32; 16] {
         let mut buf = [0.0f32; 16];
@@ -404,5 +424,43 @@ mod tests {
         s.merge_from_defs(&[]);
         assert!(s.defs.is_empty());
         assert!(s.values.is_empty());
+    }
+
+    // `.pfx` rate integrals are placed from packed_offsets, so it must agree
+    // with what pack_to_buffer actually writes — for every shipped effect, not a
+    // hand-made list. Each param gets a distinct marker value and must be found
+    // at the offset packed_offsets gave it.
+    #[test]
+    fn packed_offsets_match_pack_to_buffer() {
+        for effect in crate::effect::loader::shipped_effects_for_test() {
+            let mut s = ParamStore::new();
+            s.load_from_defs(&effect.inputs);
+            for (i, def) in effect.inputs.iter().enumerate() {
+                let m = 100.0 + i as f32;
+                let v = match def.default_value() {
+                    ParamValue::Float(_) => ParamValue::Float(m),
+                    ParamValue::Bool(b) => ParamValue::Bool(b),
+                    ParamValue::Point2D(_) => ParamValue::Point2D([m, m + 0.5]),
+                    ParamValue::Color(_) => ParamValue::Color([m, m, m, m]),
+                };
+                s.set(def.name(), v);
+            }
+            let buf = s.pack_to_buffer();
+            let (offsets, end) = ParamStore::packed_offsets(&effect.inputs);
+            for ((i, def), off) in effect.inputs.iter().enumerate().zip(&offsets) {
+                let Some(off) = off else { continue };
+                if matches!(def.default_value(), ParamValue::Bool(_)) {
+                    continue;
+                }
+                assert_eq!(
+                    buf[*off],
+                    100.0 + i as f32,
+                    "{}: `{}` packed away from offset {off}",
+                    effect.name,
+                    def.name()
+                );
+            }
+            assert!(end <= 16, "{}: layout ends past slot 16", effect.name);
+        }
     }
 }

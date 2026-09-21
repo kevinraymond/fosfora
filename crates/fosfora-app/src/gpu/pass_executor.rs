@@ -2941,100 +2941,138 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         );
     }
 
-    // #2984: Frost's crystal cells wander at a rate the music sets, and the
-    // shader used to spend it as `t * agitation` — every change in the rate
-    // multiplied by uptime, so the cells jumped whenever the music moved, on
-    // ordinary playback with no binding involved. The fix integrates the rate in
-    // a small `phase` feedback pass. This drives the SHIPPED two-pass graph the
-    // way App::render does (execute, then flip) and checks both halves:
-    //
-    //  1. The strobe is gone. Same statistic as the census reproduction
-    //     (pfx_rate_params_strobe_at_a_large_clock): a 0.01 move in u.zcr at a
-    //     300 s clock, block-averaged, against one frame of ordinary motion and a
-    //     same-uniforms self-difference as the floor.
-    //  2. Nothing else moved. With steady audio the integral IS agitation * T, so
-    //     the accumulated phase must track that. Read back from the phase pass's
-    //     own three parts, at half-float precision, over a long run, which is
-    //     where a naive running total would have stopped registering the step.
-    //
-    // Run: cargo test -p fosfora-app -- --ignored --nocapture frost_wander_is_integrated
-    #[test]
-    #[ignore = "requires a wgpu adapter"]
-    fn frost_wander_is_integrated_not_multiplied_by_uptime() {
-        let _guard = gpu_guard();
-        let (device, queue) = test_gpu();
-        let loader = EffectLoader::for_test(&crate::effect::loader::probe_libs());
-        let fmt = TextureFormat::Rgba16Float;
-        let (w, h) = (256u32, 256u32);
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-
-        let ubuf = UniformBuffer::new(&device);
-        let placeholder = PlaceholderTexture::new(&device, &queue, fmt);
-        let audio = AudioTextures::new(&device, &queue);
-        let (blit, blit_bgl) = blit_pipeline(&device);
-
-        // The wiring comes from the shipped .pfx, so this cannot pass against a
-        // graph the app does not build.
-        let frost = crate::effect::loader::shipped_effects_for_test()
-            .into_iter()
-            .find(|e| e.name == "Frost")
-            .expect("frost.pfx");
-        let defs = frost.normalized_passes();
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(names, ["phase", "main"], "frost.pfx pass order changed");
-        assert!(defs[0].feedback, "the phase pass must carry its own state");
-        assert_eq!(defs[1].inputs, ["phase"], "main must read the phase pass");
-
-        // The graph below is assembled by hand, which skips the loader. Build it
-        // once the way the app does too, so a wrong shader filename or pass
-        // name in frost.pfx fails here and not first on Kevin's screen. The
-        // loader resolves assets CWD-relative (same move as golden_loop).
-        if !std::path::Path::new("assets/effects").is_dir() {
-            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-            std::env::set_current_dir(&repo).unwrap();
+    /// Block-averaged mean-RGB difference, 16x16 blocks, 0..1. Per-pixel
+    /// differences invent defects on stochastic content (#2380); block means let
+    /// grain cancel while a real change of content survives.
+    fn block_diff(a: &[u8], b: &[u8], w: u32, h: u32) -> f64 {
+        const BK: u32 = 16;
+        let (mut total, mut blocks) = (0.0f64, 0.0f64);
+        for by in (0..h).step_by(BK as usize) {
+            for bx in (0..w).step_by(BK as usize) {
+                let (mut sa, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64);
+                for y in by..(by + BK).min(h) {
+                    for x in bx..(bx + BK).min(w) {
+                        let i = ((y * w + x) * 4) as usize;
+                        for c in 0..3 {
+                            sa += f64::from(a[i + c]);
+                            sb += f64::from(b[i + c]);
+                            n += 1.0;
+                        }
+                    }
+                }
+                total += ((sa - sb) / n).abs();
+                blocks += 1.0;
+            }
         }
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-        PassExecutor::new(
-            &device,
-            fmt,
-            w,
-            h,
-            &defs,
-            &loader,
-            &ubuf,
-            &placeholder,
-            &audio,
-            &queue,
-            None,
-        )
-        .unwrap_or_else(|e| panic!("the app cannot build frost.pfx: {e}"));
-        let err = pollster::block_on(device.pop_error_scope());
-        assert!(
-            err.is_none(),
-            "frost.pfx built with a validation error: {err:?}"
-        );
+        total / blocks / 255.0
+    }
 
-        let build = |defs: &[PassDef]| {
+    /// Runs a SHIPPED effect's pass graph the way App::render does, for the
+    /// #2984 rate probes: pipelines from the real shader files, wiring from the
+    /// real `.pfx`, one frame = execute every pass, capture, then flip.
+    struct ShippedRig {
+        device: std::sync::Arc<Device>,
+        queue: std::sync::Arc<Queue>,
+        loader: EffectLoader,
+        fmt: TextureFormat,
+        w: u32,
+        h: u32,
+        ubuf: UniformBuffer,
+        placeholder: PlaceholderTexture,
+        audio: AudioTextures,
+        blit: wgpu::RenderPipeline,
+        blit_bgl: wgpu::BindGroupLayout,
+        root: std::path::PathBuf,
+    }
+
+    impl ShippedRig {
+        fn new(w: u32, h: u32) -> Self {
+            let (device, queue) = test_gpu();
+            let fmt = TextureFormat::Rgba16Float;
+            let (blit, blit_bgl) = blit_pipeline(&device);
+            Self {
+                loader: EffectLoader::for_test(&crate::effect::loader::probe_libs()),
+                ubuf: UniformBuffer::new(&device),
+                placeholder: PlaceholderTexture::new(&device, &queue, fmt),
+                audio: AudioTextures::new(&device, &queue),
+                blit,
+                blit_bgl,
+                root: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets"),
+                device,
+                queue,
+                fmt,
+                w,
+                h,
+            }
+        }
+
+        /// Build through `PassExecutor::new`, the app's own path, so a wrong
+        /// shader filename or pass name in a `.pfx` fails here rather than first
+        /// on screen. The graph `build` hands back is assembled by hand and would
+        /// not notice. The loader resolves assets CWD-relative (as golden_loop).
+        fn check_production_build(&self, effect: &crate::effect::format::PfxEffect) {
+            if !std::path::Path::new("assets/effects").is_dir() {
+                let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+                std::env::set_current_dir(&repo).unwrap();
+            }
+            self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            PassExecutor::new(
+                &self.device,
+                self.fmt,
+                self.w,
+                self.h,
+                &effect.normalized_passes(),
+                &self.loader,
+                &self.ubuf,
+                &self.placeholder,
+                &self.audio,
+                &self.queue,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("the app cannot build {}: {e}", effect.name));
+            let err = pollster::block_on(self.device.pop_error_scope());
+            assert!(
+                err.is_none(),
+                "{} built with a validation error: {err:?}",
+                effect.name
+            );
+        }
+
+        fn build(&self, defs: &[PassDef]) -> PassExecutor {
             let specs: Vec<PassSpec> = defs
                 .iter()
                 .map(|d| {
-                    let src = std::fs::read_to_string(root.join("shaders").join(&d.shader))
+                    let src = std::fs::read_to_string(self.root.join("shaders").join(&d.shader))
                         .expect("shader source");
                     let pipe = ShaderPipeline::new(
-                        &device,
-                        fmt,
-                        &loader.prepend_library_with_inputs(&src, d.input_count()),
+                        &self.device,
+                        self.fmt,
+                        &self
+                            .loader
+                            .prepend_library_with_inputs(&src, d.input_count()),
                         None,
                         d.input_count(),
                     )
-                    .unwrap_or_else(|e| panic!("frost {}: pipeline: {e}", d.name));
+                    .unwrap_or_else(|e| panic!("{}: pipeline: {e}", d.shader));
+                    let find = |n: &String| {
+                        assert!(
+                            !n.starts_with('@'),
+                            "{}: `{n}` needs the full app",
+                            d.shader
+                        );
+                        defs.iter().position(|x| &x.name == n).expect("input")
+                    };
                     let inputs = d
                         .inputs
                         .iter()
                         .map(|n| InputSrc::Pass {
-                            pass: defs.iter().position(|x| &x.name == n).expect("input"),
+                            pass: find(n),
                             prev: false,
                         })
+                        .chain(d.prev_inputs.iter().map(|n| InputSrc::Pass {
+                            pass: find(n),
+                            prev: true,
+                        }))
                         .collect();
                     (
                         d.name.as_str(),
@@ -3047,96 +3085,242 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
                 })
                 .collect();
             assemble(
-                &device,
-                &queue,
-                w,
-                h,
-                fmt,
-                &ubuf,
-                &placeholder,
-                &audio,
+                &self.device,
+                &self.queue,
+                self.w,
+                self.h,
+                self.fmt,
+                &self.ubuf,
+                &self.placeholder,
+                &self.audio,
                 specs,
             )
-        };
+        }
 
-        const DT: f32 = 1.0 / 60.0;
-        let base = |time: f32, zcr: f32| {
+        /// One app frame; returns the LAST pass's picture, the effect's output.
+        fn frame(&self, ex: &mut PassExecutor, u: &crate::gpu::ShaderUniforms) -> Vec<u8> {
+            let last = ex.passes.len() - 1;
+            let px = capture_pass_rgba(
+                &self.device,
+                &self.queue,
+                &self.ubuf,
+                &self.blit,
+                &self.blit_bgl,
+                ex,
+                u,
+                last,
+                self.w,
+                self.h,
+            );
+            ex.flip();
+            px
+        }
+
+        /// A frame's uniforms with steady, plausible audio. Params and clock are
+        /// the caller's: it packs them and advances the rates like frame_prep.
+        fn uniforms(&self, time: f32, dt: f32, params: [f32; 16]) -> crate::gpu::ShaderUniforms {
             let mut u = crate::gpu::ShaderUniforms::zeroed();
-            u.resolution = [w as f32, h as f32];
-            let mut store = crate::params::ParamStore::new();
-            store.load_from_defs(&frost.inputs);
-            u.params = store.pack_to_buffer();
+            u.resolution = [self.w as f32, self.h as f32];
+            u.params = params;
             u.time = time;
-            u.delta_time = DT;
-            u.frame_index = time / DT;
+            u.delta_time = dt;
+            u.frame_index = time * 60.0;
             u.beat_phase = (time * 2.0).fract();
             u.rms = 0.4;
             u.bass = 0.3;
             u.sub_bass = 0.25;
             u.centroid = 0.5;
             u.flatness = 0.5;
-            u.zcr = zcr;
+            u.zcr = 0.2;
             u
-        };
+        }
+    }
 
-        // One app frame: execute every pass, capture main, then flip — the step
-        // the chain probes once skipped and so only ever tested one frame (#2670).
-        let frame = |ex: &mut PassExecutor, u: &crate::gpu::ShaderUniforms| {
-            let px = capture_pass_rgba(&device, &queue, &ubuf, &blit, &blit_bgl, ex, u, 1, w, h);
-            ex.flip();
-            px
-        };
+    // #2984: a .pfx LAYER effect that spent a param as `u.time * speed`
+    // multiplied every change in speed by the uptime, so a binding or a drag
+    // jumped the picture instead of changing its pace. Measured before the fix
+    // at a 300 s clock, a 0.01 nudge cost 884x-12,000x what it cost at a fresh
+    // one (Drift 12,222x, Cymatics 884x, Tunnel 1,411x) and moved the picture
+    // 16-44x as far as a whole frame of ordinary motion.
+    //
+    // The fix is `"rates"`: the engine integrates the param (effect::rates) and
+    // the shader reads the integral; where the rate is a product of params
+    // (Tunnel's rib screw) or depends on audio (Frost's wander), a phase pass
+    // integrates it instead. This drives EVERY shipped effect that declares
+    // rates through its real pass graph, with the params packed from the .pfx
+    // defaults and advanced by RateState exactly as frame_prep does. Two graphs
+    // are warmed identically, then split on one frame — the rate held, or
+    // nudged by 0.01 as a binding or a drag does — and compared with a floor
+    // (the two warmed graphs against each other) and with one frame of
+    // ordinary motion, at a fresh clock and at 300 s.
+    //
+    // The 300 s warm-up is 30 steps of 10 s, not 18,000 of 1/60: every
+    // integrator involved — RateState and the phase passes — is linear in dt
+    // while the params hold still, so the state it reaches is the same.
+    //
+    // Run: cargo test -p fosfora-app -- --ignored --nocapture every_rate_param_is_integrated
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn every_rate_param_is_integrated_not_multiplied_by_uptime() {
+        use crate::effect::rates::{RateState, layout};
+        use crate::params::{ParamStore, ParamValue};
 
-        let block_diff = |a: &[u8], b: &[u8]| -> f64 {
-            const BK: u32 = 16;
-            let (mut total, mut blocks) = (0.0f64, 0.0f64);
-            for by in (0..h).step_by(BK as usize) {
-                for bx in (0..w).step_by(BK as usize) {
-                    let (mut sa, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64);
-                    for y in by..(by + BK).min(h) {
-                        for x in bx..(bx + BK).min(w) {
-                            let i = ((y * w + x) * 4) as usize;
-                            for c in 0..3 {
-                                sa += f64::from(a[i + c]);
-                                sb += f64::from(b[i + c]);
-                                n += 1.0;
-                            }
-                        }
-                    }
-                    total += ((sa - sb) / n).abs();
-                    blocks += 1.0;
-                }
+        let _guard = gpu_guard();
+        let rig = ShippedRig::new(192, 192);
+        const DELTA: f32 = 0.01;
+        const DT: f32 = 1.0 / 60.0;
+        const WARM: u32 = 30;
+
+        let mut probed = Vec::new();
+        for effect in crate::effect::loader::shipped_effects_for_test() {
+            if effect.rates.is_empty() {
+                continue;
             }
-            total / blocks / 255.0
-        };
+            rig.check_production_build(&effect);
+            let slots = layout(&effect.inputs, &effect.rates).expect("rates layout");
+            let defs = effect.normalized_passes();
+
+            for slot in &slots {
+                let mut rows = Vec::new();
+                for &t_end in &[0.5f32, 300.0] {
+                    let warm_dt = t_end / WARM as f32;
+                    // Warm a fresh graph to t_end; then one more frame, with the
+                    // rate held or nudged. Returns (frame at t_end, next frame).
+                    let run = |nudge: f32| {
+                        let mut store = ParamStore::new();
+                        store.load_from_defs(&effect.inputs);
+                        let mut rates = RateState::new(slots.clone());
+                        let mut ex = rig.build(&defs);
+                        let mut last = Vec::new();
+                        for f in 1..=WARM {
+                            let mut p = store.pack_to_buffer();
+                            rates.advance(&mut p, warm_dt);
+                            last =
+                                rig.frame(&mut ex, &rig.uniforms(f as f32 * warm_dt, warm_dt, p));
+                        }
+                        if nudge != 0.0 {
+                            let v = match store.get(&slot.name) {
+                                Some(ParamValue::Float(v)) => ParamValue::Float(v + nudge),
+                                Some(ParamValue::Point2D([x, y])) => {
+                                    ParamValue::Point2D([x + nudge, *y])
+                                }
+                                other => panic!("{}: `{}` is {other:?}", effect.name, slot.name),
+                            };
+                            store.set(&slot.name, v);
+                        }
+                        let mut p = store.pack_to_buffer();
+                        rates.advance(&mut p, DT);
+                        let next = rig.frame(&mut ex, &rig.uniforms(t_end + DT, DT, p));
+                        (last, next)
+                    };
+                    let (a, held) = run(0.0);
+                    let (a2, pushed) = run(DELTA);
+                    let floor = block_diff(&a, &a2, rig.w, rig.h);
+                    assert!(
+                        floor < 1e-9,
+                        "{}: two graphs warmed identically differ by {floor} — the \
+                         comparison would be measuring noise",
+                        effect.name
+                    );
+                    rows.push((
+                        t_end,
+                        block_diff(&a, &held, rig.w, rig.h),
+                        block_diff(&a, &pushed, rig.w, rig.h),
+                    ));
+                }
+                let (_, m0, j0) = rows[0];
+                let (_, m300, j300) = rows[1];
+                eprintln!(
+                    "  {:11} {:15} t=0.5 motion {m0:.5} nudged {j0:.5} | \
+                     t=300 motion {m300:.5} nudged {j300:.5}",
+                    effect.name, slot.name
+                );
+                // The defect is AMPLIFICATION BY THE CLOCK, so compare what the
+                // nudge costs beyond motion at 300 s with what it costs at 0.5 s.
+                // A nudge may legitimately cost something at any clock — Tunnel's
+                // twist re-twists the ribs by twist * depth, ~2.5x motion at both
+                // clocks — but it must not grow with uptime. Before the fix the
+                // 300 s excess was 884x-12,000x the fresh one.
+                let (e0, e300) = ((j0 - m0).max(0.0), (j300 - m300).max(0.0));
+                assert!(
+                    e300 <= e0 * 2.0 + 1e-4,
+                    "{}: a 0.01 move in `{}` costs {e300:.5} beyond motion at a 300 s \
+                     clock but {e0:.5} at a fresh one — something is multiplying this \
+                     rate by u.time again (nudged {j300:.5}, motion {m300:.5})",
+                    effect.name,
+                    slot.name
+                );
+                probed.push(format!("{}.{}", effect.name, slot.name));
+            }
+        }
+        // Nine effects, eleven rates between them.
+        assert!(
+            probed.len() >= 11,
+            "expected every declared rate probed, got {probed:?}"
+        );
+    }
+
+    // #2984: Frost's crystal cells wander at a rate the MUSIC sets, and the
+    // shader used to spend it as `t * agitation` — every change in the rate
+    // multiplied by uptime, so the cells jumped whenever the music moved, on
+    // ordinary playback with no binding involved. Its rate depends on audio, so
+    // `"rates"` cannot integrate it; a `phase` pass does. The generic probe
+    // above nudges params; this nudges the AUDIO, and checks the phase pass
+    // keeps time:
+    //
+    //  1. The strobe is gone: a 0.01 move in u.zcr at a 300 s clock against
+    //     one frame of ordinary motion and a two-graph floor.
+    //  2. Nothing else moved. With steady audio the integral IS agitation * T,
+    //     read back from the phase pass over a long run, which is where the
+    //     half-float storage would show a bias.
+    //
+    // Run: cargo test -p fosfora-app -- --ignored --nocapture frost_wander_is_integrated
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn frost_wander_is_integrated_not_multiplied_by_uptime() {
+        use crate::effect::rates::{RateState, layout};
+
+        let _guard = gpu_guard();
+        let rig = ShippedRig::new(256, 256);
+        let frost = crate::effect::loader::shipped_effects_for_test()
+            .into_iter()
+            .find(|e| e.name == "Frost")
+            .expect("frost.pfx");
+        let defs = frost.normalized_passes();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["phase", "main"], "frost.pfx pass order changed");
+        assert!(defs[0].feedback, "the phase pass must carry its own state");
+        assert_eq!(defs[1].inputs, ["phase"], "main must read the phase pass");
+        rig.check_production_build(&frost);
+
+        const DT: f32 = 1.0 / 60.0;
+        let mut store = crate::params::ParamStore::new();
+        store.load_from_defs(&frost.inputs);
+        let slots = layout(&frost.inputs, &frost.rates).expect("rates layout");
 
         // ---- 1. The strobe ------------------------------------------------
-        // Two identical graphs warmed identically, then split on one frame:
-        // one sees the audio hold, the other sees it nudged. `u.time` sits at
-        // 300 s for all of it — the fix makes the wander independent of it, so
-        // a large clock must no longer amplify anything.
         const T: f32 = 300.0;
         const WARM: u32 = 30;
-        let warm = |ex: &mut PassExecutor| {
+        let run = |zcr_next: f32| {
+            let mut rates = RateState::new(slots.clone());
+            let mut ex = rig.build(&defs);
             let mut last = Vec::new();
-            for f in 0..WARM {
-                last = frame(ex, &base(T + f as f32 * DT, 0.2));
+            for f in 1..=WARM {
+                let mut p = store.pack_to_buffer();
+                rates.advance(&mut p, DT);
+                last = rig.frame(&mut ex, &rig.uniforms(T + f as f32 * DT, DT, p));
             }
-            last
+            let mut p = store.pack_to_buffer();
+            rates.advance(&mut p, DT);
+            let mut u = rig.uniforms(T + (WARM + 1) as f32 * DT, DT, p);
+            u.zcr = zcr_next;
+            (last, rig.frame(&mut ex, &u))
         };
-        let t_next = T + WARM as f32 * DT;
-
-        let mut held = build(&defs);
-        let a = warm(&mut held);
-        let motion_px = frame(&mut held, &base(t_next, 0.2));
-
-        let mut nudged = build(&defs);
-        let a2 = warm(&mut nudged);
-        let nudged_px = frame(&mut nudged, &base(t_next, 0.21));
-
-        let floor = block_diff(&a, &a2);
-        let motion = block_diff(&a, &motion_px);
-        let jump = block_diff(&a, &nudged_px);
+        let (a, motion_px) = run(0.2);
+        let (a2, nudged_px) = run(0.21);
+        let floor = block_diff(&a, &a2, rig.w, rig.h);
+        let motion = block_diff(&a, &motion_px, rig.w, rig.h);
+        let jump = block_diff(&a, &nudged_px, rig.w, rig.h);
         eprintln!(
             "frost at t={T}s: floor {floor:.5}  motion {motion:.5}  nudged {jump:.5}  \
              excess {:.5}",
@@ -3156,18 +3340,15 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         );
 
         // ---- 2. Nothing else moved ----------------------------------------
-        // Steady audio for a long run: the phase must equal agitation * elapsed,
-        // wrapped at 200*PI. Read the phase pass directly — its r/g halves come
-        // back through the RGBA8 blit, so decode from a raw readback instead.
-        let mut ex = build(&defs);
+        let mut ex = rig.build(&defs);
+        let mut rates = RateState::new(slots.clone());
         let frames = 3600u32; // one minute at 60 fps
         for f in 0..frames {
-            let u = base(f as f32 * DT, 0.2);
-            let _ = frame(&mut ex, &u);
+            let mut p = store.pack_to_buffer();
+            rates.advance(&mut p, DT);
+            let _ = rig.frame(&mut ex, &rig.uniforms(f as f32 * DT, DT, p));
         }
         // Default params, flatness 0.5, zcr 0.2 -> the shader's own formula.
-        let mut store = crate::params::ParamStore::new();
-        store.load_from_defs(&frost.inputs);
         let p = store.pack_to_buffer();
         let (morph_bias, reactivity) = (p[1], p[7]);
         let zcr_x = (0.2f32 * 2.5).min(1.0);
@@ -3176,7 +3357,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         let wrap = 200.0 * std::f64::consts::PI;
         let want = (f64::from(agitation) * f64::from(DT) * f64::from(frames)) % wrap;
 
-        let got = read_phase(&device, &queue, &ex);
+        let got = read_phase(&rig.device, &rig.queue, &ex);
         eprintln!(
             "frost phase after {frames} steady frames: got {got:.4}  want {want:.4} \
              (agitation {agitation:.4})"
@@ -3187,42 +3368,6 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             "steady-audio phase drifted by {err:.4} rad over {frames} frames — the \
              f16 storage is biasing the step (got {got:.4}, want {want:.4})"
         );
-
-        // ---- 3. The census's second Frost site: dunes, `drift_dir * t` -----
-        // MEASUREMENT ONLY, deliberately not asserted yet. Same split as part 1,
-        // nudging drift.x (param slot 8) by 0.01 instead of the audio. When this
-        // was written it read, block-averaged:
-        //
-        //   t=0    motion .00119  nudged .00119  excess .00000
-        //   t=300  motion .00179  nudged .01825  excess .01645   (10x motion)
-        //
-        // So dragging the drift pad at a large clock jumps the dunes. It is NOT
-        // the playback bug fixed above: nothing moves `drift` unless a person or
-        // a binding does, which puts it in the same class as the other eight
-        // census effects, and `drift` is a Point2D, which trama's `rates` does
-        // not accept. It lands with that batch (#2984); make this an assertion
-        // when it does.
-        for &t0 in &[0.0f32, T] {
-            let run = |dx: f32| {
-                let mut ex = build(&defs);
-                let mut last = Vec::new();
-                for f in 0..WARM {
-                    last = frame(&mut ex, &base(t0 + f as f32 * DT, 0.2));
-                }
-                let mut u = base(t0 + WARM as f32 * DT, 0.2);
-                u.params[8] += dx;
-                (last, frame(&mut ex, &u))
-            };
-            let (a, held) = run(0.0);
-            let (_, pushed) = run(0.01);
-            let motion = block_diff(&a, &held);
-            let jump = block_diff(&a, &pushed);
-            eprintln!(
-                "frost drift.x +0.01 at t={t0}s: motion {motion:.5}  nudged {jump:.5}  \
-                 excess {:.5}",
-                (jump - motion).max(0.0)
-            );
-        }
     }
 
     /// Read the Frost phase pass's accumulated value, `r + g + b`, from the target

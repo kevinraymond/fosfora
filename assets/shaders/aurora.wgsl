@@ -10,7 +10,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let t = u.time;
 
     // param(0) = curtain_speed, param(1) = band_spread, param(2) = glow_width
-    let curtain_speed = param(0u) * 2.0 + 0.3;
+    // Curtain travel = integral of the speed (2p + 0.3): param(3) is an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984).
+    // `t * speed` multiplied every change of speed by the uptime and jumped the curtains.
+    let curtain_travel = param(3u) * 2.0 + t * 0.3;
     let band_spread = param(1u) * 1.5 + 0.5;
     let glow_width = param(2u) * 0.04 + 0.008;
 
@@ -47,7 +49,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
         // Horizontal wave distortion — each band has different flow
         let wave_freq = 2.0 + fi * 0.5;
-        let wave_phase = t * curtain_speed * (0.8 + fi * 0.1);
+        let wave_phase = curtain_travel * (0.8 + fi * 0.1);
         let wave = sin(p.x * wave_freq + wave_phase) * 0.05
                  + sin(p.x * wave_freq * 2.3 + wave_phase * 0.7) * 0.03;
 

@@ -377,6 +377,7 @@ impl App {
                 shader_sources,
                 shader_error: None,
                 pending_rebuild: false,
+                rates: Default::default(),
             },
             param_store,
         );

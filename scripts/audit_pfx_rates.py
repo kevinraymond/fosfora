@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Census: which .pfx layer effects compute `u.time * <param>` (board #2984).
 
-Usage:  scripts/audit_pfx_rates.py
+Usage:  scripts/audit_pfx_rates.py [--check]
+
+--check exits non-zero if an effect is flagged that is not in KNOWN below, or if
+a KNOWN effect is no longer flagged (a stale exemption hides the next
+regression). The pre-commit hook runs it, so a new `u.time * param` fails at
+commit time rather than on someone's screen after a few minutes of uptime.
 
 Not a fixer and not a verdict — a candidate list to REPRODUCE, in priority
 order. A shipped .pfx effect that multiplies ABSOLUTE time by a value derived
@@ -11,7 +16,10 @@ and the binding matrix can drive any Float param from audio.
 Two distinctions the flat grep gets wrong, both found by over-flagging:
 
   * Only a ROOT product counts. Downstream users of an already-contaminated
-    value are consequences of the same defect, not separate ones.
+    value are consequences of the same defect, not separate ones — UNLESS they
+    multiply it by a DIFFERENT param, which is a new root (Tunnel's `twist * z`,
+    where z already carried `t * speed`, was missed by the first census and
+    found by the GPU probe).
 
   * Only UNBOUNDED time counts. `sin(t)` is bounded, so `param * sin(t)` is a
     gain that moves smoothly when the param moves. `param * t` is a phase, and
@@ -29,7 +37,12 @@ Verified against the GPU by `pfx_rate_params_strobe_at_a_large_clock`
 (effect/loader.rs): on the effects this flags, a 0.01 param nudge costs
 884x-12,000x more at a 300 s clock than at a fresh one.
 
-The blind spot, checked and empty when this was written: taint does not cross a
+Known limit: a `"rates"` integral slot (e.g. `param(4u)` in drift.wgsl) grows
+without bound like `u.time`, but this scan does not know which slots those are,
+so `integral * other_param` would pass here. The GPU probe
+every_rate_param_is_integrated_not_multiplied_by_uptime covers declared rates.
+
+The other blind spot, checked and empty when this was written: taint does not cross a
 function call, so a helper that both reads `param()` and receives a time-derived
 argument would be missed. Re-check that if this ever reports fewer than it should.
 """
@@ -106,13 +119,23 @@ def call_args(expr, fn_filter=None):
                     break
 
 
+# Any hash, noise or palette helper returns a bounded value however large its
+# input grows. Matched by name because the sims each carry their own
+# (uhash_f, rand_vec2, curl_noise_2d, fbm_curl_2d, storm_worley, ...).
+BOUNDED_NAME = re.compile(r"hash|noise|fbm|curl|rand|worley|voronoi|palette|simplex|perlin")
+
+
+def is_bounded_fn(fn):
+    return fn in BOUNDED_FNS or bool(BOUNDED_NAME.search(fn))
+
+
 def blank_bounded(expr):
     """Replace every bounded call with a neutral token, innermost first."""
     prev = None
     cur = expr
     while cur != prev:
         prev = cur
-        for fn, arg in call_args(cur, BOUNDED_FNS):
+        for fn, arg in call_args(cur, [n for n, _ in call_args(cur) if is_bounded_fn(n)]):
             whole = f"{fn}({arg})"
             if whole in cur:
                 cur = cur.replace(whole, " BOUNDED ")
@@ -153,19 +176,24 @@ def find_products(expr, utime_names, param_names, param_slots, depth=0):
     for term in split_top(expr, "+-"):
         factors = split_top(term, "*/")
         if len(factors) > 1:
-            t_side, p_side = [], []
+            info = []
             for f in factors:
-                is_t = has_unbounded_time(f, utime_names)
-                is_p = has_param(f, param_names)
-                # A factor that is BOTH carries the product already — its own
-                # defining line is the root, not this one.
-                if is_t and not is_p:
-                    t_side.append(f)
-                elif is_p and not is_t:
-                    p_side.append(f)
-            if t_side and p_side:
-                for f in p_side:
-                    found |= slots_of(f, param_slots) or {-1}
+                sl = slots_of(f, param_slots)
+                if not sl and has_param(f, param_names):
+                    sl = {-1}
+                info.append((has_unbounded_time(f, utime_names), sl))
+            # A factor carrying unbounded time, times a factor carrying a param
+            # slot the first does not already carry. A factor that is itself
+            # time x param is NOT exempt: Tunnel's `twist * z` hid behind
+            # `z = ... + t * speed` — contaminated by speed, then multiplied by
+            # twist — and the first census skipped it as "a consequence".
+            # Multiplying by the SAME slot again, or by a constant, is.
+            for i, (ti, si) in enumerate(info):
+                if not ti:
+                    continue
+                for j, (_tj, sj) in enumerate(info):
+                    if j != i:
+                        found |= sj - si
         for f in factors:
             for _fn, arg in call_args(f):
                 for a in split_top(arg, ","):
@@ -197,13 +225,14 @@ def scan_shader(path):
     src = path.read_text()
     raw = src.splitlines()
     all_lines = [strip_comment(l) for l in raw]
+    helpers = {m.group(1) for l in all_lines if (m := FN_START.match(l))} - {"fs_main", "cs_main"}
     findings = []
     for lo, hi in function_spans(all_lines):
-        findings += scan_body(raw, all_lines, lo, hi)
+        findings += scan_body(raw, all_lines, lo, hi, helpers)
     return findings
 
 
-def scan_body(raw, all_lines, lo, hi):
+def scan_body(raw, all_lines, lo, hi, helpers=frozenset()):
     lines = all_lines[lo:hi + 1]
 
     utime_names, param_names = set(), set()
@@ -226,12 +255,44 @@ def scan_body(raw, all_lines, lo, hi):
         i = lo + off + 1
         m = LET.match(line)
         rhs = m.group(2) if m else line
-        if "*" not in rhs:
-            continue
-        slots = find_products(rhs, utime_names, param_names, param_slots)
-        if slots:
-            findings.append((i, raw[i - 1].strip(), slots))
+        # Taint does not cross a call, so a helper handed unbounded time AND a
+        # param is reported as a site of its own: Tesla's
+        # `get_dipole_positions(u.time, mode, rotation, ...)` computes
+        # `t * rotation` inside, and Etch's `etch_clearing(clear_cycle, u.time)`
+        # computes `fract(t / clear_cycle)` — both invisible to the product walk.
+        for fn, arg in call_args(line):
+            if fn not in helpers or FN_START.match(line):
+                continue
+            # Time and a param in SEPARATE arguments, so the helper can multiply
+            # them. The same argument holding both is a sum or a product the
+            # walk below already judges (Storm's `storm_worley(wp * 2.0 +
+            # time_off * 0.3)` is an offset, not a rate).
+            args = split_top(arg, ",")
+            timed = [k for k, a in enumerate(args) if has_unbounded_time(a, utime_names)]
+            parmd = [k for k, a in enumerate(args) if has_param(a, param_names)]
+            if any(t != q for t in timed for q in parmd):
+                sl = set()
+                for a in args:
+                    sl |= slots_of(a, param_slots)
+                findings.append((i, raw[i - 1].strip(), sl or {-1}))
+                break
+        else:
+            if "*" not in rhs:
+                continue
+            slots = find_products(rhs, utime_names, param_names, param_slots)
+            if slots:
+                findings.append((i, raw[i - 1].strip(), slots))
     return findings
+
+
+# Flagged on purpose, each with the reason it is not fixed yet. Remove an entry
+# when its fix lands — --check fails on a stale one.
+KNOWN = {
+    "Tesla": "board #3039: its integral would land in slot 8, which particle "
+    "compute shaders never receive (they get slots 0-7)",
+    "Etch": "board #3040: the clear clock's rate is the RECIPROCAL of clear_cycle, "
+    "which `rates` does not integrate",
+}
 
 
 def main():
@@ -249,6 +310,11 @@ def main():
         for p in doc.get("passes", []):
             if p.get("shader"):
                 shaders.append(p["shader"])
+        # A particle sim is part of the effect: Tesla's rotates its poles as
+        # `t * rotation` in the compute shader as well as the background.
+        for v in (doc.get("particles") or {}).values():
+            if isinstance(v, str) and v.endswith(".wgsl"):
+                shaders.append(v)
 
         hits = []
         for s in dict.fromkeys(shaders):
@@ -294,6 +360,27 @@ def main():
 
     print("## clean (no unbounded time x param found)")
     print("   " + ", ".join(clean))
+
+    if "--check" in sys.argv:
+        flagged = {name for _, name, *_ in rows}
+        new = sorted(flagged - KNOWN.keys())
+        stale = sorted(KNOWN.keys() - flagged)
+        for name in sorted(flagged & KNOWN.keys()):
+            print(f"known: {name} — {KNOWN[name]}", file=sys.stderr)
+        if new:
+            print(
+                f"\nFAIL: {', '.join(new)} multiply a param by u.time (details above). A\n"
+                "binding or a drag on that param jumps the picture by (change x uptime).\n"
+                'List it under "rates" in the .pfx and read the integral instead\n'
+                "(crates/fosfora-app/src/effect/rates.rs explains how).",
+                file=sys.stderr,
+            )
+        if stale:
+            print(
+                f"\nFAIL: {', '.join(stale)} no longer flagged — remove from KNOWN.",
+                file=sys.stderr,
+            )
+        sys.exit(1 if new or stale else 0)
 
 
 if __name__ == "__main__":

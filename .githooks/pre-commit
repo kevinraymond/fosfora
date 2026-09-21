@@ -19,6 +19,14 @@ if ! scripts/check_docs.py; then
     exit 1
 fi
 
+# Guard .pfx shaders against multiplying a param by u.time (#2984): a binding or a drag
+# on that param jumps the picture by (change x uptime), which no test at a fresh clock
+# sees. Known, unfixed cases are listed with reasons inside the script.
+if ! scripts/audit_pfx_rates.py --check >/dev/null; then
+    echo "ERROR: rate audit failed. See scripts/audit_pfx_rates.py."
+    exit 1
+fi
+
 # Check cargo fmt
 if ! cargo fmt --all -- --check 2>/dev/null; then
     echo "ERROR: cargo fmt check failed. Run 'cargo fmt --all' to fix."

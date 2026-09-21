@@ -112,12 +112,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let pos = p.pos_life.xy;
 
     // Params
-    let rotation_param = param(4u);   // rotation speed
     let symmetry_param = param(5u);   // symmetry folding
     let glow_param = param(6u);       // glow multiplier
 
     // Transform position for Chladni evaluation: rotate + fold
-    let rot_angle = u.time * rotation_param * 0.5;
+    // param(7) is the integral of rotation speed (param 4), kept by the engine
+    // (`"rates"` in the .pfx, #2984) and forwarded here with slots 0-7. It MUST
+    // match cymatics_bg.wgsl's angle: the particles settle on the pattern the
+    // background draws, and `u.time * rotation` jumped both whenever it moved.
+    let rot_angle = param(7u) * 0.5;
     var eval_pos = rotate2d(pos, rot_angle);
     eval_pos = fold_symmetry(eval_pos, symmetry_param);
 

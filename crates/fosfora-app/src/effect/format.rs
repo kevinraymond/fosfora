@@ -197,6 +197,12 @@ pub struct PfxEffect {
     pub shader: String,
     #[serde(default)]
     pub inputs: Vec<ParamDef>,
+    /// Params the shader spends as a SPEED — Float or Point2D. The engine keeps
+    /// each one's running integral and writes it into its own slot after the
+    /// packed params, so the shader never multiplies a param by `u.time`
+    /// (see `effect::rates`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rates: Vec<String>,
     /// Multi-pass pipeline definition. If empty, `shader` field is used as a single pass.
     #[serde(default)]
     pub passes: Vec<PassDef>,
@@ -333,6 +339,7 @@ mod tests {
             description: String::new(),
             shader: "test.wgsl".into(),
             inputs: vec![],
+            rates: vec![],
             passes: vec![],
             postprocess: None,
             particles: None,
@@ -360,6 +367,7 @@ mod tests {
             description: String::new(),
             shader: String::new(),
             inputs: vec![],
+            rates: vec![],
             passes: vec![],
             postprocess: None,
             particles: None,
@@ -391,6 +399,7 @@ mod tests {
             description: String::new(),
             shader: "ignored.wgsl".into(),
             inputs: vec![],
+            rates: vec![],
             passes: vec![pass],
             postprocess: None,
             particles: None,
@@ -583,6 +592,7 @@ mod tests {
             description: String::new(),
             shader: shader.into(),
             inputs: vec![],
+            rates: vec![],
             passes: vec![],
             postprocess: None,
             particles: None,

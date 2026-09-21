@@ -11,13 +11,13 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // param(0) = warp_intensity, param(1) = flow_speed, param(2) = color_mode, param(3) = density
     let warp_intensity = param(0u) * 2.0 + 0.5;
-    let flow_speed = param(1u) * 0.8 + 0.1;
     let color_mode = param(2u);
     let density = param(3u) * 1.5 + 0.5;
 
     // Audio modulation
     let bass_warp = (u.sub_bass + u.bass) * 0.5 * warp_intensity;
-    let flow_t = t * flow_speed;
+    // Flow travel = integral of the speed (0.8p + 0.1): param(4) is an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984).
+    let flow_t = param(4u) * 0.8 + t * 0.1;
 
     // Triple domain warping for fluid look
     let q = vec2f(

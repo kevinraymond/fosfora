@@ -44,9 +44,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // It used to be spent here as `t * agitation`, which multiplies every change
     // in the rate — and the rate is audio-driven — by the app's uptime, so the
     // cells jumped instead of wandering. `frost_phase.wgsl` carries the rate
-    // formula and why the value arrives in three parts.
+    // formula; phase_unpack reassembles it.
     let ph = input0(vec2f(0.5, 0.5));
-    let wander = ph.r + ph.g + ph.b;
+    let wander = phase_unpack(ph);
     let amp = 0.25 + m * 0.45;                      // wander radius grows as it melts
     let shatter = u.onset * 0.35;
 
@@ -115,7 +115,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let dust = vec3f(0.55, 0.47, 0.36) * (0.25 + 0.75 * gval);
     // Sand inherits the crystal's light; a low-frequency field scrolling along
     // the wind direction shades dunes into the grain carpet
-    let dune = fosfora_fbm2(p * 2.2 + drift_dir * (t * 0.15), 3, 0.5);
+    // param(10..11) is the integral of `drift`, kept by the engine (`"rates"`, #2984);
+    // `drift_dir * t` jumped the dunes whenever the drift pad moved.
+    let dune = fosfora_fbm2(p * 2.2 + vec2f(param(10u), param(11u)) * 0.15, 3, 0.5);
     let dune_shade = mix(0.30, 1.25, smoothstep(0.22, 0.68, dune));
     let dust_col = dust * (0.4 + 0.6 * facet_lum) * dune_shade;
 

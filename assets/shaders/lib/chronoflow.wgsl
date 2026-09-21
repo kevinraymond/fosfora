@@ -162,6 +162,37 @@ fn frame_gain3(gain60: vec3f, keep60: vec3f) -> vec3f {
     return gain60 * select((vec3f(1.0) - decayed) / d, vec3f(n), d < vec3f(1e-5));
 }
 
+// ---- Phase accumulators in a feedback target (#2984) ----
+// For a rate the engine cannot integrate on the CPU — one that depends on live
+// audio (Frost's wander) or on a product of params (Tunnel's rib screw) — a
+// small feedback pass keeps the running phase itself: read it with
+// phase_unpack(feedback(...)), add rate * u.delta_time, write phase_pack(...).
+//
+// Pass targets are Rgba16Float, where a raw running total stops registering a
+// 1/60 s step within minutes. So the phase is wrapped to [0, period) and split
+// three ways: r = floor (an integer, exact in f16), g = the fraction cut to a
+// multiple of 1/1024 (exact in f16: at most ten significant bits), b = the rest.
+// Two parts are NOT enough — under a steady rate the fraction rounds with the
+// same bias every frame and the error accumulates (measured 1% slow over a
+// minute on Frost); the third bounds it below ~5e-7 a frame. `period` must be a
+// period of every use of the phase, and small enough that floor(phase) stays
+// exact (well under 2048).
+//
+// NOT quantizeToF16: it needs SHADER_FLOAT16_IN_FLOAT32, which baseline WebGPU
+// does not promise, and this file is prepended to EVERY effect — so a device
+// without it would fail to compile all of them, not just the two that use this.
+fn phase_pack(phase: f32, period: f32) -> vec4f {
+    let wrapped = phase - floor(phase / period) * period;
+    let hi = floor(wrapped);
+    let frac = wrapped - hi;
+    let coarse = floor(frac * 1024.0) / 1024.0;
+    return vec4f(hi, coarse, frac - coarse, 1.0);
+}
+
+fn phase_unpack(v: vec4f) -> f32 {
+    return v.r + v.g + v.b;
+}
+
 // ---- Deprecated aliases (pre-rename API, kept so user custom effects keep
 // compiling). Do not use in new code; may be removed in a future major release. ----
 

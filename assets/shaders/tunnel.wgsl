@@ -11,22 +11,30 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // param(0) = twist_amount, param(1) = speed, param(2) = tunnel_radius, param(3) = segments
     let twist = (param(0u) - 0.5) * 10.0;
-    let speed = param(1u) * 0.8 + 0.08;
     let tun_scale = param(2u) * 2.0 + 1.0;
     let segments = floor(param(3u) * 8.0 + 4.0); // 4-12 wall panels
 
-    // Constant speed — no audio multiplier on t (causes back-and-forth jitter)
-    let fly_speed = speed;
+    // Spin and flight = integrals of twist and speed: param(6) and param(7) are
+    // an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984).
+    // `twist` itself stays a value: the ribs below still read it.
+    let spin = (param(6u) * 10.0 - t * 5.0) * 0.15; // integral of (p0 - 0.5) * 10
+    let travel = param(7u) * 0.8 + t * 0.08;          // integral of p1 * 0.8 + 0.08
 
     // Polar coordinates — rotate the whole tunnel over time with twist
     let r = length(p);
-    let angle = atan2(p.y, p.x) + twist * t * 0.15;
+    let angle = atan2(p.y, p.x) + spin;
 
     // Log-polar depth: uniform ring spacing on screen → real motion perception
-    let z = -log(r + 0.001) * tun_scale + t * fly_speed;
+    let z_geo = -log(r + 0.001) * tun_scale;
+    let z = z_geo + travel;
 
     // Additional depth-dependent twist on ribs
-    let ta = angle + twist * z * 0.05;
+    // `twist * z` included the distance flown, so every change in twist was
+    // multiplied by the whole flight. The flown part now arrives integrated as the
+    // screw from the `phase` pass (tunnel_phase.wgsl); only the geometric depth
+    // is multiplied by the current twist (#2984).
+    let screw = phase_unpack(input0(vec2f(0.5, 0.5)));
+    let ta = angle + twist * z_geo * 0.05 + screw;
 
     // === Wall texture: asymmetric noise the eye can track ===
     // Seamless angular coord via cos/sin embedding

@@ -95,6 +95,7 @@ pub(crate) fn new_default_layer(ctx: &LayerBuildCtx<'_>, name: String) -> Option
             shader_sources: vec![source],
             shader_error: None,
             pending_rebuild: false,
+            rates: Default::default(),
         },
         crate::params::ParamStore::new(),
     ))
@@ -126,6 +127,11 @@ pub(crate) fn load_effect_into_layer(
         log::error!("{msg}");
         return Err(msg);
     }
+    let rate_slots = crate::effect::rates::layout(&effect.inputs, &effect.rates).map_err(|e| {
+        let msg = format!("Effect '{}': {e}", effect.name);
+        log::error!("{msg}");
+        msg
+    })?;
 
     // If layer is currently Media, convert to Effect first
     if layer.is_media() {
@@ -158,6 +164,7 @@ pub(crate) fn load_effect_into_layer(
                 shader_sources: vec![],
                 shader_error: None,
                 pending_rebuild: false,
+                rates: Default::default(),
             }));
         }
     }
@@ -207,6 +214,9 @@ pub(crate) fn load_effect_into_layer(
             e.shader_error = None;
             e.pending_rebuild = false;
             e.effect_index = Some(effect_index);
+            // Integrals start from zero with each load, matching the shader
+            // now running (a failed load below leaves the previous pair alone).
+            e.rates = crate::effect::rates::RateState::new(rate_slots);
             // Apply per-effect postprocess overrides
             layer.postprocess = effect.postprocess.clone().unwrap_or_default();
             // Track shader sources for hot-reload

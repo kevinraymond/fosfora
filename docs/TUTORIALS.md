@@ -270,6 +270,8 @@ Fosfora auto-prepends a WGSL shader library to every effect. You can use these f
 - Use `param(0u)` through `param(15u)` to read your effect's parameters
 - Parameters are packed as `array<vec4f, 4>` (16-byte aligned)
 
+**A parameter that sets a speed:** don't write `u.time * speed`. That multiplies every *change* in speed by how long the app has been running, so after a few minutes a binding or a drag on it jumps the picture instead of changing its pace. List it under `"rates"` in the .pfx (`"rates": ["speed"]`, Float or Point2D) and Fosfora keeps its running total, `speed × dt` summed every frame, in the next free slot after your parameters, in the order `"rates"` names them. The parameter's own slot still holds its value, so a shader that also uses the speed as a gain keeps working. If your shader remapped it, as in `u.time * (a * speed + b)`, write `a * param(N) + b * u.time`, which is the same thing integrated. Drift and Storm are short examples. `scripts/audit_pfx_rates.py` finds the pattern, and the pre-commit hook runs it.
+
 **Feedback:**
 - Call `feedback(uv)` to sample the previous frame (when feedback is enabled in the .pfx)
 

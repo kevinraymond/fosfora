@@ -2856,6 +2856,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                  frame-time correct, and nothing decays",
             ),
             (
+                "tunnel_phase.wgsl",
+                "an integrator, not an image: adds rate * delta_time, which is already \
+                 frame-time correct, and nothing decays",
+            ),
+            (
                 "sumi_pressure.wgsl",
                 "feedback is the previous Jacobi iterate, not frame history",
             ),
@@ -4644,303 +4649,43 @@ fn cs_main() {
         }
     }
 
-    // #2984: does `u.time * param` in a .pfx LAYER effect actually strobe when a
-    // binding moves that param? trama's effects were fixed and guarded; the 57
-    // .pfx files were never audited, and a census found nine of them computing
-    // an unbounded clock times a param.
-    //
-    // This is the REPRODUCTION, not the fix. It renders one effect four ways at
-    // one clock value and compares the pictures:
-    //
-    //   A  time = T,      param = v        the frame we are moving away from
-    //   S  time = T,      param = v        rendered AGAIN — the noise floor
-    //   B  time = T + dt, param = v        one frame of ordinary motion
-    //   C  time = T + dt, param = v + d    the same frame, param nudged as a
-    //                                      binding nudges it every frame
-    //
-    // A phase built as `t * speed` shifts by (d x T) when speed moves by d, so
-    // C is not B-plus-a-little: at a large T it is an unrelated picture. The
-    // control is the SAME nudge at T = 0, where (d x T) is nothing. Reporting
-    // the ratio between the two clocks is what makes this a reproduction rather
-    // than a reading — the defect is invisible at the T a fresh app starts at.
-    //
-    // Two measurement rules this repo paid for. A per-pixel difference invents
-    // defects on stochastic content (#2380), so the statistic is block-averaged
-    // as well as per-pixel, and a difference probe with no self-difference is
-    // measuring its own noise (#2380 again), so S is rendered and differenced
-    // exactly like the rest.
-    //
-    // Run: cargo test -p fosfora-app -- --ignored --nocapture pfx_rate_params_strobe_at_a_large_clock
+    // Every shipped .pfx render pass, through the production concatenation,
+    // validated on the CPU against BASELINE WebGPU capabilities. The GPU probes
+    // cannot catch a capability the dev machine happens to have: #2984 put
+    // quantizeToF16 (SHADER_FLOAT16_IN_FLOAT32) into a lib prepended to every
+    // effect, every GPU test passed on the RTX, and only trama's equivalent of
+    // this test noticed — on a device without it, no effect would compile.
     #[test]
-    #[ignore = "requires a GPU/software adapter"]
-    fn pfx_rate_params_strobe_at_a_large_clock() {
-        use crate::gpu::frame_capture::FrameCapture;
-        use crate::gpu::pipeline::ShaderPipeline;
-        use crate::gpu::uniforms::{ShaderUniforms, UniformBuffer};
-
-        let _guard = gpu_guard();
-        let (device, queue) = test_gpu();
-
-        let (w, h) = (256u32, 256u32);
-        let fmt = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-        // Candidates from the census, each a root `unbounded time x param`
-        // product. (label, shader, param slot, base value, defaults)
-        struct Case {
-            label: &'static str,
-            shader: &'static str,
-            slot: usize,
-            base: f32,
-            params: [f32; 16],
-        }
-        let mut defaults = [0.5f32; 16];
-        defaults[8] = 0.0;
-        defaults[9] = 0.0;
-        let cases = [
-            Case {
-                label: "Drift.flow_speed",
-                shader: include_str!("../../../../assets/shaders/drift.wgsl"),
-                slot: 1,
-                base: 0.5,
-                params: defaults,
-            },
-            Case {
-                label: "Cymatics.rotation",
-                shader: include_str!("../../../../assets/shaders/cymatics_bg.wgsl"),
-                slot: 4,
-                base: 0.5,
-                params: defaults,
-            },
-            Case {
-                label: "Tunnel.speed",
-                shader: include_str!("../../../../assets/shaders/tunnel.wgsl"),
-                slot: 1,
-                base: 0.5,
-                params: defaults,
-            },
-            // Frost was the fourth case here, nudging u.zcr, and measured 176x
-            // before its fix. Its wander now arrives from a `phase` pass, so the
-            // shader no longer renders alone — the two-pass graph is probed by
-            // frost_wander_is_integrated_not_multiplied_by_uptime (pass_executor.rs).
-        ];
-
-        // The nudge a binding applies between two frames. Small enough that at
-        // T = 0 it must be nearly invisible.
-        const DELTA: f32 = 0.01;
-        const DT: f32 = 1.0 / 60.0;
-
-        // Block-averaged difference: 16x16 means, so film grain and per-pixel
-        // noise cancel and a real change of content survives (#2380).
-        let block_diff = |a: &[u8], b: &[u8]| -> f64 {
-            const BK: u32 = 16;
-            let mut total = 0.0f64;
-            let mut blocks = 0.0f64;
-            for by in (0..h).step_by(BK as usize) {
-                for bx in (0..w).step_by(BK as usize) {
-                    let (mut sa, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64);
-                    for y in by..(by + BK).min(h) {
-                        for x in bx..(bx + BK).min(w) {
-                            let i = ((y * w + x) * 4) as usize;
-                            for c in 0..3 {
-                                sa += a[i + c] as f64;
-                                sb += b[i + c] as f64;
-                                n += 1.0;
-                            }
-                        }
-                    }
-                    total += ((sa - sb) / n).abs();
-                    blocks += 1.0;
+    fn shipped_pfx_passes_validate_at_baseline_capabilities() {
+        use crate::gpu::fullscreen_quad::FULLSCREEN_TRIANGLE_VS;
+        let loader = EffectLoader::for_test(&probe_libs());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");
+        let mut failures = Vec::new();
+        let mut checked = 0usize;
+        for effect in shipped_effects_for_test() {
+            for pass in effect.normalized_passes() {
+                let src = std::fs::read_to_string(root.join(&pass.shader))
+                    .unwrap_or_else(|e| panic!("{}: {}: {e}", effect.name, pass.shader));
+                let fragment = loader.prepend_library_with_inputs(&src, pass.input_count());
+                let full = format!("{FULLSCREEN_TRIANGLE_VS}\n{fragment}");
+                if let Err(e) = crate::trama::effect::validate_wgsl(&full) {
+                    let first = e
+                        .to_string()
+                        .lines()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    failures.push(format!("{} / {}: {first}", effect.name, pass.shader));
                 }
+                checked += 1;
             }
-            total / blocks / 255.0
-        };
-        let pixel_diff = |a: &[u8], b: &[u8]| -> f64 {
-            let mut s = 0.0f64;
-            for (x, y) in a.iter().zip(b.iter()) {
-                s += (*x as f64 - *y as f64).abs();
-            }
-            s / a.len() as f64 / 255.0
-        };
-
-        let mut verdicts = Vec::new();
-        for case in &cases {
-            let fragment_source = probe_preamble(case.shader);
-            let pipeline = ShaderPipeline::new(&device, fmt, &fragment_source, None, 0)
-                .unwrap_or_else(|e| panic!("{}: pipeline: {e:?}", case.label));
-
-            let mk_audio = |format: wgpu::TextureFormat| {
-                let tex = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("rate-probe-audio"),
-                    size: wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-                tex.create_view(&Default::default())
-            };
-            let waveform = mk_audio(wgpu::TextureFormat::Rg16Float);
-            let spectrum = mk_audio(wgpu::TextureFormat::R16Float);
-            let spectrogram = mk_audio(wgpu::TextureFormat::R8Unorm);
-            // The previous-frame input. Held black and identical for all four
-            // shots, so feedback contributes the same to each and cannot be
-            // what any difference below is measuring.
-            let prev = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("rate-probe-prev"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: fmt,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let prev_view = prev.create_view(&Default::default());
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
-            let ubuf = UniformBuffer::new(&device);
-
-            // One render at (time, param) -> RGBA bytes. Feedback-free: each
-            // frame is a pure function of the uniforms, which is what lets a
-            // single frame at T stand in for an app that has been up for T.
-            let shot = |time: f32, pval: f32| -> Vec<u8> {
-                let mut u = ShaderUniforms::zeroed();
-                u.resolution = [w as f32, h as f32];
-                u.delta_time = DT;
-                u.time = time;
-                u.frame_index = time / DT;
-                u.beat_phase = (time * 2.0).fract();
-                u.params = case.params;
-                u.params[case.slot] = pval;
-                // A little steady audio so an audio-gated effect draws at all.
-                u.rms = 0.4;
-                u.bass = 0.3;
-                u.sub_bass = 0.25;
-                u.centroid = 0.5;
-                u.flatness = 0.5;
-                u.zcr = 0.2;
-                u.feedback_decay = 0.0;
-
-                let mut fc = FrameCapture::new(&device, w, h, fmt, "rate-probe");
-                let bg = ubuf.create_bind_group(
-                    &device,
-                    &pipeline.bind_group_layout,
-                    &prev_view,
-                    &sampler,
-                    &waveform,
-                    &spectrum,
-                    &spectrogram,
-                    &sampler,
-                    &[],
-                );
-                ubuf.update(&queue, &u);
-                let mut enc = device.create_command_encoder(&Default::default());
-                {
-                    let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("rate-probe-pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &fc.view,
-                            depth_slice: None,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-                    pass.set_pipeline(&pipeline.pipeline);
-                    pass.set_bind_group(0, &bg, &[]);
-                    pass.draw(0..3, 0..1);
-                }
-                fc.copy_to_staging(&mut enc);
-                queue.submit([enc.finish()]);
-                device
-                    .poll(wgpu::PollType::Wait {
-                        submission_index: None,
-                        timeout: None,
-                    })
-                    .unwrap();
-                fc.request_map();
-                loop {
-                    device
-                        .poll(wgpu::PollType::Wait {
-                            submission_index: None,
-                            timeout: None,
-                        })
-                        .unwrap();
-                    if let Some(d) = fc.take_mapped_data(&device) {
-                        break d;
-                    }
-                }
-            };
-
-            eprintln!("\n=== {} (param {}) ===", case.label, case.slot);
-            let mut by_clock = Vec::new();
-            for &t in &[0.0f32, 30.0, 300.0] {
-                let a = shot(t, case.base);
-                let s = shot(t, case.base);
-                let b = shot(t + DT, case.base);
-                let c = shot(t + DT, case.base + DELTA);
-
-                let floor = block_diff(&a, &s);
-                let motion = block_diff(&a, &b);
-                let nudged = block_diff(&a, &c);
-                let floor_px = pixel_diff(&a, &s);
-                let motion_px = pixel_diff(&a, &b);
-                let nudged_px = pixel_diff(&a, &c);
-
-                eprintln!(
-                    "  t={t:>6.1}s  floor {floor:.5} ({floor_px:.5} px)  \
-                     motion {motion:.5} ({motion_px:.5} px)  \
-                     nudged {nudged:.5} ({nudged_px:.5} px)"
-                );
-                assert!(
-                    floor < 1e-9,
-                    "{}: the same uniforms rendered twice differ by {floor} — this probe is \
-                     measuring its own noise and none of the numbers below it mean anything",
-                    case.label
-                );
-                by_clock.push((t, motion, nudged, motion_px, nudged_px));
-            }
-
-            // The claim under test: the SAME param nudge costs far more at a
-            // large clock than at a fresh one.
-            let (_, m0, n0, _, _) = by_clock[0];
-            let (_, m300, n300, _, _) = by_clock[2];
-            let excess0 = (n0 - m0).max(0.0);
-            let excess300 = (n300 - m300).max(0.0);
-            eprintln!(
-                "  nudge cost beyond ordinary motion:  t=0 {excess0:.5}   t=300 {excess300:.5}   \
-                 ratio {:.1}x",
-                if excess0 > 1e-9 {
-                    excess300 / excess0
-                } else {
-                    f64::INFINITY
-                }
-            );
-            verdicts.push((case.label, excess0, excess300));
         }
-
-        eprintln!("\n--- verdict ---");
-        for (label, e0, e300) in &verdicts {
-            eprintln!("  {label:24} t=0 {e0:.5}  t=300 {e300:.5}");
-        }
+        assert!(checked > 50, "only {checked} passes found");
+        assert!(
+            failures.is_empty(),
+            "{} pass(es) need a capability baseline WebGPU does not promise:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }

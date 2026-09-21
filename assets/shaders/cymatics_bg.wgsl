@@ -12,8 +12,9 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     trail = min(trail, vec3f(0.85));
 
     // Rotation param
-    let rotation_param = param(4u);
-    let rot_angle = u.time * rotation_param * 0.5;
+    // param(7) is an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984);
+    // `u.time * rotation` jumped the pattern whenever rotation moved.
+    let rot_angle = param(7u) * 0.5;
     let c = cos(rot_angle);
     let s = sin(rot_angle);
     var rp = vec2f(p.x * c - p.y * s, p.x * s + p.y * c);

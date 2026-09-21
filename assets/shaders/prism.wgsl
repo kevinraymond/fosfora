@@ -24,12 +24,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // param(0) = fold_count, param(1) = rotation_speed, param(2) = zoom, param(3) = complexity
     let folds = floor(param(0u) * 10.0 + 3.0); // 3 to 13 folds
-    let rot_speed = param(1u) * 2.0;
     let zoom = param(2u) * 3.0 + 1.0;
     let complexity = param(3u) * 4.0 + 2.0;
 
     // Audio modulation
-    let rotation = t * rot_speed + u.beat_phase * 6.28318 * 0.25;
+    // param(7) is an integral of the param, kept by the engine (`"rates"` in the .pfx, #2984).
+    let rotation = param(7u) * 2.0 + u.beat_phase * 6.28318 * 0.25;
     let bass_pulse = 1.0 + u.bass * 0.3;
     let mid_complex = u.mid * 2.0;
 
