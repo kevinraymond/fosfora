@@ -6,6 +6,10 @@
 ## Unreleased
 
 ### Added
+- **trama Anchor node, for routing.** Right-click → Utility → Anchor drops a bend in a wire so
+  a patch can route around a node instead of crossing it. It draws as a small bead on the
+  wire, passes its input straight through, costs no render target, and is left out of the
+  layer row's node count — tidying a patch shouldn't make the layer look busier.
 - **Eleven new trama nodes, taking the library to sixteen.** Levels, Blur, Mirror,
   Kaleidoscope, Pixelate, Chromatic Aberration, Scanlines, Edge and Palette Map, plus two new
   sources, Gradient and Solid. Every Float on them modulates like the rest.
@@ -20,6 +24,15 @@
 - **`/fosfora/overlay/visible` sets the UI shown or hidden over OSC.** The existing
   `toggle_overlay` trigger only flips it, so a show controller or capture script could never be
   sure which state it left the panels in.
+
+### Changed
+- **Layer input moved from Utility to Sources in the trama add-node menu.** It takes no input
+  and hands the chain a picture, which is what a source is, and it's the first thing a new
+  chain needs.
+- **trama canvas wires are easier to hit.** Wires were drawn barely a pixel wide, which also
+  set how close the pointer had to come to grab one; they are now 4px and thicken on hover,
+  right-click removes a hovered wire and the canvas says so, and pins catch a dropped wire
+  from twice as far without the dots growing. The old on-wire "×" button is gone.
 
 ## v1.37.0 — 2026-09-20
 

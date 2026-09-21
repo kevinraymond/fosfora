@@ -689,7 +689,9 @@ impl TramaExecutor {
                     node.kind,
                     // ChainInput runs no pass for the same reason Feedback
                     // does not: its texture comes from outside the graph.
-                    NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput
+                    // Anchor runs none because it IS its input — it exists to
+                    // bend a wire, and costs a plan entry, not a pass.
+                    NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput | NodeKind::Anchor
                 ) && !node.bypass
             })
             .collect();
@@ -703,14 +705,16 @@ impl TramaExecutor {
         // Bypass aliasing resolves at plan time: the "effective producer" of a
         // pin follows bypassed effects through their input 0 until it lands on
         // a running node (or nothing — placeholder input / cleared output).
+        // An Anchor is permanently in that state: it is a routing waypoint, so
+        // it always forwards input 0 and never produces anything of its own.
         let effective = |mut id: NodeId| -> Option<NodeId> {
             loop {
                 let node = graph.node(id)?;
-                if !node.bypass {
+                if !node.bypass && !matches!(node.kind, NodeKind::Anchor) {
                     return Some(id);
                 }
                 match node.kind {
-                    NodeKind::Effect { .. } => id = graph.input_source(id, 0)?,
+                    NodeKind::Anchor | NodeKind::Effect { .. } => id = graph.input_source(id, 0)?,
                     // A bypassed source (or Output, unreachable here) yields
                     // nothing. A bypassed FEEDBACK also lands here, and must:
                     // aliasing across the delay edge would re-close the cycle
@@ -959,7 +963,7 @@ impl TramaExecutor {
             let node = graph.node(id).expect("live nodes exist");
             let effect_id = match &node.kind {
                 NodeKind::Source { effect } | NodeKind::Effect { effect } => effect,
-                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput => {
+                NodeKind::Output | NodeKind::Feedback | NodeKind::ChainInput | NodeKind::Anchor => {
                     unreachable!("filtered above")
                 }
             };

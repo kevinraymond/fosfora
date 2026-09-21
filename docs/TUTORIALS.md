@@ -607,12 +607,12 @@ trama is a small node graph that post-processes a layer's picture *after* the la
 ### Quick Start
 
 1. Select a layer and press **G** to open the trama canvas. The **Layer: _name_** tab is that layer's chain
-2. Right-click the canvas → **Utility → Layer input**. That node is the layer's own picture
+2. Right-click the canvas → **Sources → Layer input**. That node is the layer's own picture
 3. Right-click → **Effects → Transform**
 4. Drag from **Layer input**'s output pin to Transform's input, then from Transform to **Output**
 5. Click the Transform node and move **scale** in the inspector: the layer shrinks and the layers beneath show around it
 
-Nothing happens until a chain reaches its **Output** node. A chain that doesn't is *inactive*: the layer renders as usual, so you can place and wire nodes without blanking anything. Hover a wire and click the **×** to remove it.
+Nothing happens until a chain reaches its **Output** node. A chain that doesn't is *inactive*: the layer renders as usual, so you can place and wire nodes without blanking anything. To remove a wire, right-click it; hovering one says so. If a wire has to cross the patch to get where it's going, drop an **Anchor** (Utility) in its path and route through that instead.
 
 Layer rows show a diamond and a node count for any layer with a chain. It is **filled** when the chain is active and **hollow** when nothing reaches its Output. Click it to jump to that chain. Chains travel with their layer when you reorder the stack. The master chain gets the same badge on a **Master** row under the layer list.
 
@@ -620,7 +620,7 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 
 | Node | What it does | Parameters |
 |------|--------------|------------|
-| **Layer input** (Utility) | The picture this chain was handed: the layer's output, or the whole frame on the Master tab | none |
+| **Layer input** (Source) | The picture this chain was handed: the layer's output, or the whole frame on the Master tab | none |
 | **Transform** | Scale, rotate and slide the picture about the center. Pixels pulled from outside read transparent | `scale` 0.25–4 · `rotate` ±0.5 turns · `translate_x` / `translate_y` ±0.5 of the frame |
 | **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
 | **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
@@ -638,6 +638,7 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Gradient** (Source) | A linear ramp between two colors. Both carry alpha, so opaque-to-transparent is a fade mask for a Mix | `color_a` · `color_b` · `angle` ±0.5 turns · `midpoint` |
 | **Solid** (Source) | A flat color. The second input a Mix needs, and the backdrop a keyed layer sits on | `color` (RGBA) |
 | **Feedback** (Utility) | Last frame of whatever is wired into it. The building block for echo loops | none |
+| **Anchor** (Utility) | A bend in a wire, drawn as a bead on it: passes its input straight through so a patch can route around a node. Renders nothing and is not counted in the layer's badge | none |
 
 Every Float parameter can be driven: open the **mod** row under its slider and pick an oscillator (sine, saw, square, triangle, sample & hold, random walk; in Hz or beat-synced) or the music (**rms**, **onset**, **bass** / **mid** / **high**, a single **band**, **beat phase**, **bpm**). **amount** sets the depth, **mode** how it combines with the slider, **smoothing** how quickly it follows. A bright tick on the slider shows the live value.
 

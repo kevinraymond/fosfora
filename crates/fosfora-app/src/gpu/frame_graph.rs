@@ -1812,6 +1812,82 @@ mod tests {
         assert!(err.is_none(), "validation error: {err:?}");
     }
 
+    // Run: cargo test -p fosfora-app -- --ignored an_anchor_is_invisible_to_the_picture_and_to_vram
+    //
+    // An Anchor is a bend in a wire. Owner request: right-click "add anchor"
+    // so a patch can route around a node. It has to be a real graph node —
+    // egui-snarl draws wires pin to pin and offers no hook to route one
+    // through a point — so the thing worth proving is that being real costs
+    // NOTHING: same picture, byte for byte, and not one more target in the
+    // pool. Make the executor treat `NodeKind::Anchor` as an ordinary pass
+    // and both halves go red at once.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn an_anchor_is_invisible_to_the_picture_and_to_vram() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+
+        let shot = |stack: &mut LayerStack,
+                    compositor: &mut Compositor,
+                    trama: &mut crate::trama::TramaSystem,
+                    targets: &mut ChainTargets| {
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(&device, &queue, stack, compositor, trama, targets);
+            }
+            out
+        };
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Layer input -> hue_drift -> Output.
+        stack.ensure_chain(0).expect("a slot is free");
+        let (tail, out) = {
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            let tail = hue_chain(graph, &trama.registry, &[0.25]);
+            let out = graph.output_node();
+            graph.connect(tail, out, 0).unwrap();
+            (tail, out)
+        };
+        let plain = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        assert!(
+            plain.iter().any(|&b| b != 0),
+            "the chain must render something, or equality below is vacuous"
+        );
+        let (_, pool_plain) = trama.pool_stats();
+
+        // Now route that last hop through two anchors instead.
+        {
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            graph.disconnect(out, 0);
+            let a1 = graph.add_node(NodeKind::Anchor, 1, &[]);
+            let a2 = graph.add_node(NodeKind::Anchor, 1, &[]);
+            graph.connect(tail, a1, 0).unwrap();
+            graph.connect(a1, a2, 0).unwrap();
+            graph.connect(a2, out, 0).unwrap();
+        }
+        let anchored = shot(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let (_, pool_anchored) = trama.pool_stats();
+
+        assert_eq!(
+            anchored,
+            plain,
+            "an anchor forwards its input: the picture must be identical \
+             (first byte off at {:?})",
+            anchored.iter().zip(&plain).position(|(a, b)| a != b)
+        );
+        assert_eq!(
+            pool_anchored,
+            pool_plain,
+            "two anchors allocated {} extra target(s) — routing must be free",
+            pool_anchored.saturating_sub(pool_plain)
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
     // Run: cargo test -p fosfora-app -- --ignored pixelates_grid_is_the_same_cell_everywhere
     //
     // Owner play-test: Pixelate "looks more like graph paper with major/minor

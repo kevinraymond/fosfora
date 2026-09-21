@@ -29,8 +29,22 @@ use super::graph::{GraphError, NodeGraph, Wire};
 use super::modulation::{Modulation, ParamMod};
 use super::node::{NodeId, NodeInstance, NodeKind};
 
-/// The format this build writes. Bump it with a migration in [`migrate`].
-pub const TRAMA_VERSION: u32 = 1;
+/// The newest format this build understands. Bump it with a migration in
+/// [`migrate`].
+pub const TRAMA_VERSION: u32 = 2;
+
+/// The version written into a document is the OLDEST build that can read it
+/// back, not the build that wrote it — so a chain using nothing new still
+/// says `1` and still opens in an older Fosfora. `.fio.json` files are made
+/// to travel between people, and stamping every save with the current build's
+/// number would strand anchor-free chains on the release that wrote them for
+/// no reason.
+const BASE_VERSION: u32 = 1;
+
+/// [`KindDoc::Anchor`] is the first thing that an older build cannot parse.
+/// A document holding one says `2`, which that build reports as "saved by a
+/// newer Fosfora" instead of failing on an unknown enum variant.
+const ANCHOR_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChainDoc {
@@ -51,6 +65,7 @@ pub enum KindDoc {
     Effect,
     Feedback,
     LayerInput,
+    Anchor,
     Output,
 }
 
@@ -175,7 +190,7 @@ impl ChainDoc {
     /// Capture a chain. `position` answers for the canvas, which owns node
     /// positions; a node it does not know lands at the origin.
     pub fn capture(graph: &NodeGraph, position: impl Fn(NodeId) -> Option<[f32; 2]>) -> Self {
-        let nodes = graph
+        let nodes: Vec<NodeDoc> = graph
             .nodes()
             .iter()
             .map(|n| {
@@ -184,6 +199,7 @@ impl ChainDoc {
                     NodeKind::Effect { effect } => (KindDoc::Effect, Some(effect.0.clone())),
                     NodeKind::Feedback => (KindDoc::Feedback, None),
                     NodeKind::ChainInput => (KindDoc::LayerInput, None),
+                    NodeKind::Anchor => (KindDoc::Anchor, None),
                     NodeKind::Output => (KindDoc::Output, None),
                 };
                 // Manifest order first, so a file diffs cleanly; then any
@@ -235,8 +251,13 @@ impl ChainDoc {
                 to: (w.to.0, w.to_input),
             })
             .collect();
+        let trama_version = if nodes.iter().any(|n| n.kind == KindDoc::Anchor) {
+            ANCHOR_VERSION
+        } else {
+            BASE_VERSION
+        };
         Self {
-            trama_version: TRAMA_VERSION,
+            trama_version,
             graph: GraphDoc { nodes, wires },
         }
     }
@@ -283,6 +304,7 @@ impl ChainDoc {
                 },
                 KindDoc::Feedback => NodeKind::Feedback,
                 KindDoc::LayerInput => NodeKind::ChainInput,
+                KindDoc::Anchor => NodeKind::Anchor,
                 KindDoc::Output => NodeKind::Output,
             };
 
@@ -291,7 +313,7 @@ impl ChainDoc {
                 params.values.insert(p.name.clone(), p.value.into());
             }
             let inputs = match &kind {
-                NodeKind::Output | NodeKind::Feedback => 1,
+                NodeKind::Output | NodeKind::Feedback | NodeKind::Anchor => 1,
                 NodeKind::ChainInput => 0,
                 NodeKind::Source { effect } | NodeKind::Effect { effect } => {
                     match lookup(effect) {
@@ -398,7 +420,10 @@ impl ChainDoc {
 /// ONE version and recurses: `1 => migrate(v1_to_v2(doc))`.
 fn migrate(doc: ChainDoc) -> Result<ChainDoc, LoadError> {
     match doc.trama_version {
-        TRAMA_VERSION => Ok(doc),
+        // v1 and v2 describe the same structure; v2 only marks a document
+        // that uses a node kind v1 readers do not know, so neither needs
+        // lifting to be read HERE. A real migration takes an arm of its own.
+        BASE_VERSION | ANCHOR_VERSION => Ok(doc),
         found if found > TRAMA_VERSION => Err(LoadError::TooNew { found }),
         v => Err(LoadError::BadVersion(v)),
     }
@@ -874,9 +899,11 @@ mod tests {
             })
         );
         assert!(matches!(load("{}"), Err(LoadError::Parse(_))));
+        // v2 is readable here (it only marks a document holding an Anchor),
+        // so the "newer Fosfora" case is the one after it.
         assert_eq!(
-            load(r#"{"trama_version":2,"graph":{"nodes":[],"wires":[]}}"#),
-            Err(LoadError::TooNew { found: 2 })
+            load(r#"{"trama_version":3,"graph":{"nodes":[],"wires":[]}}"#),
+            Err(LoadError::TooNew { found: 3 })
         );
         assert_eq!(
             load(r#"{"trama_version":0,"graph":{"nodes":[],"wires":[]}}"#),
@@ -886,6 +913,47 @@ mod tests {
 
     // Ids are kept, not re-allocated: a graph with a gap from a removed node
     // comes back with the same ids, and the next node placed does not collide.
+    // An anchor has to survive the round trip like any other node, and the
+    // document has to ADMIT it holds one — a v1 reader cannot parse the
+    // `anchor` kind, so a file carrying one must say 2 and get the "saved by
+    // a newer Fosfora" message rather than a serde error about an unknown
+    // variant. A chain without anchors must keep saying 1, or every plain
+    // patch would stop opening in the previous release for nothing.
+    #[test]
+    fn a_document_says_2_only_when_it_actually_holds_an_anchor() {
+        let fake = Fake::new();
+        let mut g = NodeGraph::new_with_output();
+        let out = g.output_node();
+        let h = g.add_node(effect("hue_drift"), 1, &fake.hue);
+        g.connect(h, out, 0).unwrap();
+        assert_eq!(
+            ChainDoc::capture(&g, layout).trama_version,
+            BASE_VERSION,
+            "nothing new in this chain, so it stays readable by older builds"
+        );
+
+        let a = g.add_node(NodeKind::Anchor, 1, &[]);
+        g.connect(h, a, 0).unwrap();
+        g.connect(a, out, 0).unwrap();
+        let doc = ChainDoc::capture(&g, layout);
+        assert_eq!(doc.trama_version, ANCHOR_VERSION);
+        let json = doc.to_json();
+        assert!(json.contains(r#""kind": "anchor""#), "{json}");
+
+        // Round trip: the anchor comes back an anchor, with one input pin and
+        // its wires, and is still not counted.
+        let r = ChainDoc::from_json(&json)
+            .unwrap()
+            .restore(|id| fake.lookup(id))
+            .unwrap();
+        assert!(r.notes.is_empty(), "nothing to repair: {:?}", r.notes);
+        let back = r.graph.node(a).expect("the anchor survived");
+        assert!(matches!(back.kind, NodeKind::Anchor));
+        assert_eq!(back.inputs, 1);
+        assert_eq!(r.graph.placed_nodes(), 1, "hue_drift only");
+        assert!(r.graph.contributes());
+    }
+
     #[test]
     fn saved_ids_are_kept_and_the_allocator_moves_past_them() {
         let fake = Fake::new();

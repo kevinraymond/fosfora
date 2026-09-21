@@ -32,9 +32,16 @@ const PREVIEW_DISPLAY: egui::Vec2 = egui::vec2(96.0, 54.0);
 /// very chunky ... it really fills up the available space"). Capping at 1.0
 /// makes 1:1 the largest view; zooming OUT for a big patch still works.
 const PIN_SIZE: f32 = 9.0;
-/// snarl's default ratio, set explicitly because the wire remove button
-/// rebuilds the wire's curve from it (`wire_geom`) — the two must agree.
+/// snarl's default ratio, set explicitly because the wire hover test rebuilds
+/// the wire's curve from it (`wire_geom`) — the two must agree.
 const WIRE_FRAME_SIZE: f32 = PIN_SIZE * 3.0;
+/// How thick a wire is drawn, and — because snarl derives its wire hit test
+/// from the same number (`wire_width.max(2.0)`) — how close the pointer must
+/// come to grab one. snarl's default is `pin_size * 0.1`, which at our 9 px
+/// pins is a **0.9 px wire with a 2 px grab radius**: right-clicking a wire to
+/// remove it was a coin flip, and that is what made the old on-wire remove
+/// button feel necessary. Drawn 1.5x thicker while hovered, by snarl.
+const WIRE_WIDTH: f32 = 4.0;
 
 fn canvas_style(style: &egui::Style) -> SnarlStyle {
     let node_frame = egui::Frame::window(style)
@@ -53,6 +60,7 @@ fn canvas_style(style: &egui::Style) -> SnarlStyle {
         pin_placement: Some(PinPlacement::Edge),
         pin_size: Some(PIN_SIZE),
         wire_frame_size: Some(WIRE_FRAME_SIZE),
+        wire_width: Some(WIRE_WIDTH),
         ..SnarlStyle::new()
     }
 }
@@ -253,6 +261,16 @@ enum PinEnd {
     Out(egui_snarl::OutPinId),
 }
 
+/// How much larger a pin's interaction rect is than the dot drawn inside it.
+///
+/// snarl uses one rect for both, so dropping a wire means hitting a 9 px dot.
+/// This grows the catch area without growing the dot: [`TrackedPin::pin_rect`]
+/// returns the big rect and [`TrackedPin::draw`] shrinks it back before
+/// painting. Symmetric about the center on purpose — snarl takes the wire's
+/// endpoint from this rect's center, so growing it off-center would drag every
+/// wire's end off its pin.
+const PIN_SNAP: f32 = 2.0;
+
 /// A plain pin that reports where it was drawn.
 struct TrackedPin {
     info: PinInfo,
@@ -262,7 +280,8 @@ struct TrackedPin {
 
 impl SnarlPin for TrackedPin {
     fn pin_rect(&self, x: f32, y0: f32, y1: f32, size: f32) -> egui::Rect {
-        self.info.pin_rect(x, y0, y1, size)
+        let drawn = self.info.pin_rect(x, y0, y1, size);
+        egui::Rect::from_center_size(drawn.center(), drawn.size() * PIN_SNAP)
     }
 
     fn draw(
@@ -273,20 +292,27 @@ impl SnarlPin for TrackedPin {
         painter: &egui::Painter,
     ) -> egui_snarl::ui::PinWireInfo {
         // The hovered pin's rect is scaled about its center, so the center is
-        // the wire's endpoint either way.
+        // the wire's endpoint either way — and so is the snap rect's.
         let mut sink = self.sink.borrow_mut();
         match self.end {
             PinEnd::In(id) => sink.inputs.insert(id, rect.center()),
             PinEnd::Out(id) => sink.outputs.insert(id, rect.center()),
         };
         drop(sink);
-        self.info.draw(snarl_style, style, rect, painter)
+        // `rect` is the snap area this pin asked for; the dot stays its own
+        // size inside it.
+        let dot = egui::Rect::from_center_size(rect.center(), rect.size() / PIN_SNAP);
+        self.info.draw(snarl_style, style, dot, painter)
     }
 }
 
 impl CanvasViewer<'_> {
     fn pin_of(pin_input: usize) -> u8 {
         u8::try_from(pin_input).unwrap_or(u8::MAX)
+    }
+
+    fn is_anchor(&self, id: NodeId) -> bool {
+        matches!(self.graph.node(id).map(|n| &n.kind), Some(NodeKind::Anchor))
     }
 }
 
@@ -296,6 +322,7 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             Some(NodeKind::Output) => "Output".to_string(),
             Some(NodeKind::Feedback) => "Feedback".to_string(),
             Some(NodeKind::ChainInput) => "Layer input".to_string(),
+            Some(NodeKind::Anchor) => "Anchor".to_string(),
             Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => self
                 .registry
                 .get(effect)
@@ -361,10 +388,19 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         _outputs: &[OutPin],
         snarl: &Snarl<NodeId>,
     ) -> egui::Frame {
-        if *self.selected == Some(snarl[node]) {
-            default.stroke(self.selected_stroke)
+        // An Anchor is a bend in a wire, so it is drawn as a bead ON the
+        // wire: no title, no thumbnail, just enough frame to hold its two
+        // pins. Anything bigger and routing a patch around a node costs more
+        // space than the crossing it was meant to avoid.
+        let frame = if self.is_anchor(snarl[node]) {
+            default.inner_margin(egui::Margin::same(1)).corner_radius(8)
         } else {
             default
+        };
+        if *self.selected == Some(snarl[node]) {
+            frame.stroke(self.selected_stroke)
+        } else {
+            frame
         }
     }
 
@@ -376,12 +412,18 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         _outputs: &[OutPin],
         snarl: &Snarl<NodeId>,
     ) -> egui::Frame {
-        if *self.selected == Some(snarl[node]) {
-            default
-                .fill(self.selected_header_fill)
-                .stroke(self.selected_stroke)
+        // An anchor has no title to sit in a header, so its header carries no
+        // margin — the frame closes up into a bead between the two pins.
+        let base = if self.is_anchor(snarl[node]) {
+            default.inner_margin(egui::Margin::ZERO)
         } else {
             default
+        };
+        if *self.selected == Some(snarl[node]) {
+            base.fill(self.selected_header_fill)
+                .stroke(self.selected_stroke)
+        } else {
+            base
         }
     }
 
@@ -393,12 +435,20 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         ui: &mut egui::Ui,
         snarl: &mut Snarl<NodeId>,
     ) {
+        let id = snarl[node];
+        // An anchor draws as a bead on the wire: no title, no thumbnail, just
+        // enough to hold its pins. snarl calls this unconditionally — there
+        // is no `has_header` — so it claims a minimum square rather than
+        // drawing nothing, which would give the frame no size to round.
+        if self.is_anchor(id) {
+            ui.allocate_exact_size(egui::Vec2::splat(PIN_SIZE), egui::Sense::hover());
+            return;
+        }
         // Not selectable: a default label swallows the press to start a text
         // selection, so grabbing a node by its title selected the word
         // instead of dragging the node (owner play-test). Inert text lets the
         // press fall through to the node frame, which drags and selects.
-        let title = self.title(&snarl[node]);
-        ui.add(egui::Label::new(title).selectable(false));
+        ui.add(egui::Label::new(self.title(&id)).selectable(false));
     }
 
     fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<NodeId>) {
@@ -481,9 +531,12 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     fn has_body(&mut self, node: &NodeId) -> bool {
         // Every rendering node gets a thumbnail slot; Output's content IS the
         // screen (and the window title bar already says which mode is live).
+        // An Anchor has no thumbnail either: it renders nothing, and a node
+        // meant to tidy a patch that is bigger than the nodes it routes
+        // between would defeat itself.
         !matches!(
             self.graph.node(*node).map(|n| &n.kind),
-            Some(NodeKind::Output) | None
+            Some(NodeKind::Output | NodeKind::Anchor) | None
         )
     }
 
@@ -525,6 +578,31 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
             ("Effects", EffectKind::Effect),
         ] {
             ui.menu_button(label, |ui| {
+                // Layer input belongs here rather than under Utility: it
+                // takes no input and hands the chain a picture, which is what
+                // a source IS, and "where does my picture come from" is the
+                // first question a new chain asks. Feedback and Anchor stay
+                // Utility — they are plumbing, not content. At most one per
+                // chain (graph.validate enforces it), so it is offered only
+                // while this chain has none: a refused add would be a worse
+                // way to learn the rule.
+                if kind == EffectKind::Source {
+                    let has_input = self.graph.chain_input().is_some();
+                    if ui
+                        .add_enabled(!has_input, egui::Button::new("Layer input"))
+                        .on_hover_text(
+                            "The picture this chain was handed — the layer's own output, \
+                             or the composited frame on the master chain",
+                        )
+                        .on_disabled_hover_text("This chain already has its layer input")
+                        .clicked()
+                    {
+                        let id = self.graph.add_node(NodeKind::ChainInput, 0, &[]);
+                        snarl.insert_node(pos, id);
+                        ui.close();
+                    }
+                    ui.separator();
+                }
                 for def in self.registry.effects.iter().filter(|d| d.kind == kind) {
                     if ui.button(&def.name).clicked() {
                         let node_kind = match def.kind {
@@ -545,28 +623,24 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
         // Graph primitives (not effect files, so not in the registry).
         ui.menu_button("Utility", |ui| {
             if ui
+                .button("Anchor")
+                .on_hover_text(
+                    "A bend in a wire: passes its input straight through so a \
+                     patch can route around a node. Renders nothing and is not \
+                     counted in the layer's badge",
+                )
+                .clicked()
+            {
+                let id = self.graph.add_node(NodeKind::Anchor, 1, &[]);
+                snarl.insert_node(pos, id);
+                ui.close();
+            }
+            if ui
                 .button("Feedback")
                 .on_hover_text("One-frame delay — the building block for echo loops")
                 .clicked()
             {
                 let id = self.graph.add_node(NodeKind::Feedback, 1, &[]);
-                snarl.insert_node(pos, id);
-                ui.close();
-            }
-            // At most one per chain (graph.validate enforces it), so offer it
-            // only while this chain has none — a refused add would be a worse
-            // way to learn the rule.
-            let has_input = self.graph.chain_input().is_some();
-            if ui
-                .add_enabled(!has_input, egui::Button::new("Layer input"))
-                .on_hover_text(
-                    "The picture this chain was handed — the layer's own output, \
-                     or the composited frame on the master chain",
-                )
-                .on_disabled_hover_text("This chain already has its layer input")
-                .clicked()
-            {
-                let id = self.graph.add_node(NodeKind::ChainInput, 0, &[]);
                 snarl.insert_node(pos, id);
                 ui.close();
             }
@@ -607,69 +681,32 @@ impl SnarlViewer<NodeId> for CanvasViewer<'_> {
     }
 }
 
-/// How close (screen px) the pointer must come to a wire to be offered its
-/// remove button.
-const WIRE_HOVER_PX: f32 = 8.0;
-const WIRE_BUTTON_SIZE: f32 = 16.0;
-
-/// One wire's relation to the pointer this frame.
-#[derive(Clone, Copy)]
-struct WireHit {
-    /// Pointer-to-wire distance in screen pixels.
-    distance_px: f32,
-    /// Is the pointer on the spot where this wire's button goes?
-    on_button: bool,
-}
-
-/// Which wire, if any, shows its remove button.
+/// How close (screen px) the pointer must come to a wire before the canvas
+/// says how to remove it.
 ///
-/// Being ON a button beats being near a wire: the button sits on its wire's
-/// midpoint, and travelling to it can take the pointer closer to a crossing
-/// wire — without this the button would jump away as you reached for it.
-/// `near_allowed` is false while the pointer is over a node (nodes cover
-/// wires) or a press is in progress (dragging a new wire across old ones must
-/// not flash buttons), which leaves only a button already under the pointer.
-fn wire_to_offer(hits: &[WireHit], near_allowed: bool) -> Option<usize> {
-    if let Some(i) = hits.iter().position(|h| h.on_button) {
-        return Some(i);
-    }
-    if !near_allowed {
+/// This MUST match snarl's own grab radius, which is `wire_width.max(2.0)`
+/// (`hit_wire`, called from its wire loop). snarl is what actually removes the
+/// wire on a right-click; the tooltip only explains that. Any wider and the
+/// canvas would promise a right-click that snarl is going to ignore, which is
+/// worse than saying nothing. `wire_width_grab_radius_matches_snarls` pins it.
+const WIRE_HOVER_PX: f32 = WIRE_WIDTH;
+
+/// The nearest wire to the pointer, in screen pixels, if one is close enough
+/// to be worth explaining.
+///
+/// `live` is false while the pointer is over a node (nodes cover wires) or a
+/// press is in progress — dragging a new wire across old ones must not flash
+/// tooltips at every crossing.
+fn wire_under_pointer(distances_px: &[f32], live: bool) -> Option<usize> {
+    if !live {
         return None;
     }
-    hits.iter()
+    distances_px
+        .iter()
         .enumerate()
-        .filter(|(_, h)| h.distance_px <= WIRE_HOVER_PX)
-        .min_by(|a, b| a.1.distance_px.total_cmp(&b.1.distance_px))
+        .filter(|(_, d)| **d <= WIRE_HOVER_PX)
+        .min_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
-}
-
-/// The little "x" on a hovered wire. Painted, not a font glyph (house
-/// pattern), and it inverts luminance on hover rather than changing hue. In
-/// a foreground layer because snarl's own layer sits above the window's and
-/// would both paint over and out-click anything drawn in the window.
-fn wire_remove_button(ctx: &egui::Context, center: egui::Pos2) -> bool {
-    let size = egui::Vec2::splat(WIRE_BUTTON_SIZE);
-    egui::Area::new(egui::Id::new("trama-wire-remove"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(center - size * 0.5)
-        .show(ctx, |ui| {
-            let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-            let tc = crate::ui::theme::colors::theme_colors(ctx);
-            let (fill, fg) = if resp.hovered() {
-                (tc.text_primary, tc.panel)
-            } else {
-                (tc.panel, tc.text_primary)
-            };
-            let c = rect.center();
-            let painter = ui.painter();
-            painter.circle(c, 7.0, fill, egui::Stroke::new(1.0_f32, tc.text_primary));
-            let d = 2.75;
-            let stroke = egui::Stroke::new(1.5_f32, fg);
-            painter.line_segment([c + egui::vec2(-d, -d), c + egui::vec2(d, d)], stroke);
-            painter.line_segment([c + egui::vec2(d, -d), c + egui::vec2(-d, d)], stroke);
-            resp.on_hover_text("Remove this wire").clicked()
-        })
-        .inner
 }
 
 /// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
@@ -877,13 +914,16 @@ pub fn draw_trama_window(
                     *viewer.selected = None;
                 }
 
-                // Hovering a wire offers a remove button at its midpoint.
-                // snarl's own affordance is right-click-the-wire, which
-                // nobody finds.
+                // Hovering a wire says how to remove it. snarl hit-tests the
+                // wire and removes it on a right-click by itself; what it
+                // does not do is tell anyone, and an affordance nobody finds
+                // is not an affordance. This used to be an "x" button painted
+                // on the wire's midpoint — a fragile thing that depended on
+                // our copy of snarl's curve landing where snarl drew it.
                 if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
                     let to_global = viewer.to_global;
                     let local = to_global.inverse() * pointer;
-                    let wires: Vec<_> = {
+                    let distances: Vec<f32> = {
                         let pins = viewer.pins.borrow();
                         view.snarl
                             .wires()
@@ -892,33 +932,21 @@ pub fn draw_trama_window(
                                 let to = *pins.inputs.get(&inp)?;
                                 let curve =
                                     super::wire_geom::WireCurve::new(from, to, WIRE_FRAME_SIZE);
-                                let button = to_global * curve.at(0.5);
-                                let hit = WireHit {
-                                    distance_px: curve.distance_to(local) * to_global.scaling,
-                                    on_button: egui::Rect::from_center_size(
-                                        button,
-                                        egui::Vec2::splat(WIRE_BUTTON_SIZE),
-                                    )
-                                    .contains(pointer),
-                                };
-                                Some((out, inp, button, hit))
+                                Some(curve.distance_to(local) * to_global.scaling)
                             })
                             .collect()
                     };
-                    let hits: Vec<WireHit> = wires.iter().map(|w| w.3).collect();
-                    let near_allowed = background.rect.contains(pointer)
+                    let live = background.rect.contains(pointer)
                         && !viewer.pointer_on_node
                         && !ui.input(|i| i.pointer.any_down());
-                    if let Some(i) = wire_to_offer(&hits, near_allowed) {
-                        let (out, inp, button, _) = wires[i];
-                        if background.rect.contains(button) && wire_remove_button(ui.ctx(), button)
-                        {
-                            let to_node = view.snarl[inp.node];
-                            viewer
-                                .graph
-                                .disconnect(to_node, CanvasViewer::pin_of(inp.input));
-                            view.snarl.disconnect(out, inp);
-                        }
+                    if wire_under_pointer(&distances, live).is_some() {
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("trama-wire-hover"),
+                            egui::PopupAnchor::Pointer,
+                        )
+                        .show(|ui| ui.label("Right-click to remove this wire"));
                     }
                 }
             });
@@ -940,30 +968,27 @@ mod tests {
     }
 
     #[test]
-    fn the_wire_remove_button_does_not_jump_away_as_you_reach_for_it() {
-        let hit = |distance_px, on_button| WireHit {
-            distance_px,
-            on_button,
-        };
-        // Nothing within reach: no button.
-        assert_eq!(wire_to_offer(&[hit(40.0, false)], true), None);
-        // Nearest wire within reach wins.
-        assert_eq!(
-            wire_to_offer(&[hit(6.0, false), hit(2.0, false), hit(30.0, false)], true),
-            Some(1)
-        );
-        // The pointer has reached wire 0's button, and a crossing wire is now
-        // nearer than wire 0 itself. The button must stay put.
-        assert_eq!(
-            wire_to_offer(&[hit(5.0, true), hit(1.0, false)], true),
-            Some(0)
-        );
-        // Over a node, or mid-press (dragging a new wire across old ones):
-        // nearness offers nothing...
-        assert_eq!(wire_to_offer(&[hit(1.0, false)], false), None);
-        // ...but a button already under the pointer survives the press that
-        // is about to click it.
-        assert_eq!(wire_to_offer(&[hit(1.0, true)], false), Some(0));
+    fn only_the_nearest_wire_within_reach_is_explained() {
+        // Nothing within reach: say nothing.
+        assert_eq!(wire_under_pointer(&[40.0], true), None);
+        // Nearest wire within reach wins, so a crossing does not claim the
+        // tooltip from the wire actually under the pointer.
+        assert_eq!(wire_under_pointer(&[3.5, 1.0, 30.0], true), Some(1));
+        // Exactly at the grab radius still counts: snarl's hit test is
+        // inclusive too, so the tooltip must not stop one pixel early.
+        assert_eq!(wire_under_pointer(&[WIRE_HOVER_PX], true), Some(0));
+        // Over a node, or mid-press while dragging a new wire across old
+        // ones: no tooltip, however near.
+        assert_eq!(wire_under_pointer(&[1.0], false), None);
+    }
+
+    // The tooltip promises a right-click that SNARL has to honor, and snarl
+    // grabs a wire within `wire_width.max(2.0)` px of it (`hit_wire`). Offer
+    // the tooltip any further out and it names an action that will silently
+    // do nothing. Raising WIRE_WIDTH is fine; decoupling the two is not.
+    #[test]
+    fn the_grab_radius_matches_snarls() {
+        assert_eq!(WIRE_HOVER_PX, WIRE_WIDTH.max(2.0));
     }
 
     #[test]
