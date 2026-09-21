@@ -5,14 +5,16 @@
 
 ## Unreleased
 
+## v1.38.0 — 2026-09-21
+
 ### Added
 - **trama Anchor node, for routing.** Right-click → Utility → Anchor drops a bend in a wire so
   a patch can route around a node instead of crossing it. It draws as a small bead on the
   wire, passes its input straight through, costs no render target, and is left out of the
   layer row's node count — tidying a patch shouldn't make the layer look busier.
-- **Eleven new trama nodes, taking the library to sixteen.** Levels, Blur, Mirror,
-  Kaleidoscope, Pixelate, Chromatic Aberration, Scanlines, Edge and Palette Map, plus two new
-  sources, Gradient and Solid. Every Float on them modulates like the rest.
+- **Eleven new trama nodes.** Levels, Blur, Mirror, Kaleidoscope, Pixelate, Chromatic
+  Aberration, Scanlines, Edge and Palette Map, plus two new sources, Gradient and Solid. Every
+  Float on them modulates like the rest, and with the Key node below the library holds sixteen.
 - **`cargo xtask new-effect <id>` scaffolds a trama node.** Writes a file that already
   compiles and already does something visible, with `--inputs 2` and `--source` for the other
   two shapes. The app picks up a newly created file without a restart, so a new node is in the
@@ -33,6 +35,12 @@
   set how close the pointer had to come to grab one; they are now 4px and thicken on hover,
   right-click removes a hovered wire and the canvas says so, and pins catch a dropped wire
   from twice as far without the dots growing. The old on-wire "×" button is gone.
+
+### Docs
+- **A picture-first [wiki](https://github.com/kevinraymond/fosfora/wiki).** A tour of what
+  Fosfora looks like and how to get there, in clips rather than prose, opening on trama node
+  chains. The tutorial recipes and the gallery gained clips too; the written manual stays in
+  `docs/`.
 
 ### Fixed
 - **Shards could blow the whole frame out to white.** Its `edge_glow` slider reads 0–1, but a
