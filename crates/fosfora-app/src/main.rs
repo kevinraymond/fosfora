@@ -65,6 +65,9 @@ struct FosforaApp {
     obstacle_dialog_rx: Option<Receiver<PathBuf>>,
     /// Debounced param save: (effect_index, last_change_time)
     param_save_pending: Option<(usize, std::time::Instant)>,
+    /// `App::new` failed: the event loop is told to exit, and `main` turns
+    /// this into a non-zero exit status so a wrapper script can tell.
+    init_failed: bool,
 }
 
 impl FosforaApp {
@@ -75,6 +78,7 @@ impl FosforaApp {
             file_dialog_rx: None,
             obstacle_dialog_rx: None,
             param_save_pending: None,
+            init_failed: false,
         }
     }
 }
@@ -128,6 +132,7 @@ impl ApplicationHandler for FosforaApp {
             }
             Err(e) => {
                 log::error!("Failed to initialize app: {e}");
+                self.init_failed = true;
                 event_loop.exit();
             }
         }
@@ -4639,6 +4644,9 @@ fn main() -> Result<()> {
 
     let mut app = FosforaApp::new();
     event_loop.run_app(&mut app)?;
+    if app.init_failed {
+        std::process::exit(1);
+    }
 
     Ok(())
 }

@@ -402,7 +402,7 @@ impl App {
             gpu.surface_config.height,
         );
 
-        let shader_watcher = ShaderWatcher::new()?;
+        let shader_watcher = ShaderWatcher::new();
         let shader_compiler = ShaderCompiler::new();
         let settings = SettingsConfig::load();
         #[cfg(feature = "webcam")]
@@ -642,6 +642,12 @@ impl App {
         // Momentary slow-motion during a stall beats a white flash.
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
+
+        // A watch that failed at startup is noted once, on the first frame,
+        // so the six seconds start when there is a window to show them in.
+        if let Some(msg) = self.shader_watcher.take_degraded_notice() {
+            self.status_error = Some((msg, now));
+        }
 
         // Auto-clear status error after 6 seconds
         if let Some((_, when)) = &self.status_error {

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use notify_debouncer_mini::{DebouncedEventKind, Debouncer, new_debouncer};
 
@@ -74,7 +73,9 @@ fn seed(dir: &std::path::Path, recursive: bool, seen: &mut HashMap<PathBuf, Stam
 }
 
 pub struct ShaderWatcher {
-    _debouncer: Debouncer<notify::RecommendedWatcher>,
+    /// `None` when no watcher could be created at all: hot reload is off and
+    /// the channels below never deliver.
+    _debouncer: Option<Debouncer<notify::RecommendedWatcher>>,
     receiver: Receiver<PathBuf>,
     pfx_receiver: Receiver<PathBuf>,
     trama_receiver: Receiver<PathBuf>,
@@ -85,10 +86,18 @@ pub struct ShaderWatcher {
     /// stamp has not moved is a read, and is dropped here for all three
     /// routes.
     seen: HashMap<PathBuf, Stamp>,
+    /// What could not be watched, for a one-time note in the status bar.
+    /// Taken by the first frame.
+    degraded: Option<String>,
 }
 
 impl ShaderWatcher {
-    pub fn new() -> Result<Self> {
+    /// Never fails. Hot reload is a development convenience, and a watch that
+    /// cannot be set up (typically the OS file-watch limit, exhausted by an
+    /// editor watching a large tree elsewhere on the machine) used to abort
+    /// app startup with no window (#2667). Now it is logged, noted once in the
+    /// status bar, and the app runs without hot reload for that directory.
+    pub fn new() -> Self {
         Self::watching(
             &assets_dir().join("shaders"),
             &assets_dir().join("effects"),
@@ -102,7 +111,7 @@ impl ShaderWatcher {
         shader_dir: &std::path::Path,
         effects_dir: &std::path::Path,
         trama_dir: &std::path::Path,
-    ) -> Result<Self> {
+    ) -> Self {
         // Absolute, all three. In the dev workflow `assets_dir()` is the
         // RELATIVE path `assets`, while notify reports absolute paths — so
         // stamps seeded under the relative spelling were never found, and
@@ -118,7 +127,7 @@ impl ShaderWatcher {
         let (trama_tx, trama_rx): (Sender<PathBuf>, Receiver<PathBuf>) =
             crossbeam_channel::unbounded();
 
-        let mut debouncer = new_debouncer(
+        let debouncer = new_debouncer(
             std::time::Duration::from_millis(100),
             move |res: Result<Vec<notify_debouncer_mini::DebouncedEvent>, notify::Error>| {
                 if let Ok(events) = res {
@@ -135,52 +144,67 @@ impl ShaderWatcher {
                     }
                 }
             },
-        )?;
+        );
 
-        // Watch assets/shaders for .wgsl changes
-        if shader_dir.exists() {
-            debouncer
-                .watcher()
-                .watch(shader_dir, notify::RecursiveMode::Recursive)?;
-            log::info!("Watching {} for shader changes", shader_dir.display());
-        }
-
-        // Watch assets/effects for .pfx changes
-        if effects_dir.exists() {
-            debouncer
-                .watcher()
-                .watch(effects_dir, notify::RecursiveMode::Recursive)?;
-            log::info!("Watching {} for .pfx changes", effects_dir.display());
-        }
-
-        // trama effect files. NOT fatal if it cannot be watched: hot reload is
-        // a convenience, and the two watches above taking the whole app down
-        // when they fail is its own bug.
-        if trama_dir.exists() {
-            match debouncer
-                .watcher()
-                .watch(trama_dir, notify::RecursiveMode::NonRecursive)
-            {
-                Ok(()) => log::info!("Watching {} for trama effects", trama_dir.display()),
-                Err(e) => log::warn!(
-                    "trama effects will not hot-reload: cannot watch {}: {e}",
-                    trama_dir.display()
-                ),
+        let mut failed: Vec<String> = Vec::new();
+        let debouncer = match debouncer {
+            Ok(mut debouncer) => {
+                for (dir, mode, what) in [
+                    (shader_dir, notify::RecursiveMode::Recursive, "shader"),
+                    (effects_dir, notify::RecursiveMode::Recursive, ".pfx"),
+                    (
+                        trama_dir,
+                        notify::RecursiveMode::NonRecursive,
+                        "trama effect",
+                    ),
+                ] {
+                    if !dir.exists() {
+                        continue;
+                    }
+                    match debouncer.watcher().watch(dir, mode) {
+                        Ok(()) => log::info!("Watching {} for {what} changes", dir.display()),
+                        Err(e) => {
+                            log::warn!(
+                                "{what} files will not hot-reload: cannot watch {}: {e}",
+                                dir.display()
+                            );
+                            failed.push(format!("{e}"));
+                        }
+                    }
+                }
+                Some(debouncer)
             }
-        }
+            Err(e) => {
+                log::warn!("Hot reload is off: cannot create a file watcher: {e}");
+                failed.push(format!("{e}"));
+                None
+            }
+        };
+        // One line for the status bar. The reasons are usually all the same
+        // (the watch limit), so name the first and leave the rest to the log.
+        let degraded = failed
+            .first()
+            .map(|reason| format!("Hot reload off: {reason}"));
 
         let mut seen = HashMap::new();
         seed(shader_dir, true, &mut seen);
         seed(effects_dir, true, &mut seen);
         seed(trama_dir, false, &mut seen);
 
-        Ok(Self {
+        Self {
             _debouncer: debouncer,
             receiver: rx,
             pfx_receiver: pfx_rx,
             trama_receiver: trama_rx,
             seen,
-        })
+            degraded,
+        }
+    }
+
+    /// The note for the status bar if some directory could not be watched,
+    /// once.
+    pub fn take_degraded_notice(&mut self) -> Option<String> {
+        self.degraded.take()
     }
 
     /// Unique paths from `receiver` whose file really changed: created,
@@ -258,8 +282,7 @@ mod tests {
         let relative = |abs: &Path| up.join(abs.strip_prefix("/").unwrap());
         assert!(relative(&trama).is_relative() && relative(&trama).is_dir());
         let mut w =
-            ShaderWatcher::watching(&relative(&shaders), &relative(&effects), &relative(&trama))
-                .unwrap();
+            ShaderWatcher::watching(&relative(&shaders), &relative(&effects), &relative(&trama));
 
         // Poll the way the app does. `quiet` waits out the whole window (the
         // debounce is 100 ms); `next` returns as soon as something arrives.
@@ -308,6 +331,62 @@ mod tests {
             "a newly created effect is a change: {reported:?}"
         );
         assert!(reported[0].ends_with("trama/effects/brand_new.wgsl"));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // Run: cargo test -p fosfora-app -- a_directory_that_cannot_be_watched_is_not_fatal
+    //
+    // #2667: a VS Code watcher held 64,758 of the machine's 65,536 inotify
+    // watches, the shader watch failed, and `?` took app startup down with it
+    // — no window, exit 0. The failure injected here is a real one (an
+    // unreadable directory, EACCES from inotify_add_watch), not a mock.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_directory_that_cannot_be_watched_is_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("fosfora-nowatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (shaders, effects, trama) = (
+            root.join("shaders"),
+            root.join("effects"),
+            root.join("trama/effects"),
+        );
+        for d in [&shaders, &effects, &trama] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::set_permissions(&shaders, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads through any mode bits; the watch would succeed and the
+        // test would prove nothing.
+        if std::fs::read_dir(&shaders).is_ok() {
+            std::fs::set_permissions(&shaders, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::remove_dir_all(&root).unwrap();
+            eprintln!("skipped: running with permission to read a mode-000 directory");
+            return;
+        }
+
+        let mut w = ShaderWatcher::watching(&shaders, &effects, &trama);
+        std::fs::set_permissions(&shaders, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let notice = w.take_degraded_notice();
+        assert!(
+            notice
+                .as_deref()
+                .is_some_and(|n| n.starts_with("Hot reload off")),
+            "the failed watch is reported for the status bar: {notice:?}"
+        );
+        assert_eq!(w.take_degraded_notice(), None, "once");
+
+        // The directories that COULD be watched still hot-reload.
+        let file = trama.join("hue_drift.wgsl");
+        std::fs::write(&file, "one").unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut reported = Vec::new();
+        while reported.is_empty() && std::time::Instant::now() < until {
+            reported.extend(w.drain_trama_changes());
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(reported.len(), 1, "trama still watched: {reported:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
     }

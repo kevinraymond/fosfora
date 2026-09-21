@@ -32,6 +32,10 @@
   Their drift speed follows the music, and every change in it was multiplied by the app's
   uptime, so a few minutes in, each shift in the sound threw the cells to new places. They
   now drift smoothly however long the app has been up.
+- **Fosfora refused to start, with no window and no error status, when the system's
+  file-watch limit was used up** (for example by an editor watching a large folder). It now
+  starts without shader hot reload and says so in the status bar. A failed startup now exits
+  with status 1 instead of 0.
 
 ## v1.38.0 — 2026-09-21
 
