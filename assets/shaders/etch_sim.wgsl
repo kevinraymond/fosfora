@@ -32,11 +32,15 @@ fn luminance(c: vec3f) -> f32 {
 // board stays blank, raise it and the drawing starts again. That is the manual wipe.
 const ETCH_SHAKE_SECS: f32 = 0.6;
 
-fn etch_clearing(clear_cycle: f32, t: f32) -> bool {
+// `cycles` is the integral of 1 / clear_cycle — clears completed — kept by the
+// engine (`"rates"`, period form, #2984). It used to be `u.time / clear_cycle`,
+// which moved by uptime x the change in 1 / clear_cycle whenever the fader
+// moved, sweeping through the shake window and wiping the drawing at random.
+fn etch_clearing(clear_cycle: f32, cycles: f32) -> bool {
     if clear_cycle <= 0.0 {
         return true;
     }
-    return fract(t / clear_cycle) * clear_cycle < ETCH_SHAKE_SECS;
+    return fract(cycles) * clear_cycle < ETCH_SHAKE_SECS;
 }
 
 @compute @workgroup_size(256)
@@ -71,7 +75,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // eraser, which with retention at 1.0 left the board a one-way trip (Kevin, #1991).
     var prog = p.flags.w;
     let rate = draw_rate * (0.25 + u.rms * 2.0 + u.onset * 1.5);
-    let clearing = u.drop > 0.5 || etch_clearing(clear_cycle, u.time);
+    let clearing = u.drop > 0.5 || etch_clearing(clear_cycle, param(8u));
     if clearing {
         prog = 0.0;
     } else {

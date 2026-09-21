@@ -7,8 +7,8 @@ fn bg_dipole(p: vec2f, d: vec2f, moment: f32) -> f32 {
     return moment / (r2 * r_mag);
 }
 
-fn bg_total_field(p: vec2f, t: f32, mode: f32, rotation: f32) -> f32 {
-    let angle = t * rotation * 0.5;
+fn bg_total_field(p: vec2f, spin: f32, mode: f32, wobble: f32) -> f32 {
+    let angle = spin * 0.5;
     let ca = cos(angle);
     let sa = sin(angle);
     let moment = 0.3;
@@ -36,7 +36,7 @@ fn bg_total_field(p: vec2f, t: f32, mode: f32, rotation: f32) -> f32 {
             let s = select(-1.0, 1.0, (i / 2) % 2 == 0);
             B += bg_dipole(p, d, moment * s);
         }
-        B += bg_dipole(p, vec2f(0.0), sin(t * 1.5) * 0.15);
+        B += bg_dipole(p, vec2f(0.0), wobble);
     }
     return B;
 }
@@ -60,8 +60,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let trail = mix(prev.rgb, shimmer_prev.rgb, 0.4) * frame_decay(decay);
 
     let mode = param(3u);
-    let rotation = param(4u);
-    let B = bg_total_field(p, u.time, mode, rotation);
+    // param(8) is the integral of field_rotation, kept by the engine (`"rates"`
+    // in the .pfx, #2984). The poles used to sit at `u.time * rotation`, so a
+    // change in rotation after a while threw them to a new angle in one frame.
+    let spin = param(8u);
+    let B = bg_total_field(p, spin, mode, sin(u.time * 1.5) * 0.15);
     let field_vis = abs(B) * 0.005 * u.rms;
     // The field is a CONTINUOUS source: it is added once per frame, so its gain
     // is a rate and has to track the retention or the steady state a/(1-k) moves

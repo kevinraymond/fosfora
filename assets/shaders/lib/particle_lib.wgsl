@@ -160,15 +160,27 @@ struct ParticleUniforms {
     fluid_coupling: f32,  // how strongly particles relax toward the field (0..1)
     trail_head: u32,   // ribbon ring head on a fixed 60 Hz clock (#2351)
     trail_steps: u32,  // slots the head advanced this frame; writer fills them all
+
+    // Effect params 8..15 (#2984, 960 -> 992 B), appended so no offset moves.
+    // Read through param(): "rates" integrals land here for effects that pack
+    // all eight low slots.
+    effect_params_2: vec4f,
+    effect_params_3: vec4f,
 }
 
 // Access effect param by index (mirrors fragment shader's param() function).
-// Only params 0..7 are available in compute shaders.
+// All 16 slots, as in a fragment pass (params 8..15 since #2984).
 fn param(i: u32) -> f32 {
     if i < 4u {
         return u.effect_params_0[i];
     }
-    return u.effect_params_1[i - 4u];
+    if i < 8u {
+        return u.effect_params_1[i - 4u];
+    }
+    if i < 12u {
+        return u.effect_params_2[i - 8u];
+    }
+    return u.effect_params_3[i - 12u];
 }
 
 fn mfcc(i: u32) -> f32 {

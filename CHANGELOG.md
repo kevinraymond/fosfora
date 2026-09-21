@@ -8,13 +8,21 @@
 ### Added
 - **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
   one's running total in a slot after your parameters, so a shader never has to multiply a
-  parameter by `u.time`. `scripts/audit_pfx_rates.py` finds shaders that still do.
+  parameter by `u.time`; a period in seconds can be declared too. `scripts/audit_pfx_rates.py`
+  finds shaders that still multiply by `u.time`.
+
+### Changed
+- **Particle uniforms grow from 960 to 992 bytes**, so particle compute shaders can read
+  params 8–15 through `param()`. The new block is appended after the last field, so no
+  offset moves and custom sims keep working unchanged.
 
 ### Fixed
-- **Nine effects jumped when a binding or a drag moved their speed after the app had been
-  running a while:** Aurora, Chromatica, Cymatics, Drift, Lumen, Prism, Storm, Tunnel, and
-  Frost's dunes. The change in speed was multiplied by the uptime; it now changes only how
-  fast they move from that moment on.
+- **Ten effects jumped when a binding or a drag moved their speed after the app had been
+  running a while:** Aurora, Chromatica, Cymatics, Drift, Lumen, Prism, Storm, Tesla, Tunnel,
+  and Frost's dunes. The change in speed was multiplied by the uptime; it now changes only
+  how fast they move from that moment on.
+- **Moving Etch's clear-cycle fader wiped the drawing again and again** once the app had
+  been up a while: 8 clears during a 3-second drag at five minutes, now at most one.
 - **Frost's crystals jumped instead of wandering once the app had been running a while.**
   Their drift speed follows the music, and every change in it was multiplied by the app's
   uptime, so a few minutes in, each shift in the sound threw the cells to new places. They

@@ -43,9 +43,12 @@ pub(crate) fn prepare_effect_layers(
             // Update particle systems
             if let Some(ref mut ps) = e.pass_executor.particle_system {
                 ps.update_uniforms(dt, global.time, global.resolution, global.beat);
-                // Forward first 8 effect params to compute shader
+                // Forward all 16 effect params (and any "rates" integrals among
+                // them) to the compute shader.
                 let p = e.uniforms.params;
                 ps.uniforms.effect_params = [p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]];
+                ps.uniforms.effect_params_hi =
+                    [p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]];
                 // Must follow effect_params: the composite gain is derived from
                 // the same slider the background pass decays by (#2349).
                 ps.update_composite_gain(dt);
@@ -73,7 +76,8 @@ pub(crate) fn prepare_effect_layers(
                 // solver can fold pooled water into its solid mask.
                 ps.sync_fluid(device, queue);
                 // Splat (#1800): camera params ride slots 8–11 and roundness
-                // slot 12 (only 0–7 reach the sim); advance the CPU
+                // slot 12, applied CPU-side (splat_sim does not read them,
+                // though since #2984 they reach it); advance the CPU
                 // orbit/envelope driver with this frame's dt + audio (no-op
                 // for non-splat).
                 ps.splat_ui_params = [p[8], p[9], p[10], p[11], p[12]];

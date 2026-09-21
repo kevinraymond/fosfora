@@ -275,6 +275,9 @@ All fields with types and defaults:
                                        // is written to the slots after the packed params,
                                        // in this order; the param's own slot keeps its
                                        // value. Use it instead of u.time * param.
+                                       // A period in seconds (a Float): write
+                                       // {"param": name, "period": true} and the slot
+                                       // holds cycles completed, instead of u.time / param.
 
     "passes": [                        // Multi-pass pipeline (optional)
         {

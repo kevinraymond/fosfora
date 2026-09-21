@@ -20,7 +20,7 @@ pub struct Particle {
     pub flags: [f32; 4],
 }
 
-/// Particle simulation uniforms: 960 bytes.
+/// Particle simulation uniforms: 992 bytes.
 /// Separate from the main 432-byte ShaderUniforms — the two carry overlapping but not
 /// identical feature sets, and each has its own WGSL mirror that must be kept in step
 /// (see `particle_uniforms_wgsl_layout_matches_rust`).
@@ -236,7 +236,13 @@ pub struct ParticleUniforms {
     /// 60 fps, 2+ below it. The writer fills every slot it passed over; leaving
     /// the skipped ones holding stale points is the ribbon flash of #1796.
     pub trail_steps: u32,
-    // Total = 960 bytes
+    /// Effect params 8..15 (#2984), so a sim sees all 16 slots a fragment pass
+    /// does. Appended as a fresh 32-byte block — every existing offset stays
+    /// put, so a custom sim declaring the old struct still reads correctly.
+    /// Needed because `"rates"` integrals go after the packed params, and an
+    /// effect that packs eight (Tesla, Etch) puts them at slot 8.
+    pub effect_params_hi: [f32; 8],
+    // Total = 992 bytes
 }
 
 /// Obstacle collision mode.
@@ -1026,10 +1032,11 @@ mod tests {
     }
 
     #[test]
-    fn particle_uniforms_size_960() {
+    fn particle_uniforms_size_992() {
         // 896 through the Splat block, + 16 (A13 stereo) + 32 (A13b band_pan) for
-        // #1801, + 16 (fluid flow field) for #1939.
-        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 960);
+        // #1801, + 16 (fluid flow field) for #1939, + 32 (effect params 8..15)
+        // for #2984.
+        assert_eq!(std::mem::size_of::<ParticleUniforms>(), 992);
     }
 
     #[test]

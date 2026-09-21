@@ -64,9 +64,9 @@
 // DIPOLE POSITION HELPERS
 // ============================================================================
 
-fn get_dipole_positions(t: f32, mode: f32, rotation: f32, out_count: ptr<function, u32>) -> array<vec2f, 5> {
+fn get_dipole_positions(spin: f32, mode: f32, out_count: ptr<function, u32>) -> array<vec2f, 5> {
     var positions: array<vec2f, 5>;
-    let angle = t * rotation * 0.5;
+    let angle = spin * 0.5;
     let ca = cos(angle);
     let sa = sin(angle);
 
@@ -121,9 +121,9 @@ fn get_pole_sign(i: u32, mode: f32) -> f32 {
 // Each pole produces a radial field: B = sign * r_hat / |r|^2
 // The superposition of a +pole and -pole gives classic dipole field lines
 // that curve from North to South — exactly the iron filing pattern.
-fn magnetic_field(p: vec2f, t: f32, mode: f32, rotation: f32) -> vec2f {
+fn magnetic_field(p: vec2f, spin: f32, mode: f32) -> vec2f {
     var dcount: u32;
-    let dipoles = get_dipole_positions(t, mode, rotation, &dcount);
+    let dipoles = get_dipole_positions(spin, mode, &dcount);
     var B = vec2f(0.0);
 
     for (var i = 0u; i < dcount; i++) {
@@ -147,9 +147,9 @@ fn magnetic_field(p: vec2f, t: f32, mode: f32, rotation: f32) -> vec2f {
 //  - nearest "source" pole (same sign as charge → field pushes away from it)
 //  - nearest "sink" pole (opposite sign → field pulls toward it)
 // Returns: vec4f(sink_dist, source_dist, sink_pole_idx, source_pole_idx)
-fn analyze_poles(pos: vec2f, charge: f32, t: f32, mode: f32, rotation: f32) -> vec4f {
+fn analyze_poles(pos: vec2f, charge: f32, spin: f32, mode: f32) -> vec4f {
     var dcount: u32;
-    let dipoles = get_dipole_positions(t, mode, rotation, &dcount);
+    let dipoles = get_dipole_positions(spin, mode, &dcount);
 
     var sink_dist = 999.0;
     var source_dist = 999.0;
@@ -194,7 +194,10 @@ fn emit_particle(idx: u32) -> Particle {
     // them. Positional jitter below deliberately stays on the fract-sin draws.
     let sb = uhash(idx + uhash(u32(u.seed * 4096.0)));
     let mode = param(3u);
-    let rotation = param(4u);
+    // param(8) is the integral of field_rotation, kept by the engine (`"rates"`
+    // in the .pfx, #2984). The poles used to sit at `u.time * rotation`, so a
+    // change in rotation after a while threw them to a new angle in one frame.
+    let spin = param(8u);
 
     // Determine charge
     let charge_ratio = param(2u) + (u.centroid - 0.5) * 0.15;
@@ -204,7 +207,7 @@ fn emit_particle(idx: u32) -> Particle {
     // Emission strategy: mix of pole-vicinity and mid-field emission
     // This populates field lines across their full length
     var dcount: u32;
-    let dipoles = get_dipole_positions(u.time, mode, rotation, &dcount);
+    let dipoles = get_dipole_positions(spin, mode, &dcount);
 
     let emit_mode = uhash_f(sb ^ 0x85ebca6bu);
     var pos: vec2f;
@@ -260,7 +263,7 @@ fn emit_particle(idx: u32) -> Particle {
     }
 
     // Initial velocity: follow the field direction at spawn point
-    let B = magnetic_field(pos, u.time, mode, rotation);
+    let B = magnetic_field(pos, spin, mode);
     let B_mag = length(B);
     let B_dir = B / (B_mag + 0.0001);
     let speed = u.initial_speed * (0.6 + 0.8 * hash(seed_base + 2.0));
@@ -338,7 +341,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
     let field_str = param(1u);
     let mode = param(3u);
-    let rotation = param(4u);
+    // param(8) is the integral of field_rotation, kept by the engine (`"rates"`
+    // in the .pfx, #2984). The poles used to sit at `u.time * rotation`, so a
+    // change in rotation after a while threw them to a new angle in one frame.
+    let spin = param(8u);
     let tightness = param(6u);
 
     // === BEAT POLARITY FLIP (do before field calculation) ===
@@ -355,7 +361,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // === MAGNETIC FIELD AT CURRENT POSITION ===
-    let B = magnetic_field(pos, u.time, mode, rotation);
+    let B = magnetic_field(pos, spin, mode);
     let B_mag = length(B);
     let B_dir = B / (B_mag + 0.0001);
 
@@ -406,7 +412,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // === SINK POLE RECYCLING ===
     // When a particle reaches its sink pole, kill it so it gets re-emitted
     // at a source pole next frame. This traces complete field lines.
-    let poles = analyze_poles(pos, charge, u.time, mode, rotation);
+    let poles = analyze_poles(pos, charge, spin, mode);
     let sink_dist = poles.x;
     let source_dist = poles.y;
 

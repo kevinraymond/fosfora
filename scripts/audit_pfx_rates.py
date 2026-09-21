@@ -287,11 +287,9 @@ def scan_body(raw, all_lines, lo, hi, helpers=frozenset()):
 
 # Flagged on purpose, each with the reason it is not fixed yet. Remove an entry
 # when its fix lands — --check fails on a stale one.
-KNOWN = {
-    "Tesla": "board #3039: its integral would land in slot 8, which particle "
-    "compute shaders never receive (they get slots 0-7)",
-    "Etch": "board #3040: the clear clock's rate is the RECIPROCAL of clear_cycle, "
-    "which `rates` does not integrate",
+KNOWN: dict[str, str] = {
+    # Empty since #2984 fixed Tesla (#3039) and Etch (#3040). Add an entry only
+    # with a board reference and the reason it cannot be fixed yet.
 }
 
 

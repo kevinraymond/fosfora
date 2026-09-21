@@ -20,11 +20,15 @@
 // board stays blank, raise it and the drawing starts again. That is the manual wipe.
 const ETCH_SHAKE_SECS: f32 = 0.6;
 
-fn etch_clearing(clear_cycle: f32, t: f32) -> bool {
+// `cycles` is the integral of 1 / clear_cycle — clears completed — kept by the
+// engine (`"rates"`, period form, #2984). It used to be `u.time / clear_cycle`,
+// which moved by uptime x the change in 1 / clear_cycle whenever the fader
+// moved, sweeping through the shake window and wiping the drawing at random.
+fn etch_clearing(clear_cycle: f32, cycles: f32) -> bool {
     if clear_cycle <= 0.0 {
         return true;
     }
-    return fract(t / clear_cycle) * clear_cycle < ETCH_SHAKE_SECS;
+    return fract(cycles) * clear_cycle < ETCH_SHAKE_SECS;
 }
 
 @fragment
@@ -38,7 +42,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // heals itself on load, on resize, and after an effect switch.
     let uninitialised = max(prev.r, max(prev.g, prev.b)) < 0.02;
 
-    if u.drop > 0.5 || uninitialised || etch_clearing(clear_cycle, u.time) {
+    if u.drop > 0.5 || uninitialised || etch_clearing(clear_cycle, param(8u)) {
         // Fresh powder. The speckle is baked in once per frame of the shake and never
         // re-rolled while the drawing stands, so it cannot smear into the strokes — and a
         // grain running at full frame rate under a held frame is what turns a dropped frame

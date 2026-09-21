@@ -4536,9 +4536,14 @@ fn cs_main() {
     for (var i = 0u; i < 7u; i = i + 1u) {
         out[6u + i] = band_pan(i);
     }
+    // All 16 effect params through the production accessor: 8..15 are the
+    // #2984 tail, appended after trail_steps.
+    for (var i = 0u; i < 16u; i = i + 1u) {
+        out[13u + i] = param(i);
+    }
 }
 "#;
-        const N: usize = 13;
+        const N: usize = 29;
 
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
@@ -4552,6 +4557,8 @@ fn cs_main() {
         u.stereo_width = 0.75;
         u.stereo_corr = 0.125;
         u.band_pan = [0.11, 0.22, 0.33, 0.44, 0.55, 0.66, 0.77, 0.0];
+        u.effect_params = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5];
+        u.effect_params_hi = [9.25, 10.25, 11.25, 12.25, 13.25, 14.25, 15.25, 16.25];
 
         let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("probe-uniforms"),
@@ -4647,6 +4654,20 @@ fn cs_main() {
                 u.band_pan[i]
             );
         }
+        for i in 0..16 {
+            let want = if i < 8 {
+                u.effect_params[i]
+            } else {
+                u.effect_params_hi[i - 8]
+            };
+            assert_eq!(
+                got[13 + i],
+                want,
+                "param({i}): WGSL read {} but Rust wrote {want} — a particle sim would \
+                 read the wrong effect param",
+                got[13 + i]
+            );
+        }
     }
 
     // Every shipped .pfx render pass, through the production concatenation,
@@ -4686,6 +4707,176 @@ fn cs_main() {
             "{} pass(es) need a capability baseline WebGPU does not promise:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    // #2984: Etch clears its board on a clock, `fract(t / clear_cycle)`, whose
+    // rate is 1 / clear_cycle — so moving the clear-cycle fader at a large
+    // uptime moved the phase by uptime x the change in 1 / clear_cycle, sweeping
+    // it through the shake window again and again. The defect is a COUNT of
+    // clears, not a picture drifting, which the generic rates probe cannot see:
+    // at t=300 it reads the nudge as smaller than motion (a clear switched off).
+    //
+    // So this compiles the REAL etch_clearing (extracted from etch_bg.wgsl the
+    // way etch_clear_cycle_matches pins it) and counts clear onsets during a
+    // 3 s drag of the fader from 12 s to 24 s at a 300 s clock, fed two ways:
+    // the old input, t / clear_cycle, and the engine's RateState integral of
+    // 1 / clear_cycle — exactly what the shader now receives in slot 8.
+    //
+    // Run: cargo test -p fosfora-app -- --ignored --nocapture etch_fader_drag
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn etch_fader_drag_does_not_fire_spurious_clears() {
+        use crate::effect::rates::{RateState, layout};
+        use crate::params::{ParamStore, ParamValue};
+        use wgpu::util::DeviceExt;
+
+        const BG: &str = include_str!("../../../../assets/shaders/etch_bg.wgsl");
+        let start = BG.find("const ETCH_SHAKE_SECS").expect("ETCH_SHAKE_SECS");
+        let body = BG.find("fn etch_clearing").expect("etch_clearing");
+        let end = body + BG[body..].find("\n}").expect("close") + 2;
+        let clearing_src = &BG[start..end];
+
+        // The drag: 3 s at 60 fps, 12 s -> 24 s, starting at a 300 s clock.
+        const FRAMES: usize = 180;
+        const DT: f32 = 1.0 / 60.0;
+        const T0: f32 = 300.0;
+        let cycle_at = |i: usize| 12.0 + 12.0 * i as f32 / (FRAMES - 1) as f32;
+
+        let etch = shipped_effects_for_test()
+            .into_iter()
+            .find(|e| e.name == "Etch")
+            .expect("etch.pfx");
+        let slots = layout(&etch.inputs, &etch.rates).expect("rates layout");
+        let clear = slots
+            .iter()
+            .find(|s| s.name == "clear_cycle")
+            .expect("clear_cycle rate");
+        assert!(clear.period, "clear_cycle must be declared a period");
+
+        // The engine's input: RateState, run from t=0 at 12 s, then the drag.
+        let mut store = ParamStore::new();
+        store.load_from_defs(&etch.inputs);
+        store.set("clear_cycle", ParamValue::Float(12.0));
+        let mut rates = RateState::new(slots.clone());
+        for _ in 0..(T0 / DT) as usize {
+            let mut p = store.pack_to_buffer();
+            rates.advance(&mut p, DT);
+        }
+        let mut integrated = Vec::with_capacity(FRAMES * 2);
+        let mut legacy = Vec::with_capacity(FRAMES * 2);
+        for i in 0..FRAMES {
+            let c = cycle_at(i);
+            store.set("clear_cycle", ParamValue::Float(c));
+            let mut p = store.pack_to_buffer();
+            rates.advance(&mut p, DT);
+            integrated.extend([c, p[clear.dst]]);
+            legacy.extend([c, (T0 + i as f32 * DT) / c]);
+        }
+
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let shader = format!(
+            "{clearing_src}\n\
+             @group(0) @binding(0) var<storage, read> inp: array<vec2f>;\n\
+             @group(0) @binding(1) var<storage, read_write> out: array<f32>;\n\
+             @compute @workgroup_size(64)\n\
+             fn cs_main(@builtin(global_invocation_id) gid: vec3u) {{\n\
+                 let i = gid.x;\n\
+                 if i >= arrayLength(&inp) {{ return; }}\n\
+                 out[i] = select(0.0, 1.0, etch_clearing(inp[i].x, inp[i].y));\n\
+             }}"
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("etch-clearing-probe"),
+            source: wgpu::ShaderSource::Wgsl(shader.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("etch-clearing-probe"),
+            layout: None,
+            module: &module,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let run = |inputs: &[f32]| -> Vec<f32> {
+            let n = inputs.len() / 2;
+            let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(inputs),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            let bytes = (n * 4) as u64;
+            let obuf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let stage = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: ibuf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: obuf.as_entire_binding(),
+                    },
+                ],
+            });
+            let mut enc = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = enc.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.dispatch_workgroups((n as u32).div_ceil(64), 1, 1);
+            }
+            enc.copy_buffer_to_buffer(&obuf, 0, &stage, 0, bytes);
+            queue.submit([enc.finish()]);
+            stage.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .unwrap();
+            bytemuck::cast_slice::<u8, f32>(&stage.slice(..).get_mapped_range()).to_vec()
+        };
+        // Clear ONSETS: frames where clearing starts. One shake is a few
+        // consecutive frames and counts once.
+        let onsets = |flags: &[f32]| {
+            flags
+                .windows(2)
+                .filter(|w| w[0] < 0.5 && w[1] > 0.5)
+                .count()
+                + usize::from(flags[0] > 0.5)
+        };
+        let old = onsets(&run(&legacy));
+        let new = onsets(&run(&integrated));
+        eprintln!(
+            "etch: 3 s fader drag 12 s -> 24 s at a {T0} s clock: clears with t / cycle {old}, \
+             with the integral {new}"
+        );
+        // A 3 s drag through periods of 12-24 s spans at most a quarter of a
+        // cycle, so at most one clear is legitimate.
+        assert!(
+            new <= 1,
+            "the integrated clear clock fired {new} clears during a 3 s drag — the \
+             fader is sweeping the phase again"
+        );
+        assert!(
+            old > 3,
+            "the old clock should fire repeatedly during this drag (it read {old}); if \
+             it no longer does, this test has stopped discriminating"
         );
     }
 }

@@ -202,7 +202,7 @@ pub struct PfxEffect {
     /// packed params, so the shader never multiplies a param by `u.time`
     /// (see `effect::rates`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rates: Vec<String>,
+    pub rates: Vec<crate::effect::rates::RateDef>,
     /// Multi-pass pipeline definition. If empty, `shader` field is used as a single pass.
     #[serde(default)]
     pub passes: Vec<PassDef>,
