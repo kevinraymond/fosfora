@@ -34,6 +34,11 @@
   right-click removes a hovered wire and the canvas says so, and pins catch a dropped wire
   from twice as far without the dots growing. The old on-wire "×" button is gone.
 
+### Fixed
+- **Shards could blow the whole frame out to white.** Its `edge_glow` slider reads 0–1, but a
+  binding or oscillator can drive a parameter past the range the slider shows, and anything
+  below zero sent the edge term to infinity.
+
 ## v1.37.0 — 2026-09-20
 
 ### Added

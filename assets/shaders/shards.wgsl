@@ -11,7 +11,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // param(0) = cell_scale, param(1) = edge_glow, param(2) = fill_amount, param(3) = saturation
     let cell_scale = param(0u) * 8.0 + 3.0;
-    let edge_glow = param(1u) * 15.0 + 0.5;
+    // Floored at zero. The .pfx declares 0..1, but that is the UI SLIDER's
+    // range and nothing enforces it — `ParamStore::set` does not clamp, so a
+    // binding driving this parameter reaches negative values the slider never
+    // produces. Negative here is `exp(+large)` below, and the whole frame goes
+    // to infinity. No effect inside the declared range.
+    let edge_glow = max(param(1u), 0.0) * 15.0 + 0.5;
     let fill_amount = param(2u);
     let saturation = param(3u) * 2.0; // 0 = grayscale, 1 = normal, 2 = vivid
 
