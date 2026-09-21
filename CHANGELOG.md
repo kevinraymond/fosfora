@@ -12,6 +12,8 @@
   finds shaders that still multiply by `u.time`.
 
 ### Changed
+- **Profiling builds time each pass of a multi-pass effect,** plus particle simulation,
+  particle drawing and the snapshot of the layers below, instead of only each layer's total.
 - **Building from source: `--features release` gives exactly what the downloads include.**
   A plain `cargo build` still has no optional features.
 - **`fosfora --help` now explains itself.** Each mode says what it is for, the optional

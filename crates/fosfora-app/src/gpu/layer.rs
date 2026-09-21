@@ -405,16 +405,26 @@ impl Layer {
     }
 
     /// Execute this layer's render passes. Returns the final HDR target.
+    ///
+    /// Under a profiler the layer's own scope (its name) closes after its
+    /// per-pass scopes, so the log reads `… pressure | velocity | dye | Sumi`:
+    /// the passes, then the layer total they add up to.
     pub fn execute(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
+        profiler: super::profiler::ProfilerHandle<'_>,
     ) -> &RenderTarget {
+        let mut scope = profiler.scope(&self.name, encoder);
+        let encoder = scope.encoder();
         match &self.content {
-            LayerContent::Effect(e) => {
-                e.pass_executor
-                    .execute(encoder, &e.uniform_buffer, queue, &e.uniforms)
-            }
+            LayerContent::Effect(e) => e.pass_executor.execute_profiled(
+                encoder,
+                &e.uniform_buffer,
+                queue,
+                &e.uniforms,
+                profiler,
+            ),
             LayerContent::Media(m) => m.execute(encoder),
         }
     }

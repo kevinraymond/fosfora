@@ -157,7 +157,7 @@ pub(crate) fn execute_and_composite<'a>(
             // Nothing beneath a solo layer — @backdrop reads transparent, not stale.
             compositor.clear_backdrop(encoder);
         }
-        let raw = layer.execute(encoder, queue);
+        let raw = layer.execute(encoder, queue, profiler);
         let target = run_layer_chain(
             trama.as_deref_mut(),
             layer,
@@ -191,11 +191,13 @@ pub(crate) fn execute_and_composite<'a>(
                 if layer_outputs.is_empty() {
                     compositor.clear_backdrop(encoder);
                 } else {
+                    let mut scope = profiler.scope("backdrop", encoder);
+                    let encoder = scope.encoder();
                     let below = compositor.composite(device, queue, encoder, &layer_outputs);
                     compositor.snapshot_backdrop(device, encoder, below);
                 }
             }
-            let raw = layer.execute(encoder, queue);
+            let raw = layer.execute(encoder, queue, profiler);
             // `run_layer_chain` returns nothing borrowed from `trama`, which
             // is what lets `layer_outputs` keep accumulating while `&mut
             // TramaSystem` is re-borrowed on every iteration.

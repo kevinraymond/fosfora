@@ -2760,7 +2760,11 @@ mod tests {
         for frame in 0..2 {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            let pfx_out = layer.execute(&mut encoder, &queue);
+            let pfx_out = layer.execute(
+                &mut encoder,
+                &queue,
+                crate::gpu::profiler::ProfilerHandle::none(),
+            );
             assert_eq!(
                 pfx_out.format,
                 GpuContext::hdr_format(),

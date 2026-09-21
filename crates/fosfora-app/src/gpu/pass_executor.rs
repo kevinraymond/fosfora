@@ -332,7 +332,8 @@ impl PassExecutor {
     }
 
     /// Execute all passes. Returns a reference to the final pass's write target.
-    /// `viewport`: optional (width, height) to restrict rendering to a sub-region.
+    /// The probes' entry point; the app goes through [`Self::execute_profiled`].
+    #[cfg(test)]
     pub fn execute(
         &self,
         encoder: &mut CommandEncoder,
@@ -340,15 +341,39 @@ impl PassExecutor {
         queue: &Queue,
         uniforms: &super::ShaderUniforms,
     ) -> &RenderTarget {
+        self.execute_profiled(
+            encoder,
+            uniform_buffer,
+            queue,
+            uniforms,
+            super::profiler::ProfilerHandle::none(),
+        )
+    }
+
+    /// [`Self::execute`] with a timing scope per fragment pass (named after
+    /// the pass, all of its iterations inside one scope) and one each for the
+    /// particle dispatch and render, so a multi-pass effect's cost can be read
+    /// pass by pass rather than only as its layer's total.
+    pub fn execute_profiled(
+        &self,
+        encoder: &mut CommandEncoder,
+        uniform_buffer: &UniformBuffer,
+        queue: &Queue,
+        uniforms: &super::ShaderUniforms,
+        profiler: super::profiler::ProfilerHandle<'_>,
+    ) -> &RenderTarget {
         uniform_buffer.update(queue, uniforms);
 
         // 1. Particle compute dispatch (before fragment passes)
         if let Some(ref ps) = self.particle_system {
-            ps.dispatch(encoder, queue);
+            let mut scope = profiler.scope("particles-sim", encoder);
+            ps.dispatch(scope.encoder(), queue);
         }
 
         // 2. Fragment shader passes
         for pass in &self.passes {
+            let mut scope = profiler.scope(&pass.name, encoder);
+            let encoder = scope.encoder();
             // Single-draw passes render into `write_target()` (= targets[flip_parity]
             // for a feedback pass) with the parity-indexed bind group. An iterated
             // (Jacobi) pass ping-pongs its own two targets in-encoder: draw `k` uses
@@ -407,7 +432,8 @@ impl PassExecutor {
 
         // 3. Particle render pass — composites on top of last fragment pass with LoadOp::Load
         if let Some(ref ps) = self.particle_system {
-            ps.render(encoder, queue, &final_target.view);
+            let mut scope = profiler.scope("particles-render", encoder);
+            ps.render(scope.encoder(), queue, &final_target.view);
         }
 
         final_target
