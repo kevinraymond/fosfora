@@ -1251,12 +1251,22 @@ mod tests {
             "registry load errors: {:?}",
             reg.errors
         );
-        let ids: Vec<&str> = reg.effects.iter().map(|e| e.id.0.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["hue_drift", "mix", "noise_field", "transform"],
-            "sorted by id"
-        );
+        // Against the DIRECTORY, not a list written here: a hand-kept list
+        // stops covering the effect somebody adds next, and the library is
+        // growing. This asserts two things at once — every shipped file built
+        // a pipeline, and the registry is sorted by id, which the canvas
+        // palette order and every cached plan position depend on.
+        let mut expected: Vec<String> = std::fs::read_dir(effects_dir())
+            .expect("the shipped effects directory")
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "wgsl"))
+            .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect();
+        expected.sort();
+        assert!(expected.len() >= 16, "shipped effects went missing");
+        let ids: Vec<String> = reg.effects.iter().map(|e| e.id.0.clone()).collect();
+        assert_eq!(ids, expected, "every file loaded, sorted by id");
     }
 
     // Run: cargo test -p fosfora-app -- --ignored trama_executor_renders_noise_hue_output_chain

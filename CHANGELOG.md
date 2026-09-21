@@ -6,6 +6,17 @@
 ## Unreleased
 
 ### Added
+- **Eleven new trama nodes, taking the library to sixteen.** Levels, Blur, Mirror,
+  Kaleidoscope, Pixelate, Chromatic Aberration, Scanlines, Edge and Palette Map, plus two new
+  sources, Gradient and Solid. Every Float on them modulates like the rest.
+- **`cargo xtask new-effect <id>` scaffolds a trama node.** Writes a file that already
+  compiles and already does something visible, with `--inputs 2` and `--source` for the other
+  two shapes. The app picks up a newly created file without a restart, so a new node is in the
+  palette by the time you switch windows.
+- **trama Key node: dark becomes transparent.** A particle layer's "black" is a faint haze, so
+  placing one over another layer left a visible rectangle whatever blend mode you picked. Wire
+  `Layer input → Key → Output` and the box is gone; `invert` keys out the bright end instead,
+  which makes the node a matte.
 - **`/fosfora/overlay/visible` sets the UI shown or hidden over OSC.** The existing
   `toggle_overlay` trigger only flips it, so a show controller or capture script could never be
   sure which state it left the panels in.

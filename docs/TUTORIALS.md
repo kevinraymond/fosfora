@@ -624,14 +624,26 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Transform** | Scale, rotate and slide the picture about the center. Pixels pulled from outside read transparent | `scale` 0.25–4 · `rotate` ±0.5 turns · `translate_x` / `translate_y` ±0.5 of the frame |
 | **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
 | **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
+| **Key** | Turns dark into transparent, so a layer can sit on top of another one. `invert` keys out the bright end instead, making a matte | `threshold` 0–1 brightness · `softness` 0–1 ramp · `invert` |
+| **Levels** | Brightness, contrast, gamma and saturation: the grading node | `brightness` ±1 · `contrast` 0–4 · `gamma` 0.2–4 · `saturation` 0–3 |
+| **Blur** | Softens the picture. Partway on `amount` is a haze over a picture that keeps its detail | `radius` 0–48 px · `amount` 0–1 |
+| **Mirror** | Folds the picture about a line, so one half reflects over the other. Both axes gives quadrant symmetry | `horizontal` · `vertical` · `center_x` · `center_y` |
+| **Kaleidoscope** | Wraps the picture into mirrored wedges around the center | `segments` 2–24 · `spin` turns per second · `rotate` ±0.5 turns · `zoom` 0.25–4 |
+| **Pixelate** | Quantizes to a grid of cells. `gap` clears a transparent border inside each one, so the layers beneath show through the grout | `size` 2–256 cells · `gap` 0–0.5 |
+| **Chromatic Aberration** | Splits red and blue either side of green, the lens-fringe look. `radial` splits outward from the center | `amount` 0–0.05 · `angle` ±0.5 turns · `radial` |
+| **Scanlines** | Darkens the picture in horizontal bands, the CRT look | `count` 10–1080 lines · `depth` 0–1 · `scroll` lines per second · `sharpness` 0–1 |
+| **Edge** | A Sobel outline: bright where brightness changes. `fill` mixes the original back underneath | `strength` 0–4 · `thickness` 0.5–8 px · `fill` 0–1 |
+| **Palette Map** | Keeps only brightness and recolors it through a cosine palette. A white-on-black effect comes back in full color | `offset` 0–1 · `drift` turns per second · `spread` 0.25–4 · `blend` 0–1 |
 | **Noise Field** (Source) | Drifting palette-colored noise, a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
+| **Gradient** (Source) | A linear ramp between two colors. Both carry alpha, so opaque-to-transparent is a fade mask for a Mix | `color_a` · `color_b` · `angle` ±0.5 turns · `midpoint` |
+| **Solid** (Source) | A flat color. The second input a Mix needs, and the backdrop a keyed layer sits on | `color` (RGBA) |
 | **Feedback** (Utility) | Last frame of whatever is wired into it. The building block for echo loops | none |
 
 Every Float parameter can be driven: open the **mod** row under its slider and pick an oscillator (sine, saw, square, triangle, sample & hold, random walk; in Hz or beat-synced) or the music (**rms**, **onset**, **bass** / **mid** / **high**, a single **band**, **beat phase**, **bpm**). **amount** sets the depth, **mode** how it combines with the slider, **smoothing** how quickly it follows. A bright tick on the slider shows the live value.
 
 ### Recipes
 
-The clips are filmed from the running app; their presets are in `scripts/capture/demos/` (`Trama *.json`) if you want to load one and look inside. One thing they teach: to *place* a layer cleanly, it needs real transparency, which the overlay effects (Astrolabe, Reticle, Limn…) have. A particle effect's "black" is a dim haze, so shrinking one leaves a visible box whatever blend mode you pick; use it as the backdrop instead.
+The clips are filmed from the running app; their presets are in `scripts/capture/demos/` (`Trama *.json`) if you want to load one and look inside. One thing they teach: to *place* a layer cleanly, it needs real transparency, which the overlay effects (Astrolabe, Reticle, Limn…) have. A particle effect's "black" is a dim haze, so shrinking one leaves a visible box whatever blend mode you pick. Either use it as the backdrop instead, or put a **Key** node in front of the Transform to turn that haze into actual transparency.
 
 **Picture-in-picture.** On the top layer: `Layer input → Transform → Output`, with `scale` 0.4 and `translate_x` / `translate_y` pushed toward a corner. The rest of the stack fills the frame behind it. It works on media layers too, such as a video in the corner of a particle effect.
 

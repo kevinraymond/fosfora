@@ -293,6 +293,22 @@ mod tests {
 
         std::fs::remove_file(&file).unwrap();
         assert_eq!(poll(3000, true).len(), 1, "a delete is a change");
+
+        // A file that has never existed before. The stamp filter keys on path,
+        // so a new one has nothing seeded and must come through — this is what
+        // makes `xtask new-effect` land in a running app instead of needing a
+        // restart, and `TramaRegistry::reload_file` treats an unknown id as an
+        // addition rather than a swap.
+        let fresh = trama.join("brand_new.wgsl");
+        std::fs::write(&fresh, "created while the app was running").unwrap();
+        let reported = poll(3000, true);
+        assert_eq!(
+            reported.len(),
+            1,
+            "a newly created effect is a change: {reported:?}"
+        );
+        assert!(reported[0].ends_with("trama/effects/brand_new.wgsl"));
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 

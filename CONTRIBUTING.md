@@ -44,6 +44,34 @@ The fastest way to contribute is writing a new visual effect. Three steps:
 
 See the [Shader Authoring Guide](docs/TECHNICAL.md#shader-authoring-guide) for uniforms, multi-pass, particles, feedback, and common pitfalls.
 
+## Adding a trama Node
+
+A trama node is one self-contained `.wgsl` file in `assets/trama/effects/` — the manifest
+lives in a `/*! trama { … } */` comment at the top of the shader, so there is no second file
+to keep in step. Scaffold one:
+
+```sh
+cargo xtask new-effect my_effect            # a 1-input effect
+cargo xtask new-effect my_mix --inputs 2    # takes two pictures
+cargo xtask new-effect my_source --source   # generates one, takes no input
+```
+
+The app watches that directory and treats a path it has not seen before as a new effect, so
+the node appears in a running app's palette without a restart. If the file stops compiling,
+the last good version keeps rendering and the compiler's text shows in the node inspector
+under a `· ERROR` title — output never blanks because you saved a typo.
+
+Two rules the scaffold already follows:
+
+- **Color is premultiplied** (see [docs/alpha.md](docs/alpha.md)): RGB is scaled by coverage,
+  and RGB > A is legal and means additive light. Scaling a whole `vec4f` preserves that; a
+  non-linear tone curve does not, so divide coverage back out first and multiply it in again
+  the way `levels.wgsl` does.
+- **Never write `u.time * some_param`.** Multiplying a parameter by absolute time multiplies
+  every *change* in that parameter by the app's uptime, so a modulated speed strobes instead
+  of speeding up. List the parameter under `"rates"` in the manifest and its slot arrives as
+  the engine-integrated phase. A unit test refuses the pattern in shipped nodes.
+
 ## Reporting Bugs
 
 Please include:

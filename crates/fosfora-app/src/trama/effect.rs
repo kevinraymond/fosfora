@@ -410,6 +410,28 @@ mod tests {
     const HUE_DRIFT: &str = include_str!("../../../../assets/trama/effects/hue_drift.wgsl");
     const MIX: &str = include_str!("../../../../assets/trama/effects/mix.wgsl");
     const TRANSFORM: &str = include_str!("../../../../assets/trama/effects/transform.wgsl");
+    const KEY: &str = include_str!("../../../../assets/trama/effects/key.wgsl");
+
+    /// Every shipped effect file, read from disk at test time: `(path, source)`.
+    ///
+    /// The whole-library guards below scan rather than list, because a
+    /// hand-kept list silently stops covering the effect somebody adds next —
+    /// and the library is on its way from four files to fifteen.
+    fn shipped_effect_files() -> Vec<(PathBuf, String)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/trama/effects");
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
+            .map(|path| {
+                let source = std::fs::read_to_string(&path).unwrap();
+                (path, source)
+            })
+            .collect();
+        assert!(files.len() >= 4, "the shipped effects went missing");
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    }
 
     fn manifest(json: &str) -> Result<TramaManifest, EffectLoadError> {
         parse_effect_file(&format!(
@@ -449,14 +471,7 @@ mod tests {
     // by the music. Declare the parameter in "rates" and use its integral.
     #[test]
     fn no_shipped_effect_multiplies_a_parameter_by_absolute_time() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/trama/effects");
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_none_or(|e| e != "wgsl") {
-                continue;
-            }
-            let source = std::fs::read_to_string(&path).unwrap();
+        for (path, source) in shipped_effect_files() {
             for (n, line) in source.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("");
                 assert!(
@@ -612,21 +627,31 @@ mod tests {
     }
 
     #[test]
+    fn builtin_key_parses_from_assets() {
+        let m = parse_effect_file(KEY).unwrap();
+        assert_eq!(m.id, "key");
+        assert_eq!(m.kind, EffectKind::Effect);
+        assert_eq!(m.inputs, 1);
+        // threshold, softness, invert — the Bool is deliberate: Key is also a
+        // matte generator, and inverting it is not something to modulate.
+        assert_eq!(m.params.len(), 3);
+        assert!(m.rates.is_empty(), "Key has no rate: nothing in it moves");
+    }
+
+    #[test]
     fn builtin_effects_pass_naga_validation() {
         // The production compile source, byte for byte, but validated on the
         // CPU — no GPU adapter needed, so this runs in plain CI.
         let loader = EffectLoader::for_test(&probe_libs());
-        for (name, source) in [
-            ("noise_field", NOISE_FIELD),
-            ("hue_drift", HUE_DRIFT),
-            ("mix", MIX),
-            ("transform", TRANSFORM),
-        ] {
-            let m = parse_effect_file(source).unwrap();
-            let fragment = loader.prepend_library_with_inputs(source, usize::from(m.inputs));
+        for (path, source) in shipped_effect_files() {
+            let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
+            let m = parse_effect_file(&source)
+                .unwrap_or_else(|e| panic!("{stem}: manifest does not parse: {e}"));
+            check_id_matches(&m, &stem).unwrap();
+            let fragment = loader.prepend_library_with_inputs(&source, usize::from(m.inputs));
             let full = format!("{FULLSCREEN_TRIANGLE_VS}\n{fragment}");
             if let Err(e) = validate_wgsl(&full) {
-                panic!("{name} failed naga validation: {e}");
+                panic!("{stem} failed naga validation: {e}");
             }
         }
     }
