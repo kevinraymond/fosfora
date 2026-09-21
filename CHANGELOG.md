@@ -12,6 +12,8 @@
   finds shaders that still multiply by `u.time`.
 
 ### Changed
+- **Building from source: `--features release` gives exactly what the downloads include.**
+  A plain `cargo build` still has no optional features.
 - **`fosfora --help` now explains itself.** Each mode says what it is for, the optional
   features are listed with the ones your build has marked and how to build the rest, and it
   shows where your settings live.

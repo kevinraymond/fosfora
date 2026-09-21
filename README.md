@@ -99,6 +99,7 @@ Needs Rust 1.97+ (pinned via `rust-toolchain.toml`) and a Vulkan-capable GPU.
 git clone https://github.com/kevinraymond/fosfora.git
 cd fosfora
 cargo run --release                    # no extra deps
+cargo run --release --features release # everything the downloads have (needs the deps below)
 cargo run --release --features video   # video layers — needs ffmpeg on PATH
 cargo run --release --features webcam  # webcam layers — needs libclang-dev, v4l-utils (Linux)
 cargo run --release --features ndi     # NDI out — needs the NDI runtime

@@ -166,6 +166,11 @@ workspace = true
 
 [features]
 default = []
+# Exactly what the release downloads ship: release.yml builds with this, so
+# `cargo build --release --features release` reproduces a download. The
+# platform-sharing three are inert off their OS. Deliberately NOT in it:
+# `analyze` (dev tooling), `link` (makes the binary GPL), `profiling`.
+release = ["video", "ndi", "webcam", "depth", "v4l2", "spout", "syphon"]
 video = []
 ndi = []
 # Virtual camera via v4l2loopback (GH #6). Inert off-Linux: the dep is
@@ -185,8 +190,8 @@ depth = ["webcam", "ort", "flate2", "tar", "zip"]
 # Ableton Link tempo/phase sync (workstream B). rusty_link vendors Ableton
 # Link, which is GPL-2.0-or-later (proprietary licensing available from
 # Ableton) — a binary built with this feature is distributed under GPL terms.
-# Deliberately absent from default and from release.yml's feature list so
-# shipped binaries stay MIT/Apache; building with it yourself is fine.
+# Deliberately absent from default and from the `release` feature so shipped
+# binaries stay MIT/Apache; building with it yourself is fine.
 link = ["dep:rusty_link"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).
 analyze = ["symphonia"]

@@ -42,7 +42,7 @@ cap_require_fresh_binary() {
   [[ -x $bin ]] || die "release binary not found at $bin — run: cargo build --release"
   if [[ -n $(find "$repo/crates" -name '*.rs' -newer "$bin" -print -quit 2>/dev/null) ]]; then
     die "$bin is older than crates/*.rs — the clips would not be of the current build.
-     Run: cargo build --release --features \"video,ndi,webcam,depth\""
+     Run: cargo build --release --features release"
   fi
 }
 

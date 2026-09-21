@@ -4248,8 +4248,9 @@ OPTIONAL FEATURES
   Chosen when the binary is built. \"yes\" marks the ones this build has:
 {feature_rows}{none_note}
   Release downloads include video, ndi, webcam, depth and their platform's sharing
-  output. From source, name the ones you want:
-      cargo build --release --features \"video,ndi,analyze\"
+  output. From source, get the same set with
+      cargo build --release --features release
+  or name the ones you want: --features \"release,analyze\", --features webcam
 
 LOGS AND FILES
   RUST_LOG=debug fosfora     more log detail (default: info)

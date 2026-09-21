@@ -93,7 +93,7 @@ done
 # the sorted 3DGS renderer, and the only visible symptom was Splat rendering flat grey.
 if [[ -n $(find "$REPO/crates" -name '*.rs' -newer "$BIN" -print -quit 2>/dev/null) ]]; then
   die "$BIN is older than crates/*.rs — the clips would not be of the current build.
-     Run: cargo build --release --features \"video,ndi,webcam,depth\""
+     Run: cargo build --release --features release"
 fi
 
 DEFAULT_SINK=$(pactl get-default-sink)
