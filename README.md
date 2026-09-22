@@ -17,13 +17,13 @@
 
 Fosfora is a free, open-source music visualizer built for actually performing with. There's
 nothing to code, no account to make, and no project to set up: open it, play music, and it
-reacts. When you want more, every knob is there — 55 effects, an eight-layer stack, MIDI, OSC,
+reacts. When you want more, every knob is there — 56 effects, an eight-layer stack, MIDI, OSC,
 your phone as a control surface, a webcam, and four ways out to your video mixer: NDI, Spout,
 Syphon, or a virtual camera.
 
 ## See it move
 
-Nine of the fifty-five, all at default settings:
+Nine of the fifty-six, all at default settings:
 
 <table>
 <tr>
@@ -43,7 +43,7 @@ Nine of the fifty-five, all at default settings:
 </tr>
 </table>
 
-**→ [See all 55 effects in the gallery](docs/GALLERY.md)**
+**→ [See all 56 effects in the gallery](docs/GALLERY.md)**
 
 ## Past the defaults
 
@@ -128,10 +128,10 @@ prebuilt downloads don't include it. Building it from source for your own rig is
 
 ## The effects
 
-**55 built-in**, all audio-reactive out of the box, every parameter a slider you can map to
+**56 built-in**, all audio-reactive out of the box, every parameter a slider you can map to
 MIDI or OSC. [Full gallery with clips →](docs/GALLERY.md)
 
-**Shaders** — Aurora · Beam · Drift · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
+**Shaders** — Aurora · Beam · Drift · Fluvid · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
 
 **Particle simulations** — Accretion · Array · Cascade · Chaos · Cleave · Cymatics · Flux ·
 Genesis · Morph · Murmur · Mycelium · Polycephalum · Raster · Splat · Symbiosis · Tesla · Tide ·

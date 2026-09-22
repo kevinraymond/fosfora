@@ -2865,6 +2865,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "feedback is the previous Jacobi iterate, not frame history",
             ),
             (
+                "fluvid_pressure.wgsl",
+                "feedback is the previous SOR iterate, not frame history",
+            ),
+            (
+                "fluvid_rd.wgsl",
+                "a reaction-diffusion integrator, not an image: nothing decays, and its \
+                 step size is scaled by frame_steps() so the chemistry advances the same \
+                 amount per second at any frame rate",
+            ),
+            (
                 "phosphor.wgsl",
                 "unreferenced legacy file; phosphor.pfx runs the chronoflow history path",
             ),

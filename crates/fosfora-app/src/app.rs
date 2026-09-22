@@ -2106,6 +2106,7 @@ impl App {
             }
             Err(e) => {
                 log::error!("Failed to load media '{}': {e}", path.display());
+                self.status_error = Some((e, Instant::now()));
             }
         }
     }
@@ -2360,7 +2361,10 @@ impl App {
                 // Sidecar is now on disk — no longer an unsaved change.
                 self.binding_bus.preset_scope_dirty = false;
             }
-            Err(e) => log::error!("Failed to save preset: {e}"),
+            Err(e) => {
+                log::error!("Failed to save preset: {e}");
+                self.status_error = Some((format!("Failed to save preset: {e}"), Instant::now()));
+            }
         }
     }
 
@@ -2713,6 +2717,8 @@ impl App {
                                 }
                                 Err(e) => {
                                     log::error!("Failed to start webcam for particle source: {e}");
+                                    self.status_error =
+                                        Some((format!("Webcam failed: {e}"), Instant::now()));
                                 }
                             }
                         }

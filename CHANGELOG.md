@@ -6,6 +6,13 @@
 ## Unreleased
 
 ### Added
+- **Fluvid: move in front of a camera and your motion stirs a real fluid**, with a
+  reaction-diffusion maze growing in the ink. Place it above a webcam, video or any effect.
+  A medium slider morphs the liquid from ink to mercury that mirrors you to rippling water.
+- **Two new trama nodes, Color Key and Mask,** keep one color family or one region of a
+  picture and make the rest transparent. On a webcam layer they decide what Fluvid reacts to.
+- **A layer that works on the layers beneath it now says so** ("Needs a layer below")
+  when nothing enabled sits under it, instead of silently rendering nothing.
 - **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
   one's running total in a slot after your parameters, so a shader never has to multiply a
   parameter by `u.time`; a period in seconds can be declared too. `scripts/audit_pfx_rates.py`
@@ -28,6 +35,9 @@
   been measured on the current predictor was removed.
 
 ### Fixed
+- **Loading a video into an existing layer failed with no message** when the clip was over
+  the 60-second limit; the reason now shows in the status bar, as do failed preset saves and
+  a webcam that will not start as a particle source.
 - **Ten effects jumped when a binding or a drag moved their speed after the app had been
   running a while:** Aurora, Chromatica, Cymatics, Drift, Lumen, Prism, Storm, Tesla, Tunnel,
   and Frost's dunes. The change in speed was multiplied by the uptime; it now changes only

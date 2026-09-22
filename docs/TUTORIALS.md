@@ -55,7 +55,7 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **55 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
+Fosfora ships with **56 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
 intro visual you see at startup, and a rasterizer stress test).
 
 **Shaders** (11): pure fragment shaders, no particles.
@@ -627,6 +627,8 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Hue Drift** | Rotates hue, optionally drifting over time | `shift` 0–1 turns · `speed` turns per second |
 | **Mix** | Crossfades input 0 toward input 1 | `amount` 0–1 |
 | **Key** | Turns dark into transparent, so a layer can sit on top of another one. `invert` keys out the bright end instead, making a matte | `threshold` 0–1 brightness · `softness` 0–1 ramp · `invert` |
+| **Color Key** | Keeps one family of colors and makes the rest transparent. Under Fluvid, it decides what Fluvid can see: a colored glove, a prop. `invert` drops that color instead | `hue` 0–1 (0 red, ⅓ green, ⅔ blue) · `hue_width` 0–0.5 · `min_saturation` 0–1 · `softness` 0–0.5 · `invert` |
+| **Mask** | Keeps an ellipse or rectangle of the picture and makes the rest transparent. Under Fluvid, put it over your mouth and only your mouth makes smoke; `invert` cuts a region out instead, like a ceiling fan in one corner | `center_x` / `center_y` 0–1 · `width` / `height` 0–1 · `softness` 0–0.5 · `rectangle` · `invert` |
 | **Levels** | Brightness, contrast, gamma and saturation: the grading node | `brightness` ±1 · `contrast` 0–4 · `gamma` 0.2–4 · `saturation` 0–3 |
 | **Blur** | Softens the picture. Partway on `amount` is a haze over a picture that keeps its detail | `radius` 0–48 px · `amount` 0–1 |
 | **Mirror** | Folds the picture about a line, so one half reflects over the other. Both axes gives quadrant symmetry | `horizontal` · `vertical` · `center_x` · `center_y` |

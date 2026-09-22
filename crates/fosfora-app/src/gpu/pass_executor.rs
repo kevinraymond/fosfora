@@ -1211,10 +1211,31 @@ mod tests {
         w: u32,
         h: u32,
     ) -> Vec<u8> {
+        let mut enc = device.create_command_encoder(&Default::default());
+        let _ = executor.execute(&mut enc, ubuf, queue, uniforms);
+        queue.submit([enc.finish()]);
+        read_pass_rgba(device, queue, blit, blit_bgl, executor, pass_idx, w, h)
+    }
+
+    /// Blit `executor.passes[pass_idx]`'s current write target into a
+    /// FrameCapture and read back RGBA8, WITHOUT executing the graph: several
+    /// passes of one frame can be read after a single `execute`. A non-feedback
+    /// pass must be read before `flip()`; its output lives in targets[0] until
+    /// the next frame overwrites it.
+    #[allow(clippy::too_many_arguments)]
+    fn read_pass_rgba(
+        device: &Device,
+        queue: &Queue,
+        blit: &wgpu::RenderPipeline,
+        blit_bgl: &wgpu::BindGroupLayout,
+        executor: &PassExecutor,
+        pass_idx: usize,
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
         let mut fc = FrameCapture::new(device, w, h, FMT, "probe-cap");
         let mut enc = device.create_command_encoder(&Default::default());
         {
-            let _ = executor.execute(&mut enc, ubuf, queue, uniforms);
             let src = &executor.passes[pass_idx].target.write_target().view;
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("probe-blit-bg"),
@@ -3088,12 +3109,20 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
                         );
                         defs.iter().position(|x| &x.name == n).expect("input")
                     };
+                    // `@backdrop` binds whatever the caller hands `set_backdrop`
+                    // (the placeholder until then), as the app's layer does.
                     let inputs = d
                         .inputs
                         .iter()
-                        .map(|n| InputSrc::Pass {
-                            pass: find(n),
-                            prev: false,
+                        .map(|n| {
+                            if n == BACKDROP_INPUT {
+                                InputSrc::Backdrop
+                            } else {
+                                InputSrc::Pass {
+                                    pass: find(n),
+                                    prev: false,
+                                }
+                            }
                         })
                         .chain(d.prev_inputs.iter().map(|n| InputSrc::Pass {
                             pass: find(n),
@@ -3490,5 +3519,544 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             ]))
         };
         f(0) + f(4) + f(8)
+    }
+
+    // Fluvid (#3077): the camera's motion stirs the fluid and seeds the maze.
+    // Driven through the shipped .pfx wiring with a synthetic camera bound as
+    // @backdrop: a dim room with sensor noise, and a bright disc (the hand)
+    // sweeping side to side. The camera updates at 30 fps under a faster
+    // render, which is the case a plain frame difference strobes on: every
+    // repeated camera frame reads as no motion at all.
+    // Run: FLUVID_PNG_DIR=/tmp cargo test -p fosfora-app --release -- --ignored --nocapture fluvid_probe
+    #[test]
+    #[ignore = "requires a wgpu adapter; renders offscreen, optionally writes PNGs"]
+    fn fluvid_probe() {
+        use crate::params::{ParamStore, ParamValue};
+        let _guard = gpu_guard();
+        let out_dir = std::env::var("FLUVID_PNG_DIR").ok();
+        let (w, h) = (960u32, 540u32);
+        let rig = ShippedRig::new(w, h);
+        let effect = crate::effect::loader::shipped_effects_for_test()
+            .into_iter()
+            .find(|e| e.name == "Fluvid")
+            .expect("fluvid.pfx");
+        rig.check_production_build(&effect);
+        let defs = effect.normalized_passes();
+        let pass = |n: &str| defs.iter().position(|d| d.name == n).expect("pass");
+        let (motion_idx, rd_idx, dye_idx, display_idx) =
+            (pass("motion"), pass("rd"), pass("dye"), pass("display"));
+        let wave_idx = pass("wave");
+
+        let params_with = |set: &[(&str, f32)]| {
+            let mut store = ParamStore::new();
+            store.load_from_defs(&effect.inputs);
+            for (name, v) in set {
+                store.set(name, ParamValue::Float(*v));
+            }
+            store.pack_to_buffer()
+        };
+
+        // The camera: a 20/255 room with ±6 levels of per-pixel noise that
+        // changes every camera frame, and one of four scenes.
+        //   STILL: a skin-toned disc, still.   SWEEP: the disc sweeps 60% of
+        //   the width once a second (a waving hand).
+        //   SWAY: a face (eyes, nostrils, closed mouth) that shifts ±3 px
+        //   side to side 1.5 times a second, as a head does while talking.
+        //   MOUTH: the same face held still, its mouth opening and closing
+        //   once a second.
+        const STILL: u8 = 0;
+        const SWEEP: u8 = 1;
+        const SWAY: u8 = 2;
+        const MOUTH: u8 = 3;
+        let cam_frame = |tick: u32, scene: u8, seed: u32| -> Vec<u8> {
+            let t = tick as f32 / 30.0;
+            let hf = h as f32;
+            let cx = match scene {
+                SWEEP => (0.5 + 0.3 * (std::f32::consts::TAU * 0.5 * t).sin()) * w as f32,
+                SWAY => 0.5 * w as f32 + 3.0 * (std::f32::consts::TAU * 1.5 * t).sin(),
+                _ => 0.5 * w as f32,
+            };
+            let cy = 0.5 * hf;
+            let face = scene == SWAY || scene == MOUTH;
+            let r = if face { 0.3 * hf } else { 0.14 * hf };
+            let open = if scene == MOUTH {
+                (std::f32::consts::TAU * t).sin().max(0.0) * 0.05 * hf
+            } else {
+                0.0
+            };
+            // Dark facial features: (dx, dy, radius), in frame heights.
+            let features: [(f32, f32, f32); 4] = [
+                (-0.1, -0.07, 0.03),
+                (0.1, -0.07, 0.03),
+                (-0.03, 0.03, 0.012),
+                (0.03, 0.03, 0.012),
+            ];
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let mut n =
+                        (x * 73_856_093) ^ (y * 19_349_663) ^ ((tick + seed * 7919) * 83_492_791);
+                    n = (n ^ (n >> 13)).wrapping_mul(0x5bd1_e995);
+                    let noise = ((n >> 24) % 13) as i32 - 6;
+                    let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+                    let mut base = if dx * dx + dy * dy < r * r {
+                        [230, 180, 150]
+                    } else {
+                        [20, 20, 20]
+                    };
+                    if face {
+                        let dark = features.iter().any(|&(fx, fy, fr)| {
+                            let (ex, ey) = (dx - fx * hf, dy - fy * hf);
+                            ex * ex + ey * ey < (fr * hf) * (fr * hf)
+                        });
+                        // The mouth: a line when closed, an ellipse when open.
+                        let (mx, my) = (dx / (0.08 * hf), (dy - 0.13 * hf) / (open + 0.004 * hf));
+                        if dark || mx * mx + my * my < 1.0 {
+                            base = [40, 20, 20];
+                        }
+                    }
+                    let i = ((y * w + x) * 4) as usize;
+                    for c in 0..3 {
+                        px[i + c] = (base[c] + noise).clamp(0, 255) as u8;
+                    }
+                    px[i + 3] = 255;
+                }
+            }
+            px
+        };
+
+        // (mean luma, lit fraction) of an RGBA8 frame.
+        let stats = |d: &[u8]| -> (f64, f64) {
+            let (mut sum, mut lit) = (0.0, 0.0);
+            for p in d.chunks_exact(4) {
+                let l = 0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2]);
+                sum += l;
+                if l > 8.0 {
+                    lit += 1.0;
+                }
+            }
+            let n = f64::from(w * h);
+            (sum / n / 255.0, lit / n)
+        };
+
+        // One run: a fresh graph at `hz` for `secs`, the camera at 30 fps, its
+        // noise pattern offset by `seed`.
+        struct Run {
+            /// Last frame of the display, rd and dye passes.
+            display: Vec<u8>,
+            rd: Vec<u8>,
+            dye: Vec<u8>,
+            /// Last frame of the wave pass read as f16-free RGBA8: 0.5 + h
+            /// would lose sign, so this is the raw blit (negative heights clip
+            /// to 0); used for the peak positive height.
+            wave: Vec<u8>,
+            /// Mean motion gate, per frame.
+            gates: Vec<f64>,
+            /// Mean display luma, per frame.
+            means: Vec<f64>,
+        }
+        let mean_luma = |d: &[u8]| {
+            d.chunks_exact(4)
+                .map(|p| {
+                    0.299 * f64::from(p[0]) + 0.587 * f64::from(p[1]) + 0.114 * f64::from(p[2])
+                })
+                .sum::<f64>()
+                / f64::from(w * h)
+                / 255.0
+        };
+        let run_with = |defs: &[PassDef],
+                        params: [f32; 16],
+                        hz: u32,
+                        secs: u32,
+                        scene: u8,
+                        seed: u32,
+                        poison: Option<(u32, u16)>|
+         -> Run {
+            let mut ex = rig.build(defs);
+            let tex = rig.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("fluvid-probe-camera"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let sampler = rig.device.create_sampler(&wgpu::SamplerDescriptor {
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            let camera = (tex.create_view(&Default::default()), sampler);
+            ex.set_backdrop(
+                Some(camera.clone()),
+                &rig.device,
+                &rig.ubuf,
+                &rig.placeholder,
+                &rig.audio,
+            );
+            // `poison`: on that frame the layers below read as one f16 bit
+            // pattern everywhere (infinity, NaN), then the camera comes back.
+            let bad = poison.map(|(_, bits)| {
+                let t = rig.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fluvid-probe-poison"),
+                    size: wgpu::Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let texel = [bits, bits, bits, 0x3C00]; // alpha 1.0
+                let data: Vec<u8> = (0..w * h)
+                    .flat_map(|_| texel.iter().flat_map(|v| v.to_le_bytes()))
+                    .collect();
+                rig.queue.write_texture(
+                    t.as_image_copy(),
+                    &data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(w * 8),
+                        rows_per_image: Some(h),
+                    },
+                    t.size(),
+                );
+                (t.create_view(&Default::default()), camera.1.clone())
+            });
+            let dt = 1.0 / hz as f32;
+            let frames = secs * hz;
+            let mut cam_tick = u32::MAX;
+            let (mut gates, mut means) = (Vec::new(), Vec::new());
+            for f in 0..frames {
+                let tick = f * 30 / hz;
+                if tick != cam_tick {
+                    cam_tick = tick;
+                    rig.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &tex,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d::ZERO,
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &cam_frame(tick, scene, seed),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(w * 4),
+                            rows_per_image: Some(h),
+                        },
+                        wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                let poisoned = poison.is_some_and(|(pf, _)| pf == f);
+                if poisoned {
+                    ex.set_backdrop(
+                        bad.clone(),
+                        &rig.device,
+                        &rig.ubuf,
+                        &rig.placeholder,
+                        &rig.audio,
+                    );
+                }
+                let u = rig.uniforms(f as f32 * dt, dt, params);
+                let mut enc = rig.device.create_command_encoder(&Default::default());
+                let _ = ex.execute(&mut enc, &rig.ubuf, &rig.queue, &u);
+                rig.queue.submit([enc.finish()]);
+                if poisoned {
+                    ex.set_backdrop(
+                        Some(camera.clone()),
+                        &rig.device,
+                        &rig.ubuf,
+                        &rig.placeholder,
+                        &rig.audio,
+                    );
+                }
+                let m = read_pass_rgba(
+                    &rig.device,
+                    &rig.queue,
+                    &rig.blit,
+                    &rig.blit_bgl,
+                    &ex,
+                    motion_idx,
+                    w,
+                    h,
+                );
+                gates.push(
+                    m.chunks_exact(4).map(|p| f64::from(p[2])).sum::<f64>()
+                        / f64::from(w * h)
+                        / 255.0,
+                );
+                let read = |idx| {
+                    read_pass_rgba(
+                        &rig.device,
+                        &rig.queue,
+                        &rig.blit,
+                        &rig.blit_bgl,
+                        &ex,
+                        idx,
+                        w,
+                        h,
+                    )
+                };
+                let shown = read(display_idx);
+                means.push(mean_luma(&shown));
+                if f == frames - 1 {
+                    let (rd, dye, wave) = (read(rd_idx), read(dye_idx), read(wave_idx));
+                    ex.flip();
+                    return Run {
+                        display: shown,
+                        rd,
+                        dye,
+                        wave,
+                        gates,
+                        means,
+                    };
+                }
+                ex.flip();
+            }
+            unreachable!("frames > 0")
+        };
+        let run = |params: [f32; 16], hz: u32, secs: u32, scene: u8, seed: u32| {
+            run_with(&defs, params, hz, secs, scene, seed, None)
+        };
+
+        let defaults = params_with(&[]);
+        let still = run(defaults, 60, 2, STILL, 0);
+        let moving = run(defaults, 60, 4, SWEEP, 0);
+        let moving_b = run(defaults, 60, 4, SWEEP, 1);
+        let moving120 = run(defaults, 120, 4, SWEEP, 0);
+
+        if let Some(dir) = &out_dir {
+            for (name, data) in [
+                ("still", &still.display),
+                ("moving", &moving.display),
+                ("moving_rd", &moving.rd),
+                ("moving_dye", &moving.dye),
+                ("moving_seed1", &moving_b.display),
+                ("moving120", &moving120.display),
+            ] {
+                let path = format!("{dir}/fluvid_{name}.png");
+                image::RgbaImage::from_raw(w, h, data.clone())
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+                eprintln!("wrote {path}");
+            }
+        }
+
+        // Mean display luma over the last two seconds: a single frame of a
+        // chaotic fluid is one sample, and two runs differing only in sensor
+        // noise already diverge in shape.
+        let tail_mean = |r: &Run| {
+            let n = r.means.len() / 2;
+            r.means[n..].iter().sum::<f64>() / (r.means.len() - n) as f64
+        };
+        let (sm, _) = stats(&still.display);
+        let (_, mc) = stats(&moving.display);
+        let (m60, m60b, m120) = (
+            tail_mean(&moving),
+            tail_mean(&moving_b),
+            tail_mean(&moving120),
+        );
+        let still_gate = still.gates[10..].iter().sum::<f64>() / (still.gates.len() - 10) as f64;
+        // Strobe index: frame-to-frame change of the total gate relative to its
+        // level. A frame difference under a 30 fps camera at 60 Hz flips between
+        // "all motion" and "none" every frame and reads ~2.
+        let g = &moving.gates[60..];
+        let mean_g = g.iter().sum::<f64>() / g.len() as f64;
+        let strobe = g.windows(2).map(|p| (p[1] - p[0]).abs()).sum::<f64>()
+            / (g.len() - 1) as f64
+            / mean_g.max(1e-9);
+        let floor = (m60b / m60 - 1.0).abs();
+        // Gate per SECOND of wall time, summed: what the forces and injection
+        // integrate. Equal at both rates if the motion stage is rate-correct.
+        let gate_per_s = |r: &Run, hz: f64| r.gates[r.gates.len() / 2..].iter().sum::<f64>() / hz;
+        // Maze: along each row of the rd field (drawn into the capture's top-left
+        // at its own scale), how often B crosses the display's wall iso-line
+        // (0.2) per texel of active chemistry (1 − A > 0.1). A maze crosses every
+        // few texels; smooth blobs of B, which is what a pinned or over-diffused
+        // chemistry gives, almost never do. Measured: 0.127-0.133 over three runs;
+        // the uniform motion seed this replaced read 0.077-0.102.
+        let rd_scale = defs[rd_idx].scale;
+        let (rw, rh) = ((w as f32 * rd_scale) as u32, (h as f32 * rd_scale) as u32);
+        let maze = |r: &Run| {
+            let (mut cross, mut active) = (0u32, 0u32);
+            for y in 0..rh {
+                let mut prev = None;
+                for x in 0..rw {
+                    let i = ((y * w + x) * 4) as usize;
+                    if r.rd[i] > 25 {
+                        active += 1;
+                        let on = r.rd[i + 1] > 51;
+                        if prev.is_some_and(|p| p != on) {
+                            cross += 1;
+                        }
+                        prev = Some(on);
+                    } else {
+                        prev = None;
+                    }
+                }
+            }
+            f64::from(cross) / f64::from(active.max(1))
+        };
+        for (name, r) in [
+            ("60", &moving),
+            ("60 seed1", &moving_b),
+            ("120", &moving120),
+        ] {
+            eprintln!(
+                "fluvid: {name}: dye mean {:.4}, maze {:.3}, display {:.4}",
+                mean_luma(&r.dye),
+                maze(r),
+                mean_luma(&r.display)
+            );
+        }
+        eprintln!(
+            "fluvid: gate-seconds over the tail: 60 Hz {:.4}, 120 Hz {:.4}",
+            gate_per_s(&moving, 60.0),
+            gate_per_s(&moving120, 120.0)
+        );
+        eprintln!(
+            "fluvid: still mean {sm:.4} gate {still_gate:.5} | moving lit {mc:.3} \
+             gate {mean_g:.4} strobe {strobe:.3} | tail mean 60 Hz {m60:.4}, other noise seed \
+             {m60b:.4} (floor {floor:.3}), 120 Hz {m120:.4}"
+        );
+
+        assert!(
+            still_gate < 0.002,
+            "sensor noise reads as motion (gate {still_gate:.5})"
+        );
+        assert!(
+            sm < 0.01,
+            "a still, noisy camera lights the frame (mean {sm:.4})"
+        );
+        assert!(
+            m60 > 0.02 && mc > 0.03,
+            "motion leaves no ink (mean {m60:.4}, lit {mc:.3})"
+        );
+        assert!(
+            strobe < 0.35,
+            "the motion gate strobes with the camera's frame rate (index {strobe:.3})"
+        );
+        for (name, r) in [("60", &moving), ("120", &moving120)] {
+            let m = maze(r);
+            assert!(
+                m > 0.115,
+                "no maze grows in the ink at {name} Hz (index {m:.3})"
+            );
+        }
+        // Talking at the camera: a mouth opening must ink, a head swaying by a
+        // few pixels mostly must not. Sway only moves edges, so its change is
+        // thin lines; an opening mouth changes a solid patch.
+        let sway = run(defaults, 60, 3, SWAY, 0);
+        let mouth = run(defaults, 60, 3, MOUTH, 0);
+        let gate_mean = |r: &Run| r.gates[30..].iter().sum::<f64>() / (r.gates.len() - 30) as f64;
+        let (gs, gm) = (gate_mean(&sway), gate_mean(&mouth));
+        eprintln!(
+            "fluvid: talking: sway gate {gs:.5}, mouth gate {gm:.5} (ratio {:.2}), \
+             ink: sway {:.4}, mouth {:.4}",
+            gs / gm.max(1e-9),
+            tail_mean(&sway),
+            tail_mean(&mouth)
+        );
+        // motion_size 0 is the first Fluvid's per-texel gate, where every edge
+        // counts: sway must out-ink the mouth there, or the slider does nothing.
+        let edges = params_with(&[("motion_size", 0.0)]);
+        let (gs0, gm0) = (
+            gate_mean(&run(edges, 60, 3, SWAY, 0)),
+            gate_mean(&run(edges, 60, 3, MOUTH, 0)),
+        );
+        eprintln!(
+            "fluvid: talking at motion_size 0: sway {gs0:.5}, mouth {gm0:.5} (ratio {:.2})",
+            gs0 / gm0.max(1e-9)
+        );
+        assert!(
+            gs0 > gm0,
+            "motion_size 0 no longer counts every edge ({gs0:.5} vs {gm0:.5})"
+        );
+        // Measured: 0.11 with the area gate; the per-texel gate it replaced
+        // read 2.39, sway inking more than the mouth.
+        assert!(
+            gs < 0.3 * gm,
+            "a swaying head inks like an opening mouth (gate {gs:.5} vs {gm:.5})"
+        );
+        if let Some(dir) = &out_dir {
+            for (name, data) in [("sway", &sway.display), ("mouth", &mouth.display)] {
+                let path = format!("{dir}/fluvid_{name}.png");
+                image::RgbaImage::from_raw(w, h, data.clone())
+                    .expect("raw->image")
+                    .save(&path)
+                    .expect("save png");
+            }
+        }
+
+        // One frame of non-finite input from the layers below (a broken or
+        // overflowing layer, an HDR source) must not blacken Fluvid for good.
+        // Its fields feed back on themselves, so a single NaN that gets in
+        // spreads through advection and never washes out.
+        for (what, bits) in [("infinity", 0x7C00u16), ("NaN", 0x7E00)] {
+            let r = run_with(&defs, defaults, 60, 4, SWEEP, 0, Some((60, bits)));
+            let m = tail_mean(&r);
+            eprintln!("fluvid: one {what} frame at 1 s -> tail mean {m:.4} (clean {m60:.4})");
+            assert!(
+                m > 0.5 * m60,
+                "one frame of {what} from the layers below left Fluvid dark \
+                 ({m:.4} vs {m60:.4} clean)"
+            );
+        }
+        // The other two media, each at two rates and two noise seeds: every
+        // medium must show something, and the wave pass (the one new sim here)
+        // must be frame-rate independent like the rest.
+        // Both allowances are wider than the ink's: mercury reads 10-14% and
+        // ripple 7-10% dimmer at 120 Hz, a residual in the dye that mercury's
+        // hard metal edge and ripple's caustics amplify (the ink agrees within
+        // 1%). Board #3089 lists what was ruled out.
+        for (name, medium, allow) in [("mercury", 1.0f32, 0.2), ("ripple", 2.0, 0.2)] {
+            let p = params_with(&[("medium", medium)]);
+            let a = run(p, 60, 4, SWEEP, 0);
+            let a2 = run(p, 60, 4, SWEEP, 1);
+            let b = run(p, 120, 4, SWEEP, 0);
+            let (ma, ma2, mb) = (tail_mean(&a), tail_mean(&a2), tail_mean(&b));
+            let peak = b.wave.chunks_exact(4).map(|p| p[0]).max().unwrap_or(0);
+            let floor_m = (ma2 / ma - 1.0).abs();
+            let off_m = (mb / ma - 1.0).abs();
+            eprintln!(
+                "fluvid: {name}: tail mean 60 Hz {ma:.4} (seed1 {ma2:.4}, floor {floor_m:.3}), \
+                 120 Hz {mb:.4} ({off_m:.3} off), wave peak {peak}/255"
+            );
+            if let Some(dir) = &out_dir {
+                for (tag, data) in [("", &a.display), ("_120", &b.display)] {
+                    let path = format!("{dir}/fluvid_{name}{tag}.png");
+                    image::RgbaImage::from_raw(w, h, data.clone())
+                        .expect("raw->image")
+                        .save(&path)
+                        .expect("save png");
+                }
+            }
+            assert!(ma > 0.02, "{name}: motion shows nothing (mean {ma:.4})");
+            assert!(
+                off_m < (2.0 * floor_m).max(allow),
+                "{name}: 60 vs 120 Hz disagree beyond run-to-run noise: {ma:.4} vs {mb:.4}"
+            );
+        }
+        let off = (m120 / m60 - 1.0).abs();
+        assert!(
+            off < (2.0 * floor).max(0.1),
+            "60 vs 120 Hz disagree beyond run-to-run noise: {m60:.4} vs {m120:.4} \
+             ({off:.3} off, floor {floor:.3})"
+        );
     }
 }

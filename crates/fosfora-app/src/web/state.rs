@@ -478,6 +478,7 @@ mod tests {
             media_is_video: false,
             media_is_live: false,
             chain: None,
+            needs_layer_below: false,
         };
         let json = build_layer_changed(&info, 2);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

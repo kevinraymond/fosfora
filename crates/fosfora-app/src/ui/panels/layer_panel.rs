@@ -613,6 +613,22 @@ pub fn draw_layer_panel(
                         });
                     header_center_y = _header_resp.response.rect.center().y;
 
+                    // An effect that reads the layers beneath it, with nothing
+                    // enabled beneath it, renders nothing. Say so, in words.
+                    if layer.needs_layer_below {
+                        ui.label(
+                            RichText::new("Needs a layer below: webcam, video or effect")
+                                .size(SMALL_SIZE)
+                                .color(tc.text_secondary),
+                        )
+                        .on_hover_text(
+                            "This effect works on whatever is beneath it in the layer \
+                             list: it reacts to movement in a webcam, a video or \
+                             another effect. Nothing enabled is below it right now, \
+                             so it has nothing to see.",
+                        );
+                    }
+
                     // Blend mode + opacity shown BELOW the active layer header
                     if is_active && num_layers > 1 {
                         egui::Frame::new()

@@ -535,6 +535,10 @@ pub struct LayerInfo {
     pub media_is_live: bool,
     /// The layer's trama chain, when it has one worth mentioning.
     pub chain: Option<ChainBadge>,
+    /// An enabled layer whose effect reads the layers beneath it (`@backdrop`)
+    /// with no enabled layer beneath it: it has nothing to see, and renders
+    /// accordingly, which is otherwise indistinguishable from broken.
+    pub needs_layer_below: bool,
 }
 
 /// Manages an ordered stack of layers.
@@ -583,7 +587,8 @@ impl LayerStack {
     pub fn layer_infos(&self, effects: &[crate::effect::format::PfxEffect]) -> Vec<LayerInfo> {
         self.layers
             .iter()
-            .map(|l| {
+            .enumerate()
+            .map(|(i, l)| {
                 let (is_media, media_file_name, media_is_animated, media_is_video, media_is_live) =
                     match &l.content {
                         LayerContent::Media(m) => (
@@ -617,6 +622,10 @@ impl LayerStack {
                     media_is_video,
                     media_is_live,
                     chain: l.chain.as_deref().and_then(|c| ChainBadge::of(&c.graph)),
+                    // Later in the list = beneath (the list's top renders on top).
+                    needs_layer_below: l.enabled
+                        && l.wants_backdrop()
+                        && !self.layers[i + 1..].iter().any(|b| b.enabled),
                 }
             })
             .collect()

@@ -58,6 +58,9 @@ Clips were captured from the running app by [`scripts/capture/`](../scripts/capt
 drives real playback through the production render pipeline — post-processing and all — rather
 than an offscreen approximation.
 
+The Fluvid clip plays over *Blonde Woman Dancing to Music with Headphones Studio Clip*.
+Free Stock video by <a href="http://www.videezy.com/">Videezy</a>.
+
 Two effects are not shown because they are hidden from the browser: **Phosphor**, the signature
 intro visual you see at startup, and **Stress**, a ten-million-particle rasterizer benchmark.
 
