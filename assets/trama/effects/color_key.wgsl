@@ -14,9 +14,9 @@
 }
 */
 // Color Key — keeps one family of colors and makes everything else
-// transparent. On a webcam layer under an effect that reads the layers
-// beneath it (Fluvid), it decides what that effect can see: a colored glove,
-// a prop, lips.
+// transparent. On any layer under an effect that reads the layers beneath it
+// (Fluvid), whether a webcam, a video or another effect, it decides what that
+// effect can see: a colored glove, a prop, lips.
 //
 // `hue` is the color to keep (0 and 1 are both red, 1/3 green, 2/3 blue) and
 // `hue_width` how far either side of it still counts. `min_saturation` drops

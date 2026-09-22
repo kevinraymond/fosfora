@@ -16,9 +16,9 @@
 }
 */
 // Mask — keeps an ellipse (or rectangle) of the picture and makes the rest
-// transparent. On a webcam layer under an effect that reads the layers
-// beneath it (Fluvid), it limits where that effect sees motion: put it over
-// your mouth and only your mouth makes smoke.
+// transparent. On any layer under an effect that reads the layers beneath it
+// (Fluvid), whether a webcam, a video or another effect, it limits where that
+// effect sees motion: put it over your mouth and only your mouth makes smoke.
 //
 // Position and size are fractions of the frame (0,0 top left); `softness`
 // feathers the edge, in the same units. `invert` cuts the shape OUT instead,

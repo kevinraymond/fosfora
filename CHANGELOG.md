@@ -25,7 +25,8 @@
   reaction-diffusion maze growing in the ink. Place it above a webcam, video or any effect.
   A medium slider morphs the liquid from ink to mercury that mirrors you to rippling water.
 - **Two new trama nodes, Color Key and Mask,** keep one color family or one region of a
-  picture and make the rest transparent. On a webcam layer they decide what Fluvid reacts to.
+  picture and make the rest transparent. On a layer beneath Fluvid, whether a webcam, a video
+  or another effect, they decide what Fluvid reacts to.
 - **A layer that works on the layers beneath it now says so** ("Needs a layer below")
   when nothing enabled sits under it, instead of silently rendering nothing.
 - **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
