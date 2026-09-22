@@ -3380,6 +3380,66 @@ impl App {
         )
     }
 
+    /// Put the finished frame on the window — or don't.
+    ///
+    /// The v1 layout draws its panels over a full-window render, so the window
+    /// gets the composite. The workspace shell shows the output in a preview
+    /// instead, and blitting it full-window as well left the render glowing
+    /// through every panel's translucent fill. There the window gets the
+    /// interface's own ground, and the composite reaches the eye only through
+    /// the preview.
+    ///
+    /// Hiding the interface (F) means full output in either layout.
+    ///
+    /// A free function rather than a method: the frame holds
+    /// `&mut self.compositor` across this point, and `&self` collides with it.
+    /// These arguments are disjoint fields, which borrowck accepts.
+    #[allow(clippy::too_many_arguments)]
+    fn present_display(
+        device: &wgpu::Device,
+        post_process: &PostProcessChain,
+        display: &RenderTarget,
+        encoder: &mut wgpu::CommandEncoder,
+        surface_view: &wgpu::TextureView,
+        output_fills_window: bool,
+        ground: egui::Color32,
+    ) {
+        if output_fills_window {
+            post_process.blit_target(device, encoder, display, surface_view);
+            return;
+        }
+        let c = ground;
+        // The surface is sRGB; a clear color is given in linear space.
+        let lin = |v: u8| {
+            let s = v as f64 / 255.0;
+            if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shell-ground"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: surface_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: lin(c.r()),
+                        g: lin(c.g()),
+                        b: lin(c.b()),
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+    }
+
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         // Check for GPU device loss
         if self
@@ -3539,11 +3599,14 @@ impl App {
                 &new_pp,
                 alpha_mode,
             );
-            self.post_process.blit_target(
+            Self::present_display(
                 &self.gpu.device,
-                &mut encoder,
+                &self.post_process,
                 &self.display,
+                &mut encoder,
                 &surface_view,
+                self.settings.classic_layout || !self.egui_overlay.visible,
+                self.settings.theme.colors().canvas,
             );
 
             // NDI capture
@@ -3708,11 +3771,14 @@ impl App {
             #[cfg(not(feature = "profiling"))]
             let profiler = crate::gpu::profiler::ProfilerHandle::none();
             let mut scope = profiler.scope("display-blit", &mut encoder);
-            self.post_process.blit_target(
+            Self::present_display(
                 &self.gpu.device,
-                scope.encoder(),
+                &self.post_process,
                 &self.display,
+                scope.encoder(),
                 &surface_view,
+                self.settings.classic_layout || !self.egui_overlay.visible,
+                self.settings.theme.colors().canvas,
             );
         }
 

@@ -611,6 +611,7 @@ pub fn draw_panels(
                                 settings.use_ffmpeg_webcam,
                                 settings.auto_reconnect,
                                 settings.output_alpha,
+                                settings.classic_layout,
                             );
                         });
                     },

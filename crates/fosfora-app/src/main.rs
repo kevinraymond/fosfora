@@ -196,11 +196,21 @@ impl ApplicationHandler for FosforaApp {
                 match key {
                     KeyCode::Escape => {
                         // Cancel a half-finished click-to-bind, then close the
-                        // binding matrix, then the shader editor, then quit.
+                        // binding matrix, then bring the interface back, then
+                        // the shader editor, then quit.
+                        //
+                        // "Bring the interface back" is why Escape is not the
+                        // first step to quitting any more: the shell's Full
+                        // output button hides every panel, and the way back was
+                        // D — which nothing on screen says once the panels are
+                        // gone. Escape is the key people press to get out of a
+                        // full-screen view, and pressing it offered to quit.
                         if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
                             app.binding_matrix.armed = None;
                         } else if app.binding_matrix.open {
                             app.binding_matrix.open = false;
+                        } else if !app.egui_overlay.visible {
+                            app.egui_overlay.toggle_visible();
                         } else if !app.shader_editor.open {
                             app.quit_requested = true;
                         }
@@ -866,7 +876,45 @@ impl ApplicationHandler for FosforaApp {
                     // Get active layer's param_store (mutable for MIDI badges)
                     let active_params = app.layer_stack.active_mut();
                     if let Some(layer) = active_params {
-                        if !app.shader_editor.open {
+                        if !app.shader_editor.open && !app.settings.classic_layout {
+                            // v2 workspace shell (#3122)
+                            let mut shell = crate::ui::shell::ShellState {
+                                audio: &mut app.audio,
+                                params: &mut layer.param_store,
+                                shader_error: &shader_error,
+                                uniforms: &app.uniforms,
+                                effect_loader: &app.effect_loader,
+                                postprocess: &mut layer.postprocess,
+                                volumetric_enabled: &mut app.volumetric_enabled,
+                                volumetric_params: &mut app.volumetric_params,
+                                particle_count,
+                                midi: &mut app.midi,
+                                osc: &mut app.osc,
+                                web: &mut app.web,
+                                binding_bus: &mut app.binding_bus,
+                                preset_store: &app.preset_store,
+                                layers: &layer_infos,
+                                active_layer,
+                                master_chain,
+                                media_info,
+                                webcam_info,
+                                particle_info,
+                                status_error: &app.status_error,
+                                settings: &app.settings,
+                                display: app.egui_overlay.display_tex.map(|t| {
+                                    (
+                                        t,
+                                        app.display.width.max(1) as f32
+                                            / app.display.height.max(1) as f32,
+                                    )
+                                }),
+                            };
+                            crate::ui::shell::draw_shell(
+                                &ctx,
+                                app.egui_overlay.visible,
+                                &mut shell,
+                            );
+                        } else if !app.shader_editor.open {
                             crate::ui::panels::draw_panels(
                                 &ctx,
                                 app.egui_overlay.visible,
@@ -1011,6 +1059,34 @@ impl ApplicationHandler for FosforaApp {
                             .show(&ctx, |ui| {
                                 app.gpu_profiler.ui(ui);
                             });
+                    }
+
+                    // Way back from full output. Drawn while the panels are
+                    // hidden, so the window is never a dead end.
+                    {
+                        let a = app.egui_overlay.hide_hint_alpha();
+                        if a > 0.01 {
+                            let tc = crate::ui::theme::colors::theme_colors(&ctx);
+                            egui::Area::new(egui::Id::new("full_output_hint"))
+                                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -28.0))
+                                .interactable(false)
+                                .show(&ctx, |ui| {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_black_alpha((190.0 * a) as u8))
+                                        .corner_radius(14.0)
+                                        .inner_margin(egui::Margin::symmetric(14, 7))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "Full output — Esc or D for the interface",
+                                                )
+                                                .size(12.0)
+                                                .color(tc.text_primary.gamma_multiply(a)),
+                                            );
+                                        });
+                                });
+                            ctx.request_repaint();
+                        }
                     }
 
                     // Draw depth download confirmation modal
@@ -1337,6 +1413,26 @@ impl ApplicationHandler for FosforaApp {
                     app.settings.auto_reconnect = on;
                     app.settings.save();
                     app.audio.set_auto_reconnect(on);
+                }
+
+                // "Full output" in the shell's top bar hides the interface, the
+                // same thing F does.
+                let hide_overlay: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("request_hide_overlay")));
+                if hide_overlay == Some(true) {
+                    app.egui_overlay.toggle_visible();
+                }
+
+                // Classic / workspace layout switch (#3122)
+                let set_classic_layout: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_classic_layout")));
+                if let Some(on) = set_classic_layout {
+                    app.settings.classic_layout = on;
+                    app.settings.save();
                 }
 
                 // Persist A18 structure tuning after a slider release (#1510). The live value

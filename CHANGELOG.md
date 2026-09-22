@@ -13,6 +13,14 @@
   has saved bindings. Those sidecar files sit beside the presets and were being
   read as presets themselves.
 
+- New **workspace layout**, in Settings ▸ Global: turn off *Classic layout* for
+  Perform, Build and Setup instead of two narrow side panels, with the output as a
+  preview rather than the backdrop. Streams and Scenes are still Classic-only, and
+  the switch goes away in v2.1.
+
+- Hiding the interface is no longer a dead end: a hint names the way back, and Esc
+  returns you instead of asking whether to quit.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

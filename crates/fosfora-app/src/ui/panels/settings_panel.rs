@@ -13,7 +13,27 @@ pub fn draw_settings_panel(
     use_ffmpeg_webcam: bool,
     auto_reconnect: bool,
     output_alpha: AlphaOutputMode,
+    classic_layout: bool,
 ) {
+    // v2 layout switch (#3122). Ships for one release so the old panels stay
+    // reachable while the workspace shell settles; removed in v2.1.
+    let mut classic = classic_layout;
+    let resp = rows::checkbox_row(
+        ui,
+        &mut classic,
+        "Classic layout",
+        Some(
+            "The original left and right side panels. Turn this off for the workspace \
+             layout: Perform, Build and Setup, with the output as a preview. This switch \
+             goes away in v2.1.",
+        ),
+    );
+    if resp.changed() {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("set_classic_layout"), classic);
+        });
+    }
+
     rows::combo_row(
         ui,
         "theme_selector",

@@ -141,6 +141,13 @@ pub struct SettingsConfig {
     /// reproduces pre-overlay behavior byte-for-byte on old settings files.
     #[serde(default)]
     pub output_alpha: AlphaOutputMode,
+    /// Keep the v1 two-side-panel layout instead of the v2 workspace shell
+    /// (#3122). `default = "default_true"` like `auto_reconnect`, and for the
+    /// same reason: a bare `#[serde(default)]` would move every existing
+    /// install to the new layout on upgrade without anyone choosing it. The
+    /// toggle ships for one release and goes away in v2.1.
+    #[serde(default = "default_true")]
+    pub classic_layout: bool,
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -163,6 +170,7 @@ impl Default for SettingsConfig {
             auto_reconnect: true,
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),
+            classic_layout: true,
         }
     }
 }

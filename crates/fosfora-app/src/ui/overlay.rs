@@ -27,6 +27,8 @@ pub struct EguiOverlay {
     textures_delta: egui::TexturesDelta,
     screen_descriptor: egui_wgpu::ScreenDescriptor,
     startup_time: Instant,
+    /// When the interface was last hidden, for the way-back hint.
+    hidden_at: Option<Instant>,
     fade_alpha: f32,
     auto_shown: bool,
     user_toggled: bool,
@@ -127,6 +129,7 @@ impl EguiOverlay {
             textures_delta: egui::TexturesDelta::default(),
             screen_descriptor,
             startup_time: Instant::now(),
+            hidden_at: None,
             fade_alpha: 1.0,
             auto_shown: false,
             user_toggled: false,
@@ -158,6 +161,29 @@ impl EguiOverlay {
         self.visible = !self.visible;
         if self.visible {
             self.fade_alpha = 1.0;
+            self.hidden_at = None;
+        } else {
+            self.hidden_at = Some(Instant::now());
+        }
+    }
+
+    /// Opacity for the "how to get back" hint, which shows for two seconds
+    /// after the interface is hidden and then fades over one.
+    ///
+    /// Without it, hiding the panels leaves a window with no way back written
+    /// anywhere on it — Kevin hit exactly that, pressed Escape, and got the
+    /// quit dialog.
+    pub fn hide_hint_alpha(&self) -> f32 {
+        match self.hidden_at {
+            Some(t) if !self.visible => {
+                let e = t.elapsed().as_secs_f32();
+                if e < 2.0 {
+                    1.0
+                } else {
+                    (1.0 - (e - 2.0)).clamp(0.0, 1.0)
+                }
+            }
+            _ => 0.0,
         }
     }
 

@@ -1,6 +1,7 @@
 pub mod accessibility;
 pub mod overlay;
 pub mod panels;
+pub mod shell;
 pub mod theme;
 pub mod widgets;
 
