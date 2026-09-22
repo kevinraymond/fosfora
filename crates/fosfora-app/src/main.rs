@@ -23,6 +23,7 @@ mod osc;
     all(target_os = "macos", feature = "syphon")
 ))]
 mod output;
+mod output_window;
 mod params;
 mod paths;
 mod preset;
@@ -141,12 +142,47 @@ impl ApplicationHandler for FosforaApp {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
         let Some(app) = self.app.as_mut() else {
             return;
         };
+
+        // Events belonging to the second output window (#3122). They are
+        // answered here and go no further: that window carries no interface,
+        // and handing its pointer, focus and resize events to egui would move
+        // the overlay's input state from a window it is not drawn on. Its
+        // frames are drawn from the main window's render, so a redraw request
+        // on it needs nothing.
+        if app
+            .output_window
+            .as_ref()
+            .is_some_and(|ow| ow.id() == window_id)
+        {
+            match event {
+                WindowEvent::CloseRequested => app.close_output_window(),
+                WindowEvent::Resized(size) => {
+                    if let Some(ow) = app.output_window.as_mut() {
+                        ow.resize(&app.gpu.device, size.width, size.height);
+                    }
+                }
+                // Esc is the way out of a full-screen view everywhere else in
+                // the app; on a borderless window with no controls it is the
+                // only way out that does not need the mouse.
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } => app.close_output_window(),
+                _ => {}
+            }
+            return;
+        }
 
         // Let egui handle events first
         let egui_consumed = app.egui_overlay.handle_event(&app.window, &event);
@@ -849,6 +885,17 @@ impl ApplicationHandler for FosforaApp {
                         });
                     }
 
+                    // Second output window (#3122): both layouts draw the same
+                    // control, and neither takes it as an argument.
+                    {
+                        let info = crate::ui::panels::output_window_panel::OutputWindowInfo {
+                            displays: app.displays.clone(),
+                            open_on: app.output_window.as_ref().map(|ow| ow.display_name.clone()),
+                            last_display: app.settings.output_display.clone(),
+                        };
+                        crate::ui::panels::output_window_panel::publish(&ctx, info);
+                    }
+
                     // Store preset loading state in egui temp data for UI panels
                     {
                         let loading_state = app.preset_loader.state.clone();
@@ -1423,6 +1470,43 @@ impl ApplicationHandler for FosforaApp {
                     .data_mut(|d| d.remove_temp(egui::Id::new("request_hide_overlay")));
                 if hide_overlay == Some(true) {
                     app.egui_overlay.toggle_visible();
+                }
+
+                // Second output window (#3122). The picker in Setup names a
+                // display; the window can only be created from here, where the
+                // event loop is. A failure is said on the status bar rather
+                // than only in the log — the button visibly did nothing
+                // otherwise.
+                let open_output = crate::ui::panels::output_window_panel::take_open_request(
+                    &app.egui_overlay.context(),
+                );
+                if let Some(index) = open_output {
+                    app.close_output_window();
+                    match crate::output_window::OutputWindow::open(event_loop, &app.gpu, index) {
+                        Ok(ow) => {
+                            app.settings.output_display = Some(ow.display_name.clone());
+                            app.settings.save();
+                            app.output_window = Some(ow);
+                        }
+                        Err(e) => {
+                            let msg = format!("Output window: {e}");
+                            log::error!("{msg}");
+                            app.status_error = Some((msg, std::time::Instant::now()));
+                        }
+                    }
+                }
+                if crate::ui::panels::output_window_panel::take_close_request(
+                    &app.egui_overlay.context(),
+                ) {
+                    app.close_output_window();
+                }
+
+                // The display list behind that picker. Refreshed on a slow
+                // cadence rather than once at startup: a projector plugged in
+                // mid-session has to appear, and winit has no event that says
+                // the displays changed.
+                if app.displays.is_empty() || app.frame_count % 120 == 0 {
+                    app.displays = crate::output_window::displays(event_loop);
                 }
 
                 // Classic / workspace layout switch (#3122)

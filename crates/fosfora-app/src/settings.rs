@@ -148,6 +148,12 @@ pub struct SettingsConfig {
     /// toggle ships for one release and goes away in v2.1.
     #[serde(default = "default_true")]
     pub classic_layout: bool,
+    /// Display the second output window was last opened on, by name (#3122).
+    /// A name rather than an index: displays come and go and winit reorders
+    /// them, and an index would send the output to whatever took that slot.
+    /// It seeds the picker only — the window is never opened on its own.
+    #[serde(default)]
+    pub output_display: Option<String>,
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -171,6 +177,7 @@ impl Default for SettingsConfig {
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),
             classic_layout: true,
+            output_display: None,
         }
     }
 }

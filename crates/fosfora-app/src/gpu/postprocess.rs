@@ -487,6 +487,63 @@ impl PostProcessChain {
         run_fullscreen_pass(encoder, "display-blit", &self.blit_pipeline, &bg, dest_view);
     }
 
+    /// Copy an already-composited target onto a surface of a different shape,
+    /// letterboxed rather than stretched.
+    ///
+    /// The second output window (#3122) fills whatever display it was sent to,
+    /// and that display's aspect is rarely the render's — a projector at 16:10,
+    /// a monitor turned portrait. Stretching to fit would turn every circle in
+    /// the composite into an ellipse, so the frame keeps its shape and the
+    /// spare edge of the display stays black.
+    pub fn blit_target_letterboxed(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        source: &RenderTarget,
+        dest_view: &TextureView,
+        dest_width: u32,
+        dest_height: u32,
+    ) {
+        let bg = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("output-window-blit-bg"),
+            layout: &self.blit_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&source.view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&source.sampler),
+                },
+            ],
+        });
+
+        let (x, y, w, h) = letterbox_rect(source.width, source.height, dest_width, dest_height);
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("output-window-blit"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dest_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    // Opaque black, not transparent: these are the bars beside
+                    // the picture on someone's second screen.
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_viewport(x, y, w, h, 0.0, 1.0);
+        pass.set_pipeline(&self.blit_pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
     /// Render the final composite (or blit) to a secondary capture target.
     /// Reuses existing bloom results and uniform buffers — only runs the final pass.
     #[allow(dead_code)]
@@ -650,6 +707,25 @@ fn create_fs_pipeline(
     })
 }
 
+/// Where a `src_w × src_h` picture sits inside a `dst_w × dst_h` surface when
+/// it keeps its aspect ratio: `(x, y, width, height)`, centered.
+///
+/// Every result is inside the destination. A viewport that runs a rounded
+/// pixel past the attachment is a validation error, not a cosmetic slip, and
+/// zero-sized inputs are possible (a surface mid-resize reports 0).
+fn letterbox_rect(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (f32, f32, f32, f32) {
+    let (dw, dh) = (dst_w.max(1) as f32, dst_h.max(1) as f32);
+    let src_aspect = src_w.max(1) as f32 / src_h.max(1) as f32;
+    let (w, h) = if src_aspect > dw / dh {
+        (dw, dw / src_aspect)
+    } else {
+        (dh * src_aspect, dh)
+    };
+    let w = w.clamp(1.0, dw);
+    let h = h.clamp(1.0, dh);
+    (((dw - w) / 2.0).max(0.0), ((dh - h) / 2.0).max(0.0), w, h)
+}
+
 fn run_fullscreen_pass(
     encoder: &mut CommandEncoder,
     label: &str,
@@ -680,6 +756,43 @@ fn run_fullscreen_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stretch-to-fit blit would pass none of these but the matching case:
+    /// the output window (#3122) fills a display whose shape is rarely the
+    /// render's, and the whole point is that the picture keeps its own.
+    #[test]
+    fn letterbox_keeps_aspect_and_stays_in_bounds() {
+        // 16:9 onto a portrait 2160×3840 monitor: full width, bars above and
+        // below, and the picture is still 16:9.
+        let (x, y, w, h) = letterbox_rect(1920, 1080, 2160, 3840);
+        assert_eq!((x, w), (0.0, 2160.0));
+        assert!((w / h - 16.0 / 9.0).abs() < 1e-3, "aspect kept: {w}×{h}");
+        assert!((y - (3840.0 - h) / 2.0).abs() < 0.01, "centered: y={y}");
+
+        // 16:9 onto 16:9: the whole surface, no bars.
+        assert_eq!(
+            letterbox_rect(1920, 1080, 3840, 2160),
+            (0.0, 0.0, 3840.0, 2160.0)
+        );
+
+        // Square onto a wide surface: pillarboxed, full height.
+        let (x, y, w, h) = letterbox_rect(1024, 1024, 3840, 2160);
+        assert_eq!((y, h), (0.0, 2160.0));
+        assert!(
+            (w - 2160.0).abs() < 0.01 && (x - 840.0).abs() < 0.01,
+            "{x} {w}"
+        );
+
+        // Degenerate sizes (a surface mid-resize reports 0) stay in bounds.
+        for (sw, sh, dw, dh) in [(0, 0, 1920, 1080), (1920, 1080, 0, 0), (1, 4000, 640, 480)] {
+            let (x, y, w, h) = letterbox_rect(sw, sh, dw, dh);
+            assert!(w >= 1.0 && h >= 1.0, "non-empty: {w}×{h}");
+            assert!(
+                x + w <= dw.max(1) as f32 + 0.01 && y + h <= dh.max(1) as f32 + 0.01,
+                "inside {dw}×{dh}: {x},{y} {w}×{h}"
+            );
+        }
+    }
 
     /// The WGSL mirror of `PostParams` is maintained by hand and uniform structs
     /// need a 16-byte multiple. `grain_rate` took the struct from 32 to 48 with

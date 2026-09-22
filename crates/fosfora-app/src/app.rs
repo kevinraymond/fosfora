@@ -82,6 +82,13 @@ pub struct App {
     /// preview inside a panel, and lets a second window present the same frame,
     /// without either of them re-running the post chain.
     pub display: RenderTarget,
+    /// The second output window, when one is open (#3122). It presents the
+    /// display target above and carries no interface. Opened and closed from
+    /// `main.rs`, where the `ActiveEventLoop` that can create a window lives.
+    pub output_window: Option<crate::output_window::OutputWindow>,
+    /// The displays the window system reports, refreshed periodically from the
+    /// event loop so the picker lists a projector plugged in mid-session.
+    pub displays: Vec<crate::output_window::DisplayInfo>,
     /// Volumetric Mode (R3): global toggle + params, applied to the active
     /// particle layer each frame. The renderer itself lives inside the layer's
     /// `ParticleSystem` (where the particle buffers are reachable).
@@ -538,6 +545,8 @@ impl App {
             compositor,
             post_process,
             display,
+            output_window: None,
+            displays: Vec::new(),
             volumetric_enabled: false,
             volumetric_params: crate::gpu::volumetric::VolumetricParams::default(),
             placeholder,
@@ -581,6 +590,15 @@ impl App {
             #[cfg(feature = "profiling")]
             gpu_profiler,
         })
+    }
+
+    /// Close the second output window, if one is open (#3122). Dropping it
+    /// drops its surface with it — the surface holds the window alive, so the
+    /// two can only go together.
+    pub fn close_output_window(&mut self) {
+        if let Some(ow) = self.output_window.take() {
+            log::info!("Output window closed ({})", ow.display_name);
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -3477,6 +3495,15 @@ impl App {
         // for the rest of the frame, and the resolver reads &self.
         let alpha_mode = self.resolve_output_alpha();
 
+        // The second output window's frame, taken here for the same reason:
+        // `acquire` needs `&mut self.output_window` and the compositor borrow
+        // below outlives every point where the blit is actually encoded. `None`
+        // means no window is open, or its surface skipped this frame.
+        let output_frame = match self.output_window {
+            Some(ref mut ow) => ow.acquire(&self.gpu.device),
+            None => None,
+        };
+
         // Previews while patching in Layers mode: `execute_and_composite`
         // only runs the trama executor in Trama mode, which would leave the
         // canvas thumbnails frozen while building a patch before switching
@@ -3608,6 +3635,18 @@ impl App {
                 self.settings.classic_layout || !self.egui_overlay.visible,
                 self.settings.theme.colors().canvas,
             );
+            // Second output window: the same finished frame, full-window, with
+            // no interface over it (#3122).
+            if let Some((ref frame, ref view)) = output_frame {
+                self.post_process.blit_target_letterboxed(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.display,
+                    view,
+                    frame.texture.width(),
+                    frame.texture.height(),
+                );
+            }
 
             // NDI capture
             #[cfg(feature = "ndi")]
@@ -3712,6 +3751,9 @@ impl App {
             }
 
             output.present();
+            if let Some((frame, _)) = output_frame {
+                frame.present();
+            }
             return Ok(());
         }
 
@@ -3780,6 +3822,19 @@ impl App {
                 self.settings.classic_layout || !self.egui_overlay.visible,
                 self.settings.theme.colors().canvas,
             );
+            // Second output window: the same finished frame, full-window, with
+            // no interface over it (#3122). Inside the `display-blit` scope so
+            // the profiler counts what the second present costs.
+            if let Some((ref frame, ref view)) = output_frame {
+                self.post_process.blit_target_letterboxed(
+                    &self.gpu.device,
+                    scope.encoder(),
+                    &self.display,
+                    view,
+                    frame.texture.width(),
+                    frame.texture.height(),
+                );
+            }
         }
 
         // NDI capture: render composite to capture texture + copy to staging
@@ -3890,6 +3945,9 @@ impl App {
         }
 
         output.present();
+        if let Some((frame, _)) = output_frame {
+            frame.present();
+        }
 
         Ok(())
     }

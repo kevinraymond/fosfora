@@ -21,6 +21,11 @@
 - Hiding the interface is no longer a dead end: a hint names the way back, and Esc
   returns you instead of asking whether to quit.
 
+- **Send the output to a second display**, in a borderless window with no interface
+  on it, so the workspace can stay on one screen while a projector carries the
+  picture. Pick the display under *Outputs* (Classic) or *Setup ▸ Output*; the frame
+  keeps its own aspect ratio instead of stretching, and Esc closes the window.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

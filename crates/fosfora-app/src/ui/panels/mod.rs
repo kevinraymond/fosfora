@@ -15,6 +15,7 @@ pub mod midi_panel;
 pub mod ndi_panel;
 pub mod obstacle_panel;
 pub mod osc_panel;
+pub mod output_window_panel;
 pub mod param_panel;
 pub mod particle_panel;
 pub mod postfx_panel;
@@ -496,9 +497,12 @@ pub fn draw_panels(
                             );
                         }
 
-                        // Outputs subsection (Recording + NDI + virtual camera)
+                        // Outputs subsection (second window + Recording + NDI
+                        // + virtual camera)
                         {
-                            let outputs_on = rec_on
+                            let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
+                            let outputs_on = ow.open_on.is_some()
+                                || rec_on
                                 || {
                                     #[cfg(feature = "ndi")]
                                     {
@@ -554,6 +558,20 @@ pub fn draw_panels(
                                 out_color,
                                 true,
                                 |ui| {
+                                    // Second output window (#3122): a display,
+                                    // not a stream, so it leads the list — and
+                                    // it works in this layout as well as the
+                                    // workspace shell.
+                                    {
+                                        ui.label(
+                                            egui::RichText::new("Second window")
+                                                .size(10.0)
+                                                .strong(),
+                                        );
+                                        output_window_panel::draw(ui, &ow);
+                                        ui.add_space(6.0);
+                                    }
+
                                     // Recording
                                     if let Some(ref info) = rec_info {
                                         ui.label(

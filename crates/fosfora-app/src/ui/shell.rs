@@ -14,9 +14,9 @@
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
-    audio_panel, effect_panel, layer_panel, media_panel, midi_panel, osc_panel, param_panel,
-    postfx_panel, preset_panel, recording_panel, settings_panel, status_bar, triggers_panel,
-    volumetric_panel, web_panel,
+    audio_panel, effect_panel, layer_panel, media_panel, midi_panel, osc_panel,
+    output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, settings_panel,
+    status_bar, triggers_panel, volumetric_panel, web_panel,
 };
 use super::widgets;
 use crate::audio::AudioSystem;
@@ -422,8 +422,12 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .resizable(false)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
-            widgets::section(ui, "v2_setup_out", "Output", None, true, |ui| {
+            let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
+            let badge = ow.open_on.is_some().then_some("2nd window");
+            widgets::section(ui, "v2_setup_out", "Output", badge, true, |ui| {
                 preview(ui, s.display);
+                ui.add_space(8.0);
+                output_window_panel::draw(ui, &ow);
             });
         });
 
