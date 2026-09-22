@@ -33,7 +33,10 @@ IN=  OUT=  AT=  BARS=2  BPM=124
 #   capture_preset.sh; the footage is Videezy stock, credited under the hero in the README).
 #   It replaced adv_obstacle (Tide parting around a silhouette), whose clip had a terminal
 #   filmed across its bottom edge. It is not on the demo loop's phase, hence its own +AT.
-HERO_LIST=adv_pegboard@capture-out-advanced,murmur,Flovid_3_layers_4-5+11.0@capture-out-preset,splat,polycephalum,chaos
+#   Murmur_Mirror is Murmur through a trama chain (Kevin's "Murmur Mirror" preset: Mirror,
+#   then an inverted Color Key that drops the twilight sky). Stock Murmur's smooth sky
+#   gradient is what lossy WebP handles worst, and it showed as visible blocks in the hero.
+HERO_LIST=adv_pegboard@capture-out-advanced,Murmur_Mirror_1_layers_0+12.0@capture-out-preset,Flovid_3_layers_4-5+11.0@capture-out-preset,splat,polycephalum,chaos
 TILE_W=480
 HERO_W=960
 BUDGET_KB=400
