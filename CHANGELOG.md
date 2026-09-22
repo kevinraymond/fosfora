@@ -9,6 +9,19 @@
 
 <sub>Fluvid over Panorama: the ink is stirred by the motion of the layer beneath it.</sub>
 
+<table>
+<tr>
+<td width="50%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-group.webp" width="100%" alt="Fluvid over a video of friends celebrating"></td>
+<td width="50%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-dancer.webp" width="100%" alt="Fluvid over a video of a woman dancing with headphones"></td>
+</tr>
+<tr>
+<td><sub>Fluvid over <i>Diverse Group Of Young Hipster Friends happily celebrating</i>.</sub></td>
+<td><sub>Fluvid over <i>Blonde Woman Dancing to Music with Headphones Studio Clip</i>.</sub></td>
+</tr>
+</table>
+
+<sub>Both videos: Free Stock video by <a href="http://www.videezy.com/">Videezy</a>.</sub>
+
 ### Added
 - **Fluvid: move in front of a camera and your motion stirs a real fluid**, with a
   reaction-diffusion maze growing in the ink. Place it above a webcam, video or any effect.
