@@ -55,7 +55,7 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
         ui.label(egui::RichText::new(format!("On {name}")).size(11.0));
         if ui
             .button(egui::RichText::new("Close output window").size(11.0))
-            .on_hover_text("Esc on that window closes it too")
+            .on_hover_text("Esc closes it too, from either window")
             .clicked()
         {
             ui.ctx().data_mut(|d| {

@@ -241,12 +241,20 @@ impl ApplicationHandler for FosforaApp {
                         // D — which nothing on screen says once the panels are
                         // gone. Escape is the key people press to get out of a
                         // full-screen view, and pressing it offered to quit.
+                        //
+                        // The second output window is on that ladder for the
+                        // same reason. Escape closes it from the window itself,
+                        // but the pointer is usually over the main window when
+                        // someone wants it gone, and there it offered to quit
+                        // instead.
                         if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
                             app.binding_matrix.armed = None;
                         } else if app.binding_matrix.open {
                             app.binding_matrix.open = false;
                         } else if !app.egui_overlay.visible {
                             app.egui_overlay.toggle_visible();
+                        } else if app.output_window.is_some() {
+                            app.close_output_window();
                         } else if !app.shader_editor.open {
                             app.quit_requested = true;
                         }

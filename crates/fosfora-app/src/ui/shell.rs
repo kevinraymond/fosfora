@@ -200,6 +200,22 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
     }
 }
 
+/// The output: the picture, and under it the control that sends it to a second
+/// display.
+///
+/// One function rather than a section per workspace, because the two belong
+/// together — the picker first went only into Setup, and from Build or Perform
+/// there was no sign the feature existed.
+fn output_section(ui: &mut egui::Ui, id: &str, display: Option<(egui::TextureId, f32)>) {
+    let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
+    let badge = ow.open_on.is_some().then_some("2nd window");
+    widgets::section(ui, id, "Output", badge, true, |ui| {
+        preview(ui, display);
+        ui.add_space(8.0);
+        output_window_panel::draw(ui, &ow);
+    });
+}
+
 /// The output as a picture, sized to the width it is given.
 fn preview(ui: &mut egui::Ui, display: Option<(egui::TextureId, f32)>) {
     if let Some((tex, aspect)) = display {
@@ -252,9 +268,7 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                widgets::section(ui, "v2_preview", "Output", None, true, |ui| {
-                    preview(ui, s.display);
-                });
+                output_section(ui, "v2_preview", s.display);
                 let bpm = s.uniforms.bpm * 300.0;
                 let bpm_badge = (bpm > 1.0).then(|| format!("{bpm:.0}"));
                 widgets::section(ui, "v2_audio", "Audio", bpm_badge.as_deref(), true, |ui| {
@@ -411,6 +425,15 @@ fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32)
                 if bpm > 1.0 {
                     ui.label(egui::RichText::new(format!("{bpm:.0} BPM")).size(14.0));
                 }
+                // Sending the output to a second display belongs with the
+                // output wherever it is shown — including here, where there is
+                // no section to put it in.
+                ui.add_space(10.0);
+                ui.scope(|ui| {
+                    ui.set_max_width(360.0);
+                    let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
+                    output_window_panel::draw(ui, &ow);
+                });
             });
         });
 }
@@ -422,13 +445,7 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .resizable(false)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
-            let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
-            let badge = ow.open_on.is_some().then_some("2nd window");
-            widgets::section(ui, "v2_setup_out", "Output", badge, true, |ui| {
-                preview(ui, s.display);
-                ui.add_space(8.0);
-                output_window_panel::draw(ui, &ow);
-            });
+            output_section(ui, "v2_setup_out", s.display);
         });
 
     egui::CentralPanel::default()
