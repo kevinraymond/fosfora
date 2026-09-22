@@ -9,6 +9,10 @@
   visible while the interface covers the window. The finished frame is rendered
   once and shared, costing 0.03 ms per frame.
 
+- Launching no longer logs a "missing field `layers`" warning for every preset that
+  has saved bindings. Those sidecar files sit beside the presets and were being
+  read as presets themselves.
+
 ## v1.39.0 — 2026-09-22
 
 <table>
