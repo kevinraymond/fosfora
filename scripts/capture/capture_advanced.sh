@@ -189,13 +189,17 @@ log "phase-locked to playback; first record window opens in pass $PASS0"
 # tries to deserialize them as presets, which is harmless and expected.
 FORBIDDEN='not found for layer|Failed to load effect|Load error:|Failed to load obstacle image|not found for cue|Splat scene load failed'
 
+# `k` indexes the manifest row (the progress counter), `slot` counts FILMED demos. With
+# `--only`, a skipped row must not cost a loop: scheduling by `k` made `--only adv_pegboard`
+# (row 6) sit on the boot effect for six silent loops, 4.5 minutes, before filming anything.
 k=0
+slot=0
 SCENE_LOADED=0
 for row in "${ROWS[@]}"; do
   IFS=$'\t' read -r slug cue preset want <<<"$row"
   if [[ -n $ONLY && ",$ONLY," != *",$slug,"* ]]; then k=$((k+1)); continue; fi
 
-  S=$(python3 -c "print(($PASS0+$k)*$LOOP_SECS)")
+  S=$(python3 -c "print(($PASS0+$slot)*$LOOP_SECS)")
   printf '\033[36m[advanced]\033[0m %d/%d  %-16s' $((k+1)) "$N" "$slug" >&2
 
   # --- slot opens: switch demo -------------------------------------------------
@@ -267,7 +271,7 @@ for row in "${ROWS[@]}"; do
     ffmpeg -hide_banner -loglevel error -y -f x11grab -draw_mouse 0 -video_size "${W}x${H}" \
            -i "$DISPLAY+$X,$Y" -frames:v 1 "$OUT/_rehearsal/$slug.png" </dev/null
     printf ' -> rehearsal still\n' >&2
-    k=$((k+1)); continue
+    k=$((k+1)); slot=$((slot+1)); continue
   fi
 
   # --- record ------------------------------------------------------------------
@@ -289,7 +293,7 @@ for row in "${ROWS[@]}"; do
 
   wait "$REC_PID"
   printf ' -> %s\n' "$(du -h "$OUT/$slug.mp4" | cut -f1)" >&2
-  k=$((k+1))
+  k=$((k+1)); slot=$((slot+1))
 done
 
 cp "$WORK/app.log" "$OUT/app.log" 2>/dev/null || true

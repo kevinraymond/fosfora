@@ -10,6 +10,7 @@
 [![Wiki](https://img.shields.io/badge/wiki-the%20picture--first%20tour-8a2be2)](https://github.com/kevinraymond/fosfora/wiki)
 
 <img src="assets/media/hero.webp" alt="Fosfora reacting to music" width="100%" />
+<sub>Dancer footage: Free Stock video by <a href="http://www.videezy.com/">Videezy</a></sub>
 
 ### [⬇&nbsp; Download for macOS, Windows or Linux](https://github.com/kevinraymond/fosfora/releases/latest)
 

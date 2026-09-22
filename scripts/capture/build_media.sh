@@ -29,10 +29,11 @@ IN=  OUT=  AT=  BARS=2  BPM=124
 #   adv_pegboard opens: the one cut that shows the engine reacting to the viewer's OWN media
 #   rather than to a procedural field, which a montage of defaults cannot otherwise teach.
 #
-#   adv_obstacle stands in for plain `tide`: Tide's whole idea is water parting around a
-#   silhouette, and at stock defaults no obstacle is loaded, so the default clip is just falling
-#   water and the effect's actual subject never appears in the hero.
-HERO_LIST=adv_pegboard@capture-out-advanced,murmur,adv_obstacle@capture-out-advanced,splat,polycephalum,chaos
+#   Flovid_3 is Fluvid over a dancer (Kevin's "Flovid" preset, layers 5+6, filmed by
+#   capture_preset.sh; the footage is Videezy stock, credited under the hero in the README).
+#   It replaced adv_obstacle (Tide parting around a silhouette), whose clip had a terminal
+#   filmed across its bottom edge. It is not on the demo loop's phase, hence its own +AT.
+HERO_LIST=adv_pegboard@capture-out-advanced,murmur,Flovid_3_layers_4-5+11.0@capture-out-preset,splat,polycephalum,chaos
 TILE_W=480
 HERO_W=960
 BUDGET_KB=400
