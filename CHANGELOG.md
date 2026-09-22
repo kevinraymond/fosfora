@@ -3,7 +3,7 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v1.39.0 — 2026-09-22
 
 ### Added
 - **Fluvid: move in front of a camera and your motion stirs a real fluid**, with a
