@@ -24,7 +24,8 @@ Syphon, or a virtual camera.
 
 ## See it move
 
-Nine of the fifty-six, all at default settings:
+Nine of the fifty-six, eight at default settings. Fluvid reacts to whatever moves on the
+layers beneath it, so it is shown over a dancer video with tuned settings:
 
 <table>
 <tr>
@@ -35,7 +36,7 @@ Nine of the fifty-six, all at default settings:
 <tr>
 <td><img src="assets/media/tiles/intarsia.webp" width="100%" alt="Intarsia"><br><b>Intarsia</b><br><sub>Beat-revealed mosaic inlay</sub></td>
 <td><img src="assets/media/tiles/symbiosis.webp" width="100%" alt="Symbiosis"><br><b>Symbiosis</b><br><sub>Particle life, ecosystems emerging</sub></td>
-<td><img src="assets/media/tiles/reliquary.webp" width="100%" alt="Reliquary"><br><b>Reliquary</b><br><sub>A form that holds light</sub></td>
+<td><img src="assets/media/tiles/fluvid.webp" width="100%" alt="Fluvid"><br><b>Fluvid</b><br><sub>Motion stirs a fluid, here a dancer</sub></td>
 </tr>
 <tr>
 <td><img src="assets/media/tiles/genesis.webp" width="100%" alt="Genesis"><br><b>Genesis</b><br><sub>Two species, self-organizing</sub></td>
