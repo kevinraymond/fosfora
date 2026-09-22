@@ -5,6 +5,10 @@
 
 ## v1.39.0 — 2026-09-22
 
+<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0.webp" width="720" alt="Fluvid: ink stirred by the motion of the layer beneath it">
+
+<sub>Fluvid over Panorama: the ink is stirred by the motion of the layer beneath it.</sub>
+
 ### Added
 - **Fluvid: move in front of a camera and your motion stirs a real fluid**, with a
   reaction-diffusion maze growing in the ink. Place it above a webcam, video or any effect.

@@ -283,7 +283,10 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
           # Extract this version's section from CHANGELOG.md (between ## vX.Y.Z headers)
-          awk "/^## v${VERSION}[[:space:]]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md > release_notes.md
+          # and rejoin its hard-wrapped lines: a release body renders every newline as a
+          # line break, so CHANGELOG.md's 90-column wrap came out as ragged short lines.
+          awk "/^## v${VERSION}[[:space:]]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md \
+            | awk -f scripts/unwrap_markdown.awk > release_notes.md
           # Backstop for the tag-release CHANGELOG gate: a tag pushed by hand skips that
           # check entirely, and publishing a release whose only content is the footer is
           # worse than failing here.
