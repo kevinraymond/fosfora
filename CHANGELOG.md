@@ -5,16 +5,14 @@
 
 ## v1.39.0 — 2026-09-22
 
-<img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0.webp" width="720" alt="Fluvid: ink stirred by the motion of the layer beneath it">
-
-<sub>Fluvid over Panorama: the ink is stirred by the motion of the layer beneath it.</sub>
-
 <table>
 <tr>
-<td width="50%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-group.webp" width="100%" alt="Fluvid over a video of friends celebrating"></td>
-<td width="50%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-dancer.webp" width="100%" alt="Fluvid over a video of a woman dancing with headphones"></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0.webp" width="100%" alt="Fluvid over Panorama"></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-group.webp" width="100%" alt="Fluvid over a video of friends celebrating"></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/fluvid-v1.39.0-dancer.webp" width="100%" alt="Fluvid over a video of a woman dancing with headphones"></td>
 </tr>
 <tr>
+<td><sub>Fluvid over <i>Panorama</i>.</sub></td>
 <td><sub>Fluvid over <i>Diverse Group Of Young Hipster Friends happily celebrating</i>.</sub></td>
 <td><sub>Fluvid over <i>Blonde Woman Dancing to Music with Headphones Studio Clip</i>.</sub></td>
 </tr>
