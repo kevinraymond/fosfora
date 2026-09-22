@@ -17,6 +17,11 @@ pub struct EguiOverlay {
     pub renderer: egui_wgpu::Renderer,
     pub visible: bool,
     pub theme: ThemeMode,
+    /// egui's handle on the display target (#3122), so a panel can draw the
+    /// finished frame. Registered once and then re-pointed on every resize —
+    /// the target is a new texture after a resize, and an id left pointing at
+    /// the old view samples a destroyed texture.
+    pub display_tex: Option<egui::TextureId>,
     pub pending_effect_load: Option<usize>,
     shapes: Vec<egui::ClippedPrimitive>,
     textures_delta: egui::TexturesDelta,
@@ -116,6 +121,7 @@ impl EguiOverlay {
             renderer,
             visible: false,
             theme,
+            display_tex: None,
             pending_effect_load: None,
             shapes: Vec::new(),
             textures_delta: egui::TexturesDelta::default(),
@@ -179,6 +185,30 @@ impl EguiOverlay {
 
     pub fn context(&self) -> Context {
         self.state.egui_ctx().clone()
+    }
+
+    /// Point egui at the display target's current view (#3122).
+    ///
+    /// Called once at startup and again after every resize. Re-pointing the
+    /// same id keeps every `ui.image` call site valid across resizes; handing
+    /// out a fresh id each time would leave stale ids sampling a texture that
+    /// no longer exists.
+    pub fn set_display_texture(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) {
+        match self.display_tex {
+            Some(id) => self.renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                view,
+                wgpu::FilterMode::Linear,
+                id,
+            ),
+            None => {
+                self.display_tex = Some(self.renderer.register_native_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Linear,
+                ));
+            }
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {

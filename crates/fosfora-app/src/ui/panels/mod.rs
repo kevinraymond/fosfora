@@ -84,6 +84,9 @@ pub fn draw_panels(
     scene_info: Option<scene_panel::SceneInfo>,
     status_error: &Option<(String, std::time::Instant)>,
     settings: &SettingsConfig,
+    // The finished frame and its aspect ratio (#3122), drawn as the Output
+    // preview at the top of the right panel.
+    display: Option<(egui::TextureId, f32)>,
 ) {
     if !visible {
         return;
@@ -621,6 +624,19 @@ pub fn draw_panels(
         .frame(panel_frame)
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
+                // Output preview — the composite as it leaves post-processing,
+                // before this overlay is drawn over it.
+                if let Some((tex, aspect)) = display {
+                    widgets::section(ui, "sec_output", "Output", None, true, |ui| {
+                        let w = ui.available_width();
+                        let size = egui::vec2(w, (w / aspect.max(0.01)).round());
+                        ui.add(
+                            egui::Image::new(egui::load::SizedTexture::new(tex, size))
+                                .corner_radius(3.0),
+                        );
+                    });
+                }
+
                 if let Some(ref info) = webcam_info {
                     // Webcam layer: show webcam controls
                     widgets::section(ui, "sec_webcam", "Webcam", None, true, |ui| {

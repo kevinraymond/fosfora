@@ -17,7 +17,7 @@ use crate::gpu::particle::ParticleSystem;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::postprocess::PostProcessChain;
-use crate::gpu::render_target::PingPongTarget;
+use crate::gpu::render_target::{PingPongTarget, RenderTarget};
 use crate::gpu::shader_compiler::{CompileResult, ShaderCompiler};
 use crate::gpu::{GpuContext, ShaderPipeline, ShaderUniforms, UniformBuffer};
 use crate::media::MediaLayer;
@@ -76,6 +76,12 @@ pub struct App {
     // Compositor + post-processing (separate from layer_stack to avoid borrow conflicts)
     pub compositor: Compositor,
     pub post_process: PostProcessChain,
+    /// The finished frame, off-screen (#3122). Post-processing renders here
+    /// instead of straight onto the swapchain, and the window gets a blit of
+    /// it. That indirection is what lets the v2 interface show the output as a
+    /// preview inside a panel, and lets a second window present the same frame,
+    /// without either of them re-running the post chain.
+    pub display: RenderTarget,
     /// Volumetric Mode (R3): global toggle + params, applied to the active
     /// particle layer each frame. The renderer itself lives inside the layer's
     /// `ParticleSystem` (where the particle buffers are reachable).
@@ -402,6 +408,17 @@ impl App {
             gpu.surface_config.height,
         );
 
+        // Display target: the finished frame, in the surface's own format so the
+        // blit to the swapchain is a straight copy.
+        let display = RenderTarget::new(
+            &gpu.device,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+            gpu.format,
+            1.0,
+            "display",
+        );
+
         let shader_watcher = ShaderWatcher::new();
         let shader_compiler = ShaderCompiler::new();
         let settings = SettingsConfig::load();
@@ -520,6 +537,7 @@ impl App {
             layer_stack,
             compositor,
             post_process,
+            display,
             volumetric_enabled: false,
             volumetric_params: crate::gpu::volumetric::VolumetricParams::default(),
             placeholder,
@@ -603,6 +621,17 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
+        self.display = RenderTarget::new(
+            &self.gpu.device,
+            width,
+            height,
+            self.gpu.format,
+            1.0,
+            "display",
+        );
+        let display_view = self.display.view.clone();
+        self.egui_overlay
+            .set_display_texture(&self.gpu.device, &display_view);
         self.trama.resize(width, height);
         self.chain_targets.resize(width, height);
         self.egui_overlay
@@ -3496,19 +3525,25 @@ impl App {
             } else {
                 new_source
             };
-            // Post-process → surface
+            // Post-process → display target, then blit that to the window (#3122)
             self.post_process.render(
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
                 source,
-                &surface_view,
+                &self.display.view,
                 self.uniforms.time,
                 self.uniforms.rms,
                 self.uniforms.onset,
                 self.uniforms.flatness,
                 &new_pp,
                 alpha_mode,
+            );
+            self.post_process.blit_target(
+                &self.gpu.device,
+                &mut encoder,
+                &self.display,
+                &surface_view,
             );
 
             // NDI capture
@@ -3644,20 +3679,42 @@ impl App {
             source
         };
 
-        // Post-process → surface
-        self.post_process.render(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut encoder,
-            source,
-            &surface_view,
-            self.uniforms.time,
-            self.uniforms.rms,
-            self.uniforms.onset,
-            self.uniforms.flatness,
-            &postprocess,
-            alpha_mode,
-        );
+        // Post-process → display target, then blit that to the window (#3122).
+        // Both are scoped so the profiler reports the indirection's own cost:
+        // `display-blit` is exactly what the off-screen target added.
+        {
+            #[cfg(feature = "profiling")]
+            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+            #[cfg(not(feature = "profiling"))]
+            let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            let mut scope = profiler.scope("post", &mut encoder);
+            self.post_process.render(
+                &self.gpu.device,
+                &self.gpu.queue,
+                scope.encoder(),
+                source,
+                &self.display.view,
+                self.uniforms.time,
+                self.uniforms.rms,
+                self.uniforms.onset,
+                self.uniforms.flatness,
+                &postprocess,
+                alpha_mode,
+            );
+        }
+        {
+            #[cfg(feature = "profiling")]
+            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+            #[cfg(not(feature = "profiling"))]
+            let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            let mut scope = profiler.scope("display-blit", &mut encoder);
+            self.post_process.blit_target(
+                &self.gpu.device,
+                scope.encoder(),
+                &self.display,
+                &surface_view,
+            );
+        }
 
         // NDI capture: render composite to capture texture + copy to staging
         #[cfg(feature = "ndi")]

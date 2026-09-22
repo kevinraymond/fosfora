@@ -457,6 +457,36 @@ impl PostProcessChain {
         }
     }
 
+    /// Copy an already-composited target to another view, untouched.
+    ///
+    /// The display target (#3122) holds the finished frame so the UI can sample
+    /// it as a preview; the window still needs that frame blitted onto its
+    /// swapchain view. This is that copy — no bloom, no tone map, no second
+    /// pass over the post chain, just the pixels that were already produced.
+    pub fn blit_target(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        source: &RenderTarget,
+        dest_view: &TextureView,
+    ) {
+        let bg = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("display-blit-bg"),
+            layout: &self.blit_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&source.view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&source.sampler),
+                },
+            ],
+        });
+        run_fullscreen_pass(encoder, "display-blit", &self.blit_pipeline, &bg, dest_view);
+    }
+
     /// Render the final composite (or blit) to a secondary capture target.
     /// Reuses existing bloom results and uniform buffers — only runs the final pass.
     #[allow(dead_code)]

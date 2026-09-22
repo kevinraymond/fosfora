@@ -3,6 +3,12 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+- The right panel now opens with a live **Output** preview, so the composite stays
+  visible while the interface covers the window. The finished frame is rendered
+  once and shared, costing 0.03 ms per frame.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

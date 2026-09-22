@@ -251,6 +251,16 @@ impl PresetStore {
             .collect()
     }
 
+    /// Is this file stem a `<preset>.bindings.json` sidecar rather than a preset?
+    ///
+    /// Sidecars sit in the presets folder and end in `.json`, so the scan picked
+    /// them up, failed to find `layers` and logged a warning per file on every
+    /// launch (#2664). The stem of `Flovid.bindings.json` is `Flovid.bindings`,
+    /// which is what this reads.
+    fn is_bindings_sidecar(stem: &str) -> bool {
+        stem.ends_with(".bindings")
+    }
+
     pub fn scan(&mut self) {
         self.presets.clear();
         self.builtin_count = 0;
@@ -299,6 +309,9 @@ impl PresetStore {
                 .unwrap_or("")
                 .to_string();
             if name.is_empty() {
+                continue;
+            }
+            if Self::is_bindings_sidecar(&name) {
                 continue;
             }
             // Skip user presets that shadow built-in names
@@ -992,6 +1005,22 @@ mod tests {
         let def = VolumetricParams::default();
         assert_eq!(params.march_steps, def.march_steps);
         assert!((params.cam_distance - def.cam_distance).abs() < 1e-6);
+    }
+
+    // ---- Preset scan tests ----
+
+    /// The scan reads every `*.json` in the presets folder, and bindings
+    /// sidecars live there too. Before #2664 each one produced a "missing field
+    /// `layers`" warning on every launch. Drop the `.bindings` check and the
+    /// first assertion fails; the rest guard the names that must still load,
+    /// including a preset whose own name ends in "bindings".
+    #[test]
+    fn bindings_sidecars_are_not_presets() {
+        assert!(PresetStore::is_bindings_sidecar("Flovid.bindings"));
+        assert!(PresetStore::is_bindings_sidecar("trama test 1.bindings"));
+        assert!(!PresetStore::is_bindings_sidecar("Flovid"));
+        assert!(!PresetStore::is_bindings_sidecar("Bindings 01"));
+        assert!(!PresetStore::is_bindings_sidecar("my bindings"));
     }
 
     // ---- Built-in preset tests ----

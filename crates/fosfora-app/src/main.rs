@@ -272,6 +272,13 @@ impl ApplicationHandler for FosforaApp {
                 // Auto-show panels after startup delay
                 app.egui_overlay.update_auto_show();
 
+                // Point egui at the display target on the first frame; resizes
+                // re-point it from App::resize.
+                if app.egui_overlay.display_tex.is_none() {
+                    let view = app.display.view.clone();
+                    app.egui_overlay.set_display_texture(&app.gpu.device, &view);
+                }
+
                 // Prepare egui frame
                 app.egui_overlay.begin_frame(&app.window);
                 {
@@ -889,6 +896,13 @@ impl ApplicationHandler for FosforaApp {
                                 scene_info,
                                 &app.status_error,
                                 &app.settings,
+                                app.egui_overlay.display_tex.map(|t| {
+                                    (
+                                        t,
+                                        app.display.width.max(1) as f32
+                                            / app.display.height.max(1) as f32,
+                                    )
+                                }),
                             );
                         }
                         // Sync global postprocess enabled from layer
