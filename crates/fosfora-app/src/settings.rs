@@ -175,7 +175,7 @@ impl Default for SettingsConfig {
     fn default() -> Self {
         Self {
             version: 1,
-            theme: ThemeMode::Dark,
+            theme: ThemeMode::Gray,
             audio_device: None,
             band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
@@ -220,7 +220,7 @@ mod tests {
     fn settings_config_defaults() {
         let c = SettingsConfig::default();
         assert_eq!(c.version, 1);
-        assert_eq!(c.theme, ThemeMode::Dark);
+        assert_eq!(c.theme, ThemeMode::Gray);
         assert!(c.audio_device.is_none());
     }
 
@@ -230,7 +230,7 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(c2.version, 1);
-        assert_eq!(c2.theme, ThemeMode::Dark);
+        assert_eq!(c2.theme, ThemeMode::Gray);
     }
 
     #[test]
@@ -283,26 +283,27 @@ mod tests {
 
     #[test]
     fn settings_config_all_themes_roundtrip() {
-        for mode in ThemeMode::ALL {
+        let custom = ThemeMode::Custom("night-shift".into());
+        for mode in ThemeMode::BUILT_IN.into_iter().chain([custom]) {
             let c = SettingsConfig {
-                theme: *mode,
+                theme: mode.clone(),
                 ..Default::default()
             };
             let json = serde_json::to_string(&c).unwrap();
             let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
-            assert_eq!(c2.theme, *mode);
+            assert_eq!(c2.theme, mode);
         }
     }
 
     #[test]
     fn settings_config_non_default_theme_persists() {
         let c = SettingsConfig {
-            theme: ThemeMode::HighContrast,
+            theme: ThemeMode::BlueOrange,
             ..Default::default()
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(c2.theme, ThemeMode::HighContrast);
+        assert_eq!(c2.theme, ThemeMode::BlueOrange);
     }
 
     #[test]
@@ -355,10 +356,20 @@ mod tests {
     }
 
     #[test]
-    fn settings_config_old_cvd_theme_falls_back_to_default() {
-        // Users with old CVD theme names in settings.json should fall back to Dark
-        let json = r#"{"version":1,"theme":"Deuteranopia"}"#;
-        let c: SettingsConfig = serde_json::from_str(json).unwrap_or_default();
-        assert_eq!(c.theme, ThemeMode::Dark);
+    fn settings_with_a_retired_theme_keep_everything_else() {
+        // settings.json is parsed whole: an unknown theme name would reset every
+        // setting in it, so every name any release wrote still loads (#3125).
+        for (old, now) in [
+            ("Dark", ThemeMode::Gray),
+            ("Midnight", ThemeMode::BlueOrange),
+            ("Deuteranopia", ThemeMode::BlueOrange),
+            ("Protanopia", ThemeMode::BlueOrange),
+            ("Tritanopia", ThemeMode::Gray),
+        ] {
+            let json = format!(r#"{{"version":1,"theme":"{old}","auto_reconnect":false}}"#);
+            let c: SettingsConfig = serde_json::from_str(&json).expect(old);
+            assert_eq!(c.theme, now, "{old}");
+            assert!(!c.auto_reconnect, "{old} reset the other settings");
+        }
     }
 }

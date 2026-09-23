@@ -5,8 +5,8 @@ use egui::Context;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use super::theme::ThemeMode;
 use super::theme::colors::set_theme_colors;
+use super::theme::palette::Palette;
 
 const INTER_REGULAR: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Regular.ttf");
 const INTER_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Bold.ttf");
@@ -16,7 +16,8 @@ pub struct EguiOverlay {
     pub state: egui_winit::State,
     pub renderer: egui_wgpu::Renderer,
     pub visible: bool,
-    pub theme: ThemeMode,
+    /// The theme in use, resolved to its colors.
+    pub palette: Palette,
     /// egui's handle on the display target (#3122), so a panel can draw the
     /// finished frame. Registered once and then re-pointed on every resize —
     /// the target is a new texture after a resize, and an id left pointing at
@@ -39,15 +40,15 @@ impl EguiOverlay {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         window: &Window,
-        theme: ThemeMode,
+        palette: Palette,
         ui_scale: f32,
     ) -> Self {
         let ctx = Context::default();
         // Straight into the options rather than `set_zoom_factor`, which only
         // lands at the next pass: the first frame is laid out at this scale.
         ctx.options_mut(|o| o.zoom_factor = super::panels::appearance_panel::clamp_scale(ui_scale));
-        ctx.set_visuals(theme.visuals());
-        set_theme_colors(&ctx, theme.colors());
+        ctx.set_visuals(palette.visuals());
+        set_theme_colors(&ctx, palette.colors());
 
         // Register bundled fonts (Inter proportional, JetBrains Mono monospace)
         let mut fonts = egui::FontDefinitions::default();
@@ -126,7 +127,7 @@ impl EguiOverlay {
             state,
             renderer,
             visible: false,
-            theme,
+            palette,
             display_tex: None,
             pending_effect_load: None,
             shapes: Vec::new(),
@@ -140,11 +141,11 @@ impl EguiOverlay {
         }
     }
 
-    pub fn set_theme(&mut self, theme: ThemeMode) {
-        self.theme = theme;
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
         let ctx = self.state.egui_ctx();
-        ctx.set_visuals(theme.visuals());
-        set_theme_colors(ctx, theme.colors());
+        ctx.set_visuals(palette.visuals());
+        set_theme_colors(ctx, palette.colors());
     }
 
     pub fn handle_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
@@ -252,7 +253,7 @@ impl EguiOverlay {
 
     pub fn begin_frame(&mut self, window: &Window) {
         // Refresh theme colors each frame so panels always have them
-        set_theme_colors(self.state.egui_ctx(), self.theme.colors());
+        set_theme_colors(self.state.egui_ctx(), self.palette.colors());
         let raw_input = self.state.take_egui_input(window);
         self.state.egui_ctx().begin_pass(raw_input);
     }

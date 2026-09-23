@@ -72,6 +72,9 @@ pub struct App {
     pub preset_loader: PresetLoader,
     // Settings
     pub settings: SettingsConfig,
+    /// Theme files from the themes folder (#3125), read at startup and on
+    /// Reload in Appearance.
+    pub custom_themes: Vec<crate::ui::theme::custom::CustomTheme>,
     // Layers
     pub layer_stack: LayerStack,
     // Compositor + post-processing (separate from layer_stack to avoid borrow conflicts)
@@ -470,13 +473,16 @@ impl App {
         preset_store.scan();
         let mut scene_store = SceneStore::new();
         scene_store.scan();
+        let custom_themes =
+            crate::ui::theme::custom::load_dir(&crate::ui::theme::custom::themes_dir());
         let egui_overlay = EguiOverlay::new(
             &gpu.device,
             gpu.format,
             &window,
-            settings.theme,
+            settings.theme.palette(&custom_themes),
             settings.ui_scale,
         );
+        crate::ui::theme::custom::publish(&egui_overlay.context(), &custom_themes);
         #[cfg(feature = "ndi")]
         let ndi = crate::ndi::NdiSystem::new(
             &gpu.device,
@@ -560,6 +566,7 @@ impl App {
             morph_from: None,
             morph_to: None,
             settings,
+            custom_themes,
             egui_overlay,
             effect_loader,
             window,
@@ -3822,7 +3829,7 @@ impl App {
                 &mut encoder,
                 &surface_view,
                 self.settings.classic_layout || !self.egui_overlay.visible,
-                self.settings.theme.colors().canvas,
+                self.egui_overlay.palette.bg,
             );
             if tap_thumbs {
                 self.layer_thumbs.tap(
@@ -4018,7 +4025,7 @@ impl App {
                 scope.encoder(),
                 &surface_view,
                 self.settings.classic_layout || !self.egui_overlay.visible,
-                self.settings.theme.colors().canvas,
+                self.egui_overlay.palette.bg,
             );
             // Master's row picture, from the finished frame (#3123).
             if tap_thumbs {

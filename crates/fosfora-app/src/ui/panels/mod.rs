@@ -623,14 +623,17 @@ pub fn draw_panels(
                         }
 
                         widgets::subsection(ui, "sub_look", "Appearance", None, dim, true, |ui| {
-                            appearance_panel::draw_appearance_panel(ui, settings.ui_scale);
+                            appearance_panel::draw_appearance_panel(
+                                ui,
+                                &settings.theme,
+                                settings.ui_scale,
+                            );
                         });
 
                         // Global subsection
                         widgets::subsection(ui, "sub_global", "Global", None, dim, true, |ui| {
                             settings_panel::draw_settings_panel(
                                 ui,
-                                settings.theme,
                                 settings.particle_quality,
                                 settings.band_scale,
                                 settings.use_ffmpeg_webcam,

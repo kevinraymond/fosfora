@@ -712,7 +712,7 @@ mod tests {
             let ctx = egui::Context::default();
             crate::ui::theme::colors::set_theme_colors(
                 &ctx,
-                crate::ui::theme::colors::ThemeColors::dark(),
+                crate::ui::theme::palette::Palette::GRAY.colors(),
             );
             let mut loader = EffectLoader::for_test("");
             loader.effects = vec![effect("Sumi"), effect("Tide")];

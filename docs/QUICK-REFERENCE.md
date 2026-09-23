@@ -64,7 +64,8 @@ Cue timeline with per-cue preset, transition type, and duration. Advance modes: 
 
 ### Settings
 Status dots show connection state (MIDI / OSC / WEB / NDI / AUD). Subsections: MIDI, OSC, Web,
-Outputs (NDI and video recording), Global (theme, particle quality, band scale, auto-reconnect).
+Outputs (NDI and video recording), Appearance (theme, interface scale), Global (particle quality,
+band scale, auto-reconnect).
 
 ---
 

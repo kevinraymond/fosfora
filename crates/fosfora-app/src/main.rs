@@ -1061,7 +1061,6 @@ impl ApplicationHandler for FosforaApp {
                     crate::ui::panels::shader_editor::draw_shader_editor(
                         &ctx,
                         &mut app.shader_editor,
-                        app.settings.theme,
                     );
                     crate::ui::panels::shader_editor::draw_new_effect_prompt(
                         &ctx,
@@ -1466,14 +1465,73 @@ impl ApplicationHandler for FosforaApp {
                 }
 
                 // Handle theme change from settings panel
-                let set_theme: Option<crate::ui::theme::ThemeMode> = app
-                    .egui_overlay
-                    .context()
-                    .data_mut(|d| d.remove_temp(egui::Id::new("set_theme")));
-                if let Some(theme) = set_theme {
-                    app.egui_overlay.set_theme(theme);
-                    app.settings.theme = theme;
-                    app.settings.save();
+                // Themes (#3125): pick one, reread the themes folder, or save
+                // the one in use as a new file to edit.
+                {
+                    use crate::ui::panels::appearance_panel::ThemeIntent;
+                    use crate::ui::theme::custom;
+                    let intent: Option<ThemeIntent> = app.egui_overlay.context().data_mut(|d| {
+                        let id = egui::Id::new(ThemeIntent::ID);
+                        let v = d.get_temp(id);
+                        d.remove::<ThemeIntent>(id);
+                        v
+                    });
+                    let mut pick = None;
+                    let relisted =
+                        matches!(intent, Some(ThemeIntent::Reload | ThemeIntent::SaveCopy));
+                    match intent {
+                        Some(ThemeIntent::Use(theme)) => pick = Some(theme),
+                        Some(ThemeIntent::Reload) => {
+                            app.custom_themes = custom::load_dir(&custom::themes_dir());
+                            pick = Some(app.settings.theme.clone());
+                        }
+                        Some(ThemeIntent::SaveCopy) => {
+                            let name = format!(
+                                "{} copy",
+                                app.settings.theme.display_name(&app.custom_themes)
+                            );
+                            match custom::write_new(
+                                &custom::themes_dir(),
+                                &name,
+                                &app.egui_overlay.palette,
+                            ) {
+                                Ok(path) => {
+                                    log::info!("theme saved to {}", path.display());
+                                    app.custom_themes = custom::load_dir(&custom::themes_dir());
+                                    pick = path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .map(|s| crate::ui::theme::ThemeMode::Custom(s.into()));
+                                }
+                                Err(e) => {
+                                    app.status_error = Some((
+                                        format!("Could not save the theme: {e}"),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(ThemeIntent::OpenFolder) => {
+                            if let Err(e) = custom::reveal(&custom::themes_dir()) {
+                                app.status_error = Some((
+                                    format!("Could not open the themes folder: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                        None => {}
+                    }
+                    if relisted {
+                        custom::publish(&app.egui_overlay.context(), &app.custom_themes);
+                    }
+                    if let Some(theme) = pick {
+                        app.egui_overlay
+                            .set_palette(theme.palette(&app.custom_themes));
+                        if theme != app.settings.theme {
+                            app.settings.theme = theme;
+                            app.settings.save();
+                        }
+                    }
                 }
 
                 // Handle output-alpha mode change from settings panel

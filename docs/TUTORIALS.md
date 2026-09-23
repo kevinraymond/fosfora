@@ -1251,9 +1251,25 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 | **T** | Toggle timeline play/stop |
 | **Tab** | Cycle UI widgets |
 
-### Themes
+### Themes and interface scale
 
-Fosfora supports multiple UI themes. Change the theme in the settings area of the UI. Available themes follow WCAG 2.2 AA contrast standards for accessibility.
+Pick a theme under **Appearance** (Setup in the workspace layout, Settings in Classic):
+Light, Gray and Black use no hue at all, and Blue and orange uses a pair that stays
+distinct for red–green color blindness. Every built-in theme meets WCAG 2.2 AA contrast.
+
+**Interface scale** (80–200 %) sets how large text and controls are drawn; Ctrl + and
+Ctrl − change it too, and Ctrl 0 resets it.
+
+To make your own theme, press **Save a copy to edit**. It writes the theme in use to
+`~/.config/fosfora/themes/` as fifteen named colors:
+
+```json
+{ "name": "Night shift", "base": "Black", "colors": { "text": "#F4E9D8", "accent": "#56B4E9" } }
+```
+
+A file only needs the colors it changes; the rest come from `base` (Gray when it names
+none). Press **Reload** after editing. A color that is not readable against its
+background is listed under the theme, with its contrast ratio.
 
 ### Configuration Files
 
@@ -1261,7 +1277,8 @@ All configuration is stored in `~/.config/fosfora/`:
 
 | File | Contents |
 |------|----------|
-| `settings.json` | Theme, audio device |
+| `settings.json` | Theme, interface scale, audio device |
+| `themes/*.json` | Custom themes |
 | `midi.json` | MIDI port, CC mappings, trigger bindings |
 | `osc.json` | OSC ports, address mappings, TX rate |
 | `web.json` | WebSocket port, enabled flag |

@@ -1,10 +1,35 @@
-//! Appearance and accessibility (#3125): how big the interface is drawn.
+//! Appearance and accessibility (#3125): the theme, and how big the
+//! interface is drawn.
 
-use egui::{RichText, Ui};
+use egui::{Align2, CornerRadius, FontId, RichText, Sense, Stroke, StrokeKind, Ui};
 
+use crate::ui::accessibility::focus::draw_focus_ring;
+use crate::ui::theme::ThemeMode;
 use crate::ui::theme::colors::theme_colors;
+use crate::ui::theme::custom;
+use crate::ui::theme::palette::Palette;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets::rows;
+
+/// What the theme controls ask `main.rs` to do, under [`ThemeIntent::ID`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThemeIntent {
+    Use(ThemeMode),
+    /// Save the theme in use as a new file in the themes folder, and use it.
+    SaveCopy,
+    OpenFolder,
+    /// Read the themes folder again.
+    Reload,
+}
+
+impl ThemeIntent {
+    pub const ID: &str = "theme_intent";
+
+    fn send(self, ui: &Ui) {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(Self::ID), self));
+    }
+}
 
 /// The interface scale's range, in percent. The mockup's 80–200 %.
 pub const SCALE_MIN: u32 = 80;
@@ -50,8 +75,178 @@ fn scale_edit(value: u32, changed: bool, dragged: bool, released: bool) -> Scale
     }
 }
 
+/// `theme` and `scale` are the ones in use (scale 1.0 = 100 %).
+pub fn draw_appearance_panel(ui: &mut Ui, theme: &ThemeMode, scale: f32) {
+    theme_picker(ui, theme);
+    ui.add_space(10.0);
+    scale_row(ui, scale);
+}
+
+fn theme_picker(ui: &mut Ui, theme: &ThemeMode) {
+    let tc = theme_colors(ui.ctx());
+    let custom = custom::published(ui.ctx());
+
+    ui.horizontal_wrapped(|ui| {
+        for t in ThemeMode::BUILT_IN {
+            let palette = t.built_in_palette().unwrap_or(Palette::GRAY);
+            if theme_card(ui, &t.display_name(&[]), &palette, *theme == t, &[]).clicked() {
+                ThemeIntent::Use(t).send(ui);
+            }
+        }
+        for c in custom.iter() {
+            let t = ThemeMode::Custom(c.stem.clone());
+            if theme_card(ui, &c.name, &c.palette, *theme == t, &c.problems).clicked() {
+                ThemeIntent::Use(t).send(ui);
+            }
+        }
+    });
+    ui.label(
+        RichText::new(
+            "Light, Gray and Black use no hue; Blue and orange adds a pair that stays \
+             apart for red–green color blindness. In every theme, what is selected or \
+             on also shows by fill, weight or words.",
+        )
+        .size(SMALL_SIZE)
+        .color(tc.text_secondary),
+    );
+
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .button("Save a copy to edit")
+            .on_hover_text(
+                "Write the theme in use to a file in the themes folder and switch to it. \
+                 Change its colors in any text editor, then press Reload.",
+            )
+            .clicked()
+        {
+            ThemeIntent::SaveCopy.send(ui);
+        }
+        if ui.button("Open themes folder").clicked() {
+            ThemeIntent::OpenFolder.send(ui);
+        }
+        if ui
+            .button("Reload")
+            .on_hover_text("Read the theme files again")
+            .clicked()
+        {
+            ThemeIntent::Reload.send(ui);
+        }
+    });
+    ui.label(
+        RichText::new(custom::themes_dir().display().to_string())
+            .size(SMALL_SIZE)
+            .monospace()
+            .color(tc.text_secondary),
+    );
+
+    if let ThemeMode::Custom(stem) = theme
+        && let Some(c) = custom::find(&custom, stem)
+        && !c.problems.is_empty()
+    {
+        ui.add_space(4.0);
+        ui.label(RichText::new(format!("To fix in {stem}.json:")).strong());
+        for p in &c.problems {
+            ui.label(RichText::new(format!("• {p}")).size(SMALL_SIZE));
+        }
+    }
+}
+
+/// One theme as a card: its colors as stripes, its name, and whether it is
+/// in use. In use is a heavy outline and the words, never a color.
+fn theme_card(
+    ui: &mut Ui,
+    name: &str,
+    p: &Palette,
+    selected: bool,
+    problems: &[String],
+) -> egui::Response {
+    let tc = theme_colors(ui.ctx());
+    let size = egui::vec2(124.0, 88.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, name)
+    });
+    let painter = ui.painter_at(rect.expand(3.0));
+    let r = CornerRadius::same(WIDGET_ROUNDING);
+    if resp.hovered() {
+        painter.rect_filled(rect, r, tc.hover_fill);
+    }
+
+    // Stripes: ground, panel, well, then text and accent as narrow bars.
+    let strip = egui::Rect::from_min_size(
+        rect.min + egui::vec2(6.0, 6.0),
+        egui::vec2(rect.width() - 12.0, 34.0),
+    );
+    let narrow = 12.0;
+    let bars: Vec<(egui::Color32, f32)> = {
+        let mut v = vec![(p.bg, 1.0), (p.panel, 1.0), (p.well, 1.0), (p.text, 0.0)];
+        if p.accent != p.text {
+            v.push((p.accent, 0.0));
+        }
+        v
+    };
+    let fixed = bars.iter().filter(|b| b.1 == 0.0).count() as f32 * narrow;
+    let unit = (strip.width() - fixed) / bars.iter().map(|b| b.1).sum::<f32>();
+    let mut x = strip.left();
+    for (c, grow) in bars {
+        let w = if grow > 0.0 { unit * grow } else { narrow };
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x, strip.top()), egui::vec2(w, strip.height())),
+            0.0,
+            c,
+        );
+        x += w;
+    }
+    painter.rect_stroke(
+        strip,
+        0.0,
+        Stroke::new(1.0_f32, tc.card_border),
+        StrokeKind::Inside,
+    );
+
+    painter.text(
+        egui::pos2(strip.left(), strip.bottom() + 6.0),
+        Align2::LEFT_TOP,
+        name,
+        FontId::proportional(BODY_SIZE),
+        tc.text_primary,
+    );
+    let state = if selected {
+        "✓ In use".to_string()
+    } else if !problems.is_empty() {
+        format!("{} to fix", problems.len())
+    } else {
+        "Use".to_string()
+    };
+    painter.text(
+        egui::pos2(strip.left(), rect.bottom() - 6.0),
+        Align2::LEFT_BOTTOM,
+        state,
+        FontId::proportional(SMALL_SIZE),
+        if selected {
+            tc.text_primary
+        } else {
+            tc.text_secondary
+        },
+    );
+    let outline = if selected {
+        Stroke::new(2.5_f32, tc.text_primary)
+    } else {
+        Stroke::new(1.0_f32, tc.card_border)
+    };
+    painter.rect_stroke(rect, r, outline, StrokeKind::Inside);
+    draw_focus_ring(ui, &resp);
+
+    if problems.is_empty() {
+        resp
+    } else {
+        resp.on_hover_text(problems.join("\n"))
+    }
+}
+
 /// `scale` is the one in use (1.0 = 100 %).
-pub fn draw_appearance_panel(ui: &mut Ui, scale: f32) {
+fn scale_row(ui: &mut Ui, scale: f32) {
     let tc = theme_colors(ui.ctx());
     let current = (scale * 100.0).round() as u32;
     let held_id = egui::Id::new(HELD_SCALE);
@@ -133,7 +328,7 @@ mod tests {
             ..Default::default()
         };
         let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| draw_appearance_panel(ui, 1.0));
+            egui::CentralPanel::default().show(ctx, |ui| scale_row(ui, 1.0));
         });
         ctx.data_mut(|d| {
             let id = egui::Id::new(SET_UI_SCALE);

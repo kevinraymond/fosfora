@@ -868,12 +868,15 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                         });
                     }
                     widgets::section(c, "v2_setup_look", "Appearance", None, true, |ui| {
-                        appearance_panel::draw_appearance_panel(ui, s.settings.ui_scale);
+                        appearance_panel::draw_appearance_panel(
+                            ui,
+                            &s.settings.theme,
+                            s.settings.ui_scale,
+                        );
                     });
                     widgets::section(c, "v2_setup_global", "Global", None, true, |ui| {
                         settings_panel::draw_settings_panel(
                             ui,
-                            s.settings.theme,
                             s.settings.particle_quality,
                             s.settings.band_scale,
                             s.settings.use_ffmpeg_webcam,
@@ -907,7 +910,7 @@ mod tests {
         let ctx = Context::default();
         crate::ui::theme::colors::set_theme_colors(
             &ctx,
-            crate::ui::theme::colors::ThemeColors::dark(),
+            crate::ui::theme::palette::Palette::GRAY.colors(),
         );
         let mut out = (0.0, 0.0);
         // A few passes: egui settles sizes over frames.

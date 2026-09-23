@@ -1,13 +1,11 @@
 use egui::{RichText, Ui};
 
 use crate::settings::{AlphaOutputMode, BandScale, ParticleQuality};
-use crate::ui::theme::ThemeMode;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets::rows;
 
 pub fn draw_settings_panel(
     ui: &mut Ui,
-    current_theme: ThemeMode,
     current_quality: ParticleQuality,
     current_band_scale: BandScale,
     use_ffmpeg_webcam: bool,
@@ -33,27 +31,6 @@ pub fn draw_settings_panel(
             d.insert_temp(egui::Id::new("set_classic_layout"), classic);
         });
     }
-
-    rows::combo_row(
-        ui,
-        "theme_selector",
-        "Theme",
-        None,
-        current_theme.display_name(),
-        |ui| {
-            for &mode in ThemeMode::ALL {
-                let r = ui.selectable_label(
-                    mode == current_theme,
-                    RichText::new(mode.display_name()).size(SMALL_SIZE),
-                );
-                if r.clicked() && mode != current_theme {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("set_theme"), mode);
-                    });
-                }
-            }
-        },
-    );
 
     rows::combo_row(
         ui,

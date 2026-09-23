@@ -51,6 +51,15 @@
   the Classic layout): text, controls and spacing grow together, and the output is
   untouched. Ctrl + and Ctrl − change it too, and the size is remembered.
 
+- **New themes: Light, Gray, Black, and Blue and orange.** The first three use no hue
+  at all, and Blue and orange is a pair that stays distinct for red–green color
+  blindness. Midnight, Ember, Neon and High Contrast are retired: a saved choice moves
+  to the nearest new theme, and every other setting is kept.
+
+- **Custom themes**: *Save a copy to edit* writes the theme in use to a file of fifteen
+  named colors in the themes folder. Change any of them, press Reload, and Appearance
+  lists any color that fails contrast minimums.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

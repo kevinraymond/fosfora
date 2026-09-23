@@ -6,7 +6,6 @@ use egui::{
 };
 use egui_code_editor::{ColorTheme, Syntax, Token, TokenType};
 
-use crate::ui::theme::ThemeMode;
 use crate::ui::theme::colors::theme_colors;
 
 /// Which file type is currently active in the editor.
@@ -252,20 +251,17 @@ fn json_syntax() -> Syntax {
 }
 
 /// Get the color theme for syntax highlighting (no bg hacking needed).
-fn editor_color_theme(theme: ThemeMode) -> ColorTheme {
-    match theme {
-        ThemeMode::Light => ColorTheme::GITHUB_LIGHT,
-        _ => ColorTheme::AYU_DARK,
+fn editor_color_theme(dark: bool) -> ColorTheme {
+    if dark {
+        ColorTheme::AYU_DARK
+    } else {
+        ColorTheme::GITHUB_LIGHT
     }
 }
 
 /// Draw the shader editor as an overlay with semi-transparent code area.
 /// Returns true if the editor is open.
-pub fn draw_shader_editor(
-    ctx: &egui::Context,
-    state: &mut ShaderEditorState,
-    theme: ThemeMode,
-) -> bool {
+pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState) -> bool {
     use egui::TextBuffer;
 
     if !state.open {
@@ -274,7 +270,7 @@ pub fn draw_shader_editor(
 
     let tc = theme_colors(ctx);
     let screen = ctx.input(|i| i.content_rect());
-    let color_theme = editor_color_theme(theme);
+    let color_theme = editor_color_theme(ctx.style().visuals.dark_mode);
     let fontsize = 13.0f32;
 
     // Header bar height + toolbar + separators
