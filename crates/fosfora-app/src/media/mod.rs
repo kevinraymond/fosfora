@@ -1,4 +1,5 @@
 pub mod decoder;
+pub mod toolchain;
 pub mod types;
 #[cfg(feature = "video")]
 pub mod video;

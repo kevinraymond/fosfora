@@ -25,11 +25,13 @@ mod osc;
 mod output;
 mod params;
 mod paths;
+mod palette;
 mod preset;
 mod recording;
 mod scene;
 mod settings;
 mod shader;
+mod show;
 mod signal;
 #[cfg(all(target_os = "windows", feature = "spout"))]
 mod spout;
@@ -232,7 +234,11 @@ impl ApplicationHandler for FosforaApp {
                         }
                     KeyCode::KeyB
                         if !app.shader_editor.open => {
-                            app.binding_matrix.open = !app.binding_matrix.open;
+                            if app.show.is_some() {
+                                app.master_output.blackout = !app.master_output.blackout;
+                            } else {
+                                app.binding_matrix.open = !app.binding_matrix.open;
+                            }
                         }
                     KeyCode::KeyG
                         // Toggle the trama graph canvas
@@ -889,6 +895,12 @@ impl ApplicationHandler for FosforaApp {
                                 scene_info,
                                 &app.status_error,
                                 &app.settings,
+                                // Show orchestration (Phase 1/3): `None` when
+                                // no `--show` pack is open, so vanilla
+                                // Fosfora keeps its exact current UI.
+                                app.show.as_mut(),
+                                &mut app.palette_panel,
+                                app.master_output.blackout,
                             );
                         }
                         // Sync global postprocess enabled from layer
@@ -896,6 +908,87 @@ impl ApplicationHandler for FosforaApp {
                     }
                     if (app.volumetric_enabled, app.volumetric_params) != vol_before {
                         app.preset_store.mark_dirty();
+                    }
+
+                    // Show-panel intents (queued inside draw_panels via egui
+                    // temp data — the `&mut layer.param_store` borrow above
+                    // forbids calling `show_command` inline).
+                    let show_ui_action: Option<crate::app::ShowUiAction> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new("show_ui_action")));
+                    if let Some(action) = show_ui_action {
+                        if !action.is_none() {
+                            if action.toggle_blackout {
+                                app.master_output.blackout = !app.master_output.blackout;
+                            }
+                            if let Some(cmd) = action.show {
+                                app.show_command(cmd.to_controller());
+                            }
+                            // Apply Palette Now: push the ACTIVE palette's
+                            // slot colors through the active preset's binding
+                            // set via `set_runtime` (non-dirtying).
+                            if action.apply_palette_now {
+                                if let Some(show) = app.show.as_ref() {
+                                    let elapsed = show.clock.elapsed();
+                                    let colors =
+                                        crate::palette::controller::palette_colors_at(
+                                            &show.definition.palette_track,
+                                            &show.palettes,
+                                            elapsed,
+                                        )
+                                        .or_else(|| {
+                                            show.palette
+                                                .active_palette_id
+                                                .as_deref()
+                                                .and_then(|id| show.palettes.get(id))
+                                                .map(|p| p.as_param_map())
+                                        });
+                                    if let Some(colors) = colors {
+                                        app.apply_palette_map(colors);
+                                    }
+                                }
+                            }
+                            // Palette edits/imports land in the pack directory
+                            // directly (open-in-place): debounced atomic save.
+                            if action.palette_edited || action.imported_palette.is_some() {
+                                if let Some(show) = app.show.as_mut() {
+                                    if let Some(p) = action.imported_palette {
+                                        // Import into the open pack: insert +
+                                        // save through the atomic store path.
+                                        let root = show.pack_root.clone();
+                                        let mut store =
+                                            crate::palette::store::PaletteStore::from_map(
+                                                root,
+                                                std::mem::take(&mut show.palettes),
+                                            );
+                                        store.insert(p);
+                                        if let Err(e) = store.save_all() {
+                                            log::warn!("palette import save: {e:#}");
+                                        }
+                                        show.palettes = std::mem::take(&mut store.palettes);
+                                    } else {
+                                        let root = show.pack_root.clone();
+                                        let mut store =
+                                            crate::palette::store::PaletteStore::from_map(
+                                                root,
+                                                std::mem::take(&mut show.palettes),
+                                            );
+                                        store.touch();
+                                        if let Err(e) =
+                                            store.flush_if_due(std::time::Instant::now())
+                                        {
+                                            log::warn!("palette autosave: {e:#}");
+                                        }
+                                        // Force-write for explicit panel edits
+                                        // (the 400 ms debounce above is for
+                                        // drags; a click edit saves now).
+                                        if let Err(e) = store.save_all() {
+                                            log::warn!("palette save: {e:#}");
+                                        }
+                                        show.palettes = std::mem::take(&mut store.palettes);
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Draw shader editor overlay (on top of everything)
@@ -4140,6 +4233,7 @@ const KNOWN_FLAGS: &[(&str, Option<&str>, bool)] = &[
     ("--window-secs", Some("analyze"), cfg!(feature = "analyze")),
     ("--validate", Some("analyze"), cfg!(feature = "analyze")),
     ("--dense", Some("analyze"), cfg!(feature = "analyze")),
+    ("--show", None, true),
 ];
 
 /// `--help`. Written for someone who downloaded a build, not for someone reading
@@ -4245,6 +4339,7 @@ ANALYSIS
   --validate DIR             Check a generated scene before loading it.
 
 INFO
+  --show PACK/show.json      Open a Hibernation-style show pack in place.
   --caps                     List the optional features in this build.
   --version                  Print the version.
   --help, -h                 This text.
@@ -4641,6 +4736,13 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(path) = crate::show::parse_show_arg(&args) {
+            let _ = crate::show::SHOW_PACK_ARG.set(path);
+        }
+    }
 
     let mut app = FosforaApp::new();
     event_loop.run_app(&mut app)?;

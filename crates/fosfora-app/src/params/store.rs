@@ -67,6 +67,11 @@ impl ParamStore {
         self.changed = true;
     }
 
+    /// Runtime write used by palette playback — never marks the store dirty.
+    pub fn set_runtime(&mut self, name: &str, value: ParamValue) {
+        self.values.insert(name.to_string(), value);
+    }
+
     pub fn get(&self, name: &str) -> Option<&ParamValue> {
         self.values.get(name)
     }
@@ -190,6 +195,18 @@ mod tests {
         assert!(!s.changed);
         s.set("speed", ParamValue::Float(0.8));
         assert!(s.changed);
+    }
+
+    #[test]
+    fn set_runtime_does_not_mark_changed() {
+        let mut s = ParamStore::new();
+        s.load_from_defs(&test_defs());
+        s.set_runtime("speed", ParamValue::Float(0.8));
+        assert!(!s.changed);
+        match s.get("speed") {
+            Some(ParamValue::Float(v)) => assert!(approx_eq(*v, 0.8, 1e-6)),
+            _ => panic!("expected Float"),
+        }
     }
 
     #[test]

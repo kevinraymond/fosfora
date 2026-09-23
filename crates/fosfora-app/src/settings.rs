@@ -141,6 +141,9 @@ pub struct SettingsConfig {
     /// reproduces pre-overlay behavior byte-for-byte on old settings files.
     #[serde(default)]
     pub output_alpha: AlphaOutputMode,
+    /// Absolute ffmpeg binary. Empty = auto-discover (PATH, Homebrew, /usr/local).
+    #[serde(default)]
+    pub ffmpeg_path: Option<String>,
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -163,6 +166,7 @@ impl Default for SettingsConfig {
             auto_reconnect: true,
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),
+            ffmpeg_path: None,
         }
     }
 }

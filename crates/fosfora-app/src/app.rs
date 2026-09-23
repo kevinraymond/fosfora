@@ -171,6 +171,75 @@ pub struct App {
     // GPU profiler (feature-gated)
     #[cfg(feature = "profiling")]
     pub gpu_profiler: crate::gpu::profiler::Profiler,
+    pub master_output: MasterOutput,
+    pub show: Option<crate::show::controller::ShowController>,
+    pub palette_panel: crate::ui::panels::palette_panel::PalettePanelState,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MasterOutput {
+    pub blackout: bool,
+}
+
+/// Intent returned by [`App::draw_show_ui`]: a show transport command and/or
+/// palette side-effects for the owner (`App`/main.rs) to apply after the egui
+/// borrow ends.
+#[derive(Debug, Clone, Default)]
+pub struct ShowUiAction {
+    pub show: Option<ShowCmd>,
+    pub toggle_blackout: bool,
+    pub apply_palette_now: bool,
+    pub palette_edited: bool,
+    pub imported_palette: Option<crate::palette::types::Palette>,
+}
+
+impl ShowUiAction {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.show.is_none()
+            && !self.toggle_blackout
+            && !self.apply_palette_now
+            && !self.palette_edited
+            && self.imported_palette.is_none()
+    }
+}
+
+/// Transport commands addressable from the native show panel (mirrors
+/// [`crate::show::controller::ShowCommand`]; the `ToggleBlackout` arm is
+/// folded into `ShowUiAction::toggle_blackout`).
+#[derive(Debug, Clone, Copy)]
+pub enum ShowCmd {
+    Start,
+    Pause,
+    Resume,
+    Reset,
+    Seek { secs: u32 },
+    StopAuto,
+    NextVisual,
+    PrevVisual,
+    NextPalette,
+    PrevPalette,
+}
+
+impl ShowCmd {
+    pub fn to_controller(self) -> crate::show::controller::ShowCommand {
+        use crate::show::controller::ShowCommand as C;
+        match self {
+            ShowCmd::Start => C::Start,
+            ShowCmd::Pause => C::Pause,
+            ShowCmd::Resume => C::Resume,
+            ShowCmd::Reset => C::Reset,
+            ShowCmd::Seek { secs } => C::Seek { secs },
+            ShowCmd::StopAuto => C::StopAuto,
+            ShowCmd::NextVisual => C::NextVisual,
+            ShowCmd::PrevVisual => C::PrevVisual,
+            ShowCmd::NextPalette => C::NextPalette,
+            ShowCmd::PrevPalette => C::PrevPalette,
+        }
+    }
 }
 
 impl App {
@@ -481,7 +550,7 @@ impl App {
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
         let now = Instant::now();
-        Ok(Self {
+        let mut app = Self {
             gpu,
             mel_last_commit: None,
             mel_commit_interval: 1.0 / 43.0, // ~43 Hz audio-hop column rate
@@ -562,7 +631,12 @@ impl App {
             depth_download: None,
             #[cfg(feature = "profiling")]
             gpu_profiler,
-        })
+            master_output: MasterOutput::default(),
+            show: None,
+            palette_panel: crate::ui::panels::palette_panel::PalettePanelState::default(),
+        };
+        app.init_show_pack();
+        Ok(app)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -1112,6 +1186,11 @@ impl App {
             self.timeline.stop();
         }
         self.midi_clock_was_playing = self.midi_clock.playing();
+
+        // Show orchestration (Phase 1/3): edge-triggered schedulers on the
+        // Instant-based ShowClock — never the clamped render dt above. When
+        // no show pack is open this is a cheap `None` check.
+        self.tick_show(now);
 
         // Advance timeline (scene system)
         if self.timeline.active {
@@ -3134,6 +3213,315 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Render the SHOW + PALETTES sections into the open left-panel scroll
+    /// area (Phase 1 p1-ui, Phase 2). No-ops when no show pack is loaded —
+    /// vanilla Fosfora keeps its exact current UI.
+    ///
+    /// Call sites pass `&mut self.show` + the panel state disjointly from the
+    /// other `&mut self` borrows they already hold (main.rs holds
+    /// `layer.param_store`, `volumetric_*`, …), so this is a free function.
+    pub fn draw_show_ui(
+        show: Option<&mut crate::show::controller::ShowController>,
+        palette_state: &mut crate::ui::panels::palette_panel::PalettePanelState,
+        blackout: bool,
+        ui: &mut egui::Ui,
+    ) -> ShowUiAction {
+        use crate::ui::panels::palette_panel::{draw_palette_panel, PalettePanelAction};
+        use crate::ui::panels::show_panel::{draw_show_panel, ShowPanelAction};
+        let Some(show) = show else {
+            return ShowUiAction::none();
+        };
+        let mut out = ShowUiAction::none();
+        ui.separator();
+        match draw_show_panel(ui, show, blackout) {
+            ShowPanelAction::None => {}
+            ShowPanelAction::Start => out.show = Some(ShowCmd::Start),
+            ShowPanelAction::Pause => out.show = Some(ShowCmd::Pause),
+            ShowPanelAction::Resume => out.show = Some(ShowCmd::Resume),
+            ShowPanelAction::Reset => out.show = Some(ShowCmd::Reset),
+            ShowPanelAction::StopAuto => out.show = Some(ShowCmd::StopAuto),
+            ShowPanelAction::ToggleBlackout => out.toggle_blackout = true,
+            ShowPanelAction::Seek(secs) => out.show = Some(ShowCmd::Seek { secs }),
+            ShowPanelAction::NextVisual => out.show = Some(ShowCmd::NextVisual),
+            ShowPanelAction::PrevVisual => out.show = Some(ShowCmd::PrevVisual),
+        }
+        ui.separator();
+        match draw_palette_panel(ui, show, palette_state) {
+            PalettePanelAction::None => {}
+            PalettePanelAction::ApplyNow => out.apply_palette_now = true,
+            PalettePanelAction::Imported(p) => out.imported_palette = Some(p),
+            PalettePanelAction::Edited => out.palette_edited = true,
+            PalettePanelAction::PrevPalette => out.show = Some(ShowCmd::PrevPalette),
+            PalettePanelAction::NextPalette => out.show = Some(ShowCmd::NextPalette),
+        }
+        out
+    }
+
+    /// Open `--show <path/to/show.json>` in place (Phase 1 p1-paths).
+    ///
+    /// Every relative path in the pack resolves against the show.json
+    /// directory; the pack directory itself is the single filesystem root.
+    /// Called once from `App::new` — before this, `self.show` is `None`.
+    fn init_show_pack(&mut self) {
+        let Some(show_json) = crate::show::SHOW_PACK_ARG.get().cloned() else {
+            return;
+        };
+        let pack = match crate::show::pack::ShowPack::open(&show_json) {
+            Ok(pack) => pack,
+            Err(e) => {
+                log::warn!("--show {}: {e:#}", show_json.display());
+                self.status_error = Some((format!("Show pack: {e:#}"), Instant::now()));
+                return;
+            }
+        };
+        // Populate the native preset store with the pack's presets so cue
+        // loads resolve by stable preset_id.
+        let mut preset_ids: Vec<String> = pack.presets.keys().cloned().collect();
+        preset_ids.sort();
+        for id in &preset_ids {
+            if let Some(preset) = pack.presets.get(id) {
+                if !self.preset_store.presets.iter().any(|(n, _)| n == id) {
+                    self.preset_store.presets.push((id.clone(), preset.clone()));
+                }
+            }
+        }
+        // Bridge show cues into the native scene-timeline types: one cue per
+        // preset lets show transitions reuse the engine's dissolve snapshot
+        // path instead of duplicating renderer logic.
+        self.timeline = Timeline::new(
+            crate::show::build_timeline_cues(&preset_ids, 8.0),
+            false,
+            AdvanceMode::Manual,
+        );
+        self.transition_renderer.get_or_insert_with(|| {
+            TransitionRenderer::new(&self.gpu.device, GpuContext::hdr_format())
+        });
+        let report = {
+            let mut controller = crate::show::controller::ShowController::new(
+                pack.definition.clone(),
+                pack.root.clone(),
+                pack.palettes.clone(),
+                pack.bindings.clone(),
+                preset_ids,
+            );
+            controller.validate(&[], &std::collections::HashSet::new(), &[])
+        };
+        log::info!(
+            "Show pack '{}' loaded: {} scene cues, {} palette cues — {}",
+            pack.definition.name,
+            pack.definition.scene_track.len(),
+            pack.definition.palette_track.len(),
+            report.summary()
+        );
+        if !report.ready() {
+            for issue in &report.issues {
+                log::warn!("show validation: {}", issue.message);
+            }
+            self.status_error = Some((format!("Show: {}", report.summary()), Instant::now()));
+        }
+        let mut controller = crate::show::controller::ShowController::new(
+            pack.definition,
+            pack.root,
+            pack.palettes,
+            pack.bindings,
+            self.preset_store
+                .presets
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>(),
+        );
+        controller.last_report = report;
+        self.show = Some(controller);
+    }
+
+    /// Tick the show + palette schedulers (Phase 1/3). Called every frame from
+    /// `update` with an `Instant` `now` — never the clamped render `dt` — so a
+    /// 5 s stall advances the show by exactly 5 s.
+    fn tick_show(&mut self, now: Instant) {
+        let events = match self.show.as_mut() {
+            Some(show) => show.tick(now),
+            None => return,
+        };
+        for event in events {
+            self.apply_show_event(event);
+        }
+        // Continuous slot-ID-keyed interpolation: survive scene changes and
+        // fill frames between cue edges without new events. Computed without
+        // holding the show borrow so `apply_palette_map` can take `&mut self`.
+        let colors = match self.show.as_ref() {
+            Some(show) if show.auto_enabled => {
+                let elapsed = show.clock.elapsed_at(now);
+                crate::palette::controller::palette_colors_at(
+                    &show.definition.palette_track,
+                    &show.palettes,
+                    elapsed,
+                )
+            }
+            _ => None,
+        };
+        if let Some(colors) = colors {
+            self.apply_palette_map(colors);
+        }
+    }
+
+    /// Handle one edge-triggered [`ShowVisualEvent`]: scene preset load +
+    /// palette `set_runtime` writes (non-dirtying).
+    fn apply_show_event(&mut self, event: crate::show::controller::ShowVisualEvent) {
+        use crate::show::controller::ShowVisualEvent;
+        match event {
+            ShowVisualEvent::Scene(action) => {
+                let cue_index = self
+                    .timeline
+                    .cues
+                    .iter()
+                    .position(|c| c.preset_name == action.preset_id);
+                if action.snap {
+                    // SEEK/START semantics: snap-load the target preset
+                    // immediately (no historical dissolve reconstruction).
+                    if let Some(idx) = cue_index {
+                        if let Some(preset_idx) = self
+                            .preset_store
+                            .presets
+                            .iter()
+                            .position(|(n, _)| n == &action.preset_id)
+                        {
+                            // Keep the timeline's cue cursor aligned so the
+                            // next scheduled edge still fires on time.
+                            let tl_event = self.timeline.go_to_cue(idx);
+                            self.process_timeline_event(tl_event);
+                            self.load_preset_for_cue(preset_idx, idx);
+                        }
+                    } else if let Some(preset_idx) = self
+                        .preset_store
+                        .presets
+                        .iter()
+                        .position(|(n, _)| n == &action.preset_id)
+                    {
+                        self.load_preset(preset_idx);
+                    }
+                } else if let Some(idx) = cue_index {
+                    // Native transitions: cut loads now, dissolve/param-morph
+                    // go through `TimelineEvent` so the render path captures
+                    // the outgoing frame (see `dissolve_capture_pending`).
+                    let from = self.timeline.current_cue_index();
+                    let tl_event = if action.kind
+                        == crate::show::definition::TransitionKind::Cut
+                    {
+                        // Align cursor then load directly: `go_to_cue` on a
+                        // Cut cue already emits `LoadCue`, which
+                        // `process_timeline_event` handles.
+                        self.timeline.go_to_cue(idx)
+                    } else {
+                        let cue = &self.timeline.cues[idx];
+                        self.timeline.state = crate::scene::timeline::PlaybackState::Transitioning {
+                            from_cue: from.min(self.timeline.cues.len().saturating_sub(1)),
+                            to_cue: idx,
+                            progress: 0.0,
+                            transition_type: cue.transition,
+                            duration: action.duration_ms as f32 / 1000.0,
+                        };
+                        crate::show::timeline_event_for_cue(
+                            idx,
+                            action.kind,
+                            action.duration_ms,
+                        )
+                    };
+                    self.process_timeline_event(tl_event);
+                } else if let Some(preset_idx) = self
+                    .preset_store
+                    .presets
+                    .iter()
+                    .position(|(n, _)| n == &action.preset_id)
+                {
+                    self.load_preset(preset_idx);
+                } else {
+                    log::warn!("show cue: unknown preset '{}'", action.preset_id);
+                }
+            }
+            ShowVisualEvent::Palette(colors) => {
+                self.apply_palette_map(colors);
+            }
+        }
+    }
+
+    /// Route an interpolated slot→color map through the active preset's
+    /// `PaletteBindingSet` and write via `set_runtime` (never dirty).
+    ///
+    /// Fallback rule (MVP): when the active preset has no binding set, the
+    /// first set in the pack applies — every Hibernation preset ships one,
+    /// so this only fires for ad-hoc packs.
+    pub fn apply_palette_map(&mut self, colors: std::collections::HashMap<String, crate::params::ParamValue>) {
+        let Some(show) = self.show.as_ref() else {
+            return;
+        };
+        let active = show.scene.active_preset_id.clone();
+        let bindings = active
+            .as_deref()
+            .and_then(|id| show.bindings.get(id))
+            .cloned()
+            .or_else(|| show.bindings.values().next().cloned());
+        let Some(set) = bindings else {
+            return;
+        };
+        for b in &set.bindings {
+            let Some(value) = colors.get(&b.slot) else {
+                continue;
+            };
+            if let Some(layer) = self.layer_stack.layers.get_mut(b.layer) {
+                if !layer.locked {
+                    layer.param_store.set_runtime(&b.parameter, value.clone());
+                }
+            }
+        }
+    }
+
+    /// Dispatch a [`ShowCommand`]: START/PAUSE/RESUME/RESET/SEEK/STOP AUTO/
+    /// NEXT-PREV VISUAL/PALETTE. Returns after applying the resulting scene +
+    /// palette events atomically (seek applies both at once).
+    pub fn show_command(&mut self, cmd: crate::show::controller::ShowCommand) {
+        let now = Instant::now();
+        if matches!(
+            cmd,
+            crate::show::controller::ShowCommand::ToggleBlackout
+        ) {
+            self.master_output.blackout = !self.master_output.blackout;
+            return;
+        }
+        let events = match self.show.as_mut() {
+            Some(show) => show.handle(now, cmd),
+            None => return,
+        };
+        for event in events {
+            self.apply_show_event(event);
+        }
+        // SEEK/START atomically reconstruct the exact palette colors at the
+        // target timestamp (no historical dissolve reconstruction).
+        if matches!(
+            cmd,
+            crate::show::controller::ShowCommand::Seek { .. }
+                | crate::show::controller::ShowCommand::Start
+                | crate::show::controller::ShowCommand::NextPalette
+                | crate::show::controller::ShowCommand::PrevPalette
+        ) {
+            let (elapsed, colors) = match self.show.as_mut() {
+                Some(show) => {
+                    let elapsed = show.clock.elapsed_at(now);
+                    let colors = crate::palette::controller::palette_colors_at(
+                        &show.definition.palette_track,
+                        &show.palettes,
+                        elapsed,
+                    );
+                    (elapsed, colors)
+                }
+                None => return,
+            };
+            let _ = elapsed;
+            if let Some(colors) = colors {
+                self.apply_palette_map(colors);
+            }
+        }
+    }
+
     /// Load a scene and start its timeline.
     pub fn load_scene(&mut self, index: usize) {
         let scene = match self.scene_store.load(index) {
@@ -3496,20 +3884,40 @@ impl App {
             } else {
                 new_source
             };
-            // Post-process → surface
-            self.post_process.render(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                source,
-                &surface_view,
-                self.uniforms.time,
-                self.uniforms.rms,
-                self.uniforms.onset,
-                self.uniforms.flatness,
-                &new_pp,
-                alpha_mode,
-            );
+            // TRUE BLACKOUT also covers the dissolve deferred-load branch:
+            // same contract as the normal path — present black, egui on top.
+            if self.master_output.blackout {
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("blackout-clear-dissolve"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &surface_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            } else {
+                // Post-process → surface
+                self.post_process.render(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &mut encoder,
+                    source,
+                    &surface_view,
+                    self.uniforms.time,
+                    self.uniforms.rms,
+                    self.uniforms.onset,
+                    self.uniforms.flatness,
+                    &new_pp,
+                    alpha_mode,
+                );
+            }
 
             // NDI capture
             #[cfg(feature = "ndi")]
@@ -3643,6 +4051,42 @@ impl App {
         } else {
             source
         };
+
+        // TRUE BLACKOUT (Phase 1 p1-blackout): applied at final
+        // presentation, independent of scene/palette/pause/STOP AUTO/preset/
+        // audio. When on, the surface presents black instead of the
+        // post-processed frame — reachable via keyboard (B), native UI, and
+        // web. UI overlays (egui) still draw on top so the operator keeps
+        // control; projector rehearsal hides the overlay separately.
+        if self.master_output.blackout {
+            // Still submit a cleared command buffer so the surface presents
+            // a real black frame (never a stale or torn one), then draw only
+            // the egui overlay.
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blackout-clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            self.egui_overlay.render(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &mut encoder,
+                &surface_view,
+            );
+            self.gpu.queue.submit(std::iter::once(encoder.finish()));
+            output.present();
+            return Ok(());
+        }
 
         // Post-process → surface
         self.post_process.render(
