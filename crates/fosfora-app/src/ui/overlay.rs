@@ -40,8 +40,12 @@ impl EguiOverlay {
         format: wgpu::TextureFormat,
         window: &Window,
         theme: ThemeMode,
+        ui_scale: f32,
     ) -> Self {
         let ctx = Context::default();
+        // Straight into the options rather than `set_zoom_factor`, which only
+        // lands at the next pass: the first frame is laid out at this scale.
+        ctx.options_mut(|o| o.zoom_factor = super::panels::appearance_panel::clamp_scale(ui_scale));
         ctx.set_visuals(theme.visuals());
         set_theme_colors(&ctx, theme.colors());
 
@@ -237,6 +241,8 @@ impl EguiOverlay {
         }
     }
 
+    /// `pixels_per_point` is the window's; `end_frame` replaces it with the
+    /// one egui laid the frame out at, which includes the interface scale.
     pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
         self.screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [width, height],
@@ -253,6 +259,10 @@ impl EguiOverlay {
 
     pub fn end_frame(&mut self, window: &Window) {
         let output = self.state.egui_ctx().end_pass();
+        // Render at the scale the frame was laid out at. The window's scale
+        // factor alone leaves out the interface scale (#3125): shapes would be
+        // tessellated at one size and placed at another.
+        self.screen_descriptor.pixels_per_point = output.pixels_per_point;
         self.state
             .handle_platform_output(window, output.platform_output);
         self.shapes = self

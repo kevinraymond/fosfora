@@ -1,3 +1,4 @@
+pub mod appearance_panel;
 pub mod audio_mappings_panel;
 pub mod audio_panel;
 pub mod binding_helpers;
@@ -620,6 +621,10 @@ pub fn draw_panels(
                                 },
                             );
                         }
+
+                        widgets::subsection(ui, "sub_look", "Appearance", None, dim, true, |ui| {
+                            appearance_panel::draw_appearance_panel(ui, settings.ui_scale);
+                        });
 
                         // Global subsection
                         widgets::subsection(ui, "sub_global", "Global", None, dim, true, |ui| {

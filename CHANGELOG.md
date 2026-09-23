@@ -47,6 +47,10 @@
   one click. Presets load exactly as saved, and editing post-processing now marks the
   preset as changed.
 
+- **Interface scale**, from 80 to 200 %, under *Appearance* in Setup (or Settings in
+  the Classic layout): text, controls and spacing grow together, and the output is
+  untouched. Ctrl + and Ctrl − change it too, and the size is remembered.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

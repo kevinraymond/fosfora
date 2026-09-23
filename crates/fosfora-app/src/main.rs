@@ -1573,6 +1573,27 @@ impl ApplicationHandler for FosforaApp {
                     app.displays = crate::output_window::displays(event_loop);
                 }
 
+                // Interface scale (#3125). The slider hands over a value it has
+                // let go of; Ctrl +/− change egui's zoom directly, so follow that
+                // too, clamped to the slider's range, and save whichever moved.
+                // (A new zoom lands at the next pass: a keyboard step shows up
+                // here one frame later, which is harmless.)
+                {
+                    use crate::ui::panels::appearance_panel::{SET_UI_SCALE, clamp_scale};
+                    let ctx = app.egui_overlay.context();
+                    let asked: Option<f32> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new(SET_UI_SCALE)));
+                    let zoom = ctx.zoom_factor();
+                    let want = clamp_scale(asked.unwrap_or(zoom));
+                    if want != zoom {
+                        ctx.set_zoom_factor(want);
+                    }
+                    if want != app.settings.ui_scale {
+                        app.settings.ui_scale = want;
+                        app.settings.save();
+                    }
+                }
+
                 // Classic / workspace layout switch (#3122)
                 let set_classic_layout: Option<bool> = app
                     .egui_overlay

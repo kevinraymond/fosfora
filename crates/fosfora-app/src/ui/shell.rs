@@ -14,7 +14,7 @@
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
-    audio_panel, catalog_panel, layer_panel, media_panel, midi_panel, osc_panel,
+    appearance_panel, audio_panel, catalog_panel, layer_panel, media_panel, midi_panel, osc_panel,
     output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, settings_panel,
     stack_panel, status_bar, triggers_panel, volumetric_panel, web_panel,
 };
@@ -867,6 +867,9 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                             recording_panel::draw_recording_panel(ui, info);
                         });
                     }
+                    widgets::section(c, "v2_setup_look", "Appearance", None, true, |ui| {
+                        appearance_panel::draw_appearance_panel(ui, s.settings.ui_scale);
+                    });
                     widgets::section(c, "v2_setup_global", "Global", None, true, |ui| {
                         settings_panel::draw_settings_panel(
                             ui,

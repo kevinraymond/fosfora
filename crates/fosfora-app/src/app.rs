@@ -470,7 +470,13 @@ impl App {
         preset_store.scan();
         let mut scene_store = SceneStore::new();
         scene_store.scan();
-        let egui_overlay = EguiOverlay::new(&gpu.device, gpu.format, &window, settings.theme);
+        let egui_overlay = EguiOverlay::new(
+            &gpu.device,
+            gpu.format,
+            &window,
+            settings.theme,
+            settings.ui_scale,
+        );
         #[cfg(feature = "ndi")]
         let ndi = crate::ndi::NdiSystem::new(
             &gpu.device,

@@ -154,6 +154,16 @@ pub struct SettingsConfig {
     /// It seeds the picker only — the window is never opened on its own.
     #[serde(default)]
     pub output_display: Option<String>,
+    /// Interface scale, 1.0 = 100 % (#3125): egui's zoom factor, so text,
+    /// controls and spacing grow together. Clamped to 80–200 % where it is
+    /// applied, so a hand-edited value can't make the interface unusable.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+}
+
+/// Serde default for [`SettingsConfig::ui_scale`]: `f32`'s `Default` is 0.
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -178,6 +188,7 @@ impl Default for SettingsConfig {
             output_alpha: AlphaOutputMode::default(),
             classic_layout: true,
             output_display: None,
+            ui_scale: 1.0,
         }
     }
 }
@@ -319,6 +330,14 @@ mod tests {
         let json = r#"{"version":1,"theme":"Dark"}"#;
         let c: SettingsConfig = serde_json::from_str(json).unwrap();
         assert!(c.auto_reconnect);
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_full_size_when_missing() {
+        // A bare #[serde(default)] would load 0 %, and egui draws nothing at zoom 0.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ui_scale, 1.0);
     }
 
     #[test]
