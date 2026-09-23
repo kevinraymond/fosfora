@@ -32,9 +32,9 @@
   Master, and the trama chain editor now opens there instead of floating over it.
 
 - **Selecting a layer no longer changes the post-processing.** Bloom, vignette, grain
-  and tonemap belong to the preset: an effect's own settings are used when it is the
-  only layer, and on a larger stack Master offers each layer's settings with one
-  click. Presets load exactly as saved, and editing post-processing now marks the
+  and tonemap belong to the preset: an effect's recommended look is used when it is
+  the only layer, and on a larger stack Master can reset to any effect's look with
+  one click. Presets load exactly as saved, and editing post-processing now marks the
   preset as changed.
 
 ## v1.39.0 — 2026-09-22

@@ -305,9 +305,7 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                // A reading width: at full width a description ran to ~130
-                // characters a line and every slider stretched across 600 px.
-                ui.set_max_width(INSPECTOR_MAX_WIDTH);
+                inspector_width(ui);
                 if stack_panel::master_selected(ui.ctx()) {
                     master_inspector(ui, s);
                 } else {
@@ -319,6 +317,15 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
 
 /// Widest the inspector's content gets, however wide its column is.
 const INSPECTOR_MAX_WIDTH: f32 = 720.0;
+
+/// Hold the inspector to a reading width: at full width a description ran to
+/// ~130 characters a line and every slider stretched across 600 px. `min()`
+/// because a bare `set_max_width` inside a ScrollArea acts as a MINIMUM too —
+/// the content stayed 720 px however narrow the column got, and clipped every
+/// row's right-hand buttons.
+fn inspector_width(ui: &mut egui::Ui) {
+    ui.set_max_width(ui.available_width().min(INSPECTOR_MAX_WIDTH));
+}
 
 /// The post-processing stages switched on, in words, for Master's row.
 fn postfx_on(pp: &PostProcessDef) -> Vec<&'static str> {
@@ -533,48 +540,48 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
     }
 }
 
-/// Where Master's post-processing came from, and the effects' own settings on
-/// offer. Each effect ships a suggestion; one loaded onto the only layer is
-/// adopted, and on a stack of several nothing changes until you pick one here.
+/// Where Master's post-processing came from, and the way back to an effect's
+/// recommended look. Post-processing belongs to Master alone; what an effect
+/// contributes is the block its author wrote into its `.pfx` — adopted by
+/// itself when the effect is the only layer, and offered here otherwise.
 fn postfx_source(ui: &mut egui::Ui, s: &ShellState<'_>) {
     let tc = theme_colors(ui.ctx());
-    let effect_layers: Vec<(usize, &crate::gpu::layer::LayerInfo)> = s
-        .layers
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| !l.is_media && l.effect_index.is_some())
-        .collect();
-    let matching: Vec<&str> = effect_layers
-        .iter()
-        .filter(|(i, _)| s.postfx_matches.get(*i).copied().unwrap_or(false))
-        .map(|(_, l)| stack_panel::layer_name(l))
-        .collect();
-    let source = match matching.as_slice() {
-        [] => "Saved with this preset".to_string(),
-        [one] => format!("{one}'s own settings"),
-        many => format!("the settings {} share", many.join(" and ")),
+    // One entry per effect that recommends a look: an effect with no
+    // post-processing block would "recommend" plain defaults, and two layers
+    // of the same effect recommend the same thing once.
+    let mut effects: Vec<(usize, &str, bool)> = Vec::new();
+    for (i, l) in s.layers.iter().enumerate() {
+        let Some(fx) = l.effect_index.and_then(|e| s.effect_loader.effects.get(e)) else {
+            continue;
+        };
+        if l.is_media || fx.postprocess.is_none() || effects.iter().any(|e| e.1 == fx.name) {
+            continue;
+        }
+        let matches = s.postfx_matches.get(i).copied().unwrap_or(false);
+        effects.push((i, fx.name.as_str(), matches));
+    }
+    let source = match effects.iter().find(|e| e.2) {
+        Some((_, name, _)) => format!("Matches {name}'s recommended look."),
+        None => "This preset's own settings.".to_string(),
     };
     ui.label(
-        egui::RichText::new(format!(
-            "Using {source}. Selecting a layer never changes it."
-        ))
-        .size(12.0)
-        .color(tc.text_secondary),
+        egui::RichText::new(format!("{source} Selecting a layer never changes them."))
+            .size(12.0)
+            .color(tc.text_secondary),
     );
-    let offers: Vec<_> = effect_layers
-        .iter()
-        .filter(|(i, _)| !s.postfx_matches.get(*i).copied().unwrap_or(true))
-        .collect();
+    let offers: Vec<_> = effects.iter().filter(|e| !e.2).collect();
     if !offers.is_empty() {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Use the settings of").size(12.0));
-            for (i, l) in offers {
+            ui.label(egui::RichText::new("Reset to an effect's recommended look:").size(12.0));
+            for &&(i, name, _) in &offers {
                 if ui
-                    .small_button(stack_panel::layer_name(l))
-                    .on_hover_text("Replace Master's post-processing with this effect's own")
+                    .small_button(name)
+                    .on_hover_text(format!(
+                        "{name}'s effect file recommends its own post-processing. \
+                         Copy it to Master, replacing the settings below."
+                    ))
                     .clicked()
                 {
-                    let i = *i;
                     ui.ctx().data_mut(|d| {
                         d.insert_temp(egui::Id::new("adopt_layer_postprocess"), i);
                     });
@@ -776,4 +783,78 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                 );
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Lay a parameter-style row out in the inspector's frame, in a window
+    /// `w` wide. Returns (how far the row's right-hand button reaches past the
+    /// column, how wide the row is).
+    fn row_extent(w: f32) -> (f32, f32) {
+        let ctx = Context::default();
+        crate::ui::theme::colors::set_theme_colors(
+            &ctx,
+            crate::ui::theme::colors::ThemeColors::dark(),
+        );
+        let mut out = (0.0, 0.0);
+        // A few passes: egui settles sizes over frames.
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(w, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(panel_frame(egui::Color32::BLACK))
+                    .show(ctx, |ui| {
+                        let edge = ui.max_rect().right();
+                        ScrollArea::vertical().show(ui, |ui| {
+                            inspector_width(ui);
+                            let mut v = 0.5f32;
+                            let row = ui.horizontal(|ui| {
+                                ui.label("splat_force");
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let o = ui.button("O");
+                                        ui.spacing_mut().slider_width = ui.available_width();
+                                        ui.add(egui::Slider::new(&mut v, 0.0..=1.0));
+                                        o.rect.right()
+                                    },
+                                )
+                                .inner
+                            });
+                            out = (row.inner - edge, row.response.rect.width());
+                        });
+                    });
+            });
+        }
+        out
+    }
+
+    // Kevin narrowed the middle column and each parameter row's "O" button
+    // went under its edge. A bare `set_max_width(720)` inside a ScrollArea
+    // held the content at 720 px however narrow the column got. Put the bare
+    // form back in `inspector_width` and the first assertion fails by exactly
+    // what the column lacks.
+    #[test]
+    fn inspector_rows_fit_the_column_and_stop_at_a_reading_width() {
+        for w in [900.0, 700.0, 500.0, 300.0] {
+            let (past, _) = row_extent(w);
+            assert!(
+                past <= 0.5,
+                "at {w} px the row reaches {past:.0} px past its column"
+            );
+        }
+        let (_, width) = row_extent(1600.0);
+        assert!(
+            width <= INSPECTOR_MAX_WIDTH + 0.5,
+            "in a wide column the row is {width:.0} px, past the {INSPECTOR_MAX_WIDTH} cap"
+        );
+    }
 }
