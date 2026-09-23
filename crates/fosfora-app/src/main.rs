@@ -344,7 +344,7 @@ impl ApplicationHandler for FosforaApp {
                 // Point egui at the display target on the first frame; resizes
                 // re-point it from App::resize.
                 if app.egui_overlay.display_tex.is_none() {
-                    let view = app.display.view.clone();
+                    let view = app.display_view_for_egui();
                     app.egui_overlay.set_display_texture(&app.gpu.device, &view);
                 }
 

@@ -53,8 +53,6 @@ pub struct StackPictures<'a> {
     /// `None` until the first frame registers them — rows then draw an empty
     /// frame of the same size, so nothing jumps when they arrive.
     pub thumbs: Option<&'a LayerThumbs>,
-    /// The finished output, for Master's row.
-    pub output: Option<TextureId>,
     /// Width over height of the output; the thumbnails are drawn at it.
     pub aspect: f32,
 }
@@ -166,7 +164,11 @@ pub fn draw_stack(
     } else {
         "the final output"
     };
-    let master_pic = if alone { None } else { pics.output };
+    let master_pic = if alone {
+        None
+    } else {
+        pics.tex(ThumbKind::Master, 0)
+    };
     let resp = row(
         ui,
         "v2_row_master",

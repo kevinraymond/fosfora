@@ -427,13 +427,11 @@ impl App {
 
         // Display target: the finished frame, in the surface's own format so the
         // blit to the swapchain is a straight copy.
-        let display = RenderTarget::new(
+        let display = Self::new_display(
             &gpu.device,
             gpu.surface_config.width,
             gpu.surface_config.height,
             gpu.format,
-            1.0,
-            "display",
         );
 
         let shader_watcher = ShaderWatcher::new();
@@ -651,15 +649,8 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
-        self.display = RenderTarget::new(
-            &self.gpu.device,
-            width,
-            height,
-            self.gpu.format,
-            1.0,
-            "display",
-        );
-        let display_view = self.display.view.clone();
+        self.display = Self::new_display(&self.gpu.device, width, height, self.gpu.format);
+        let display_view = self.display_view_for_egui();
         self.egui_overlay
             .set_display_texture(&self.gpu.device, &display_view);
         self.trama.resize(width, height);
@@ -3192,6 +3183,31 @@ impl App {
         crate::gpu::layer::ChainBadge::of(&self.trama.master)
     }
 
+    /// The display target: the finished frame, in the surface's own format so
+    /// the blit to the swapchain is a straight copy — and viewable without its
+    /// `-srgb` suffix, for [`Self::display_view_for_egui`].
+    fn new_display(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> RenderTarget {
+        let plain = format.remove_srgb_suffix();
+        let extra: &[wgpu::TextureFormat] = if plain == format { &[] } else { &[plain] };
+        RenderTarget::new_with_view_formats(device, width, height, format, 1.0, "display", extra)
+    }
+
+    /// The finished frame as egui must sample it: WITHOUT the `-srgb`
+    /// decode. egui-wgpu treats every sampled texture as gamma-encoded and
+    /// converts it to linear itself (`fs_main_linear_framebuffer`), so an
+    /// `-srgb` view is decoded twice — the output preview read darker and
+    /// more contrasty than the real output, much like the tonemap. The same
+    /// trap the trama previews document.
+    pub fn display_view_for_egui(&self) -> wgpu::TextureView {
+        self.display
+            .view_as(self.display.format.remove_srgb_suffix())
+    }
+
     /// Master post-processing, as a preset saves it.
     pub fn current_postprocess(&self) -> PostProcessDef {
         self.master_postprocess.clone()
@@ -3668,6 +3684,15 @@ impl App {
                 self.settings.classic_layout || !self.egui_overlay.visible,
                 self.settings.theme.colors().canvas,
             );
+            if tap_thumbs {
+                self.layer_thumbs.tap(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.display.view,
+                    crate::gpu::layer_thumbs::ThumbKind::Master,
+                    0,
+                );
+            }
             // Second output window: the same finished frame, full-window, with
             // no interface over it (#3122).
             if let Some((ref frame, ref view)) = output_frame {
@@ -3855,6 +3880,16 @@ impl App {
                 self.settings.classic_layout || !self.egui_overlay.visible,
                 self.settings.theme.colors().canvas,
             );
+            // Master's row picture, from the finished frame (#3123).
+            if tap_thumbs {
+                self.layer_thumbs.tap(
+                    &self.gpu.device,
+                    scope.encoder(),
+                    &self.display.view,
+                    crate::gpu::layer_thumbs::ThumbKind::Master,
+                    0,
+                );
+            }
             // Second output window: the same finished frame, full-window, with
             // no interface over it (#3122). Inside the `display-blit` scope so
             // the profiler counts what the second present costs.

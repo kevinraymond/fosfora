@@ -49,6 +49,20 @@ impl RenderTarget {
         scale: f32,
         label: &str,
     ) -> Self {
+        Self::new_with_view_formats(device, width, height, format, scale, label, &[])
+    }
+
+    /// [`Self::new`], also viewable as each of `view_formats` (see
+    /// [`Self::view_as`]).
+    pub fn new_with_view_formats(
+        device: &Device,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        scale: f32,
+        label: &str,
+        view_formats: &[TextureFormat],
+    ) -> Self {
         let w = ((width as f32 * scale) as u32).max(1);
         let h = ((height as f32 * scale) as u32).max(1);
 
@@ -64,7 +78,7 @@ impl RenderTarget {
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
+            view_formats,
         });
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -88,6 +102,14 @@ impl RenderTarget {
             scale,
             id: NEXT_TARGET_ID.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// A view of the texture in another format it was created viewable as.
+    pub fn view_as(&self, format: TextureFormat) -> TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            ..Default::default()
+        })
     }
 
     pub fn resize(&mut self, device: &Device, width: u32, height: u32) {

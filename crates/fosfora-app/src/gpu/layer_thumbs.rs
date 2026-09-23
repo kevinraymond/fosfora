@@ -68,6 +68,12 @@ pub enum ThumbKind {
     Blended,
     /// This layer alone, after its chain, before blending.
     Alone,
+    /// Master's row: the finished output, after post-processing. One slot.
+    /// Through this blit rather than egui sampling the display target
+    /// directly, so all rows are filtered alike — Master's row first drew the
+    /// full frame with one bilinear tap per texel and a particle field thinned
+    /// into sparse dots beside the layer rows' averaged ones.
+    Master,
 }
 
 struct Thumb {
@@ -112,6 +118,8 @@ pub struct LayerThumbs {
     sampler: Sampler,
     blended: Vec<Thumb>,
     alone: Vec<Thumb>,
+    /// Length 1; a Vec so it shares `slots` with the other two.
+    master: Vec<Thumb>,
 }
 
 impl LayerThumbs {
@@ -192,6 +200,7 @@ impl LayerThumbs {
             sampler,
             blended: slots("layer-thumb-blended"),
             alone: slots("layer-thumb-alone"),
+            master: vec![Thumb::new(device, "layer-thumb-master")],
         }
     }
 
@@ -199,13 +208,19 @@ impl LayerThumbs {
         match kind {
             ThumbKind::Blended => &self.blended,
             ThumbKind::Alone => &self.alone,
+            ThumbKind::Master => &self.master,
         }
     }
 
     /// Register every target with egui. Idempotent; the targets never change
     /// identity, so after the first call this does nothing.
     pub fn register(&mut self, device: &Device, renderer: &mut egui_wgpu::Renderer) {
-        for thumb in self.blended.iter_mut().chain(self.alone.iter_mut()) {
+        let all = self
+            .blended
+            .iter_mut()
+            .chain(&mut self.alone)
+            .chain(&mut self.master);
+        for thumb in all {
             if thumb.tex_id.is_none() {
                 thumb.tex_id = Some(renderer.register_native_texture(
                     device,

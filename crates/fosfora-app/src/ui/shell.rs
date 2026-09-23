@@ -257,7 +257,6 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                 widgets::section(ui, "v2_layers", "Stack", Some(&layer_badge), true, |ui| {
                     let pics = stack_panel::StackPictures {
                         thumbs: Some(s.layer_thumbs),
-                        output: s.display.map(|(t, _)| t),
                         aspect: s.display.map_or(16.0 / 9.0, |(_, a)| a),
                     };
                     stack_panel::draw_stack(
