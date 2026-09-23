@@ -17,6 +17,7 @@ use egui::{Color32, RichText, Sense, Stroke, TextureId, Ui, UiBuilder, Vec2};
 
 use crate::gpu::layer::{ChainBadge, LayerInfo};
 use crate::gpu::layer_thumbs::{LayerThumbs, ThumbKind};
+use crate::ui::panels::catalog_panel::{self, CatalogDrop, EffectDrag};
 use crate::ui::theme::colors::theme_colors;
 
 const MAX_LAYERS: usize = crate::bindings::catalog::MAX_LAYERS;
@@ -36,6 +37,11 @@ pub fn master_selected(ctx: &egui::Context) -> bool {
 
 fn select_master(ctx: &egui::Context, on: bool) {
     ctx.data_mut(|d| d.insert_temp(master_id(), on));
+}
+
+/// Put the inspector on the selected layer rather than Master.
+pub fn show_layer_in_inspector(ctx: &egui::Context) {
+    select_master(ctx, false);
 }
 
 fn select_layer(ctx: &egui::Context, i: usize) {
@@ -191,6 +197,8 @@ pub fn draw_stack(
     if resp.clicked() {
         select_master(&ctx, true);
     }
+    // Master has no effect of its own: an effect dropped on it goes on top.
+    drop_target(ui, &resp, layers, |_| Some(CatalogDrop::Insert(0)));
     if roomy {
         let line = if postfx_on.is_empty() {
             "Master passes the full blend through".to_string()
@@ -311,6 +319,7 @@ pub fn draw_stack(
             select_layer(&ctx, i);
         }
         resp.context_menu(|ui| row_menu(ui, layers, i));
+        drop_target(ui, &resp, layers, |y| Some(row_zone(resp.rect, y, i)));
 
         if roomy && layer.enabled && !is_bottom {
             flow_line(
@@ -325,7 +334,10 @@ pub fn draw_stack(
     }
 
     ui.add_space(6.0);
-    add_buttons(ui, layers.len());
+    let below = ui.scope(|ui| add_buttons(ui, layers.len())).response;
+    drop_target(ui, &below, layers, |_| {
+        Some(CatalogDrop::Insert(layers.len()))
+    });
     ui.add_space(4.0);
     ui.label(
         RichText::new(if alone {
@@ -379,56 +391,68 @@ fn row(
     } else {
         tc.text_primary
     };
-    ui.push_id(id, |ui| {
-        ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
-            egui::Frame::new()
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(4.0)
-                .inner_margin(egui::Margin::same(6))
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.horizontal(|ui| {
-                        ui.add_sized(
-                            [18.0, 18.0],
-                            egui::Label::new(
-                                RichText::new(text.badge)
-                                    .size(12.0)
-                                    .strong()
-                                    .color(tc.text_secondary),
-                            ),
-                        );
-                        picture(ui, &pic, dimmed);
-                        ui.add_space(4.0);
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(text.name)
-                                    .size(14.0)
-                                    .strong()
-                                    .color(text_color),
+    let resp = ui
+        .push_id(id, |ui| {
+            ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
+                egui::Frame::new()
+                    .fill(fill)
+                    .stroke(stroke)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::same(6))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [18.0, 18.0],
+                                egui::Label::new(
+                                    RichText::new(text.badge)
+                                        .size(12.0)
+                                        .strong()
+                                        .color(tc.text_secondary),
+                                ),
                             );
-                            ui.label(RichText::new(text.sub).size(12.0).color(tc.text_secondary));
-                            ui.label(
-                                RichText::new(text.what)
-                                    .size(11.0)
-                                    .monospace()
-                                    .color(tc.text_secondary),
+                            picture(ui, &pic, dimmed);
+                            ui.add_space(4.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(text.name)
+                                        .size(14.0)
+                                        .strong()
+                                        .color(text_color),
+                                );
+                                ui.label(
+                                    RichText::new(text.sub).size(12.0).color(tc.text_secondary),
+                                );
+                                ui.label(
+                                    RichText::new(text.what)
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(tc.text_secondary),
+                                );
+                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                trailing,
                             );
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing);
                     });
-                });
+            })
+            .response
         })
-        .response
-    })
-    .inner
+        .inner;
+    // Where each row is, for the drag-and-drop test to aim at.
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new(id).with("rect"), resp.rect));
+    resp
 }
 
 fn picture(ui: &mut Ui, pic: &Picture, dimmed: bool) {
     let tc = theme_colors(ui.ctx());
-    // The structure column is 600-800 px; the picture is what the row is for,
-    // so it takes the width the text does not need.
-    let w = if pic.compact { 168.0 } else { 224.0 };
+    // The picture is what the row is for, so it takes what the text does not
+    // need — up to a cap, and shrinking with the column on a small window.
+    let cap = if pic.compact { 168.0 } else { 224.0 };
+    let w = (ui.available_width() * 0.42).clamp(96.0, cap).round();
     let size = Vec2::new(w, (w / pic.aspect.max(0.01)).round());
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     if !ui.is_rect_visible(rect) {
@@ -641,5 +665,105 @@ fn clear_all(ui: &mut Ui, count: usize) {
     }
     if armed {
         ui.ctx().request_repaint();
+    }
+}
+
+/// Which part of a layer row an effect is dropped on: the middle replaces the
+/// layer's effect, the top or bottom edge adds a layer above or below it.
+fn row_zone(rect: egui::Rect, y: f32, i: usize) -> CatalogDrop {
+    let edge = (rect.height() * 0.25).min(28.0);
+    if y < rect.top() + edge {
+        CatalogDrop::Insert(i)
+    } else if y > rect.bottom() - edge {
+        CatalogDrop::Insert(i + 1)
+    } else {
+        CatalogDrop::Replace(i)
+    }
+}
+
+/// Why a drop could not happen, or `None` when it can.
+fn refusal(layers: &[LayerInfo], at: CatalogDrop) -> Option<&'static str> {
+    match at {
+        CatalogDrop::Replace(i) if layers.get(i).is_some_and(|l| l.locked) => {
+            Some("This layer is locked")
+        }
+        CatalogDrop::Insert(_) if layers.len() >= MAX_LAYERS => Some("The stack is full"),
+        _ => None,
+    }
+}
+
+/// While a catalog effect is dragged over `resp`, show where it would land —
+/// an outline for "replace", a bar for "new layer here", each with words —
+/// and send the drop when it is released.
+fn drop_target(
+    ui: &Ui,
+    resp: &egui::Response,
+    layers: &[LayerInfo],
+    zone: impl FnOnce(f32) -> Option<CatalogDrop>,
+) {
+    let ctx = ui.ctx();
+    if !resp.contains_pointer() || !egui::DragAndDrop::has_payload_of_type::<EffectDrag>(ctx) {
+        return;
+    }
+    let Some(pos) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    let Some(at) = zone(pos.y) else {
+        return;
+    };
+    let Some(drag) = egui::DragAndDrop::payload::<EffectDrag>(ctx) else {
+        return;
+    };
+    let refused = refusal(layers, at);
+    let tc = theme_colors(ctx);
+    let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("v2_drop_hint"));
+    let painter = ctx.layer_painter(layer);
+    let r = resp.rect;
+    let (anchor, words) = match (refused, at) {
+        (Some(why), _) => (r.center(), why.to_string()),
+        (None, CatalogDrop::Replace(i)) => {
+            painter.rect_stroke(
+                r,
+                4.0,
+                Stroke::new(3.0_f32, tc.text_primary),
+                egui::StrokeKind::Inside,
+            );
+            let on = layers.get(i).map_or("this layer", |l| layer_name(l));
+            (r.center(), format!("Replace {on} with {}", drag.name))
+        }
+        (None, CatalogDrop::Insert(_)) => {
+            // Above the row for its top edge (and for Master, and the add
+            // buttons at the bottom), below it for its bottom edge.
+            let y = if pos.y > r.center().y && r.height() > 40.0 {
+                r.bottom() + 1.0
+            } else {
+                r.top() - 1.0
+            };
+            painter.line_segment(
+                [egui::pos2(r.left(), y), egui::pos2(r.right(), y)],
+                Stroke::new(4.0_f32, tc.text_primary),
+            );
+            (
+                egui::pos2(r.center().x, y),
+                format!("New layer here: {}", drag.name),
+            )
+        }
+    };
+    let galley = painter.layout_no_wrap(words, egui::FontId::proportional(13.0), tc.text_primary);
+    let pill = egui::Rect::from_center_size(anchor, galley.size() + Vec2::new(16.0, 8.0));
+    painter.rect_filled(pill, 4.0, tc.panel);
+    painter.rect_stroke(
+        pill,
+        4.0,
+        Stroke::new(1.0_f32, tc.text_primary),
+        egui::StrokeKind::Outside,
+    );
+    painter.galley(pill.min + Vec2::new(8.0, 4.0), galley, tc.text_primary);
+
+    if refused.is_none() && ctx.input(|i| i.pointer.any_released()) {
+        if let Some(drag) = egui::DragAndDrop::take_payload::<EffectDrag>(ctx) {
+            select_master(ctx, false);
+            catalog_panel::send_drop(ctx, drag.name.clone(), at);
+        }
     }
 }

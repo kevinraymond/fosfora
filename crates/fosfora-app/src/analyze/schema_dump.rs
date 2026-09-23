@@ -74,7 +74,7 @@ pub struct EffectCapability {
     pub audio_mappings: Vec<AudioMapping>,
     pub pass_count: usize,
     pub has_particles: bool,
-    /// Browser grouping bucket (`"effect"` default, `"overlay"` for the HUD family).
+    /// Catalog family (`"overlay"`, `"fluid"`, …; `"effect"` = none).
     pub category: String,
     /// Emits a meaningful alpha channel (overlay content, layerable over other sources).
     pub alpha: bool,

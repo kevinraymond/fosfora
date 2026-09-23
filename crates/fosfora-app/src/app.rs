@@ -90,6 +90,8 @@ pub struct App {
     /// The v2 layer rows' pictures (#3123): each layer alone, and the stack
     /// blended up to it. Tapped only while the workspace shell is on screen.
     pub layer_thumbs: crate::gpu::layer_thumbs::LayerThumbs,
+    /// The v2 catalog's effect pictures, decoded on first use (#3124).
+    pub catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs,
     /// The second output window, when one is open (#3122). It presents the
     /// display target above and carries no interface. Opened and closed from
     /// `main.rs`, where the `ActiveEventLoop` that can create a window lives.
@@ -555,6 +557,7 @@ impl App {
             master_postprocess: PostProcessDef::default(),
             display,
             layer_thumbs,
+            catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs::shipped(),
             output_window: None,
             displays: Vec::new(),
             volumetric_enabled: false,
@@ -1797,6 +1800,43 @@ impl App {
             log::info!("Dropped {dropped} preset binding(s) targeting layer {layer_idx}");
         }
         self.load_effect_on_layer(layer_idx, index);
+    }
+
+    /// Put a catalog effect on the stack (#3124): onto a layer, replacing its
+    /// effect, or as a new layer at an index. Either way the layer it lands on
+    /// is selected, and — a user's pick, like [`Self::load_effect`] — starts
+    /// without the preset bindings that aimed at the effect it replaced.
+    /// Returns false when nothing changed: a locked layer, a full stack.
+    pub fn place_effect(
+        &mut self,
+        effect_index: usize,
+        at: crate::ui::panels::catalog_panel::CatalogDrop,
+    ) -> bool {
+        use crate::ui::panels::catalog_panel::CatalogDrop;
+        if effect_index >= self.effect_loader.effects.len() {
+            return false;
+        }
+        match at {
+            CatalogDrop::Replace(i) => {
+                if self.layer_stack.layers.get(i).is_none_or(|l| l.locked) {
+                    return false;
+                }
+                self.layer_stack.active_layer = i;
+            }
+            CatalogDrop::Insert(pos) => {
+                let n = self.layer_stack.layers.len();
+                self.add_layer();
+                if self.layer_stack.layers.len() == n {
+                    return false;
+                }
+                // add_layer appends at the bottom and selects it; the move
+                // carries the selection along.
+                self.move_layer(n, pos.min(n));
+                self.layer_stack.active_layer = pos.min(n);
+            }
+        }
+        self.load_effect(effect_index);
+        true
     }
 
     /// Load an effect on a specific layer.

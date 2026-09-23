@@ -3,6 +3,7 @@ pub mod audio_panel;
 pub mod binding_helpers;
 pub mod binding_matrix;
 pub mod bindings_panel;
+pub mod catalog_panel;
 pub mod effect_panel;
 pub mod helix_panel;
 pub mod lattice_panel;

@@ -31,6 +31,11 @@
   is the final output. The middle column shows whatever you select, a layer or
   Master, and the trama chain editor now opens there instead of floating over it.
 
+- In the workspace layout, **Build has a catalog of pictures along the bottom**: every
+  effect in families (Particles, Fluids, Life and growth and more), with search across
+  names and descriptions, and favorites. Click a picture to load it into the selected
+  layer, or drag it onto the stack to replace a layer's effect or add a new layer.
+
 - **Selecting a layer no longer changes the post-processing.** Bloom, vignette, grain
   and tonemap belong to the preset: an effect's recommended look is used when it is
   the only layer, and on a larger stack Master can reset to any effect's look with

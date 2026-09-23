@@ -14,7 +14,7 @@
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
-    audio_panel, effect_panel, layer_panel, media_panel, midi_panel, osc_panel,
+    audio_panel, catalog_panel, layer_panel, media_panel, midi_panel, osc_panel,
     output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, settings_panel,
     stack_panel, status_bar, triggers_panel, volumetric_panel, web_panel,
 };
@@ -105,6 +105,8 @@ pub struct ShellState<'a> {
     pub postfx_matches: &'a [bool],
     /// The finished frame and its aspect ratio, drawn as the output preview.
     pub display: Option<(egui::TextureId, f32)>,
+    /// The catalog's pictures (#3124).
+    pub catalog_thumbs: &'a mut crate::ui::catalog_thumbs::CatalogThumbs,
 }
 
 /// Draw the workspace shell. Returns without drawing when the overlay is
@@ -240,15 +242,48 @@ fn panel_frame(fill: egui::Color32) -> Frame {
     }
 }
 
+/// How wide the side columns are for a window `w` points wide.
+///
+/// Fixed floors (600 left, 420 right) left a ~1200 px window with 150 px for
+/// the inspector between them. The sides now take a share of the window and
+/// give way first, so the middle keeps at least [`MIDDLE_MIN`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Columns {
+    left_default: f32,
+    left_range: (f32, f32),
+    right: f32,
+}
+
+/// The least the middle column is left with, whatever the sides want.
+const MIDDLE_MIN: f32 = 380.0;
+
+fn columns(w: f32) -> Columns {
+    let right = (w * 0.24).clamp(260.0, 420.0);
+    let left_max = (w - right - MIDDLE_MIN).clamp(280.0, 800.0);
+    let left_min = 280.0_f32.min(left_max);
+    Columns {
+        left_default: (w * 0.36).clamp(left_min, left_max),
+        left_range: (left_min, left_max),
+        right,
+    }
+}
+
 /// Build: the structure on the left, the selection's controls in the middle,
-/// the output and its audio on the right.
+/// the output and its audio on the right, and the catalog along the bottom.
 fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
-    // Wide enough for layer rows to breathe: at 300 px they were cramped while
-    // the middle column had width to spare. Resizable inside a range rather
-    // than fixed, since the right size depends on the window.
+    let cols = columns(ctx.content_rect().width());
+    // First, so it runs the full width under all three columns. Not while
+    // the chain editor is docked: the canvas wants the height, and effects
+    // go onto layers, not into chains.
+    if !s.trama_docked {
+        catalog_drawer(ctx, s, fill);
+    }
+
+    // Resizable inside a range rather than fixed, since the right size
+    // depends on the window.
     egui::SidePanel::left("v2_structure")
-        .default_width(680.0)
-        .width_range(600.0..=800.0)
+        .default_width(cols.left_default)
+        .width_range(cols.left_range.0..=cols.left_range.1)
         .resizable(true)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
@@ -269,21 +304,13 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                     );
                 });
                 // Closed to start: in Build the stack is what this column is
-                // for, and both are a click away.
+                // for.
                 preset_panel::draw_preset_section_open(ui, s.preset_store, false);
-                let fx_badge = format!("{}", s.effect_loader.effects.len());
-                widgets::section(ui, "v2_catalog", "Catalog", Some(&fx_badge), false, |ui| {
-                    effect_panel::draw_effect_panel(
-                        ui,
-                        s.effect_loader,
-                        &s.settings.favorite_effects,
-                    );
-                });
             });
         });
 
     egui::SidePanel::right("v2_output")
-        .exact_width(420.0)
+        .exact_width(cols.right)
         .resizable(false)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
@@ -311,6 +338,85 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                     layer_inspector(ui, s);
                 }
             });
+        });
+}
+
+/// The catalog along the bottom of Build (#3124). Its height is the user's to
+/// drag; closed, it is one line that says how to open it.
+fn catalog_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
+    let tc = theme_colors(ctx);
+    let open_id = egui::Id::new("v2_catalog_open");
+    let open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(true);
+    let visible = s.effect_loader.effects.iter().filter(|e| !e.hidden).count();
+
+    let header = |ui: &mut egui::Ui| {
+        let r = ui
+            .horizontal(|ui| {
+                widgets::draw_section_arrow(ui, open, tc.text_secondary);
+                ui.label(
+                    egui::RichText::new("CATALOG")
+                        .size(12.0)
+                        .strong()
+                        .color(tc.text_secondary),
+                );
+                ui.label(
+                    egui::RichText::new(format!("{visible} effects"))
+                        .size(12.0)
+                        .color(tc.text_secondary),
+                );
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(if open {
+                        "Click a picture to load it into the selected layer, or drag it onto the stack."
+                    } else {
+                        "Click to open"
+                    })
+                    .size(12.0)
+                    .color(tc.text_secondary),
+                );
+            })
+            .response
+            .interact(egui::Sense::click());
+        if r.clicked() {
+            ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
+        }
+    };
+
+    let frame = Frame {
+        fill,
+        inner_margin: Margin::symmetric(10, 6),
+        ..Default::default()
+    };
+    if !open {
+        egui::TopBottomPanel::bottom("v2_catalog_closed")
+            .exact_height(30.0)
+            .frame(frame)
+            .show(ctx, header);
+        return;
+    }
+    let screen_h = ctx.content_rect().height();
+    egui::TopBottomPanel::bottom("v2_catalog")
+        .default_height(340.0)
+        .height_range(160.0..=(screen_h * 0.6).max(200.0))
+        .resizable(true)
+        .frame(frame)
+        .show(ctx, |ui| {
+            header(ui);
+            ui.add_space(4.0);
+            let active = s.layers.get(s.active_layer);
+            let target = catalog_panel::Target {
+                current: active.and_then(|l| l.effect_index),
+                locked: active.is_some_and(|l| l.locked),
+                can_add: s.layers.len() < crate::bindings::catalog::MAX_LAYERS,
+                active: s.active_layer,
+            };
+            catalog_panel::draw_catalog(
+                ui,
+                s.effect_loader,
+                &s.settings.favorite_effects,
+                s.catalog_thumbs,
+                &target,
+            );
         });
 }
 
@@ -639,9 +745,10 @@ fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
 
 /// Perform: presets on the left, the output large in the middle.
 fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
+    let cols = columns(ctx.content_rect().width());
     egui::SidePanel::left("v2_presets")
-        .default_width(680.0)
-        .width_range(600.0..=800.0)
+        .default_width(cols.left_default)
+        .width_range(cols.left_range.0..=cols.left_range.1)
         .resizable(true)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
@@ -834,6 +941,25 @@ mod tests {
             });
         }
         out
+    }
+
+    // Kevin's ~1200 px window left the inspector ~150 px between a 600 px
+    // left floor and a fixed 420 px right. Put those floors back in
+    // `columns` and the first assertion fails.
+    #[test]
+    fn the_middle_column_keeps_its_width_on_a_small_window() {
+        for w in [1100.0, 1206.0, 1440.0, 1920.0, 3840.0] {
+            let c = columns(w);
+            let middle = w - c.left_range.1 - c.right;
+            assert!(
+                middle >= MIDDLE_MIN - 0.5,
+                "at {w} px the middle column can shrink to {middle:.0} px"
+            );
+            assert!(c.left_range.0 <= c.left_default && c.left_default <= c.left_range.1);
+        }
+        // A big window still gets the full-size columns.
+        let c = columns(1920.0);
+        assert!(c.right >= 420.0 - 0.5 && c.left_default >= 650.0, "{c:?}");
     }
 
     // Kevin narrowed the middle column and each parameter row's "O" button

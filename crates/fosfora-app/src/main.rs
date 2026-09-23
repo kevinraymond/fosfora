@@ -1001,6 +1001,7 @@ impl ApplicationHandler for FosforaApp {
                                             / app.display.height.max(1) as f32,
                                     )
                                 }),
+                                catalog_thumbs: &mut app.catalog_thumbs,
                             };
                             crate::ui::shell::draw_shell(
                                 &ctx,
@@ -2076,6 +2077,28 @@ impl ApplicationHandler for FosforaApp {
                     if !active_locked {
                         app.load_effect(idx);
                         app.preset_store.mark_dirty();
+                    }
+                }
+
+                // A catalog effect dropped on the stack, or added from its
+                // menu (#3124). By name: the list may have been rescanned.
+                let catalog_drop: Option<(String, crate::ui::panels::catalog_panel::CatalogDrop)> =
+                    app.egui_overlay.context().data_mut(|d| {
+                        let id = egui::Id::new(crate::ui::panels::catalog_panel::DROP_INTENT);
+                        let v = d.get_temp(id);
+                        d.remove::<(String, crate::ui::panels::catalog_panel::CatalogDrop)>(id);
+                        v
+                    });
+                if let Some((name, at)) = catalog_drop {
+                    let idx = app
+                        .effect_loader
+                        .effects
+                        .iter()
+                        .position(|e| e.name == name);
+                    if let Some(idx) = idx {
+                        if app.place_effect(idx, at) {
+                            app.preset_store.mark_dirty();
+                        }
                     }
                 }
 
