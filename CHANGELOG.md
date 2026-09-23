@@ -26,6 +26,17 @@
   picture. Pick the display under *Outputs* (Classic) or *Setup ▸ Output*; the frame
   keeps its own aspect ratio instead of stretching, and Esc closes the window.
 
+- In the workspace layout, **Build shows the layer stack as pictures**: each row is the
+  stack blended up to that layer, with the layer alone as an inset, and Master on top
+  is the final output. The middle column shows whatever you select, a layer or
+  Master, and the trama chain editor now opens there instead of floating over it.
+
+- **Selecting a layer no longer changes the post-processing.** Bloom, vignette, grain
+  and tonemap belong to the preset: an effect's own settings are used when it is the
+  only layer, and on a larger stack Master offers each layer's settings with one
+  click. Presets load exactly as saved, and editing post-processing now marks the
+  preset as changed.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

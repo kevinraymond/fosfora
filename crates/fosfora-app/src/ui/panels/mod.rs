@@ -26,6 +26,7 @@ pub mod settings_panel;
 pub mod shader_editor;
 #[cfg(all(target_os = "windows", feature = "spout"))]
 pub mod spout_panel;
+pub mod stack_panel;
 pub mod status_bar;
 #[cfg(all(target_os = "macos", feature = "syphon"))]
 pub mod syphon_panel;

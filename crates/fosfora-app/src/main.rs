@@ -247,12 +247,19 @@ impl ApplicationHandler for FosforaApp {
                         // but the pointer is usually over the main window when
                         // someone wants it gone, and there it offered to quit
                         // instead.
+                        //
+                        // The workspace's docked chain editor comes before it:
+                        // it fills Build's middle column, and Esc is the way
+                        // back to the inspector it replaced.
                         if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
                             app.binding_matrix.armed = None;
                         } else if app.binding_matrix.open {
                             app.binding_matrix.open = false;
                         } else if !app.egui_overlay.visible {
                             app.egui_overlay.toggle_visible();
+                        } else if app.trama.canvas_open && !app.settings.classic_layout {
+                            // The docked chain editor: back to the inspector.
+                            app.trama.canvas_open = false;
                         } else if app.output_window.is_some() {
                             app.close_output_window();
                         } else if !app.shader_editor.open {
@@ -320,6 +327,14 @@ impl ApplicationHandler for FosforaApp {
 
                 // Collect layer info snapshots before UI (avoids borrow conflicts)
                 let layer_infos = app.layer_infos();
+                // Which layers' effects suggest exactly the post-processing
+                // Master has now — the Master inspector's provenance line.
+                let postfx_matches: Vec<bool> = app
+                    .layer_stack
+                    .layers
+                    .iter()
+                    .map(|l| l.postprocess == app.master_postprocess)
+                    .collect();
                 let master_chain = app.master_chain_badge();
                 let active_layer = app.layer_stack.active_layer;
 
@@ -927,6 +942,26 @@ impl ApplicationHandler for FosforaApp {
                     // panel below (which mutates it by &mut) marks the preset
                     // dirty, like the other panels do.
                     let vol_before = (app.volumetric_enabled, app.volumetric_params);
+                    // Same for Master's post-processing, which no panel marks.
+                    let pp_before = app.master_postprocess.clone();
+
+                    // In the workspace the trama canvas lives in Build (#3123):
+                    // opening it from anywhere (G, a row's badge in Perform)
+                    // goes to Build, and leaving Build puts it away rather
+                    // than keeping a chain editor open that nothing shows.
+                    if !app.shader_editor.open && !app.settings.classic_layout {
+                        use crate::ui::shell::Workspace;
+                        let was_id = egui::Id::new("v2_trama_was_open");
+                        let was_open = ctx.data(|d| d.get_temp(was_id).unwrap_or(false));
+                        if app.trama.canvas_open && !was_open {
+                            Workspace::Build.write(&ctx);
+                        } else if app.trama.canvas_open && Workspace::read(&ctx) != Workspace::Build
+                        {
+                            app.trama.canvas_open = false;
+                        }
+                        let open = app.trama.canvas_open;
+                        ctx.data_mut(|d| d.insert_temp(was_id, open));
+                    }
 
                     // Get active layer's param_store (mutable for MIDI badges)
                     let active_params = app.layer_stack.active_mut();
@@ -939,7 +974,7 @@ impl ApplicationHandler for FosforaApp {
                                 shader_error: &shader_error,
                                 uniforms: &app.uniforms,
                                 effect_loader: &app.effect_loader,
-                                postprocess: &mut layer.postprocess,
+                                postprocess: &mut app.master_postprocess,
                                 volumetric_enabled: &mut app.volumetric_enabled,
                                 volumetric_params: &mut app.volumetric_params,
                                 particle_count,
@@ -956,6 +991,9 @@ impl ApplicationHandler for FosforaApp {
                                 particle_info,
                                 status_error: &app.status_error,
                                 settings: &app.settings,
+                                trama_docked: app.trama.canvas_open,
+                                layer_thumbs: &app.layer_thumbs,
+                                postfx_matches: &postfx_matches,
                                 display: app.egui_overlay.display_tex.map(|t| {
                                     (
                                         t,
@@ -978,7 +1016,7 @@ impl ApplicationHandler for FosforaApp {
                                 &shader_error,
                                 &app.uniforms,
                                 &app.effect_loader,
-                                &mut layer.postprocess,
+                                &mut app.master_postprocess,
                                 &mut app.volumetric_enabled,
                                 &mut app.volumetric_params,
                                 particle_count,
@@ -1008,10 +1046,13 @@ impl ApplicationHandler for FosforaApp {
                                 }),
                             );
                         }
-                        // Sync global postprocess enabled from layer
-                        app.post_process.enabled = layer.postprocess.enabled;
+                        // Sync the chain's switch from Master's post-processing
+                        app.post_process.enabled = app.master_postprocess.enabled;
                     }
                     if (app.volumetric_enabled, app.volumetric_params) != vol_before {
+                        app.preset_store.mark_dirty();
+                    }
+                    if app.master_postprocess != pp_before {
                         app.preset_store.mark_dirty();
                     }
 
@@ -1033,11 +1074,25 @@ impl ApplicationHandler for FosforaApp {
                     // TextureIds; dead ones are freed on the same call.
                     app.trama
                         .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
-                    crate::trama::ui::canvas::draw_trama_window(
-                        &ctx,
-                        &mut app.trama,
-                        &mut app.layer_stack,
-                    );
+                    app.layer_thumbs
+                        .register(&app.gpu.device, &mut app.egui_overlay.renderer);
+                    if app.settings.classic_layout || app.shader_editor.open {
+                        crate::trama::ui::canvas::draw_trama_window(
+                            &ctx,
+                            &mut app.trama,
+                            &mut app.layer_stack,
+                        );
+                    } else if app.egui_overlay.visible {
+                        // In the workspace the canvas lives in Build's middle
+                        // column, which the shell left empty for it.
+                        let fill = crate::ui::theme::colors::theme_colors(&ctx).panel;
+                        crate::trama::ui::canvas::draw_trama_docked(
+                            &ctx,
+                            &mut app.trama,
+                            &mut app.layer_stack,
+                            fill,
+                        );
+                    }
 
                     // Check if sidebar "Matrix" button was clicked
                     let matrix_open_requested = ctx.data_mut(|d| {
@@ -4049,6 +4104,17 @@ impl ApplicationHandler for FosforaApp {
                     }
                 }
 
+                // The Master inspector's offer: this layer's effect's own
+                // post-processing, adopted as Master's (#3147).
+                let adopt_pp: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("adopt_layer_postprocess")));
+                if let Some(idx) = adopt_pp {
+                    app.adopt_layer_postprocess(idx);
+                    app.preset_store.mark_dirty();
+                }
+
                 let layer_move: Option<(usize, usize)> = app
                     .egui_overlay
                     .context()
@@ -4189,9 +4255,7 @@ impl ApplicationHandler for FosforaApp {
                         }
                         TriggerAction::TogglePostProcess => {
                             app.post_process.enabled = !app.post_process.enabled;
-                            if let Some(layer) = app.layer_stack.active_mut() {
-                                layer.postprocess.enabled = app.post_process.enabled;
-                            }
+                            app.master_postprocess.enabled = app.post_process.enabled;
                         }
                         TriggerAction::ToggleOverlay => {
                             app.egui_overlay.toggle_visible();

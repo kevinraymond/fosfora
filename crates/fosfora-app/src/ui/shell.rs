@@ -16,7 +16,7 @@ use egui::{Context, Frame, Margin, ScrollArea};
 use super::panels::{
     audio_panel, effect_panel, layer_panel, media_panel, midi_panel, osc_panel,
     output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, settings_panel,
-    status_bar, triggers_panel, volumetric_panel, web_panel,
+    stack_panel, status_bar, triggers_panel, volumetric_panel, web_panel,
 };
 use super::widgets;
 use crate::audio::AudioSystem;
@@ -51,7 +51,7 @@ impl Workspace {
         (Workspace::Setup, "Setup"),
     ];
 
-    fn read(ctx: &Context) -> Self {
+    pub fn read(ctx: &Context) -> Self {
         ctx.data_mut(|d| match d.get_temp::<u8>(egui::Id::new("v2_workspace")) {
             Some(0) => Workspace::Perform,
             Some(2) => Workspace::Setup,
@@ -60,7 +60,7 @@ impl Workspace {
         })
     }
 
-    fn write(self, ctx: &Context) {
+    pub fn write(self, ctx: &Context) {
         let v: u8 = match self {
             Workspace::Perform => 0,
             Workspace::Build => 1,
@@ -96,6 +96,13 @@ pub struct ShellState<'a> {
     pub particle_info: Option<super::panels::particle_panel::ParticleInfo>,
     pub status_error: &'a Option<(String, std::time::Instant)>,
     pub settings: &'a SettingsConfig,
+    /// The trama canvas is open: Build leaves its middle column to it, and
+    /// `main.rs` draws it there after the shell (#3123).
+    pub trama_docked: bool,
+    /// The layer rows' pictures (#3123).
+    pub layer_thumbs: &'a crate::gpu::layer_thumbs::LayerThumbs,
+    /// Per layer: does its effect's own post-processing equal Master's?
+    pub postfx_matches: &'a [bool],
     /// The finished frame and its aspect ratio, drawn as the output preview.
     pub display: Option<(egui::TextureId, f32)>,
 }
@@ -247,12 +254,26 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 let layer_badge = format!("{}/{}", s.layers.len(), 8);
-                widgets::section(ui, "v2_layers", "Layers", Some(&layer_badge), true, |ui| {
-                    layer_panel::draw_layer_panel(ui, s.layers, s.active_layer, s.master_chain);
+                widgets::section(ui, "v2_layers", "Stack", Some(&layer_badge), true, |ui| {
+                    let pics = stack_panel::StackPictures {
+                        thumbs: Some(s.layer_thumbs),
+                        output: s.display.map(|(t, _)| t),
+                        aspect: s.display.map_or(16.0 / 9.0, |(_, a)| a),
+                    };
+                    stack_panel::draw_stack(
+                        ui,
+                        s.layers,
+                        s.active_layer,
+                        s.master_chain,
+                        &postfx_on(s.postprocess),
+                        &pics,
+                    );
                 });
-                preset_panel::draw_preset_section(ui, s.preset_store);
+                // Closed to start: in Build the stack is what this column is
+                // for, and both are a click away.
+                preset_panel::draw_preset_section_open(ui, s.preset_store, false);
                 let fx_badge = format!("{}", s.effect_loader.effects.len());
-                widgets::section(ui, "v2_catalog", "Catalog", Some(&fx_badge), true, |ui| {
+                widgets::section(ui, "v2_catalog", "Catalog", Some(&fx_badge), false, |ui| {
                     effect_panel::draw_effect_panel(
                         ui,
                         s.effect_loader,
@@ -277,109 +298,337 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
             });
         });
 
+    if s.trama_docked {
+        return;
+    }
     egui::CentralPanel::default()
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
-                let name = s
-                    .layers
-                    .get(s.active_layer)
-                    .map(|l| l.name.as_str())
-                    .unwrap_or("No layer");
-                ui.label(
-                    egui::RichText::new(format!("Layer {}", s.active_layer + 1))
-                        .size(11.0)
-                        .color(theme_colors(ui.ctx()).text_secondary),
-                );
-                ui.label(egui::RichText::new(name).size(20.0).strong());
-                ui.add_space(6.0);
-
-                if let Some(ref info) = s.webcam_info {
-                    widgets::section(ui, "v2_webcam", "Camera", None, true, |ui| {
-                        super::panels::webcam_panel::draw_webcam_panel(ui, info);
-                    });
-                } else if let Some(ref info) = s.media_info {
-                    widgets::section(ui, "v2_media", "Media", None, true, |ui| {
-                        media_panel::draw_media_panel(ui, info);
-                    });
+                // A reading width: at full width a description ran to ~130
+                // characters a line and every slider stretched across 600 px.
+                ui.set_max_width(INSPECTOR_MAX_WIDTH);
+                if stack_panel::master_selected(ui.ctx()) {
+                    master_inspector(ui, s);
                 } else {
-                    widgets::section(ui, "v2_params", "Parameters", None, true, |ui| {
-                        param_panel::draw_param_panel(ui, s.params, s.midi, s.osc);
-                    });
-                    if let Some(ref pinfo) = s.particle_info {
-                        let badge = if pinfo.alive_count >= 1000 {
-                            format!("{:.1}K", pinfo.alive_count as f32 / 1000.0)
-                        } else {
-                            format!("{}", pinfo.alive_count)
-                        };
-                        widgets::section(
-                            ui,
-                            "v2_particles",
-                            "Particles",
-                            Some(&badge),
-                            false,
-                            |ui| {
-                                super::panels::particle_panel::draw_particle_panel(ui, pinfo);
-                            },
-                        );
-                    }
+                    layer_inspector(ui, s);
                 }
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("MASTER")
-                            .size(11.0)
-                            .color(theme_colors(ui.ctx()).text_secondary),
-                    );
-                    // The matrix is a window, not a panel — a button is the
-                    // whole control, so it does not need a section of its own.
-                    let active = s.binding_bus.active_count();
-                    let label = if active > 0 {
-                        format!("Bindings · {active} active  (B)")
-                    } else {
-                        "Bindings  (B)".to_string()
-                    };
-                    if ui
-                        .button(egui::RichText::new(label).size(11.0))
-                        .on_hover_text("Open the binding matrix")
-                        .clicked()
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("open_binding_matrix"), true);
-                        });
-                    }
-                });
-                // Side by side: neither is tall, and stacked they pushed the
-                // layer's own parameters off the screen.
-                ui.columns(2, |cols| {
-                    widgets::section(
-                        &mut cols[0],
-                        "v2_postfx",
-                        "Post-Processing",
-                        None,
-                        true,
-                        |ui| {
-                            postfx_panel::draw_postfx_panel(ui, s.postprocess);
-                        },
-                    );
-                    widgets::section(
-                        &mut cols[1],
-                        "v2_volumetric",
-                        "Volumetric (R3)",
-                        None,
-                        true,
-                        |ui| {
-                            volumetric_panel::draw_volumetric_panel(
-                                ui,
-                                s.volumetric_enabled,
-                                s.volumetric_params,
-                            );
-                        },
-                    );
-                });
             });
         });
+}
+
+/// Widest the inspector's content gets, however wide its column is.
+const INSPECTOR_MAX_WIDTH: f32 = 720.0;
+
+/// The post-processing stages switched on, in words, for Master's row.
+fn postfx_on(pp: &PostProcessDef) -> Vec<&'static str> {
+    if !pp.enabled {
+        return Vec::new();
+    }
+    [
+        (pp.bloom_enabled, "bloom"),
+        (pp.ca_enabled, "chromatic aberration"),
+        (pp.vignette_enabled, "vignette"),
+        (pp.grain_enabled, "grain"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect()
+}
+
+/// The inspector's heading: what scope, what it is called, what it does.
+fn inspector_heading(ui: &mut egui::Ui, kicker: &str, name: &str, desc: &str) {
+    let tc = theme_colors(ui.ctx());
+    ui.label(
+        egui::RichText::new(kicker)
+            .size(12.0)
+            .color(tc.text_secondary),
+    );
+    ui.label(egui::RichText::new(name).size(20.0).strong());
+    if !desc.is_empty() {
+        ui.label(
+            egui::RichText::new(desc)
+                .size(13.0)
+                .color(tc.text_secondary),
+        );
+    }
+    ui.add_space(8.0);
+}
+
+/// A chain's state and the way into the canvas, for either scope.
+fn chain_line(
+    ui: &mut egui::Ui,
+    badge: Option<crate::gpu::layer::ChainBadge>,
+    empty: &str,
+    open: impl FnOnce(&egui::Context),
+) {
+    let tc = theme_colors(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Chain").size(13.0).strong());
+        let words = match badge {
+            None => empty.to_string(),
+            Some(b) => {
+                let nodes = match b.nodes {
+                    1 => "1 node".to_string(),
+                    n => format!("{n} nodes"),
+                };
+                if b.active {
+                    format!("{nodes}, reaches Output")
+                } else {
+                    format!("{nodes}, inactive: nothing reaches Output yet")
+                }
+            }
+        };
+        ui.label(
+            egui::RichText::new(words)
+                .size(13.0)
+                .color(tc.text_secondary),
+        );
+        if ui
+            .button(egui::RichText::new("Edit chain  (G)").size(12.0))
+            .clicked()
+        {
+            open(ui.ctx());
+        }
+    });
+}
+
+/// Layer scope: everything that belongs to the selected layer, and nothing
+/// that belongs to the preset as a whole.
+fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
+    let Some(layer) = s.layers.get(s.active_layer) else {
+        inspector_heading(ui, "Layer", "No layer", "");
+        return;
+    };
+    let kind = stack_panel::layer_kind(layer);
+    let kicker = format!(
+        "Layer {} of {} · {kind}",
+        s.active_layer + 1,
+        s.layers.len()
+    );
+    let desc = if layer.is_media {
+        layer.media_file_name.clone().unwrap_or_default()
+    } else {
+        layer
+            .effect_index
+            .and_then(|i| s.effect_loader.effects.get(i))
+            .map(|e| e.description.clone())
+            .unwrap_or_default()
+    };
+    inspector_heading(ui, &kicker, stack_panel::layer_name(layer), &desc);
+
+    let bottom = s.layers.iter().rposition(|l| l.enabled) == Some(s.active_layer);
+    widgets::section(ui, "v2_blend", "Blend", None, true, |ui| {
+        blend_controls(ui, layer, s.active_layer, bottom);
+    });
+
+    if let Some(ref info) = s.webcam_info {
+        widgets::section(ui, "v2_webcam", "Camera", None, true, |ui| {
+            super::panels::webcam_panel::draw_webcam_panel(ui, info);
+        });
+    } else if let Some(ref info) = s.media_info {
+        widgets::section(ui, "v2_media", "Media", None, true, |ui| {
+            media_panel::draw_media_panel(ui, info);
+        });
+    } else {
+        widgets::section(ui, "v2_params", "Parameters", None, true, |ui| {
+            param_panel::draw_param_panel(ui, s.params, s.midi, s.osc);
+        });
+        if let Some(ref pinfo) = s.particle_info {
+            let badge = if pinfo.alive_count >= 1000 {
+                format!("{:.1}K", pinfo.alive_count as f32 / 1000.0)
+            } else {
+                format!("{}", pinfo.alive_count)
+            };
+            widgets::section(ui, "v2_particles", "Particles", Some(&badge), false, |ui| {
+                super::panels::particle_panel::draw_particle_panel(ui, pinfo);
+            });
+        }
+    }
+
+    ui.add_space(6.0);
+    let i = s.active_layer;
+    chain_line(ui, layer.chain, "none yet", |ctx| {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_layer"), i));
+    });
+}
+
+/// Blend mode, visibility and opacity: how the layer lands on the stack.
+fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: usize, bottom: bool) {
+    use crate::gpu::layer::BlendMode;
+    let tc = theme_colors(ui.ctx());
+    ui.add_enabled_ui(!layer.locked, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Mode").size(13.0));
+            egui::ComboBox::from_id_salt("v2_blend_mode")
+                .selected_text(layer.blend_mode.display_name())
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for &mode in BlendMode::ALL {
+                        // The displacement family warps instead of coloring.
+                        if mode == BlendMode::DISPLACEMENT[0] {
+                            ui.separator();
+                        }
+                        let r = ui
+                            .selectable_label(mode == layer.blend_mode, mode.display_name())
+                            .on_hover_text(mode.description());
+                        if r.clicked() && mode != layer.blend_mode {
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("layer_blend"), mode.as_u32());
+                            });
+                        }
+                    }
+                });
+            ui.add_space(12.0);
+            let mut visible = layer.enabled;
+            if ui.checkbox(&mut visible, "Visible").changed() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("layer_toggle_enable"), (i, visible));
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Opacity").size(13.0));
+            let mut opacity = layer.opacity;
+            let r = ui.add(
+                egui::Slider::new(&mut opacity, 0.0..=1.0)
+                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+            );
+            if r.changed() {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("layer_opacity"), opacity));
+            }
+        });
+        if layer.blend_mode.is_displacement() {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Displace").size(13.0));
+                let mut amount = layer.displace_amount;
+                let r = ui.add(
+                    egui::Slider::new(&mut amount, 0.0..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+                );
+                if r.changed() {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("layer_displace"), amount));
+                }
+            });
+        }
+    });
+    let note = if layer.locked {
+        Some("This layer is locked. Unlock it from its row's right-click menu.")
+    } else if bottom {
+        Some(
+            "The bottom layer has nothing beneath it, so its blend mode is not applied; \
+             only its opacity is.",
+        )
+    } else {
+        None
+    };
+    if let Some(note) = note {
+        ui.label(
+            egui::RichText::new(note)
+                .size(12.0)
+                .color(tc.text_secondary),
+        );
+    }
+}
+
+/// Where Master's post-processing came from, and the effects' own settings on
+/// offer. Each effect ships a suggestion; one loaded onto the only layer is
+/// adopted, and on a stack of several nothing changes until you pick one here.
+fn postfx_source(ui: &mut egui::Ui, s: &ShellState<'_>) {
+    let tc = theme_colors(ui.ctx());
+    let effect_layers: Vec<(usize, &crate::gpu::layer::LayerInfo)> = s
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.is_media && l.effect_index.is_some())
+        .collect();
+    let matching: Vec<&str> = effect_layers
+        .iter()
+        .filter(|(i, _)| s.postfx_matches.get(*i).copied().unwrap_or(false))
+        .map(|(_, l)| stack_panel::layer_name(l))
+        .collect();
+    let source = match matching.as_slice() {
+        [] => "Saved with this preset".to_string(),
+        [one] => format!("{one}'s own settings"),
+        many => format!("the settings {} share", many.join(" and ")),
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "Using {source}. Selecting a layer never changes it."
+        ))
+        .size(12.0)
+        .color(tc.text_secondary),
+    );
+    let offers: Vec<_> = effect_layers
+        .iter()
+        .filter(|(i, _)| !s.postfx_matches.get(*i).copied().unwrap_or(true))
+        .collect();
+    if !offers.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("Use the settings of").size(12.0));
+            for (i, l) in offers {
+                if ui
+                    .small_button(stack_panel::layer_name(l))
+                    .on_hover_text("Replace Master's post-processing with this effect's own")
+                    .clicked()
+                {
+                    let i = *i;
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("adopt_layer_postprocess"), i);
+                    });
+                }
+            }
+        });
+    }
+}
+
+/// Master scope: what runs on the finished blend, and is saved with the
+/// preset rather than with any one layer.
+fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
+    inspector_heading(
+        ui,
+        "Master · runs on the blended stack",
+        "Master",
+        "Post-processing and the master chain apply after every layer is blended. \
+         Master's row at the top of the stack shows the result.",
+    );
+    // The matrix is a window, not a panel — a button is the whole control,
+    // so it does not need a section of its own.
+    let active = s.binding_bus.active_count();
+    let label = if active > 0 {
+        format!("Bindings · {active} active  (B)")
+    } else {
+        "Bindings  (B)".to_string()
+    };
+    if ui
+        .button(egui::RichText::new(label).size(12.0))
+        .on_hover_text("Open the binding matrix")
+        .clicked()
+    {
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("open_binding_matrix"), true);
+        });
+    }
+    ui.add_space(6.0);
+    widgets::section(ui, "v2_postfx", "Post-Processing", None, true, |ui| {
+        postfx_source(ui, s);
+        ui.add_space(4.0);
+        postfx_panel::draw_postfx_panel(ui, s.postprocess);
+    });
+    widgets::section(ui, "v2_volumetric", "Volumetric (R3)", None, true, |ui| {
+        volumetric_panel::draw_volumetric_panel(ui, s.volumetric_enabled, s.volumetric_params);
+    });
+    ui.add_space(6.0);
+    chain_line(
+        ui,
+        s.master_chain,
+        "empty: passes the blend through",
+        |ctx| {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_master"), true));
+        },
+    );
 }
 
 /// Perform: presets on the left, the output large in the middle.

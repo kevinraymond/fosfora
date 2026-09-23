@@ -709,8 +709,9 @@ fn wire_under_pointer(distances_px: &[f32], live: bool) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
-/// same hosting pattern as the shader editor — `draw_panels` stays untouched.
+/// The Classic layout's host: a floating window. Drawn from `main.rs` between
+/// the overlay's `begin_frame`/`end_frame`, the same hosting pattern as the
+/// shader editor — `draw_panels` stays untouched.
 pub fn draw_trama_window(
     ctx: &egui::Context,
     trama: &mut TramaSystem,
@@ -719,10 +720,64 @@ pub fn draw_trama_window(
     if !trama.canvas_open {
         return;
     }
+    let mut open = true;
+    egui::Window::new("trama")
+        .default_size([1020.0, 520.0])
+        .open(&mut open)
+        .show(ctx, |ui| draw_trama_body(ui, trama, layer_stack));
+    if !open {
+        trama.canvas_open = false;
+    }
+}
+
+/// The workspace shell's host (#3123): the canvas takes Build's middle column,
+/// between the stack it edits and the output it changes, instead of floating
+/// over both. Call after the shell's side panels, which leave that column
+/// empty while the canvas is open.
+pub fn draw_trama_docked(
+    ctx: &egui::Context,
+    trama: &mut TramaSystem,
+    layer_stack: &mut crate::gpu::layer::LayerStack,
+    fill: egui::Color32,
+) {
+    if !trama.canvas_open {
+        return;
+    }
+    let mut close = false;
+    egui::CentralPanel::default()
+        .frame(egui::Frame {
+            fill,
+            inner_margin: egui::Margin::same(8),
+            ..Default::default()
+        })
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Chain editor").size(16.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close = ui
+                        .button("Done  (G / Esc)")
+                        .on_hover_text("Back to the inspector")
+                        .clicked();
+                });
+            });
+            ui.add_space(4.0);
+            draw_trama_body(ui, trama, layer_stack);
+        });
+    if close {
+        trama.canvas_open = false;
+    }
+}
+
+/// Tabs, status lines, the node inspector and the canvas itself — everything
+/// either host shows.
+fn draw_trama_body(
+    ui: &mut egui::Ui,
+    trama: &mut TramaSystem,
+    layer_stack: &mut crate::gpu::layer::LayerStack,
+) {
     let (pool_in_use, pool_total) = trama.pool_stats();
     let feedback_pairs = trama.feedback_stats();
     let preview_targets = trama.executor.preview_stats();
-    let mut open = trama.canvas_open;
     let TramaSystem {
         master,
         registry,
@@ -790,168 +845,161 @@ pub fn draw_trama_window(
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
     let selected = view.selected;
-    egui::Window::new("trama")
-        .default_size([1020.0, 520.0])
-        .open(&mut open)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Tabs say what they are in words; the selected one is
-                // marked by egui's fill and strong text, not by hue.
-                for (target, text, tip) in [
-                    (
-                        CanvasTarget::SelectedLayer,
-                        &layer_tab,
-                        "The selected layer's chain — post-processes that layer \
+    ui.horizontal(|ui| {
+        // Tabs say what they are in words; the selected one is
+        // marked by egui's fill and strong text, not by hue.
+        for (target, text, tip) in [
+            (
+                CanvasTarget::SelectedLayer,
+                &layer_tab,
+                "The selected layer's chain — post-processes that layer \
                          only, and follows the layer panel's selection",
-                    ),
-                    (
-                        CanvasTarget::Master,
-                        &master_tab,
-                        "The master chain — post-processes the composited frame, \
+            ),
+            (
+                CanvasTarget::Master,
+                &master_tab,
+                "The master chain — post-processes the composited frame, \
                          before tonemapping",
-                    ),
-                ] {
-                    if ui
-                        .selectable_label(*canvas_target == target, text)
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        *canvas_target = target;
-                    }
-                }
-                ui.separator();
-                if ui
-                    .small_button("Export…")
-                    .on_hover_text("Save this chain as a .fio.json file")
-                    .clicked()
-                {
-                    io.export(crate::trama::ser::ChainDoc::capture(graph, |node| {
-                        view.snarl
-                            .nodes_pos_ids()
-                            .find(|(_, _, n)| **n == node)
-                            .map(|(_, pos, _)| [pos.x, pos.y])
-                    }));
-                }
-                if ui
-                    .small_button("Import…")
-                    .on_hover_text("Replace this chain with one from a .fio.json file")
-                    .clicked()
-                {
-                    io.import(active_chain);
-                }
-                ui.separator();
-                ui.weak(format!(
-                    "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
-                ));
-                if !registry.errors.is_empty() {
-                    ui.separator();
-                    let n = registry.errors.len();
-                    ui.colored_label(
-                        ui.visuals().warn_fg_color,
-                        format!("{n} effect file(s) failed"),
-                    )
-                    .on_hover_text(
-                        registry
-                            .errors
-                            .iter()
-                            .map(|(f, e)| format!("{f}: {e}"))
-                            .collect::<Vec<_>>()
-                            .join("\n"),
-                    );
-                }
-            });
-            if let Some(err) = last_error.as_deref().or(status.as_deref()) {
-                ui.colored_label(ui.visuals().error_fg_color, err);
+            ),
+        ] {
+            if ui
+                .selectable_label(*canvas_target == target, text)
+                .on_hover_text(tip)
+                .clicked()
+            {
+                *canvas_target = target;
             }
-            if !graph.contributes() {
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    "Nothing reaches Output — this chain is inactive and its host's \
+        }
+        ui.separator();
+        if ui
+            .small_button("Export…")
+            .on_hover_text("Save this chain as a .fio.json file")
+            .clicked()
+        {
+            io.export(crate::trama::ser::ChainDoc::capture(graph, |node| {
+                view.snarl
+                    .nodes_pos_ids()
+                    .find(|(_, _, n)| **n == node)
+                    .map(|(_, pos, _)| [pos.x, pos.y])
+            }));
+        }
+        if ui
+            .small_button("Import…")
+            .on_hover_text("Replace this chain with one from a .fio.json file")
+            .clicked()
+        {
+            io.import(active_chain);
+        }
+        ui.separator();
+        ui.weak(format!(
+            "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
+        ));
+        if !registry.errors.is_empty() {
+            ui.separator();
+            let n = registry.errors.len();
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("{n} effect file(s) failed"),
+            )
+            .on_hover_text(
+                registry
+                    .errors
+                    .iter()
+                    .map(|(f, e)| format!("{f}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+    });
+    if let Some(err) = last_error.as_deref().or(status.as_deref()) {
+        ui.colored_label(ui.visuals().error_fg_color, err);
+    }
+    if !graph.contributes() {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Nothing reaches Output — this chain is inactive and its host's \
                      picture passes through untouched. Right-click the canvas to add \
                      nodes; drag from a pin to wire them.",
-                );
-            }
-            ui.separator();
-            // Fixed width (house pattern, ui/panels/mod.rs): the inspector's
-            // sliders greedily fill available width, so a resizable panel in
-            // an auto-sizing window ratchets the window wider on every
-            // selection. 315 px is the budget rows.rs columns are sized for.
-            egui::SidePanel::right("trama-inspector")
-                .resizable(false)
-                .exact_width(315.0)
-                .show_inside(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        super::inspector::draw_inspector(ui, graph, registry, audio_view, selected);
-                    });
-                });
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                let origin = ui.next_widget_position();
-                let translate = last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
-                *last_origin = Some(origin);
-                let tc = crate::ui::theme::colors::theme_colors(ui.ctx());
-                let mut viewer = CanvasViewer {
-                    graph,
-                    chain: active_chain,
-                    registry,
-                    executor: &*executor,
-                    status,
-                    selected: &mut view.selected,
-                    pointer_on_node: false,
-                    translate,
-                    selected_stroke: egui::Stroke::new(1.5_f32, tc.text_primary),
-                    selected_header_fill: tc.hover_fill,
-                    pins: Default::default(),
-                    to_global: egui::emath::TSTransform::IDENTITY,
-                };
-                let background = SnarlWidget::new()
-                    .id_salt("trama-canvas")
-                    .style(canvas_style(ui.style()))
-                    .show(&mut view.snarl, &mut viewer, ui);
-                // A completed click on empty canvas clears the selection; the
-                // pointer_on_node guard keeps node clicks (which select in
-                // `final_node_rect` on press) from immediately deselecting.
-                if background.clicked() && !viewer.pointer_on_node {
-                    *viewer.selected = None;
-                }
-
-                // Hovering a wire says how to remove it. snarl hit-tests the
-                // wire and removes it on a right-click by itself; what it
-                // does not do is tell anyone, and an affordance nobody finds
-                // is not an affordance. This used to be an "x" button painted
-                // on the wire's midpoint — a fragile thing that depended on
-                // our copy of snarl's curve landing where snarl drew it.
-                if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
-                    let to_global = viewer.to_global;
-                    let local = to_global.inverse() * pointer;
-                    let distances: Vec<f32> = {
-                        let pins = viewer.pins.borrow();
-                        view.snarl
-                            .wires()
-                            .filter_map(|(out, inp)| {
-                                let from = *pins.outputs.get(&out)?;
-                                let to = *pins.inputs.get(&inp)?;
-                                let curve =
-                                    super::wire_geom::WireCurve::new(from, to, WIRE_FRAME_SIZE);
-                                Some(curve.distance_to(local) * to_global.scaling)
-                            })
-                            .collect()
-                    };
-                    let live = background.rect.contains(pointer)
-                        && !viewer.pointer_on_node
-                        && !ui.input(|i| i.pointer.any_down());
-                    if wire_under_pointer(&distances, live).is_some() {
-                        egui::Tooltip::always_open(
-                            ui.ctx().clone(),
-                            ui.layer_id(),
-                            egui::Id::new("trama-wire-hover"),
-                            egui::PopupAnchor::Pointer,
-                        )
-                        .show(|ui| ui.label("Right-click to remove this wire"));
-                    }
-                }
+        );
+    }
+    ui.separator();
+    // Fixed width (house pattern, ui/panels/mod.rs): the inspector's
+    // sliders greedily fill available width, so a resizable panel in
+    // an auto-sizing window ratchets the window wider on every
+    // selection. 315 px is the budget rows.rs columns are sized for.
+    egui::SidePanel::right("trama-inspector")
+        .resizable(false)
+        .exact_width(315.0)
+        .show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                super::inspector::draw_inspector(ui, graph, registry, audio_view, selected);
             });
         });
-    trama.canvas_open = open;
+    egui::CentralPanel::default().show_inside(ui, |ui| {
+        let origin = ui.next_widget_position();
+        let translate = last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
+        *last_origin = Some(origin);
+        let tc = crate::ui::theme::colors::theme_colors(ui.ctx());
+        let mut viewer = CanvasViewer {
+            graph,
+            chain: active_chain,
+            registry,
+            executor: &*executor,
+            status,
+            selected: &mut view.selected,
+            pointer_on_node: false,
+            translate,
+            selected_stroke: egui::Stroke::new(1.5_f32, tc.text_primary),
+            selected_header_fill: tc.hover_fill,
+            pins: Default::default(),
+            to_global: egui::emath::TSTransform::IDENTITY,
+        };
+        let background = SnarlWidget::new()
+            .id_salt("trama-canvas")
+            .style(canvas_style(ui.style()))
+            .show(&mut view.snarl, &mut viewer, ui);
+        // A completed click on empty canvas clears the selection; the
+        // pointer_on_node guard keeps node clicks (which select in
+        // `final_node_rect` on press) from immediately deselecting.
+        if background.clicked() && !viewer.pointer_on_node {
+            *viewer.selected = None;
+        }
+
+        // Hovering a wire says how to remove it. snarl hit-tests the
+        // wire and removes it on a right-click by itself; what it
+        // does not do is tell anyone, and an affordance nobody finds
+        // is not an affordance. This used to be an "x" button painted
+        // on the wire's midpoint — a fragile thing that depended on
+        // our copy of snarl's curve landing where snarl drew it.
+        if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+            let to_global = viewer.to_global;
+            let local = to_global.inverse() * pointer;
+            let distances: Vec<f32> = {
+                let pins = viewer.pins.borrow();
+                view.snarl
+                    .wires()
+                    .filter_map(|(out, inp)| {
+                        let from = *pins.outputs.get(&out)?;
+                        let to = *pins.inputs.get(&inp)?;
+                        let curve = super::wire_geom::WireCurve::new(from, to, WIRE_FRAME_SIZE);
+                        Some(curve.distance_to(local) * to_global.scaling)
+                    })
+                    .collect()
+            };
+            let live = background.rect.contains(pointer)
+                && !viewer.pointer_on_node
+                && !ui.input(|i| i.pointer.any_down());
+            if wire_under_pointer(&distances, live).is_some() {
+                egui::Tooltip::always_open(
+                    ui.ctx().clone(),
+                    ui.layer_id(),
+                    egui::Id::new("trama-wire-hover"),
+                    egui::PopupAnchor::Pointer,
+                )
+                .show(|ui| ui.label("Right-click to remove this wire"));
+            }
+        }
+    });
 }
 
 #[cfg(test)]

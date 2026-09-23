@@ -76,12 +76,20 @@ pub struct App {
     // Compositor + post-processing (separate from layer_stack to avoid borrow conflicts)
     pub compositor: Compositor,
     pub post_process: PostProcessChain,
+    /// Master post-processing (#3147): one setting for the whole preset,
+    /// saved with it. Each layer still carries its effect's own
+    /// `postprocess` block, but only as a suggestion — selecting a layer
+    /// never changes this. See [`App::adopt_layer_postprocess`].
+    pub master_postprocess: PostProcessDef,
     /// The finished frame, off-screen (#3122). Post-processing renders here
     /// instead of straight onto the swapchain, and the window gets a blit of
     /// it. That indirection is what lets the v2 interface show the output as a
     /// preview inside a panel, and lets a second window present the same frame,
     /// without either of them re-running the post chain.
     pub display: RenderTarget,
+    /// The v2 layer rows' pictures (#3123): each layer alone, and the stack
+    /// blended up to it. Tapped only while the workspace shell is on screen.
+    pub layer_thumbs: crate::gpu::layer_thumbs::LayerThumbs,
     /// The second output window, when one is open (#3122). It presents the
     /// display target above and carries no interface. Opened and closed from
     /// `main.rs`, where the `ActiveEventLoop` that can create a window lives.
@@ -406,6 +414,8 @@ impl App {
             gpu.surface_config.height,
         );
 
+        let layer_thumbs = crate::gpu::layer_thumbs::LayerThumbs::new(&gpu.device);
+
         // Post-processing chain
         let post_process = PostProcessChain::new(
             &gpu.device,
@@ -544,7 +554,9 @@ impl App {
             layer_stack,
             compositor,
             post_process,
+            master_postprocess: PostProcessDef::default(),
             display,
+            layer_thumbs,
             output_window: None,
             displays: Vec::new(),
             volumetric_enabled: false,
@@ -893,9 +905,7 @@ impl App {
             }
             if let Some(pp_enabled) = osc_result.postprocess_enabled {
                 self.post_process.enabled = pp_enabled;
-                if let Some(layer) = self.layer_stack.active_mut() {
-                    layer.postprocess.enabled = pp_enabled;
-                }
+                self.master_postprocess.enabled = pp_enabled;
             }
             if let Some(vol_enabled) = osc_result.volumetric_enabled {
                 self.volumetric_enabled = vol_enabled;
@@ -991,9 +1001,7 @@ impl App {
             }
             if let Some(pp_enabled) = web_result.postprocess_enabled {
                 self.post_process.enabled = pp_enabled;
-                if let Some(layer) = self.layer_stack.active_mut() {
-                    layer.postprocess.enabled = pp_enabled;
-                }
+                self.master_postprocess.enabled = pp_enabled;
             }
 
             // Handle effect loads from web
@@ -1748,10 +1756,17 @@ impl App {
                             .postprocess
                             .clone()
                             .unwrap_or_default();
-                        self.layer_stack.layers[layer_idx].postprocess = pp;
-                        if layer_idx == self.layer_stack.active_layer {
-                            self.post_process.enabled =
-                                self.layer_stack.layers[layer_idx].postprocess.enabled;
+                        // Master follows an edited .pfx only while it is
+                        // still exactly what that effect suggested — someone
+                        // tuning the effect's file sees the change; someone
+                        // who has since tuned Master keeps their own.
+                        let old = std::mem::replace(
+                            &mut self.layer_stack.layers[layer_idx].postprocess,
+                            pp.clone(),
+                        );
+                        if self.master_postprocess == old {
+                            self.master_postprocess = pp;
+                            self.post_process.enabled = self.master_postprocess.enabled;
                         }
                     }
                 }
@@ -1873,11 +1888,16 @@ impl App {
 
         match result {
             Ok(()) => {
-                // If this is the active layer, update global postprocess + grid
-                // selection — UI state, so it stays out of the shared core.
+                // An effect loaded onto the only layer IS the output, so its
+                // own post-processing becomes Master's. On a stack of several
+                // it stays a suggestion the Master inspector offers (#3147):
+                // an overlay on layer 5 asking for a linear tonemap must not
+                // restyle the four layers beneath it.
+                if self.layer_stack.layers.len() == 1 {
+                    self.adopt_layer_postprocess(layer_idx);
+                }
+                // Grid selection is UI state, so it stays out of the shared core.
                 if layer_idx == self.layer_stack.active_layer {
-                    self.post_process.enabled =
-                        self.layer_stack.layers[layer_idx].postprocess.enabled;
                     self.effect_loader.current_effect = Some(effect_index);
                 }
                 self.shader_watcher.drain_changes();
@@ -2234,6 +2254,7 @@ impl App {
             layer_stack: &mut self.layer_stack,
             effects: &self.effect_loader.effects,
             uniforms: &mut self.uniforms,
+            postprocess: &mut self.master_postprocess,
             pending_triggers: &mut self.binding_bus.pending_triggers,
         };
         crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
@@ -3067,9 +3088,7 @@ impl App {
             .active_layer
             .min(self.layer_stack.layers.len().saturating_sub(1));
         self.sync_active_layer();
-        if let Some(layer) = self.layer_stack.active_mut() {
-            layer.postprocess = preset.postprocess.clone();
-        }
+        self.master_postprocess = preset.postprocess.clone();
         self.post_process.enabled = preset.postprocess.enabled;
         // Restore the global Volumetric (R3) mode. Disable when the preset has
         // no volumetric block so an earlier preset's volumetric can't bleed into
@@ -3173,12 +3192,17 @@ impl App {
         crate::gpu::layer::ChainBadge::of(&self.trama.master)
     }
 
-    /// Get the current postprocess def from active layer.
+    /// Master post-processing, as a preset saves it.
     pub fn current_postprocess(&self) -> PostProcessDef {
-        self.layer_stack
-            .active()
-            .map(|l| l.postprocess.clone())
-            .unwrap_or_default()
+        self.master_postprocess.clone()
+    }
+
+    /// Make layer `idx`'s effect's own post-processing Master's.
+    pub fn adopt_layer_postprocess(&mut self, idx: usize) {
+        if let Some(layer) = self.layer_stack.layers.get(idx) {
+            self.master_postprocess = layer.postprocess.clone();
+            self.post_process.enabled = self.master_postprocess.enabled;
+        }
     }
 
     /// Load a scene and start its timeline.
@@ -3530,13 +3554,19 @@ impl App {
             trama.drop_chain(chain);
         });
 
+        // Only the workspace shell draws layer rows with pictures; the Classic
+        // panels and a hidden interface pay nothing for them.
+        let tap_thumbs = !self.settings.classic_layout && self.egui_overlay.visible;
+
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
-        let (source, postprocess) = crate::gpu::frame_graph::execute_and_composite(
+        let postprocess = self.master_postprocess.clone();
+        let source = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
             Some(&mut self.trama),
             &self.chain_targets,
+            tap_thumbs.then_some(&self.layer_thumbs),
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -3578,11 +3608,14 @@ impl App {
             targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
                 trama.drop_chain(chain);
             });
-            let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
+            // The preset just loaded set Master's post-processing.
+            let new_pp = self.master_postprocess.clone();
+            let new_source = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
                 Some(&mut self.trama),
                 &self.chain_targets,
+                tap_thumbs.then_some(&self.layer_thumbs),
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,

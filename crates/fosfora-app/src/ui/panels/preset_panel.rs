@@ -45,6 +45,12 @@ fn draw_pulse_dot(ui: &mut Ui, time: f64) {
 
 /// Top-level preset section with custom header (replaces widgets::section for presets).
 pub fn draw_preset_section(ui: &mut Ui, store: &PresetStore) {
+    draw_preset_section_open(ui, store, true);
+}
+
+/// [`draw_preset_section`], choosing whether it starts open. The v2 Build
+/// workspace starts it closed: there the stack is what the column is for.
+pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: bool) {
     let tc = theme_colors(ui.ctx());
     let dirty = store.dirty;
     let time = ui.input(|i| i.time);
@@ -56,7 +62,7 @@ pub fn draw_preset_section(ui: &mut Ui, store: &PresetStore) {
     };
 
     let id = ui.make_persistent_id("sec_presets");
-    let state = CollapsingState::load_with_default_open(ui.ctx(), id, true);
+    let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
     let arrow_color = if dirty { AMBER } else { tc.text_secondary };
     let title_color = if dirty { AMBER } else { tc.text_secondary };

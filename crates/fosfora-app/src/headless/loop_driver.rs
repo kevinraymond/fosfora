@@ -320,6 +320,10 @@ impl LoopSession {
             )
             .map_err(|e| format!("loading '{}': {e}", spec.effect))?;
         }
+        // One layer, so the effect IS the output and its own post-processing
+        // is Master's — the rule the app applies to a one-layer stack (#3147).
+        sr.master_postprocess = sr.layer_stack.layers[0].postprocess.clone();
+        sr.post_process.enabled = sr.master_postprocess.enabled;
         sr.layer_stack.layers[0]
             .param_store
             .load_from_defs(&effect.inputs);

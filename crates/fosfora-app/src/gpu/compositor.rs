@@ -171,6 +171,22 @@ impl Compositor {
         encoder: &mut CommandEncoder,
         layers: &[LayerComposite<'_>],
     ) -> &'a RenderTarget {
+        self.composite_tapped(device, queue, encoder, layers, &mut |_, _, _| {})
+    }
+
+    /// [`Self::composite`], calling `tap(encoder, k, picture)` as soon as
+    /// stage `k` exists — `picture` is layers `0..=k` blended, which the next
+    /// stage overwrites in the ping-pong, so this is the only moment it can be
+    /// read. The v2 layer rows' "blended so far" thumbnails (#3123) come from
+    /// here.
+    pub fn composite_tapped<'a>(
+        &'a self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        layers: &[LayerComposite<'_>],
+        tap: &mut dyn FnMut(&mut CommandEncoder, usize, &RenderTarget),
+    ) -> &'a RenderTarget {
         assert!(!layers.is_empty());
 
         let first = layers[0].target;
@@ -275,6 +291,7 @@ impl Compositor {
             );
         }
 
+        tap(encoder, 0, self.accumulator.write_target());
         if layers.len() == 1 {
             return self.accumulator.write_target();
         }
@@ -338,6 +355,7 @@ impl Compositor {
                 &composite_bg,
                 &write_target.view,
             );
+            tap(encoder, pass_idx + 1, write_target);
 
             read_idx = write_idx;
         }

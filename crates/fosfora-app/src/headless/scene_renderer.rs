@@ -51,6 +51,8 @@ pub struct SceneRenderer {
     /// takes the targets from its caller.
     pub chain_targets: crate::gpu::chain_targets::ChainTargets,
     pub post_process: PostProcessChain,
+    /// Master post-processing, from the preset (#3147).
+    pub master_postprocess: crate::effect::format::PostProcessDef,
     pub capture: FrameCapture,
     pub placeholder: PlaceholderTexture,
     pub audio_textures: AudioTextures,
@@ -113,6 +115,7 @@ impl SceneRenderer {
             compositor,
             chain_targets: crate::gpu::chain_targets::ChainTargets::new(width, height),
             post_process,
+            master_postprocess: Default::default(),
             capture,
             placeholder,
             audio_textures,
@@ -435,9 +438,7 @@ impl SceneRenderer {
         self.layer_stack.active_layer = preset
             .active_layer
             .min(self.layer_stack.layers.len().saturating_sub(1));
-        if let Some(layer) = self.layer_stack.active_mut() {
-            layer.postprocess = preset.postprocess.clone();
-        }
+        self.master_postprocess = preset.postprocess.clone();
         self.post_process.enabled = preset.postprocess.enabled;
         if let Some(vol) = &preset.volumetric {
             self.volumetric_enabled = vol.enabled;
@@ -606,7 +607,7 @@ impl SceneRenderer {
             }
         }
 
-        let (source, pp) = crate::gpu::frame_graph::execute_and_composite(
+        let source = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
             // Headless is Layers-only in M0; M3 (graph persistence) upgrades
@@ -615,6 +616,7 @@ impl SceneRenderer {
             // headless renders the unchained picture until #2063 lands.
             None,
             &self.chain_targets,
+            None,
             &self.device,
             &self.queue,
             &mut encoder,
@@ -631,7 +633,7 @@ impl SceneRenderer {
                 self.uniforms.rms,
                 self.uniforms.onset,
                 self.uniforms.flatness,
-                &pp,
+                &self.master_postprocess,
                 crate::gpu::frame_graph::resolve_output_alpha(
                     self.output_alpha,
                     &self.layer_stack,
@@ -702,6 +704,7 @@ impl SceneRenderer {
                 layer_stack: &mut self.layer_stack,
                 effects: &self.effect_loader.effects,
                 uniforms: &mut self.uniforms,
+                postprocess: &mut self.master_postprocess,
                 pending_triggers: &mut self.binding_bus.pending_triggers,
             };
             for o in &outs {
@@ -926,6 +929,7 @@ mod tests {
                 layer_stack: &mut sr.layer_stack,
                 effects: &sr.effect_loader.effects,
                 uniforms: &mut sr.uniforms,
+                postprocess: &mut sr.master_postprocess,
                 pending_triggers: &mut sr.binding_bus.pending_triggers,
             };
             for out in &outs {
@@ -937,10 +941,9 @@ mod tests {
                 );
             }
         }
-        let active = sr.layer_stack.active_layer;
         assert!(
-            (sr.layer_stack.layers[active].postprocess.bloom_intensity - 0.9).abs() < 1e-5,
-            "kick binding did not reach the active layer's postprocess"
+            (sr.master_postprocess.bloom_intensity - 0.9).abs() < 1e-5,
+            "kick binding did not reach Master's post-processing"
         );
 
         for frame in 0..30u32 {
