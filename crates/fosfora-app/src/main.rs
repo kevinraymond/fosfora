@@ -2760,7 +2760,11 @@ impl ApplicationHandler for FosforaApp {
                             {
                                 match crate::media::video::probe_video(&path) {
                                     Ok(meta) => {
-                                        match crate::media::video::decode_all_frames(&path, &meta) {
+                                        match crate::media::video::decode_all_frames(
+                                            &path,
+                                            &meta,
+                                            &Default::default(),
+                                        ) {
                                             Ok((frames, delays_ms)) => {
                                                 let path_str = path.to_string_lossy().to_string();
                                                 if let Some(layer) = app.layer_stack.active_mut() {
@@ -2871,12 +2875,34 @@ impl ApplicationHandler for FosforaApp {
                         .ok();
                 }
 
+                // Media decoding for new layers: add the finished ones, and
+                // tell the panels how far the rest have got.
+                if app.poll_media_loads() > 0 {
+                    app.preset_store.mark_dirty();
+                }
+                let cancel_load: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    let id = egui::Id::new("cancel_media_load");
+                    let v = d.get_temp(id);
+                    d.remove::<usize>(id);
+                    v
+                });
+                if let Some(i) = cancel_load {
+                    app.cancel_media_load(i);
+                }
+                let loading: Vec<crate::ui::panels::media_panel::MediaLoading> = app
+                    .media_loads
+                    .iter()
+                    .map(crate::ui::panels::media_panel::MediaLoading::of)
+                    .collect();
+                app.egui_overlay.context().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("media_loading"), std::sync::Arc::new(loading));
+                });
+
                 // Drain file dialog result (non-blocking)
                 if let Some(ref rx) = self.file_dialog_rx {
                     match rx.try_recv() {
                         Ok(path) => {
-                            app.add_media_layer(path);
-                            app.preset_store.mark_dirty();
+                            app.start_media_layer(path);
                             self.file_dialog_rx = None;
                         }
                         Err(crossbeam_channel::TryRecvError::Disconnected) => {

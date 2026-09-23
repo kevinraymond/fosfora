@@ -476,7 +476,7 @@ fn load_video_sync(path: &std::path::Path) -> ParticleSourceResult {
         ));
     }
 
-    match decode_all_frames(path, &meta) {
+    match decode_all_frames(path, &meta, &Default::default()) {
         Ok((frames, delays_ms)) => ParticleSourceResult::Animated {
             path: path.to_string_lossy().to_string(),
             frames,

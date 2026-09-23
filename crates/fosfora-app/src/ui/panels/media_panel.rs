@@ -222,3 +222,80 @@ fn format_time(secs: f64) -> String {
     let s = total_secs % 60;
     format!("{:02}:{:02}", mins, s)
 }
+
+/// A media file still decoding for a new layer, as the panels show it.
+#[derive(Clone)]
+pub struct MediaLoading {
+    pub file_name: String,
+    /// Frames decoded, and how many the probe expects (0 = not known yet).
+    pub done: u32,
+    pub total: u32,
+    pub secs: f32,
+}
+
+impl MediaLoading {
+    pub fn of(load: &crate::app::MediaLoad) -> Self {
+        use std::sync::atomic::Ordering;
+        Self {
+            file_name: load.file_name.clone(),
+            done: load.progress.done.load(Ordering::Relaxed),
+            total: load.progress.total.load(Ordering::Relaxed),
+            secs: load.started.elapsed().as_secs_f32(),
+        }
+    }
+
+    /// `"212 of 450 frames"`, or what is happening before frames arrive.
+    fn words(&self) -> String {
+        if self.total > 0 {
+            format!("{} of {} frames", self.done.min(self.total), self.total)
+        } else {
+            "reading the file".to_string()
+        }
+    }
+}
+
+/// One line per file still loading, where the new layer will appear: what,
+/// how far, and a way to stop it. A video decodes every frame up front, and
+/// before this the app froze for the whole of it with nothing on screen.
+pub fn draw_loading(ui: &mut Ui) {
+    let loads: Option<std::sync::Arc<Vec<MediaLoading>>> = ui
+        .ctx()
+        .data(|d| d.get_temp(egui::Id::new("media_loading")));
+    let Some(loads) = loads.filter(|l| !l.is_empty()) else {
+        return;
+    };
+    let tc = theme_colors(ui.ctx());
+    for (i, l) in loads.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new(format!("Loading {}", l.file_name)).size(13.0));
+            let fraction = if l.total > 0 {
+                l.done as f32 / l.total as f32
+            } else {
+                0.0
+            };
+            ui.add(
+                egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                    .desired_width(160.0)
+                    .text(RichText::new(l.words()).size(11.0)),
+            );
+            ui.label(
+                RichText::new(format!("{:.0} s", l.secs))
+                    .size(11.0)
+                    .color(tc.text_secondary),
+            );
+            if ui.small_button("Cancel").clicked() {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("cancel_media_load"), i));
+            }
+        });
+    }
+    ui.label(
+        RichText::new(
+            "A video decodes every frame before it plays; the layer appears when it is done.",
+        )
+        .size(11.0)
+        .color(tc.text_secondary),
+    );
+    ui.ctx().request_repaint();
+}

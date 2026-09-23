@@ -263,7 +263,13 @@ pub fn draw_catalog(
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
                 for &(i, e) in &shown {
-                    let pic = thumbs.get(ui.ctx(), e);
+                    let still = thumbs.get(ui.ctx(), e);
+                    // While hovered, the picture plays its loop from the
+                    // start of the hover.
+                    let pic = match hovered_for(ui.ctx(), &e.name) {
+                        Some(secs) => thumbs.animated(ui.ctx(), e, secs).or(still),
+                        None => still,
+                    };
                     tile(ui, i, e, pic, favorites, target);
                 }
             });
@@ -274,6 +280,23 @@ pub fn draw_catalog(
 
 fn tile_id(name: &str) -> egui::Id {
     egui::Id::new("v2_catalog_tile").with(name)
+}
+
+/// How long the pointer has been over this tile, from last frame's hover.
+/// `None` when it is not, or while something is being dragged.
+fn hovered_for(ctx: &egui::Context, name: &str) -> Option<f64> {
+    let key = tile_id(name).with("hover_since");
+    let now = ctx.input(|i| i.time);
+    let hovered = ctx
+        .read_response(tile_id(name))
+        .is_some_and(|r| r.hovered())
+        && !egui::DragAndDrop::has_any_payload(ctx);
+    if !hovered {
+        ctx.data_mut(|d| d.remove::<f64>(key));
+        return None;
+    }
+    let since = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(key, || now));
+    Some(now - since)
 }
 
 /// One picture with its name under it.
@@ -616,6 +639,36 @@ mod tests {
         );
     }
 
+    // The hover loop: every shipped effect has one beside its still.
+    #[test]
+    fn every_shipped_effect_has_a_hover_preview() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/thumbs");
+        let missing: Vec<_> = shipped()
+            .into_iter()
+            .filter(|(stem, _)| !dir.join(format!("{stem}.anim.webp")).is_file())
+            .map(|(stem, _)| stem)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no hover preview in assets/thumbs for: {missing:?}; \
+             uv run scripts/build_thumbnails.py --anim-only --effects <stems>"
+        );
+    }
+
+    #[test]
+    fn a_hover_preview_decodes_to_a_loop() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/thumbs/accretion.anim.webp");
+        let l = crate::ui::catalog_thumbs::decode_loop(&path).expect("decodes");
+        assert!(l.frames.len() >= 20, "{} frames", l.frames.len());
+        assert_eq!(l.frames[0].size, [352, 198]);
+        assert!(
+            (l.frame_secs - 1.0 / 12.0).abs() < 0.01,
+            "{} s a frame",
+            l.frame_secs
+        );
+    }
+
     fn effect(name: &str) -> PfxEffect {
         serde_json::from_str(&format!(r#"{{"name":"{name}","author":"Fosfora"}}"#)).unwrap()
     }
@@ -775,6 +828,32 @@ mod tests {
         // Released back over the catalog: nothing happens.
         let home = h.tile_rect("Sumi").center() + egui::vec2(0.0, 2.0);
         assert_eq!(h.drag("Tide", home), None);
+    }
+
+    // The loop plays from the start of a hover, stops when the pointer
+    // leaves, and stays still while a picture is being dragged.
+    #[test]
+    fn a_hover_is_timed_from_its_start() {
+        use egui::Event;
+        let mut h = Harness::new();
+        h.frame(vec![]);
+        let tile = h.tile_rect("Sumi").center();
+        h.frame(vec![Event::PointerMoved(tile)]);
+        h.frame(vec![]);
+        let first = hovered_for(&h.ctx, "Sumi").expect("hovered");
+        for _ in 0..30 {
+            h.frame(vec![]);
+        }
+        let later = hovered_for(&h.ctx, "Sumi").expect("still hovered");
+        assert!(later - first > 0.4, "{first} -> {later}");
+        assert_eq!(hovered_for(&h.ctx, "Tide"), None);
+
+        h.frame(vec![Event::PointerMoved(egui::pos2(5.0, 5.0))]);
+        h.frame(vec![]);
+        assert_eq!(hovered_for(&h.ctx, "Sumi"), None);
+        h.frame(vec![Event::PointerMoved(tile)]);
+        h.frame(vec![]);
+        assert!(hovered_for(&h.ctx, "Sumi").unwrap() < 0.1, "restarts");
     }
 
     #[test]

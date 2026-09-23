@@ -4,7 +4,8 @@
 # dependencies = ["numpy", "pillow"]
 # ///
 """Render the catalog's pictures (board #3124): one still per shipped effect,
-written to assets/thumbs/<pfx stem>.webp, which the v2 catalog shows.
+written to assets/thumbs/<pfx stem>.webp, which the v2 catalog shows, and a
+2.5 s loop beside it (<pfx stem>.anim.webp) that plays while it is hovered.
 
 Each effect renders through the app's own `--render-scene` (real analysis,
 real shaders, real post-processing) against the casting catalog's test track,
@@ -23,6 +24,7 @@ default render does not show what they are.
 Needs `target/release/fosfora` built with `--features release,analyze`.
     uv run scripts/build_thumbnails.py                 # every effect
     uv run scripts/build_thumbnails.py --effects sumi,tide
+    uv run scripts/build_thumbnails.py --anim-only     # previews, stills kept
 """
 
 from __future__ import annotations
@@ -48,6 +50,12 @@ TRACK = REPO / "catalog" / "test_track.wav"
 # Twice the catalog's 176x99 tile, for HiDPI screens.
 SIZE = (352, 198)
 QUALITY = 82
+
+# The hover preview: <stem>.anim.webp, a short loop at the same size. Kept
+# short and low-rate so the whole set stays a few MB.
+ANIM_SECS = 2.5
+ANIM_FPS = 12
+ANIM_QUALITY = 50
 
 # Overlays that draw from the layers beneath, and what they are shown over:
 # dimmed, so the overlay reads as the subject rather than the base.
@@ -129,7 +137,38 @@ def spread(img: Image.Image) -> float:
     return float(np.asarray(img.convert("L"), dtype=np.float32).std())
 
 
-def render(stem: str, pfx: dict, work: Path) -> Image.Image | None:
+def frames_of_video(clip: Path, start: float, work: Path, tag: str) -> list[Image.Image]:
+    """ANIM_SECS of `clip` from `start`, at ANIM_FPS, as preview-sized frames."""
+    d = work / f"frames_{tag}"
+    d.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(start, 0.0):.2f}",
+         "-t", str(ANIM_SECS), "-i", str(clip),
+         "-vf", f"fps={ANIM_FPS},scale={SIZE[0]}:{SIZE[1]}:flags=lanczos",
+         str(d / "%03d.png")],
+        check=True,
+    )
+    return [Image.open(f).convert("RGB") for f in sorted(d.glob("*.png"))]
+
+
+def frames_of_tile(tile: Path, middle: int) -> list[Image.Image]:
+    """About ANIM_SECS of an animated README tile, around frame `middle`."""
+    im = Image.open(tile)
+    n = getattr(im, "n_frames", 1)
+    # The tiles run at their own rate; sample them at ANIM_FPS.
+    ms = im.info.get("duration", 1000 // ANIM_FPS) or 1000 // ANIM_FPS
+    step = max(1, round((1000 / ANIM_FPS) / ms))
+    count = int(ANIM_SECS * ANIM_FPS)
+    first = max(0, min(middle - count * step // 2, n - count * step))
+    out = []
+    for k in range(count):
+        im.seek(min(first + k * step, n - 1))
+        out.append(im.convert("RGB").resize(SIZE, Image.LANCZOS))
+    return out
+
+
+def render(stem: str, pfx: dict, work: Path) -> tuple[Image.Image, list[Image.Image]] | None:
+    """The still, and the frames of the hover preview."""
     ov = OVERRIDES.get(stem, {})
     if "video" in ov:
         clip, at = ov["video"]
@@ -141,7 +180,8 @@ def render(stem: str, pfx: dict, work: Path) -> Image.Image | None:
                  "-frames:v", "1", str(frame)],
                 check=True,
             )
-            return Image.open(frame).convert("RGB")
+            anim = frames_of_video(clip, at - ANIM_SECS / 2, work, stem)
+            return Image.open(frame).convert("RGB"), anim
         print(f"  {stem}: {clip} missing, rendering headless instead")
     if "tile" in ov:
         name, index = ov["tile"]
@@ -149,7 +189,7 @@ def render(stem: str, pfx: dict, work: Path) -> Image.Image | None:
         if tile.exists():
             im = Image.open(tile)
             im.seek(min(index, getattr(im, "n_frames", 1) - 1))
-            return im.convert("RGB")
+            return im.convert("RGB"), frames_of_tile(tile, index)
         print(f"  {stem}: {tile} missing, rendering headless instead")
 
     scene = work / f"scene_{stem}"
@@ -174,12 +214,20 @@ def render(stem: str, pfx: dict, work: Path) -> Image.Image | None:
     else:
         loud = stills[len(stills) // 2:] or stills
         pick = max(loud, key=lambda p: spread(Image.open(p)))
-    return Image.open(pick).convert("RGB")
+    # The preview comes from the loud section's clip, past its first second
+    # (the section boundary is a hard cut in the test track).
+    clips = sorted((out / "clips").glob("*.mp4"))
+    if not clips:
+        print(f"  {stem}: no clips")
+        return None
+    return Image.open(pick).convert("RGB"), frames_of_video(clips[-1], 1.5, work, stem)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--effects", help="comma-separated .pfx stems")
+    ap.add_argument("--anim-only", action="store_true",
+                    help="write only the hover previews, leaving the stills as they are")
     args = ap.parse_args()
 
     if not BIN.exists():
@@ -196,13 +244,20 @@ def main() -> None:
             if wanted and stem not in wanted:
                 continue
             print(f"{stem} ({pfx['name']})", flush=True)
-            img = render(stem, pfx, work)
-            if img is None:
+            got = render(stem, pfx, work)
+            if got is None or not got[1]:
                 failed.append(stem)
                 continue
-            img = img.resize(SIZE, Image.LANCZOS)
-            img.save(OUT / f"{stem}.webp", quality=QUALITY, method=6)
-            print(f"  spread {spread(img):.1f}", flush=True)
+            img, anim = got
+            if not args.anim_only:
+                img = img.resize(SIZE, Image.LANCZOS)
+                img.save(OUT / f"{stem}.webp", quality=QUALITY, method=6)
+                print(f"  spread {spread(img):.1f}", flush=True)
+            path = OUT / f"{stem}.anim.webp"
+            anim[0].save(path, save_all=True, append_images=anim[1:],
+                         duration=round(1000 / ANIM_FPS), loop=0,
+                         quality=ANIM_QUALITY, method=6)
+            print(f"  preview {len(anim)} frames, {path.stat().st_size // 1024} KB", flush=True)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     if failed:

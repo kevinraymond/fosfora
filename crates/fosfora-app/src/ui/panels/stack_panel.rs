@@ -333,6 +333,8 @@ pub fn draw_stack(
         }
     }
 
+    // Media still decoding: the layer will land at the bottom, here.
+    super::media_panel::draw_loading(ui);
     ui.add_space(6.0);
     let below = ui.scope(|ui| add_buttons(ui, layers.len())).response;
     drop_target(ui, &below, layers, |_| {

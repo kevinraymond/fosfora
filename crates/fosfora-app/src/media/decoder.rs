@@ -1,6 +1,19 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use super::types::DecodedFrame;
+
+/// How far a decode has got, shared with the thread doing it, so the UI can
+/// say so: a video pre-decodes every frame and can take many seconds.
+#[derive(Default)]
+pub struct MediaProgress {
+    /// Frames decoded so far.
+    pub done: AtomicU32,
+    /// Frames the probe expects; 0 until probed, and for an image.
+    pub total: AtomicU32,
+    /// Set to stop the decode early; it then returns an error.
+    pub cancel: AtomicBool,
+}
 
 /// Decoded media source: either a static image or animated frames.
 /// Video files are pre-decoded to Animated (same as GIF), enabling instant random access.
@@ -69,6 +82,13 @@ pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v
 
 /// Load an image or animation from a file path.
 pub fn load_media(path: &Path) -> Result<MediaSource, String> {
+    load_media_with(path, &MediaProgress::default())
+}
+
+/// [`load_media`], reporting progress and honoring a cancel as it goes.
+pub fn load_media_with(path: &Path, progress: &MediaProgress) -> Result<MediaSource, String> {
+    #[cfg(not(feature = "video"))]
+    let _ = progress;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -77,7 +97,7 @@ pub fn load_media(path: &Path) -> Result<MediaSource, String> {
 
     #[cfg(feature = "video")]
     if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
-        return load_video(path);
+        return load_video(path, progress);
     }
 
     match ext.as_str() {
@@ -89,7 +109,7 @@ pub fn load_media(path: &Path) -> Result<MediaSource, String> {
 
 /// Load a video file by pre-decoding all frames via ffmpeg.
 #[cfg(feature = "video")]
-fn load_video(path: &Path) -> Result<MediaSource, String> {
+fn load_video(path: &Path, progress: &MediaProgress) -> Result<MediaSource, String> {
     use super::video::{MAX_PREDECODE_SECS, decode_all_frames, ffmpeg_available, probe_video};
 
     if !ffmpeg_available() {
@@ -113,7 +133,7 @@ fn load_video(path: &Path) -> Result<MediaSource, String> {
         ));
     }
 
-    let (frames, delays_ms) = decode_all_frames(path, &meta)?;
+    let (frames, delays_ms) = decode_all_frames(path, &meta, progress)?;
     Ok(MediaSource::Animated {
         frames,
         delays_ms,
@@ -298,4 +318,58 @@ fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
         rgba.push(255);
     }
     rgba
+}
+
+#[cfg(all(test, feature = "video"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// A 2 s, 10 fps test clip, or None where ffmpeg is missing.
+    fn clip(dir: &Path) -> Option<std::path::PathBuf> {
+        if !crate::media::video::ffmpeg_available() {
+            return None;
+        }
+        let path = dir.join("clip.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg("testsrc=size=64x36:rate=10:duration=2")
+            .args(["-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(path)
+    }
+
+    // The loading row's numbers: the probe's frame count up front, then
+    // every decoded frame counted as it lands.
+    #[test]
+    fn a_video_decode_reports_its_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(path) = clip(dir.path()) else {
+            eprintln!("ffmpeg not found; skipped");
+            return;
+        };
+        let progress = MediaProgress::default();
+        let source = load_media_with(&path, &progress).expect("decodes");
+        let total = progress.total.load(Ordering::Relaxed);
+        let done = progress.done.load(Ordering::Relaxed);
+        assert_eq!(done as usize, source.frame_count());
+        assert!((19..=21).contains(&total), "probe expected {total} frames");
+        assert!(done >= total - 1, "{done} of {total}");
+    }
+
+    // Cancel stops the decode rather than finishing it and throwing it away.
+    #[test]
+    fn a_cancelled_decode_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(path) = clip(dir.path()) else {
+            eprintln!("ffmpeg not found; skipped");
+            return;
+        };
+        let progress = MediaProgress::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        assert!(load_media_with(&path, &progress).is_err());
+        assert_eq!(progress.done.load(Ordering::Relaxed), 0);
+    }
 }

@@ -108,7 +108,9 @@ fn parse_frame_rate(rate: &str) -> f64 {
 pub fn decode_all_frames(
     path: &Path,
     meta: &VideoMeta,
+    progress: &super::decoder::MediaProgress,
 ) -> Result<(Vec<DecodedFrame>, Vec<u32>), String> {
+    use std::sync::atomic::Ordering;
     let frame_size = (meta.width as usize) * (meta.height as usize) * 4;
     let delay_ms = (1000.0 / meta.fps).round() as u32;
 
@@ -141,6 +143,9 @@ pub fn decode_all_frames(
         .spawn()
         .map_err(|e| format!("Failed to spawn ffmpeg: {e}"))?;
 
+    progress
+        .total
+        .store(est_frames.min(u32::MAX as usize) as u32, Ordering::Relaxed);
     let mut stdout = child.stdout.take().ok_or("ffmpeg: no stdout pipe")?;
 
     let mut frames = Vec::with_capacity(est_frames);
@@ -148,12 +153,18 @@ pub fn decode_all_frames(
     let mut buf = vec![0u8; frame_size];
 
     while stdout.read_exact(&mut buf).is_ok() {
+        if progress.cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".to_string());
+        }
         frames.push(DecodedFrame {
             data: buf.clone(),
             width: meta.width,
             height: meta.height,
         });
         delays_ms.push(delay_ms.max(1));
+        progress.done.fetch_add(1, Ordering::Relaxed);
     }
 
     let _ = child.wait();

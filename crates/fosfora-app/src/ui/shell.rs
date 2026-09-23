@@ -314,8 +314,10 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         .resizable(false)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
+            // The output stays put; only Audio scrolls under it — the preview
+            // is what you watch while scrolling the meters.
+            output_section(ui, "v2_preview", s.display);
             ScrollArea::vertical().show(ui, |ui| {
-                output_section(ui, "v2_preview", s.display);
                 let bpm = s.uniforms.bpm * 300.0;
                 let bpm_badge = (bpm > 1.0).then(|| format!("{bpm:.0}"));
                 widgets::section(ui, "v2_audio", "Audio", bpm_badge.as_deref(), true, |ui| {

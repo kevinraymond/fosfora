@@ -1026,6 +1026,7 @@ pub fn draw_layer_panel(
         )
     };
 
+    super::media_panel::draw_loading(ui);
     ui.horizontal(|ui| {
         #[cfg(feature = "webcam")]
         let btn_count = 3.0_f32;

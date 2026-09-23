@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -147,6 +148,10 @@ pub struct App {
     /// eagerly at the timeline event instead would be clobbered by the async
     /// path, whose decode lands whole frames later.
     pub pending_cue_overrides: Option<usize>,
+    /// Media files decoding for new layers, oldest first. A video pre-decodes
+    /// every frame, which took ~15 s with the app frozen and nothing on
+    /// screen while it ran on this thread.
+    pub media_loads: Vec<MediaLoad>,
     pub midi_clock: MidiClock,
     /// Whether MIDI clock was playing last frame (for rising-edge transport detection).
     pub midi_clock_was_playing: bool,
@@ -542,6 +547,7 @@ impl App {
             transition_renderer: None,
             dissolve_capture_pending: None,
             pending_cue_overrides: None,
+            media_loads: Vec::new(),
             midi_clock: MidiClock::new(),
             midi_clock_was_playing: false,
             midi_clock_beat_crossed: false,
@@ -2015,6 +2021,7 @@ impl App {
 
     /// Remove all layers and create one fresh layer with the Phosphor default effect.
     pub fn clear_all_layers(&mut self) {
+        self.cancel_media_loads();
         self.layer_stack.layers.clear();
         self.layer_stack.active_layer = 0;
         self.add_layer();
@@ -2030,7 +2037,98 @@ impl App {
     }
 
     /// Add a new media layer from a file path.
-    pub fn add_media_layer(&mut self, path: std::path::PathBuf) {
+    /// Start decoding a media file for a new layer, off this thread. The
+    /// layer appears when the decode finishes ([`Self::poll_media_loads`]);
+    /// until then [`Self::media_loads`] says how far it has got.
+    pub fn start_media_layer(&mut self, path: std::path::PathBuf) {
+        let max = crate::bindings::catalog::MAX_LAYERS;
+        if self.layer_stack.layers.len() + self.media_loads.len() >= max {
+            log::warn!("Maximum {max} layers reached");
+            return;
+        }
+        let progress = std::sync::Arc::new(crate::media::decoder::MediaProgress::default());
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (p, job) = (progress.clone(), path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("media-decode".into())
+            .spawn(move || {
+                let _ = tx.send(crate::media::decoder::load_media_with(&job, &p));
+            });
+        if let Err(e) = spawned {
+            self.status_error = Some((format!("Could not start loading: {e}"), Instant::now()));
+            return;
+        }
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        log::info!("Loading media: {}", path.display());
+        self.media_loads.push(MediaLoad {
+            path,
+            file_name,
+            progress,
+            rx,
+            started: Instant::now(),
+        });
+    }
+
+    /// Add the layers whose media finished decoding. Returns how many.
+    pub fn poll_media_loads(&mut self) -> usize {
+        let mut added = 0;
+        let mut i = 0;
+        while i < self.media_loads.len() {
+            match self.media_loads[i].rx.try_recv() {
+                Ok(result) => {
+                    let load = self.media_loads.remove(i);
+                    match result {
+                        Ok(source) => {
+                            log::info!(
+                                "Decoded {} in {:.1} s",
+                                load.file_name,
+                                load.started.elapsed().as_secs_f32()
+                            );
+                            self.add_media_layer_from_source(load.path, source);
+                            added += 1;
+                        }
+                        Err(e) if load.progress.cancel.load(Ordering::Relaxed) => {
+                            log::info!("Cancelled loading {}: {e}", load.file_name);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to load media '{}': {e}", load.path.display());
+                            self.status_error = Some((e, Instant::now()));
+                        }
+                    }
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => i += 1,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.media_loads.remove(i);
+                }
+            }
+        }
+        added
+    }
+
+    /// Stop decoding `index` of [`Self::media_loads`] (the UI's Cancel).
+    pub fn cancel_media_load(&mut self, index: usize) {
+        if index < self.media_loads.len() {
+            let load = self.media_loads.remove(index);
+            load.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Stop every pending decode: the stack it was meant for is being
+    /// replaced (a preset load, Clear stack).
+    pub fn cancel_media_loads(&mut self) {
+        for load in self.media_loads.drain(..) {
+            load.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn add_media_layer_from_source(
+        &mut self,
+        path: std::path::PathBuf,
+        source: crate::media::decoder::MediaSource,
+    ) {
         let num = self.layer_stack.layers.len();
         if num >= crate::bindings::catalog::MAX_LAYERS {
             log::warn!(
@@ -2039,33 +2137,24 @@ impl App {
             );
             return;
         }
-
-        match crate::media::decoder::load_media(&path) {
-            Ok(source) => {
-                let hdr_format = GpuContext::hdr_format();
-                let media_layer = MediaLayer::new(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    hdr_format,
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
-                    source,
-                    path.clone(),
-                );
-                let file_name = media_layer.file_name.clone();
-                let name = format!("Layer {}", num + 1);
-                self.layer_stack
-                    .layers
-                    .push(Layer::new_media(name, media_layer));
-                self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
-                self.sync_active_layer();
-                log::info!("Added media layer: {}", file_name);
-            }
-            Err(e) => {
-                log::error!("Failed to load media '{}': {e}", path.display());
-                self.status_error = Some((e, Instant::now()));
-            }
-        }
+        let hdr_format = GpuContext::hdr_format();
+        let media_layer = MediaLayer::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            hdr_format,
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+            source,
+            path,
+        );
+        let file_name = media_layer.file_name.clone();
+        let name = format!("Layer {}", num + 1);
+        self.layer_stack
+            .layers
+            .push(Layer::new_media(name, media_layer));
+        self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
+        self.sync_active_layer();
+        log::info!("Added media layer: {}", file_name);
     }
 
     /// Add a webcam layer. Starts capture if not already running.
@@ -2484,6 +2573,7 @@ impl App {
     }
 
     fn load_preset_inner(&mut self, index: usize) {
+        self.cancel_media_loads();
         let preset = match self.preset_store.load(index) {
             Some(p) => p.clone(),
             None => return,
@@ -2753,7 +2843,11 @@ impl App {
                         if path.exists() && crate::media::video::ffmpeg_available() {
                             match crate::media::video::probe_video(&path) {
                                 Ok(meta) => {
-                                    match crate::media::video::decode_all_frames(&path, &meta) {
+                                    match crate::media::video::decode_all_frames(
+                                        &path,
+                                        &meta,
+                                        &Default::default(),
+                                    ) {
                                         Ok((frames, delays_ms)) => {
                                             if let Some(ps) = self
                                                 .layer_stack
@@ -4263,6 +4357,15 @@ fn changes_touch_effect(
             .particles
             .as_ref()
             .is_some_and(|pd| touches(&pd.compute_shader))
+}
+
+/// A media file decoding for a new layer on its own thread.
+pub struct MediaLoad {
+    pub path: std::path::PathBuf,
+    pub file_name: String,
+    pub progress: std::sync::Arc<crate::media::decoder::MediaProgress>,
+    rx: crossbeam_channel::Receiver<Result<crate::media::decoder::MediaSource, String>>,
+    pub started: Instant,
 }
 
 #[cfg(test)]

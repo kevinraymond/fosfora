@@ -183,7 +183,11 @@ pub(crate) fn build_particle_system(
                 if crate::media::video::ffmpeg_available() {
                     match crate::media::video::probe_video(&video_path) {
                         Ok(meta) => {
-                            match crate::media::video::decode_all_frames(&video_path, &meta) {
+                            match crate::media::video::decode_all_frames(
+                                &video_path,
+                                &meta,
+                                &Default::default(),
+                            ) {
                                 Ok((frames, delays_ms)) => {
                                     let path_str = video_path.to_string_lossy().to_string();
                                     ps.set_video_source(queue, frames, delays_ms, path_str);

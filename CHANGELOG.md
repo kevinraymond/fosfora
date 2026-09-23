@@ -33,8 +33,13 @@
 
 - In the workspace layout, **Build has a catalog of pictures along the bottom**: every
   effect in families (Particles, Fluids, Life and growth and more), with search across
-  names and descriptions, and favorites. Click a picture to load it into the selected
-  layer, or drag it onto the stack to replace a layer's effect or add a new layer.
+  names and descriptions, and favorites. Hover a picture to see it move. Click it to
+  load it into the selected layer, or drag it onto the stack to replace a layer's
+  effect or add a new layer.
+
+- **Adding a video layer no longer freezes the app.** A video decodes every frame
+  before it plays, which took ~15 s with nothing on screen; it now decodes in the
+  background with a progress bar and a Cancel button where the layer will appear.
 
 - **Selecting a layer no longer changes the post-processing.** Bloom, vignette, grain
   and tonemap belong to the preset: an effect's recommended look is used when it is
