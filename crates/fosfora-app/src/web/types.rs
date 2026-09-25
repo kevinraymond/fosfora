@@ -44,6 +44,8 @@ pub enum WsInMessage {
     },
     /// Preview thumbnail image (JPEG) from a bridge source.
     BindPreview { source: String, jpeg_data: Vec<u8> },
+    /// Show orchestration command.
+    ShowCommand(crate::show::controller::ShowCommand),
 }
 
 /// Metadata for a WebSocket source field.
@@ -72,6 +74,7 @@ pub struct WebFrameResult {
     pub effect_loads: Vec<usize>,
     pub select_layer: Option<usize>,
     pub preset_loads: Vec<usize>,
+    pub show_commands: Vec<crate::show::controller::ShowCommand>,
 }
 
 impl WebFrameResult {
@@ -86,6 +89,7 @@ impl WebFrameResult {
             effect_loads: Vec::new(),
             select_layer: None,
             preset_loads: Vec::new(),
+            show_commands: Vec::new(),
         }
     }
 }

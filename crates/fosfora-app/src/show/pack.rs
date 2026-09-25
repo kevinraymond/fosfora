@@ -133,4 +133,29 @@ mod tests {
         let pack2 = ShowPack::open(&dest.join("show.json")).unwrap();
         assert_eq!(pack2.definition.id, "pack-test");
     }
+
+    #[test]
+    fn hibernation_show_pack_validates_clean() {
+        let path = std::path::PathBuf::from("/Users/dysell/Dev/vj/show/hibernation/show.json");
+        if !path.exists() {
+            return;
+        }
+        let pack = ShowPack::open(&path).expect("open hibernation show pack");
+        let preset_ids: Vec<String> = pack.presets.keys().cloned().collect();
+        let mut controller = crate::show::controller::ShowController::new(
+            pack.definition,
+            pack.root,
+            pack.palettes,
+            pack.bindings,
+            preset_ids,
+        );
+        let mut color_params = std::collections::HashSet::new();
+        color_params.insert((1, "tint".into()));
+        let report = controller.validate(&[], &color_params, &[]);
+        assert!(
+            report.ready(),
+            "Hibernation pack must be ready: {:?}",
+            report.issues
+        );
+    }
 }

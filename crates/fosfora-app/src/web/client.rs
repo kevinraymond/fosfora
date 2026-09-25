@@ -195,6 +195,27 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
                 .collect();
             Some(WsInMessage::BindSchema { source, fields })
         }
+        "show" => {
+            let action_str = v.get("action")?.as_str()?;
+            let cmd = match action_str {
+                "start" => crate::show::controller::ShowCommand::Start,
+                "pause" => crate::show::controller::ShowCommand::Pause,
+                "resume" => crate::show::controller::ShowCommand::Resume,
+                "reset" => crate::show::controller::ShowCommand::Reset,
+                "stop_auto" => crate::show::controller::ShowCommand::StopAuto,
+                "toggle_blackout" => crate::show::controller::ShowCommand::ToggleBlackout,
+                "seek" => {
+                    let secs = v.get("secs")?.as_u64()? as u32;
+                    crate::show::controller::ShowCommand::Seek { secs }
+                }
+                "next_visual" => crate::show::controller::ShowCommand::NextVisual,
+                "prev_visual" => crate::show::controller::ShowCommand::PrevVisual,
+                "next_palette" => crate::show::controller::ShowCommand::NextPalette,
+                "prev_palette" => crate::show::controller::ShowCommand::PrevPalette,
+                _ => return None,
+            };
+            Some(WsInMessage::ShowCommand(cmd))
+        }
         _ => {
             log::debug!("Unknown WS message type: {msg_type}");
             None
@@ -438,5 +459,28 @@ mod tests {
     #[test]
     fn parse_binary_preview_bad_jpeg() {
         assert!(parse_binary_preview(b"src\x00notjpeg").is_none());
+    }
+
+    #[test]
+    fn parse_show_commands() {
+        let json = r#"{"type":"show","action":"start"}"#;
+        match parse_client_message(json) {
+            Some(WsInMessage::ShowCommand(crate::show::controller::ShowCommand::Start)) => {}
+            other => panic!("expected ShowCommand::Start, got {:?}", other),
+        }
+
+        let json_seek = r#"{"type":"show","action":"seek","secs":1200}"#;
+        match parse_client_message(json_seek) {
+            Some(WsInMessage::ShowCommand(crate::show::controller::ShowCommand::Seek { secs })) => {
+                assert_eq!(secs, 1200);
+            }
+            other => panic!("expected ShowCommand::Seek, got {:?}", other),
+        }
+
+        let json_bo = r#"{"type":"show","action":"toggle_blackout"}"#;
+        match parse_client_message(json_bo) {
+            Some(WsInMessage::ShowCommand(crate::show::controller::ShowCommand::ToggleBlackout)) => {}
+            other => panic!("expected ShowCommand::ToggleBlackout, got {:?}", other),
+        }
     }
 }

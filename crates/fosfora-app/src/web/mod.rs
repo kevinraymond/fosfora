@@ -202,6 +202,9 @@ impl WebSystem {
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
                 }
+                WsInMessage::ShowCommand(cmd) => {
+                    result.show_commands.push(cmd);
+                }
             }
         }
 
@@ -256,6 +259,9 @@ impl WebSystem {
                 }
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
+                }
+                WsInMessage::ShowCommand(cmd) => {
+                    result.show_commands.push(cmd);
                 }
                 _ => {} // Skip active-layer param application
             }

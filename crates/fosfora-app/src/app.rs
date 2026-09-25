@@ -1041,6 +1041,11 @@ impl App {
                 }
             }
 
+            // Handle show commands from web
+            for cmd in web_result.show_commands {
+                self.show_command(cmd);
+            }
+
             // Handle preset loads from web
             let had_preset_loads = !web_result.preset_loads.is_empty();
             for preset_idx in web_result.preset_loads {
@@ -1049,6 +1054,7 @@ impl App {
 
             // After preset load, broadcast full state so all clients update
             if had_preset_loads && self.web.client_count > 0 {
+                let show_snap = self.show.as_ref().map(|s| s.snapshot(now, self.master_output.blackout));
                 let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
                 let layer_data: Vec<_> = self
                     .layer_stack
@@ -1072,6 +1078,7 @@ impl App {
                     &layer_data,
                     &self.preset_store,
                     self.post_process.enabled,
+                    show_snap.as_ref(),
                 );
                 self.web.broadcast_json(&state_json);
             }
@@ -1118,6 +1125,7 @@ impl App {
 
             // Broadcast full state to web clients after async preset load
             if self.web.client_count > 0 {
+                let show_snap = self.show.as_ref().map(|s| s.snapshot(now, self.master_output.blackout));
                 let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
                 let layer_data: Vec<_> = self
                     .layer_stack
@@ -1141,6 +1149,7 @@ impl App {
                     &layer_data,
                     &self.preset_store,
                     self.post_process.enabled,
+                    show_snap.as_ref(),
                 );
                 self.web.broadcast_json(&state_json);
             }
@@ -1277,6 +1286,7 @@ impl App {
 
         // Web: update latest state for new client initial sync
         if self.web.client_count > 0 || self.web.is_running() {
+            let show_snap = self.show.as_ref().map(|s| s.snapshot(now, self.master_output.blackout));
             let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
             let layer_data: Vec<_> = self
                 .layer_stack
@@ -1300,6 +1310,7 @@ impl App {
                 &layer_data,
                 &self.preset_store,
                 self.post_process.enabled,
+                show_snap.as_ref(),
             );
             self.web.update_latest_state(&state_json);
         }

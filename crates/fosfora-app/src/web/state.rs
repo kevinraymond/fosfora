@@ -17,6 +17,8 @@ pub struct FullState {
     pub presets: Vec<PresetInfo>,
     pub current_preset: Option<usize>,
     pub postprocess_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show: Option<crate::show::controller::ShowSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -142,6 +144,7 @@ pub fn build_full_state(
     layers: &[LayerTuple<'_>],
     preset_store: &PresetStore,
     postprocess_enabled: bool,
+    show: Option<&crate::show::controller::ShowSnapshot>,
 ) -> String {
     let effect_list: Vec<EffectInfo> = effects
         .iter()
@@ -204,6 +207,7 @@ pub fn build_full_state(
         presets,
         current_preset: preset_store.current_preset,
         postprocess_enabled,
+        show: show.cloned(),
     };
 
     serde_json::to_string(&state).unwrap_or_default()
@@ -522,5 +526,29 @@ mod tests {
         assert_eq!(presets.len(), 2);
         assert!(presets[0]["builtin"].as_bool().unwrap());
         assert!(!presets[1]["builtin"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn full_state_includes_show_snapshot_when_present() {
+        let store = PresetStore::new();
+        let snap = crate::show::controller::ShowSnapshot {
+            loaded: true,
+            auto_enabled: true,
+            running: true,
+            elapsed_ms: 120_000,
+            scene: Some("deep-sleep".into()),
+            next_scene: Some("under-ice".into()),
+            palette: Some("earth".into()),
+            next_palette: Some("deep-blue".into()),
+            blackout: false,
+            validation: "READY".into(),
+        };
+        let json = build_full_state(&[], &[], 0, &[], &store, true, Some(&snap));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "state");
+        assert_eq!(v["show"]["scene"], "deep-sleep");
+        assert_eq!(v["show"]["palette"], "earth");
+        assert_eq!(v["show"]["elapsed_ms"], 120000);
+        assert_eq!(v["show"]["auto_enabled"], true);
     }
 }
