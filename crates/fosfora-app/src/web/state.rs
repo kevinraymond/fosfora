@@ -551,4 +551,37 @@ mod tests {
         assert_eq!(v["show"]["elapsed_ms"], 120000);
         assert_eq!(v["show"]["auto_enabled"], true);
     }
+
+    #[test]
+    fn full_state_at_01_47_23_shows_correct_mid_show_state() {
+        // Phase 3 CHECKPOINT: a browser refresh at 01:47:23 (6443s) must
+        // render the full show state — reconnect is harmless. At 6443s the
+        // scene track sits on pulse-below (3600s cue) with thaw next, and
+        // the palette track sits on deep-blue (3500s cue) with plum next.
+        let store = PresetStore::new();
+        let snap = crate::show::controller::ShowSnapshot {
+            loaded: true,
+            auto_enabled: true,
+            running: true,
+            elapsed_ms: 6_443_000,
+            scene: Some("pulse-below".into()),
+            next_scene: Some("thaw".into()),
+            palette: Some("deep-blue".into()),
+            next_palette: Some("plum".into()),
+            blackout: false,
+            validation: "READY".into(),
+        };
+        let json = build_full_state(&[], &[], 0, &[], &store, true, Some(&snap));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["show"]["loaded"], true);
+        assert_eq!(v["show"]["auto_enabled"], true);
+        assert_eq!(v["show"]["running"], true);
+        assert_eq!(v["show"]["elapsed_ms"], 6_443_000);
+        assert_eq!(v["show"]["scene"], "pulse-below");
+        assert_eq!(v["show"]["next_scene"], "thaw");
+        assert_eq!(v["show"]["palette"], "deep-blue");
+        assert_eq!(v["show"]["next_palette"], "plum");
+        assert_eq!(v["show"]["blackout"], false);
+        assert_eq!(v["show"]["validation"], "READY");
+    }
 }

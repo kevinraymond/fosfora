@@ -128,6 +128,54 @@ mod tests {
     }
 
     #[test]
+    fn both_tracks_independent_for_full_3h_from_one_clock() {
+        // Phase 3 CHECKPOINT core: both tracks run independently for the
+        // full 3h from one ShowClock. Walk every cue boundary of the
+        // Hibernation timeline (scene cues at 0/1200/3600/7200/9600,
+        // palette cues at 0/3500/6900) plus a mid-transition sample, in
+        // milliseconds of test time via `elapsed_at`.
+        let t0 = Instant::now();
+        let mut clock = ShowClock::new();
+        clock.start(t0);
+        // (elapsed_s, expected scene idx, expected palette idx)
+        let checkpoints = [
+            (0, 0, 0),
+            (1199, 0, 0),
+            (1200, 1, 0),
+            (3499, 1, 0),
+            (3500, 1, 1),
+            (3522, 1, 1), // 37% into the 60s earth→deep-blue blend
+            (3600, 2, 1),
+            (6899, 2, 1),
+            (6900, 2, 2),
+            (7200, 3, 2),
+            (9600, 4, 2),
+            (10799, 4, 2),
+        ];
+        for (secs, scene_idx, pal_idx) in checkpoints {
+            let now = t0 + Duration::from_secs(secs);
+            let elapsed = clock.elapsed_at(now);
+            assert_eq!(elapsed, Duration::from_secs(secs), "elapsed at {secs}s");
+            let e = elapsed.as_secs().min(u64::from(u32::MAX)) as u32;
+            assert_eq!(
+                crate::show::definition::scheduled_index([0, 1200, 3600, 7200, 9600], e),
+                Some(scene_idx),
+                "scene index at {secs}s"
+            );
+            assert_eq!(
+                crate::show::definition::scheduled_index([0, 3500, 6900], e),
+                Some(pal_idx),
+                "palette index at {secs}s"
+            );
+        }
+        // End of show: clock reads exactly 3h.
+        assert_eq!(
+            clock.elapsed_at(t0 + Duration::from_secs(10800)),
+            Duration::from_secs(10800)
+        );
+    }
+
+    #[test]
     fn pause_ten_minutes_then_resume() {
         let t0 = Instant::now();
         let mut clock = ShowClock::new();
