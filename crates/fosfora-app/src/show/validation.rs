@@ -108,8 +108,10 @@ pub fn validate_show(
     }
 
     for (preset_id, set) in bindings {
-        if !preset_ids.contains(preset_id) && set.preset != *preset_id {
-            // still validate targets
+        if !preset_ids.contains(preset_id) && !preset_ids.contains(&set.preset) {
+            issues.push(issue(format!(
+                "Unknown preset '{preset_id}' in palette bindings"
+            )));
         }
         for b in &set.bindings {
             if !color_params.is_empty()
@@ -121,10 +123,22 @@ pub fn validate_show(
                 )));
             }
         }
-        let bound_slots: BTreeSet<_> = set.bindings.iter().map(|b| b.slot.as_str()).collect();
-        for b in &set.bindings {
-            if bound_slots.contains(b.slot.as_str()) {
-                // placeholder for delete-bound-swatch: checked when palette is edited
+        // Delete-bound-swatch: every bound slot must still exist on at least
+        // one palette on the track (slot IDs are stable; array position is not).
+        let live_slots: BTreeSet<&str> = def
+            .palette_track
+            .iter()
+            .filter_map(|c| palettes.get(&c.palette_id))
+            .flat_map(|p| p.swatches.iter().map(|s| s.slot.as_str()))
+            .collect();
+        if !live_slots.is_empty() {
+            for b in &set.bindings {
+                if !live_slots.contains(b.slot.as_str()) {
+                    issues.push(issue(format!(
+                        "Binding {preset_id} slot {} no longer exists on any track palette",
+                        b.slot
+                    )));
+                }
             }
         }
     }
@@ -269,5 +283,40 @@ mod tests {
         let bytes = estimate_rgba_ram(1280, 720, 15.0, 8.0);
         // 120 frames * 1280 * 720 * 4 ≈ 442 MB
         assert!(bytes > 400_000_000 && bytes < 500_000_000);
+    }
+
+    #[test]
+    fn delete_bound_swatch_is_a_validation_error() {
+        use crate::palette::bindings::{PaletteBinding, PaletteBindingSet};
+        let mut palettes = HashMap::new();
+        let mut earth = crate::palette::types::Palette::solid_test("earth", "Earth");
+        earth.swatches.retain(|s| s.slot != "color-1");
+        palettes.insert("earth".into(), earth);
+        let mut presets = HashSet::new();
+        presets.insert("deep-sleep".into());
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "deep-sleep".into(),
+            PaletteBindingSet {
+                schema_version: 1,
+                preset: "deep-sleep".into(),
+                bindings: vec![PaletteBinding {
+                    slot: "color-1".into(),
+                    layer: 1,
+                    parameter: "tint".into(),
+                }],
+            },
+        );
+        let report = validate_show(
+            &def(),
+            &palettes,
+            &bindings,
+            &presets,
+            &[],
+            &HashSet::new(),
+            &[],
+        );
+        assert!(!report.ready());
+        assert!(report.issues.iter().any(|i| i.message.contains("color-1")));
     }
 }

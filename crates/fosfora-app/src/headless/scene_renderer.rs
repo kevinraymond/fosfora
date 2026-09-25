@@ -703,6 +703,8 @@ impl SceneRenderer {
                 effects: &self.effect_loader.effects,
                 uniforms: &mut self.uniforms,
                 pending_triggers: &mut self.binding_bus.pending_triggers,
+                // Headless renderer has no show pack — no palette ownership.
+                palette_owned: None,
             };
             for o in &outs {
                 crate::bindings::apply::apply_binding_target(
@@ -927,6 +929,7 @@ mod tests {
                 effects: &sr.effect_loader.effects,
                 uniforms: &mut sr.uniforms,
                 pending_triggers: &mut sr.binding_bus.pending_triggers,
+                palette_owned: None,
             };
             for out in &outs {
                 crate::bindings::apply::apply_binding_target(

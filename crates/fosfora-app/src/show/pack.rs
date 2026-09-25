@@ -149,9 +149,7 @@ mod tests {
             pack.bindings,
             preset_ids,
         );
-        let mut color_params = std::collections::HashSet::new();
-        color_params.insert((1, "tint".into()));
-        let report = controller.validate(&[], &color_params, &[]);
+        let report = controller.validate(&pack.presets, &[], &[]);
         assert!(
             report.ready(),
             "Hibernation pack must be ready: {:?}",

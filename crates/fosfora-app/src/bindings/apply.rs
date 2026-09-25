@@ -23,6 +23,11 @@ pub(crate) struct BindingTargetCtx<'a> {
     pub uniforms: &'a mut ShaderUniforms,
     /// `scene.transport.*` actions land here; the event loop drains them.
     pub pending_triggers: &'a mut Vec<String>,
+    /// Palette-owned (layer, param) pairs, when show automation is active.
+    /// `Some` = PaletteController owns these color params exclusively; the
+    /// bus must not write them (exclusive runtime ownership, Phase 2
+    /// p2-ownership). `None` = no guard (vanilla Fosfora behavior).
+    pub palette_owned: Option<std::collections::HashSet<(usize, String)>>,
 }
 
 pub(crate) fn apply_binding_target(
@@ -32,6 +37,25 @@ pub(crate) fn apply_binding_target(
     rising: bool,
 ) {
     use crate::bindings::types::{BindingTarget, LayerField};
+
+    // Exclusive palette ownership: the bus never writes a palette-owned
+    // color param while automation is active. PaletteController is the
+    // final word via `set_runtime` in `tick_show` (runs after this).
+    if let Some(owned) = ctx.palette_owned.as_ref() {
+        let blocked = match target {
+            BindingTarget::Param { layer, param, .. } => {
+                owned.contains(&(*layer, param.clone()))
+            }
+            BindingTarget::LegacyParam { param, .. } => {
+                let active = ctx.layer_stack.active_layer;
+                owned.contains(&(active, param.clone()))
+            }
+            _ => false,
+        };
+        if blocked {
+            return;
+        }
+    }
     match target {
         // Unset is a half-made binding; Unknown is one we did not recognise
         // and are carrying verbatim rather than discarding.

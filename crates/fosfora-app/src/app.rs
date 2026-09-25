@@ -2273,11 +2273,18 @@ impl App {
         value: f32,
         rising: bool,
     ) {
+        // Computed before the layer-stack borrow below (E0502 otherwise).
+        let palette_owned = self.palette_owned();
         let mut ctx = crate::bindings::apply::BindingTargetCtx {
             layer_stack: &mut self.layer_stack,
             effects: &self.effect_loader.effects,
             uniforms: &mut self.uniforms,
             pending_triggers: &mut self.binding_bus.pending_triggers,
+            // Exclusive ownership (p2-ownership): while palette automation
+            // is active the bus never writes a palette-owned color param.
+            // PaletteController has the final word via `set_runtime` in
+            // `tick_show`, which runs after the bus each frame.
+            palette_owned,
         };
         crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
     }
@@ -3320,7 +3327,69 @@ impl App {
                 pack.bindings.clone(),
                 preset_ids,
             );
-            controller.validate(&[], &std::collections::HashSet::new(), &[])
+            // Ownership validation (p2-ownership): collect every external
+            // control path targeting a palette-owned color param. MIDI/OSC
+            // configs map param NAME → mapping; resolve to the live layer
+            // index by matching the name against each layer's defs. Layer-
+            // addressed OSC/WS messages and bus targets carry their own
+            // layer index. Audio sources are bus-only, so the bus scan
+            // covers them (audio.* → Param targets).
+            let owned: std::collections::HashSet<(usize, String)> = pack
+                .bindings
+                .values()
+                .flat_map(|set| set.bindings.iter())
+                .map(|b| (b.layer, b.parameter.clone()))
+                .collect();
+            let mut external: Vec<(String, usize, String)> = Vec::new();
+            // MIDI + OSC global configs: param name → find owning layers.
+            for name in self
+                .midi
+                .config
+                .params
+                .keys()
+                .chain(self.osc.config.params.keys())
+            {
+                let owner = if self.midi.config.params.contains_key(name) {
+                    "midi"
+                } else {
+                    "osc"
+                };
+                for (idx, layer) in self.layer_stack.layers.iter().enumerate() {
+                    if layer.param_store.defs.iter().any(|d| d.name() == name) {
+                        external.push((owner.into(), idx, name.clone()));
+                    }
+                }
+            }
+            // Binding bus: audio + midi + osc + ws sources → Param targets.
+            for b in &self.binding_bus.bindings {
+                if !b.enabled {
+                    continue;
+                }
+                match &b.target {
+                    crate::bindings::types::BindingTarget::Param {
+                        layer,
+                        param,
+                        ..
+                    } => external.push((
+                        format!("binding-bus({})", b.source),
+                        *layer,
+                        param.clone(),
+                    )),
+                    crate::bindings::types::BindingTarget::LegacyParam {
+                        param, ..
+                    } => external.push((
+                        format!("binding-bus({})", b.source),
+                        self.layer_stack.active_layer,
+                        param.clone(),
+                    )),
+                    _ => {}
+                }
+            }
+            let conflicts: Vec<(String, usize, String)> = external
+                .into_iter()
+                .filter(|(_, layer, param)| owned.contains(&(*layer, param.clone())))
+                .collect();
+            controller.validate(&pack.presets, &[], &conflicts)
         };
         log::info!(
             "Show pack '{}' loaded: {} scene cues, {} palette cues — {}",
@@ -3350,9 +3419,33 @@ impl App {
         self.show = Some(controller);
     }
 
+    /// True while palette automation owns bound color params: a pack is open
+    /// AND automation is on. External writers (MIDI/OSC/WS/binding-bus)
+    /// must skip palette-owned params while this holds — PaletteController
+    /// is the exclusive owner, enforced by the per-frame write order below.
+    pub fn palette_automating(&self) -> bool {
+        self.show.as_ref().is_some_and(|s| s.auto_enabled)
+    }
+
+    /// Palette-owned (layer, param) pairs for the ownership guard, or `None`
+    /// when automation is off (no guard — vanilla Fosfora behavior).
+    fn palette_owned(&self) -> Option<std::collections::HashSet<(usize, String)>> {
+        let show = self.show.as_ref()?;
+        if !show.auto_enabled {
+            return None;
+        }
+        Some(show.palette_owned_params())
+    }
+
     /// Tick the show + palette schedulers (Phase 1/3). Called every frame from
     /// `update` with an `Instant` `now` — never the clamped render `dt` — so a
     /// 5 s stall advances the show by exactly 5 s.
+    ///
+    /// Exclusive ownership (Phase 2 p2-ownership): palette automation writes
+    /// LAST each frame via `set_runtime`, so a stray MIDI/OSC/WS/binding write
+    /// to a bound color param is overwritten the same frame — the palette is
+    /// the final word while automation is active. The validator surfaces the
+    /// configuration conflict; this guarantees the runtime behavior.
     fn tick_show(&mut self, now: Instant) {
         let events = match self.show.as_mut() {
             Some(show) => show.tick(now),

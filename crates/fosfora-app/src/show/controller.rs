@@ -80,18 +80,40 @@ impl ShowController {
 
     pub fn validate(
         &mut self,
+        pack_presets: &HashMap<String, crate::preset::Preset>,
         media: &[MediaEstimate],
-        color_params: &std::collections::HashSet<(usize, String)>,
         conflicts: &[(String, usize, String)],
     ) -> ValidationReport {
         let preset_set = self.preset_ids.iter().cloned().collect();
+        // Color targets come from the pack presets themselves: any (layer,
+        // param) whose stored value is ParamValue::Color. No caller inventory
+        // needed — bindings must point at Color params by construction.
+        let mut color_params = std::collections::HashSet::new();
+        for (preset_id, set) in &self.bindings {
+            let Some(preset) = pack_presets
+                .get(preset_id)
+                .or_else(|| pack_presets.get(&set.preset))
+            else {
+                continue;
+            };
+            for b in &set.bindings {
+                if preset
+                    .layers
+                    .get(b.layer)
+                    .and_then(|l| l.params.get(&b.parameter))
+                    .is_some_and(|v| matches!(v, ParamValue::Color(_)))
+                {
+                    color_params.insert((b.layer, b.parameter.clone()));
+                }
+            }
+        }
         let mut report = validate_show(
             &self.definition,
             &self.palettes,
             &self.bindings,
             &preset_set,
             media,
-            color_params,
+            &color_params,
             conflicts,
         );
         report
@@ -103,6 +125,32 @@ impl ShowController {
 
     pub fn elapsed_ms_at(&self, now: Instant) -> u128 {
         self.clock.elapsed_at(now).as_millis()
+    }
+
+    /// (layer, param) pairs owned by palette automation, for conflict scans.
+    /// Derived from the open pack's binding sets — callers pass live MIDI /
+    /// OSC / binding-bus targets to [`Self::palette_conflicts`] to build the
+    /// validator's `conflicting_owners` list.
+    pub fn palette_owned_params(&self) -> std::collections::HashSet<(usize, String)> {
+        self.bindings
+            .values()
+            .flat_map(|set| set.bindings.iter())
+            .map(|b| (b.layer, b.parameter.clone()))
+            .collect()
+    }
+
+    /// Build the validator `conflicting_owners` list: every (owner, layer,
+    /// param) where an external control path (audio/MIDI/OSC/binding-bus)
+    /// targets a palette-owned color param. Empty when clean.
+    pub fn palette_conflicts(
+        &self,
+        external_targets: impl IntoIterator<Item = (String, usize, String)>,
+    ) -> Vec<(String, usize, String)> {
+        let owned = self.palette_owned_params();
+        external_targets
+            .into_iter()
+            .filter(|(_, layer, param)| owned.contains(&(*layer, param.clone())))
+            .collect()
     }
 
     pub fn handle(&mut self, now: Instant, cmd: ShowCommand) -> Vec<ShowVisualEvent> {
