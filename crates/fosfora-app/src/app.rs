@@ -2494,8 +2494,24 @@ impl App {
             .map(|(n, _)| n.clone())
             .unwrap_or_default();
 
-        // Load preset-scoped bindings and migrate old 3-part targets to 4-part format
-        self.binding_bus.load_preset_bindings(&preset_name);
+        // Load preset-scoped bindings and migrate old 3-part targets to 4-part format.
+        // With a show pack open, the pack's audio-bindings/<preset>.bindings.json
+        // wins over the config-dir sidecar: the show's audio maps are curated
+        // content (music = motion/energy, never palette-owned color params),
+        // versioned with the pack, and portable across machines. Falls back to
+        // the config-dir sidecar when the pack ships none for this preset.
+        let pack_sidecar: Option<std::path::PathBuf> = self
+            .show
+            .as_ref()
+            .map(|show| show.pack_root.join(format!("audio-bindings/{preset_name}.bindings.json")));
+        match pack_sidecar {
+            Some(path) if path.is_file() => {
+                self.binding_bus.load_preset_bindings_from(&path);
+            }
+            _ => {
+                self.binding_bus.load_preset_bindings(&preset_name);
+            }
+        }
         // Freshly loaded bindings match disk — clear any stale unsaved flag.
         self.binding_bus.preset_scope_dirty = false;
         crate::bindings::apply::upgrade_legacy_targets(&mut self.binding_bus, &preset);
@@ -3360,6 +3376,37 @@ impl App {
                     }
                 }
             }
+            // Pack audio maps also count as external writers: the pack's
+            // audio-bindings/*.bindings.json are live bus bindings (loaded
+            // per cue above), so a map onto a palette-owned tint must fail
+            // validation exactly like a config-dir sidecar would.
+            let mut pack_audio_targets: Vec<(String, usize, String)> = Vec::new();
+            for (preset_id, list) in &pack.audio_bindings {
+                for b in list {
+                    if !b.enabled {
+                        continue;
+                    }
+                    match &b.target {
+                        crate::bindings::types::BindingTarget::Param {
+                            layer,
+                            param,
+                            ..
+                        } => pack_audio_targets.push((
+                            format!("audio-bindings({preset_id})"),
+                            *layer,
+                            param.clone(),
+                        )),
+                        crate::bindings::types::BindingTarget::LegacyParam { param, .. } => {
+                            pack_audio_targets.push((
+                                format!("audio-bindings({preset_id})"),
+                                0,
+                                param.clone(),
+                            ))
+                        }
+                        _ => {}
+                    }
+                }
+            }
             // Binding bus: audio + midi + osc + ws sources → Param targets.
             for b in &self.binding_bus.bindings {
                 if !b.enabled {
@@ -3385,6 +3432,7 @@ impl App {
                     _ => {}
                 }
             }
+            external.extend(pack_audio_targets);
             let conflicts: Vec<(String, usize, String)> = external
                 .into_iter()
                 .filter(|(_, layer, param)| owned.contains(&(*layer, param.clone())))

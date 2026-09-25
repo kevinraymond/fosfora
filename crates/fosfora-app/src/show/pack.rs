@@ -15,6 +15,11 @@ pub struct ShowPack {
     pub palettes: HashMap<String, Palette>,
     pub bindings: HashMap<String, PaletteBindingSet>,
     pub presets: HashMap<String, Preset>,
+    /// Curated per-preset audio maps (music = motion/energy): parsed but
+    /// unstructured [`crate::bindings::types::Binding`] lists, keyed by
+    /// preset id. Loaded live per cue from `audio-bindings/` (see
+    /// `load_preset_inner`), so this map only feeds validation.
+    pub audio_bindings: HashMap<String, Vec<crate::bindings::types::Binding>>,
 }
 
 impl ShowPack {
@@ -40,6 +45,29 @@ impl ShowPack {
                 let raw = fs::read_to_string(&path)?;
                 let set: PaletteBindingSet = serde_json::from_str(&raw)?;
                 bindings.insert(set.preset.clone(), set);
+            }
+        }
+
+        let mut audio_bindings: HashMap<String, Vec<crate::bindings::types::Binding>> =
+            HashMap::new();
+        let audio_dir = root.join("audio-bindings");
+        if audio_dir.is_dir() {
+            for entry in fs::read_dir(&audio_dir)? {
+                let path = entry?.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let raw = fs::read_to_string(&path)?;
+                let file: crate::bindings::persistence::BindingsFile =
+                    serde_json::from_str(&raw)
+                        .with_context(|| format!("parse {}", path.display()))?;
+                let id = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .trim_end_matches(".bindings")
+                    .to_string();
+                audio_bindings.insert(id, file.bindings);
             }
         }
 
@@ -69,6 +97,7 @@ impl ShowPack {
             palettes,
             bindings,
             presets,
+            audio_bindings,
         })
     }
 }
@@ -132,6 +161,43 @@ mod tests {
         fs::copy(root.join("palettes/earth.json"), dest.join("palettes/earth.json")).unwrap();
         let pack2 = ShowPack::open(&dest.join("show.json")).unwrap();
         assert_eq!(pack2.definition.id, "pack-test");
+    }
+
+    #[test]
+    fn hibernation_audio_bindings_avoid_palette_owned_params() {
+        // Exclusive ownership (p2-ownership): music = motion/energy, never
+        // palette-owned color params. Every audio-bindings target must miss
+        // the pack's palette-owned (layer, param) set.
+        let path = std::path::PathBuf::from("/Users/dysell/Dev/vj/show/hibernation/show.json");
+        if !path.exists() {
+            return;
+        }
+        let pack = ShowPack::open(&path).expect("open hibernation show pack");
+        let owned: std::collections::HashSet<(usize, String)> = pack
+            .bindings
+            .values()
+            .flat_map(|set| set.bindings.iter())
+            .map(|b| (b.layer, b.parameter.clone()))
+            .collect();
+        assert!(!owned.is_empty(), "pack must own some color params");
+        for (preset_id, list) in &pack.audio_bindings {
+            for b in list {
+                match &b.target {
+                    crate::bindings::types::BindingTarget::Param { layer, param, .. } => {
+                        assert!(
+                            !owned.contains(&(*layer, param.clone())),
+                            "{preset_id}: audio map targets palette-owned layer {layer} / {param}"
+                        );
+                    }
+                    crate::bindings::types::BindingTarget::LegacyParam { param, .. } => {
+                        panic!("{preset_id}: legacy target on {param} — use indexed form");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // All five presets ship curated maps.
+        assert_eq!(pack.audio_bindings.len(), 5);
     }
 
     #[test]
