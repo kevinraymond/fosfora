@@ -3264,6 +3264,11 @@ impl App {
             PalettePanelAction::Edited => out.palette_edited = true,
             PalettePanelAction::PrevPalette => out.show = Some(ShowCmd::PrevPalette),
             PalettePanelAction::NextPalette => out.show = Some(ShowCmd::NextPalette),
+            // CRUD actions mutate the open pack directly — same save path as
+            // edits (deleted palettes remove their file; created/renamed write).
+            PalettePanelAction::Created => out.palette_edited = true,
+            PalettePanelAction::Deleted => out.palette_edited = true,
+            PalettePanelAction::Duplicated => out.palette_edited = true,
         }
         out
     }

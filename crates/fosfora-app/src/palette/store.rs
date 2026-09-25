@@ -57,6 +57,27 @@ impl PaletteStore {
             fs::write(&tmp, json)?;
             fs::rename(&tmp, dest)?;
         }
+        // Deleting a palette in the editor removes its file (open-in-place):
+        // drop pack files whose id is no longer in the map.
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default();
+                if stem.starts_with('.') {
+                    continue;
+                }
+                let in_map = self.palettes.values().any(|p| p.id == stem);
+                if !in_map {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
         self.dirty = false;
         Ok(())
     }
