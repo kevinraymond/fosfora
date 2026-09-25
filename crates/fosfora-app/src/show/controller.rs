@@ -354,6 +354,15 @@ mod tests {
     use crate::show::definition::{PaletteCue, SceneCue, SceneTransition, TransitionKind};
 
     fn controller() -> ShowController {
+        // Distinct palettes: "earth" starts at 0.0 gray, "deep-blue" ends at
+        // 1.0 gray, so interpolation fractions are directly assertable.
+        fn gray(id: &str, v: f32) -> Palette {
+            let mut p = Palette::solid_test(id, id);
+            for s in &mut p.swatches {
+                s.rgba = [v, v, v, 1.0];
+            }
+            p
+        }
         let def = ShowDefinition {
             schema_version: 1,
             id: "test".into(),
@@ -391,14 +400,8 @@ mod tests {
             ],
         };
         let mut palettes = HashMap::new();
-        palettes.insert(
-            "earth".into(),
-            Palette::solid_test("earth", "Earth"),
-        );
-        palettes.insert(
-            "deep-blue".into(),
-            Palette::solid_test("deep-blue", "Deep Blue"),
-        );
+        palettes.insert("earth".into(), gray("earth", 0.0));
+        palettes.insert("deep-blue".into(), gray("deep-blue", 1.0));
         ShowController::new(
             def,
             PathBuf::from("/tmp"),
@@ -434,5 +437,109 @@ mod tests {
             c.clock.elapsed_at(t0 + Duration::from_secs(30)),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn both_tracks_run_independently_from_one_clock() {
+        // Scene edge at 1200s and palette edge at 3500s fire independently:
+        // each track advances on its own cue times off the same ShowClock.
+        let mut c = controller();
+        let t0 = Instant::now();
+        c.handle(t0, ShowCommand::Start);
+        assert_eq!(c.scene.active_preset_id.as_deref(), Some("A"));
+        assert_eq!(c.palette.active_palette_id.as_deref(), Some("earth"));
+        // Scene edge fires; palette untouched.
+        let scene_events = c.tick(t0 + Duration::from_secs(1200));
+        assert!(scene_events
+            .iter()
+            .any(|e| matches!(e, ShowVisualEvent::Scene(s) if s.preset_id == "B")));
+        assert_eq!(c.palette.active_palette_id.as_deref(), Some("earth"));
+        // Palette edge fires; scene untouched.
+        let pal_events = c.tick(t0 + Duration::from_secs(3500));
+        assert!(pal_events.iter().any(|e| matches!(e, ShowVisualEvent::Palette(_))));
+        assert_eq!(c.scene.active_preset_id.as_deref(), Some("B"));
+        assert_eq!(c.palette.active_palette_id.as_deref(), Some("deep-blue"));
+    }
+
+    #[test]
+    fn seek_atomically_reconstructs_scene_and_palette() {
+        // SEEK into the palette transition (3522s = 37% of the 60s blend)
+        // yields both the snapped scene AND the exact interpolated colors.
+        let mut c = controller();
+        let t0 = Instant::now();
+        c.handle(t0, ShowCommand::Start);
+        let events = c.handle(t0 + Duration::from_secs(10), ShowCommand::Seek { secs: 3522 });
+        let scene = events.iter().find_map(|e| match e {
+            ShowVisualEvent::Scene(s) => Some(s),
+            _ => None,
+        });
+        let scene = scene.expect("seek emits scene");
+        assert_eq!(scene.preset_id, "B");
+        assert!(scene.snap);
+        let colors = events.iter().find_map(|e| match e {
+            ShowVisualEvent::Palette(m) => Some(m),
+            _ => None,
+        });
+        let colors = colors.expect("seek emits palette");
+        match colors.get("color-1") {
+            Some(ParamValue::Color(col)) => {
+                let expected = 22.0 / 60.0;
+                assert!((col[0] - expected).abs() < 0.03, "{col:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Schedulers agree with the seek position — no stale replay follows.
+        assert_eq!(c.scene.last_processed_scheduled_index, Some(1));
+        assert_eq!(c.palette.last_processed_scheduled_index, Some(1));
+    }
+
+    #[test]
+    fn stall_jump_resolves_both_tracks_to_latest() {
+        // One tick leaping over BOTH edges lands each track on its latest
+        // cue — stale transitions are never replayed.
+        let mut c = controller();
+        let t0 = Instant::now();
+        c.handle(t0, ShowCommand::Start);
+        let events = c.tick(t0 + Duration::from_secs(7200));
+        let scene = events.iter().find_map(|e| match e {
+            ShowVisualEvent::Scene(s) => Some(s),
+            _ => None,
+        });
+        assert_eq!(scene.map(|s| s.preset_id.as_str()), Some("B"));
+        assert_eq!(c.scene.last_processed_scheduled_index, Some(1));
+        assert_eq!(c.palette.last_processed_scheduled_index, Some(1));
+    }
+
+    #[test]
+    fn manual_visual_override_does_not_disturb_palette_track() {
+        // Manual NEXT changes the visual but neither scheduled index —
+        // automation resumes normally on both tracks afterwards.
+        let mut c = controller();
+        let t0 = Instant::now();
+        c.handle(t0, ShowCommand::Start);
+        c.handle(t0 + Duration::from_secs(60), ShowCommand::NextVisual);
+        assert_eq!(c.scene.active_preset_id.as_deref(), Some("B"));
+        assert_eq!(c.scene.last_processed_scheduled_index, Some(0));
+        assert_eq!(c.palette.last_processed_scheduled_index, Some(0));
+        // The 1200s scene edge is a no-op (already showing B) …
+        assert!(c.tick(t0 + Duration::from_secs(1200)).iter().all(|e| matches!(e, ShowVisualEvent::Palette(_))));
+        // … and the palette edge still fires on schedule.
+        let pal_events = c.tick(t0 + Duration::from_secs(3500));
+        assert!(pal_events.iter().any(|e| matches!(e, ShowVisualEvent::Palette(_))));
+        assert_eq!(c.palette.active_palette_id.as_deref(), Some("deep-blue"));
+    }
+
+    #[test]
+    fn manual_palette_override_does_not_move_palette_index() {
+        let mut c = controller();
+        let t0 = Instant::now();
+        c.handle(t0, ShowCommand::Start);
+        c.handle(t0 + Duration::from_secs(60), ShowCommand::NextPalette);
+        assert_eq!(c.palette.active_palette_id.as_deref(), Some("deep-blue"));
+        assert_eq!(c.palette.last_processed_scheduled_index, Some(0));
+        // Automation resumes: the 3500s edge still fires on schedule.
+        let events = c.tick(t0 + Duration::from_secs(3500));
+        assert_eq!(c.palette.last_processed_scheduled_index, Some(1));
+        assert!(events.iter().any(|e| matches!(e, ShowVisualEvent::Palette(_))));
     }
 }

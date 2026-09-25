@@ -150,4 +150,144 @@ mod tests {
             other => panic!("{other:?}"),
         }
     }
+
+    #[test]
+    fn independent_tracks_scene_and_palette_edges_do_not_interfere() {
+        // Scene edges at 1200s must not reset palette interpolation, and
+        // palette edges must not disturb the scene index: both tracks read
+        // the same elapsed but keep separate `last_processed` state.
+        let palette_cues = vec![
+            PaletteCue {
+                at_secs: 0,
+                palette_id: "a".into(),
+                transition_ms: 0,
+            },
+            PaletteCue {
+                at_secs: 3500,
+                palette_id: "b".into(),
+                transition_ms: 60_000,
+            },
+        ];
+        let mut map = HashMap::new();
+        map.insert("a".into(), pal("a", 0.0));
+        map.insert("b".into(), pal("b", 1.0));
+        let mut sched = PaletteScheduler::default();
+        // Just before the palette edge: solid "a".
+        let pre = sched
+            .tick(&palette_cues, &map, Duration::from_secs(3499))
+            .unwrap();
+        match pre.get("color-1") {
+            Some(ParamValue::Color(c)) => assert!((c[0]).abs() < 1e-5, "{c:?}"),
+            other => panic!("{other:?}"),
+        }
+        // A scene edge "fires" at 1200s / 3600s in between — the palette
+        // scheduler never sees it; mid-palette-transition value is pure
+        // function of elapsed (37% of 60s at 3500+22=3522s).
+        let mid = palette_colors_at(&palette_cues, &map, Duration::from_secs(3522)).unwrap();
+        match mid.get("color-1") {
+            Some(ParamValue::Color(c)) => assert!((c[0] - 22.0 / 60.0).abs() < 0.02, "{c:?}"),
+            other => panic!("{other:?}"),
+        }
+        // After the transition completes the target holds exactly.
+        let done = sched
+            .tick(&palette_cues, &map, Duration::from_secs(3600))
+            .unwrap();
+        match done.get("color-1") {
+            Some(ParamValue::Color(c)) => assert!((c[0] - 1.0).abs() < 1e-5, "{c:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_change_mid_scene_transition_keeps_both_tracks() {
+        // Palette NEXT/PREV is a manual override: it must not move the
+        // palette scheduled index, mirroring the scene-track rule.
+        let cues = vec![
+            PaletteCue {
+                at_secs: 0,
+                palette_id: "a".into(),
+                transition_ms: 0,
+            },
+            PaletteCue {
+                at_secs: 3500,
+                palette_id: "b".into(),
+                transition_ms: 60_000,
+            },
+        ];
+        let mut sched = PaletteScheduler::default();
+        sched.tick(&cues, &HashMap::new(), Duration::from_secs(100));
+        assert_eq!(sched.last_processed_scheduled_index, Some(0));
+        sched.manual_set("b".into());
+        assert_eq!(sched.active_palette_id.as_deref(), Some("b"));
+        // Scheduled index untouched by the manual override …
+        assert_eq!(sched.last_processed_scheduled_index, Some(0));
+        // … so the next automatic edge still fires on schedule.
+        let mut map = HashMap::new();
+        map.insert("a".into(), pal("a", 0.0));
+        map.insert("b".into(), pal("b", 1.0));
+        let colors = sched
+            .tick(&cues, &map, Duration::from_secs(3500))
+            .unwrap();
+        assert_eq!(sched.last_processed_scheduled_index, Some(1));
+        assert!(colors.contains_key("color-1"));
+    }
+
+    #[test]
+    fn seek_into_palette_transition_reconstructs_exact_color() {
+        // SEEK must land on the exact interpolated color at the timestamp —
+        // no replaying the transition from its start.
+        let cues = vec![
+            PaletteCue {
+                at_secs: 0,
+                palette_id: "a".into(),
+                transition_ms: 0,
+            },
+            PaletteCue {
+                at_secs: 3500,
+                palette_id: "b".into(),
+                transition_ms: 60_000,
+            },
+        ];
+        let mut map = HashMap::new();
+        map.insert("a".into(), pal("a", 0.0));
+        map.insert("b".into(), pal("b", 1.0));
+        let mut sched = PaletteScheduler::default();
+        // Simulate a seek to 3530s = 50% through the 60s transition.
+        sched.sync_index(&cues, Duration::from_secs(3530));
+        assert_eq!(sched.last_processed_scheduled_index, Some(1));
+        assert_eq!(sched.active_palette_id.as_deref(), Some("b"));
+        let colors = palette_colors_at(&cues, &map, Duration::from_secs(3530)).unwrap();
+        match colors.get("color-1") {
+            Some(ParamValue::Color(c)) => assert!((c[0] - 0.5).abs() < 0.02, "{c:?}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn slot_id_keying_not_array_position() {
+        // Reordered swatches must still interpolate by slot ID: "to" order
+        // reversed must yield the same per-slot colors as forward order.
+        let mut a = pal("a", 0.0);
+        let mut b = pal("b", 1.0);
+        b.swatches.reverse();
+        let fwd = lerp_palettes(&a, &b, 0.5);
+        b.swatches.reverse();
+        let rev_check = lerp_palettes(&a, &b, 0.5);
+        for slot in ["color-1", "color-3", "color-6"] {
+            match (fwd.get(slot), rev_check.get(slot)) {
+                (Some(ParamValue::Color(x)), Some(ParamValue::Color(y))) => {
+                    assert!(
+                        x.iter().zip(y.iter()).all(|(u, v)| (u - v).abs() < 1e-6),
+                        "slot {slot}: {x:?} vs {y:?}"
+                    );
+                }
+                pair => panic!("slot {slot}: {pair:?}"),
+            }
+        }
+        // A slot missing from `from` is skipped, never zero-filled.
+        a.swatches.retain(|s| s.slot != "color-2");
+        let partial = lerp_palettes(&a, &b, 0.5);
+        assert!(!partial.contains_key("color-2"));
+        assert!(partial.contains_key("color-1"));
+    }
 }
