@@ -110,7 +110,7 @@ pub fn draw_status_bar(
         else {
             ui.add_space(4.0);
             ui.label(
-                RichText::new("B binding matrix · D toggle overlay · F fullscreen")
+                RichText::new("B bindings · C chains · D hide interface · F fullscreen")
                     .size(SMALL_SIZE)
                     .color(tc.text_secondary),
             );

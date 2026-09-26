@@ -1,5 +1,6 @@
 pub mod accessibility;
 pub mod catalog_thumbs;
+pub mod modal;
 pub mod overlay;
 pub mod panels;
 pub mod shell;

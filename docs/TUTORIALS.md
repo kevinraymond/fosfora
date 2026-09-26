@@ -608,7 +608,7 @@ trama is a small node graph that post-processes a layer's picture *after* the la
 
 ### Quick Start
 
-1. Select a layer and press **G** to open the trama canvas. The **Layer: _name_** tab is that layer's chain
+1. Select a layer and press **C** (for chain) to open the trama canvas. The **Layer: _name_** tab is that layer's chain
 2. Right-click the canvas → **Sources → Layer input**. That node is the layer's own picture
 3. Right-click → **Effects → Transform**
 4. Drag from **Layer input**'s output pin to Transform's input, then from Transform to **Output**
@@ -1244,6 +1244,8 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 |-----|--------|
 | **D** | Toggle UI overlay |
 | **F** | Toggle fullscreen |
+| **B** | Binding matrix |
+| **C** | trama chain editor |
 | **Esc** | Quit (with confirmation dialog) |
 | **[** | Previous layer |
 | **]** | Next layer |

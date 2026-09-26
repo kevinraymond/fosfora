@@ -145,14 +145,22 @@ pub fn draw_binding_matrix(
     state.card_positions.clear();
     state.hovered_binding_id = None;
 
+    // In the workspace the matrix covers Build's stack and inspector and stops
+    // at the output column (#3125); in Classic it has the whole window.
+    let bounded = crate::ui::modal::bounds(ctx);
     #[allow(deprecated)]
-    let screen = ctx.input(|i| i.screen_rect());
+    let screen = bounded.unwrap_or_else(|| ctx.input(|i| i.screen_rect()));
     let tc = theme_colors(ctx);
 
-    // Backdrop — paint a dimming rectangle over the whole screen
-    let backdrop_layer = egui::LayerId::new(Order::Middle, Id::new("matrix_backdrop"));
-    let painter = ctx.layer_painter(backdrop_layer);
-    painter.rect_filled(screen, 0.0, tc.backdrop);
+    // Backdrop: dims what the matrix covers. In the workspace it also takes
+    // the clicks, so nothing under the matrix reacts to them.
+    if bounded.is_some() {
+        let _ = crate::ui::modal::backdrop(ctx, "matrix_backdrop", screen);
+    } else {
+        let backdrop_layer = egui::LayerId::new(Order::Middle, Id::new("matrix_backdrop"));
+        let painter = ctx.layer_painter(backdrop_layer);
+        painter.rect_filled(screen, 0.0, tc.backdrop);
+    }
 
     // Reads LAST frame's popup state (sampled before this frame's widgets),
     // so the click/Esc that dismisses a popup — source picker, target combo,
@@ -167,7 +175,7 @@ pub fn draw_binding_matrix(
     }
 
     // Area for the matrix content — centered on window width, max width capped
-    let margin = 40.0;
+    let margin = if bounded.is_some() { 12.0 } else { 40.0 };
     let frame_pad = 12.0; // inner_margin on the frame below
     let max_w = 1200.0;
     let actual_w = (screen.width() - margin * 2.0).min(max_w);
@@ -301,11 +309,12 @@ pub fn draw_binding_matrix(
             d.insert_temp(egui::Id::new("binding_matrix_just_opened"), false);
         });
     } else {
+        // Beside the matrix, but not on the output column it leaves open.
         let clicked_outside = ctx.input(|i| {
             i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|pos| !area_resp.response.rect.contains(pos))
+                && i.pointer.interact_pos().is_some_and(|pos| {
+                    !area_resp.response.rect.contains(pos) && screen.contains(pos)
+                })
         });
         if clicked_outside && !popup_was_open {
             state.open = false;

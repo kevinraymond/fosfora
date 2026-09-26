@@ -77,6 +77,10 @@
 - The Bindings window numbers layers from 1, as the layer list does; the first layer
   was shown as Layer 0.
 
+- **The chain editor now opens with C** (for chain) instead of G. The status bar lists
+  it next to B for Bindings. In the workspace layout both open over the stack and
+  inspector, and the output column stays in view beside them.
+
 - The Bindings window is solid instead of letting the output show through it.
 
 ## v1.39.0 — 2026-09-22

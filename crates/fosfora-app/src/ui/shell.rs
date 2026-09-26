@@ -97,9 +97,6 @@ pub struct ShellState<'a> {
     pub particle_info: Option<super::panels::particle_panel::ParticleInfo>,
     pub status_error: &'a Option<(String, std::time::Instant)>,
     pub settings: &'a SettingsConfig,
-    /// The trama canvas is open: Build leaves its middle column to it, and
-    /// `main.rs` draws it there after the shell (#3123).
-    pub trama_docked: bool,
     /// The layer rows' pictures (#3123).
     pub layer_thumbs: &'a crate::gpu::layer_thumbs::LayerThumbs,
     /// Per layer: does its effect's own post-processing equal Master's?
@@ -120,7 +117,7 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
     let tc = theme_colors(ctx);
     let ws = Workspace::read(ctx);
 
-    egui::TopBottomPanel::top("v2_top")
+    let top = egui::TopBottomPanel::top("v2_top")
         .exact_height(40.0)
         .frame(Frame {
             fill: tc.panel,
@@ -179,7 +176,7 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
             });
         });
 
-    egui::TopBottomPanel::bottom("v2_status").show(ctx, |ui| {
+    let status = egui::TopBottomPanel::bottom("v2_status").show(ctx, |ui| {
         status_bar::draw_status_bar(
             ui,
             s.shader_error,
@@ -203,10 +200,25 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
         );
     });
 
-    match ws {
-        Workspace::Build => build_workspace(ctx, s, tc.panel),
-        Workspace::Perform => perform_workspace(ctx, s, tc.panel),
-        Workspace::Setup => setup_workspace(ctx, s, tc.panel),
+    // Each returns where its output column starts, if it has one.
+    let output_left = match ws {
+        Workspace::Build => Some(build_workspace(ctx, s, tc.panel)),
+        Workspace::Perform => {
+            perform_workspace(ctx, s, tc.panel);
+            None
+        }
+        Workspace::Setup => Some(setup_workspace(ctx, s, tc.panel)),
+    };
+    // The modals cover everything left of the output column, between the
+    // bars, so the output stays in view under them.
+    if let Some(right) = output_left {
+        crate::ui::modal::set_bounds(
+            ctx,
+            egui::Rect::from_min_max(
+                egui::pos2(ctx.content_rect().left(), top.response.rect.bottom()),
+                egui::pos2(right, status.response.rect.top()),
+            ),
+        );
     }
 }
 
@@ -271,14 +283,10 @@ fn columns(w: f32) -> Columns {
 
 /// Build: the structure on the left, the selection's controls in the middle,
 /// the output and its audio on the right, and the catalog along the bottom.
-fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
+fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -> f32 {
     let cols = columns(ctx.content_rect().width());
-    // First, so it runs the full width under all three columns. Not while
-    // the chain editor is docked: the canvas wants the height, and effects
-    // go onto layers, not into chains.
-    if !s.trama_docked {
-        catalog_drawer(ctx, s, fill);
-    }
+    // First, so it runs the full width under all three columns.
+    catalog_drawer(ctx, s, fill);
 
     // Resizable inside a range rather than fixed, since the right size
     // depends on the window.
@@ -310,7 +318,7 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
             });
         });
 
-    egui::SidePanel::right("v2_output")
+    let output = egui::SidePanel::right("v2_output")
         .exact_width(cols.right)
         .resizable(false)
         .frame(panel_frame(fill))
@@ -327,9 +335,6 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
             });
         });
 
-    if s.trama_docked {
-        return;
-    }
     egui::CentralPanel::default()
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
@@ -342,6 +347,7 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                 }
             });
         });
+    output.response.rect.left()
 }
 
 /// The catalog along the bottom of Build (#3124). Its height is the user's to
@@ -503,7 +509,7 @@ fn chain_line(
                 .color(tc.text_secondary),
         );
         if ui
-            .button(egui::RichText::new("Edit chain  (G)").size(12.0))
+            .button(egui::RichText::new("Edit chain  (C)").size(12.0))
             .clicked()
         {
             open(ui.ctx());
@@ -824,11 +830,11 @@ fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32)
 }
 
 /// Setup: audio, control surfaces and preferences, at full width.
-fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
+fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -> f32 {
     // On the right at Build's width, so the output is in the same place in
     // every workspace.
     let cols = columns(ctx.content_rect().width());
-    egui::SidePanel::right("v2_setup_preview")
+    let output = egui::SidePanel::right("v2_setup_preview")
         .exact_width(cols.right)
         .resizable(false)
         .frame(panel_frame(fill))
@@ -921,6 +927,7 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                 );
             });
         });
+    output.response.rect.left()
 }
 
 #[cfg(test)]

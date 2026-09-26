@@ -248,9 +248,8 @@ impl ApplicationHandler for FosforaApp {
                         // someone wants it gone, and there it offered to quit
                         // instead.
                         //
-                        // The workspace's docked chain editor comes before it:
-                        // it fills Build's middle column, and Esc is the way
-                        // back to the inspector it replaced.
+                        // The workspace's chain editor modal comes before it,
+                        // as the binding matrix's does.
                         if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
                             app.binding_matrix.armed = None;
                         } else if app.binding_matrix.open {
@@ -258,7 +257,6 @@ impl ApplicationHandler for FosforaApp {
                         } else if !app.egui_overlay.visible {
                             app.egui_overlay.toggle_visible();
                         } else if app.trama.canvas_open && !app.settings.classic_layout {
-                            // The docked chain editor: back to the inspector.
                             app.trama.canvas_open = false;
                         } else if app.output_window.is_some() {
                             app.close_output_window();
@@ -294,11 +292,19 @@ impl ApplicationHandler for FosforaApp {
                     KeyCode::KeyB
                         if !app.shader_editor.open => {
                             app.binding_matrix.open = !app.binding_matrix.open;
+                            // One modal at a time.
+                            if app.binding_matrix.open {
+                                app.trama.canvas_open = false;
+                            }
                         }
-                    KeyCode::KeyG
-                        // Toggle the trama graph canvas
+                    // The chain editor: C for chain, the word the interface
+                    // uses (it was G before v2).
+                    KeyCode::KeyC
                         if !app.shader_editor.open => {
                             app.trama.canvas_open = !app.trama.canvas_open;
+                            if app.trama.canvas_open {
+                                app.binding_matrix.open = false;
+                            }
                         }
                     KeyCode::BracketLeft => {
                         // Previous layer
@@ -945,22 +951,24 @@ impl ApplicationHandler for FosforaApp {
                     // Same for Master's post-processing, which no panel marks.
                     let pp_before = app.master_postprocess.clone();
 
-                    // In the workspace the trama canvas lives in Build (#3123):
-                    // opening it from anywhere (G, a row's badge in Perform)
-                    // goes to Build, and leaving Build puts it away rather
-                    // than keeping a chain editor open that nothing shows.
+                    // In the workspace the chain editor and the binding matrix
+                    // are modals over Build, beside its output column (#3125):
+                    // opening either from anywhere goes to Build, and leaving
+                    // Build puts them away.
                     if !app.shader_editor.open && !app.settings.classic_layout {
                         use crate::ui::shell::Workspace;
-                        let was_id = egui::Id::new("v2_trama_was_open");
-                        let was_open = ctx.data(|d| d.get_temp(was_id).unwrap_or(false));
-                        if app.trama.canvas_open && !was_open {
+                        let was_id = egui::Id::new("v2_modals_were_open");
+                        let (was_trama, was_matrix): (bool, bool) =
+                            ctx.data(|d| d.get_temp(was_id).unwrap_or_default());
+                        let (trama, matrix) = (app.trama.canvas_open, app.binding_matrix.open);
+                        if (trama && !was_trama) || (matrix && !was_matrix) {
                             Workspace::Build.write(&ctx);
-                        } else if app.trama.canvas_open && Workspace::read(&ctx) != Workspace::Build
-                        {
+                        } else if Workspace::read(&ctx) != Workspace::Build {
                             app.trama.canvas_open = false;
+                            app.binding_matrix.open = false;
                         }
-                        let open = app.trama.canvas_open;
-                        ctx.data_mut(|d| d.insert_temp(was_id, open));
+                        let now = (app.trama.canvas_open, app.binding_matrix.open);
+                        ctx.data_mut(|d| d.insert_temp(was_id, now));
                     }
 
                     // Get active layer's param_store (mutable for MIDI badges)
@@ -991,7 +999,6 @@ impl ApplicationHandler for FosforaApp {
                                 particle_info,
                                 status_error: &app.status_error,
                                 settings: &app.settings,
-                                trama_docked: app.trama.canvas_open,
                                 layer_thumbs: &app.layer_thumbs,
                                 postfx_matches: &postfx_matches,
                                 display: app.egui_overlay.display_tex.map(|t| {
@@ -1067,7 +1074,7 @@ impl ApplicationHandler for FosforaApp {
                         &mut app.shader_editor,
                     );
 
-                    // Trama graph canvas (G toggles; hosted here like the
+                    // Trama graph canvas (C toggles; hosted here like the
                     // shader editor — draw_panels stays untouched). Preview
                     // textures created during last frame's execute register
                     // with egui here, right before the canvas needs their
@@ -1083,15 +1090,20 @@ impl ApplicationHandler for FosforaApp {
                             &mut app.layer_stack,
                         );
                     } else if app.egui_overlay.visible {
-                        // In the workspace the canvas lives in Build's middle
-                        // column, which the shell left empty for it.
-                        let fill = crate::ui::theme::colors::theme_colors(&ctx).panel;
-                        crate::trama::ui::canvas::draw_trama_docked(
-                            &ctx,
-                            &mut app.trama,
-                            &mut app.layer_stack,
-                            fill,
-                        );
+                        match crate::ui::modal::bounds(&ctx) {
+                            Some(bounds) => crate::trama::ui::canvas::draw_trama_modal(
+                                &ctx,
+                                &mut app.trama,
+                                &mut app.layer_stack,
+                                bounds,
+                            ),
+                            // No output column this frame: the floating window.
+                            None => crate::trama::ui::canvas::draw_trama_window(
+                                &ctx,
+                                &mut app.trama,
+                                &mut app.layer_stack,
+                            ),
+                        }
                     }
 
                     // Check if sidebar "Matrix" button was clicked

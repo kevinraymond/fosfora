@@ -730,40 +730,52 @@ pub fn draw_trama_window(
     }
 }
 
-/// The workspace shell's host (#3123): the canvas takes Build's middle column,
-/// between the stack it edits and the output it changes, instead of floating
-/// over both. Call after the shell's side panels, which leave that column
-/// empty while the canvas is open.
-pub fn draw_trama_docked(
+/// The workspace shell's host: a modal over Build's stack and inspector,
+/// stopping at the output column so the output stays in view, like the
+/// binding matrix. `bounds` is [`crate::ui::modal::bounds`]. A click beside
+/// it, Done, C or Esc closes it.
+pub fn draw_trama_modal(
     ctx: &egui::Context,
     trama: &mut TramaSystem,
     layer_stack: &mut crate::gpu::layer::LayerStack,
-    fill: egui::Color32,
+    bounds: egui::Rect,
 ) {
     if !trama.canvas_open {
         return;
     }
+    let tc = crate::ui::theme::colors::theme_colors(ctx);
+    let beside = crate::ui::modal::backdrop(ctx, "trama_modal_backdrop", bounds);
+    let rect = bounds.shrink(12.0);
+    let pad = 12.0;
     let mut close = false;
-    egui::CentralPanel::default()
-        .frame(egui::Frame {
-            fill,
-            inner_margin: egui::Margin::same(8),
-            ..Default::default()
-        })
+    egui::Area::new(egui::Id::new("trama_modal"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .constrain(false)
         .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Chain editor").size(16.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    close = ui
-                        .button("Done  (G / Esc)")
-                        .on_hover_text("Back to the inspector")
-                        .clicked();
+            egui::Frame::new()
+                .fill(tc.panel)
+                .stroke(egui::Stroke::new(1.0_f32, tc.card_border))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    let inner = rect.size() - egui::vec2(pad * 2.0, pad * 2.0);
+                    ui.set_min_size(inner);
+                    ui.set_max_size(inner);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Chain editor").size(16.0).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            close = ui
+                                .button("Done  (C / Esc)")
+                                .on_hover_text("Close the chain editor")
+                                .clicked();
+                        });
+                    });
+                    ui.add_space(4.0);
+                    draw_trama_body(ui, trama, layer_stack);
                 });
-            });
-            ui.add_space(4.0);
-            draw_trama_body(ui, trama, layer_stack);
         });
-    if close {
+    if close || (beside.clicked() && !egui::Popup::is_any_open(ctx)) {
         trama.canvas_open = false;
     }
 }
