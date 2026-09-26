@@ -63,6 +63,18 @@
 - **Larger text throughout**: nothing is drawn below 12 px at 100 % scale. Hints,
   units and tables were 7 to 10 px, and the Bindings matrix was the worst of them.
 
+- **Presets are compact tiles** with names on up to two lines, as many across as the
+  column fits, and opening Presets no longer widens its column.
+
+- A section opens or closes from a click anywhere on its title bar. Clicks on the
+  title's words were missed, so only the arrow and the gaps between words worked.
+
+- Master's post-processing can go back: next to each effect's recommended look,
+  *Previous settings* restores what a reset replaced (press it again to return) and
+  *Defaults* restores the built-in settings.
+
+- The Bindings window is solid instead of letting the output show through it.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

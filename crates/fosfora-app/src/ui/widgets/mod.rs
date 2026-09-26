@@ -44,6 +44,24 @@ pub fn card_frame(ui: &Ui) -> Frame {
     }
 }
 
+/// A header that takes a click anywhere on it: the full width, and at least
+/// `min_height` tall. Its labels are made unselectable, because a selectable
+/// label keeps the click for itself — headers built as a row of labels only
+/// toggled on the gaps between them. Buttons inside still get their own
+/// clicks: they sit above the row.
+pub fn header_row(ui: &mut Ui, min_height: f32, add: impl FnOnce(&mut Ui)) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        let w = ui.available_width();
+        ui.set_min_size(egui::vec2(w, min_height));
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_size(egui::vec2(w, min_height));
+            add(ui);
+        });
+    })
+    .response
+}
+
 /// Collapsible section with card styling.
 /// Returns the inner `Ui` response if the section is open.
 pub fn section(
@@ -59,11 +77,7 @@ pub fn section(
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
     card_frame(ui).show(ui, |ui| {
-        let full_width = ui.available_width();
-
-        // Header row — always full width
-        let header_response = ui.horizontal(|ui| {
-            ui.set_min_width(full_width);
+        let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             draw_section_arrow(ui, state.is_open(), tc.text_secondary);
             ui.label(
                 RichText::new(title.to_uppercase())
@@ -78,12 +92,7 @@ pub fn section(
             });
         });
 
-        // Toggle on header click
-        if header_response
-            .response
-            .interact(egui::Sense::click())
-            .clicked()
-        {
+        if header_response.clicked() {
             let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
             state.toggle(ui);
             state.store(ui.ctx());
@@ -140,10 +149,7 @@ pub fn section_with_header(
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
     card_frame(ui).show(ui, |ui| {
-        let full_width = ui.available_width();
-
-        let header_response = ui.horizontal(|ui| {
-            ui.set_min_width(full_width);
+        let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             draw_section_arrow(ui, state.is_open(), tc.text_secondary);
             ui.label(
                 RichText::new(title.to_uppercase())
@@ -156,11 +162,7 @@ pub fn section_with_header(
             });
         });
 
-        if header_response
-            .response
-            .interact(egui::Sense::click())
-            .clicked()
-        {
+        if header_response.clicked() {
             let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
             state.toggle(ui);
             state.store(ui.ctx());
@@ -197,9 +199,7 @@ pub fn subsection(
     // JSX: marginTop 10 on every SectionLabel
     ui.add_space(10.0);
 
-    let full_width = ui.available_width();
-    let header_response = ui.horizontal(|ui| {
-        ui.set_min_width(full_width);
+    let header_response = header_row(ui, SUBSECTION_SIZE + 6.0, |ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         // Smaller arrow than parent section (JSX font-size 8 vs 11)
         draw_section_arrow_sized(ui, state.is_open(), tc.text_secondary, SUBSECTION_ARROW);
@@ -220,11 +220,7 @@ pub fn subsection(
         });
     });
 
-    if header_response
-        .response
-        .interact(egui::Sense::click())
-        .clicked()
-    {
+    if header_response.clicked() {
         let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
         state.toggle(ui);
         state.store(ui.ctx());
@@ -292,5 +288,58 @@ mod tests {
         let s = "Ätherwellen — Über";
         assert_eq!(truncate_chars(s, 10), "Ätherwell…");
         assert_eq!(truncate_chars("日本語テスト名前長い", 5), "日本語テ…");
+    }
+
+    /// Click a section's header at `x` (points from the left) and report
+    /// whether its body is open afterwards.
+    fn section_open_after_click(x: f32) -> bool {
+        let ctx = egui::Context::default();
+        let mut open = false;
+        let run = |events: Vec<egui::Event>, open: &mut bool| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    *open = false;
+                    section(ui, "t", "Presets and scenes", Some("3"), false, |_| {
+                        *open = true;
+                    });
+                });
+            });
+        };
+        run(vec![], &mut open);
+        run(vec![], &mut open);
+        // The header's middle: 8 panel margin + 4 card margin + 8 padding
+        // + half a row.
+        let pos = egui::pos2(x, 8.0 + 4.0 + 8.0 + MIN_INTERACT_HEIGHT / 2.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(
+            vec![egui::Event::PointerMoved(pos), button(true)],
+            &mut open,
+        );
+        run(vec![button(false)], &mut open);
+        run(vec![], &mut open);
+        open
+    }
+
+    #[test]
+    fn a_section_header_toggles_from_its_title_text() {
+        assert!(section_open_after_click(80.0), "on the title text");
+    }
+
+    #[test]
+    fn a_section_header_toggles_from_its_far_end() {
+        assert!(section_open_after_click(300.0), "right of the title");
     }
 }

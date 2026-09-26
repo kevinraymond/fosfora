@@ -8,7 +8,11 @@ use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
 use crate::ui::widgets;
 
-const COLS: usize = 2;
+/// Narrowest a preset tile gets. The grid fits as many columns as that
+/// allows, two at the least, and a name wraps onto a second line rather than
+/// widening its tile.
+const TILE_MIN_WIDTH: f32 = 96.0;
+const TILE_MAX_COLS: usize = 6;
 const AMBER: Color32 = Color32::from_rgb(0xFB, 0x92, 0x3C);
 const AMBER_TEXT: Color32 = Color32::from_rgb(0xFD, 0xBA, 0x74);
 
@@ -78,11 +82,7 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
         );
     }
     frame.show(ui, |ui| {
-        let full_width = ui.available_width();
-
-        // Header row
-        let header_response = ui.horizontal(|ui| {
-            ui.set_min_width(full_width);
+        let header_response = widgets::header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             widgets::draw_section_arrow(ui, state.is_open(), arrow_color);
             ui.label(
                 RichText::new("PRESETS")
@@ -94,7 +94,7 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
             // Dirty: show *preset_name inline after title
             if dirty {
                 if let Some(name) = store.current_name() {
-                    let truncated = truncate_name(name, 14);
+                    let truncated = widgets::truncate_chars(name, 14);
                     ui.label(
                         RichText::new(format!("*{truncated}"))
                             .size(SMALL_SIZE)
@@ -119,11 +119,7 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
         });
 
         // Toggle on header click
-        if header_response
-            .response
-            .interact(egui::Sense::click())
-            .clicked()
-        {
+        if header_response.clicked() {
             let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, true);
             state.toggle(ui);
             state.store(ui.ctx());
@@ -172,19 +168,15 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                     ..Default::default()
                 }
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        draw_pulse_dot(ui, time);
-                        ui.label(
-                            RichText::new(&current_name)
-                                .size(SMALL_SIZE)
-                                .color(AMBER_TEXT),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Buttons first, from the right; the name is cut to what
+                    // they leave rather than pushing them past the edge.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        {
                             // Reset button (neutral style)
                             let reset_btn = ui.add(
                                 egui::Button::new(
                                     RichText::new("Reset")
-                                        .size(SMALL_SIZE - 1.0)
+                                        .size(SMALL_SIZE)
                                         .color(tc.text_secondary),
                                 )
                                 .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 13)) // ~5%
@@ -207,9 +199,7 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                             if is_user_preset {
                                 let update_btn = ui.add(
                                     egui::Button::new(
-                                        RichText::new("Update")
-                                            .size(SMALL_SIZE - 1.0)
-                                            .color(AMBER_TEXT),
+                                        RichText::new("Update").size(SMALL_SIZE).color(AMBER_TEXT),
                                     )
                                     .fill(Color32::from_rgba_unmultiplied(
                                         AMBER.r(),
@@ -240,6 +230,17 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                                     });
                                 }
                             }
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            draw_pulse_dot(ui, time);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&current_name)
+                                        .size(SMALL_SIZE)
+                                        .color(AMBER_TEXT),
+                                )
+                                .truncate(),
+                            );
                         });
                     });
                 });
@@ -260,19 +261,19 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
         .data_mut(|d| d.get_temp::<String>(egui::Id::new("preset_save_name")))
         .unwrap_or_default();
 
-    ui.horizontal(|ui| {
-        let save_width = 40.0;
-        let spacing = ui.spacing().item_spacing.x;
-        let text_width = (ui.available_width() - save_width - spacing).max(1.0);
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut name)
-                .desired_width(text_width)
-                .hint_text("Name...")
-                .font(egui::FontId::proportional(SMALL_SIZE)),
-        );
+    // Right to left, the button first: the field gets whatever the button
+    // leaves. A width guessed for the button overflowed once text grew, and
+    // an overflowing row widens a resizable column a little every frame.
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let save_btn = ui.add_enabled(
             !name.trim().is_empty(),
             egui::Button::new(RichText::new("SAVE").size(SMALL_SIZE).strong()),
+        );
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .desired_width(ui.available_width())
+                .hint_text("Name...")
+                .font(egui::FontId::proportional(SMALL_SIZE)),
         );
         if save_btn.clicked()
             || (response.lost_focus()
@@ -313,7 +314,8 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
     let mut new_pending: Option<(usize, f64)> = pending_delete;
 
     let gap = 4.0;
-    let btn_height = 26.0;
+    // Two lines of name.
+    let btn_height = (2.0 * SMALL_SIZE * 1.3 + 8.0).round();
 
     // Split into built-in and user presets
     let builtin: Vec<(usize, &(String, _))> = store
@@ -489,10 +491,14 @@ fn draw_preset_grid(
     let warning_color = Color32::from_rgb(0xE0, 0x60, 0x40);
     let now = ui.input(|i| i.time);
     let available_width = ui.available_width();
-    let total_gaps = (COLS - 1) as f32 * gap;
-    let btn_width = ((available_width - total_gaps) / COLS as f32).max(40.0);
+    let cols = tile_cols(available_width, gap);
+    let total_gaps = (cols - 1) as f32 * gap;
+    // floor(): a tile a fraction of a point too wide is a row too wide.
+    let btn_width = ((available_width - total_gaps) / cols as f32)
+        .floor()
+        .max(1.0);
 
-    for row in presets.chunks(COLS) {
+    for row in presets.chunks(cols) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for &(i, (pname, _)) in row {
@@ -565,20 +571,19 @@ fn draw_preset_grid(
                 };
 
                 let display_name = if is_dirty_selected {
-                    format!("*{}", truncate_name(pname, 17))
+                    format!("*{pname}")
                 } else {
-                    truncate_name(pname, 18)
+                    pname.clone()
                 };
-                let btn = egui::Button::new(
-                    RichText::new(&display_name)
-                        .size(SMALL_SIZE)
-                        .color(text_color),
-                )
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(CornerRadius::same(4));
-
-                let response = ui.add_sized(Vec2::new(btn_width, btn_height), btn);
+                let response = preset_tile(
+                    ui,
+                    &display_name,
+                    Vec2::new(btn_width, btn_height),
+                    fill,
+                    stroke,
+                    text_color,
+                    is_current,
+                );
 
                 // Left click: load/reload preset (also clears pending delete)
                 if response.clicked() {
@@ -632,10 +637,132 @@ fn draw_preset_grid(
     }
 }
 
-fn truncate_name(name: &str, max_len: usize) -> String {
-    if name.len() <= max_len {
-        name.to_string()
+/// How many tiles fit across `width`.
+fn tile_cols(width: f32, gap: f32) -> usize {
+    (((width + gap) / (TILE_MIN_WIDTH + gap)).floor() as usize).clamp(2, TILE_MAX_COLS)
+}
+
+/// One preset as a tile of exactly `size`: the name wraps onto a second line
+/// and ends in an ellipsis past that, so a long name never widens the grid.
+fn preset_tile(
+    ui: &mut Ui,
+    name: &str,
+    size: Vec2,
+    fill: Color32,
+    stroke: Stroke,
+    text_color: Color32,
+    selected: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
+    let visuals = ui.style().interact(&response);
+    let stroke = if response.hovered() {
+        visuals.bg_stroke
     } else {
-        format!("{}\u{2026}", &name[..max_len - 1])
+        stroke
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(4),
+        fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
+    let mut job = egui::text::LayoutJob::simple(
+        name.to_string(),
+        egui::FontId::proportional(SMALL_SIZE),
+        text_color,
+        rect.width() - 10.0,
+    );
+    job.wrap.max_rows = 2;
+    job.halign = egui::Align::Center;
+    let galley = ui.painter().layout_job(job);
+    let pos = egui::pos2(rect.center().x, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, text_color);
+    crate::ui::accessibility::focus::draw_focus_ring(ui, &response);
+    response
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn store(names: &[&str]) -> PresetStore {
+        let preset: crate::preset::Preset =
+            serde_json::from_str(r#"{"layers":[]}"#).expect("a minimal preset parses");
+        PresetStore {
+            presets: names
+                .iter()
+                .map(|n| (n.to_string(), preset.clone()))
+                .collect(),
+            current_preset: Some(0),
+            dirty: false,
+            builtin_count: 2,
+        }
+    }
+
+    /// Width of a resizable side panel holding the open preset section,
+    /// after `frames` frames.
+    fn panel_width(store: &PresetStore, frames: usize) -> f32 {
+        let ctx = egui::Context::default();
+        let mut w = 0.0;
+        for _ in 0..frames {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                w = egui::SidePanel::left("p")
+                    .default_width(300.0)
+                    .width_range(280.0..=800.0)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            draw_preset_section_open(ui, store, true);
+                        });
+                    })
+                    .response
+                    .rect
+                    .width();
+            });
+        }
+        w
+    }
+
+    #[test]
+    fn opening_presets_does_not_widen_its_column() {
+        let s = store(&[
+            "Aurora Borealis Deluxe Edition",
+            "Murmur Mirror",
+            "Fluvid over camera with Color Key",
+            "Tide",
+            "Pegboard",
+        ]);
+        let w = panel_width(&s, 40);
+        assert!(w <= 301.0, "the column grew to {w}");
+    }
+
+    #[test]
+    fn unsaved_changes_to_a_long_named_preset_do_not_widen_its_column() {
+        let mut s = store(&[
+            "Tide",
+            "Murmur",
+            "A user preset with a name far longer than the column is wide",
+        ]);
+        s.current_preset = Some(2);
+        s.dirty = true;
+        let w = panel_width(&s, 40);
+        assert!(w <= 301.0, "the column grew to {w}");
+    }
+
+    #[test]
+    fn narrow_columns_keep_two_tiles_and_wide_ones_fit_more() {
+        assert_eq!(tile_cols(270.0, 4.0), 2);
+        assert_eq!(tile_cols(420.0, 4.0), 4);
+        assert_eq!(tile_cols(2000.0, 4.0), TILE_MAX_COLS);
     }
 }

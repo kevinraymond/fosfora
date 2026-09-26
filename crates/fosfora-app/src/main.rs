@@ -975,6 +975,7 @@ impl ApplicationHandler for FosforaApp {
                                 uniforms: &app.uniforms,
                                 effect_loader: &app.effect_loader,
                                 postprocess: &mut app.master_postprocess,
+                                postprocess_previous: app.master_postprocess_previous.as_ref(),
                                 volumetric_enabled: &mut app.volumetric_enabled,
                                 volumetric_params: &mut app.volumetric_params,
                                 particle_count,
@@ -4240,6 +4241,22 @@ impl ApplicationHandler for FosforaApp {
                     .data_mut(|d| d.remove_temp(egui::Id::new("adopt_layer_postprocess")));
                 if let Some(idx) = adopt_pp {
                     app.adopt_layer_postprocess(idx);
+                    app.preset_store.mark_dirty();
+                }
+                // Its other two resets: the settings before the last reset,
+                // and the defaults.
+                let (to_previous, to_defaults) = app.egui_overlay.context().data_mut(|d| {
+                    (
+                        d.remove_temp::<bool>(egui::Id::new("postprocess_to_previous")),
+                        d.remove_temp::<bool>(egui::Id::new("postprocess_to_defaults")),
+                    )
+                });
+                if to_previous == Some(true) {
+                    app.restore_previous_postprocess();
+                    app.preset_store.mark_dirty();
+                }
+                if to_defaults == Some(true) {
+                    app.replace_master_postprocess(Default::default());
                     app.preset_store.mark_dirty();
                 }
 

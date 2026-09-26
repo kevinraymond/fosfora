@@ -355,23 +355,26 @@ fn draw_type_filter(ui: &mut Ui, tc: &ThemeColors, types_on: &mut (bool, bool, b
             };
             let color = type_color(et);
             let resp = ui
-                .horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::new(3.0, 10.0), egui::Sense::hover());
-                    let strip = if on {
-                        color
-                    } else {
-                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60)
-                    };
-                    ui.painter().rect_filled(rect, 1.0, strip);
-                    ui.label(RichText::new(type_title(et)).size(SMALL_SIZE).color(if on {
-                        tc.text_secondary
-                    } else {
-                        tc.text_dim
-                    }));
+                .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    // A selectable label would keep the click for itself.
+                    ui.style_mut().interaction.selectable_labels = false;
+                    ui.horizontal(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(3.0, 10.0), egui::Sense::hover());
+                        let strip = if on {
+                            color
+                        } else {
+                            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60)
+                        };
+                        ui.painter().rect_filled(rect, 1.0, strip);
+                        ui.label(RichText::new(type_title(et)).size(SMALL_SIZE).color(if on {
+                            tc.text_secondary
+                        } else {
+                            tc.text_dim
+                        }));
+                    });
                 })
-                .response
-                .interact(egui::Sense::click());
+                .response;
             if resp.clicked() {
                 let all_on = types_on.0 && types_on.1 && types_on.2;
                 if all_on {

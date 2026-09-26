@@ -85,6 +85,9 @@ pub struct App {
     /// `postprocess` block, but only as a suggestion — selecting a layer
     /// never changes this. See [`App::adopt_layer_postprocess`].
     pub master_postprocess: PostProcessDef,
+    /// What Master's post-processing was before it was last replaced by a
+    /// reset, for the inspector's way back. Cleared when a preset loads.
+    pub master_postprocess_previous: Option<PostProcessDef>,
     /// The finished frame, off-screen (#3122). Post-processing renders here
     /// instead of straight onto the swapchain, and the window gets a blit of
     /// it. That indirection is what lets the v2 interface show the output as a
@@ -574,6 +577,7 @@ impl App {
             compositor,
             post_process,
             master_postprocess: PostProcessDef::default(),
+            master_postprocess_previous: None,
             display,
             layer_thumbs,
             catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs::shipped(),
@@ -3227,6 +3231,7 @@ impl App {
             .min(self.layer_stack.layers.len().saturating_sub(1));
         self.sync_active_layer();
         self.master_postprocess = preset.postprocess.clone();
+        self.master_postprocess_previous = None;
         self.post_process.enabled = preset.postprocess.enabled;
         // Restore the global Volumetric (R3) mode. Disable when the preset has
         // no volumetric block so an earlier preset's volumetric can't bleed into
@@ -3363,8 +3368,26 @@ impl App {
     /// Make layer `idx`'s effect's own post-processing Master's.
     pub fn adopt_layer_postprocess(&mut self, idx: usize) {
         if let Some(layer) = self.layer_stack.layers.get(idx) {
-            self.master_postprocess = layer.postprocess.clone();
-            self.post_process.enabled = self.master_postprocess.enabled;
+            self.replace_master_postprocess(layer.postprocess.clone());
+        }
+    }
+
+    /// Replace Master's post-processing, keeping the settings it replaces as
+    /// the inspector's "Previous settings".
+    pub fn replace_master_postprocess(&mut self, pp: PostProcessDef) {
+        replace_keeping_previous(
+            &mut self.master_postprocess,
+            &mut self.master_postprocess_previous,
+            pp,
+        );
+        self.post_process.enabled = self.master_postprocess.enabled;
+    }
+
+    /// Go back to the settings the last replacement replaced. That keeps the
+    /// ones it leaves, so pressing it again comes back.
+    pub fn restore_previous_postprocess(&mut self) {
+        if let Some(prev) = self.master_postprocess_previous.clone() {
+            self.replace_master_postprocess(prev);
         }
     }
 
@@ -4442,5 +4465,37 @@ mod tests {
             &[PathBuf::from("/assets/shaders/unrelated.wgsl")],
             false
         ));
+    }
+}
+
+/// `*current = new`, with the old value kept in `previous`. Replacing a value
+/// with itself keeps the older `previous`: a reset that changed nothing must
+/// not lose the way back.
+fn replace_keeping_previous<T: PartialEq>(current: &mut T, previous: &mut Option<T>, new: T) {
+    if *current != new {
+        *previous = Some(std::mem::replace(current, new));
+    }
+}
+
+#[cfg(test)]
+mod postprocess_reset_tests {
+    use super::replace_keeping_previous;
+
+    #[test]
+    fn a_replacement_keeps_the_way_back_and_going_back_swaps() {
+        let (mut cur, mut prev) = ("mine", None);
+        replace_keeping_previous(&mut cur, &mut prev, "sumi");
+        assert_eq!((cur, prev), ("sumi", Some("mine")));
+        // "Previous settings" is a replacement with the previous value.
+        let back = prev.unwrap();
+        replace_keeping_previous(&mut cur, &mut prev, back);
+        assert_eq!((cur, prev), ("mine", Some("sumi")));
+    }
+
+    #[test]
+    fn a_replacement_that_changes_nothing_keeps_the_older_way_back() {
+        let (mut cur, mut prev) = ("sumi", Some("mine"));
+        replace_keeping_previous(&mut cur, &mut prev, "sumi");
+        assert_eq!((cur, prev), ("sumi", Some("mine")));
     }
 }

@@ -11,7 +11,7 @@
 //! per-section draw functions in [`super::panels`] — only the arrangement
 //! differs, so a control fixed in one is fixed in both.
 
-use crate::ui::theme::tokens::SMALL_SIZE;
+use crate::ui::theme::tokens::{MIN_INTERACT_HEIGHT, SMALL_SIZE};
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
@@ -81,6 +81,8 @@ pub struct ShellState<'a> {
     pub uniforms: &'a ShaderUniforms,
     pub effect_loader: &'a EffectLoader,
     pub postprocess: &'a mut PostProcessDef,
+    /// Master's post-processing before its last reset, if it has one.
+    pub postprocess_previous: Option<&'a PostProcessDef>,
     pub volumetric_enabled: &'a mut bool,
     pub volumetric_params: &'a mut VolumetricParams,
     pub particle_count: Option<u32>,
@@ -352,34 +354,37 @@ fn catalog_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
     let open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(true);
     let visible = s.effect_loader.effects.iter().filter(|e| !e.hidden).count();
 
+    // The whole bar toggles, and when closed that is the whole panel.
     let header = |ui: &mut egui::Ui| {
-        let r = ui
-            .horizontal(|ui| {
-                widgets::draw_section_arrow(ui, open, tc.text_secondary);
-                ui.label(
-                    egui::RichText::new("CATALOG")
-                        .size(12.0)
-                        .strong()
-                        .color(tc.text_secondary),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{visible} effects"))
-                        .size(12.0)
-                        .color(tc.text_secondary),
-                );
-                ui.add_space(12.0);
-                ui.label(
-                    egui::RichText::new(if open {
-                        "Click a picture to load it into the selected layer, or drag it onto the stack."
-                    } else {
-                        "Click to open"
-                    })
+        let h = if open {
+            MIN_INTERACT_HEIGHT
+        } else {
+            ui.available_height()
+        };
+        let r = widgets::header_row(ui, h, |ui| {
+            widgets::draw_section_arrow(ui, open, tc.text_secondary);
+            ui.label(
+                egui::RichText::new("CATALOG")
+                    .size(12.0)
+                    .strong()
+                    .color(tc.text_secondary),
+            );
+            ui.label(
+                egui::RichText::new(format!("{visible} effects"))
                     .size(12.0)
                     .color(tc.text_secondary),
-                );
-            })
-            .response
-            .interact(egui::Sense::click());
+            );
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new(if open {
+                    "Click a picture to load it into the selected layer, or drag it onto the stack."
+                } else {
+                    "Click to open"
+                })
+                .size(12.0)
+                .color(tc.text_secondary),
+            );
+        });
         if r.clicked() {
             ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
         }
@@ -678,9 +683,35 @@ fn postfx_source(ui: &mut egui::Ui, s: &ShellState<'_>) {
             .color(tc.text_secondary),
     );
     let offers: Vec<_> = effects.iter().filter(|e| !e.2).collect();
-    if !offers.is_empty() {
+    let previous = s.postprocess_previous.filter(|p| *p != &*s.postprocess);
+    let defaults = PostProcessDef::default();
+    let not_defaults = *s.postprocess != defaults;
+    if !offers.is_empty() || previous.is_some() || not_defaults {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Reset to an effect's recommended look:").size(12.0));
+            ui.label(egui::RichText::new("Reset to:").size(12.0));
+            if previous.is_some()
+                && ui
+                    .small_button("Previous settings")
+                    .on_hover_text(
+                        "The settings Master had before its last reset. Press again to \
+                         come back to these.",
+                    )
+                    .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("postprocess_to_previous"), true);
+                });
+            }
+            if not_defaults
+                && ui
+                    .small_button("Defaults")
+                    .on_hover_text("Post-processing's built-in settings")
+                    .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("postprocess_to_defaults"), true);
+                });
+            }
             for &&(i, name, _) in &offers {
                 if ui
                     .small_button(name)
@@ -805,8 +836,11 @@ fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32)
 
 /// Setup: audio, control surfaces and preferences, at full width.
 fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
-    egui::SidePanel::left("v2_setup_preview")
-        .exact_width(360.0)
+    // On the right at Build's width, so the output is in the same place in
+    // every workspace.
+    let cols = columns(ctx.content_rect().width());
+    egui::SidePanel::right("v2_setup_preview")
+        .exact_width(cols.right)
         .resizable(false)
         .frame(panel_frame(fill))
         .show(ctx, |ui| {

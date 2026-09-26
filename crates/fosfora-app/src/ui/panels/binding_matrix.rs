@@ -181,8 +181,11 @@ pub fn draw_binding_matrix(
         .order(Order::Foreground)
         .fixed_pos(content_rect.min)
         .show(ctx, |ui| {
+            // Solid, like every other surface of the interface: the output
+            // behind it is dimmed by the backdrop, not read through it.
             let frame = egui::Frame::new()
-                .fill(Color32::TRANSPARENT)
+                .fill(tc.panel)
+                .stroke(egui::Stroke::new(1.0_f32, tc.card_border))
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::same(12));
 
@@ -209,8 +212,8 @@ pub fn draw_binding_matrix(
                 let col_target_w = 240.0;
                 let col_center_w = (avail.x - col_source_w - col_target_w - 24.0).max(200.0);
 
-                // Fully opaque side panels (tc.panel may have ~90% alpha)
-                let side_bg = Color32::from_rgb(tc.panel.r(), tc.panel.g(), tc.panel.b());
+                // The three columns are cards on the frame.
+                let side_bg = tc.card_bg;
                 let side_pad = 6.0;
 
                 // Set by whichever column completed a click-to-bind this frame;
@@ -239,7 +242,7 @@ pub fn draw_binding_matrix(
 
                     ui.add_space(8.0);
 
-                    // Center: Binding cards (semi-transparent bg)
+                    // Center: Binding cards
                     let center_bg_idx = ui.painter().add(egui::Shape::Noop);
                     let center_resp = ui.vertical(|ui| {
                         ui.set_width(col_center_w);
@@ -248,16 +251,7 @@ pub fn draw_binding_matrix(
                     });
                     ui.painter().set(
                         center_bg_idx,
-                        egui::Shape::rect_filled(
-                            center_resp.response.rect,
-                            6.0,
-                            Color32::from_rgba_unmultiplied(
-                                tc.panel.r(),
-                                tc.panel.g(),
-                                tc.panel.b(),
-                                128,
-                            ),
-                        ),
+                        egui::Shape::rect_filled(center_resp.response.rect, 6.0, side_bg),
                     );
 
                     ui.add_space(8.0);
