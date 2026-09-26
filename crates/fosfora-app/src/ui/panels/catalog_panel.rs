@@ -75,6 +75,8 @@ pub fn send_drop(ctx: &egui::Context, name: String, at: CatalogDrop) {
 /// Picture size in the grid, in points. 16:9, like the output.
 const PIC: Vec2 = Vec2::new(176.0, 99.0);
 const NAME_H: f32 = 20.0;
+/// The card's margin around the picture and its name.
+const CARD_PAD: f32 = 5.0;
 
 /// Which tab is open.
 #[derive(Clone, PartialEq, Eq)]
@@ -250,7 +252,7 @@ pub fn draw_catalog(
     let footer_h = 30.0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .max_height((ui.available_height() - footer_h).max(PIC.y + NAME_H))
+        .max_height((ui.available_height() - footer_h).max(PIC.y + NAME_H + 2.0 * CARD_PAD))
         .show(ui, |ui| {
             if shown.is_empty() {
                 let msg = if tab == Tab::Favorites && q.is_empty() {
@@ -300,7 +302,9 @@ fn hovered_for(ctx: &egui::Context, name: &str) -> Option<f64> {
     Some(now - since)
 }
 
-/// One picture with its name under it.
+/// One picture with its name under it, on a faint card that holds the two
+/// together: in a wrapped grid a bare name sat as close to the picture below
+/// it as to its own.
 fn tile(
     ui: &mut Ui,
     index: usize,
@@ -310,7 +314,7 @@ fn tile(
     target: &Target,
 ) {
     let tc = theme_colors(ui.ctx());
-    let size = Vec2::new(PIC.x, PIC.y + NAME_H);
+    let size = Vec2::new(PIC.x, PIC.y + NAME_H) + Vec2::splat(2.0 * CARD_PAD);
     // Keyed by name rather than by position, so a drag survives the grid
     // reflowing under it (a search result arriving, a favorite added).
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -319,7 +323,7 @@ fn tile(
         name: e.name.clone(),
     });
     let is_fav = favorites.contains(&e.name);
-    let pic_rect = egui::Rect::from_min_size(rect.min, PIC);
+    let pic_rect = egui::Rect::from_min_size(rect.min + Vec2::splat(CARD_PAD), PIC);
 
     // The star takes clicks before the tile does.
     let star_rect = egui::Rect::from_center_size(
@@ -331,9 +335,8 @@ fn tile(
     if ui.is_rect_visible(rect) {
         let current = target.current == Some(index);
         let painter = ui.painter();
-        draw_picture(painter, pic_rect, pic, e, &tc, Color32::WHITE);
-        // The selected layer's effect: a strong outline and a bold name, not a
-        // hue.
+        // The selected layer's effect: a strong outline round the card and a
+        // bold name, not a hue.
         let stroke = if current {
             Stroke::new(2.5_f32, tc.text_primary)
         } else if resp.hovered() {
@@ -341,7 +344,8 @@ fn tile(
         } else {
             Stroke::new(1.0_f32, tc.card_border)
         };
-        painter.rect_stroke(pic_rect, 3.0, stroke, egui::StrokeKind::Outside);
+        painter.rect(rect, 5.0, tc.card_bg, stroke, egui::StrokeKind::Inside);
+        draw_picture(painter, pic_rect, pic, e, &tc, Color32::WHITE);
 
         let mut name = RichText::new(crate::ui::widgets::truncate_chars(&e.name, 24)).size(13.0);
         if current {
@@ -354,7 +358,7 @@ fn tile(
             egui::TextStyle::Body,
         );
         painter.galley(
-            egui::pos2(rect.left(), pic_rect.bottom() + 4.0),
+            egui::pos2(pic_rect.left(), pic_rect.bottom() + 4.0),
             galley,
             tc.text_primary,
         );

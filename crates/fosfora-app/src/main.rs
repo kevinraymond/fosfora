@@ -942,7 +942,7 @@ impl ApplicationHandler for FosforaApp {
                     }
 
                     // Collect scene info before mutable borrows
-                    let scene_info = Some(app.scene_info());
+                    let scene_info = app.scene_info();
 
                     // Snapshot global volumetric state so a slider drag in the
                     // panel below (which mutates it by &mut) marks the preset
@@ -1009,6 +1009,7 @@ impl ApplicationHandler for FosforaApp {
                                     )
                                 }),
                                 catalog_thumbs: &mut app.catalog_thumbs,
+                                scene: &scene_info,
                             };
                             crate::ui::shell::draw_shell(
                                 &ctx,
@@ -1042,7 +1043,7 @@ impl ApplicationHandler for FosforaApp {
                                 obstacle_info,
                                 lattice_info,
                                 helix_info,
-                                scene_info,
+                                Some(scene_info),
                                 &app.status_error,
                                 &app.settings,
                                 app.egui_overlay.display_tex.map(|t| {

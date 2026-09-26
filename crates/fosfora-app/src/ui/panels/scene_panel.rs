@@ -25,7 +25,23 @@ pub struct CueDisplayInfo {
     pub hold_secs: Option<f32>,
 }
 
+/// The whole scene section, one piece under the next, for a side column.
+/// The workspace drawer lays the same pieces out side by side instead.
 pub fn draw_scene_panel(ui: &mut Ui, info: &SceneInfo) {
+    draw_scene_library(ui, info);
+    if info.current_scene.is_some() {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+        draw_transport(ui, info);
+        ui.separator();
+        ui.add_space(2.0);
+        draw_cue_list(ui, info, Some(6));
+    }
+}
+
+/// The saved scenes: the LIVE light, the Save row and a tile per scene.
+pub fn draw_scene_library(ui: &mut Ui, info: &SceneInfo) {
     let tc = theme_colors(ui.ctx());
 
     // ── LIVE pulsing dot (when timeline active) ──
@@ -107,9 +123,12 @@ pub fn draw_scene_panel(ui: &mut Ui, info: &SceneInfo) {
     if info.scene_store_names.is_empty() {
         ui.add_space(4.0);
         ui.label(
-            RichText::new("No scenes saved")
-                .size(SMALL_SIZE)
-                .color(tc.text_secondary),
+            RichText::new(
+                "No scenes yet. A scene plays presets in order as a cue list: by \
+                 hand, on a timer or on the beat. Name one above and press Save.",
+            )
+            .size(SMALL_SIZE)
+            .color(tc.text_secondary),
         );
     } else {
         ui.add_space(4.0);
@@ -163,286 +182,291 @@ pub fn draw_scene_panel(ui: &mut Ui, info: &SceneInfo) {
             }
         }
     }
+}
 
-    // ── Zone 2: Transport + Mode (gated on current scene) ──
+/// Play, Stop, Prev and Go, and how the cue list advances. Only meaningful
+/// once a scene is current.
+pub fn draw_transport(ui: &mut Ui, info: &SceneInfo) {
+    let tc = theme_colors(ui.ctx());
+    ui.label(
+        RichText::new("TRANSPORT")
+            .size(HEADING_SIZE)
+            .color(tc.text_secondary)
+            .strong(),
+    );
+    ui.add_space(2.0);
 
-    if info.current_scene.is_some() {
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("TRANSPORT")
-                .size(HEADING_SIZE)
-                .color(tc.text_secondary)
-                .strong(),
-        );
-        ui.add_space(2.0);
-
-        // Transport controls
-        if let Some(ref tl) = info.timeline {
-            if !tl.active {
-                // Idle: full-width PLAY ghost-border button
-                let play_btn = egui::Button::new(
-                    RichText::new("PLAY")
-                        .size(BODY_SIZE)
-                        .color(tc.success)
-                        .strong(),
+    // Transport controls
+    if let Some(ref tl) = info.timeline {
+        if !tl.active {
+            // Idle: full-width PLAY ghost-border button
+            let play_btn = egui::Button::new(
+                RichText::new("PLAY")
+                    .size(BODY_SIZE)
+                    .color(tc.success)
+                    .strong(),
+            )
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::new(1.0_f32, tc.success))
+            .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
+            if ui
+                .add_sized(
+                    Vec2::new(ui.available_width(), MIN_INTERACT_HEIGHT),
+                    play_btn,
                 )
-                .fill(Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0_f32, tc.success))
-                .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
+                .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("scene_toggle_play"), true);
+                });
+            }
+        } else {
+            // Active: STOP (red) | PREV | GO (green filled)
+            ui.horizontal(|ui| {
+                let stop_btn =
+                    egui::Button::new(RichText::new("STOP").size(SMALL_SIZE).color(tc.error))
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.0_f32, tc.error))
+                        .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
                 if ui
-                    .add_sized(
-                        Vec2::new(ui.available_width(), MIN_INTERACT_HEIGHT),
-                        play_btn,
-                    )
+                    .add_sized(Vec2::new(60.0, MIN_INTERACT_HEIGHT), stop_btn)
                     .clicked()
                 {
                     ui.ctx().data_mut(|d| {
                         d.insert_temp(egui::Id::new("scene_toggle_play"), true);
                     });
                 }
-            } else {
-                // Active: STOP (red) | PREV | GO (green filled)
-                ui.horizontal(|ui| {
-                    let stop_btn =
-                        egui::Button::new(RichText::new("STOP").size(SMALL_SIZE).color(tc.error))
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::new(1.0_f32, tc.error))
-                            .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
-                    if ui
-                        .add_sized(Vec2::new(60.0, MIN_INTERACT_HEIGHT), stop_btn)
-                        .clicked()
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("scene_toggle_play"), true);
-                        });
-                    }
 
-                    let prev_btn = egui::Button::new(
-                        RichText::new("PREV")
-                            .size(SMALL_SIZE)
-                            .color(tc.text_primary),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0_f32, tc.card_border))
-                    .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
-                    if ui
-                        .add_sized(Vec2::new(50.0, MIN_INTERACT_HEIGHT), prev_btn)
-                        .clicked()
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("scene_go_prev"), true);
-                        });
-                    }
-
-                    let go_w = ui.available_width();
-                    let go_btn = egui::Button::new(
-                        RichText::new("GO")
-                            .size(BODY_SIZE)
-                            .color(tc.on_selection)
-                            .strong(),
-                    )
-                    .fill(tc.selection)
-                    .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
-                    if ui
-                        .add_sized(Vec2::new(go_w, MIN_INTERACT_HEIGHT), go_btn)
-                        .clicked()
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("scene_go_next"), true);
-                        });
-                    }
-                });
-            }
-
-            ui.add_space(2.0);
-
-            // Loop + Advance mode on one row
-            ui.horizontal(|ui| {
-                let mut loop_mode = tl.loop_mode;
+                let prev_btn = egui::Button::new(
+                    RichText::new("PREV")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_primary),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::new(1.0_f32, tc.card_border))
+                .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
                 if ui
-                    .checkbox(&mut loop_mode, RichText::new("Loop").size(SMALL_SIZE))
-                    .changed()
+                    .add_sized(Vec2::new(50.0, MIN_INTERACT_HEIGHT), prev_btn)
+                    .clicked()
                 {
                     ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("scene_set_loop"), loop_mode);
+                        d.insert_temp(egui::Id::new("scene_go_prev"), true);
                     });
                 }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let advance_mode = &tl.advance_mode;
-                    let mode_id: u32 = match advance_mode {
-                        AdvanceMode::Manual => 0,
-                        AdvanceMode::Timer => 1,
-                        AdvanceMode::BeatSync { .. } => 2,
-                    };
-                    let mode_names = ["Manual", "Timer", "Beat Sync"];
-
-                    let mut selected = mode_id;
-                    egui::ComboBox::from_id_salt("advance_mode_combo")
-                        .width(80.0)
-                        .selected_text(mode_names[selected as usize])
-                        .show_ui(ui, |ui| {
-                            for (i, name) in mode_names.iter().enumerate() {
-                                ui.selectable_value(&mut selected, i as u32, *name);
-                            }
-                        });
-                    if selected != mode_id {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("scene_set_advance_mode"), selected);
-                        });
-                    }
-
-                    ui.label(
-                        RichText::new("Advance:")
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    );
-                });
+                let go_w = ui.available_width();
+                let go_btn = egui::Button::new(
+                    RichText::new("GO")
+                        .size(BODY_SIZE)
+                        .color(tc.on_selection)
+                        .strong(),
+                )
+                .fill(tc.selection)
+                .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
+                if ui
+                    .add_sized(Vec2::new(go_w, MIN_INTERACT_HEIGHT), go_btn)
+                    .clicked()
+                {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("scene_go_next"), true);
+                    });
+                }
             });
+        }
 
-            // BeatSync: beats_per_cue control
-            if let AdvanceMode::BeatSync { beats_per_cue } = &tl.advance_mode {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Beats/cue:")
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    );
-                    let bpc_id = egui::Id::new("beats_per_cue_val");
-                    let mut bpc: u32 = ui
-                        .ctx()
-                        .data_mut(|d| d.get_temp(bpc_id).unwrap_or(*beats_per_cue));
-                    let drag = ui.add(egui::DragValue::new(&mut bpc).range(1..=64).speed(0.1));
-                    if drag.changed() {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(bpc_id, bpc);
-                            d.insert_temp(egui::Id::new("scene_set_beats_per_cue"), bpc);
-                        });
-                    }
+        ui.add_space(2.0);
+
+        // Loop + Advance mode on one row
+        ui.horizontal(|ui| {
+            let mut loop_mode = tl.loop_mode;
+            if ui
+                .checkbox(&mut loop_mode, RichText::new("Loop").size(SMALL_SIZE))
+                .changed()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("scene_set_loop"), loop_mode);
                 });
             }
 
-            ui.add_space(4.0);
-        }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let advance_mode = &tl.advance_mode;
+                let mode_id: u32 = match advance_mode {
+                    AdvanceMode::Manual => 0,
+                    AdvanceMode::Timer => 1,
+                    AdvanceMode::BeatSync { .. } => 2,
+                };
+                let mode_names = ["Manual", "Timer", "Beat Sync"];
 
-        // ── Zone 3: Cue List ──
+                let mut selected = mode_id;
+                egui::ComboBox::from_id_salt("advance_mode_combo")
+                    .width(80.0)
+                    .selected_text(mode_names[selected as usize])
+                    .show_ui(ui, |ui| {
+                        for (i, name) in mode_names.iter().enumerate() {
+                            ui.selectable_value(&mut selected, i as u32, *name);
+                        }
+                    });
+                if selected != mode_id {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("scene_set_advance_mode"), selected);
+                    });
+                }
 
-        ui.separator();
-        ui.add_space(2.0);
-        ui.label(
-            RichText::new("CUE LIST")
-                .size(HEADING_SIZE)
-                .color(tc.text_secondary)
-                .strong(),
-        );
-        ui.add_space(2.0);
+                ui.label(
+                    RichText::new("Advance:")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+            });
+        });
 
-        if info.cue_list.is_empty() {
-            egui::Frame::new()
-                .fill(tc.card_bg)
-                .stroke(Stroke::new(1.0_f32, tc.card_border))
-                .corner_radius(CornerRadius::same(WIDGET_ROUNDING))
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("No cues — add presets below")
-                            .size(SMALL_SIZE)
-                            .color(tc.text_secondary),
-                    );
-                });
-        } else {
-            let current_cue = info.timeline.as_ref().map(|t| t.current_cue).unwrap_or(0);
-            let active = info.timeline.as_ref().map(|t| t.active).unwrap_or(false);
-            let transitioning_to = info.timeline.as_ref().and_then(|t| {
-                if let TimelineInfoState::Transitioning { to, .. } = &t.state {
-                    Some(*to)
-                } else {
-                    None
+        // BeatSync: beats_per_cue control
+        if let AdvanceMode::BeatSync { beats_per_cue } = &tl.advance_mode {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Beats/cue:")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                let bpc_id = egui::Id::new("beats_per_cue_val");
+                let mut bpc: u32 = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp(bpc_id).unwrap_or(*beats_per_cue));
+                let drag = ui.add(egui::DragValue::new(&mut bpc).range(1..=64).speed(0.1));
+                if drag.changed() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(bpc_id, bpc);
+                        d.insert_temp(egui::Id::new("scene_set_beats_per_cue"), bpc);
+                    });
                 }
             });
+        }
 
-            // Scrollable cue list: fixed-height viewport for up to 6 cards
+        ui.add_space(4.0);
+    }
+}
+
+/// The current scene's cues and the row that adds one. `max_visible` cues
+/// show at once before the list scrolls; `None` draws them all, for a
+/// container that scrolls already.
+pub fn draw_cue_list(ui: &mut Ui, info: &SceneInfo, max_visible: Option<usize>) {
+    let tc = theme_colors(ui.ctx());
+    ui.label(
+        RichText::new("CUE LIST")
+            .size(HEADING_SIZE)
+            .color(tc.text_secondary)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    if info.cue_list.is_empty() {
+        egui::Frame::new()
+            .fill(tc.card_bg)
+            .stroke(Stroke::new(1.0_f32, tc.card_border))
+            .corner_radius(CornerRadius::same(WIDGET_ROUNDING))
+            .inner_margin(egui::Margin::symmetric(6, 4))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("No cues — add presets below")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+            });
+    } else {
+        let current_cue = info.timeline.as_ref().map(|t| t.current_cue).unwrap_or(0);
+        let active = info.timeline.as_ref().map(|t| t.active).unwrap_or(false);
+        let transitioning_to = info.timeline.as_ref().and_then(|t| {
+            if let TimelineInfoState::Transitioning { to, .. } = &t.state {
+                Some(*to)
+            } else {
+                None
+            }
+        });
+
+        let rows = |ui: &mut Ui| {
+            for (idx, cue) in info.cue_list.iter().enumerate() {
+                draw_cue_row(
+                    ui,
+                    idx,
+                    cue,
+                    active,
+                    current_cue,
+                    transitioning_to,
+                    info,
+                    &tc,
+                );
+            }
+        };
+        if let Some(max_visible) = max_visible {
+            // Scrollable cue list: a fixed-height viewport for up to
+            // `max_visible` cards
             let card_height = 57.0; // approx height per two-line cue card
-            let max_visible = 6;
             let scroll_height =
                 (info.cue_list.len() as f32 * card_height).min(max_visible as f32 * card_height);
             let avail_w = ui.available_width();
             ui.allocate_ui(Vec2::new(avail_w, scroll_height), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("cue_list_scroll")
-                    .show(ui, |ui| {
-                        for (idx, cue) in info.cue_list.iter().enumerate() {
-                            draw_cue_row(
-                                ui,
-                                idx,
-                                cue,
-                                active,
-                                current_cue,
-                                transitioning_to,
-                                info,
-                                &tc,
-                            );
-                        }
-                    });
-            });
-        }
-
-        // ── Add Cue bar (separated at bottom) ──
-        ui.add_space(2.0);
-        ui.separator();
-        ui.add_space(2.0);
-
-        if !info.preset_names.is_empty() {
-            let mut add_cue_preset: usize = ui
-                .ctx()
-                .data_mut(|d| d.get_temp(egui::Id::new("add_cue_preset_idx")).unwrap_or(0));
-
-            ui.horizontal(|ui| {
-                let btn_width = 52.0;
-                let spacing = ui.spacing().item_spacing.x;
-                let combo_w = (ui.available_width() - btn_width - spacing).max(60.0);
-
-                egui::ComboBox::from_id_salt("add_cue_combo")
-                    .width(combo_w)
-                    .selected_text(
-                        info.preset_names
-                            .get(add_cue_preset)
-                            .map(|s| s.as_str())
-                            .unwrap_or("Select preset"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (i, name) in info.preset_names.iter().enumerate() {
-                            ui.selectable_value(&mut add_cue_preset, i, name);
-                        }
-                    });
-
-                let add_btn =
-                    egui::Button::new(RichText::new("+ Cue").size(SMALL_SIZE).color(tc.accent))
-                        .fill(Color32::TRANSPARENT)
-                        .stroke(Stroke::new(1.0_f32, tc.card_border))
-                        .corner_radius(CornerRadius::same(WIDGET_ROUNDING))
-                        .min_size(Vec2::new(btn_width, MIN_INTERACT_HEIGHT));
-                if ui.add(add_btn).clicked() {
-                    if let Some(name) = info.preset_names.get(add_cue_preset) {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("scene_add_cue"), name.clone());
-                        });
-                    }
-                }
-            });
-
-            ui.ctx().data_mut(|d| {
-                d.insert_temp(egui::Id::new("add_cue_preset_idx"), add_cue_preset);
+                    .show(ui, rows);
             });
         } else {
-            ui.label(
-                RichText::new("Save some presets first")
-                    .size(SMALL_SIZE)
-                    .color(tc.text_secondary),
-            );
+            rows(ui);
         }
+    }
+
+    // ── Add Cue bar (separated at bottom) ──
+    ui.add_space(2.0);
+    ui.separator();
+    ui.add_space(2.0);
+
+    if !info.preset_names.is_empty() {
+        let mut add_cue_preset: usize = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(egui::Id::new("add_cue_preset_idx")).unwrap_or(0));
+
+        ui.horizontal(|ui| {
+            let btn_width = 52.0;
+            let spacing = ui.spacing().item_spacing.x;
+            let combo_w = (ui.available_width() - btn_width - spacing).max(60.0);
+
+            egui::ComboBox::from_id_salt("add_cue_combo")
+                .width(combo_w)
+                .selected_text(
+                    info.preset_names
+                        .get(add_cue_preset)
+                        .map(|s| s.as_str())
+                        .unwrap_or("Select preset"),
+                )
+                .show_ui(ui, |ui| {
+                    for (i, name) in info.preset_names.iter().enumerate() {
+                        ui.selectable_value(&mut add_cue_preset, i, name);
+                    }
+                });
+
+            let add_btn =
+                egui::Button::new(RichText::new("+ Cue").size(SMALL_SIZE).color(tc.accent))
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(1.0_f32, tc.card_border))
+                    .corner_radius(CornerRadius::same(WIDGET_ROUNDING))
+                    .min_size(Vec2::new(btn_width, MIN_INTERACT_HEIGHT));
+            if ui.add(add_btn).clicked() {
+                if let Some(name) = info.preset_names.get(add_cue_preset) {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("scene_add_cue"), name.clone());
+                    });
+                }
+            }
+        });
+
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(egui::Id::new("add_cue_preset_idx"), add_cue_preset);
+        });
+    } else {
+        ui.label(
+            RichText::new("Save some presets first")
+                .size(SMALL_SIZE)
+                .color(tc.text_secondary),
+        );
     }
 }
 
@@ -457,15 +481,16 @@ fn draw_scene_tile(
     now: f64,
     tc: &crate::ui::theme::colors::ThemeColors,
 ) {
-    let card_fill = if is_current {
-        tc.accent.linear_multiply(0.15)
+    // The current scene takes the inverted selection fill, like the current
+    // preset: an accent tint alone read the same as the rest without hue.
+    let (card_fill, border, text_color) = if is_current {
+        (tc.selection, Stroke::NONE, tc.on_selection)
     } else {
-        tc.card_bg
-    };
-    let border = if is_current {
-        Stroke::new(1.0_f32, tc.accent)
-    } else {
-        Stroke::new(1.0_f32, tc.card_border)
+        (
+            tc.card_bg,
+            Stroke::new(1.0_f32, tc.card_border),
+            tc.text_primary,
+        )
     };
 
     let frame_resp = egui::Frame::new()
@@ -481,16 +506,8 @@ fn draw_scene_tile(
 
                 // Name button
                 let display = truncate_scene_name(name, 14);
-                let label = if is_current {
-                    RichText::new(&display)
-                        .size(SMALL_SIZE)
-                        .color(tc.accent)
-                        .strong()
-                } else {
-                    RichText::new(&display)
-                        .size(SMALL_SIZE)
-                        .color(tc.text_primary)
-                };
+                let label = RichText::new(&display).size(SMALL_SIZE).color(text_color);
+                let label = if is_current { label.strong() } else { label };
 
                 let del_w = if hovered || is_armed { 18.0 } else { 0.0 };
                 let name_w = (ui.available_width() - del_w - ui.spacing().item_spacing.x).max(20.0);
@@ -508,11 +525,7 @@ fn draw_scene_tile(
                 // Delete button — hover-reveal
                 if hovered || is_armed {
                     let del_text = if is_armed { "Sure?" } else { "×" };
-                    let del_color = if is_armed {
-                        tc.error
-                    } else {
-                        tc.text_secondary
-                    };
+                    let del_color = if is_armed { tc.error } else { text_color };
                     let del_btn_w = if is_armed { 32.0 } else { del_w };
                     let del_btn = egui::Button::new(
                         RichText::new(del_text).size(SMALL_SIZE).color(del_color),

@@ -16,8 +16,9 @@ use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
     appearance_panel, audio_panel, catalog_panel, layer_panel, media_panel, midi_panel, osc_panel,
-    output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, settings_panel,
-    stack_panel, status_bar, triggers_panel, volumetric_panel, web_panel,
+    output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, scene_panel,
+    settings_panel, stack_panel, status_bar, timeline_bar, triggers_panel, volumetric_panel,
+    web_panel,
 };
 use super::widgets;
 use crate::audio::AudioSystem;
@@ -105,6 +106,8 @@ pub struct ShellState<'a> {
     pub display: Option<(egui::TextureId, f32)>,
     /// The catalog's pictures (#3124).
     pub catalog_thumbs: &'a mut crate::ui::catalog_thumbs::CatalogThumbs,
+    /// Scenes, the current cue list and where the timeline is (#3173).
+    pub scene: &'a scene_panel::SceneInfo,
 }
 
 /// Draw the workspace shell. Returns without drawing when the overlay is
@@ -176,6 +179,7 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
             });
         });
 
+    let playing = s.scene.timeline.as_ref().filter(|t| t.active);
     let status = egui::TopBottomPanel::bottom("v2_status").show(ctx, |ui| {
         status_bar::draw_status_bar(
             ui,
@@ -192,8 +196,8 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
             false,
             false,
             false,
-            false,
-            None,
+            playing.is_some(),
+            playing.map(|t| (t.current_cue, t.cue_count)),
             s.status_error,
             None,
             s.audio.indicator(),
@@ -286,7 +290,7 @@ fn columns(w: f32) -> Columns {
 fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -> f32 {
     let cols = columns(ctx.content_rect().width());
     // First, so it runs the full width under all three columns.
-    catalog_drawer(ctx, s, fill);
+    bottom_drawer(ctx, s, fill, Workspace::Build);
 
     // Resizable inside a range rather than fixed, since the right size
     // depends on the window.
@@ -350,46 +354,131 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
     output.response.rect.left()
 }
 
-/// The catalog along the bottom of Build (#3124). Its height is the user's to
-/// drag; closed, it is one line that says how to open it.
-fn catalog_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
-    let tc = theme_colors(ctx);
-    let open_id = egui::Id::new("v2_catalog_open");
-    let open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(true);
-    let visible = s.effect_loader.effects.iter().filter(|e| !e.hidden).count();
+/// What the bottom drawer can show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DrawerTab {
+    Catalog,
+    Scenes,
+}
 
-    // The whole bar toggles, and when closed that is the whole panel.
+impl DrawerTab {
+    fn label(self) -> &'static str {
+        match self {
+            DrawerTab::Catalog => "CATALOG",
+            DrawerTab::Scenes => "SCENES",
+        }
+    }
+
+    /// The tabs a workspace's drawer has. Perform plays scenes but loads
+    /// no effects, so it has no catalog.
+    fn for_workspace(ws: Workspace) -> &'static [DrawerTab] {
+        match ws {
+            Workspace::Perform => &[DrawerTab::Scenes],
+            _ => &[DrawerTab::Catalog, DrawerTab::Scenes],
+        }
+    }
+}
+
+/// The drawer along the bottom: the catalog and the scenes as tabs in Build
+/// (#3124, #3173), the scenes alone in Perform. Its height is the user's to
+/// drag; closed, it is one line that says how to open it. Each workspace
+/// keeps its own open state, height and tab.
+fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws: Workspace) {
+    let tc = theme_colors(ctx);
+    let key = match ws {
+        Workspace::Perform => "perform",
+        _ => "build",
+    };
+    let open_id = egui::Id::new("v2_drawer_open").with(key);
+    let tab_id = egui::Id::new("v2_drawer_tab").with(key);
+    let tabs = DrawerTab::for_workspace(ws);
+    let open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(true);
+    let tab = ctx
+        .data(|d| d.get_temp::<DrawerTab>(tab_id))
+        .filter(|t| tabs.contains(t))
+        .unwrap_or(tabs[0]);
+    let visible = s.effect_loader.effects.iter().filter(|e| !e.hidden).count();
+    let scene = s.scene;
+    let playing = scene.timeline.as_ref().filter(|t| t.active);
+
+    // The whole bar toggles, and when closed that is the whole panel. A tab
+    // takes its own click: it shows that tab, opening the drawer if needed.
     let header = |ui: &mut egui::Ui| {
         let h = if open {
             MIN_INTERACT_HEIGHT
         } else {
             ui.available_height()
         };
+        let mut picked = None;
         let r = widgets::header_row(ui, h, |ui| {
             widgets::draw_section_arrow(ui, open, tc.text_secondary);
+            if tabs.len() == 1 {
+                ui.label(
+                    egui::RichText::new(tab.label())
+                        .size(12.0)
+                        .strong()
+                        .color(tc.text_secondary),
+                );
+            } else {
+                for &t in tabs {
+                    let text = egui::RichText::new(t.label()).size(12.0).strong();
+                    if ui.selectable_label(open && t == tab, text).clicked() {
+                        picked = Some(t);
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            // What the drawer holds, and whether a scene is playing: said
+            // whichever tab is showing, so a running cue list is never out
+            // of sight.
+            let count = match tab {
+                DrawerTab::Catalog => format!("{visible} effects"),
+                DrawerTab::Scenes => match scene.scene_store_names.len() {
+                    1 => "1 scene".to_string(),
+                    n => format!("{n} scenes"),
+                },
+            };
             ui.label(
-                egui::RichText::new("CATALOG")
+                egui::RichText::new(count)
                     .size(12.0)
-                    .strong()
                     .color(tc.text_secondary),
             );
-            ui.label(
-                egui::RichText::new(format!("{visible} effects"))
-                    .size(12.0)
-                    .color(tc.text_secondary),
-            );
+            if let Some(t) = playing {
+                ui.add_space(8.0);
+                widgets::paint_mark(ui, widgets::Mark::Active);
+                let cue = scene
+                    .cue_list
+                    .get(t.current_cue)
+                    .map_or("", |c| c.preset_name.as_str());
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Playing cue {} of {}: {cue}",
+                        t.current_cue + 1,
+                        t.cue_count
+                    ))
+                    .size(12.0),
+                );
+            }
             ui.add_space(12.0);
-            ui.label(
-                egui::RichText::new(if open {
+            let hint = match (open, tab) {
+                (false, _) => "Click to open",
+                (true, DrawerTab::Catalog) => {
                     "Click a picture to load it into the selected layer, or drag it onto the stack."
-                } else {
-                    "Click to open"
-                })
-                .size(12.0)
-                .color(tc.text_secondary),
+                }
+                (true, DrawerTab::Scenes) => "Space goes to the next cue. T starts and stops.",
+            };
+            ui.label(
+                egui::RichText::new(hint)
+                    .size(12.0)
+                    .color(tc.text_secondary),
             );
         });
-        if r.clicked() {
+        if let Some(t) = picked {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(tab_id, t);
+                d.insert_temp(open_id, true);
+            });
+        } else if r.clicked() {
             ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
         }
     };
@@ -400,36 +489,115 @@ fn catalog_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
         ..Default::default()
     };
     if !open {
-        egui::TopBottomPanel::bottom("v2_catalog_closed")
+        egui::TopBottomPanel::bottom(egui::Id::new("v2_drawer_closed").with(key))
             .exact_height(30.0)
             .frame(frame)
             .show(ctx, header);
         return;
     }
     let screen_h = ctx.content_rect().height();
-    egui::TopBottomPanel::bottom("v2_catalog")
-        .default_height(340.0)
+    egui::TopBottomPanel::bottom(egui::Id::new("v2_drawer").with(key))
+        .default_height(if ws == Workspace::Perform {
+            260.0
+        } else {
+            340.0
+        })
         .height_range(160.0..=(screen_h * 0.6).max(200.0))
         .resizable(true)
         .frame(frame)
         .show(ctx, |ui| {
             header(ui);
             ui.add_space(4.0);
-            let active = s.layers.get(s.active_layer);
-            let target = catalog_panel::Target {
-                current: active.and_then(|l| l.effect_index),
-                locked: active.is_some_and(|l| l.locked),
-                can_add: s.layers.len() < crate::bindings::catalog::MAX_LAYERS,
-                active: s.active_layer,
-            };
-            catalog_panel::draw_catalog(
-                ui,
-                s.effect_loader,
-                &s.settings.favorite_effects,
-                s.catalog_thumbs,
-                &target,
-            );
+            match tab {
+                DrawerTab::Catalog => {
+                    let active = s.layers.get(s.active_layer);
+                    let target = catalog_panel::Target {
+                        current: active.and_then(|l| l.effect_index),
+                        locked: active.is_some_and(|l| l.locked),
+                        can_add: s.layers.len() < crate::bindings::catalog::MAX_LAYERS,
+                        active: s.active_layer,
+                    };
+                    catalog_panel::draw_catalog(
+                        ui,
+                        s.effect_loader,
+                        &s.settings.favorite_effects,
+                        s.catalog_thumbs,
+                        &target,
+                    );
+                }
+                DrawerTab::Scenes => scenes_tab(ui, scene),
+            }
         });
+}
+
+/// Widest the scene library column gets.
+const SCENE_LIBRARY_MAX: f32 = 420.0;
+/// Widest a cue row gets: at the drawer's full width its hold time sat a
+/// window's width from its name.
+const CUE_LIST_MAX: f32 = 760.0;
+
+/// The Scenes tab: the timeline across the top while a scene plays, then the
+/// saved scenes and the transport on the left and the cue list beside them.
+/// Each column scrolls on its own, so the transport stays put under a long
+/// cue list.
+fn scenes_tab(ui: &mut egui::Ui, scene: &scene_panel::SceneInfo) {
+    let tc = theme_colors(ui.ctx());
+    if let Some(tl) = scene.timeline.as_ref().filter(|t| t.active) {
+        let names: Vec<String> = scene
+            .cue_list
+            .iter()
+            .map(|c| c.preset_name.clone())
+            .collect();
+        timeline_bar::draw_timeline_bar(ui, tl, &names);
+        ui.add_space(6.0);
+    }
+    let h = ui.available_height();
+    let gap = 16.0;
+    let left_w = (ui.available_width() * 0.34)
+        .clamp(260.0, SCENE_LIBRARY_MAX)
+        .min(ui.available_width());
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_w, h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ScrollArea::vertical()
+                    .id_salt("v2_scene_library")
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        scene_panel::draw_scene_library(ui, scene);
+                        if scene.current_scene.is_some() {
+                            ui.add_space(6.0);
+                            scene_panel::draw_transport(ui, scene);
+                        }
+                    });
+            },
+        );
+        let w = ui.available_width().min(CUE_LIST_MAX);
+        ui.allocate_ui_with_layout(
+            egui::vec2(w, h),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ScrollArea::vertical()
+                    .id_salt("v2_scene_cues")
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        if scene.current_scene.is_some() {
+                            scene_panel::draw_cue_list(ui, scene, None);
+                        } else {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Pick a scene, or save a new one, to see and edit its cues.",
+                                )
+                                .size(12.0)
+                                .color(tc.text_secondary),
+                            );
+                        }
+                    });
+            },
+        );
+    });
 }
 
 /// Widest the inspector's content gets, however wide its column is.
@@ -772,9 +940,12 @@ fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
     );
 }
 
-/// Perform: presets on the left, the output large in the middle.
+/// Perform: presets on the left, the output large in the middle, the scenes
+/// along the bottom.
 fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
     let cols = columns(ctx.content_rect().width());
+    // First, so it runs the full width under both columns.
+    bottom_drawer(ctx, s, fill, Workspace::Perform);
     egui::SidePanel::left("v2_presets")
         .default_width(cols.left_default)
         .width_range(cols.left_range.0..=cols.left_range.1)
@@ -919,8 +1090,8 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
-                        "Streams (NDI, virtual camera, Spout, Syphon) and Scenes are still \
-                         only in the Classic layout.",
+                        "Streams (NDI, virtual camera, Spout, Syphon) are still only in the \
+                         Classic layout.",
                     )
                     .size(SMALL_SIZE)
                     .color(theme_colors(ui.ctx()).text_secondary),
@@ -980,6 +1151,125 @@ mod tests {
             });
         }
         out
+    }
+
+    /// A scene library of three, the first current and playing its second
+    /// of three cues.
+    fn scenes(playing: bool) -> scene_panel::SceneInfo {
+        use crate::scene::timeline::{TimelineInfo, TimelineInfoState};
+        use crate::scene::types::{AdvanceMode, TransitionType};
+        let cue = |name: &str, transition| scene_panel::CueDisplayInfo {
+            preset_name: name.to_string(),
+            transition,
+            transition_secs: 1.0,
+            hold_secs: Some(4.0),
+        };
+        scene_panel::SceneInfo {
+            scene_store_names: vec!["Opener".into(), "Middle".into(), "Close".into()],
+            current_scene: Some(0),
+            timeline: Some(TimelineInfo {
+                active: playing,
+                cue_count: 3,
+                current_cue: 1,
+                state: if playing {
+                    TimelineInfoState::Holding {
+                        elapsed: 1.0,
+                        hold_secs: Some(4.0),
+                    }
+                } else {
+                    TimelineInfoState::Idle
+                },
+                loop_mode: false,
+                advance_mode: AdvanceMode::BeatSync { beats_per_cue: 8 },
+            }),
+            preset_names: vec!["Tide".into(), "Sumi".into()],
+            cue_list: vec![
+                cue("Tide", TransitionType::Cut),
+                cue("Sumi", TransitionType::Dissolve),
+                cue("Pegboard", TransitionType::ParamMorph),
+            ],
+        }
+    }
+
+    /// Run `draw` in a panel `size` large for a few frames; returns the
+    /// height of what it drew.
+    fn drawn_height(size: egui::Vec2, mut draw: impl FnMut(&mut egui::Ui)) -> f32 {
+        let ctx = Context::default();
+        crate::ui::theme::colors::set_theme_colors(
+            &ctx,
+            crate::ui::theme::palette::Palette::GRAY.colors(),
+        );
+        let mut h = 0.0;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(panel_frame(egui::Color32::BLACK))
+                    .show(ctx, |ui| {
+                        h = ui.scope(|ui| draw(ui)).response.rect.height();
+                    });
+            });
+        }
+        h
+    }
+
+    // Each piece of the Scenes tab is as tall as its rows, in a panel with
+    // far more height than it needs. A row laid out with a bare
+    // `with_layout` takes all the height below it; that bit the section
+    // headers and the preset rows in #3125, and a click test passed both.
+    #[test]
+    fn scene_pieces_are_as_tall_as_their_rows() {
+        let tall = egui::vec2(1400.0, 2000.0);
+        for playing in [false, true] {
+            let info = scenes(playing);
+            let lib = drawn_height(tall, |ui| scene_panel::draw_scene_library(ui, &info));
+            assert!(lib < 160.0, "playing {playing}: the library is {lib} tall");
+            let tr = drawn_height(tall, |ui| scene_panel::draw_transport(ui, &info));
+            assert!(tr < 160.0, "playing {playing}: the transport is {tr} tall");
+            // Three two-line cue cards and the add row.
+            let cues = drawn_height(tall, |ui| scene_panel::draw_cue_list(ui, &info, None));
+            assert!(
+                cues < 300.0,
+                "playing {playing}: three cues are {cues} tall"
+            );
+            let bar = drawn_height(tall, |ui| {
+                if let Some(tl) = &info.timeline {
+                    timeline_bar::draw_timeline_bar(ui, tl, &[]);
+                }
+            });
+            assert!(bar < 40.0, "playing {playing}: the timeline is {bar} tall");
+        }
+    }
+
+    // The Scenes tab fills its drawer and no more: its two columns take the
+    // height they are given, and a column taller than that scrolls.
+    #[test]
+    fn the_scenes_tab_stays_inside_its_drawer() {
+        for h in [160.0, 300.0] {
+            for playing in [false, true] {
+                let info = scenes(playing);
+                let drawn = drawn_height(egui::vec2(1400.0, h), |ui| scenes_tab(ui, &info));
+                assert!(
+                    drawn <= h,
+                    "a {h} px drawer drew {drawn} px (playing {playing})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn perform_has_scenes_and_no_catalog() {
+        assert_eq!(
+            DrawerTab::for_workspace(Workspace::Perform),
+            &[DrawerTab::Scenes]
+        );
+        assert_eq!(
+            DrawerTab::for_workspace(Workspace::Build),
+            &[DrawerTab::Catalog, DrawerTab::Scenes]
+        );
     }
 
     // Kevin's ~1200 px window left the inspector ~150 px between a 600 px

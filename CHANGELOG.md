@@ -15,8 +15,8 @@
 
 - New **workspace layout**, in Settings ▸ Global: turn off *Classic layout* for
   Perform, Build and Setup instead of two narrow side panels, with the output as a
-  preview rather than the backdrop. Streams and Scenes are still Classic-only, and
-  the switch goes away in v2.1.
+  preview rather than the backdrop. Streams are still Classic-only, and the switch
+  goes away in v2.1.
 
 - Hiding the interface is no longer a dead end: a hint names the way back, and Esc
   returns you instead of asking whether to quit.
@@ -36,6 +36,10 @@
   names and descriptions, and favorites. Hover a picture to see it move. Click it to
   load it into the selected layer, or drag it onto the stack to replace a layer's
   effect or add a new layer.
+
+- In the workspace layout, **scenes, the cue list and the timeline are in the drawer
+  along the bottom**: a Scenes tab beside the catalog in Build, and on its own in
+  Perform. Its bar says which cue is playing even while the drawer is closed.
 
 - **Adding a video layer no longer freezes the app.** A video decodes every frame
   before it plays, which took ~15 s with nothing on screen; it now decodes in the
