@@ -81,7 +81,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         // work out which effect it belonged to, and every target under it is
         // pinned to that layer's index.
         let group_label: std::borrow::Cow<'static, str> =
-            format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into();
+            format!("Layer {} \u{2022} {}", lp.index + 1, lp.effect_name).into();
         for name in &lp.param_names {
             targets.push(TargetOption {
                 id: BindingTarget::Param {
@@ -105,7 +105,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         ] {
             targets.push(TargetOption {
                 id: BindingTarget::Layer { layer: i, field },
-                label: format!("Layer {i} {}", field.as_str()),
+                label: format!("Layer {} {}", i + 1, field.as_str()),
                 group: "Layers".into(),
             });
         }
@@ -937,9 +937,10 @@ pub fn ws_source_display_name(source_name: &str) -> String {
 pub fn friendly_target(target: &BindingTarget) -> String {
     match target {
         BindingTarget::Unset => String::new(),
-        BindingTarget::Param { layer, param, .. } => format!("L{layer} {param}"),
+        // Layers are numbered from 1 on screen, as in the stack.
+        BindingTarget::Param { layer, param, .. } => format!("L{} {param}", layer + 1),
         BindingTarget::LegacyParam { param, .. } => param.clone(),
-        BindingTarget::Layer { layer, field } => format!("L{layer} {}", field.as_str()),
+        BindingTarget::Layer { layer, field } => format!("L{} {}", layer + 1, field.as_str()),
         BindingTarget::GlobalMasterOpacity => "master opacity".to_string(),
         BindingTarget::PostFx(field) | BindingTarget::Particle(field) => field.replace('_', " "),
         BindingTarget::Uniform(field) => format!("u.{field}"),
@@ -1228,8 +1229,9 @@ mod tests {
         let targets = build_target_options(&info);
         let groups: std::collections::HashSet<&str> =
             targets.iter().map(|t| t.group.as_ref()).collect();
-        assert!(groups.contains("Layer 0 \u{2022} Raster"));
-        assert!(groups.contains("Layer 1 \u{2022} Frost"));
+        // Numbered from 1, as the stack numbers them.
+        assert!(groups.contains("Layer 1 \u{2022} Raster"));
+        assert!(groups.contains("Layer 2 \u{2022} Frost"));
         // The seven fixed ids alone would not have covered those two.
         assert!(groups.len() > 7);
     }
@@ -1310,8 +1312,8 @@ mod tests {
         assert!(target_matches(opt, "warp")); // label
         // The group names its layer and effect even with one layer loaded, so a
         // user can tell what they are about to bind.
-        assert_eq!(opt.group.as_ref(), "Layer 0 \u{2022} Raster");
-        assert!(target_matches(opt, "Layer 0")); // group
+        assert_eq!(opt.group.as_ref(), "Layer 1 \u{2022} Raster");
+        assert!(target_matches(opt, "Layer 1")); // group
         assert!(target_matches(opt, "raster")); // id, case-insensitively
         assert!(!target_matches(opt, "zzzznope"));
 
@@ -1368,5 +1370,18 @@ mod tests {
             .filter(|k| *k != "audio.dominant_chroma")
             .collect();
         assert_eq!(grouped, expected);
+    }
+
+    #[test]
+    fn layers_are_numbered_from_one_as_in_the_stack() {
+        let first = BindingTarget::Layer {
+            layer: 0,
+            field: LayerField::Opacity,
+        };
+        assert_eq!(friendly_target(&first), "L1 opacity");
+        assert_eq!(
+            friendly_target(&BindingTarget::from("param.2.Tide.speed")),
+            "L3 speed"
+        );
     }
 }

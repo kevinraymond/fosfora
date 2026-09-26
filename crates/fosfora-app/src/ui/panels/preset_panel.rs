@@ -170,79 +170,88 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                 .show(ui, |ui| {
                     // Buttons first, from the right; the name is cut to what
                     // they leave rather than pushing them past the edge.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        {
-                            // Reset button (neutral style)
-                            let reset_btn = ui.add(
-                                egui::Button::new(
-                                    RichText::new("Reset")
-                                        .size(SMALL_SIZE)
-                                        .color(tc.text_secondary),
-                                )
-                                .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 13)) // ~5%
-                                .stroke(Stroke::new(
-                                    1.0_f32,
-                                    Color32::from_rgba_unmultiplied(255, 255, 255, 31), // ~12%
-                                ))
-                                .corner_radius(CornerRadius::same(3)),
-                            );
-                            if reset_btn
-                                .on_hover_text("Discard changes and reload preset")
-                                .clicked()
+                    widgets::layout_row(
+                        ui,
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
                             {
-                                ui.ctx().data_mut(|d| {
-                                    d.insert_temp(egui::Id::new("pending_preset"), current_idx);
-                                });
-                            }
-
-                            // Update button (amber, only for user presets)
-                            if is_user_preset {
-                                let update_btn = ui.add(
+                                // Reset button (neutral style)
+                                let reset_btn = ui.add(
                                     egui::Button::new(
-                                        RichText::new("Update").size(SMALL_SIZE).color(AMBER_TEXT),
+                                        RichText::new("Reset")
+                                            .size(SMALL_SIZE)
+                                            .color(tc.text_secondary),
                                     )
-                                    .fill(Color32::from_rgba_unmultiplied(
-                                        AMBER.r(),
-                                        AMBER.g(),
-                                        AMBER.b(),
-                                        64, // ~25%
-                                    ))
+                                    .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 13)) // ~5%
                                     .stroke(Stroke::new(
                                         1.0_f32,
-                                        Color32::from_rgba_unmultiplied(
-                                            AMBER.r(),
-                                            AMBER.g(),
-                                            AMBER.b(),
-                                            128, // ~50%
-                                        ),
+                                        Color32::from_rgba_unmultiplied(255, 255, 255, 31), // ~12%
                                     ))
                                     .corner_radius(CornerRadius::same(3)),
                                 );
-                                if update_btn
-                                    .on_hover_text("Save changes to current preset")
+                                if reset_btn
+                                    .on_hover_text("Discard changes and reload preset")
                                     .clicked()
                                 {
                                     ui.ctx().data_mut(|d| {
-                                        d.insert_temp(
-                                            egui::Id::new("save_preset"),
-                                            current_name.clone(),
-                                        );
+                                        d.insert_temp(egui::Id::new("pending_preset"), current_idx);
                                     });
                                 }
+
+                                // Update button (amber, only for user presets)
+                                if is_user_preset {
+                                    let update_btn = ui.add(
+                                        egui::Button::new(
+                                            RichText::new("Update")
+                                                .size(SMALL_SIZE)
+                                                .color(AMBER_TEXT),
+                                        )
+                                        .fill(Color32::from_rgba_unmultiplied(
+                                            AMBER.r(),
+                                            AMBER.g(),
+                                            AMBER.b(),
+                                            64, // ~25%
+                                        ))
+                                        .stroke(Stroke::new(
+                                            1.0_f32,
+                                            Color32::from_rgba_unmultiplied(
+                                                AMBER.r(),
+                                                AMBER.g(),
+                                                AMBER.b(),
+                                                128, // ~50%
+                                            ),
+                                        ))
+                                        .corner_radius(CornerRadius::same(3)),
+                                    );
+                                    if update_btn
+                                        .on_hover_text("Save changes to current preset")
+                                        .clicked()
+                                    {
+                                        ui.ctx().data_mut(|d| {
+                                            d.insert_temp(
+                                                egui::Id::new("save_preset"),
+                                                current_name.clone(),
+                                            );
+                                        });
+                                    }
+                                }
                             }
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            draw_pulse_dot(ui, time);
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(&current_name)
-                                        .size(SMALL_SIZE)
-                                        .color(AMBER_TEXT),
-                                )
-                                .truncate(),
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    draw_pulse_dot(ui, time);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&current_name)
+                                                .size(SMALL_SIZE)
+                                                .color(AMBER_TEXT),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
                             );
-                        });
-                    });
+                        },
+                    );
                 });
 
                 ui.add_space(6.0);
@@ -264,7 +273,7 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
     // Right to left, the button first: the field gets whatever the button
     // leaves. A width guessed for the button overflowed once text grew, and
     // an overflowing row widens a resizable column a little every frame.
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    widgets::layout_row(ui, egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let save_btn = ui.add_enabled(
             !name.trim().is_empty(),
             egui::Button::new(RichText::new("SAVE").size(SMALL_SIZE).strong()),
@@ -705,8 +714,14 @@ mod layout_tests {
     /// Width of a resizable side panel holding the open preset section,
     /// after `frames` frames.
     fn panel_width(store: &PresetStore, frames: usize) -> f32 {
+        panel_size(store, frames).0
+    }
+
+    /// (panel width, height of the open preset section) after `frames` frames.
+    fn panel_size(store: &PresetStore, frames: usize) -> (f32, f32) {
         let ctx = egui::Context::default();
         let mut w = 0.0;
+        let mut h = 0.0;
         for _ in 0..frames {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -722,7 +737,11 @@ mod layout_tests {
                     .resizable(true)
                     .show(ctx, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            draw_preset_section_open(ui, store, true);
+                            h = ui
+                                .scope(|ui| draw_preset_section_open(ui, store, true))
+                                .response
+                                .rect
+                                .height();
                         });
                     })
                     .response
@@ -730,7 +749,20 @@ mod layout_tests {
                     .width();
             });
         }
-        w
+        (w, h)
+    }
+
+    /// Rows laid out with a bare `with_layout` take all the height below
+    /// them; the Save row did, and the section filled the column.
+    #[test]
+    fn the_open_section_is_as_tall_as_its_rows() {
+        for dirty in [false, true] {
+            let mut s = store(&["Tide", "Murmur", "Pegboard", "Sumi", "Drift"]);
+            s.current_preset = Some(4);
+            s.dirty = dirty;
+            let (_, h) = panel_size(&s, 5);
+            assert!(h < 400.0, "dirty {dirty}: the section is {h} tall");
+        }
     }
 
     #[test]

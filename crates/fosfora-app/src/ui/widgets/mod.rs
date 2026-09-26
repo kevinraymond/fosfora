@@ -67,6 +67,14 @@ pub fn header_row(ui: &mut Ui, min_height: f32, add: impl FnOnce(&mut Ui)) -> eg
     .response
 }
 
+/// One row of controls in `layout`, exactly `MIN_INTERACT_HEIGHT` tall and
+/// the full width. A bare `with_layout` takes all the height left below it —
+/// the row, and whatever frame holds it, grows to fill the column.
+pub fn layout_row<R>(ui: &mut Ui, layout: egui::Layout, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = egui::vec2(ui.available_width(), MIN_INTERACT_HEIGHT);
+    ui.allocate_ui_with_layout(size, layout, add).inner
+}
+
 /// Collapsible section with card styling.
 /// Returns the inner `Ui` response if the section is open.
 pub fn section(

@@ -21,7 +21,6 @@ use super::panels::{
 };
 use super::widgets;
 use crate::audio::AudioSystem;
-use crate::bindings::bus::BindingBus;
 use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
 use crate::gpu::ShaderUniforms;
@@ -89,7 +88,6 @@ pub struct ShellState<'a> {
     pub midi: &'a mut MidiSystem,
     pub osc: &'a mut OscSystem,
     pub web: &'a mut WebSystem,
-    pub binding_bus: &'a mut BindingBus,
     pub preset_store: &'a PresetStore,
     pub layers: &'a [LayerInfo],
     pub active_layer: usize,
@@ -659,22 +657,22 @@ fn blend_controls(ui: &mut egui::Ui, layer: &crate::gpu::layer::LayerInfo, i: us
 /// itself when the effect is the only layer, and offered here otherwise.
 fn postfx_source(ui: &mut egui::Ui, s: &ShellState<'_>) {
     let tc = theme_colors(ui.ctx());
-    // One entry per effect that recommends a look: an effect with no
-    // post-processing block would "recommend" plain defaults, and two layers
-    // of the same effect recommend the same thing once.
-    let mut effects: Vec<(usize, &str, bool)> = Vec::new();
+    // One entry per effect on the stack, once each, with whether it
+    // recommends a look of its own and whether Master already matches it.
+    let mut effects: Vec<(usize, &str, bool, bool)> = Vec::new();
     for (i, l) in s.layers.iter().enumerate() {
         let Some(fx) = l.effect_index.and_then(|e| s.effect_loader.effects.get(e)) else {
             continue;
         };
-        if l.is_media || fx.postprocess.is_none() || effects.iter().any(|e| e.1 == fx.name) {
+        if l.is_media || effects.iter().any(|e| e.1 == fx.name) {
             continue;
         }
-        let matches = s.postfx_matches.get(i).copied().unwrap_or(false);
-        effects.push((i, fx.name.as_str(), matches));
+        let recommends = fx.postprocess.is_some();
+        let matches = recommends && s.postfx_matches.get(i).copied().unwrap_or(false);
+        effects.push((i, fx.name.as_str(), recommends, matches));
     }
-    let source = match effects.iter().find(|e| e.2) {
-        Some((_, name, _)) => format!("Matches {name}'s recommended look."),
+    let source = match effects.iter().find(|e| e.3) {
+        Some((_, name, _, _)) => format!("Matches {name}'s recommended look."),
         None => "This preset's own settings.".to_string(),
     };
     ui.label(
@@ -682,52 +680,60 @@ fn postfx_source(ui: &mut egui::Ui, s: &ShellState<'_>) {
             .size(12.0)
             .color(tc.text_secondary),
     );
-    let offers: Vec<_> = effects.iter().filter(|e| !e.2).collect();
+
+    // Every way back is always shown, so none seems to vanish; one that
+    // would change nothing is greyed out and says why.
     let previous = s.postprocess_previous.filter(|p| *p != &*s.postprocess);
-    let defaults = PostProcessDef::default();
-    let not_defaults = *s.postprocess != defaults;
-    if !offers.is_empty() || previous.is_some() || not_defaults {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("Reset to:").size(12.0));
-            if previous.is_some()
-                && ui
-                    .small_button("Previous settings")
-                    .on_hover_text(
-                        "The settings Master had before its last reset. Press again to \
-                         come back to these.",
-                    )
-                    .clicked()
-            {
+    let at_defaults = *s.postprocess == PostProcessDef::default();
+    let send = |ui: &egui::Ui, key: &str| {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(egui::Id::new(key), true));
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Reset to:").size(12.0));
+        let b = ui.add_enabled(
+            previous.is_some(),
+            egui::Button::new("Previous settings").small(),
+        );
+        let b = if previous.is_some() {
+            b.on_hover_text(
+                "The settings Master had before its last reset. Press again to come \
+                 back to these.",
+            )
+        } else {
+            b.on_disabled_hover_text("Nothing to go back to yet: this is here after a reset.")
+        };
+        if b.clicked() {
+            send(ui, "postprocess_to_previous");
+        }
+
+        let b = ui
+            .add_enabled(!at_defaults, egui::Button::new("Defaults").small())
+            .on_hover_text("Post-processing's built-in settings")
+            .on_disabled_hover_text("These are already the built-in settings.");
+        if b.clicked() {
+            send(ui, "postprocess_to_defaults");
+        }
+
+        for &(i, name, recommends, matches) in &effects {
+            let b = ui
+                .add_enabled(recommends && !matches, egui::Button::new(name).small())
+                .on_hover_text(format!(
+                    "{name}'s effect file recommends its own post-processing. Copy it \
+                     to Master, replacing the settings below."
+                ))
+                .on_disabled_hover_text(if matches {
+                    format!("Master already has {name}'s recommended look.")
+                } else {
+                    format!("{name} recommends no post-processing of its own.")
+                });
+            if b.clicked() {
                 ui.ctx().data_mut(|d| {
-                    d.insert_temp(egui::Id::new("postprocess_to_previous"), true);
+                    d.insert_temp(egui::Id::new("adopt_layer_postprocess"), i);
                 });
             }
-            if not_defaults
-                && ui
-                    .small_button("Defaults")
-                    .on_hover_text("Post-processing's built-in settings")
-                    .clicked()
-            {
-                ui.ctx().data_mut(|d| {
-                    d.insert_temp(egui::Id::new("postprocess_to_defaults"), true);
-                });
-            }
-            for &&(i, name, _) in &offers {
-                if ui
-                    .small_button(name)
-                    .on_hover_text(format!(
-                        "{name}'s effect file recommends its own post-processing. \
-                         Copy it to Master, replacing the settings below."
-                    ))
-                    .clicked()
-                {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("adopt_layer_postprocess"), i);
-                    });
-                }
-            }
-        });
-    }
+        }
+    });
 }
 
 /// Master scope: what runs on the finished blend, and is saved with the
@@ -740,23 +746,6 @@ fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
         "Post-processing and the master chain apply after every layer is blended. \
          Master's row at the top of the stack shows the result.",
     );
-    // The matrix is a window, not a panel — a button is the whole control,
-    // so it does not need a section of its own.
-    let active = s.binding_bus.active_count();
-    let label = if active > 0 {
-        format!("Bindings · {active} active  (B)")
-    } else {
-        "Bindings  (B)".to_string()
-    };
-    if ui
-        .button(egui::RichText::new(label).size(12.0))
-        .on_hover_text("Open the binding matrix")
-        .clicked()
-    {
-        ui.ctx().data_mut(|d| {
-            d.insert_temp(egui::Id::new("open_binding_matrix"), true);
-        });
-    }
     ui.add_space(6.0);
     widgets::section(ui, "v2_postfx", "Post-Processing", None, true, |ui| {
         postfx_source(ui, s);

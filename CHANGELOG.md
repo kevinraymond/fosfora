@@ -69,9 +69,13 @@
 - A section opens or closes from a click anywhere on its title bar. Clicks on the
   title's words were missed, so only the arrow and the gaps between words worked.
 
-- Master's post-processing can go back: next to each effect's recommended look,
+- Master's post-processing can go back: beside each effect's recommended look,
   *Previous settings* restores what a reset replaced (press it again to return) and
-  *Defaults* restores the built-in settings.
+  *Defaults* restores the built-in settings. Every choice is always shown, and one
+  that would change nothing is greyed out with the reason on hover.
+
+- The Bindings window numbers layers from 1, as the layer list does; the first layer
+  was shown as Layer 0.
 
 - The Bindings window is solid instead of letting the output show through it.
 

@@ -346,11 +346,11 @@ fn draw_header(
             let active = info.layers.iter().find(|l| l.index == info.active_layer);
             let (label, known) = match active {
                 Some(l) if !l.effect_name.is_empty() => (
-                    format!("Layer {} \u{2022} {}", l.index, l.effect_name),
+                    format!("Layer {} \u{2022} {}", l.index + 1, l.effect_name),
                     true,
                 ),
                 _ => (
-                    format!("Layer {} \u{2022} no effect", info.active_layer),
+                    format!("Layer {} \u{2022} no effect", info.active_layer + 1),
                     false,
                 ),
             };

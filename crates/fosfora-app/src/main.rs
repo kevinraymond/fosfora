@@ -982,7 +982,6 @@ impl ApplicationHandler for FosforaApp {
                                 midi: &mut app.midi,
                                 osc: &mut app.osc,
                                 web: &mut app.web,
-                                binding_bus: &mut app.binding_bus,
                                 preset_store: &app.preset_store,
                                 layers: &layer_infos,
                                 active_layer,
