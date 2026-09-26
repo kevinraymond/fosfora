@@ -44,6 +44,73 @@ pub fn card_frame(ui: &Ui) -> Frame {
     }
 }
 
+/// A status light's state, each with its own shape (#3125): three of the
+/// four themes draw every state color in the text color, and the user this
+/// is built for doesn't separate red from green. Color is only a second cue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// Filled dot: receiving, running, live.
+    Active,
+    /// Ring: switched on, nothing arriving.
+    Idle,
+    /// Short dash: switched off.
+    Off,
+    /// Triangle: needs a look, still working.
+    Warn,
+    /// Cross: not working.
+    Fault,
+}
+
+pub fn paint_mark(ui: &mut Ui, mark: Mark) -> egui::Response {
+    let tc = theme_colors(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+    let c = rect.center();
+    let p = ui.painter();
+    match mark {
+        Mark::Active => {
+            p.circle_filled(c, 3.5, tc.success);
+        }
+        Mark::Idle => {
+            p.circle_stroke(c, 3.0, Stroke::new(1.2_f32, tc.text_secondary));
+        }
+        Mark::Off => {
+            p.line_segment(
+                [c - egui::Vec2::new(3.0, 0.0), c + egui::Vec2::new(3.0, 0.0)],
+                Stroke::new(1.2_f32, tc.text_dim),
+            );
+        }
+        Mark::Warn => {
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    c + egui::Vec2::new(0.0, -4.0),
+                    c + egui::Vec2::new(4.0, 3.5),
+                    c + egui::Vec2::new(-4.0, 3.5),
+                ],
+                tc.warning,
+                Stroke::NONE,
+            ));
+        }
+        Mark::Fault => {
+            let s = Stroke::new(1.6_f32, tc.error);
+            p.line_segment(
+                [
+                    c + egui::Vec2::new(-3.5, -3.5),
+                    c + egui::Vec2::new(3.5, 3.5),
+                ],
+                s,
+            );
+            p.line_segment(
+                [
+                    c + egui::Vec2::new(-3.5, 3.5),
+                    c + egui::Vec2::new(3.5, -3.5),
+                ],
+                s,
+            );
+        }
+    }
+    resp
+}
+
 /// A header that takes a click anywhere on it: the full width, and at least
 /// `min_height` tall. Its labels are made unselectable, because a selectable
 /// label keeps the click for itself — headers built as a row of labels only

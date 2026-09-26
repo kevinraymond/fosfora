@@ -204,20 +204,21 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
 
         let tc = &tc;
         let tab_btn = |ui: &mut Ui, label: &str, is_active: bool| -> egui::Response {
+            // The active tab is the inverted selection fill (#3125).
             let btn = egui::Button::new(RichText::new(label).size(SMALL_SIZE).color(if is_active {
-                egui::Color32::WHITE
+                tc.on_selection
             } else {
                 tc.text_secondary
             }))
             .fill(if is_active {
-                egui::Color32::from_rgba_unmultiplied(0x3b, 0x82, 0xf6, 50)
+                tc.selection
             } else {
                 tc.widget_bg
             })
             .stroke(egui::Stroke::new(
                 1.0_f32,
                 if is_active {
-                    egui::Color32::from_rgba_unmultiplied(0x3b, 0x82, 0xf6, 100)
+                    tc.selection
                 } else {
                     tc.card_border
                 },

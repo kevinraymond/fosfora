@@ -497,7 +497,6 @@ fn draw_preset_grid(
     new_pending: &mut Option<(usize, f64)>,
     loading_index: Option<usize>,
 ) {
-    let warning_color = Color32::from_rgb(0xE0, 0x60, 0x40);
     let now = ui.input(|i| i.time);
     let available_width = ui.available_width();
     let cols = tile_cols(available_width, gap);
@@ -517,15 +516,17 @@ fn draw_preset_grid(
                     !is_builtin_section && pending_delete.map_or(false, |(idx, _)| idx == i);
                 let is_dirty_selected = is_current && store.dirty;
 
+                // Every state differs by more than hue (#3125): current is the
+                // inverted selection fill, armed says so in words with a heavy
+                // outline, loading pulses its outline, unsaved adds a "*".
                 let (fill, text_color, stroke) = if is_armed {
-                    (warning_color, Color32::WHITE, Stroke::NONE)
+                    (tc.card_bg, tc.text_primary, Stroke::new(2.5_f32, tc.error))
                 } else if is_loading {
-                    // Pulsing border for loading preset
                     let pulse = ((now * 3.0).sin() * 0.5 + 0.5) as f32;
                     let border_alpha = (pulse * 200.0 + 55.0) as u8;
                     (
                         tc.card_bg,
-                        tc.accent,
+                        tc.text_primary,
                         Stroke::new(
                             2.0_f32,
                             Color32::from_rgba_unmultiplied(
@@ -536,41 +537,8 @@ fn draw_preset_grid(
                             ),
                         ),
                     )
-                } else if is_dirty_selected {
-                    // Amber-tinted dirty selected tile
-                    (
-                        Color32::from_rgba_unmultiplied(AMBER.r(), AMBER.g(), AMBER.b(), 46), // ~18%
-                        AMBER_TEXT,
-                        Stroke::new(
-                            1.0_f32,
-                            Color32::from_rgba_unmultiplied(
-                                AMBER.r(),
-                                AMBER.g(),
-                                AMBER.b(),
-                                115, // ~45%
-                            ),
-                        ),
-                    )
                 } else if is_current {
-                    // Clean selected: semi-transparent accent
-                    (
-                        Color32::from_rgba_unmultiplied(
-                            tc.accent.r(),
-                            tc.accent.g(),
-                            tc.accent.b(),
-                            64, // ~25%
-                        ),
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 242), // near-white
-                        Stroke::new(
-                            1.0_f32,
-                            Color32::from_rgba_unmultiplied(
-                                tc.accent.r(),
-                                tc.accent.g(),
-                                tc.accent.b(),
-                                128, // ~50%
-                            ),
-                        ),
-                    )
+                    (tc.selection, tc.on_selection, Stroke::NONE)
                 } else {
                     (
                         tc.card_bg,
@@ -579,7 +547,9 @@ fn draw_preset_grid(
                     )
                 };
 
-                let display_name = if is_dirty_selected {
+                let display_name = if is_armed {
+                    format!("Delete {pname}?")
+                } else if is_dirty_selected {
                     format!("*{pname}")
                 } else {
                     pname.clone()

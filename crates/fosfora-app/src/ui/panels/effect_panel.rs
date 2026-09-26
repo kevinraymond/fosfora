@@ -44,7 +44,6 @@ struct GridCtx<'a> {
     gap: f32,
     /// Right-click two-stage delete (user section only; favorites row never deletes).
     allow_delete: bool,
-    warning_color: Color32,
 }
 
 pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String]) {
@@ -171,7 +170,6 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String
         btn_height: 22.0,
         gap: 4.0,
         allow_delete: false,
-        warning_color: Color32::from_rgb(200, 60, 60),
     };
 
     // ── Favorites row (always on top, never collapsible) ─────────────
@@ -437,10 +435,13 @@ fn draw_effect_grid(
                 let et = effect.effect_type();
                 let et_color = type_color(et);
 
+                // Current is the inverted selection fill; armed for delete
+                // says so in words with a heavy outline, not by a red fill
+                // alone (#3125).
                 let (fill, text_color, stroke) = if is_armed {
-                    (ctx.warning_color, Color32::WHITE, Stroke::NONE)
+                    (tc.card_bg, tc.text_primary, Stroke::new(2.5_f32, tc.error))
                 } else if is_current {
-                    (tc.accent, Color32::WHITE, Stroke::NONE)
+                    (tc.selection, tc.on_selection, Stroke::NONE)
                 } else {
                     (
                         tc.card_bg,
@@ -449,14 +450,16 @@ fn draw_effect_grid(
                     )
                 };
 
-                let btn = egui::Button::new(
-                    RichText::new(truncate_name(&effect.name, 22))
-                        .size(SMALL_SIZE)
-                        .color(text_color),
-                )
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(CornerRadius::same(4));
+                let shown = if is_armed {
+                    format!("Delete {}?", truncate_name(&effect.name, 14))
+                } else {
+                    truncate_name(&effect.name, 22)
+                };
+                let btn =
+                    egui::Button::new(RichText::new(shown).size(SMALL_SIZE).color(text_color))
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(CornerRadius::same(4));
 
                 let response = ui.add_sized(Vec2::new(btn_width, ctx.btn_height), btn);
                 let rect = response.rect;

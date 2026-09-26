@@ -184,6 +184,9 @@ fn theme_card(
         if p.accent != p.text {
             v.push((p.accent, 0.0));
         }
+        if p.success != p.text && p.success != p.accent {
+            v.push((p.success, 0.0));
+        }
         v
     };
     let fixed = bars.iter().filter(|b| b.1 == 0.0).count() as f32 * narrow;

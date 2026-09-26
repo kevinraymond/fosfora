@@ -550,8 +550,6 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     // Morph section
     if info.has_morph {
         let morph_purple = egui::Color32::from_rgb(0xC0, 0x80, 0xE0);
-        let morph_active = egui::Color32::from_rgb(0x80, 0x50, 0xA0);
-        let morph_dest = egui::Color32::from_rgb(0x60, 0x40, 0x80);
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -605,16 +603,19 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                     has_target && info.morph_transitioning && i == info.morph_dest_index;
                 let is_selected = selected_slot == Some(i);
 
+                // Each state in words or fill, not in hue (#3125): the shape
+                // it holds is the selection fill, the one it is morphing to has
+                // an arrow and an outline, the slot picked for replacing says so.
                 let sz = SMALL_SIZE;
                 let btn = if is_selected {
-                    egui::Button::new(RichText::new(&label).size(sz).color(egui::Color32::WHITE))
-                        .fill(egui::Color32::from_rgb(0xA0, 0x60, 0x30))
+                    egui::Button::new(RichText::new(format!("Replace: {label}")).size(sz))
+                        .stroke(egui::Stroke::new(2.0_f32, tc.text_primary))
                 } else if is_current {
-                    egui::Button::new(RichText::new(&label).size(sz).color(egui::Color32::WHITE))
-                        .fill(morph_active)
+                    egui::Button::new(RichText::new(&label).size(sz).color(tc.on_selection))
+                        .fill(tc.selection)
                 } else if is_morphing_to {
-                    egui::Button::new(RichText::new(&label).size(sz).color(egui::Color32::WHITE))
-                        .fill(morph_dest)
+                    egui::Button::new(RichText::new(format!("\u{2192} {label}")).size(sz))
+                        .stroke(egui::Stroke::new(2.0_f32, tc.text_primary))
                 } else if !has_target {
                     egui::Button::new(
                         RichText::new(&label)

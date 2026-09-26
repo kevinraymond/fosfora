@@ -52,13 +52,18 @@
   untouched. Ctrl + and Ctrl − change it too, and the size is remembered.
 
 - **New themes: Light, Gray, Black, and Blue and orange.** The first three use no hue
-  at all, and Blue and orange is a pair that stays distinct for red–green color
-  blindness. Midnight, Ember, Neon and High Contrast are retired: a saved choice moves
+  at all. Blue and orange is navy with orange for what is selected: a pair that stays
+  distinct for red–green color blindness. Midnight, Ember, Neon and High Contrast are retired: a saved choice moves
   to the nearest new theme, and every other setting is kept.
 
 - **Custom themes**: *Save a copy to edit* writes the theme in use to a file of fifteen
   named colors in the themes folder. Change any of them, press Reload, and Appearance
   lists any color that fails contrast minimums.
+
+- **No state is shown by color alone.** Status lights have a shape per state (filled,
+  ring, dash, triangle, cross) and say it in words on hover; the audio light's live,
+  quiet and failed were one dot in three colors. Selected tabs, the current preset,
+  effect and cue, and tiles armed for delete now differ by fill, outline or words.
 
 - **Larger text throughout**: nothing is drawn below 12 px at 100 % scale. Hints,
   units and tables were 7 to 10 px, and the Bindings matrix was the worst of them.

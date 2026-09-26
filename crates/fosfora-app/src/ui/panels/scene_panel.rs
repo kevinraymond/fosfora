@@ -240,10 +240,10 @@ pub fn draw_scene_panel(ui: &mut Ui, info: &SceneInfo) {
                     let go_btn = egui::Button::new(
                         RichText::new("GO")
                             .size(BODY_SIZE)
-                            .color(Color32::WHITE)
+                            .color(tc.on_selection)
                             .strong(),
                     )
-                    .fill(tc.success)
+                    .fill(tc.selection)
                     .corner_radius(CornerRadius::same(WIDGET_ROUNDING));
                     if ui
                         .add_sized(Vec2::new(go_w, MIN_INTERACT_HEIGHT), go_btn)
@@ -562,16 +562,10 @@ fn draw_cue_row(
     } else {
         tc.card_bg
     };
+    // The playing cue also has a heavy outline and a ▶ before its name, the
+    // next one a →: the tints alone read as one state without hue (#3125).
     let border_color = if is_current {
-        Stroke::new(
-            1.0_f32,
-            Color32::from_rgba_unmultiplied(
-                tc.accent.r(),
-                tc.accent.g(),
-                tc.accent.b(),
-                77, // ~0.3 alpha
-            ),
-        )
+        Stroke::new(2.0_f32, tc.text_primary)
     } else if is_target {
         Stroke::new(
             1.0_f32,
@@ -614,7 +608,14 @@ fn draw_cue_row(
                     } else {
                         tc.text_primary
                     };
-                    let display = truncate_scene_name(&cue.preset_name, 22);
+                    let name = truncate_scene_name(&cue.preset_name, 22);
+                    let display = if is_current {
+                        format!("\u{25B6} {name}")
+                    } else if is_target {
+                        format!("\u{2192} {name}")
+                    } else {
+                        name
+                    };
                     let name_btn = egui::Button::new(
                         RichText::new(&display).size(SMALL_SIZE).color(name_color),
                     )

@@ -42,7 +42,7 @@ fn icon_button(
     let size = Vec2::splat(16.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let c = if response.hovered() {
-        Color32::WHITE
+        theme_colors(ui.ctx()).text_primary
     } else {
         color
     };
@@ -55,7 +55,7 @@ fn drag_handle(ui: &mut Ui, color: Color32) -> egui::Response {
     let size = Vec2::new(12.0, 16.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::drag());
     let c = if response.hovered() || response.dragged() {
-        Color32::WHITE
+        theme_colors(ui.ctx()).text_primary
     } else {
         color
     };
@@ -171,7 +171,7 @@ fn chain_button(
     let size = Vec2::new(CHAIN_BADGE_WIDTH, 16.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let c = if response.hovered() {
-        Color32::WHITE
+        theme_colors(ui.ctx()).text_primary
     } else {
         color
     };
@@ -288,7 +288,7 @@ pub fn draw_layer_panel(
             // Title/pin color: dimmed more aggressively for disabled layers
             let title_color = {
                 let base = if is_active {
-                    Color32::WHITE
+                    tc.text_primary
                 } else if !layer.enabled {
                     with_alpha(tc.text_secondary, 0.25)
                 } else {
@@ -314,11 +314,16 @@ pub fn draw_layer_panel(
             };
 
             let outer_stroke = {
-                let base_color = if is_active { tc.accent } else { tc.card_border };
-                if alpha < 1.0 {
-                    Stroke::new(1.0_f32, with_alpha(base_color, alpha))
+                // Active: a heavy outline in the text color, not a hue (#3125).
+                let (base_color, w) = if is_active {
+                    (tc.text_primary, 2.0_f32)
                 } else {
-                    Stroke::new(1.0_f32, base_color)
+                    (tc.card_border, 1.0_f32)
+                };
+                if alpha < 1.0 {
+                    Stroke::new(w, with_alpha(base_color, alpha))
+                } else {
+                    Stroke::new(w, base_color)
                 }
             };
 
@@ -349,9 +354,10 @@ pub fn draw_layer_panel(
                 .outer_margin(egui::Margin::symmetric(0, 1))
                 .show(ui, |ui| {
                     // Header row
+                    // A light tint: a full accent fill under white text was
+                    // unreadable wherever the accent is the text color.
                     let header_fill = if is_active {
-                        let c = tc.accent;
-                        with_alpha(c, alpha)
+                        with_alpha(tc.accent, 0.18 * alpha)
                     } else {
                         card_fill
                     };
@@ -864,7 +870,7 @@ pub fn draw_layer_panel(
                 let center = del_rect.center();
                 let s = 3.5;
                 let del_color = if del_resp.hovered() {
-                    Color32::WHITE
+                    tc.text_primary
                 } else {
                     ctrl_color
                 };

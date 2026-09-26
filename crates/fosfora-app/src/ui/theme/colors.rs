@@ -24,6 +24,11 @@ pub struct ThemeColors {
     pub hover_fill: Color32,
     pub hover_border: Color32,
     pub backdrop: Color32,
+    /// Fill of whatever is selected, current or on: selection inverts rather
+    /// than tints, so it reads without hue (#3125).
+    pub selection: Color32,
+    /// Text and marks drawn on `selection`.
+    pub on_selection: Color32,
 }
 
 const THEME_COLORS_ID: &str = "fosfora_theme_colors";

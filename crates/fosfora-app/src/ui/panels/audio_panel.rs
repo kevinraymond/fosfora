@@ -473,13 +473,15 @@ fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
         let track_left = row_left + bar_left;
 
         if i == 1 {
-            // Kick: boolean dot at start of track area
-            let dot_color = if v > 0.5 {
-                Color32::WHITE
+            // Kick: a filled dot on a kick, a ring between them — shape and
+            // theme colors, so it reads in the Light theme too (#3125).
+            let tc = theme_colors(ui.ctx());
+            let c = pos2(track_left + 4.0, cy);
+            if v > 0.5 {
+                painter.circle_filled(c, 3.5, tc.text_primary);
             } else {
-                Color32::from_rgb(0x33, 0x33, 0x33)
-            };
-            painter.circle_filled(pos2(track_left + 4.0, cy), 3.5, dot_color);
+                painter.circle_stroke(c, 3.0, egui::Stroke::new(1.0_f32, tc.text_dim));
+            }
         } else {
             // Track background
             let track_rect = Rect::from_min_size(

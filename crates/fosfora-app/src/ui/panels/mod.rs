@@ -239,7 +239,7 @@ pub fn draw_panels(
                                 ui.label(
                                     egui::RichText::new(format!("{active} active"))
                                         .size(SMALL_SIZE)
-                                        .color(egui::Color32::from_white_alpha(120)),
+                                        .color(theme_colors(ui.ctx()).text_secondary),
                                 );
                             }
                             if ui
@@ -336,18 +336,9 @@ pub fn draw_panels(
                 let dot_active_midi = egui::Color32::from_rgb(0x60, 0xA0, 0xE0);
                 let dot_active_osc = egui::Color32::from_rgb(0x50, 0xC0, 0x70);
                 let dot_active_web = egui::Color32::from_rgb(0x50, 0x90, 0xE0);
-                #[cfg(feature = "ndi")]
-                let dot_active_ndi = egui::Color32::from_rgb(0x40, 0xC0, 0x40);
-                #[cfg(all(target_os = "linux", feature = "v4l2"))]
-                let dot_active_v4l2 = egui::Color32::from_rgb(0x40, 0xB0, 0xB0);
-                #[cfg(all(target_os = "windows", feature = "spout"))]
-                let dot_active_spout = egui::Color32::from_rgb(0xC0, 0x90, 0x40);
-                #[cfg(all(target_os = "macos", feature = "syphon"))]
-                let dot_active_syphon = egui::Color32::from_rgb(0xA0, 0x60, 0xE0);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
                 #[cfg(feature = "link")]
                 let dot_active_link = egui::Color32::from_rgb(0xE0, 0xB8, 0x30);
-                let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
                 widgets::section_with_header(
                     ui,
@@ -355,41 +346,42 @@ pub fn draw_panels(
                     "Settings",
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let dim_label = egui::Color32::from_white_alpha(38); // ~0.15
-                        let on_label = egui::Color32::from_white_alpha(90); // ~0.35
-                        // Helper: dot + tiny label (right-to-left order)
-                        let status_dot =
-                            |ui: &mut egui::Ui, on: bool, color: egui::Color32, label: &str| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 3.0;
-                                    let (r, _) = ui.allocate_exact_size(
-                                        egui::vec2(4.0, 4.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    let c = if on { color } else { dot_off };
-                                    ui.painter().circle_filled(r.center(), 2.0, c);
-                                    ui.label(
-                                        egui::RichText::new(label).size(SMALL_SIZE).color(if on {
-                                            on_label
-                                        } else {
-                                            dim_label
-                                        }),
-                                    );
-                                });
-                            };
+                        // On is a filled dot, off a dash, and the name says
+                        // which on hover: never color alone (#3125).
+                        let tc = theme_colors(ui.ctx());
+                        let status_dot = |ui: &mut egui::Ui, on: bool, label: &str| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                let words = format!("{label}: {}", if on { "on" } else { "off" });
+                                let mark = if on {
+                                    widgets::Mark::Active
+                                } else {
+                                    widgets::Mark::Off
+                                };
+                                widgets::paint_mark(ui, mark).on_hover_text(&words);
+                                ui.label(
+                                    egui::RichText::new(label).size(SMALL_SIZE).color(if on {
+                                        tc.text_secondary
+                                    } else {
+                                        tc.text_dim
+                                    }),
+                                )
+                                .on_hover_text(&words);
+                            });
+                        };
                         // Drawn right-to-left, so reverse visual order
-                        status_dot(ui, rec_on, dot_active_rec, "REC");
+                        status_dot(ui, rec_on, "REC");
                         #[cfg(all(target_os = "macos", feature = "syphon"))]
-                        status_dot(ui, syphon_on, dot_active_syphon, "SYP");
+                        status_dot(ui, syphon_on, "SYP");
                         #[cfg(all(target_os = "windows", feature = "spout"))]
-                        status_dot(ui, spout_on, dot_active_spout, "SPT");
+                        status_dot(ui, spout_on, "SPT");
                         #[cfg(all(target_os = "linux", feature = "v4l2"))]
-                        status_dot(ui, v4l2_on, dot_active_v4l2, "V4L");
+                        status_dot(ui, v4l2_on, "V4L");
                         #[cfg(feature = "ndi")]
-                        status_dot(ui, ndi_on, dot_active_ndi, "NDI");
-                        status_dot(ui, web_on, dot_active_web, "WEB");
-                        status_dot(ui, osc_on, dot_active_osc, "OSC");
-                        status_dot(ui, midi_on, dot_active_midi, "MIDI");
+                        status_dot(ui, ndi_on, "NDI");
+                        status_dot(ui, web_on, "WEB");
+                        status_dot(ui, osc_on, "OSC");
+                        status_dot(ui, midi_on, "MIDI");
                     },
                     false,
                     |ui| {

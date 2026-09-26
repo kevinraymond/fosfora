@@ -325,6 +325,21 @@ pub fn draw_binding_matrix(
     draw_connections(ctx, state, bus);
 }
 
+/// A row's dot in the side columns: filled in `color` when the row is bound,
+/// an outline in the dim text color when not, so bound reads without hue.
+fn bound_dot(ui: &egui::Ui, center: egui::Pos2, radius: f32, bound: bool, color: Color32) {
+    let tc = theme_colors(ui.ctx());
+    if bound {
+        ui.painter().circle_filled(center, radius, color);
+    } else {
+        ui.painter().circle_stroke(
+            center,
+            radius - 0.5,
+            egui::Stroke::new(1.0_f32, tc.text_dim),
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
@@ -415,14 +430,15 @@ fn draw_header(
         ui.add_space(12.0);
 
         // Scope tabs
+        // The active tab is the inverted selection fill (#3125).
         let tab_btn = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
             let color = if active {
-                tc.text_primary
+                tc.on_selection
             } else {
                 tc.text_secondary
             };
             let fill = if active {
-                tc.hover_fill
+                tc.selection
             } else {
                 Color32::TRANSPARENT
             };
@@ -804,15 +820,9 @@ fn draw_source_group(
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.add_space(12.0); // indent
 
-                // Mapped dot
-                let dot_color = if is_bound {
-                    source_color(key)
-                } else {
-                    tc.text_dim
-                };
+                // Mapped dot: filled when bound, a ring when not (#3125).
                 let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(dot_rect.center(), 2.5, dot_color);
+                bound_dot(ui, dot_rect.center(), 2.5, is_bound, source_color(key));
 
                 // Label
                 let label_color = if is_bound {
@@ -847,13 +857,7 @@ fn draw_source_group(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (anchor_rect, _) =
                         ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
-                    let anchor_color = if is_bound {
-                        source_color(key).linear_multiply(0.7)
-                    } else {
-                        tc.hover_border
-                    };
-                    ui.painter()
-                        .circle_filled(anchor_rect.center(), 3.0, anchor_color);
+                    bound_dot(ui, anchor_rect.center(), 3.0, is_bound, source_color(key));
                     // Store anchor position for bezier
                     state
                         .source_positions
@@ -1145,8 +1149,7 @@ fn draw_target_column(
                     } else {
                         let (dot_rect, _) =
                             ui.allocate_exact_size(egui::vec2(5.0, 5.0), Sense::hover());
-                        ui.painter()
-                            .circle_filled(dot_rect.center(), 2.0, tc.text_dim);
+                        bound_dot(ui, dot_rect.center(), 2.5, false, tc.text_dim);
                     }
 
                     // Label

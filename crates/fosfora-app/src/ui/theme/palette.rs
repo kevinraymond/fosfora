@@ -137,22 +137,23 @@ impl Palette {
         beat: rgb(0xECEAE4),
     };
 
-    /// Dark slate with the Okabe–Ito sky blue and orange: a pair that stays
-    /// apart for red–green color blindness. Blue selects and confirms, orange
-    /// is live, warm and wrong; a state still never rests on hue alone.
+    /// Navy with the Okabe–Ito orange and sky blue: a pair that stays apart
+    /// for red–green color blindness. Blue is the ground, the outlines and
+    /// what is live; orange is what is selected, hovered or focused. A state
+    /// still never rests on hue alone.
     pub const BLUE_ORANGE: Palette = Palette {
-        bg: rgb(0x14181E),
-        panel: rgb(0x1D232B),
-        well: rgb(0x0E1116),
-        text: rgb(0xECEEF1),
-        sub: rgb(0xAAB3BF),
-        dim: rgb(0x5F6A77),
-        rule: rgb(0x2E3742),
-        line: rgb(0x6B7988),
-        sel_bg: rgb(0x56B4E9),
-        sel_fg: rgb(0x0A1620),
-        accent: rgb(0x56B4E9),
-        error: rgb(0xE69F00),
+        bg: rgb(0x0E1A2B),
+        panel: rgb(0x15253B),
+        well: rgb(0x0A1320),
+        text: rgb(0xEEF2F7),
+        sub: rgb(0xB3C2D6),
+        dim: rgb(0x62748C),
+        rule: rgb(0x26405E),
+        line: rgb(0x5B8FC7),
+        sel_bg: rgb(0xE69F00),
+        sel_fg: rgb(0x1A1203),
+        accent: rgb(0xF0A830),
+        error: rgb(0xFF8A4C),
         warning: rgb(0xF0E442),
         success: rgb(0x56B4E9),
         beat: rgb(0xE69F00),
@@ -282,6 +283,8 @@ impl Palette {
             hover_fill: with_alpha(p.text, 18),
             hover_border: with_alpha(p.text, 36),
             backdrop: Color32::from_black_alpha(if dark { 180 } else { 120 }),
+            selection: p.sel_bg,
+            on_selection: p.sel_fg,
         }
     }
 }
