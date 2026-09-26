@@ -52,12 +52,17 @@ pub fn card_frame(ui: &Ui) -> Frame {
 pub fn header_row(ui: &mut Ui, min_height: f32, add: impl FnOnce(&mut Ui)) -> egui::Response {
     ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
         ui.style_mut().interaction.selectable_labels = false;
-        let w = ui.available_width();
-        ui.set_min_size(egui::vec2(w, min_height));
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.set_min_size(egui::vec2(w, min_height));
-            add(ui);
-        });
+        // A row of exactly this size. `with_layout` would center the contents
+        // in all the height left below, and the header grew to fill it.
+        let size = egui::vec2(ui.available_width(), min_height);
+        ui.allocate_ui_with_layout(
+            size,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(size);
+                add(ui);
+            },
+        );
     })
     .response
 }
@@ -341,5 +346,30 @@ mod tests {
     #[test]
     fn a_section_header_toggles_from_its_far_end() {
         assert!(section_open_after_click(300.0), "right of the title");
+    }
+
+    #[test]
+    fn a_header_is_one_row_tall_however_much_room_is_below_it() {
+        let ctx = egui::Context::default();
+        let mut h = 0.0;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    h = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
+                        ui.label("PRESETS");
+                    })
+                    .rect
+                    .height();
+                });
+            });
+        }
+        assert!(h <= MIN_INTERACT_HEIGHT + 1.0, "the header is {h} tall");
     }
 }
