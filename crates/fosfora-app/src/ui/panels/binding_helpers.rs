@@ -1,3 +1,4 @@
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Color32, Pos2, RichText, Ui};
 
 use crate::bindings::sources::SourceSnapshot;
@@ -797,7 +798,7 @@ pub fn draw_source_badge(ui: &mut Ui, source: &str) {
     ui.add(
         egui::Button::new(
             RichText::new(abbrev)
-                .size(7.0)
+                .size(SMALL_SIZE)
                 .color(Color32::WHITE)
                 .strong(),
         )
@@ -1018,7 +1019,7 @@ pub fn draw_source_row(
         Pos2::new(left, cy),
         egui::Align2::LEFT_CENTER,
         friendly_name,
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(SMALL_SIZE),
         text_color,
     );
 
@@ -1037,7 +1038,7 @@ pub fn draw_source_row(
         Pos2::new(val_right, cy),
         egui::Align2::LEFT_CENTER,
         format!("{val:.2}"),
-        egui::FontId::proportional(8.0),
+        egui::FontId::proportional(SMALL_SIZE),
         dim_color,
     );
 
@@ -1047,7 +1048,7 @@ pub fn draw_source_row(
             Pos2::new(uniform_right, cy),
             egui::Align2::RIGHT_CENTER,
             uniform_ref,
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_dim,
         );
     }

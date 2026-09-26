@@ -8,6 +8,7 @@
 //! NAME rather than its index — the list is rescanned when an effect file
 //! changes, and an index held across that would load the wrong effect.
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Color32, RichText, Sense, Stroke, TextureId, Ui, Vec2};
 
 use crate::effect::format::{EffectType, PfxEffect};
@@ -443,7 +444,7 @@ fn draw_picture(
                 rect.center() + Vec2::new(0.0, 12.0),
                 egui::Align2::CENTER_CENTER,
                 "no picture yet",
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(SMALL_SIZE),
                 tc.text_secondary,
             );
         }

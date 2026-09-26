@@ -1,3 +1,4 @@
+use crate::ui::theme::tokens::SMALL_SIZE;
 use std::collections::{HashMap, HashSet};
 
 use egui::{
@@ -360,9 +361,11 @@ fn draw_header(
                 ),
             };
             let fg = if known { tc.accent } else { tc.text_dim };
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), fg);
+            let galley = ui.painter().layout_no_wrap(
+                label.clone(),
+                egui::FontId::proportional(SMALL_SIZE),
+                fg,
+            );
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(galley.size().x + 16.0, 22.0), Sense::hover());
             ui.painter()
@@ -394,7 +397,11 @@ fn draw_header(
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 3.0, color);
-                ui.label(RichText::new(label).size(8.0).color(tc.text_secondary));
+                ui.label(
+                    RichText::new(label)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
             });
         };
         legend(ui, AUDIO_COLOR, "Audio");
@@ -417,7 +424,7 @@ fn draw_header(
                 Color32::TRANSPARENT
             };
             ui.add(
-                egui::Button::new(RichText::new(label).size(10.0).color(color))
+                egui::Button::new(RichText::new(label).size(SMALL_SIZE).color(color))
                     .fill(fill)
                     .corner_radius(4.0)
                     .min_size(egui::vec2(60.0, 20.0)),
@@ -453,12 +460,12 @@ fn draw_header(
         // Templates
         ui.add_space(8.0);
         egui::ComboBox::from_id_salt("matrix_templates")
-            .selected_text(RichText::new("Templates").size(9.0))
+            .selected_text(RichText::new("Templates").size(SMALL_SIZE))
             .width(100.0)
             .show_ui(ui, |ui| {
                 for tmpl in templates::builtin_templates() {
                     if ui
-                        .button(RichText::new(tmpl.name).size(9.0))
+                        .button(RichText::new(tmpl.name).size(SMALL_SIZE))
                         .on_hover_text(tmpl.description)
                         .clicked()
                     {
@@ -507,16 +514,20 @@ fn draw_filter_box(ui: &mut egui::Ui, filter: &mut String, id: &str) {
         ui.add(
             egui::TextEdit::singleline(filter)
                 .id_salt(id)
-                .hint_text(RichText::new("filter").size(8.0))
+                .hint_text(RichText::new("filter").size(SMALL_SIZE))
                 .desired_width(width)
-                .font(egui::FontId::proportional(9.0)),
+                .font(egui::FontId::proportional(SMALL_SIZE)),
         );
         if !filter.is_empty()
             && ui
                 .add(
-                    egui::Button::new(RichText::new("\u{00d7}").size(9.0).color(tc.text_dim))
-                        .frame(false)
-                        .min_size(egui::vec2(14.0, 14.0)),
+                    egui::Button::new(
+                        RichText::new("\u{00d7}")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_dim),
+                    )
+                    .frame(false)
+                    .min_size(egui::vec2(14.0, 14.0)),
                 )
                 .on_hover_text("Clear filter")
                 .clicked()
@@ -537,7 +548,7 @@ fn draw_source_column(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("SOURCES")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .strong()
                 .color(tc.text_secondary),
         );
@@ -558,7 +569,7 @@ fn draw_source_column(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
+                    egui::Button::new(RichText::new(icon).size(SMALL_SIZE).color(tc.text_dim))
                         .frame(false)
                         .min_size(egui::vec2(14.0, 14.0)),
                 )
@@ -638,7 +649,7 @@ fn draw_source_column(
                     } else {
                         "no sources yet"
                     })
-                    .size(8.0)
+                    .size(SMALL_SIZE)
                     .color(tc.text_dim),
                 );
             }
@@ -724,7 +735,7 @@ fn draw_source_group(
         Pos2::new(x, cy),
         egui::Align2::LEFT_CENTER,
         caret,
-        egui::FontId::proportional(7.0),
+        egui::FontId::proportional(SMALL_SIZE),
         tc.text_secondary,
     );
     x += 12.0;
@@ -732,7 +743,7 @@ fn draw_source_group(
     // Label
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(SMALL_SIZE),
         tc.text_primary,
     );
     ui.painter().galley(
@@ -747,7 +758,7 @@ fn draw_source_group(
             Pos2::new(header_rect.right() - 6.0, cy),
             egui::Align2::RIGHT_CENTER,
             format!("{mapped_count}"),
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             color,
         );
     }
@@ -806,7 +817,7 @@ fn draw_source_group(
                 } else {
                     tc.text_secondary
                 };
-                ui.label(RichText::new(&friendly).size(9.0).color(label_color));
+                ui.label(RichText::new(&friendly).size(SMALL_SIZE).color(label_color));
 
                 // Mini bar (32x3)
                 let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 3.0), Sense::hover());
@@ -825,7 +836,7 @@ fn draw_source_group(
                 // Value
                 ui.label(
                     RichText::new(format!("{val:.2}"))
-                        .size(7.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_dim),
                 );
 
@@ -944,7 +955,7 @@ fn draw_target_column(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("TARGETS")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .strong()
                 .color(tc.text_secondary),
         );
@@ -958,7 +969,7 @@ fn draw_target_column(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
+                    egui::Button::new(RichText::new(icon).size(SMALL_SIZE).color(tc.text_dim))
                         .frame(false)
                         .min_size(egui::vec2(14.0, 14.0)),
                 )
@@ -1021,7 +1032,7 @@ fn draw_target_column(
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new("no targets match")
-                        .size(8.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_dim),
                 );
             }
@@ -1066,14 +1077,14 @@ fn draw_target_column(
                         Pos2::new(x, cy),
                         egui::Align2::LEFT_CENTER,
                         caret,
-                        egui::FontId::proportional(7.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         tc.text_secondary,
                     );
                     x += 12.0;
 
                     let label_galley = ui.painter().layout_no_wrap(
                         current_group.to_string(),
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         tc.text_primary,
                     );
                     ui.painter().galley(
@@ -1141,7 +1152,11 @@ fn draw_target_column(
                     } else {
                         tc.text_secondary
                     };
-                    ui.label(RichText::new(&opt.label).size(9.0).color(label_color));
+                    ui.label(
+                        RichText::new(&opt.label)
+                            .size(SMALL_SIZE)
+                            .color(label_color),
+                    );
 
                     // Output bar — show last value from any binding targeting this
                     // Match both new-format (param.0.Effect.name) and old-format (param.Effect.name)
@@ -1221,7 +1236,7 @@ fn draw_center_column(
 
     ui.label(
         RichText::new("BINDINGS")
-            .size(8.0)
+            .size(SMALL_SIZE)
             .strong()
             .color(tc.text_secondary),
     );
@@ -1261,7 +1276,7 @@ fn draw_center_column(
                 ui.add_space(20.0);
                 ui.label(
                     RichText::new("No bindings in this scope")
-                        .size(10.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
                 ui.add_space(8.0);
@@ -1333,7 +1348,7 @@ fn draw_center_column(
                 btn_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "+ New Binding",
-                egui::FontId::proportional(10.0),
+                egui::FontId::proportional(SMALL_SIZE),
                 if btn_resp.hovered() {
                     tc.text_primary
                 } else {
@@ -1534,7 +1549,7 @@ fn draw_binding_card(
             };
             ui.label(
                 RichText::new(crate::ui::widgets::truncate_chars(&display, 24))
-                    .size(9.0)
+                    .size(SMALL_SIZE)
                     .strong()
                     .color(tc.text_primary),
             )
@@ -1546,7 +1561,7 @@ fn draw_binding_card(
                 && !binding_source.is_empty()
                 && !bus.last_snapshot.contains_key(&binding_source)
             {
-                ui.label(RichText::new("\u{26a0}").size(8.0).color(tc.warning))
+                ui.label(RichText::new("\u{26a0}").size(SMALL_SIZE).color(tc.warning))
                     .on_hover_text(
                         "Source not currently available \u{2014} check the device or re-Learn",
                     );
@@ -1556,7 +1571,7 @@ fn draw_binding_card(
             // bites: change a layer's effect and every binding onto its params
             // stops resolving, while still rendering a perfectly plausible label.
             if enabled && !binding_target.is_unset() && !target_is_live(&binding_target, targets) {
-                ui.label(RichText::new("\u{2717}").size(8.0).color(tc.warning))
+                ui.label(RichText::new("\u{2717}").size(SMALL_SIZE).color(tc.warning))
                     .on_hover_text(format!(
                         "Target no longer exists \u{2014} \u{201c}{binding_target}\u{201d}.\n\
                          The layer it names has a different effect now, or is gone.\n\
@@ -1566,7 +1581,11 @@ fn draw_binding_card(
 
             // Transform chain summary pills
             if binding_transforms.is_empty() {
-                ui.label(RichText::new("passthrough").size(8.0).color(tc.text_dim));
+                ui.label(
+                    RichText::new("passthrough")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_dim),
+                );
             } else {
                 for t in &binding_transforms {
                     let icon = transform_icon(t);
@@ -1576,7 +1595,7 @@ fn draw_binding_card(
                     ui.add(
                         egui::Button::new(
                             RichText::new(pill_text)
-                                .size(8.0)
+                                .size(SMALL_SIZE)
                                 .color(src_rgba(src_color, 170)),
                         )
                         .fill(src_rgba(src_color, 20))
@@ -1594,13 +1613,17 @@ fn draw_binding_card(
 
                 // Collapse/expand chevron
                 let chevron = if expanded { "\u{25b2}" } else { "\u{25bc}" };
-                ui.label(RichText::new(chevron).size(7.0).color(tc.text_secondary));
+                ui.label(
+                    RichText::new(chevron)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
 
                 // Output value + bar
                 if enabled && last_output > 0.001 {
                     ui.label(
                         RichText::new(format!("{:.2}", last_output))
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(src_rgba(src_color, 145)),
                     );
 
@@ -1621,7 +1644,7 @@ fn draw_binding_card(
                 if enabled && last_input > 0.001 {
                     ui.label(
                         RichText::new(format!("{:.2}", last_input))
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
 
@@ -1766,7 +1789,7 @@ fn draw_expanded_content(
                 .font(egui::TextStyle::Small)
                 .hint_text(&auto_name),
         );
-        ui.checkbox(&mut enabled_val, RichText::new("Enabled").size(8.0));
+        ui.checkbox(&mut enabled_val, RichText::new("Enabled").size(SMALL_SIZE));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Delete — two-stage confirmation
@@ -1778,7 +1801,7 @@ fn draw_expanded_content(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(del_label).size(8.0).color(del_color))
+                    egui::Button::new(RichText::new(del_label).size(SMALL_SIZE).color(del_color))
                         .fill(if is_armed {
                             Color32::from_rgba_unmultiplied(0xE0, 0x60, 0x60, 30)
                         } else {
@@ -1799,7 +1822,7 @@ fn draw_expanded_content(
                 .add(
                     egui::Button::new(
                         RichText::new("Duplicate")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     )
                     .frame(false),
@@ -1820,13 +1843,17 @@ fn draw_expanded_content(
         // Source picker
         draw_matrix_source_picker(ui, state, bus, id, &mut source, tc);
 
-        ui.label(RichText::new("\u{2192}").size(10.0).color(tc.text_dim));
+        ui.label(
+            RichText::new("\u{2192}")
+                .size(SMALL_SIZE)
+                .color(tc.text_dim),
+        );
 
         // Target picker
         let total_w = ui.available_width();
         let current_label = target_display_label(&target, targets);
         egui::ComboBox::from_id_salt(format!("matrix_target_{id}"))
-            .selected_text(RichText::new(&current_label).size(9.0))
+            .selected_text(RichText::new(&current_label).size(SMALL_SIZE))
             .width((total_w - 10.0).min(200.0))
             .show_ui(ui, |ui| {
                 // Same filter the target column uses, so this popup narrows too
@@ -1845,14 +1872,14 @@ fn draw_expanded_content(
                         current_group = opt.group.as_ref();
                         ui.label(
                             RichText::new(current_group)
-                                .size(8.0)
+                                .size(SMALL_SIZE)
                                 .strong()
                                 .color(tc.text_secondary),
                         );
                     }
                     let selected = target == opt.id;
                     if ui
-                        .selectable_label(selected, RichText::new(&opt.label).size(9.0))
+                        .selectable_label(selected, RichText::new(&opt.label).size(SMALL_SIZE))
                         .clicked()
                     {
                         target = opt.id.clone();
@@ -1861,7 +1888,7 @@ fn draw_expanded_content(
                 if !any {
                     ui.label(
                         RichText::new("no targets match")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
                 }
@@ -1896,27 +1923,27 @@ fn draw_expanded_content(
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(ref raw) = runtime.last_raw {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Raw").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Raw").size(SMALL_SIZE).color(tc.text_dim));
                             ui.label(
                                 RichText::new(&raw.display)
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(tc.text_secondary),
                             );
                         });
                     }
                     if let Some(input) = runtime.last_input {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Norm").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Norm").size(SMALL_SIZE).color(tc.text_dim));
                             draw_inline_bar(ui, input, 40.0, 3.0, tc.text_dim, tc.meter_bg);
                             ui.label(
                                 RichText::new(format!("{:.3}", input))
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(tc.text_secondary),
                             );
                         });
                     }
                 } else {
-                    ui.label(RichText::new("--").size(8.0).color(tc.text_dim));
+                    ui.label(RichText::new("--").size(SMALL_SIZE).color(tc.text_dim));
                 }
             });
 
@@ -1928,7 +1955,7 @@ fn draw_expanded_content(
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Transforms")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .strong()
                             .color(tc.text_secondary),
                     );
@@ -1936,7 +1963,9 @@ fn draw_expanded_content(
                     // "+ Transform" add button
                     let add_resp = ui.add(
                         egui::Button::new(
-                            RichText::new("+ Add").size(7.0).color(tc.text_secondary),
+                            RichText::new("+ Add")
+                                .size(SMALL_SIZE)
+                                .color(tc.text_secondary),
                         )
                         .fill(tc.hover_fill)
                         .corner_radius(3.0)
@@ -1981,7 +2010,9 @@ fn draw_expanded_content(
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new(label).size(9.0).color(tc.text_primary),
+                                            RichText::new(label)
+                                                .size(SMALL_SIZE)
+                                                .color(tc.text_primary),
                                         )
                                         .frame(false)
                                         .min_size(egui::vec2(100.0, 22.0)),
@@ -2000,7 +2031,11 @@ fn draw_expanded_content(
 
                 let label_w = 60.0;
                 if transforms.is_empty() {
-                    ui.label(RichText::new("passthrough").size(8.0).color(tc.text_dim));
+                    ui.label(
+                        RichText::new("passthrough")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_dim),
+                    );
                 } else {
                     let mut to_remove: Option<usize> = None;
                     for (i, t) in transforms.iter().enumerate() {
@@ -2023,7 +2058,7 @@ fn draw_expanded_content(
                                 Pos2::new(label_rect.left() + 2.0, label_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 format!("{icon} {label}"),
-                                egui::FontId::proportional(8.0),
+                                egui::FontId::proportional(SMALL_SIZE),
                                 tc.text_secondary,
                             );
                             label_resp.on_hover_text(tooltip);
@@ -2039,7 +2074,7 @@ fn draw_expanded_content(
                                         .add(
                                             egui::Button::new(
                                                 RichText::new("\u{00d7}")
-                                                    .size(9.0)
+                                                    .size(SMALL_SIZE)
                                                     .color(tc.text_dim),
                                             )
                                             .frame(false)
@@ -2117,17 +2152,17 @@ fn draw_expanded_content(
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(output) = runtime.last_output {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Out").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Out").size(SMALL_SIZE).color(tc.text_dim));
                             draw_inline_bar(ui, output, 40.0, 3.0, src_color, tc.meter_bg);
                             ui.label(
                                 RichText::new(format!("{:.3}", output))
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(src_color),
                             );
                         });
                     }
                 } else {
-                    ui.label(RichText::new("--").size(8.0).color(tc.text_dim));
+                    ui.label(RichText::new("--").size(SMALL_SIZE).color(tc.text_dim));
                 }
             });
         });
@@ -2288,12 +2323,12 @@ fn draw_transform_params_inline(
             let curves = crate::bindings::transforms::CURVE_TYPES;
             let mut selected = curve_type.clone();
             egui::ComboBox::from_id_salt(format!("xf_curve_{binding_id}_{transform_idx}"))
-                .selected_text(RichText::new(&selected).size(8.0))
+                .selected_text(RichText::new(&selected).size(SMALL_SIZE))
                 .width(100.0)
                 .show_ui(ui, |ui| {
                     for &ct in curves {
                         if ui
-                            .selectable_label(selected == ct, RichText::new(ct).size(8.0))
+                            .selectable_label(selected == ct, RichText::new(ct).size(SMALL_SIZE))
                             .clicked()
                         {
                             selected = ct.to_string();
@@ -2334,7 +2369,7 @@ fn draw_matrix_source_picker(
         };
 
         egui::ComboBox::from_id_salt(format!("matrix_source_{id}"))
-            .selected_text(RichText::new(&current_display).size(9.0))
+            .selected_text(RichText::new(&current_display).size(SMALL_SIZE))
             .width(200.0)
             .height(350.0)
             .show_ui(ui, |ui| {
@@ -2358,7 +2393,7 @@ fn draw_matrix_source_picker(
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(&group.label)
-                            .size(7.0)
+                            .size(SMALL_SIZE)
                             .strong()
                             .color(group.color.linear_multiply(0.7)),
                     );
@@ -2388,7 +2423,7 @@ fn draw_matrix_source_picker(
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("no sources match")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
                 }
@@ -2405,7 +2440,7 @@ fn draw_matrix_source_picker(
             let color = Color32::from_rgba_unmultiplied(0xE0, 0xA0, 0x40, (alpha * 255.0) as u8);
             if ui
                 .add(egui::Button::new(
-                    RichText::new("..").color(color).size(9.0),
+                    RichText::new("..").color(color).size(SMALL_SIZE),
                 ))
                 .on_hover_text("Cancel learn")
                 .clicked()
@@ -2414,7 +2449,7 @@ fn draw_matrix_source_picker(
             }
             ui.ctx().request_repaint();
         } else if ui
-            .add(egui::Button::new(RichText::new("Learn").size(9.0)))
+            .add(egui::Button::new(RichText::new("Learn").size(SMALL_SIZE)))
             .on_hover_text("Learn from next MIDI/OSC")
             .clicked()
         {
@@ -2602,7 +2637,7 @@ fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) 
                 bus.bindings.len(),
                 unique_targets.len(),
             ))
-            .size(9.0)
+            .size(SMALL_SIZE)
             .color(tc.text_secondary),
         );
         // Click-to-bind is only discoverable if the half-finished state says so.
@@ -2620,7 +2655,7 @@ fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) 
                 RichText::new(format!(
                     "\u{2014}  {what} \u{201c}{name}\u{201d} armed \u{00b7} pick a {other} to bind, Esc to cancel"
                 ))
-                .size(9.0)
+                .size(SMALL_SIZE)
                 .color(tc.accent),
             );
         }

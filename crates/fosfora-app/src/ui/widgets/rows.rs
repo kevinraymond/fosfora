@@ -13,11 +13,11 @@ use super::super::theme::tokens::*;
 use super::fmt_val;
 
 /// Fixed label column. 315px panel − 2×6 frame margin − 2×8 card padding = 287px
-/// usable; 92px fits the longest live label ("Audio dilation", "Speed (gen/s)")
-/// at SMALL_SIZE on one line, leaving ~150px of slider + a 40px value cell.
-pub const LABEL_WIDTH: f32 = 92.0;
+/// usable; 110px fits the longest live label ("Audio dilation", "Speed (gen/s)")
+/// at SMALL_SIZE on one line, leaving ~130px of slider + a 46px value cell.
+pub const LABEL_WIDTH: f32 = 110.0;
 /// Fixed value cell so slider right edges align across rows.
-pub const VALUE_WIDTH: f32 = 40.0;
+pub const VALUE_WIDTH: f32 = 46.0;
 
 /// Response from a [`ParamRow`] slider/drag.
 pub struct RowResponse {
@@ -248,7 +248,7 @@ pub fn group_label(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
     ui.label(
         RichText::new(text.to_uppercase())
-            .size(8.0)
+            .size(SMALL_SIZE)
             .color(tc.text_secondary)
             .strong(),
     );

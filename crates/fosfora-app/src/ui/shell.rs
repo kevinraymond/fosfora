@@ -11,6 +11,7 @@
 //! per-section draw functions in [`super::panels`] — only the arrangement
 //! differs, so a control fixed in one is fixed in both.
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
@@ -141,7 +142,7 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
                 if s.preset_store.dirty {
                     ui.label(
                         egui::RichText::new("edited")
-                            .size(11.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     );
                 }
@@ -892,7 +893,7 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) {
                         "Streams (NDI, virtual camera, Spout, Syphon) and Scenes are still \
                          only in the Classic layout.",
                     )
-                    .size(10.0)
+                    .size(SMALL_SIZE)
                     .color(theme_colors(ui.ctx()).text_secondary),
                 );
             });

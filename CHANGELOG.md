@@ -60,6 +60,9 @@
   named colors in the themes folder. Change any of them, press Reload, and Appearance
   lists any color that fails contrast minimums.
 
+- **Larger text throughout**: nothing is drawn below 12 px at 100 % scale. Hints,
+  units and tables were 7 to 10 px, and the Bindings matrix was the worst of them.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

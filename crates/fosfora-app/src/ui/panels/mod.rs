@@ -40,6 +40,7 @@ pub mod volumetric_panel;
 pub mod web_panel;
 pub mod webcam_panel;
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use crate::audio::AudioSystem;
@@ -237,14 +238,16 @@ pub fn draw_panels(
                             if active > 0 {
                                 ui.label(
                                     egui::RichText::new(format!("{active} active"))
-                                        .size(9.0)
+                                        .size(SMALL_SIZE)
                                         .color(egui::Color32::from_white_alpha(120)),
                                 );
                             }
                             if ui
                                 .add(
-                                    egui::Button::new(egui::RichText::new("Matrix").size(9.0))
-                                        .min_size(egui::vec2(60.0, 18.0)),
+                                    egui::Button::new(
+                                        egui::RichText::new("Matrix").size(SMALL_SIZE),
+                                    )
+                                    .min_size(egui::vec2(60.0, 18.0)),
                                 )
                                 .on_hover_text("Open Binding Matrix (B)")
                                 .clicked()
@@ -365,11 +368,13 @@ pub fn draw_panels(
                                     );
                                     let c = if on { color } else { dot_off };
                                     ui.painter().circle_filled(r.center(), 2.0, c);
-                                    ui.label(egui::RichText::new(label).size(7.0).color(if on {
-                                        on_label
-                                    } else {
-                                        dim_label
-                                    }));
+                                    ui.label(
+                                        egui::RichText::new(label).size(SMALL_SIZE).color(if on {
+                                            on_label
+                                        } else {
+                                            dim_label
+                                        }),
+                                    );
                                 });
                             };
                         // Drawn right-to-left, so reverse visual order
@@ -568,7 +573,7 @@ pub fn draw_panels(
                                     {
                                         ui.label(
                                             egui::RichText::new("Second window")
-                                                .size(10.0)
+                                                .size(SMALL_SIZE)
                                                 .strong(),
                                         );
                                         output_window_panel::draw(ui, &ow);
@@ -578,7 +583,9 @@ pub fn draw_panels(
                                     // Recording
                                     if let Some(ref info) = rec_info {
                                         ui.label(
-                                            egui::RichText::new("Recording").size(10.0).strong(),
+                                            egui::RichText::new("Recording")
+                                                .size(SMALL_SIZE)
+                                                .strong(),
                                         );
                                         recording_panel::draw_recording_panel(ui, info);
                                     }
@@ -587,7 +594,9 @@ pub fn draw_panels(
                                     #[cfg(feature = "ndi")]
                                     if let Some(ref info) = ndi_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("NDI®").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("NDI®").size(SMALL_SIZE).strong(),
+                                        );
                                         ndi_panel::draw_ndi_panel(ui, info);
                                     }
 
@@ -597,7 +606,7 @@ pub fn draw_panels(
                                         ui.add_space(6.0);
                                         ui.label(
                                             egui::RichText::new("Virtual Camera")
-                                                .size(10.0)
+                                                .size(SMALL_SIZE)
                                                 .strong(),
                                         );
                                         v4l2_panel::draw_v4l2_panel(ui, info);
@@ -607,7 +616,9 @@ pub fn draw_panels(
                                     #[cfg(all(target_os = "windows", feature = "spout"))]
                                     if let Some(ref info) = spout_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("Spout").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("Spout").size(SMALL_SIZE).strong(),
+                                        );
                                         spout_panel::draw_spout_panel(ui, info);
                                     }
 
@@ -615,7 +626,9 @@ pub fn draw_panels(
                                     #[cfg(all(target_os = "macos", feature = "syphon"))]
                                     if let Some(ref info) = syphon_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("Syphon").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("Syphon").size(SMALL_SIZE).strong(),
+                                        );
                                         syphon_panel::draw_syphon_panel(ui, info);
                                     }
                                 },

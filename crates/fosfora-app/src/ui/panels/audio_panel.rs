@@ -231,7 +231,11 @@ fn draw_section_header(ui: &mut Ui, label: &str, right: &str) {
                 .strong(),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(right).size(8.0).color(tc.text_secondary));
+            ui.label(
+                RichText::new(right)
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
         });
     });
     ui.add_space(2.0);
@@ -289,7 +293,7 @@ fn draw_bpm_ring(ui: &mut Ui, uniforms: &ShaderUniforms) -> egui::Response {
             center,
             egui::Align2::CENTER_CENTER,
             format!("{:.0}", bpm),
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_primary,
         );
     }
@@ -310,7 +314,7 @@ fn draw_header_row(ui: &mut Ui, uniforms: &ShaderUniforms) {
         );
         ui.label(
             RichText::new("45 features")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -683,7 +687,7 @@ fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
             label_pos,
             egui::Align2::CENTER_CENTER,
             CHROMA_LABELS[i],
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_secondary,
         );
     }
@@ -714,7 +718,7 @@ fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
     ui.vertical_centered(|ui| {
         let resp = ui
             .horizontal(|ui| {
-                ui.label(RichText::new("KEY").size(9.0).color(tc.text_secondary));
+                ui.label(RichText::new("KEY").size(SMALL_SIZE).color(tc.text_secondary));
                 if conf < 0.15 {
                     // Too little tonal evidence (silence / atonal) to name a key.
                     ui.label(RichText::new("\u{2014}").size(12.0).color(tc.text_secondary));
@@ -733,7 +737,7 @@ fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
                     );
                     ui.label(
                         RichText::new(format!("\u{00b7} {:.0}%", conf * 100.0))
-                            .size(9.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     );
                 }
@@ -777,7 +781,7 @@ fn draw_mfcc_heatmap(ui: &mut Ui, mfcc: &[f32; 16]) {
             pos2(x, label_rect.center().y),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_secondary,
         );
     }
@@ -803,7 +807,7 @@ fn draw_footer(ui: &mut Ui) {
     ui.separator();
     ui.label(
         RichText::new("7 bands · 7 dynamics · 12 chroma · 13 mfcc · 4096/1024/512 fft")
-            .size(7.0)
+            .size(SMALL_SIZE)
             .color(tc.text_secondary),
     );
 }

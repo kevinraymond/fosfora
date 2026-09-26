@@ -105,7 +105,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
     ui.horizontal(|ui| {
         ui.label(
             RichText::new(format_count(info.alive_count))
-                .size(11.0)
+                .size(SMALL_SIZE)
                 .strong()
                 .color(tc.text_primary),
         );
@@ -605,7 +605,7 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                     has_target && info.morph_transitioning && i == info.morph_dest_index;
                 let is_selected = selected_slot == Some(i);
 
-                let sz = SMALL_SIZE - 1.0;
+                let sz = SMALL_SIZE;
                 let btn = if is_selected {
                     egui::Button::new(RichText::new(&label).size(sz).color(egui::Color32::WHITE))
                         .fill(egui::Color32::from_rgb(0xA0, 0x60, 0x30))

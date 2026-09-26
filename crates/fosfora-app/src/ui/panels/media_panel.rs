@@ -277,11 +277,11 @@ pub fn draw_loading(ui: &mut Ui) {
             ui.add(
                 egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
                     .desired_width(160.0)
-                    .text(RichText::new(l.words()).size(11.0)),
+                    .text(RichText::new(l.words()).size(SMALL_SIZE)),
             );
             ui.label(
                 RichText::new(format!("{:.0} s", l.secs))
-                    .size(11.0)
+                    .size(SMALL_SIZE)
                     .color(tc.text_secondary),
             );
             if ui.small_button("Cancel").clicked() {
@@ -294,7 +294,7 @@ pub fn draw_loading(ui: &mut Ui) {
         RichText::new(
             "A video decodes every frame before it plays; the layer appears when it is done.",
         )
-        .size(11.0)
+        .size(SMALL_SIZE)
         .color(tc.text_secondary),
     );
     ui.ctx().request_repaint();

@@ -42,7 +42,11 @@ pub fn draw_triggers_table(ui: &mut Ui, midi: &mut MidiSystem, osc: &mut OscSyst
             for proto in ["MIDI", "OSC"] {
                 ui.add_sized(
                     [badge_w, 12.0],
-                    egui::Label::new(RichText::new(proto).size(8.0).color(tc.text_secondary)),
+                    egui::Label::new(
+                        RichText::new(proto)
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    ),
                 );
             }
             ui.end_row();

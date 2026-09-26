@@ -6,6 +6,7 @@
 //! so a click here leaves a request in egui data for the frame loop to pick
 //! up, the same route "Full output" takes.
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::Ui;
 
 use crate::output_window::DisplayInfo;
@@ -52,9 +53,9 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
     let tc = theme_colors(ui.ctx());
 
     if let Some(name) = &info.open_on {
-        ui.label(egui::RichText::new(format!("On {name}")).size(11.0));
+        ui.label(egui::RichText::new(format!("On {name}")).size(SMALL_SIZE));
         if ui
-            .button(egui::RichText::new("Close output window").size(11.0))
+            .button(egui::RichText::new("Close output window").size(SMALL_SIZE))
             .on_hover_text("Esc closes it too, from either window")
             .clicked()
         {
@@ -68,7 +69,7 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
     if info.displays.len() < 2 {
         ui.label(
             egui::RichText::new("One display — connect a second to send the output to it.")
-                .size(10.0)
+                .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
         return;
@@ -89,16 +90,20 @@ pub fn draw(ui: &mut Ui, info: &OutputWindowInfo) {
 
     egui::ComboBox::from_id_salt("output_display_combo")
         .width((ui.available_width() - 8.0).max(120.0))
-        .selected_text(egui::RichText::new(info.displays[index].label()).size(11.0))
+        .selected_text(egui::RichText::new(info.displays[index].label()).size(SMALL_SIZE))
         .show_ui(ui, |ui| {
             for (i, d) in info.displays.iter().enumerate() {
-                ui.selectable_value(&mut index, i, egui::RichText::new(d.label()).size(11.0));
+                ui.selectable_value(
+                    &mut index,
+                    i,
+                    egui::RichText::new(d.label()).size(SMALL_SIZE),
+                );
             }
         });
     ui.ctx().data_mut(|d| d.insert_temp(id, index));
 
     if ui
-        .button(egui::RichText::new("Send output here").size(11.0))
+        .button(egui::RichText::new("Send output here").size(SMALL_SIZE))
         .on_hover_text("A borderless window on that display, with no interface on it")
         .clicked()
     {

@@ -364,7 +364,7 @@ fn draw_type_filter(ui: &mut Ui, tc: &ThemeColors, types_on: &mut (bool, bool, b
                         Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60)
                     };
                     ui.painter().rect_filled(rect, 1.0, strip);
-                    ui.label(RichText::new(type_title(et)).size(8.0).color(if on {
+                    ui.label(RichText::new(type_title(et)).size(SMALL_SIZE).color(if on {
                         tc.text_secondary
                     } else {
                         tc.text_dim
@@ -497,7 +497,7 @@ fn draw_effect_grid(
                         star_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         glyph,
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         color,
                     );
                 } else {
@@ -518,7 +518,7 @@ fn draw_effect_grid(
                         badge_pos,
                         egui::Align2::LEFT_CENTER,
                         type_label(et),
-                        egui::FontId::monospace(7.0),
+                        egui::FontId::monospace(SMALL_SIZE),
                         badge_color,
                     );
                 }
@@ -611,7 +611,11 @@ fn draw_footer(
     };
     ui.add_space(4.0);
     ui.separator();
-    ui.label(RichText::new(text).size(7.0).color(tc.text_secondary));
+    ui.label(
+        RichText::new(text)
+            .size(SMALL_SIZE)
+            .color(tc.text_secondary),
+    );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

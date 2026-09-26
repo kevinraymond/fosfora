@@ -48,7 +48,7 @@ fn default_modulation(source: ModSource) -> Modulation {
 /// The house per-control reset affordance (`param_panel.rs` precedent),
 /// leading every row so the label columns stay aligned.
 fn reset_button(ui: &mut egui::Ui, tip: &str) -> bool {
-    ui.small_button(RichText::new("R").size(9.0))
+    ui.small_button(RichText::new("R").size(SMALL_SIZE))
         .on_hover_text(tip)
         .clicked()
 }

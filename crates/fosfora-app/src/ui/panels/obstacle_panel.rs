@@ -204,7 +204,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
 
         let tc = &tc;
         let tab_btn = |ui: &mut Ui, label: &str, is_active: bool| -> egui::Response {
-            let btn = egui::Button::new(RichText::new(label).size(9.0).color(if is_active {
+            let btn = egui::Button::new(RichText::new(label).size(SMALL_SIZE).color(if is_active {
                 egui::Color32::WHITE
             } else {
                 tc.text_secondary
@@ -277,7 +277,7 @@ pub fn draw_obstacle_panel(ui: &mut Ui, info: &ObstacleInfo) {
                 let pct = info.depth_downloading.unwrap_or(0);
                 ui.add_enabled(
                     false,
-                    egui::Button::new(RichText::new(format!("Depth {pct}%")).size(9.0))
+                    egui::Button::new(RichText::new(format!("Depth {pct}%")).size(SMALL_SIZE))
                         .min_size(egui::vec2(0.0, 22.0)),
                 );
             } else {
@@ -753,9 +753,9 @@ pub fn draw_depth_download_modal(ctx: &egui::Context) {
             ui.add_space(4.0);
             ui.indent("dl_details", |ui| {
                 ui.label(RichText::new("ONNX Runtime (~15 MB)").size(12.0).color(tc.text_secondary));
-                ui.label(RichText::new("  from github.com/microsoft").size(11.0).color(tc.text_secondary));
+                ui.label(RichText::new("  from github.com/microsoft").size(SMALL_SIZE).color(tc.text_secondary));
                 ui.label(RichText::new("MiDaS v2.1 model (~63 MB)").size(12.0).color(tc.text_secondary));
-                ui.label(RichText::new("  from huggingface.co").size(11.0).color(tc.text_secondary));
+                ui.label(RichText::new("  from huggingface.co").size(SMALL_SIZE).color(tc.text_secondary));
             });
             ui.add_space(4.0);
             ui.label(

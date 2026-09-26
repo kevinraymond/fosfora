@@ -1,3 +1,4 @@
+use crate::ui::theme::tokens::SMALL_SIZE;
 use std::path::PathBuf;
 
 use egui::{
@@ -651,7 +652,7 @@ pub fn draw_shader_editor(ctx: &egui::Context, state: &mut ShaderEditorState) ->
                         ui.add_space(10.0);
                         ui.label(
                             RichText::new(truncate_error(error, 200))
-                                .size(11.0)
+                                .size(SMALL_SIZE)
                                 .color(tc.error),
                         );
                     });

@@ -11,6 +11,7 @@
 //! with one set of handlers. What is new is the Master *selection*: the
 //! inspector shows Master's settings instead of a layer's while it is set.
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use std::fmt::Write as _;
 
 use egui::{Color32, RichText, Sense, Stroke, TextureId, Ui, UiBuilder, Vec2};
@@ -134,7 +135,7 @@ pub fn draw_stack(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Pictures")
-                .size(11.0)
+                .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
         for (on, label, tip) in [
@@ -350,7 +351,7 @@ pub fn draw_stack(
              layer blended onto everything beneath it; the inset is the layer on \
              its own. Master is what goes out. Right-click a row for more."
         })
-        .size(11.0)
+        .size(SMALL_SIZE)
         .color(tc.text_secondary),
     );
 }
@@ -427,7 +428,7 @@ fn row(
                                 );
                                 ui.label(
                                     RichText::new(text.what)
-                                        .size(11.0)
+                                        .size(SMALL_SIZE)
                                         .monospace()
                                         .color(tc.text_secondary),
                                 );
@@ -501,7 +502,7 @@ fn flow_line(ui: &mut Ui, text: &str) {
         ui.add_space(26.0);
         ui.label(
             RichText::new(format!("↑  {text}"))
-                .size(11.0)
+                .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
     });

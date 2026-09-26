@@ -224,7 +224,11 @@ fn draw_layer_type_legend(ui: &mut Ui, tc: &crate::ui::theme::colors::ThemeColor
                     let (rect, _) =
                         ui.allocate_exact_size(Vec2::new(3.0, 10.0), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 1.0, color);
-                    ui.label(RichText::new(label).size(8.0).color(tc.text_secondary));
+                    ui.label(
+                        RichText::new(label)
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
                 })
                 .response;
             resp.on_hover_text(tooltip);
@@ -1160,7 +1164,7 @@ pub fn draw_layer_panel(
         RichText::new(format!(
             "{fx_count} effect · {media_count} media · {webcam_count} webcam"
         ))
-        .size(7.0)
+        .size(SMALL_SIZE)
         .color(tc.text_secondary),
     );
 }

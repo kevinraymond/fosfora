@@ -172,12 +172,12 @@ pub fn section_with_header(
     });
 }
 
-/// Subsection font size — smaller than parent section heading (JSX: 9px vs 11px).
-const SUBSECTION_SIZE: f32 = 9.0;
-/// Subsection arrow size (JSX: font-size 8).
+/// Subsection title: a step below the section heading, at the text floor.
+const SUBSECTION_SIZE: f32 = SMALL_SIZE;
+/// Subsection arrow size.
 const SUBSECTION_ARROW: f32 = 8.0;
-/// Subsection badge font size (JSX: font-size 8).
-const SUBSECTION_BADGE: f32 = 8.0;
+/// Subsection badge font size.
+const SUBSECTION_BADGE: f32 = SMALL_SIZE;
 
 /// Lightweight collapsible subsection (no card frame) for nesting inside a parent section.
 /// Matches the JSX `SectionLabel` style: small arrow + uppercase title + ON/OFF badge.
