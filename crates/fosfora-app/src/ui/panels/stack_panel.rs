@@ -45,6 +45,11 @@ pub fn show_layer_in_inspector(ctx: &egui::Context) {
     select_master(ctx, false);
 }
 
+/// Put Master in the inspector.
+pub fn show_master_in_inspector(ctx: &egui::Context) {
+    select_master(ctx, true);
+}
+
 /// Select layer `i` and show it in the inspector.
 pub fn select_layer(ctx: &egui::Context, i: usize) {
     select_master(ctx, false);
@@ -322,6 +327,9 @@ pub fn draw_stack(
         if resp.clicked() {
             select_layer(&ctx, i);
         }
+        if !master_on && i == active_layer {
+            crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::LayerRow, resp.rect);
+        }
         resp.context_menu(|ui| row_menu(ui, layers, i));
         drop_target(ui, &resp, layers, |y| Some(row_zone(resp.rect, y, i)));
 
@@ -341,6 +349,7 @@ pub fn draw_stack(
     super::media_panel::draw_loading(ui);
     ui.add_space(6.0);
     let below = ui.scope(|ui| add_buttons(ui, layers.len())).response;
+    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::StackAdd, below.rect);
     drop_target(ui, &below, layers, |_| {
         Some(CatalogDrop::Insert(layers.len()))
     });

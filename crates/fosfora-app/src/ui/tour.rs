@@ -14,8 +14,10 @@
 //!   then leaves it to the user.
 //! - **The spotlight.** Everything but the anchor is dimmed and takes no
 //!   clicks, so a stray click cannot change what the note describes; the
-//!   anchor itself stays live, because trying it is the point. The note goes
-//!   on whichever side of the anchor has room.
+//!   anchor itself stays live, because trying it is the point. A step may
+//!   leave a second part lit to watch ([`Step::watch`]): the output, while
+//!   a blend mode is tried. The note goes on whichever side of the anchor
+//!   has room, clear of both.
 //!
 //! While a tour shows, nothing may take the interface out from under it:
 //! the ways out that sit inside a lit area (Edit chain, Bind, loading a
@@ -71,6 +73,16 @@ pub enum Anchor {
     ChainTabs,
     /// The chain editor's Export and Import.
     ChainFiles,
+    /// The selected layer's Blend section: mode, visibility, opacity.
+    Blend,
+    /// The selected layer's row in the stack.
+    LayerRow,
+    /// The buttons under the stack that add a layer.
+    StackAdd,
+    /// Master's Post-Processing section in the inspector.
+    PostProcessing,
+    /// The output preview.
+    Output,
 }
 
 /// The tours there are.
@@ -79,10 +91,11 @@ pub enum Tour {
     FirstRun,
     Bindings,
     Chains,
+    Layers,
 }
 
 impl Tour {
-    pub const ALL: &[Tour] = &[Tour::FirstRun, Tour::Bindings, Tour::Chains];
+    pub const ALL: &[Tour] = &[Tour::FirstRun, Tour::Bindings, Tour::Chains, Tour::Layers];
 
     /// The name settings records it under once it is finished or skipped.
     /// Never change one: a renamed key replays the tour for everyone.
@@ -91,6 +104,7 @@ impl Tour {
             Tour::FirstRun => "first_run",
             Tour::Bindings => "bindings",
             Tour::Chains => "chains",
+            Tour::Layers => "layers",
         }
     }
 
@@ -99,6 +113,7 @@ impl Tour {
             Tour::FirstRun => "First run",
             Tour::Bindings => "Bindings",
             Tour::Chains => "Chains",
+            Tour::Layers => "Layers and blending",
         }
     }
 
@@ -109,6 +124,9 @@ impl Tour {
             }
             Tour::Bindings => "Make a control follow the bass, a MIDI knob or an OSC message.",
             Tour::Chains => "Build a trama node chain on a layer, and on the master.",
+            Tour::Layers => {
+                "Stack layers, blend each onto the ones beneath, and finish the mix on Master."
+            }
         }
     }
 
@@ -128,6 +146,7 @@ impl Tour {
             Tour::FirstRun => FIRST_RUN,
             Tour::Bindings => BINDINGS,
             Tour::Chains => CHAINS,
+            Tour::Layers => LAYERS,
         }
     }
 }
@@ -187,6 +206,10 @@ pub struct Step {
     pub reveal: &'static [&'static str],
     /// The view held open over the workspace during this step.
     pub modal: Modal,
+    /// A second part left lit, for watching what the anchor changes: the
+    /// output while a blend mode is tried. It takes clicks like the anchor.
+    /// A collapsible section it sits in goes in `reveal` too.
+    pub watch: Option<Anchor>,
     /// Drawn in the note under the words, in an inset: a thing the step
     /// describes, drawn by the code that draws it for real, so the picture
     /// cannot drift from the interface.
@@ -217,6 +240,7 @@ const FIRST_RUN: &[Step] = &[
         prepare: to_build,
         reveal: &["v2_audio"],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
     Step {
@@ -228,6 +252,7 @@ const FIRST_RUN: &[Step] = &[
         prepare: to_catalog,
         reveal: &[],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
     Step {
@@ -239,6 +264,7 @@ const FIRST_RUN: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
     Step {
@@ -250,6 +276,7 @@ const FIRST_RUN: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
     Step {
@@ -260,6 +287,7 @@ const FIRST_RUN: &[Step] = &[
         prepare: to_build,
         reveal: &["sec_presets"],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
 ];
@@ -297,6 +325,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_effect_layer,
         reveal: &["v2_params"],
         modal: Modal::None,
+        watch: None,
         picture: Some(super::panels::param_panel::draw_example_row),
     },
     Step {
@@ -310,6 +339,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_matrix_armed,
         reveal: &[],
         modal: Modal::MatrixPickSource,
+        watch: None,
         picture: None,
     },
     Step {
@@ -322,6 +352,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::Matrix,
+        watch: None,
         picture: None,
     },
     Step {
@@ -333,6 +364,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::Matrix,
+        watch: None,
         picture: None,
     },
     Step {
@@ -344,6 +376,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::Matrix,
+        watch: None,
         picture: None,
     },
     Step {
@@ -356,6 +389,7 @@ const BINDINGS: &[Step] = &[
         prepare: to_build,
         reveal: &["v2_params"],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
 ];
@@ -374,6 +408,7 @@ const CHAINS: &[Step] = &[
         prepare: to_effect_layer,
         reveal: &[],
         modal: Modal::None,
+        watch: None,
         picture: None,
     },
     Step {
@@ -387,6 +422,7 @@ const CHAINS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::LayerChainStarter,
+        watch: None,
         picture: None,
     },
     Step {
@@ -398,6 +434,7 @@ const CHAINS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::LayerChain,
+        watch: None,
         picture: None,
     },
     Step {
@@ -409,6 +446,7 @@ const CHAINS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::MasterChain,
+        watch: None,
         picture: None,
     },
     Step {
@@ -421,6 +459,145 @@ const CHAINS: &[Step] = &[
         prepare: to_build,
         reveal: &[],
         modal: Modal::LayerChain,
+        watch: None,
+        picture: None,
+    },
+];
+
+/// Build, with the layer the Layers tour explains selected: see
+/// [`blend_layer`].
+fn to_blend_layer(ctx: &Context) {
+    to_build(ctx);
+    ctx.data_mut(|d| d.insert_temp(Id::new(SELECT_BLEND_LAYER), true));
+}
+
+/// Build, with Master in the inspector.
+fn to_master(ctx: &Context) {
+    super::shell::Workspace::Build.write(ctx);
+    super::panels::stack_panel::show_master_in_inspector(ctx);
+}
+
+/// Asks the shell to select the layer the Layers tour explains, starting
+/// one if it has to ([`blend_layer`]).
+pub const SELECT_BLEND_LAYER: &str = "tour_select_blend_layer";
+
+/// What the Layers tour loads into an empty top layer (Kevin's call,
+/// #3231): bright bands on black, so in Screen both it and the picture
+/// beneath show, and each other mode visibly changes that.
+pub const STARTER_EFFECT: &str = "Aurora";
+/// The mode the starter layer lands in.
+pub const STARTER_BLEND: crate::gpu::layer::BlendMode = crate::gpu::layer::BlendMode::Screen;
+
+/// Which layer the Layers tour explains.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BlendLayer {
+    /// This one, as it is.
+    Explain(usize),
+    /// This one, empty: load [`STARTER_EFFECT`] into it first.
+    Start(usize),
+}
+
+/// The layer the Layers tour explains: one whose blend shows, so it is
+/// visible, runs something and has a visible layer beneath it. The selected
+/// layer if it is one, else the topmost. With none, the topmost empty
+/// visible layer with a visible layer beneath it gets the starter (the
+/// launch stack's Layer 1). With neither, `None`: the tour explains
+/// whatever is selected.
+pub fn blend_layer(layers: &[crate::gpu::layer::LayerInfo], selected: usize) -> Option<BlendLayer> {
+    let bottom = layers.iter().rposition(|l| l.enabled)?;
+    let above = |i: usize| i < bottom && layers[i].enabled;
+    let empty = |i: usize| super::panels::stack_panel::layer_kind(&layers[i]) == "Empty";
+    let shows = |i: usize| above(i) && !empty(i);
+    if selected < layers.len() && shows(selected) {
+        return Some(BlendLayer::Explain(selected));
+    }
+    if let Some(i) = (0..layers.len()).find(|&i| shows(i)) {
+        return Some(BlendLayer::Explain(i));
+    }
+    (0..layers.len())
+        .find(|&i| above(i) && empty(i) && !layers[i].locked)
+        .map(BlendLayer::Start)
+}
+
+/// Load [`STARTER_EFFECT`] into layer `i` in [`STARTER_BLEND`], through the
+/// requests the catalog and the Blend section send. `main.rs` reads the
+/// catalog's first, and it selects the layer the mode then goes to.
+pub fn start_layer(ctx: &Context, i: usize) {
+    use super::panels::catalog_panel::{CatalogDrop, send_drop};
+    send_drop(ctx, STARTER_EFFECT.to_string(), CatalogDrop::Replace(i));
+    super::panels::stack_panel::select_layer(ctx, i);
+    ctx.data_mut(|d| d.insert_temp(Id::new("layer_blend"), STARTER_BLEND.as_u32()));
+}
+
+/// The Layers and blending tour: the stack, how one layer lands on it, its
+/// row, adding layers, and Master. The first step gives an empty top layer
+/// an effect (Kevin's call, #3231), and the steps that change the picture
+/// keep the output lit beside them.
+const LAYERS: &[Step] = &[
+    Step {
+        anchor: Anchor::Stack,
+        title: "Layers stack from the bottom up",
+        body: "The bottom layer is drawn first, each layer above lands on the picture so \
+               far, and Master, on top, is what goes out. The lines between rows say how \
+               each one lands. If the top layer was empty, the tour loaded Aurora into it \
+               so there is a blend to read. Each layer alone shows the layers before \
+               blending.",
+        prepare: to_blend_layer,
+        reveal: &[],
+        modal: Modal::None,
+        watch: None,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::Blend,
+        title: "How a layer lands",
+        body: "Mode is how this layer meets the picture beneath: Normal covers it, Add \
+               and Screen brighten, Multiply darkens, Difference inverts. The last three \
+               bend the picture beneath instead of coloring it. Opacity fades the layer, \
+               and Visible takes it out. Try a few and watch the output.",
+        prepare: to_blend_layer,
+        reveal: &["v2_blend", "v2_preview"],
+        modal: Modal::None,
+        watch: Some(Anchor::Output),
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::LayerRow,
+        title: "Order matters",
+        body: "Hide takes the layer out and lets the picture below pass up. Right-click \
+               the row to rename it, move it up or down, lock it against edits or pin its \
+               place. A layer blends onto whatever is beneath it, so moving one can \
+               change the whole picture.",
+        prepare: to_blend_layer,
+        reveal: &[],
+        modal: Modal::None,
+        watch: None,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::StackAdd,
+        title: "Add a layer",
+        body: "After the tour, these add a layer: an effect, an image or video, or a \
+               camera. Or drag a catalog picture onto the stack: onto a row's top or \
+               bottom edge adds a layer there, onto its middle replaces that layer's \
+               effect. A stack holds up to eight layers.",
+        prepare: to_blend_layer,
+        reveal: &[],
+        modal: Modal::None,
+        watch: None,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::PostProcessing,
+        title: "Master finishes the mix",
+        body: "Post-processing runs once, on the blend of every layer: bloom, chromatic \
+               aberration, vignette and grain. It belongs to the preset, not to a layer, \
+               so selecting a layer never changes it. Replay this tour from Setup \
+               \u{203a} Tutorials.",
+        prepare: to_master,
+        reveal: &["v2_postfx", "v2_preview"],
+        modal: Modal::None,
+        watch: Some(Anchor::Output),
         picture: None,
     },
 ];
@@ -707,22 +884,35 @@ pub fn hole(anchor: Rect, screen: Rect) -> Rect {
 }
 
 /// Where the note goes: beside the hole, on the side with the most room
-/// that the note fits, with room to spare, never over the hole. When no
-/// side has room (the anchor fills the window) it sits inside the hole's
-/// lower right corner.
-pub fn place_callout(hole: Rect, size: Vec2, screen: Rect) -> Rect {
+/// that the note fits, with room to spare, never over the hole, and not
+/// over anything in `avoid` (a step's watched part) while some side allows.
+/// When no side has room (the anchor fills the window) it sits inside the
+/// hole's lower right corner.
+pub fn place_callout(hole: Rect, size: Vec2, screen: Rect, avoid: &[Rect]) -> Rect {
     let room = [
         (hole.left() - screen.left(), size.x),
         (screen.right() - hole.right(), size.x),
         (hole.top() - screen.top(), size.y),
         (screen.bottom() - hole.bottom(), size.y),
     ];
+    let fits = |i: usize| room[i].0 >= room[i].1 + 2.0 * GAP;
+    let clear = |i: usize| {
+        let at = callout_on_side(Some(i), hole, size, screen);
+        !avoid.iter().any(|a| a.intersects(at))
+    };
+    // Compare the room left over, so a tall note prefers a side.
+    let most_room =
+        |a: &usize, b: &usize| (room[*a].0 - room[*a].1).total_cmp(&(room[*b].0 - room[*b].1));
     let best = (0..4)
-        .filter(|&i| room[i].0 >= room[i].1 + 2.0 * GAP)
-        .max_by(|&a, &b| {
-            // Compare the room left over, so a tall note prefers a side.
-            (room[a].0 - room[a].1).total_cmp(&(room[b].0 - room[b].1))
-        });
+        .filter(|&i| fits(i) && clear(i))
+        .max_by(most_room)
+        .or_else(|| (0..4).filter(|&i| fits(i)).max_by(most_room));
+    callout_on_side(best, hole, size, screen)
+}
+
+/// The note on side `side` of `hole` (left, right, above, below), or in its
+/// lower right corner for `None`.
+fn callout_on_side(side: Option<usize>, hole: Rect, size: Vec2, screen: Rect) -> Rect {
     let clamp_x = |x: f32| {
         x.clamp(
             screen.left() + GAP,
@@ -735,7 +925,7 @@ pub fn place_callout(hole: Rect, size: Vec2, screen: Rect) -> Rect {
             (screen.bottom() - GAP - size.y).max(screen.top() + GAP),
         )
     };
-    let min = match best {
+    let min = match side {
         Some(0) => Pos2::new(
             hole.left() - GAP - size.x,
             clamp_y(hole.center().y - size.y / 2.0),
@@ -754,20 +944,44 @@ pub fn place_callout(hole: Rect, size: Vec2, screen: Rect) -> Rect {
     Rect::from_min_size(min, size)
 }
 
-/// The four rectangles of `screen` around `hole`: above, below, left, right.
-fn around(hole: Rect, screen: Rect) -> [Rect; 4] {
-    [
-        Rect::from_min_max(screen.min, Pos2::new(screen.right(), hole.top())),
-        Rect::from_min_max(Pos2::new(screen.left(), hole.bottom()), screen.max),
-        Rect::from_min_max(
-            Pos2::new(screen.left(), hole.top()),
-            Pos2::new(hole.left(), hole.bottom()),
-        ),
-        Rect::from_min_max(
-            Pos2::new(hole.right(), hole.top()),
-            Pos2::new(screen.right(), hole.bottom()),
-        ),
-    ]
+/// Rectangles covering `screen` except `holes`, none overlapping: the
+/// screen cut into bands at every hole edge, each band's run of cells
+/// outside every hole merged into one rectangle. One hole gives the four
+/// around it: above, left, right, below.
+fn around(holes: &[Rect], screen: Rect) -> Vec<Rect> {
+    let cuts = |lo: f32, hi: f32, edges: &mut dyn Iterator<Item = f32>| {
+        let mut v: Vec<f32> = std::iter::once(lo)
+            .chain(edges.map(|e| e.clamp(lo, hi)))
+            .chain(std::iter::once(hi))
+            .collect();
+        v.sort_by(f32::total_cmp);
+        v.dedup();
+        v
+    };
+    let xs = cuts(
+        screen.left(),
+        screen.right(),
+        &mut holes.iter().flat_map(|h| [h.left(), h.right()]),
+    );
+    let ys = cuts(
+        screen.top(),
+        screen.bottom(),
+        &mut holes.iter().flat_map(|h| [h.top(), h.bottom()]),
+    );
+    let mut out = Vec::new();
+    for y in ys.windows(2) {
+        let mut run: Option<Rect> = None;
+        for x in xs.windows(2) {
+            let cell = Rect::from_min_max(Pos2::new(x[0], y[0]), Pos2::new(x[1], y[1]));
+            if holes.iter().any(|h| h.contains(cell.center())) {
+                out.extend(run.take());
+            } else {
+                run = Some(run.map_or(cell, |r| r.union(cell)));
+            }
+        }
+        out.extend(run);
+    }
+    out
 }
 
 /// Draw the tour showing, if any. Call after everything it points at has
@@ -789,6 +1003,12 @@ pub fn draw(ctx: &Context) {
     // Not drawn this frame (the step has just opened a workspace): dim it
     // all and put the note in the middle until it is.
     let lit = anchor_rect(ctx, step.anchor).map(|a| hole(a, screen));
+    // Lit only with the anchor: alone, a watched part would be a note
+    // about something else.
+    let watched = lit
+        .and(step.watch)
+        .and_then(|w| anchor_rect(ctx, w))
+        .map(|a| hole(a, screen));
 
     // Each dimmed piece is its own area so that the hole has none: an area
     // over the hole would take the pointer there, clicks and scrolling both.
@@ -799,10 +1019,8 @@ pub fn draw(ctx: &Context) {
     // dimming exists: every frame the dimming asks to be on top again, and
     // egui's end-of-frame sort is stable, so it stays over the matrix even
     // on a frame the matrix is clicked and asks the same.
-    let pieces = match lit {
-        Some(h) => around(h, screen).to_vec(),
-        None => vec![screen],
-    };
+    let holes: Vec<Rect> = lit.into_iter().chain(watched).collect();
+    let pieces = around(&holes, screen);
     for (i, piece) in pieces.iter().enumerate() {
         if !piece.is_positive() {
             continue;
@@ -820,7 +1038,7 @@ pub fn draw(ctx: &Context) {
 
     let size = Vec2::new(CALLOUT_WIDTH, callout_height(ctx));
     let at = match lit {
-        Some(h) => place_callout(h, size, screen),
+        Some(h) => place_callout(h, size, screen, watched.as_slice()),
         None => Rect::from_center_size(screen.center(), size),
     };
     let steps = r.tour.steps().len();
@@ -899,10 +1117,10 @@ pub fn draw(ctx: &Context) {
 
     // The lit edge, drawn over the dimming: the selection color inside its
     // own text color, so it reads on a dark surround and a light one alike.
-    if let Some(h) = lit {
-        let p = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("tour_ring")));
+    let p = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("tour_ring")));
+    for h in &holes {
         for (w, c) in [(4.0_f32, tc.on_selection), (2.0_f32, tc.selection)] {
-            p.rect_stroke(h, 6.0, egui::Stroke::new(w, c), egui::StrokeKind::Outside);
+            p.rect_stroke(*h, 6.0, egui::Stroke::new(w, c), egui::StrokeKind::Outside);
         }
     }
 
@@ -1046,6 +1264,19 @@ mod tests {
                         !note.intersects(hole(a, screen)),
                         "{at}: the note {note:?} covers {a:?}"
                     );
+                    if let Some(w) = step.watch {
+                        let wa = drawn(&h.ctx, w)
+                            .unwrap_or_else(|| panic!("{at}: the watched {w:?} was not drawn"));
+                        assert!(
+                            wa.width() >= 120.0 && wa.height() >= 60.0,
+                            "{at}: {w:?} is only {wa:?}"
+                        );
+                        assert!(screen.contains_rect(wa), "{at}: {wa:?} is off screen");
+                        assert!(
+                            !note.intersects(hole(wa, screen)),
+                            "{at}: the note {note:?} covers the watched {wa:?}"
+                        );
+                    }
                     h.key(Key::Enter);
                 }
                 h.settle(1);
@@ -1083,26 +1314,31 @@ mod tests {
         for (i, step) in tour.steps().iter().enumerate() {
             h.settle(30);
             let lit = drawn(&h.ctx, step.anchor).unwrap();
-            let mut y = lit.top() + 6.0;
-            while y < lit.bottom() {
-                let mut x = lit.left() + 6.0;
-                while x < lit.right() {
-                    h.click(Pos2::new(x, y));
-                    // Straight after the click: the tour sets the tab again
-                    // next frame, so a switch shows only now.
-                    if let (Some(c), Some(ChainEditor::Open(tab))) =
-                        (&h.chains, chain_wanted(&h.ctx))
-                    {
-                        let want = match tab {
-                            ChainTab::Layer => crate::trama::CanvasTarget::SelectedLayer,
-                            ChainTab::Master => crate::trama::CanvasTarget::Master,
-                        };
-                        assert!(c.trama.canvas_target == want, "a click switched the tab");
-                    }
-                    h.settle(1);
-                    x += 30.0;
+            let watched = step.watch.map(|w| drawn(&h.ctx, w).unwrap());
+            let spots = std::iter::once(lit).chain(watched).flat_map(|r| {
+                let cols = ((r.width() - 6.0) / 30.0).ceil().max(0.0) as usize;
+                let rows = ((r.height() - 6.0) / 30.0).ceil().max(0.0) as usize;
+                (0..rows).flat_map(move |j| {
+                    (0..cols).map(move |i| {
+                        Pos2::new(
+                            r.left() + 6.0 + 30.0 * i as f32,
+                            r.top() + 6.0 + 30.0 * j as f32,
+                        )
+                    })
+                })
+            });
+            for at in spots.collect::<Vec<_>>() {
+                h.click(at);
+                // Straight after the click: the tour sets the tab again
+                // next frame, so a switch shows only now.
+                if let (Some(c), Some(ChainEditor::Open(tab))) = (&h.chains, chain_wanted(&h.ctx)) {
+                    let want = match tab {
+                        ChainTab::Layer => crate::trama::CanvasTarget::SelectedLayer,
+                        ChainTab::Master => crate::trama::CanvasTarget::Master,
+                    };
+                    assert!(c.trama.canvas_target == want, "a click switched the tab");
                 }
-                y += 30.0;
+                h.settle(1);
             }
             let at = format!("{} step {}", tour.name(), i + 1);
             assert_eq!(h.leaving, None, "{at}: a click inside asked to leave");
@@ -1296,18 +1532,18 @@ mod tests {
         let size = Vec2::new(CALLOUT_WIDTH, 200.0);
         // The right-hand column: the note goes left of it.
         let right = Rect::from_min_max(Pos2::new(1080.0, 300.0), Pos2::new(1390.0, 420.0));
-        let n = place_callout(right, size, screen);
+        let n = place_callout(right, size, screen, &[]);
         assert!(n.right() <= right.left(), "{n:?}");
         // The drawer along the bottom: above it.
         let drawer = Rect::from_min_max(Pos2::new(0.0, 640.0), Pos2::new(1400.0, 870.0));
-        let n = place_callout(drawer, size, screen);
+        let n = place_callout(drawer, size, screen, &[]);
         assert!(n.bottom() <= drawer.top(), "{n:?}");
         // The left column: right of it.
         let left = Rect::from_min_max(Pos2::new(8.0, 50.0), Pos2::new(500.0, 620.0));
-        let n = place_callout(left, size, screen);
+        let n = place_callout(left, size, screen, &[]);
         assert!(n.left() >= left.right(), "{n:?}");
         for target in [right, drawer, left, screen.shrink(2.0)] {
-            let n = place_callout(target, size, screen);
+            let n = place_callout(target, size, screen, &[]);
             assert!(screen.contains_rect(n), "{target:?}: {n:?}");
         }
     }
@@ -1746,5 +1982,276 @@ mod tests {
         h.settle(2);
         assert_eq!(current(&h.ctx), None);
         assert!(!h.chains.as_ref().unwrap().trama.canvas_open);
+    }
+
+    // ── The Layers and blending tour (#3129) ──────────────────────────
+
+    use crate::gpu::layer::{BlendMode, LayerInfo};
+
+    fn info(name: &str, kind: &str) -> LayerInfo {
+        LayerInfo {
+            name: name.into(),
+            custom_name: None,
+            effect_index: (kind == "effect").then_some(0),
+            effect_name: (kind == "effect").then(|| name.to_string()),
+            blend_mode: BlendMode::default(),
+            opacity: 1.0,
+            displace_amount: 0.0,
+            enabled: true,
+            locked: false,
+            pinned: false,
+            has_particles: false,
+            shader_error: None,
+            is_media: kind == "media",
+            media_file_name: None,
+            media_is_animated: false,
+            media_is_video: false,
+            media_is_live: false,
+            chain: None,
+            needs_layer_below: false,
+        }
+    }
+
+    // The layer the tour explains is one whose blend shows: visible, running
+    // something, with a visible layer beneath. The bottom layer's mode is
+    // never applied, so it is never the one; an empty top layer gets the
+    // starter only when no layer qualifies.
+    #[test]
+    fn the_layers_tour_explains_a_layer_whose_blend_shows() {
+        use BlendLayer::{Explain, Start};
+        let launch = [info("Layer 1", "empty"), info("F", "effect")];
+        assert_eq!(blend_layer(&launch, 0), Some(Start(0)));
+        assert_eq!(blend_layer(&launch, 1), Some(Start(0)), "not the bottom F");
+
+        let three = [info("A", "effect"), info("B", "media"), info("C", "effect")];
+        assert_eq!(blend_layer(&three, 1), Some(Explain(1)), "the selected one");
+        assert_eq!(blend_layer(&three, 2), Some(Explain(0)), "else the topmost");
+
+        // Beneath means beneath and visible: with C hidden, B is the bottom.
+        let mut hidden_bottom = three.clone();
+        hidden_bottom[2].enabled = false;
+        assert_eq!(blend_layer(&hidden_bottom, 1), Some(Explain(0)));
+        let mut only_top_hidden = three.clone();
+        only_top_hidden[0].enabled = false;
+        assert_eq!(blend_layer(&only_top_hidden, 0), Some(Explain(1)));
+
+        // A layer that runs something always wins over starting one.
+        let mixed = [
+            info("Layer 1", "empty"),
+            info("B", "effect"),
+            info("F", "effect"),
+        ];
+        assert_eq!(blend_layer(&mixed, 0), Some(Explain(1)));
+
+        // Nothing to start on: locked, hidden, or nothing beneath.
+        let mut locked = launch.clone();
+        locked[0].locked = true;
+        assert_eq!(blend_layer(&locked, 0), None);
+        let mut hidden = launch.clone();
+        hidden[0].enabled = false;
+        assert_eq!(blend_layer(&hidden, 0), None);
+        assert_eq!(blend_layer(&[info("F", "effect")], 0), None);
+        assert_eq!(blend_layer(&[info("Layer 1", "empty")], 0), None);
+        assert_eq!(blend_layer(&[], 0), None);
+    }
+
+    /// The harness layer named `name`'s index.
+    fn layer_named(h: &ShellHarness, name: &str) -> Option<usize> {
+        h.layers
+            .iter()
+            .position(|l| l.effect_name.as_deref() == Some(name))
+    }
+
+    // Kevin's call (#3231): on the launch stack the tour loads Aurora into
+    // the empty Layer 1, in Screen, and explains it from then on; it stays
+    // after the tour. The F beneath is untouched.
+    #[test]
+    fn the_layers_tour_starts_aurora_on_an_empty_top_layer() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        let f_before = h.layers[1].clone();
+        start(&h.ctx, Tour::Layers);
+        h.settle(30);
+        assert_eq!(layer_named(&h, STARTER_EFFECT), Some(0));
+        assert_eq!(h.layers[0].blend_mode, STARTER_BLEND);
+        assert_eq!(h.active_layer, 0);
+        assert_eq!(h.layers[1].effect_name, f_before.effect_name);
+        assert_eq!(h.layers[1].blend_mode, f_before.blend_mode);
+        // Its row says so, as the stack's lines are what step 1 reads.
+        assert!(
+            h.text_rect("\u{2191}  Aurora blends onto the picture below: Screen 100%")
+                .is_some()
+        );
+
+        // The next steps explain it, and change nothing: a mode picked on
+        // the Blend step stays.
+        h.key(Key::Enter);
+        h.settle(30);
+        assert_eq!(h.active_layer, 0);
+        h.layers[0].blend_mode = BlendMode::Multiply;
+        for i in 2..Tour::Layers.steps().len() - 1 {
+            go_to(&h.ctx, Tour::Layers, i);
+            h.settle(30);
+            assert_eq!(h.active_layer, 0, "step {}", i + 1);
+        }
+        assert_eq!(
+            h.layers[0].blend_mode,
+            BlendMode::Multiply,
+            "no second start"
+        );
+        let last = Tour::Layers.steps().len() - 1;
+        go_to(&h.ctx, Tour::Layers, last);
+        h.settle(30);
+        assert!(
+            crate::ui::panels::stack_panel::master_selected(&h.ctx),
+            "the last step is Master's"
+        );
+        go_to(&h.ctx, Tour::Layers, 0);
+        h.settle(30);
+        assert!(!crate::ui::panels::stack_panel::master_selected(&h.ctx));
+        assert_eq!(h.layers[0].blend_mode, BlendMode::Multiply);
+        h.key(Key::Escape);
+        assert_eq!(layer_named(&h, STARTER_EFFECT), Some(0), "it stays");
+    }
+
+    // A stack with a layer to explain is the user's: the tour selects that
+    // layer and loads nothing.
+    #[test]
+    fn the_layers_tour_leaves_a_running_layer_alone() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        h.layers[0].effect_index = Some(3);
+        h.layers[0].effect_name = Some("Effect 3".into());
+        h.layers[0].blend_mode = BlendMode::Difference;
+        h.active_layer = 1;
+        start(&h.ctx, Tour::Layers);
+        h.settle(30);
+        assert_eq!(h.active_layer, 0);
+        assert_eq!(h.layers[0].effect_name.as_deref(), Some("Effect 3"));
+        assert_eq!(h.layers[0].blend_mode, BlendMode::Difference);
+        assert_eq!(layer_named(&h, STARTER_EFFECT), None);
+    }
+
+    fn is_dim(id: Option<Id>) -> bool {
+        (0..16).any(|i| id == Some(Id::new("tour_dim").with(i)))
+    }
+
+    // The Blend step keeps the output lit: dimmed everywhere but the Blend
+    // section and the output, and both take the pointer.
+    #[test]
+    fn the_blend_step_leaves_the_output_lit() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        go_to(&h.ctx, Tour::Layers, 1);
+        h.settle(30);
+        let screen = h.screen();
+        let lit = hole(drawn(&h.ctx, Anchor::Blend).unwrap(), screen);
+        let watched = hole(drawn(&h.ctx, Anchor::Output).unwrap(), screen);
+        assert!(!lit.intersects(watched));
+        let out = h.frame_output(vec![]);
+        let dims: Vec<Rect> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill == DIM => Some(r.rect),
+                _ => None,
+            })
+            .collect();
+        let covered: f32 = dims.iter().map(|r| r.area()).sum();
+        let want = screen.area() - lit.area() - watched.area();
+        assert!(
+            (covered - want).abs() < 1.0,
+            "dimmed {covered}, want {want}"
+        );
+        for d in &dims {
+            assert!(!d.intersects(lit.shrink(0.5)) && !d.intersects(watched.shrink(0.5)));
+        }
+        let layer_at = |p: Pos2| h.ctx.layer_id_at(p).map(|l| l.id);
+        assert!(!is_dim(layer_at(watched.center())), "the output is lit");
+        assert!(!is_dim(layer_at(lit.center())), "the controls are lit");
+        let between = Pos2::new(watched.left() - 20.0, watched.bottom() + 40.0);
+        assert!(is_dim(layer_at(between)), "the rest is dimmed");
+    }
+
+    // The dimming is cut around every hole, whatever their places: it covers
+    // the rest exactly once and none of any hole.
+    #[test]
+    fn the_dimming_is_cut_around_each_hole() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1000.0, 700.0));
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1))
+        };
+        let cases: [&[Rect]; 5] = [
+            &[],
+            &[r(100.0, 100.0, 300.0, 200.0)],
+            // Side by side, one taller, like the Blend step.
+            &[r(400.0, 150.0, 700.0, 300.0), r(740.0, 10.0, 990.0, 180.0)],
+            // Overlapping, and one running off the screen.
+            &[
+                r(100.0, 100.0, 400.0, 400.0),
+                r(300.0, 300.0, 1200.0, 500.0),
+            ],
+            &[screen],
+        ];
+        for holes in cases {
+            let pieces = around(holes, screen);
+            if holes.len() == 1 && holes[0] != screen {
+                assert_eq!(pieces.len(), 4, "one hole, four pieces");
+            }
+            // A grid of sample points: each outside every hole is in exactly
+            // one piece, each inside a hole in none.
+            for j in 0..70 {
+                for i in 0..100 {
+                    let p = Pos2::new(5.0 + 10.0 * i as f32, 5.0 + 10.0 * j as f32);
+                    let n = pieces.iter().filter(|q| q.contains(p)).count();
+                    let inside = holes.iter().any(|h| h.contains(p));
+                    assert_eq!(n, usize::from(!inside), "{holes:?} at {p:?}");
+                }
+            }
+        }
+    }
+
+    // The note never covers what a step asks you to watch, if a side allows.
+    #[test]
+    fn the_note_stays_off_the_watched_part() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0));
+        let size = Vec2::new(CALLOUT_WIDTH, 200.0);
+        // A tall section mid-window, the output down the right: the
+        // right-hand side has the most room, and the output is there.
+        let blend = Rect::from_min_max(Pos2::new(420.0, 90.0), Pos2::new(700.0, 700.0));
+        let output = Rect::from_min_max(Pos2::new(1000.0, 60.0), Pos2::new(1390.0, 500.0));
+        let free = place_callout(blend, size, screen, &[]);
+        assert!(
+            free.intersects(output),
+            "the case needs the room to be there"
+        );
+        let n = place_callout(blend, size, screen, &[output]);
+        assert!(!n.intersects(output) && !n.intersects(blend), "{n:?}");
+        assert!(screen.contains_rect(n));
+    }
+
+    // And the tour passes the watched part along: with the stack column
+    // dragged narrow the room is on the output's side, and the note must go
+    // elsewhere rather than over the picture it asks you to watch.
+    #[test]
+    fn the_drawn_note_stays_off_the_watched_part() {
+        let ctx = Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0));
+        let blend = Rect::from_min_max(Pos2::new(420.0, 90.0), Pos2::new(700.0, 700.0));
+        let output = Rect::from_min_max(Pos2::new(1000.0, 60.0), Pos2::new(1390.0, 500.0));
+        go_to(&ctx, Tour::Layers, 1);
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    anchor(ui, Anchor::Blend, blend);
+                    anchor(ui, Anchor::Output, output);
+                });
+                draw(ctx);
+            });
+        }
+        let note = callout_rect(&ctx).unwrap();
+        assert!(!note.intersects(hole(output, screen)), "{note:?}");
+        assert!(!note.intersects(hole(blend, screen)), "{note:?}");
     }
 }

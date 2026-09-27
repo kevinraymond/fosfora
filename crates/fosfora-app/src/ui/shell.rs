@@ -135,6 +135,23 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
     {
         stack_panel::select_layer(ctx, i);
     }
+    // A Layers tour step: the layer whose blend it explains (#3129).
+    if ctx
+        .data_mut(|d| d.remove_temp::<bool>(egui::Id::new(tour::SELECT_BLEND_LAYER)))
+        .is_some()
+    {
+        let starter = s
+            .effect_loader
+            .effects
+            .iter()
+            .any(|e| e.name == tour::STARTER_EFFECT);
+        match tour::blend_layer(s.layers, s.active_layer) {
+            Some(tour::BlendLayer::Explain(i)) => stack_panel::select_layer(ctx, i),
+            Some(tour::BlendLayer::Start(i)) if starter => tour::start_layer(ctx, i),
+            Some(tour::BlendLayer::Start(i)) => stack_panel::select_layer(ctx, i),
+            None => {}
+        }
+    }
 
     let top = egui::TopBottomPanel::top("v2_top")
         .exact_height(40.0)
@@ -260,18 +277,28 @@ fn output_section(ui: &mut egui::Ui, id: &str, display: Option<(egui::TextureId,
     let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
     let badge = ow.open_on.is_some().then_some("2nd window");
     widgets::section(ui, id, "Output", badge, true, |ui| {
-        preview(ui, display);
+        let r = ui.scope(|ui| preview(ui, display));
+        tour::anchor(ui, tour::Anchor::Output, r.response.rect);
         ui.add_space(8.0);
         output_window_panel::draw(ui, &ow);
     });
 }
 
-/// The output as a picture, sized to the width it is given.
+/// The output as a picture, sized to the width it is given. Until the first
+/// frame registers it, an empty frame of the same size, so nothing jumps
+/// when it arrives.
 fn preview(ui: &mut egui::Ui, display: Option<(egui::TextureId, f32)>) {
-    if let Some((tex, aspect)) = display {
-        let w = ui.available_width();
-        let size = egui::vec2(w, (w / aspect.max(0.01)).round());
-        ui.add(egui::Image::new(egui::load::SizedTexture::new(tex, size)).corner_radius(3.0));
+    let w = ui.available_width();
+    let aspect = display.map_or(16.0 / 9.0, |(_, a)| a);
+    let size = egui::vec2(w, (w / aspect.max(0.01)).round());
+    match display {
+        Some((tex, _)) => {
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(tex, size)).corner_radius(3.0));
+        }
+        None => {
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, egui::Color32::BLACK);
+        }
     }
 }
 
@@ -747,9 +774,12 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
     inspector_heading(ui, &kicker, stack_panel::layer_name(layer), &desc);
 
     let bottom = s.layers.iter().rposition(|l| l.enabled) == Some(s.active_layer);
-    widgets::section(ui, "v2_blend", "Blend", None, true, |ui| {
-        blend_controls(ui, layer, s.active_layer, bottom);
+    let r = ui.scope(|ui| {
+        widgets::section(ui, "v2_blend", "Blend", None, true, |ui| {
+            blend_controls(ui, layer, s.active_layer, bottom);
+        });
     });
+    tour::anchor(ui, tour::Anchor::Blend, r.response.rect);
 
     if let Some(ref info) = s.webcam_info {
         widgets::section(ui, "v2_webcam", "Camera", None, true, |ui| {
@@ -1007,11 +1037,14 @@ fn master_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
          Master's row at the top of the stack shows the result.",
     );
     ui.add_space(6.0);
-    widgets::section(ui, "v2_postfx", "Post-Processing", None, true, |ui| {
-        postfx_source(ui, s);
-        ui.add_space(4.0);
-        postfx_panel::draw_postfx_panel(ui, s.postprocess);
+    let r = ui.scope(|ui| {
+        widgets::section(ui, "v2_postfx", "Post-Processing", None, true, |ui| {
+            postfx_source(ui, s);
+            ui.add_space(4.0);
+            postfx_panel::draw_postfx_panel(ui, s.postprocess);
+        });
     });
+    tour::anchor(ui, tour::Anchor::PostProcessing, r.response.rect);
     widgets::section(ui, "v2_volumetric", "Volumetric (R3)", None, true, |ui| {
         volumetric_panel::draw_volumetric_panel(ui, s.volumetric_enabled, s.volumetric_params);
     });

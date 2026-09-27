@@ -1097,6 +1097,11 @@ mod tests {
             names.iter().any(|n| n == LAUNCH_EFFECT),
             "{LAUNCH_EFFECT} does not ship"
         );
+        let starter = crate::ui::tour::STARTER_EFFECT;
+        assert!(
+            names.iter().any(|n| n == starter),
+            "the Layers tour's {starter} does not ship"
+        );
         for (old, new) in RENAMED_EFFECTS {
             assert!(
                 names.iter().any(|n| n == new),

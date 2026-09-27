@@ -136,6 +136,10 @@ impl ShellHarness {
         {
             loader.effects.push(effect(&format!("Effect {i}"), cat));
         }
+        // What the Layers tour loads into an empty top layer.
+        loader
+            .effects
+            .push(effect(crate::ui::tour::STARTER_EFFECT, "pattern"));
         Self {
             ctx,
             size,
@@ -334,11 +338,33 @@ impl ShellHarness {
                 },
             );
             crate::ui::tour::draw(ctx);
-            // As main.rs does after the frame.
+            // As main.rs does after the frame, in its order: a catalog drop,
+            // the selection, then the selected layer's blend mode.
+            use crate::ui::panels::catalog_panel::{CatalogDrop, DROP_INTENT};
+            let drop = ctx.data_mut(|d| {
+                let id = egui::Id::new(DROP_INTENT);
+                let v = d.get_temp::<(String, CatalogDrop)>(id);
+                d.remove::<(String, CatalogDrop)>(id);
+                v
+            });
+            if let Some((name, CatalogDrop::Replace(i))) = drop
+                && let Some(fx) = self.loader.effects.iter().position(|e| e.name == name)
+                && self.layers.get(i).is_some_and(|l| !l.locked)
+            {
+                self.layers[i].effect_index = Some(fx);
+                self.layers[i].effect_name = Some(name);
+                self.active_layer = i;
+            }
             if let Some(i) = ctx.data_mut(|d| d.remove_temp::<usize>(egui::Id::new("select_layer")))
                 && i < self.layers.len()
             {
                 self.active_layer = i;
+            }
+            if let Some(mode) = ctx.data_mut(|d| d.remove_temp::<u32>(egui::Id::new("layer_blend")))
+                && let Some(l) = self.layers.get_mut(self.active_layer)
+                && !l.locked
+            {
+                l.blend_mode = BlendMode::from_u32(mode);
             }
         })
     }

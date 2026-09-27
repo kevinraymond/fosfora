@@ -122,6 +122,11 @@
   the layer's chain is empty it starts one (Layer input, Kaleidoscope, Output) so the
   picture changes; deleting those two nodes puts the layer back as it was.
 
+- **A Layers and blending tour**, in the Tours menu: reading the stack bottom to top,
+  blend modes and opacity with the output left lit so you see each one, a layer's row
+  and menu, adding layers, and Master's post-processing. If the top layer is empty it
+  loads Aurora there in Screen, so there is a blend to try.
+
 - **Kaleidoscope no longer draws a seam** from the center to the left edge while it
   turns. It happened whenever *segments* was not a whole number: its slider now steps
   in whole numbers, and a fraction from an older preset rounds. A trama effect can mark
