@@ -150,6 +150,9 @@ pub struct Params {
     pub gravity: f32,
     /// Cull sprites nearer than this to the eye (meters; 0 = off).
     pub near_cull: f32,
+    /// Depth-test the sprites against the quad (S5 behavior). Off is a
+    /// diagnostic: the same draw with `CompareFunction::Always`.
+    pub depth_test: bool,
 }
 
 pub struct Particles3d {
@@ -368,7 +371,11 @@ impl Particles3d {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: if params.depth_test {
+                    wgpu::CompareFunction::Less
+                } else {
+                    wgpu::CompareFunction::Always
+                },
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

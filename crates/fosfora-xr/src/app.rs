@@ -45,6 +45,9 @@ const MR_RESTITUTION: f32 = 0.4;
 /// user stands inside the cube; near sprites are pure fill-rate cost).
 const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
+/// Where the depth-writing primer quad sits in `mr` (below the floor,
+/// behind the user; 1 mm wide, so never visible).
+const PRIMER_POS: [f32; 3] = [0.0, -1.0, 4.0];
 /// The floor obstacle: the STAGE space's y=0 plane, from Space Setup.
 const FLOOR_HALF_M: f32 = 10.0;
 const FLOOR_HALF_THICKNESS_M: f32 = 0.05;
@@ -125,6 +128,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.gravity 0.15             (m/s^2; default 0.15 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
     //   adb shell setprop debug.fosfora.nearcull 0.3             (cull sprites nearer than this, m; default 0.3 in mr, 0 otherwise)
+    //   adb shell setprop debug.fosfora.quad 0|1                 (the static test quad; default on in particles, off in mr)
+    //   adb shell setprop debug.fosfora.quadpos "0,1.5,-1.5"     (where the static quad sits; diagnostic for the S7 quad finding)
+    //   adb shell setprop debug.fosfora.depthtest 0              (sprites drawn with depth compare Always; diagnostic)
+    //   adb shell setprop debug.fosfora.primer 0|1               (mr without the quad: keep a 1 mm depth-writing quad in the pass; default on)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -301,8 +308,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // reality the real room is the reference, so no quad unless
             // asked for.
             if toggle("debug.fosfora.quad", !mixed) {
+                let quad_pos = debug_prop("debug.fosfora.quadpos")
+                    .and_then(|v| {
+                        let n: Vec<f32> =
+                            v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                        (n.len() == 3).then(|| [n[0], n[1], n[2]])
+                    })
+                    .unwrap_or(QUAD_CENTER);
                 let (tex, view) = static_quad_texture(&gfx.device, &gfx.queue);
-                gfx.set_quad(&view, QUAD_WIDTH_M, 16.0 / 9.0, QUAD_CENTER);
+                gfx.set_quad(&view, QUAD_WIDTH_M, 16.0 / 9.0, quad_pos);
+                static_quad = Some(tex);
+            } else if toggle("debug.fosfora.primer", mixed) {
+                // S7 finding (MEASURED.md): with a depth-writing opaque draw
+                // in the eye pass, 750K sprites cost ~10 ms; with the sprite
+                // draw alone, ~31 ms, whether or not the quad is in view or
+                // covers anything. Until the mechanism is understood, keep a
+                // depth-writing draw in the pass: a 1 mm quad below the
+                // floor, behind the user.
+                let (tex, view) = static_quad_texture(&gfx.device, &gfx.queue);
+                gfx.set_quad(&view, 0.001, 1.0, PRIMER_POS);
                 static_quad = Some(tex);
             }
             let mut p = Particles3d::new(
@@ -319,6 +343,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     lifetime: 12.0,
                     gravity,
                     near_cull,
+                    depth_test: toggle("debug.fosfora.depthtest", true),
                 },
             );
             p.sim_enabled = sim_enabled;

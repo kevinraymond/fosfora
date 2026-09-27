@@ -62,6 +62,9 @@ the device; wgpu's own validation reported nothing over the run.
 | S4 | `fad08e4` | `Flux XR Vertex` (billboard path, Low, 87k alive): holds rate but the image is almost black (Flux's look comes from the raster resolve + velocity feedback), so a renderer-cost datum, not a Flux result | 72 | Yes: 78 s, 5511 frames, 1 long frame, max wait-to-wait 14.8 ms, 0 stale | 2.19 avg / 3.49 max | 4.60 median / 5.56 max | same |
 | S5 | `47fb3d0` | S5 test sim, 750K world-space sprites (vertex pulling, 3-vertex), both eyes at 1680x1760 with depth, static quad | 72 | Yes: 63 s, 4555 frames, 0 long frames, 13 stale | 0.67 avg | 10.1 median / 12.9 max (runtime `App=`) | same, via `scripts/xr/sweep.sh` |
 | S5 | `47fb3d0` | same, 750K | 90 | Yes: 63 s, 5678 frames, 0 long frames, 0 stale | 0.59 avg | 8.1 median / 8.8 max | same |
+| S7 | `031956b` | mixed reality: passthrough layer + hand joints + scene anchors + floor as obstacles, 100K unoccluded sprites, near cull, no quad | 72 | Yes: 30 s, 2029 frames, 0 long, 16 stale | 0.77 avg | 5.4 median / 6.6 max | `sweep.sh --mode mr` |
+| S7 | `031956b` | same, 250K | 72 | No: 61.5 frames/s, 167 long, 431 stale | 1.32 avg | 13.5 median / 18.4 max | same |
+| S7 | `031956b` | same, 250K, passthrough off | 72 | Yes: 30 s, 2026 frames, 2 long, 9 stale | 0.62 avg | 9.4 median / 10.1 max | same |
 
 ### S4 notes (commit `fad08e4`, Quest 3 v207)
 
@@ -343,9 +346,116 @@ speed, rms and the beat pulse → sprite size) or the S4 quad's effect.
 
 ## Mixed reality (S7)
 
-| Configuration | Particles | GPU ms | Held 72 Hz? |
-|---|---|---|---|
-| Passthrough off (S5 baseline) | | | |
-| Passthrough on | | | |
-| + hands as obstacles | | | |
-| + scene planes / mesh | | | |
+Setup (commits `101cdd6`..`031956b`, Quest 3 v207, board #3194): `debug.fosfora.mode
+mr` = `XR_FB_passthrough` reconstruction layer under the projection layer,
+`XR_EXT_hand_tracking` joints as obstacle spheres, `XR_FB_scene` anchors and the
+stage floor as obstacle boxes, gravity 0.15 m/s², near-sprite cull 0.3 m, no test
+quad, sim cube 2.2 m centered at (0, 1.1, −0.9) m (the user stands inside it).
+Same harness as S5 (`scripts/xr/sweep.sh --mode mr --set …`, headless, 30 s runs,
+GPU ms = runtime `App=` median after 5 s). The headset sat unworn on the desk
+(eyes at y ≈ 0.96 m), so no hands were tracked and, with no room set up, no
+anchors: the obstacle set in these runs is the floor box alone. Hands and
+anchors cost the same shader loop, so their cost is bounded below by these rows
+and measured separately once a room exists (see "Functional gate" below).
+
+### Extension gating (the S1 list was a manifest artifact)
+
+The S1 app saw 84 extensions and none of the `XR_FB_scene` /
+`XR_FB_spatial_entity*` family. Adding `com.oculus.permission.USE_ANCHOR_API` to
+the manifest (no code change) makes the runtime list **97**: the 13 that
+appeared are `XR_FB_scene`, `XR_FB_scene_capture`, `XR_FB_spatial_entity`,
+`_query`, `_storage`, `_storage_batch`, `_container`, `XR_EXT_spatial_entity`,
+`XR_EXT_spatial_anchor`, `XR_EXT_spatial_persistence`,
+`_persistence_operations`, `XR_META_spatial_entity_discovery` and
+`_persistence`. `XR_EXT_eye_gaze_interaction` is still absent (Quest 3 has no
+eye tracking). Passthrough layer, both hand trackers and the scene query all
+came up on the first run with the permission declared (board #3258).
+
+### Frame time with MR on (72 Hz, unoccluded sprites)
+
+| Particles | Passthrough | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|---|
+| 100K | on | 5.4 / 6.6 | 72.0 | 0 | 16 | Yes |
+| 250K | on | 13.5 / 18.4 | 61.5 | 167 | 431 | No |
+| 500K | on | 26.5 / 41.6 | 30.9 | 723 | 1040 | No |
+| 750K | on | 40.0 / 63.2 | 21.5 | 505 | 833 | No |
+| 100K | off | 5.5 / 6.4 | 72.0 | 0 | 6 | Yes |
+| 250K | off | 9.4 / 10.1 | 72.0 | 2 | 9 | Yes |
+| 500K | off | 15.9 / 21.4 | 50.7 | 132 | 511 | No |
+| 750K | off | 26.1 / 36.8 | 33.4 | 769 | 1007 | No |
+
+**Budget with passthrough, hands and room on: ~150K sprites at 72 Hz (100K at
+5.4 ms holds; 250K at 13.5 ms does not).** Without passthrough the same scene
+holds 250K (9.4 ms). Passthrough's cost is not a fixed overhead: 0 ms at 100K,
++4 ms at 250K, +11 ms at 500K, +14 ms at 750K, i.e. the app's GPU time
+stretches by ~1.5× under load, which reads as GPU contention with the
+passthrough pipeline rather than compositor work billed to the app.
+
+### What each S7 feature costs (750K, S5 cube at (0, 1.5, −1.5), gravity 0)
+
+| Configuration | GPU ms (med / max) | frames/s |
+|---|---|---|
+| `mode particles` (S5 as measured: static quad on) | 9.7 / 12.3 | 70.0 |
+| `mode mr`, quad on, every S7 feature off | 9.4 / 13.8 | 70.1 |
+| `mode mr`, quad off, every S7 feature off | 30.2 / 43.4 | 29.5 |
+| `mode particles`, quad off | 31.1 / 47.4 | 29.1 |
+| + passthrough | 45.8 / 70.9 | 19.0 |
+| + hands + room + floor (no passthrough) | 29.2 / 45.9 | 29.2 |
+| + passthrough + hands + room + floor | 44.2 / 74.1 | 18.8 |
+| `mr` defaults (MR cube, gravity, near cull 0.3, all on) | 40.0 / 63.2 | 21.5 |
+| same, near cull off | 41.3 / 61.2 | 20.6 |
+| same, passthrough off | 26.1 / 36.8 | 33.4 |
+
+- **Obstacles are free at this granularity:** the collide pass with 1–53
+  spheres and up to 33 boxes is inside run-to-run noise (29.2 vs 30.2 ms).
+- **The near cull saves ~1.3 ms** in the MR cube (41.3 → 40.0 ms).
+- **Correction to S5 (board #3259): the S5 ceiling depended on the test
+  quad.** The same 750K sprites cost 9.4–9.7 ms with the opaque quad in the
+  scene and 30–31 ms without it, in either mode. The quad covers ~6 % of the
+  view from the desk, so plain occlusion cannot explain a 3× change; the
+  diagnostic rows below isolate the mechanism.
+
+### The quad effect, isolated (750K, `mode particles`, 72 Hz)
+
+| Configuration | GPU ms (med / max) | frames/s |
+|---|---|---|
+| quad at the S5 place (0, 1.5, −1.5): in view, occludes some sprites | 9.6 / 11.6 | 70.0 |
+| quad at (0, 1.5, −4.0): in view, behind every sprite, occludes nothing | 10.6 / 11.7 | 70.1 |
+| quad at (0, 1.5, +4.0): behind the head, not in view, zero fragments | 10.4 / 12.8 | 70.1 |
+| no quad, sprites depth-tested (`Less`) | 31.1 / 47.4 | 29.1 |
+| no quad, sprites with depth compare `Always` | 31.3 / 46.9 | 26.7 |
+
+**Occlusion is not the mechanism.** A depth-writing opaque draw anywhere in
+the eye pass, even one that produces no fragments, makes the 750K additive
+sprite draw 3× cheaper; the sprites' own depth compare is irrelevant. This
+smells like an Adreno/driver render-pass mode decision (binning or
+LRZ setup) keyed on the pass having a depth-writing pipeline. Consequence:
+every world-space pass should carry a depth-writing draw. `mode mr` now draws
+a 1 mm "primer" quad below the floor behind the user by default
+(`debug.fosfora.primer`); its effect on the MR budget is in the next table.
+
+### MR budget with the primer (72 Hz, `mr` defaults, `031956b` + primer)
+
+| Particles | Passthrough | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|---|
+| 250K | on | 8.2 / 8.7 | 72.0 | 0 | 1 | Yes |
+| 500K | on | 13.1 / 16.0 | 64.6 | 74 | 311 | No |
+| 750K | on | 17.6 / 23.7 | 44.7 | 640 | 773 | No |
+| 500K | off | 11.6 / 18.3 | 68.6 | 40 | 229 | Marginal |
+| 750K | off | 17.6 / 23.5 | 48.6 | 347 | 657 | No |
+
+**MR budget: 250K sprites at 72 Hz with passthrough, hands, room and floor on
+(8.2 ms, 1 stale frame in 30 s); ~350K is the edge (500K at 13.1 ms drops to
+65 fps).** Against S5's 750K at 10.1 ms this is the honest number for the
+product: it is what a wearer inside the cloud sees, over passthrough, with
+hands. With the primer, passthrough's extra cost is inside the noise at 750K
+(17.6 vs 17.6 ms) and ~1.5 ms at 500K; the earlier 1.5× stretch was the slow
+sprite path amplified. Hands, room anchors and the floor remain below the
+noise floor.
+
+### Functional gate (wearer)
+
+Passthrough composition, bouncing off hands and a real table, and the pinch
+toggle need a wearer and a room from Space Setup; the headless runs above
+tracked no hands and found no anchors (the query completed with 0; Space
+Setup not run on this headset yet). Filled in below when run.
