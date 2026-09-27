@@ -3,6 +3,11 @@ name: XR APK
 # Builds the Quest debug APK (crates/fosfora-xr + android/) on every push to
 # `xr`, signed with one stable debug key so consecutive artifacts install over
 # each other with `adb install -r`. The desktop checks run from ci.yml.
+#
+# The repo is public, and so are its workflow artifacts, so the APK is uploaded
+# only age-encrypted to the XR_APK_AGE_RECIPIENT repository variable (a public
+# key). Decrypt with the matching identity:
+#   age -d -i ~/.config/age/fosfora-xr.txt fosfora-xr-debug-<sha>.apk.age > x.apk
 
 on:
   push:
@@ -49,6 +54,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # First, before any build: without a recipient there is nothing safe to upload.
+      - name: Encryption recipient
+        env:
+          RECIPIENT: ${{ vars.XR_APK_AGE_RECIPIENT }}
+        run: |
+          case "$RECIPIENT" in
+            age1*) echo "age recipient: $RECIPIENT" ;;
+            *)
+              echo "::error title=Missing age recipient::Set the XR_APK_AGE_RECIPIENT repository variable (Settings > Secrets and variables > Actions > Variables) to an age public key (age1...)."
+              cat <<'EOF'
+          The APK artifact is uploaded only age-encrypted, because artifacts on a
+          public repo are downloadable by anyone signed in to GitHub. Once:
+
+            age-keygen -o ~/.config/age/fosfora-xr.txt   # prints "Public key: age1..."
+            gh variable set XR_APK_AGE_RECIPIENT --body age1...
+          EOF
+              exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -123,11 +147,12 @@ jobs:
           XR_DEBUG_KEYSTORE_PASS: ${{ secrets.XR_DEBUG_KEYSTORE_PASS }}
         run: scripts/xr/run.sh build
 
-      - name: Verify signature and stage artifact
+      - name: Verify signature, encrypt and stage artifact
         id: stage
         env:
           # A PR's github.sha is the test merge commit; name the APK after the head.
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RECIPIENT: ${{ vars.XR_APK_AGE_RECIPIENT }}
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
@@ -141,9 +166,14 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$certs" | grep -E 'certificate (DN|SHA-256)' || printf '%s\n' "$certs"
-          name="fosfora-xr-debug-${SHA::7}.apk"
+          if ! command -v age > /dev/null; then
+            sudo apt-get install -y -o Acquire::Retries=3 age > /dev/null \
+              || { sudo apt-get update -o Acquire::Retries=3 && sudo apt-get install -y -o Acquire::Retries=3 age; }
+          fi
+          name="fosfora-xr-debug-${SHA::7}.apk.age"
           mkdir -p staging
-          cp "$apk" "staging/$name"
+          # The plaintext APK never enters staging/, the only uploaded path.
+          age -r "$RECIPIENT" -o "staging/$name" "$apk"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
