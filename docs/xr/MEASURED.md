@@ -65,8 +65,14 @@ the device; wgpu's own validation reported nothing over the run.
 - Screencap: the triangle appears in both eyes with opposite-sign parallax
   (centroid 62% across the left-eye image, 39% across the right-eye image),
   consistent with an object 1.5 m ahead.
-- World-stability: verified by Kevin wearing the headset (Sep 27): the triangle
-  stays put while moving and turning, no double vision.
+- World-locking: verified by Kevin wearing the headset (Sep 27): the triangle
+  stays put while moving and turning. (Monocular check; Kevin sees with one eye.)
+- Convergence, numeric (commit `53ed2ac`, tracked, flags 7): runtime
+  IPD 65.0 mm, triangle center 1.52 m from the eye midpoint → expected
+  disparity 2.44°; from our per-eye matrices the center sits at +0.62° in the
+  left eye and −1.86° in the right eye, disparity 2.48°, convergent. Left-eye
+  fov [−54°, +40°, +44°, −55°], so a straight-ahead object sits at NDC x ≈ +0.25
+  in the left image, which is what the screencap parallax showed.
 
 ## Particle sweep (S5)
 

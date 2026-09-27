@@ -385,11 +385,12 @@ impl XrSession {
             return Ok(());
         }
 
-        let (_flags, views) = self
+        let (view_flags, views) = self
             .session
             .locate_views(VIEW_TYPE, frame_state.predicted_display_time, &self.space)
             .context("xrLocateViews")?;
         let view_projs: Vec<glam::Mat4> = views.iter().map(view_projection).collect();
+        log_stereo(view_flags, &views, &view_projs);
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -467,4 +468,53 @@ fn view_projection(view: &xr::View) -> glam::Mat4 {
         NEAR,
         FAR,
     )
+}
+
+/// Center of the S2 test triangle (`gfx::TRIANGLE_WGSL`), for the stereo log.
+const STEREO_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 1.45, -1.5);
+
+/// Numeric convergence check, every 5 s: the horizontal angle at which each
+/// eye sees the triangle center, against the angle IPD/distance predicts.
+/// Stereo correctness can't be judged by a one-eyed wearer, so this is the
+/// evidence for it (board #3221).
+fn log_stereo(flags: xr::ViewStateFlags, views: &[xr::View], view_projs: &[glam::Mat4]) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static FRAME: AtomicU64 = AtomicU64::new(0);
+    if !FRAME.fetch_add(1, Ordering::Relaxed).is_multiple_of(360) || views.len() != 2 {
+        return;
+    }
+    let pos =
+        |v: &xr::View| glam::Vec3::new(v.pose.position.x, v.pose.position.y, v.pose.position.z);
+    let (p0, p1) = (pos(&views[0]), pos(&views[1]));
+    let ipd = p0.distance(p1);
+    let mid = (p0 + p1) * 0.5;
+    let dist = STEREO_TARGET.distance(mid);
+    let expected = (ipd / dist).atan().to_degrees();
+    // Horizontal view angle of the target in each eye, from its NDC x and
+    // that eye's asymmetric fov.
+    let azimuth = |i: usize| {
+        let c = view_projs[i] * STEREO_TARGET.extend(1.0);
+        let x = c.x / c.w;
+        let l = views[i].fov.angle_left.tan();
+        let r = views[i].fov.angle_right.tan();
+        (x, (l + (x + 1.0) * 0.5 * (r - l)).atan().to_degrees())
+    };
+    let (x0, az0) = azimuth(0);
+    let (x1, az1) = azimuth(1);
+    info!(
+        "stereo: flags {flags:?} · ipd {:.1} mm · target {:.2} m from eye midpoint · expected disparity {expected:.2}° · eye0 ndc.x {x0:.3} az {az0:.2}° · eye1 ndc.x {x1:.3} az {az1:.2}° · measured disparity {:.2}° · eye0 pos ({:.3},{:.3},{:.3}) · eye1 pos ({:.3},{:.3},{:.3}) · fov0 deg [{:.1} {:.1} {:.1} {:.1}]",
+        ipd * 1000.0,
+        dist,
+        az0 - az1,
+        p0.x,
+        p0.y,
+        p0.z,
+        p1.x,
+        p1.y,
+        p1.z,
+        views[0].fov.angle_left.to_degrees(),
+        views[0].fov.angle_right.to_degrees(),
+        views[0].fov.angle_up.to_degrees(),
+        views[0].fov.angle_down.to_degrees(),
+    );
 }
