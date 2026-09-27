@@ -35,9 +35,9 @@ pub struct MidiSystem {
 }
 
 impl MidiSystem {
-    pub fn new() -> Self {
-        let config = MidiConfig::load();
-        let mut sys = Self {
+    /// The system with `config` and nothing opened: no port scanned or opened.
+    fn unconnected(config: MidiConfig) -> Self {
+        Self {
             receiver: None,
             clock_receiver: None,
             connection: None,
@@ -49,7 +49,18 @@ impl MidiSystem {
             last_port_poll: Instant::now(),
             available_ports: Vec::new(),
             last_cc_values: HashMap::default(),
-        };
+        }
+    }
+
+    /// For tests: default settings and nothing opened, so nothing on the
+    /// machine running them is read or touched.
+    #[cfg(test)]
+    pub(crate) fn offline() -> Self {
+        Self::unconnected(MidiConfig::default())
+    }
+
+    pub fn new() -> Self {
+        let mut sys = Self::unconnected(MidiConfig::load());
 
         // Initial port scan
         sys.available_ports = MidiPort::list_ports();

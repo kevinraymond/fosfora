@@ -9,7 +9,7 @@
 //! arms, that test fails loudly with "marker not found"; retarget it in the
 //! same change.
 
-use crate::effect::format::PfxEffect;
+use crate::effect::format::{PfxEffect, PostProcessDef};
 use crate::gpu::layer::LayerStack;
 use crate::gpu::uniforms::ShaderUniforms;
 use crate::params::ParamValue;
@@ -21,6 +21,8 @@ pub(crate) struct BindingTargetCtx<'a> {
     /// Loaded effects, for the legacy indexless target's name check.
     pub effects: &'a [PfxEffect],
     pub uniforms: &'a mut ShaderUniforms,
+    /// Master post-processing: preset scope, never a layer's (#3147).
+    pub postprocess: &'a mut PostProcessDef,
     /// `scene.transport.*` actions land here; the event loop drains them.
     pub pending_triggers: &'a mut Vec<String>,
 }
@@ -94,31 +96,29 @@ pub(crate) fn apply_binding_target(
         }
 
         BindingTarget::PostFx(rest) => {
-            if let Some(layer) = ctx.layer_stack.active_mut() {
-                let rest = rest.as_str();
-                match rest {
-                    "bloom_threshold" => {
-                        layer.postprocess.bloom_threshold = value * 1.5;
-                    }
-                    "bloom_intensity" => {
-                        layer.postprocess.bloom_intensity = value.clamp(0.0, 1.0);
-                    }
-                    "vignette" => {
-                        layer.postprocess.vignette = value.clamp(0.0, 1.0);
-                    }
-                    "ca_intensity" => {
-                        layer.postprocess.ca_intensity = value.clamp(0.0, 1.0);
-                    }
-                    "grain_intensity" => {
-                        layer.postprocess.grain_intensity = value.clamp(0.0, 1.0);
-                    }
-                    "grain_rate" => {
-                        // Hz, not 0..1 like its neighbours — the bus
-                        // delivers normalized, the field is a rate.
-                        layer.postprocess.grain_rate = value.clamp(0.0, 1.0) * 60.0;
-                    }
-                    _ => {}
+            let pp = &mut *ctx.postprocess;
+            match rest.as_str() {
+                "bloom_threshold" => {
+                    pp.bloom_threshold = value * 1.5;
                 }
+                "bloom_intensity" => {
+                    pp.bloom_intensity = value.clamp(0.0, 1.0);
+                }
+                "vignette" => {
+                    pp.vignette = value.clamp(0.0, 1.0);
+                }
+                "ca_intensity" => {
+                    pp.ca_intensity = value.clamp(0.0, 1.0);
+                }
+                "grain_intensity" => {
+                    pp.grain_intensity = value.clamp(0.0, 1.0);
+                }
+                "grain_rate" => {
+                    // Hz, not 0..1 like its neighbors — the bus
+                    // delivers normalized, the field is a rate.
+                    pp.grain_rate = value.clamp(0.0, 1.0) * 60.0;
+                }
+                _ => {}
             }
         }
 

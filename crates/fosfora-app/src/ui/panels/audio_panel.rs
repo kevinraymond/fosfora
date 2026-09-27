@@ -170,52 +170,51 @@ fn mfcc_heat_color(t: f32) -> Color32 {
 
 fn draw_device_selector(ui: &mut Ui, audio: &mut AudioSystem) {
     let tc = theme_colors(ui.ctx());
-
-    let devices = audio.list_devices();
-
-    let current = &audio.device_name;
-    let selected_text = truncate_device_name(current, 24);
-
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         ui.label(
             RichText::new("Input")
                 .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
-
-        egui::ComboBox::from_id_salt("audio_device_combo")
-            .selected_text(RichText::new(&selected_text).size(SMALL_SIZE))
-            .width(ui.available_width() - 4.0)
-            .show_ui(ui, |ui| {
-                let is_default = !devices.iter().any(|d| d == current);
-                if ui
-                    .selectable_label(
-                        is_default,
-                        RichText::new(DEFAULT_DEVICE_LABEL).size(SMALL_SIZE),
-                    )
-                    .clicked()
-                {
-                    ui.ctx().data_mut(|d| {
-                        d.insert_temp(egui::Id::new("switch_audio_device"), String::new());
-                    });
-                }
-                for dev in &devices {
-                    let selected = dev == current;
-                    let label = truncate_device_name(dev, 40);
-                    if ui
-                        .selectable_label(selected, RichText::new(&label).size(SMALL_SIZE))
-                        .clicked()
-                        && !selected
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("switch_audio_device"), dev.clone());
-                        });
-                    }
-                }
-            });
+        device_combo(ui, audio, ui.available_width() - 4.0, SMALL_SIZE);
     });
+    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::AudioInput, row.response.rect);
 
     ui.add_space(4.0);
+}
+
+/// The input picker alone, `width` wide, its text at `size`.
+pub(crate) fn device_combo(ui: &mut Ui, audio: &mut AudioSystem, width: f32, size: f32) {
+    let devices = audio.list_devices();
+    let current = &audio.device_name;
+    let selected_text = truncate_device_name(current, 40);
+    egui::ComboBox::from_id_salt("audio_device_combo")
+        .selected_text(RichText::new(&selected_text).size(size))
+        .width(width)
+        .show_ui(ui, |ui| {
+            let is_default = !devices.iter().any(|d| d == current);
+            if ui
+                .selectable_label(is_default, RichText::new(DEFAULT_DEVICE_LABEL).size(size))
+                .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("switch_audio_device"), String::new());
+                });
+            }
+            for dev in &devices {
+                let selected = dev == current;
+                let label = truncate_device_name(dev, 40);
+                if ui
+                    .selectable_label(selected, RichText::new(&label).size(size))
+                    .clicked()
+                    && !selected
+                {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("switch_audio_device"), dev.clone());
+                    });
+                }
+            }
+        });
 }
 
 // ── Section header ─────────────────────────────────────────────────────
@@ -231,7 +230,11 @@ fn draw_section_header(ui: &mut Ui, label: &str, right: &str) {
                 .strong(),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(right).size(8.0).color(tc.text_secondary));
+            ui.label(
+                RichText::new(right)
+                    .size(SMALL_SIZE)
+                    .color(tc.text_secondary),
+            );
         });
     });
     ui.add_space(2.0);
@@ -289,7 +292,7 @@ fn draw_bpm_ring(ui: &mut Ui, uniforms: &ShaderUniforms) -> egui::Response {
             center,
             egui::Align2::CENTER_CENTER,
             format!("{:.0}", bpm),
-            egui::FontId::proportional(9.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_primary,
         );
     }
@@ -310,7 +313,7 @@ fn draw_header_row(ui: &mut Ui, uniforms: &ShaderUniforms) {
         );
         ui.label(
             RichText::new("45 features")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -321,7 +324,7 @@ fn draw_header_row(ui: &mut Ui, uniforms: &ShaderUniforms) {
 
 // ── Spectrum bars (gradient + peak hold) ───────────────────────────────
 
-fn draw_spectrum_bars(ui: &mut Ui, bands: &[f32; 7]) {
+pub(crate) fn draw_spectrum_bars(ui: &mut Ui, bands: &[f32; 7]) {
     let tc = theme_colors(ui.ctx());
     let available_width = ui.available_width();
     let total_gaps = (bands.len() - 1) as f32 * METER_GAP;
@@ -426,7 +429,7 @@ fn draw_spectrum_bars(ui: &mut Ui, bands: &[f32; 7]) {
 
 // ── Dynamics rows ──────────────────────────────────────────────────────
 
-fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
+pub(crate) fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
     let tc = theme_colors(ui.ctx());
     let values: [f32; 7] = [
         uniforms.rms,
@@ -469,13 +472,15 @@ fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
         let track_left = row_left + bar_left;
 
         if i == 1 {
-            // Kick: boolean dot at start of track area
-            let dot_color = if v > 0.5 {
-                Color32::WHITE
+            // Kick: a filled dot on a kick, a ring between them — shape and
+            // theme colors, so it reads in the Light theme too (#3125).
+            let tc = theme_colors(ui.ctx());
+            let c = pos2(track_left + 4.0, cy);
+            if v > 0.5 {
+                painter.circle_filled(c, 3.5, tc.text_primary);
             } else {
-                Color32::from_rgb(0x33, 0x33, 0x33)
-            };
-            painter.circle_filled(pos2(track_left + 4.0, cy), 3.5, dot_color);
+                painter.circle_stroke(c, 3.0, egui::Stroke::new(1.0_f32, tc.text_dim));
+            }
         } else {
             // Track background
             let track_rect = Rect::from_min_size(
@@ -510,7 +515,7 @@ fn draw_dynamics_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
 
 // ── Structure rows (A10 loudness + A18 build/drop/section) ─────────────
 
-fn draw_structure_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
+pub(crate) fn draw_structure_rows(ui: &mut Ui, uniforms: &ShaderUniforms) {
     let tc = theme_colors(ui.ctx());
     let values: [f32; 5] = [
         uniforms.loudness_s,
@@ -619,7 +624,7 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 // ── Chroma wheel ───────────────────────────────────────────────────────
 
-fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
+pub(crate) fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
     let tc = theme_colors(ui.ctx());
     let outer_r = CHROMA_OUTER_RADIUS;
     let size = Vec2::splat(outer_r * 2.0 + 24.0); // extra for labels
@@ -683,7 +688,7 @@ fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
             label_pos,
             egui::Align2::CENTER_CENTER,
             CHROMA_LABELS[i],
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_secondary,
         );
     }
@@ -707,14 +712,14 @@ fn draw_chroma_wheel(ui: &mut Ui, chroma: &[f32; 12]) {
 
 // ── Key readout ────────────────────────────────────────────────────────
 
-fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
+pub(crate) fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
     let tc = theme_colors(ui.ctx());
     let conf = uniforms.key_confidence.clamp(0.0, 1.0);
 
     ui.vertical_centered(|ui| {
         let resp = ui
             .horizontal(|ui| {
-                ui.label(RichText::new("KEY").size(9.0).color(tc.text_secondary));
+                ui.label(RichText::new("KEY").size(SMALL_SIZE).color(tc.text_secondary));
                 if conf < 0.15 {
                     // Too little tonal evidence (silence / atonal) to name a key.
                     ui.label(RichText::new("\u{2014}").size(12.0).color(tc.text_secondary));
@@ -733,7 +738,7 @@ fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
                     );
                     ui.label(
                         RichText::new(format!("\u{00b7} {:.0}%", conf * 100.0))
-                            .size(9.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     );
                 }
@@ -747,7 +752,7 @@ fn draw_key_readout(ui: &mut Ui, uniforms: &ShaderUniforms) {
 
 // ── MFCC heatmap ───────────────────────────────────────────────────────
 
-fn draw_mfcc_heatmap(ui: &mut Ui, mfcc: &[f32; 16]) {
+pub(crate) fn draw_mfcc_heatmap(ui: &mut Ui, mfcc: &[f32; 16]) {
     let tc = theme_colors(ui.ctx());
     let available_width = ui.available_width();
     let gap = 1.0;
@@ -777,7 +782,7 @@ fn draw_mfcc_heatmap(ui: &mut Ui, mfcc: &[f32; 16]) {
             pos2(x, label_rect.center().y),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             tc.text_secondary,
         );
     }
@@ -803,7 +808,7 @@ fn draw_footer(ui: &mut Ui) {
     ui.separator();
     ui.label(
         RichText::new("7 bands · 7 dynamics · 12 chroma · 13 mfcc · 4096/1024/512 fft")
-            .size(7.0)
+            .size(SMALL_SIZE)
             .color(tc.text_secondary),
     );
 }
@@ -838,7 +843,12 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
         uniforms.brilliance,
     ];
     draw_section_header(ui, "SPECTRUM", "7 bands");
+    let top = ui.cursor().top();
     draw_spectrum_bars(ui, &bands);
+    // The meters are the other half of choosing an input: they show whether
+    // it hears anything.
+    let meters = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.min_rect().bottom());
+    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::AudioInput, meters);
 
     // Dynamics
     draw_section_header(ui, "DYNAMICS", "7 features");
@@ -875,7 +885,6 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
 /// (applied in `main.rs`). Collapsed by default to keep the monitor panel uncluttered.
 fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
     let tc = theme_colors(ui.ctx());
-    let mut committed = false;
     widgets::subsection(
         ui,
         "sub_audio_tuning",
@@ -883,120 +892,127 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
         None,
         tc.text_secondary,
         false,
-        |ui| {
-            let mut cfg = audio.tuning().lock().unwrap_or_else(|e| e.into_inner());
-
-            // `committed` (drag released or keyboard entry confirmed) persists once
-            // per adjustment, not every drag frame.
-            let row = |ui: &mut Ui,
-                       v: &mut f32,
-                       range: std::ops::RangeInclusive<f32>,
-                       label: &str,
-                       tip: &str|
-             -> bool {
-                rows::ParamRow::new(label)
-                    .tooltip(tip)
-                    .show_slider(ui, v, range)
-                    .committed
-            };
-
-            rows::group_label(ui, "Build-up");
-            committed |= row(
-                ui,
-                &mut cfg.buildup_bias,
-                -5.0..=0.0,
-                "Bias",
-                "Base tension. More negative = harder to build up.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.buildup_w_loud,
-                0.0..=5.0,
-                "Loud",
-                "Weight on loudness rise (the loudness trend).",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.buildup_w_centroid,
-                0.0..=5.0,
-                "Bright",
-                "Weight on spectral brightening (centroid rise).",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.buildup_w_onset,
-                0.0..=5.0,
-                "Onsets",
-                "Weight on onset-density rise.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.buildup_w_subbass,
-                0.0..=5.0,
-                "Sub-out",
-                "Weight on sub-bass withdrawal (the EDM high-pass sweep).",
-            );
-
-            ui.add_space(2.0);
-            rows::group_label(ui, "Drop");
-            committed |= row(
-                ui,
-                &mut cfg.drop_arm_buildup,
-                0.3..=0.9,
-                "Arm level",
-                "Build-up level that must be sustained to arm the drop.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_arm_sustain,
-                1.0..=12.0,
-                "Arm secs",
-                "Seconds build-up must stay above the arm level.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_arm_hold,
-                0.0..=12.0,
-                "Arm hold",
-                "Seconds the arm survives after build-up falls away, so the cut before a \
-                 drop cannot disarm it.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_loud_jump,
-                0.02..=0.2,
-                "Jump",
-                "Broadband loudness leap that fires a drop (0.08 \u{2248} 5 LU).",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_baseline_seconds,
-                0.5..=20.0,
-                "Jump window",
-                "Seconds the jump's running-minimum baseline looks back.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_subbass_return,
-                0.2..=0.9,
-                "Sub-back",
-                "Fraction of the sub-bass reference peak that must return.",
-            );
-            committed |= row(
-                ui,
-                &mut cfg.drop_refractory,
-                4.0..=40.0,
-                "Refractory",
-                "Seconds of drop suppression after one fires.",
-            );
-
-            ui.add_space(2.0);
-            if ui.button("Reset to defaults").clicked() {
-                *cfg = StructureConfig::default();
-                committed = true;
-            }
-        },
+        |ui| draw_tuning_body(ui, audio),
     );
+}
+
+/// The build-up and drop sliders and their reset, without a container: the
+/// Classic panel wraps them in a subsection, Setup in its own group.
+pub(crate) fn draw_tuning_body(ui: &mut Ui, audio: &mut AudioSystem) {
+    let mut committed = false;
+    {
+        let mut cfg = audio.tuning().lock().unwrap_or_else(|e| e.into_inner());
+
+        // `committed` (drag released or keyboard entry confirmed) persists once
+        // per adjustment, not every drag frame.
+        let row = |ui: &mut Ui,
+                   v: &mut f32,
+                   range: std::ops::RangeInclusive<f32>,
+                   label: &str,
+                   tip: &str|
+         -> bool {
+            rows::ParamRow::new(label)
+                .tooltip(tip)
+                .show_slider(ui, v, range)
+                .committed
+        };
+
+        rows::group_label(ui, "Build-up");
+        committed |= row(
+            ui,
+            &mut cfg.buildup_bias,
+            -5.0..=0.0,
+            "Bias",
+            "Base tension. More negative = harder to build up.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.buildup_w_loud,
+            0.0..=5.0,
+            "Loud",
+            "Weight on loudness rise (the loudness trend).",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.buildup_w_centroid,
+            0.0..=5.0,
+            "Bright",
+            "Weight on spectral brightening (centroid rise).",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.buildup_w_onset,
+            0.0..=5.0,
+            "Onsets",
+            "Weight on onset-density rise.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.buildup_w_subbass,
+            0.0..=5.0,
+            "Sub-out",
+            "Weight on sub-bass withdrawal (the EDM high-pass sweep).",
+        );
+
+        ui.add_space(2.0);
+        rows::group_label(ui, "Drop");
+        committed |= row(
+            ui,
+            &mut cfg.drop_arm_buildup,
+            0.3..=0.9,
+            "Arm level",
+            "Build-up level that must be sustained to arm the drop.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_arm_sustain,
+            1.0..=12.0,
+            "Arm secs",
+            "Seconds build-up must stay above the arm level.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_arm_hold,
+            0.0..=12.0,
+            "Arm hold",
+            "Seconds the arm survives after build-up falls away, so the cut before a \
+                 drop cannot disarm it.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_loud_jump,
+            0.02..=0.2,
+            "Jump",
+            "Broadband loudness leap that fires a drop (0.08 \u{2248} 5 LU).",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_baseline_seconds,
+            0.5..=20.0,
+            "Jump window",
+            "Seconds the jump's running-minimum baseline looks back.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_subbass_return,
+            0.2..=0.9,
+            "Sub-back",
+            "Fraction of the sub-bass reference peak that must return.",
+        );
+        committed |= row(
+            ui,
+            &mut cfg.drop_refractory,
+            4.0..=40.0,
+            "Refractory",
+            "Seconds of drop suppression after one fires.",
+        );
+
+        ui.add_space(2.0);
+        if ui.button("Reset to defaults").clicked() {
+            *cfg = StructureConfig::default();
+            committed = true;
+        }
+    }
 
     if committed {
         ui.ctx()
@@ -1010,8 +1026,6 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
 /// Collapsed by default to keep the monitor panel uncluttered.
 fn draw_tempo_rows(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUniforms) {
     let tc = theme_colors(ui.ctx());
-    let mut committed = false;
-    let mut tapped = false;
     widgets::subsection(
         ui,
         "sub_audio_tempo",
@@ -1019,102 +1033,110 @@ fn draw_tempo_rows(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUnifor
         None,
         tc.text_secondary,
         false,
-        |ui| {
-            let mut ctl = audio.tempo().lock().unwrap_or_else(|e| e.into_inner());
-
-            // Preset picker. The active entry is derived from the values rather than stored,
-            // so the sliders below stay the single source of truth — hand-tune one and the
-            // picker honestly reads "Custom".
-            let current = TempoPreset::from_config(&ctl.config);
-            let selected = current.map(|p| p.display_name()).unwrap_or("Custom");
-            rows::combo_row(ui, "tempo_preset", "Preset", None, selected, |ui| {
-                for &p in TempoPreset::ALL {
-                    if ui
-                        .selectable_label(
-                            current == Some(p),
-                            RichText::new(p.display_name()).size(SMALL_SIZE),
-                        )
-                        .clicked()
-                    {
-                        let (center, sigma) = p.values();
-                        ctl.config.prior_center_bpm = center;
-                        ctl.config.prior_sigma = sigma;
-                        committed = true;
-                    }
-                }
-            });
-
-            let auto = ctl.config.auto_prior;
-            // In auto mode the detector owns the centre and publishes it back each hop, so the
-            // slider becomes a live readout rather than an input.
-            committed |= rows::ParamRow::new("Centre")
-                .enabled(!auto)
-                .tooltip(
-                    "Where the detector expects the tempo to sit. Tracks far from this fold to \
-                     half/double.",
-                )
-                .show_slider(ui, &mut ctl.config.prior_center_bpm, 60.0..=200.0)
-                .committed;
-
-            committed |= rows::ParamRow::new("Width")
-                .tooltip(
-                    "Prior width in octaves. Narrow = a strong opinion about which octave is \
-                     right.",
-                )
-                .show_slider(ui, &mut ctl.config.prior_sigma, 0.2..=1.5)
-                .committed;
-
-            if rows::checkbox_row(
-                ui,
-                &mut ctl.config.auto_prior,
-                "Adapt automatically",
-                Some("Slowly move the centre toward the tempo actually being detected (~1 min)."),
-            )
-            .changed()
-            {
-                committed = true;
-            }
-
-            ui.add_space(2.0);
-            let bpm = uniforms.bpm * 300.0;
-            if bpm > 1.0 {
-                ui.label(
-                    RichText::new(format!("{bpm:.1} BPM"))
-                        .size(SMALL_SIZE)
-                        .strong(),
-                );
-            } else {
-                ui.label(RichText::new("\u{2014} BPM").size(SMALL_SIZE).weak());
-            }
-
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("\u{00f7}2").size(SMALL_SIZE))
-                    .on_hover_text("Halve the detected tempo (also mappable to MIDI/OSC).")
-                    .clicked()
-                {
-                    ctl.push(TempoCommand::ShiftOctave(-1));
-                }
-                if ui
-                    .button(RichText::new("\u{00d7}2").size(SMALL_SIZE))
-                    .on_hover_text("Double the detected tempo (also mappable to MIDI/OSC).")
-                    .clicked()
-                {
-                    ctl.push(TempoCommand::ShiftOctave(1));
-                }
-                tapped = ui
-                    .button(RichText::new("Tap").size(SMALL_SIZE))
-                    .on_hover_text("Tap the beat 3+ times to lock the tempo.")
-                    .clicked();
-            });
-
-            ui.add_space(2.0);
-            if ui.button("Reset to defaults").clicked() {
-                ctl.config = TempoConfig::default();
-                committed = true;
-            }
-        },
+        |ui| draw_tempo_body(ui, audio, uniforms),
     );
+}
+
+/// The tempo prior, the octave and tap controls and their reset, without a
+/// container: the Classic panel wraps them in a subsection, Setup in a group.
+pub(crate) fn draw_tempo_body(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUniforms) {
+    let mut committed = false;
+    let mut tapped = false;
+    {
+        let mut ctl = audio.tempo().lock().unwrap_or_else(|e| e.into_inner());
+
+        // Preset picker. The active entry is derived from the values rather than stored,
+        // so the sliders below stay the single source of truth — hand-tune one and the
+        // picker honestly reads "Custom".
+        let current = TempoPreset::from_config(&ctl.config);
+        let selected = current.map(|p| p.display_name()).unwrap_or("Custom");
+        rows::combo_row(ui, "tempo_preset", "Preset", None, selected, |ui| {
+            for &p in TempoPreset::ALL {
+                if ui
+                    .selectable_label(
+                        current == Some(p),
+                        RichText::new(p.display_name()).size(SMALL_SIZE),
+                    )
+                    .clicked()
+                {
+                    let (center, sigma) = p.values();
+                    ctl.config.prior_center_bpm = center;
+                    ctl.config.prior_sigma = sigma;
+                    committed = true;
+                }
+            }
+        });
+
+        let auto = ctl.config.auto_prior;
+        // In auto mode the detector owns the centre and publishes it back each hop, so the
+        // slider becomes a live readout rather than an input.
+        committed |= rows::ParamRow::new("Centre")
+            .enabled(!auto)
+            .tooltip(
+                "Where the detector expects the tempo to sit. Tracks far from this fold to \
+                     half/double.",
+            )
+            .show_slider(ui, &mut ctl.config.prior_center_bpm, 60.0..=200.0)
+            .committed;
+
+        committed |= rows::ParamRow::new("Width")
+            .tooltip(
+                "Prior width in octaves. Narrow = a strong opinion about which octave is \
+                     right.",
+            )
+            .show_slider(ui, &mut ctl.config.prior_sigma, 0.2..=1.5)
+            .committed;
+
+        if rows::checkbox_row(
+            ui,
+            &mut ctl.config.auto_prior,
+            "Adapt automatically",
+            Some("Slowly move the centre toward the tempo actually being detected (~1 min)."),
+        )
+        .changed()
+        {
+            committed = true;
+        }
+
+        ui.add_space(2.0);
+        let bpm = uniforms.bpm * 300.0;
+        if bpm > 1.0 {
+            ui.label(
+                RichText::new(format!("{bpm:.1} BPM"))
+                    .size(SMALL_SIZE)
+                    .strong(),
+            );
+        } else {
+            ui.label(RichText::new("\u{2014} BPM").size(SMALL_SIZE).weak());
+        }
+
+        ui.horizontal(|ui| {
+            if ui
+                .button(RichText::new("\u{00f7}2").size(SMALL_SIZE))
+                .on_hover_text("Halve the detected tempo (also mappable to MIDI/OSC).")
+                .clicked()
+            {
+                ctl.push(TempoCommand::ShiftOctave(-1));
+            }
+            if ui
+                .button(RichText::new("\u{00d7}2").size(SMALL_SIZE))
+                .on_hover_text("Double the detected tempo (also mappable to MIDI/OSC).")
+                .clicked()
+            {
+                ctl.push(TempoCommand::ShiftOctave(1));
+            }
+            tapped = ui
+                .button(RichText::new("Tap").size(SMALL_SIZE))
+                .on_hover_text("Tap the beat 3+ times to lock the tempo.")
+                .clicked();
+        });
+
+        ui.add_space(2.0);
+        if ui.button("Reset to defaults").clicked() {
+            ctl.config = TempoConfig::default();
+            committed = true;
+        }
+    }
 
     // Outside the closure: the tempo mutex guard above has dropped, and `tap_tempo` locks it
     // again to post the averaged tempo.

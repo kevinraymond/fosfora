@@ -17,7 +17,7 @@ the wrong look and the wrong knobs.
 
 Motion scale (mean inter-frame Δ, grayscale 0-1): 0.001 essentially static ·
 ~0.03 moderate · 0.10 frantic. Regenerate everything with
-`uv run scripts/build_catalog.py` (needs `target/release/phosphor-app` built
+`uv run scripts/build_catalog.py` (needs `target/release/fosfora` built
 with `--features analyze`, plus ffmpeg).
 
 Known catalog-wide truths (2026-07-31 sweep): several effects are near-black or

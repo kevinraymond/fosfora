@@ -42,6 +42,8 @@ pub mod osc;
     all(target_os = "macos", feature = "syphon")
 ))]
 pub mod output;
+#[cfg(feature = "desktop")]
+pub mod output_window;
 pub mod params;
 pub mod paths;
 pub mod preset;

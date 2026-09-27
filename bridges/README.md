@@ -140,7 +140,7 @@ docker compose -f bridges/docker-compose.yml --profile depth up hands realsense 
 docker compose -f bridges/docker-compose.yml --profile gpu up yolo-gpu hands lfo
 
 # Point at Fosfora on another machine
-PHOSPHOR_HOST=192.168.1.100 docker compose -f bridges/docker-compose.yml up hands lfo
+FOSFORA_HOST=192.168.1.100 docker compose -f bridges/docker-compose.yml up hands lfo
 ```
 
 ### Building images

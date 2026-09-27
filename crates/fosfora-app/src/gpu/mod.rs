@@ -11,6 +11,7 @@ pub mod helix;
 pub mod lattice;
 pub mod layer;
 pub mod layer_builder;
+pub mod layer_thumbs;
 pub mod particle;
 pub mod pass_executor;
 pub mod pipeline;

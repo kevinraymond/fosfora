@@ -2,7 +2,7 @@
 
 Phase-0 recon map for the feature program (see `TASKS.md`). Written 2026-08-06 from a
 source-level survey; line numbers drift, names don't. Single crate:
-`crates/phosphor-app` (rename to `fosfora-app` in progress, workstream R).
+`crates/fosfora-app`.
 
 ## Corrections to README/docs claims
 
@@ -22,7 +22,7 @@ source-level survey; line numbers drift, names don't. Single crate:
 ```
 cpal / PulseCapture / WasapiCapture callback      (no DSP in callback)
   └─ SPSC RingBuffer (65536 f32, atomics)          audio/capture.rs
-"phosphor-audio" thread                            audio/mod.rs (spawn ~:408, loop ~:1175)
+"fosfora-audio" thread                             audio/mod.rs (spawn ~:408, loop ~:1175)
   ├─ FIFO-slices exactly ANALYSIS_HOP=512 samples; sample-clock timestamps (no wall clock)
   ├─ HopAnalyzer::process_hop                      audio/hop.rs — THE canonical chain:
   │    FFT (3 res: 4096/1024/512, Hann) → loudness → stereo → HPSS → pitch(YIN) →
@@ -81,7 +81,7 @@ channel sees every hop and fixes this by construction.
 ## I/O + config
 
 - **OSC** (`src/osc/`, rosc): RX thread + fire-and-forget UDP sender. Namespace
-  `/phosphor/` (guard at `receiver.rs`; → dual-prefix in R2). Config `osc.json`
+  `/fosfora/`; the pre-rename `/phosphor/` prefix is still accepted (`receiver.rs`). Config `osc.json`
   (rx 9000, tx 9001, tx_rate 30, learn maps).
 - **MIDI** (`src/midi/`, midir, patched for alsa 0.11): **input only** — CC/note +
   clock IN (24 ppqn, `midi/clock.rs`). No MIDI output exists; clock/note/CC out is
@@ -93,8 +93,8 @@ channel sees every hop and fixes this by construction.
   no auth/roles. Role-scoping seams: `server.rs` route match; `run_client` client_id;
   `WebSystem::clients` vec; `parse_client_message` gating.
 - **Config layer**: every subsystem = `src/<mod>/types.rs` with `XConfig` +
-  `config_path()/load()/save()` → own JSON under `dirs::config_dir()/phosphor/`
-  (17 sites; → single `paths::config_root()` in R1). `version` fields exist, nothing
+  `config_path()/load()/save()` → own JSON under `paths::config_root()`
+  (`<config dir>/fosfora/`; a pre-rename `phosphor/` dir is moved over at launch). `version` fields exist, nothing
   reads them; forward-compat is `#[serde(default)]` + `unwrap_or_default()`.
 - **Outputs** (NDI/Spout/Syphon/v4l2): one pattern — `FrameSink` trait
   (`output/sink.rs`, deliberately not Send; sink constructed inside its sender thread)

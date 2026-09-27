@@ -10,7 +10,8 @@
     { "type": "Float", "name": "rotate",   "default": 0.0, "min": -0.5, "max": 0.5 },
     { "type": "Float", "name": "zoom",     "default": 1.0, "min": 0.25, "max": 4.0 }
   ],
-  "rates": ["spin"]
+  "rates": ["spin"],
+  "integers": ["segments"]
 }
 */
 // Kaleidoscope — wraps the picture into mirrored wedges around the center.
@@ -32,7 +33,12 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let p = (uv - 0.5) * vec2f(aspect, 1.0);
     let r = length(p);
 
-    let seg = 6.2831853 / max(param(0u), 2.0);
+    // Whole wedges only: the circle closes where atan2 wraps (the line from
+    // the center to the left edge) only if a whole number of wedges fits
+    // it. A slider left at 6.4 drew a seam there whenever the pattern was
+    // turned (#3128). "integers" steps the slider; this catches a
+    // modulation or an older preset.
+    let seg = 6.2831853 / max(round(param(0u)), 2.0);
     var a = atan2(p.y, p.x) + (param(1u) + param(2u)) * 6.2831853;
     a = a - seg * floor(a / seg); // wrap into one segment
     a = abs(a - seg * 0.5);       // fold it: the wedge mirrors about its middle

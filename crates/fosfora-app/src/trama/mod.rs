@@ -12,6 +12,7 @@ pub mod modulation;
 pub mod node;
 pub mod persist;
 pub mod ser;
+pub mod starter;
 #[cfg(feature = "desktop")]
 pub mod ui;
 #[cfg(not(feature = "desktop"))]
@@ -115,6 +116,23 @@ impl TramaSystem {
             frames_since_edit_poll: 0,
             edited: false,
         }
+    }
+
+    /// Point the canvas at the chain its tab names, giving the selected
+    /// layer a chain if it has none: opening the canvas on a layer is what
+    /// brings that layer's chain into existence. Once per frame from
+    /// `App::update`, while the canvas is open; the shell tests call it too.
+    pub fn resolve_active_chain(&mut self, layer_stack: &mut crate::gpu::layer::LayerStack) {
+        if !self.canvas_open {
+            return;
+        }
+        let active = layer_stack.active_layer;
+        self.active_chain = match self.canvas_target {
+            CanvasTarget::Master => node::ChainId::Master,
+            CanvasTarget::SelectedLayer => layer_stack
+                .ensure_chain(active)
+                .unwrap_or(node::ChainId::Master),
+        };
     }
 
     /// Once-per-frame advance, from `App::update`: capture the fully-mirrored

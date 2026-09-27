@@ -44,6 +44,103 @@ pub fn card_frame(ui: &Ui) -> Frame {
     }
 }
 
+/// A status light's state, each with its own shape (#3125): three of the
+/// four themes draw every state color in the text color, and the user this
+/// is built for doesn't separate red from green. Color is only a second cue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// Filled dot: receiving, running, live.
+    Active,
+    /// Ring: switched on, nothing arriving.
+    Idle,
+    /// Short dash: switched off.
+    Off,
+    /// Triangle: needs a look, still working.
+    Warn,
+    /// Cross: not working.
+    Fault,
+}
+
+pub fn paint_mark(ui: &mut Ui, mark: Mark) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+    paint_mark_at(
+        ui.painter(),
+        &theme_colors(ui.ctx()),
+        rect.center(),
+        mark,
+        1.0,
+    );
+    resp
+}
+
+/// [`paint_mark`] at `c`, `scale` times its 10 px size, without taking space.
+pub fn paint_mark_at(
+    p: &egui::Painter,
+    tc: &crate::ui::theme::colors::ThemeColors,
+    c: egui::Pos2,
+    mark: Mark,
+    scale: f32,
+) {
+    let v = |x: f32, y: f32| egui::Vec2::new(x, y) * scale;
+    match mark {
+        Mark::Active => {
+            p.circle_filled(c, 3.5 * scale, tc.success);
+        }
+        Mark::Idle => {
+            p.circle_stroke(c, 3.0 * scale, Stroke::new(1.2 * scale, tc.text_secondary));
+        }
+        Mark::Off => {
+            p.line_segment(
+                [c - v(3.0, 0.0), c + v(3.0, 0.0)],
+                Stroke::new(1.2 * scale, tc.text_dim),
+            );
+        }
+        Mark::Warn => {
+            p.add(egui::Shape::convex_polygon(
+                vec![c + v(0.0, -4.0), c + v(4.0, 3.5), c + v(-4.0, 3.5)],
+                tc.warning,
+                Stroke::NONE,
+            ));
+        }
+        Mark::Fault => {
+            let s = Stroke::new(1.6 * scale, tc.error);
+            p.line_segment([c + v(-3.5, -3.5), c + v(3.5, 3.5)], s);
+            p.line_segment([c + v(-3.5, 3.5), c + v(3.5, -3.5)], s);
+        }
+    }
+}
+
+/// A header that takes a click anywhere on it: the full width, and at least
+/// `min_height` tall. Its labels are made unselectable, because a selectable
+/// label keeps the click for itself — headers built as a row of labels only
+/// toggled on the gaps between them. Buttons inside still get their own
+/// clicks: they sit above the row.
+pub fn header_row(ui: &mut Ui, min_height: f32, add: impl FnOnce(&mut Ui)) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        // A row of exactly this size. `with_layout` would center the contents
+        // in all the height left below, and the header grew to fill it.
+        let size = egui::vec2(ui.available_width(), min_height);
+        ui.allocate_ui_with_layout(
+            size,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(size);
+                add(ui);
+            },
+        );
+    })
+    .response
+}
+
+/// One row of controls in `layout`, exactly `MIN_INTERACT_HEIGHT` tall and
+/// the full width. A bare `with_layout` takes all the height left below it —
+/// the row, and whatever frame holds it, grows to fill the column.
+pub fn layout_row<R>(ui: &mut Ui, layout: egui::Layout, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = egui::vec2(ui.available_width(), MIN_INTERACT_HEIGHT);
+    ui.allocate_ui_with_layout(size, layout, add).inner
+}
+
 /// Collapsible section with card styling.
 /// Returns the inner `Ui` response if the section is open.
 pub fn section(
@@ -55,15 +152,22 @@ pub fn section(
     add_body: impl FnOnce(&mut Ui),
 ) {
     let tc = theme_colors(ui.ctx());
+    let reveal = crate::ui::tour::reveals(ui.ctx(), id);
+    let name = id;
     let id = ui.make_persistent_id(id);
-    let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    #[cfg(test)]
+    record_section(ui.ctx(), name, id);
+    #[cfg(not(test))]
+    let _ = name;
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    if reveal && !state.is_open() {
+        // A tour step points inside: open it, and leave it open.
+        state.set_open(true);
+        state.store(ui.ctx());
+    }
 
     card_frame(ui).show(ui, |ui| {
-        let full_width = ui.available_width();
-
-        // Header row — always full width
-        let header_response = ui.horizontal(|ui| {
-            ui.set_min_width(full_width);
+        let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             draw_section_arrow(ui, state.is_open(), tc.text_secondary);
             ui.label(
                 RichText::new(title.to_uppercase())
@@ -78,12 +182,7 @@ pub fn section(
             });
         });
 
-        // Toggle on header click
-        if header_response
-            .response
-            .interact(egui::Sense::click())
-            .clicked()
-        {
+        if header_response.clicked() {
             let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
             state.toggle(ui);
             state.store(ui.ctx());
@@ -95,6 +194,33 @@ pub fn section(
             add_body(ui);
         }
     });
+}
+
+/// Tests close sections by the name their draw call gives them; the egui
+/// id behind that name depends on where the section is drawn.
+#[cfg(test)]
+fn record_section(ctx: &egui::Context, name: &str, id: egui::Id) {
+    ctx.data_mut(|d| {
+        let seen =
+            d.get_temp_mut_or_default::<Vec<(String, egui::Id)>>(egui::Id::new("test_section_ids"));
+        if !seen.iter().any(|(n, i)| n == name && *i == id) {
+            seen.push((name.to_string(), id));
+        }
+    });
+}
+
+/// Close every section drawn so far under `name`, as a click on its
+/// header would.
+#[cfg(test)]
+pub(crate) fn close_section(ctx: &egui::Context, name: &str) {
+    let ids: Vec<(String, egui::Id)> = ctx
+        .data(|d| d.get_temp(egui::Id::new("test_section_ids")))
+        .unwrap_or_default();
+    for (_, id) in ids.iter().filter(|(n, _)| n == name) {
+        let mut state = CollapsingState::load_with_default_open(ctx, *id, true);
+        state.set_open(false);
+        state.store(ctx);
+    }
 }
 
 /// Draw a solid triangle indicator for collapsible sections.
@@ -140,10 +266,7 @@ pub fn section_with_header(
     let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
 
     card_frame(ui).show(ui, |ui| {
-        let full_width = ui.available_width();
-
-        let header_response = ui.horizontal(|ui| {
-            ui.set_min_width(full_width);
+        let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             draw_section_arrow(ui, state.is_open(), tc.text_secondary);
             ui.label(
                 RichText::new(title.to_uppercase())
@@ -156,11 +279,7 @@ pub fn section_with_header(
             });
         });
 
-        if header_response
-            .response
-            .interact(egui::Sense::click())
-            .clicked()
-        {
+        if header_response.clicked() {
             let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
             state.toggle(ui);
             state.store(ui.ctx());
@@ -172,12 +291,12 @@ pub fn section_with_header(
     });
 }
 
-/// Subsection font size — smaller than parent section heading (JSX: 9px vs 11px).
-const SUBSECTION_SIZE: f32 = 9.0;
-/// Subsection arrow size (JSX: font-size 8).
+/// Subsection title: a step below the section heading, at the text floor.
+const SUBSECTION_SIZE: f32 = SMALL_SIZE;
+/// Subsection arrow size.
 const SUBSECTION_ARROW: f32 = 8.0;
-/// Subsection badge font size (JSX: font-size 8).
-const SUBSECTION_BADGE: f32 = 8.0;
+/// Subsection badge font size.
+const SUBSECTION_BADGE: f32 = SMALL_SIZE;
 
 /// Lightweight collapsible subsection (no card frame) for nesting inside a parent section.
 /// Matches the JSX `SectionLabel` style: small arrow + uppercase title + ON/OFF badge.
@@ -197,9 +316,7 @@ pub fn subsection(
     // JSX: marginTop 10 on every SectionLabel
     ui.add_space(10.0);
 
-    let full_width = ui.available_width();
-    let header_response = ui.horizontal(|ui| {
-        ui.set_min_width(full_width);
+    let header_response = header_row(ui, SUBSECTION_SIZE + 6.0, |ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         // Smaller arrow than parent section (JSX font-size 8 vs 11)
         draw_section_arrow_sized(ui, state.is_open(), tc.text_secondary, SUBSECTION_ARROW);
@@ -220,11 +337,7 @@ pub fn subsection(
         });
     });
 
-    if header_response
-        .response
-        .interact(egui::Sense::click())
-        .clicked()
-    {
+    if header_response.clicked() {
         let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
         state.toggle(ui);
         state.store(ui.ctx());
@@ -292,5 +405,83 @@ mod tests {
         let s = "Ätherwellen — Über";
         assert_eq!(truncate_chars(s, 10), "Ätherwell…");
         assert_eq!(truncate_chars("日本語テスト名前長い", 5), "日本語テ…");
+    }
+
+    /// Click a section's header at `x` (points from the left) and report
+    /// whether its body is open afterwards.
+    fn section_open_after_click(x: f32) -> bool {
+        let ctx = egui::Context::default();
+        let mut open = false;
+        let run = |events: Vec<egui::Event>, open: &mut bool| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    *open = false;
+                    section(ui, "t", "Presets and scenes", Some("3"), false, |_| {
+                        *open = true;
+                    });
+                });
+            });
+        };
+        run(vec![], &mut open);
+        run(vec![], &mut open);
+        // The header's middle: 8 panel margin + 4 card margin + 8 padding
+        // + half a row.
+        let pos = egui::pos2(x, 8.0 + 4.0 + 8.0 + MIN_INTERACT_HEIGHT / 2.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        run(
+            vec![egui::Event::PointerMoved(pos), button(true)],
+            &mut open,
+        );
+        run(vec![button(false)], &mut open);
+        run(vec![], &mut open);
+        open
+    }
+
+    #[test]
+    fn a_section_header_toggles_from_its_title_text() {
+        assert!(section_open_after_click(80.0), "on the title text");
+    }
+
+    #[test]
+    fn a_section_header_toggles_from_its_far_end() {
+        assert!(section_open_after_click(300.0), "right of the title");
+    }
+
+    #[test]
+    fn a_header_is_one_row_tall_however_much_room_is_below_it() {
+        let ctx = egui::Context::default();
+        let mut h = 0.0;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    h = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
+                        ui.label("PRESETS");
+                    })
+                    .rect
+                    .height();
+                });
+            });
+        }
+        assert!(h <= MIN_INTERACT_HEIGHT + 1.0, "the header is {h} tall");
     }
 }

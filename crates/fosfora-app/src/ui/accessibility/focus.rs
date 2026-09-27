@@ -1,6 +1,7 @@
 use egui::{Response, Stroke, StrokeKind, Ui};
 
-use crate::ui::theme::tokens::{DARK_ACCENT, FOCUS_RING_WIDTH};
+use crate::ui::theme::colors::theme_colors;
+use crate::ui::theme::tokens::FOCUS_RING_WIDTH;
 
 /// Draw a 2px focus ring around a widget when it has keyboard focus (WCAG 2.4.11).
 pub fn draw_focus_ring(ui: &Ui, response: &Response) {
@@ -9,7 +10,7 @@ pub fn draw_focus_ring(ui: &Ui, response: &Response) {
         ui.painter().rect_stroke(
             rect,
             response.rect.height() * 0.15, // slight rounding
-            Stroke::new(FOCUS_RING_WIDTH, DARK_ACCENT),
+            Stroke::new(FOCUS_RING_WIDTH, theme_colors(ui.ctx()).accent),
             StrokeKind::Outside,
         );
     }

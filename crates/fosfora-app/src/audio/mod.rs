@@ -368,6 +368,23 @@ impl AudioSystem {
         )
     }
 
+    /// For tests: no device opened and none scanned for, as on a machine
+    /// with no audio.
+    #[cfg(test)]
+    pub(crate) fn offline() -> Self {
+        let mut sys = Self::from_opened(
+            Err("offline".to_string()),
+            None,
+            BandScale::default(),
+            Arc::new(Mutex::new(StructureConfig::default())),
+            Arc::new(Mutex::new(TempoControl::default())),
+            Arc::new(RingBuffer::new()),
+        );
+        // Scanned just now, so drawing the picker starts no scan.
+        sys.last_scan = Instant::now();
+        sys
+    }
+
     pub fn new_with_device(
         device_name: Option<&str>,
         band_scale: BandScale,

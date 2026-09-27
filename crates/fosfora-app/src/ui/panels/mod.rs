@@ -1,8 +1,11 @@
+pub mod appearance_panel;
 pub mod audio_mappings_panel;
 pub mod audio_panel;
 pub mod binding_helpers;
 pub mod binding_matrix;
 pub mod bindings_panel;
+pub mod catalog_panel;
+pub mod cue_strip;
 pub mod effect_panel;
 pub mod helix_panel;
 pub mod lattice_panel;
@@ -15,6 +18,7 @@ pub mod midi_panel;
 pub mod ndi_panel;
 pub mod obstacle_panel;
 pub mod osc_panel;
+pub mod output_window_panel;
 pub mod param_panel;
 pub mod particle_panel;
 pub mod postfx_panel;
@@ -25,6 +29,7 @@ pub mod settings_panel;
 pub mod shader_editor;
 #[cfg(all(target_os = "windows", feature = "spout"))]
 pub mod spout_panel;
+pub mod stack_panel;
 pub mod status_bar;
 #[cfg(all(target_os = "macos", feature = "syphon"))]
 pub mod syphon_panel;
@@ -36,6 +41,7 @@ pub mod volumetric_panel;
 pub mod web_panel;
 pub mod webcam_panel;
 
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use crate::audio::AudioSystem;
@@ -84,6 +90,9 @@ pub fn draw_panels(
     scene_info: Option<scene_panel::SceneInfo>,
     status_error: &Option<(String, std::time::Instant)>,
     settings: &SettingsConfig,
+    // The finished frame and its aspect ratio (#3122), drawn as the Output
+    // preview at the top of the right panel.
+    display: Option<(egui::TextureId, f32)>,
 ) {
     if !visible {
         return;
@@ -230,14 +239,16 @@ pub fn draw_panels(
                             if active > 0 {
                                 ui.label(
                                     egui::RichText::new(format!("{active} active"))
-                                        .size(9.0)
-                                        .color(egui::Color32::from_white_alpha(120)),
+                                        .size(SMALL_SIZE)
+                                        .color(theme_colors(ui.ctx()).text_secondary),
                                 );
                             }
                             if ui
                                 .add(
-                                    egui::Button::new(egui::RichText::new("Matrix").size(9.0))
-                                        .min_size(egui::vec2(60.0, 18.0)),
+                                    egui::Button::new(
+                                        egui::RichText::new("Matrix").size(SMALL_SIZE),
+                                    )
+                                    .min_size(egui::vec2(60.0, 18.0)),
                                 )
                                 .on_hover_text("Open Binding Matrix (B)")
                                 .clicked()
@@ -326,18 +337,9 @@ pub fn draw_panels(
                 let dot_active_midi = egui::Color32::from_rgb(0x60, 0xA0, 0xE0);
                 let dot_active_osc = egui::Color32::from_rgb(0x50, 0xC0, 0x70);
                 let dot_active_web = egui::Color32::from_rgb(0x50, 0x90, 0xE0);
-                #[cfg(feature = "ndi")]
-                let dot_active_ndi = egui::Color32::from_rgb(0x40, 0xC0, 0x40);
-                #[cfg(all(target_os = "linux", feature = "v4l2"))]
-                let dot_active_v4l2 = egui::Color32::from_rgb(0x40, 0xB0, 0xB0);
-                #[cfg(all(target_os = "windows", feature = "spout"))]
-                let dot_active_spout = egui::Color32::from_rgb(0xC0, 0x90, 0x40);
-                #[cfg(all(target_os = "macos", feature = "syphon"))]
-                let dot_active_syphon = egui::Color32::from_rgb(0xA0, 0x60, 0xE0);
                 let dot_active_rec = egui::Color32::from_rgb(0xE0, 0x40, 0x40);
                 #[cfg(feature = "link")]
                 let dot_active_link = egui::Color32::from_rgb(0xE0, 0xB8, 0x30);
-                let dot_off = egui::Color32::from_rgb(0x33, 0x33, 0x33);
 
                 widgets::section_with_header(
                     ui,
@@ -345,39 +347,42 @@ pub fn draw_panels(
                     "Settings",
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        let dim_label = egui::Color32::from_white_alpha(38); // ~0.15
-                        let on_label = egui::Color32::from_white_alpha(90); // ~0.35
-                        // Helper: dot + tiny label (right-to-left order)
-                        let status_dot =
-                            |ui: &mut egui::Ui, on: bool, color: egui::Color32, label: &str| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 3.0;
-                                    let (r, _) = ui.allocate_exact_size(
-                                        egui::vec2(4.0, 4.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    let c = if on { color } else { dot_off };
-                                    ui.painter().circle_filled(r.center(), 2.0, c);
-                                    ui.label(egui::RichText::new(label).size(7.0).color(if on {
-                                        on_label
+                        // On is a filled dot, off a dash, and the name says
+                        // which on hover: never color alone (#3125).
+                        let tc = theme_colors(ui.ctx());
+                        let status_dot = |ui: &mut egui::Ui, on: bool, label: &str| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 3.0;
+                                let words = format!("{label}: {}", if on { "on" } else { "off" });
+                                let mark = if on {
+                                    widgets::Mark::Active
+                                } else {
+                                    widgets::Mark::Off
+                                };
+                                widgets::paint_mark(ui, mark).on_hover_text(&words);
+                                ui.label(
+                                    egui::RichText::new(label).size(SMALL_SIZE).color(if on {
+                                        tc.text_secondary
                                     } else {
-                                        dim_label
-                                    }));
-                                });
-                            };
+                                        tc.text_dim
+                                    }),
+                                )
+                                .on_hover_text(&words);
+                            });
+                        };
                         // Drawn right-to-left, so reverse visual order
-                        status_dot(ui, rec_on, dot_active_rec, "REC");
+                        status_dot(ui, rec_on, "REC");
                         #[cfg(all(target_os = "macos", feature = "syphon"))]
-                        status_dot(ui, syphon_on, dot_active_syphon, "SYP");
+                        status_dot(ui, syphon_on, "SYP");
                         #[cfg(all(target_os = "windows", feature = "spout"))]
-                        status_dot(ui, spout_on, dot_active_spout, "SPT");
+                        status_dot(ui, spout_on, "SPT");
                         #[cfg(all(target_os = "linux", feature = "v4l2"))]
-                        status_dot(ui, v4l2_on, dot_active_v4l2, "V4L");
+                        status_dot(ui, v4l2_on, "V4L");
                         #[cfg(feature = "ndi")]
-                        status_dot(ui, ndi_on, dot_active_ndi, "NDI");
-                        status_dot(ui, web_on, dot_active_web, "WEB");
-                        status_dot(ui, osc_on, dot_active_osc, "OSC");
-                        status_dot(ui, midi_on, dot_active_midi, "MIDI");
+                        status_dot(ui, ndi_on, "NDI");
+                        status_dot(ui, web_on, "WEB");
+                        status_dot(ui, osc_on, "OSC");
+                        status_dot(ui, midi_on, "MIDI");
                     },
                     false,
                     |ui| {
@@ -493,9 +498,12 @@ pub fn draw_panels(
                             );
                         }
 
-                        // Outputs subsection (Recording + NDI + virtual camera)
+                        // Outputs subsection (second window + Recording + NDI
+                        // + virtual camera)
                         {
-                            let outputs_on = rec_on
+                            let ow = output_window_panel::read(ui.ctx()).unwrap_or_default();
+                            let outputs_on = ow.open_on.is_some()
+                                || rec_on
                                 || {
                                     #[cfg(feature = "ndi")]
                                     {
@@ -551,10 +559,26 @@ pub fn draw_panels(
                                 out_color,
                                 true,
                                 |ui| {
+                                    // Second output window (#3122): a display,
+                                    // not a stream, so it leads the list — and
+                                    // it works in this layout as well as the
+                                    // workspace shell.
+                                    {
+                                        ui.label(
+                                            egui::RichText::new("Second window")
+                                                .size(SMALL_SIZE)
+                                                .strong(),
+                                        );
+                                        output_window_panel::draw(ui, &ow);
+                                        ui.add_space(6.0);
+                                    }
+
                                     // Recording
                                     if let Some(ref info) = rec_info {
                                         ui.label(
-                                            egui::RichText::new("Recording").size(10.0).strong(),
+                                            egui::RichText::new("Recording")
+                                                .size(SMALL_SIZE)
+                                                .strong(),
                                         );
                                         recording_panel::draw_recording_panel(ui, info);
                                     }
@@ -563,7 +587,9 @@ pub fn draw_panels(
                                     #[cfg(feature = "ndi")]
                                     if let Some(ref info) = ndi_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("NDI®").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("NDI®").size(SMALL_SIZE).strong(),
+                                        );
                                         ndi_panel::draw_ndi_panel(ui, info);
                                     }
 
@@ -573,7 +599,7 @@ pub fn draw_panels(
                                         ui.add_space(6.0);
                                         ui.label(
                                             egui::RichText::new("Virtual Camera")
-                                                .size(10.0)
+                                                .size(SMALL_SIZE)
                                                 .strong(),
                                         );
                                         v4l2_panel::draw_v4l2_panel(ui, info);
@@ -583,7 +609,9 @@ pub fn draw_panels(
                                     #[cfg(all(target_os = "windows", feature = "spout"))]
                                     if let Some(ref info) = spout_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("Spout").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("Spout").size(SMALL_SIZE).strong(),
+                                        );
                                         spout_panel::draw_spout_panel(ui, info);
                                     }
 
@@ -591,23 +619,33 @@ pub fn draw_panels(
                                     #[cfg(all(target_os = "macos", feature = "syphon"))]
                                     if let Some(ref info) = syphon_info {
                                         ui.add_space(6.0);
-                                        ui.label(egui::RichText::new("Syphon").size(10.0).strong());
+                                        ui.label(
+                                            egui::RichText::new("Syphon").size(SMALL_SIZE).strong(),
+                                        );
                                         syphon_panel::draw_syphon_panel(ui, info);
                                     }
                                 },
                             );
                         }
 
+                        widgets::subsection(ui, "sub_look", "Appearance", None, dim, true, |ui| {
+                            appearance_panel::draw_appearance_panel(
+                                ui,
+                                &settings.theme,
+                                settings.ui_scale,
+                            );
+                        });
+
                         // Global subsection
                         widgets::subsection(ui, "sub_global", "Global", None, dim, true, |ui| {
                             settings_panel::draw_settings_panel(
                                 ui,
-                                settings.theme,
                                 settings.particle_quality,
                                 settings.band_scale,
                                 settings.use_ffmpeg_webcam,
                                 settings.auto_reconnect,
                                 settings.output_alpha,
+                                settings.classic_layout,
                             );
                         });
                     },
@@ -621,6 +659,19 @@ pub fn draw_panels(
         .frame(panel_frame)
         .show(ctx, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
+                // Output preview — the composite as it leaves post-processing,
+                // before this overlay is drawn over it.
+                if let Some((tex, aspect)) = display {
+                    widgets::section(ui, "sec_output", "Output", None, true, |ui| {
+                        let w = ui.available_width();
+                        let size = egui::vec2(w, (w / aspect.max(0.01)).round());
+                        ui.add(
+                            egui::Image::new(egui::load::SizedTexture::new(tex, size))
+                                .corner_radius(3.0),
+                        );
+                    });
+                }
+
                 if let Some(ref info) = webcam_info {
                     // Webcam layer: show webcam controls
                     widgets::section(ui, "sec_webcam", "Webcam", None, true, |ui| {
@@ -634,7 +685,7 @@ pub fn draw_panels(
                 } else {
                     // Effect layer: show parameters
                     widgets::section(ui, "sec_params", "Parameters", None, true, |ui| {
-                        param_panel::draw_param_panel(ui, params, midi, osc);
+                        param_panel::draw_param_panel(ui, params, midi, osc, None);
                     });
 
                     // Particle section (shows when active layer has particles)

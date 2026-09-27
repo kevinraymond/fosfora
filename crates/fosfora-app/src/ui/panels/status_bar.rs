@@ -4,19 +4,34 @@ use crate::audio::AudioIndicator;
 use crate::gpu::ShaderUniforms;
 use crate::ui::theme::colors::theme_colors;
 use crate::ui::theme::tokens::*;
+use crate::ui::widgets::{Mark, paint_mark};
 
-const OFF: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-const DIM: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
-const LABEL_COLOR: Color32 = Color32::from_rgb(0x70, 0x70, 0x70);
+/// The audio light when it isn't reconnecting: a shape per state, because
+/// these three were one dot in three hues — identical in the hue-free themes.
+fn audio_mark(audio: AudioIndicator) -> (Mark, &'static str) {
+    match audio {
+        AudioIndicator::Live => (Mark::Active, "live"),
+        AudioIndicator::Quiet => (Mark::Warn, "the input has stopped sending audio"),
+        AudioIndicator::Failed | AudioIndicator::Reconnecting { .. } => {
+            (Mark::Fault, "no audio: the input could not be opened")
+        }
+    }
+}
 
-fn dot(ui: &mut Ui, active: bool, active_color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-    let color = if active { active_color } else { DIM };
-    ui.painter().circle_filled(rect.center(), 3.0, color);
+/// One status light: its mark, its name, and its state in words on hover.
+/// Added right to left, so the mark ends up to the right of the name.
+fn indicator(ui: &mut Ui, mark: Mark, name: &str, state: &str) {
+    let tc = theme_colors(ui.ctx());
+    let hover = format!("{name}: {state}");
+    paint_mark(ui, mark).on_hover_text(&hover);
+    ui.label(RichText::new(name).size(MONO_SIZE).color(tc.text_secondary))
+        .on_hover_text(&hover);
+    ui.add_space(6.0);
 }
 
 fn label(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(MONO_SIZE).color(LABEL_COLOR));
+    let tc = theme_colors(ui.ctx());
+    ui.label(RichText::new(text).size(MONO_SIZE).color(tc.text_secondary));
 }
 
 /// Fixed-width value using monospace-style right-aligned layout.
@@ -110,7 +125,7 @@ pub fn draw_status_bar(
         else {
             ui.add_space(4.0);
             ui.label(
-                RichText::new("B binding matrix · D toggle overlay · F fullscreen")
+                RichText::new("B bindings · C chains · D hide interface · F fullscreen")
                     .size(SMALL_SIZE)
                     .color(tc.text_secondary),
             );
@@ -137,17 +152,23 @@ pub fn draw_status_bar(
 
             ui.add_space(6.0);
 
+            let running = |on: bool| {
+                if on {
+                    (Mark::Active, "sending")
+                } else {
+                    (Mark::Off, "off")
+                }
+            };
+
             // NDI — always show (no separate enabled flag; running=on)
-            dot(ui, ndi_running, Color32::from_rgb(0x40, 0xC0, 0x40));
-            label(ui, "NDI");
-            ui.add_space(6.0);
+            let (m, st) = running(ndi_running);
+            indicator(ui, m, "NDI", st);
 
             // Virtual camera — only where the build can have one
             #[cfg(all(target_os = "linux", feature = "v4l2"))]
             {
-                dot(ui, v4l2_running, Color32::from_rgb(0x40, 0xB0, 0xB0));
-                label(ui, "V4L");
-                ui.add_space(6.0);
+                let (m, st) = running(v4l2_running);
+                indicator(ui, m, "V4L", st);
             }
             #[cfg(not(all(target_os = "linux", feature = "v4l2")))]
             let _ = v4l2_running;
@@ -155,9 +176,8 @@ pub fn draw_status_bar(
             // Spout — only where the build can have one
             #[cfg(all(target_os = "windows", feature = "spout"))]
             {
-                dot(ui, spout_running, Color32::from_rgb(0xC0, 0x90, 0x40));
-                label(ui, "SPT");
-                ui.add_space(6.0);
+                let (m, st) = running(spout_running);
+                indicator(ui, m, "SPT", st);
             }
             #[cfg(not(all(target_os = "windows", feature = "spout")))]
             let _ = spout_running;
@@ -165,90 +185,68 @@ pub fn draw_status_bar(
             // Syphon — only where the build can have one
             #[cfg(all(target_os = "macos", feature = "syphon"))]
             {
-                dot(ui, syphon_running, Color32::from_rgb(0xA0, 0x60, 0xE0));
-                label(ui, "SYP");
-                ui.add_space(6.0);
+                let (m, st) = running(syphon_running);
+                indicator(ui, m, "SYP", st);
             }
             #[cfg(not(all(target_os = "macos", feature = "syphon")))]
             let _ = syphon_running;
 
-            // Web — always show
-            {
-                let color = if web_client_count > 0 {
-                    Color32::from_rgb(0x50, 0x90, 0xE0)
-                } else if web_enabled {
-                    DIM
+            // Web, OSC, MIDI: on and receiving, on and quiet, or off.
+            let link = |active: bool, enabled: bool, active_words: &'static str| {
+                if active {
+                    (Mark::Active, active_words)
+                } else if enabled {
+                    (Mark::Idle, "on, nothing arriving")
                 } else {
-                    OFF
-                };
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 3.0, color);
-            }
-            label(ui, "WEB");
-            ui.add_space(6.0);
+                    (Mark::Off, "off")
+                }
+            };
+            let web_words = if web_client_count == 1 {
+                "1 client connected".to_string()
+            } else {
+                format!("{web_client_count} clients connected")
+            };
+            let (m, st) = link(web_client_count > 0, web_enabled, "");
+            indicator(
+                ui,
+                m,
+                "WEB",
+                if m == Mark::Active { &web_words } else { st },
+            );
+            let (m, st) = link(osc_recently_active, osc_enabled, "receiving");
+            indicator(ui, m, "OSC", st);
+            let (m, st) = link(midi_recently_active, midi_enabled, "receiving");
+            indicator(ui, m, "MIDI", st);
 
-            // OSC — always show
-            {
-                let color = if osc_recently_active {
-                    tc.success
-                } else if osc_enabled {
-                    DIM
-                } else {
-                    OFF
-                };
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 3.0, color);
-            }
-            label(ui, "OSC");
-            ui.add_space(6.0);
-
-            // MIDI — always show
-            {
-                let color = if midi_recently_active {
-                    tc.success
-                } else if midi_enabled {
-                    DIM
-                } else {
-                    OFF
-                };
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 3.0, color);
-            }
-            label(ui, "MIDI");
-            ui.add_space(6.0);
-
-            // Audio capture health (A9 #1460) — the only dot here that can report a fault, so
-            // it shows an attempt counter rather than just a colour.
-            {
-                match audio {
-                    AudioIndicator::Reconnecting { attempt } => {
-                        // Pulse so a reconnect in progress reads as *activity*, not a dead
-                        // light. Same time-driven repaint the preset-loading branch uses.
-                        let t = ui.input(|i| i.time);
-                        let on = ((t * 3.0) as u64).is_multiple_of(2);
-                        fixed_value(
-                            ui,
-                            &format!("{attempt}/{}", crate::audio::reconnect::MAX_ATTEMPTS),
-                            22.0,
-                            tc.warning,
-                        );
-                        dot(ui, on, tc.warning);
-                        ui.ctx().request_repaint();
-                    }
-                    AudioIndicator::Failed => dot(ui, true, tc.error),
-                    AudioIndicator::Quiet => dot(ui, true, tc.warning),
-                    AudioIndicator::Live => dot(ui, true, tc.success),
+            // Audio capture health (A9 #1460) — the only light here that can
+            // report a fault, so a reconnect also shows its attempt count.
+            match audio {
+                AudioIndicator::Reconnecting { attempt } => {
+                    // Pulse between warning and idle so a reconnect in progress
+                    // reads as activity, not a dead light.
+                    let t = ui.input(|i| i.time);
+                    let on = ((t * 3.0) as u64).is_multiple_of(2);
+                    let max = crate::audio::reconnect::MAX_ATTEMPTS;
+                    let words = format!("reconnecting, attempt {attempt} of {max}");
+                    let mark = if on { Mark::Warn } else { Mark::Idle };
+                    paint_mark(ui, mark).on_hover_text(format!("AUD: {words}"));
+                    fixed_value(ui, &format!("{attempt}/{max}"), 22.0, tc.warning);
+                    label(ui, "AUD");
+                    ui.add_space(6.0);
+                    ui.ctx().request_repaint();
+                }
+                steady => {
+                    let (mark, words) = audio_mark(steady);
+                    indicator(ui, mark, "AUD", words);
                 }
             }
-            label(ui, "AUD");
-            ui.add_space(6.0);
 
             // Particles
             if let Some(count) = particle_count {
                 ui.label(
                     RichText::new(format!("{count}"))
                         .size(SMALL_SIZE)
-                        .color(Color32::from_rgb(0x80, 0xB0, 0xE0)),
+                        .color(tc.text_primary),
                 );
                 label(ui, "PTL");
                 ui.add_space(6.0);
@@ -261,12 +259,10 @@ pub fn draw_status_bar(
                         ui,
                         &format!("{}/{}", current + 1, total),
                         28.0,
-                        Color32::from_rgb(0xFF, 0xA0, 0x40),
+                        tc.text_primary,
                     );
                 }
-                dot(ui, true, Color32::from_rgb(0xFF, 0xA0, 0x40));
-                label(ui, "SCN");
-                ui.add_space(6.0);
+                indicator(ui, Mark::Active, "SCN", "a scene is playing");
             }
 
             // BPM + beat dot
@@ -280,9 +276,28 @@ pub fn draw_status_bar(
                 };
                 // Fixed 3-char width for BPM value (prevents jitter on 2→3 digit changes)
                 fixed_value(ui, &format!("{:.0}", bpm), 24.0, bpm_color);
-                dot(ui, beat_on, tc.beat_color);
+                // The beat is a filled dot that empties between beats.
+                let mark = if beat_on { Mark::Active } else { Mark::Idle };
+                paint_mark(ui, mark);
                 label(ui, "BPM");
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_audio_state_has_its_own_shape() {
+        let marks = [
+            audio_mark(AudioIndicator::Live).0,
+            audio_mark(AudioIndicator::Quiet).0,
+            audio_mark(AudioIndicator::Failed).0,
+        ];
+        assert_ne!(marks[0], marks[1]);
+        assert_ne!(marks[1], marks[2]);
+        assert_ne!(marks[0], marks[2]);
+    }
 }

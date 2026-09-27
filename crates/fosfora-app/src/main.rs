@@ -13,6 +13,7 @@ use fosfora_app::media;
 use fosfora_app::midi;
 #[cfg(feature = "ndi")]
 use fosfora_app::ndi;
+use fosfora_app::output_window;
 use fosfora_app::params;
 use fosfora_app::paths;
 use fosfora_app::recording;
@@ -126,12 +127,47 @@ impl ApplicationHandler for FosforaApp {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
+        window_id: WindowId,
         event: WindowEvent,
     ) {
         let Some(app) = self.app.as_mut() else {
             return;
         };
+
+        // Events belonging to the second output window (#3122). They are
+        // answered here and go no further: that window carries no interface,
+        // and handing its pointer, focus and resize events to egui would move
+        // the overlay's input state from a window it is not drawn on. Its
+        // frames are drawn from the main window's render, so a redraw request
+        // on it needs nothing.
+        if app
+            .output_window
+            .as_ref()
+            .is_some_and(|ow| ow.id() == window_id)
+        {
+            match event {
+                WindowEvent::CloseRequested => app.close_output_window(),
+                WindowEvent::Resized(size) => {
+                    if let Some(ow) = app.output_window.as_mut() {
+                        ow.resize(&app.gpu.device, size.width, size.height);
+                    }
+                }
+                // Esc is the way out of a full-screen view everywhere else in
+                // the app; on a borderless window with no controls it is the
+                // only way out that does not need the mouse.
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                    ..
+                } => app.close_output_window(),
+                _ => {}
+            }
+            return;
+        }
 
         // Let egui handle events first
         let egui_consumed = app.egui_overlay.handle_event(&app.window, &event);
@@ -178,14 +214,48 @@ impl ApplicationHandler for FosforaApp {
                     },
                 ..
             } if !egui_consumed || !app.egui_overlay.wants_keyboard() => {
+                // A tour takes every shortcut but Esc: each of them changes
+                // the view a step describes (#3126).
+                if key != KeyCode::Escape
+                    && crate::ui::tour::is_running(&app.egui_overlay.context())
+                {
+                    return;
+                }
                 match key {
                     KeyCode::Escape => {
                         // Cancel a half-finished click-to-bind, then close the
-                        // binding matrix, then the shader editor, then quit.
+                        // binding matrix, then bring the interface back, then
+                        // the shader editor, then quit.
+                        //
+                        // "Bring the interface back" is why Escape is not the
+                        // first step to quitting any more: the shell's Full
+                        // output button hides every panel, and the way back was
+                        // D — which nothing on screen says once the panels are
+                        // gone. Escape is the key people press to get out of a
+                        // full-screen view, and pressing it offered to quit.
+                        //
+                        // The second output window is on that ladder for the
+                        // same reason. Escape closes it from the window itself,
+                        // but the pointer is usually over the main window when
+                        // someone wants it gone, and there it offered to quit
+                        // instead.
+                        //
+                        // The workspace's chain editor modal comes before it,
+                        // as the binding matrix's does.
                         if app.binding_matrix.open && app.binding_matrix.armed.is_some() {
                             app.binding_matrix.armed = None;
                         } else if app.binding_matrix.open {
                             app.binding_matrix.open = false;
+                        } else if !app.egui_overlay.visible {
+                            app.egui_overlay.toggle_visible();
+                        } else if crate::ui::tour::current(&app.egui_overlay.context()).is_some()
+                        {
+                            // The tour sees the same Escape in its own frame
+                            // and ends itself; here it only must not quit.
+                        } else if app.trama.canvas_open && !app.settings.classic_layout {
+                            app.trama.canvas_open = false;
+                        } else if app.output_window.is_some() {
+                            app.close_output_window();
                         } else if !app.shader_editor.open {
                             app.quit_requested = true;
                         }
@@ -218,11 +288,19 @@ impl ApplicationHandler for FosforaApp {
                     KeyCode::KeyB
                         if !app.shader_editor.open => {
                             app.binding_matrix.open = !app.binding_matrix.open;
+                            // One modal at a time.
+                            if app.binding_matrix.open {
+                                app.trama.canvas_open = false;
+                            }
                         }
-                    KeyCode::KeyG
-                        // Toggle the trama graph canvas
+                    // The chain editor: C for chain, the word the interface
+                    // uses (it was G before v2).
+                    KeyCode::KeyC
                         if !app.shader_editor.open => {
                             app.trama.canvas_open = !app.trama.canvas_open;
+                            if app.trama.canvas_open {
+                                app.binding_matrix.open = false;
+                            }
                         }
                     KeyCode::BracketLeft => {
                         // Previous layer
@@ -251,11 +329,26 @@ impl ApplicationHandler for FosforaApp {
 
                 // Collect layer info snapshots before UI (avoids borrow conflicts)
                 let layer_infos = app.layer_infos();
+                // Which layers' effects suggest exactly the post-processing
+                // Master has now — the Master inspector's provenance line.
+                let postfx_matches: Vec<bool> = app
+                    .layer_stack
+                    .layers
+                    .iter()
+                    .map(|l| l.postprocess == app.master_postprocess)
+                    .collect();
                 let master_chain = app.master_chain_badge();
                 let active_layer = app.layer_stack.active_layer;
 
                 // Auto-show panels after startup delay
                 app.egui_overlay.update_auto_show();
+
+                // Point egui at the display target on the first frame; resizes
+                // re-point it from App::resize.
+                if app.egui_overlay.display_tex.is_none() {
+                    let view = app.display_view_for_egui();
+                    app.egui_overlay.set_display_texture(&app.gpu.device, &view);
+                }
 
                 // Prepare egui frame
                 app.egui_overlay.begin_frame(&app.window);
@@ -817,6 +910,17 @@ impl ApplicationHandler for FosforaApp {
                         });
                     }
 
+                    // Second output window (#3122): both layouts draw the same
+                    // control, and neither takes it as an argument.
+                    {
+                        let info = crate::ui::panels::output_window_panel::OutputWindowInfo {
+                            displays: app.displays.clone(),
+                            open_on: app.output_window.as_ref().map(|ow| ow.display_name.clone()),
+                            last_display: app.settings.output_display.clone(),
+                        };
+                        crate::ui::panels::output_window_panel::publish(&ctx, info);
+                    }
+
                     // Store preset loading state in egui temp data for UI panels
                     {
                         let loading_state = app.preset_loader.state.clone();
@@ -834,17 +938,97 @@ impl ApplicationHandler for FosforaApp {
                     }
 
                     // Collect scene info before mutable borrows
-                    let scene_info = Some(app.scene_info());
+                    let scene_info = app.scene_info();
 
                     // Snapshot global volumetric state so a slider drag in the
                     // panel below (which mutates it by &mut) marks the preset
                     // dirty, like the other panels do.
                     let vol_before = (app.volumetric_enabled, app.volumetric_params);
+                    // Same for Master's post-processing, which no panel marks.
+                    let pp_before = app.master_postprocess.clone();
+
+                    // In the workspace the chain editor and the binding matrix
+                    // are modals over Build, beside its output column (#3125):
+                    // opening either from anywhere goes to Build, and leaving
+                    // Build puts them away.
+                    if !app.shader_editor.open && !app.settings.classic_layout {
+                        use crate::ui::shell::Workspace;
+                        let was_id = egui::Id::new("v2_modals_were_open");
+                        let (was_trama, was_matrix): (bool, bool) =
+                            ctx.data(|d| d.get_temp(was_id).unwrap_or_default());
+                        let (trama, matrix) = (app.trama.canvas_open, app.binding_matrix.open);
+                        if (trama && !was_trama) || (matrix && !was_matrix) {
+                            Workspace::Build.write(&ctx);
+                        } else if Workspace::read(&ctx) != Workspace::Build {
+                            app.trama.canvas_open = false;
+                            app.binding_matrix.open = false;
+                        }
+                        let now = (app.trama.canvas_open, app.binding_matrix.open);
+                        ctx.data_mut(|d| d.insert_temp(was_id, now));
+                    }
 
                     // Get active layer's param_store (mutable for MIDI badges)
                     let active_params = app.layer_stack.active_mut();
                     if let Some(layer) = active_params {
-                        if !app.shader_editor.open {
+                        if !app.shader_editor.open && !app.settings.classic_layout {
+                            // The First run tour, once (#3126).
+                            let auto_id = egui::Id::new("tour_auto_started");
+                            if app.egui_overlay.visible
+                                && crate::ui::tour::should_auto_start(&app.settings)
+                                && !ctx.data(|d| d.get_temp::<bool>(auto_id).unwrap_or(false))
+                            {
+                                ctx.data_mut(|d| d.insert_temp(auto_id, true));
+                                crate::ui::tour::start(&ctx, crate::ui::tour::Tour::FirstRun);
+                            }
+                            // v2 workspace shell (#3122)
+                            let mut shell = crate::ui::shell::ShellState {
+                                audio: &mut app.audio,
+                                params: &mut layer.param_store,
+                                shader_error: &shader_error,
+                                uniforms: &app.uniforms,
+                                effect_loader: &app.effect_loader,
+                                postprocess: &mut app.master_postprocess,
+                                postprocess_previous: app.master_postprocess_previous.as_ref(),
+                                volumetric_enabled: &mut app.volumetric_enabled,
+                                volumetric_params: &mut app.volumetric_params,
+                                particle_count,
+                                midi: &mut app.midi,
+                                osc: &mut app.osc,
+                                web: &mut app.web,
+                                preset_store: &app.preset_store,
+                                layers: &layer_infos,
+                                active_layer,
+                                master_chain,
+                                media_info,
+                                webcam_info,
+                                particle_info,
+                                obstacle_info,
+                                lattice_info,
+                                helix_info,
+                                status_error: &app.status_error,
+                                settings: &app.settings,
+                                layer_thumbs: Some(&app.layer_thumbs),
+                                postfx_matches: &postfx_matches,
+                                display: app.egui_overlay.display_tex.map(|t| {
+                                    (
+                                        t,
+                                        app.display.width.max(1) as f32
+                                            / app.display.height.max(1) as f32,
+                                    )
+                                }),
+                                catalog_thumbs: &mut app.catalog_thumbs,
+                                scene: &scene_info,
+                                bindings: &app.binding_bus,
+                            };
+                            crate::ui::shell::draw_shell(
+                                &ctx,
+                                app.egui_overlay.visible,
+                                &mut shell,
+                            );
+                            // Before the modals read their requests; the
+                            // tour itself draws after them (#3127).
+                            crate::ui::tour::gate(&ctx);
+                        } else if !app.shader_editor.open {
                             crate::ui::panels::draw_panels(
                                 &ctx,
                                 app.egui_overlay.visible,
@@ -853,7 +1037,7 @@ impl ApplicationHandler for FosforaApp {
                                 &shader_error,
                                 &app.uniforms,
                                 &app.effect_loader,
-                                &mut layer.postprocess,
+                                &mut app.master_postprocess,
                                 &mut app.volumetric_enabled,
                                 &mut app.volumetric_params,
                                 particle_count,
@@ -871,15 +1055,25 @@ impl ApplicationHandler for FosforaApp {
                                 obstacle_info,
                                 lattice_info,
                                 helix_info,
-                                scene_info,
+                                Some(scene_info),
                                 &app.status_error,
                                 &app.settings,
+                                app.egui_overlay.display_tex.map(|t| {
+                                    (
+                                        t,
+                                        app.display.width.max(1) as f32
+                                            / app.display.height.max(1) as f32,
+                                    )
+                                }),
                             );
                         }
-                        // Sync global postprocess enabled from layer
-                        app.post_process.enabled = layer.postprocess.enabled;
+                        // Sync the chain's switch from Master's post-processing
+                        app.post_process.enabled = app.master_postprocess.enabled;
                     }
                     if (app.volumetric_enabled, app.volumetric_params) != vol_before {
+                        app.preset_store.mark_dirty();
+                    }
+                    if app.master_postprocess != pp_before {
                         app.preset_store.mark_dirty();
                     }
 
@@ -887,88 +1081,101 @@ impl ApplicationHandler for FosforaApp {
                     crate::ui::panels::shader_editor::draw_shader_editor(
                         &ctx,
                         &mut app.shader_editor,
-                        app.settings.theme,
                     );
                     crate::ui::panels::shader_editor::draw_new_effect_prompt(
                         &ctx,
                         &mut app.shader_editor,
                     );
 
-                    // Trama graph canvas (G toggles; hosted here like the
+                    // Trama graph canvas (C toggles; hosted here like the
                     // shader editor — draw_panels stays untouched). Preview
                     // textures created during last frame's execute register
                     // with egui here, right before the canvas needs their
                     // TextureIds; dead ones are freed on the same call.
                     app.trama
                         .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
-                    crate::trama::ui::canvas::draw_trama_window(
-                        &ctx,
-                        &mut app.trama,
-                        &mut app.layer_stack,
-                    );
-
-                    // Check if sidebar "Matrix" button was clicked
-                    let matrix_open_requested = ctx.data_mut(|d| {
-                        d.get_temp::<bool>(egui::Id::new("open_binding_matrix"))
-                            .unwrap_or(false)
-                    });
-                    if matrix_open_requested {
-                        app.binding_matrix.open = true;
-                        ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new("open_binding_matrix"), false);
-                            d.insert_temp(egui::Id::new("binding_matrix_just_opened"), true);
-                        });
+                    app.layer_thumbs
+                        .register(&app.gpu.device, &mut app.egui_overlay.renderer);
+                    crate::trama::ui::canvas::follow_tour(&ctx, &mut app.trama);
+                    if app.settings.classic_layout || app.shader_editor.open {
+                        crate::trama::ui::canvas::draw_trama_window(
+                            &ctx,
+                            &mut app.trama,
+                            &mut app.layer_stack,
+                        );
+                    } else if app.egui_overlay.visible {
+                        match crate::ui::modal::bounds(&ctx) {
+                            Some(bounds) => crate::trama::ui::canvas::draw_trama_modal(
+                                &ctx,
+                                &mut app.trama,
+                                &mut app.layer_stack,
+                                bounds,
+                            ),
+                            // No output column this frame: the floating window.
+                            None => crate::trama::ui::canvas::draw_trama_window(
+                                &ctx,
+                                &mut app.trama,
+                                &mut app.layer_stack,
+                            ),
+                        }
                     }
 
-                    // Draw binding matrix modal
-                    if app.binding_matrix.open {
-                        let layers: Vec<crate::ui::panels::binding_helpers::LayerParamInfo> = app
-                            .layer_stack
-                            .layers
-                            .iter()
-                            .enumerate()
-                            .map(|(i, l)| {
-                                let effect_name = l
-                                    .effect_index()
-                                    .and_then(|idx| app.effect_loader.effects.get(idx))
-                                    .map(|eff| eff.name.clone())
-                                    .unwrap_or_default();
-                                let param_names = l
-                                    .param_store
-                                    .defs
-                                    .iter()
-                                    .filter(|d| {
-                                        matches!(
-                                            d,
-                                            crate::params::ParamDef::Float { .. }
-                                                | crate::params::ParamDef::Bool { .. }
-                                        )
-                                    })
-                                    .map(|d| d.name().to_string())
-                                    .collect();
-                                crate::ui::panels::binding_helpers::LayerParamInfo {
-                                    index: i,
-                                    effect_name,
-                                    param_names,
-                                }
-                            })
-                            .collect();
-                        let bind_info = crate::ui::panels::binding_helpers::BindingPanelInfo {
-                            layers,
-                            active_layer,
-                            layer_count: layer_infos.len(),
-                            preset_name: app
-                                .preset_store
-                                .current_name()
-                                .unwrap_or("(unsaved)")
-                                .to_string(),
-                        };
-                        crate::ui::panels::binding_matrix::draw_binding_matrix(
-                            &ctx,
-                            &mut app.binding_matrix,
-                            &mut app.binding_bus,
-                            &bind_info,
-                        );
+                    // The binding matrix: its requests, then the matrix.
+                    crate::ui::panels::binding_matrix::frame(
+                        &ctx,
+                        &mut app.binding_matrix,
+                        &mut app.binding_bus,
+                        || {
+                            let layers = app
+                                .layer_stack
+                                .layers
+                                .iter()
+                                .enumerate()
+                                .map(|(i, l)| {
+                                    let effect_name = l
+                                        .effect_index()
+                                        .and_then(|idx| app.effect_loader.effects.get(idx))
+                                        .map(|eff| eff.name.clone())
+                                        .unwrap_or_default();
+                                    let param_names = l
+                                        .param_store
+                                        .defs
+                                        .iter()
+                                        .filter(|d| {
+                                            matches!(
+                                                d,
+                                                crate::params::ParamDef::Float { .. }
+                                                    | crate::params::ParamDef::Bool { .. }
+                                            )
+                                        })
+                                        .map(|d| d.name().to_string())
+                                        .collect();
+                                    crate::ui::panels::binding_helpers::LayerParamInfo {
+                                        index: i,
+                                        effect_name,
+                                        param_names,
+                                    }
+                                })
+                                .collect();
+                            crate::ui::panels::binding_helpers::BindingPanelInfo {
+                                layers,
+                                active_layer,
+                                layer_count: layer_infos.len(),
+                                preset_name: app
+                                    .preset_store
+                                    .current_name()
+                                    .unwrap_or("(unsaved)")
+                                    .to_string(),
+                            }
+                        },
+                    );
+
+                    // Over everything it points at, the modals included.
+                    if !app.settings.classic_layout
+                        && !app.shader_editor.open
+                        && app.egui_overlay.visible
+                    {
+                        crate::ui::tour::draw(&ctx);
                     }
 
                     // GPU profiler panel
@@ -982,6 +1189,34 @@ impl ApplicationHandler for FosforaApp {
                             .show(&ctx, |ui| {
                                 app.gpu_profiler.ui(ui);
                             });
+                    }
+
+                    // Way back from full output. Drawn while the panels are
+                    // hidden, so the window is never a dead end.
+                    {
+                        let a = app.egui_overlay.hide_hint_alpha();
+                        if a > 0.01 {
+                            let tc = crate::ui::theme::colors::theme_colors(&ctx);
+                            egui::Area::new(egui::Id::new("full_output_hint"))
+                                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -28.0))
+                                .interactable(false)
+                                .show(&ctx, |ui| {
+                                    egui::Frame::new()
+                                        .fill(egui::Color32::from_black_alpha((190.0 * a) as u8))
+                                        .corner_radius(14.0)
+                                        .inner_margin(egui::Margin::symmetric(14, 7))
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "Full output — Esc or D for the interface",
+                                                )
+                                                .size(12.0)
+                                                .color(tc.text_primary.gamma_multiply(a)),
+                                            );
+                                        });
+                                });
+                            ctx.request_repaint();
+                        }
                     }
 
                     // Draw depth download confirmation modal
@@ -1250,14 +1485,73 @@ impl ApplicationHandler for FosforaApp {
                 }
 
                 // Handle theme change from settings panel
-                let set_theme: Option<crate::ui::theme::ThemeMode> = app
-                    .egui_overlay
-                    .context()
-                    .data_mut(|d| d.remove_temp(egui::Id::new("set_theme")));
-                if let Some(theme) = set_theme {
-                    app.egui_overlay.set_theme(theme);
-                    app.settings.theme = theme;
-                    app.settings.save();
+                // Themes (#3125): pick one, reread the themes folder, or save
+                // the one in use as a new file to edit.
+                {
+                    use crate::ui::panels::appearance_panel::ThemeIntent;
+                    use crate::ui::theme::custom;
+                    let intent: Option<ThemeIntent> = app.egui_overlay.context().data_mut(|d| {
+                        let id = egui::Id::new(ThemeIntent::ID);
+                        let v = d.get_temp(id);
+                        d.remove::<ThemeIntent>(id);
+                        v
+                    });
+                    let mut pick = None;
+                    let relisted =
+                        matches!(intent, Some(ThemeIntent::Reload | ThemeIntent::SaveCopy));
+                    match intent {
+                        Some(ThemeIntent::Use(theme)) => pick = Some(theme),
+                        Some(ThemeIntent::Reload) => {
+                            app.custom_themes = custom::load_dir(&custom::themes_dir());
+                            pick = Some(app.settings.theme.clone());
+                        }
+                        Some(ThemeIntent::SaveCopy) => {
+                            let name = format!(
+                                "{} copy",
+                                app.settings.theme.display_name(&app.custom_themes)
+                            );
+                            match custom::write_new(
+                                &custom::themes_dir(),
+                                &name,
+                                &app.egui_overlay.palette,
+                            ) {
+                                Ok(path) => {
+                                    log::info!("theme saved to {}", path.display());
+                                    app.custom_themes = custom::load_dir(&custom::themes_dir());
+                                    pick = path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .map(|s| crate::ui::theme::ThemeMode::Custom(s.into()));
+                                }
+                                Err(e) => {
+                                    app.status_error = Some((
+                                        format!("Could not save the theme: {e}"),
+                                        std::time::Instant::now(),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(ThemeIntent::OpenFolder) => {
+                            if let Err(e) = custom::reveal(&custom::themes_dir()) {
+                                app.status_error = Some((
+                                    format!("Could not open the themes folder: {e}"),
+                                    std::time::Instant::now(),
+                                ));
+                            }
+                        }
+                        None => {}
+                    }
+                    if relisted {
+                        custom::publish(&app.egui_overlay.context(), &app.custom_themes);
+                    }
+                    if let Some(theme) = pick {
+                        app.egui_overlay
+                            .set_palette(theme.palette(&app.custom_themes));
+                        if theme != app.settings.theme {
+                            app.settings.theme = theme;
+                            app.settings.save();
+                        }
+                    }
                 }
 
                 // Handle output-alpha mode change from settings panel
@@ -1308,6 +1602,96 @@ impl ApplicationHandler for FosforaApp {
                     app.settings.auto_reconnect = on;
                     app.settings.save();
                     app.audio.set_auto_reconnect(on);
+                }
+
+                // "Full output" in the shell's top bar hides the interface, the
+                // same thing F does.
+                let hide_overlay: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("request_hide_overlay")));
+                if hide_overlay == Some(true) {
+                    app.egui_overlay.toggle_visible();
+                }
+
+                // Second output window (#3122). The picker in Setup names a
+                // display; the window can only be created from here, where the
+                // event loop is. A failure is said on the status bar rather
+                // than only in the log — the button visibly did nothing
+                // otherwise.
+                let open_output = crate::ui::panels::output_window_panel::take_open_request(
+                    &app.egui_overlay.context(),
+                );
+                if let Some(index) = open_output {
+                    app.close_output_window();
+                    match crate::output_window::OutputWindow::open(event_loop, &app.gpu, index) {
+                        Ok(ow) => {
+                            app.settings.output_display = Some(ow.display_name.clone());
+                            app.settings.save();
+                            app.output_window = Some(ow);
+                        }
+                        Err(e) => {
+                            let msg = format!("Output window: {e}");
+                            log::error!("{msg}");
+                            app.status_error = Some((msg, std::time::Instant::now()));
+                        }
+                    }
+                }
+                if crate::ui::panels::output_window_panel::take_close_request(
+                    &app.egui_overlay.context(),
+                ) {
+                    app.close_output_window();
+                }
+
+                // The display list behind that picker. Refreshed on a slow
+                // cadence rather than once at startup: a projector plugged in
+                // mid-session has to appear, and winit has no event that says
+                // the displays changed.
+                if app.displays.is_empty() || app.frame_count % 120 == 0 {
+                    app.displays = crate::output_window::displays(event_loop);
+                }
+
+                // Interface scale (#3125). The slider hands over a value it has
+                // let go of; Ctrl +/− change egui's zoom directly, so follow that
+                // too, clamped to the slider's range, and save whichever moved.
+                // (A new zoom lands at the next pass: a keyboard step shows up
+                // here one frame later, which is harmless.)
+                {
+                    use crate::ui::panels::appearance_panel::{SET_UI_SCALE, clamp_scale};
+                    let ctx = app.egui_overlay.context();
+                    let asked: Option<f32> =
+                        ctx.data_mut(|d| d.remove_temp(egui::Id::new(SET_UI_SCALE)));
+                    let zoom = ctx.zoom_factor();
+                    let want = clamp_scale(asked.unwrap_or(zoom));
+                    if want != zoom {
+                        ctx.set_zoom_factor(want);
+                    }
+                    if want != app.settings.ui_scale {
+                        app.settings.ui_scale = want;
+                        app.settings.save();
+                    }
+                }
+
+                // A tour finished or skipped: it no longer starts by itself.
+                let tour_done: Option<&'static str> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("tour_done")));
+                if let Some(key) = tour_done {
+                    if !app.settings.tours_done.iter().any(|k| k == key) {
+                        app.settings.tours_done.push(key.to_string());
+                        app.settings.save();
+                    }
+                }
+
+                // Classic / workspace layout switch (#3122)
+                let set_classic_layout: Option<bool> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_classic_layout")));
+                if let Some(on) = set_classic_layout {
+                    app.settings.classic_layout = on;
+                    app.settings.save();
                 }
 
                 // Persist A18 structure tuning after a slider release (#1510). The live value
@@ -1807,6 +2191,28 @@ impl ApplicationHandler for FosforaApp {
                     }
                 }
 
+                // A catalog effect dropped on the stack, or added from its
+                // menu (#3124). By name: the list may have been rescanned.
+                let catalog_drop: Option<(String, crate::ui::panels::catalog_panel::CatalogDrop)> =
+                    app.egui_overlay.context().data_mut(|d| {
+                        let id = egui::Id::new(crate::ui::panels::catalog_panel::DROP_INTENT);
+                        let v = d.get_temp(id);
+                        d.remove::<(String, crate::ui::panels::catalog_panel::CatalogDrop)>(id);
+                        v
+                    });
+                if let Some((name, at)) = catalog_drop {
+                    let idx = app
+                        .effect_loader
+                        .effects
+                        .iter()
+                        .position(|e| e.name == name);
+                    if let Some(idx) = idx {
+                        if app.place_effect(idx, at) {
+                            app.preset_store.mark_dirty();
+                        }
+                    }
+                }
+
                 // Handle preset signals from UI
                 let pending_preset: Option<usize> = app
                     .egui_overlay
@@ -1917,6 +2323,38 @@ impl ApplicationHandler for FosforaApp {
                 if let Some(idx) = load_scene_idx {
                     app.load_scene(idx);
                 }
+                // Opening a scene edits it without playing it (#3173).
+                let open_scene: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("open_scene")));
+                if let Some(idx) = open_scene {
+                    app.open_scene(idx);
+                }
+                let rename_scene: Option<(usize, String)> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("scene_rename")));
+                if let Some((idx, name)) = rename_scene {
+                    if let Err(e) = app.scene_store.rename(idx, &name) {
+                        app.status_error = Some((
+                            format!("Could not rename the scene: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                let duplicate_scene: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("scene_duplicate")));
+                if let Some(idx) = duplicate_scene {
+                    if let Err(e) = app.scene_store.duplicate(idx) {
+                        app.status_error = Some((
+                            format!("Could not duplicate the scene: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
                 let delete_scene: Option<usize> = app
                     .egui_overlay
                     .context()
@@ -1980,26 +2418,44 @@ impl ApplicationHandler for FosforaApp {
                     .data_mut(|d| d.remove_temp(egui::Id::new("scene_add_cue")));
                 let mut scene_dirty = false;
                 if let Some(preset_name) = add_cue {
-                    // In Timer mode, default hold_secs so the timer can advance
-                    let hold_secs = if matches!(
-                        app.timeline.advance_mode,
-                        crate::scene::types::AdvanceMode::Timer
-                    ) {
-                        Some(4.0)
-                    } else {
-                        None
-                    };
-                    let cue = crate::scene::types::SceneCue {
-                        preset_name,
-                        transition: crate::scene::types::TransitionType::Cut,
-                        transition_secs: 1.0,
-                        hold_secs,
-                        label: None,
-                        param_overrides: Vec::new(),
-                        transition_beats: None,
-                    };
+                    let cue = app.new_cue(preset_name);
                     app.timeline.cues.push(cue);
                     scene_dirty = true;
+                }
+                // The workspace's cue strip (#3173): a preset dropped between
+                // cues, a cue dragged to a new place, a cue's name, and a
+                // Timer cue that waits for Go instead.
+                let ctx = app.egui_overlay.context().clone();
+                let take = |key: &str| egui::Id::new(key);
+                if let Some((name, at)) =
+                    ctx.data_mut(|d| d.remove_temp::<(String, usize)>(take("scene_insert_cue")))
+                {
+                    let cue = app.new_cue(name);
+                    app.timeline.insert_cue(at, cue);
+                    scene_dirty = true;
+                }
+                if let Some((from, to)) =
+                    ctx.data_mut(|d| d.remove_temp::<(usize, usize)>(take("scene_move_cue")))
+                {
+                    app.timeline.move_cue(from, to);
+                    scene_dirty = true;
+                }
+                if let Some((idx, label)) =
+                    ctx.data_mut(|d| d.remove_temp::<(usize, String)>(take("scene_set_cue_label")))
+                {
+                    if let Some(cue) = app.timeline.cues.get_mut(idx) {
+                        let label = label.trim();
+                        cue.label = (!label.is_empty()).then(|| label.to_string());
+                        scene_dirty = true;
+                    }
+                }
+                if let Some(idx) =
+                    ctx.data_mut(|d| d.remove_temp::<usize>(take("scene_clear_cue_hold")))
+                {
+                    if let Some(cue) = app.timeline.cues.get_mut(idx) {
+                        cue.hold_secs = None;
+                        scene_dirty = true;
+                    }
                 }
                 let scene_jump: Option<usize> = app
                     .egui_overlay
@@ -2465,7 +2921,11 @@ impl ApplicationHandler for FosforaApp {
                             {
                                 match crate::media::video::probe_video(&path) {
                                     Ok(meta) => {
-                                        match crate::media::video::decode_all_frames(&path, &meta) {
+                                        match crate::media::video::decode_all_frames(
+                                            &path,
+                                            &meta,
+                                            &Default::default(),
+                                        ) {
                                             Ok((frames, delays_ms)) => {
                                                 let path_str = path.to_string_lossy().to_string();
                                                 if let Some(layer) = app.layer_stack.active_mut() {
@@ -2576,12 +3036,34 @@ impl ApplicationHandler for FosforaApp {
                         .ok();
                 }
 
+                // Media decoding for new layers: add the finished ones, and
+                // tell the panels how far the rest have got.
+                if app.poll_media_loads() > 0 {
+                    app.preset_store.mark_dirty();
+                }
+                let cancel_load: Option<usize> = app.egui_overlay.context().data_mut(|d| {
+                    let id = egui::Id::new("cancel_media_load");
+                    let v = d.get_temp(id);
+                    d.remove::<usize>(id);
+                    v
+                });
+                if let Some(i) = cancel_load {
+                    app.cancel_media_load(i);
+                }
+                let loading: Vec<crate::ui::panels::media_panel::MediaLoading> = app
+                    .media_loads
+                    .iter()
+                    .map(crate::ui::panels::media_panel::MediaLoading::of)
+                    .collect();
+                app.egui_overlay.context().data_mut(|d| {
+                    d.insert_temp(egui::Id::new("media_loading"), std::sync::Arc::new(loading));
+                });
+
                 // Drain file dialog result (non-blocking)
                 if let Some(ref rx) = self.file_dialog_rx {
                     match rx.try_recv() {
                         Ok(path) => {
-                            app.add_media_layer(path);
-                            app.preset_store.mark_dirty();
+                            app.start_media_layer(path);
                             self.file_dialog_rx = None;
                         }
                         Err(crossbeam_channel::TryRecvError::Disconnected) => {
@@ -3832,6 +4314,33 @@ impl ApplicationHandler for FosforaApp {
                     }
                 }
 
+                // The Master inspector's offer: this layer's effect's own
+                // post-processing, adopted as Master's (#3147).
+                let adopt_pp: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("adopt_layer_postprocess")));
+                if let Some(idx) = adopt_pp {
+                    app.adopt_layer_postprocess(idx);
+                    app.preset_store.mark_dirty();
+                }
+                // Its other two resets: the settings before the last reset,
+                // and the defaults.
+                let (to_previous, to_defaults) = app.egui_overlay.context().data_mut(|d| {
+                    (
+                        d.remove_temp::<bool>(egui::Id::new("postprocess_to_previous")),
+                        d.remove_temp::<bool>(egui::Id::new("postprocess_to_defaults")),
+                    )
+                });
+                if to_previous == Some(true) {
+                    app.restore_previous_postprocess();
+                    app.preset_store.mark_dirty();
+                }
+                if to_defaults == Some(true) {
+                    app.replace_master_postprocess(Default::default());
+                    app.preset_store.mark_dirty();
+                }
+
                 let layer_move: Option<(usize, usize)> = app
                     .egui_overlay
                     .context()
@@ -3972,9 +4481,7 @@ impl ApplicationHandler for FosforaApp {
                         }
                         TriggerAction::TogglePostProcess => {
                             app.post_process.enabled = !app.post_process.enabled;
-                            if let Some(layer) = app.layer_stack.active_mut() {
-                                layer.postprocess.enabled = app.post_process.enabled;
-                            }
+                            app.master_postprocess.enabled = app.post_process.enabled;
                         }
                         TriggerAction::ToggleOverlay => {
                             app.egui_overlay.toggle_visible();

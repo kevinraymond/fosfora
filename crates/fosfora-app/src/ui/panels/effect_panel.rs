@@ -44,7 +44,6 @@ struct GridCtx<'a> {
     gap: f32,
     /// Right-click two-stage delete (user section only; favorites row never deletes).
     allow_delete: bool,
-    warning_color: Color32,
 }
 
 pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String]) {
@@ -171,7 +170,6 @@ pub fn draw_effect_panel(ui: &mut Ui, loader: &EffectLoader, favorites: &[String
         btn_height: 22.0,
         gap: 4.0,
         allow_delete: false,
-        warning_color: Color32::from_rgb(200, 60, 60),
     };
 
     // ── Favorites row (always on top, never collapsible) ─────────────
@@ -355,23 +353,26 @@ fn draw_type_filter(ui: &mut Ui, tc: &ThemeColors, types_on: &mut (bool, bool, b
             };
             let color = type_color(et);
             let resp = ui
-                .horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(Vec2::new(3.0, 10.0), egui::Sense::hover());
-                    let strip = if on {
-                        color
-                    } else {
-                        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60)
-                    };
-                    ui.painter().rect_filled(rect, 1.0, strip);
-                    ui.label(RichText::new(type_title(et)).size(8.0).color(if on {
-                        tc.text_secondary
-                    } else {
-                        tc.text_dim
-                    }));
+                .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    // A selectable label would keep the click for itself.
+                    ui.style_mut().interaction.selectable_labels = false;
+                    ui.horizontal(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(3.0, 10.0), egui::Sense::hover());
+                        let strip = if on {
+                            color
+                        } else {
+                            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60)
+                        };
+                        ui.painter().rect_filled(rect, 1.0, strip);
+                        ui.label(RichText::new(type_title(et)).size(SMALL_SIZE).color(if on {
+                            tc.text_secondary
+                        } else {
+                            tc.text_dim
+                        }));
+                    });
                 })
-                .response
-                .interact(egui::Sense::click());
+                .response;
             if resp.clicked() {
                 let all_on = types_on.0 && types_on.1 && types_on.2;
                 if all_on {
@@ -434,10 +435,13 @@ fn draw_effect_grid(
                 let et = effect.effect_type();
                 let et_color = type_color(et);
 
+                // Current is the inverted selection fill; armed for delete
+                // says so in words with a heavy outline, not by a red fill
+                // alone (#3125).
                 let (fill, text_color, stroke) = if is_armed {
-                    (ctx.warning_color, Color32::WHITE, Stroke::NONE)
+                    (tc.card_bg, tc.text_primary, Stroke::new(2.5_f32, tc.error))
                 } else if is_current {
-                    (tc.accent, Color32::WHITE, Stroke::NONE)
+                    (tc.selection, tc.on_selection, Stroke::NONE)
                 } else {
                     (
                         tc.card_bg,
@@ -446,14 +450,16 @@ fn draw_effect_grid(
                     )
                 };
 
-                let btn = egui::Button::new(
-                    RichText::new(truncate_name(&effect.name, 22))
-                        .size(SMALL_SIZE)
-                        .color(text_color),
-                )
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(CornerRadius::same(4));
+                let shown = if is_armed {
+                    format!("Delete {}?", truncate_name(&effect.name, 14))
+                } else {
+                    truncate_name(&effect.name, 22)
+                };
+                let btn =
+                    egui::Button::new(RichText::new(shown).size(SMALL_SIZE).color(text_color))
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(CornerRadius::same(4));
 
                 let response = ui.add_sized(Vec2::new(btn_width, ctx.btn_height), btn);
                 let rect = response.rect;
@@ -497,7 +503,7 @@ fn draw_effect_grid(
                         star_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         glyph,
-                        egui::FontId::proportional(10.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         color,
                     );
                 } else {
@@ -518,7 +524,7 @@ fn draw_effect_grid(
                         badge_pos,
                         egui::Align2::LEFT_CENTER,
                         type_label(et),
-                        egui::FontId::monospace(7.0),
+                        egui::FontId::monospace(SMALL_SIZE),
                         badge_color,
                     );
                 }
@@ -611,7 +617,11 @@ fn draw_footer(
     };
     ui.add_space(4.0);
     ui.separator();
-    ui.label(RichText::new(text).size(7.0).color(tc.text_secondary));
+    ui.label(
+        RichText::new(text)
+            .size(SMALL_SIZE)
+            .color(tc.text_secondary),
+    );
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

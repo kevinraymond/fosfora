@@ -77,7 +77,7 @@ crates/fosfora-app/src/
 ├── shader/              Hot-reload, PassExecutor, multi-pass orchestration
 ├── ui/
 │   ├── panels/          egui panels (effects, params, layers, presets, MIDI, OSC, web)
-│   ├── theme/           WCAG 2.2 AA dark/light themes
+│   ├── theme/           theme tokens, built-in and custom themes (WCAG 2.2 AA)
 │   └── accessibility/   Reduced motion detection (stub)
 └── web/                 WebSocket server, embedded HTML control surface, state sync
 ```

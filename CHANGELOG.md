@@ -3,6 +3,70 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+## v2.0.0 — 2026-09-27
+
+Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,
+with the output as a live preview beside them instead of behind two narrow side panels.
+
+<img src="https://raw.githubusercontent.com/kevinraymond/fosfora/v2.0.0/assets/media/ui.webp" width="100%" alt="The Build workspace: the layer stack, Fluvid's controls, the output and the effect catalog">
+
+<sub>Fluvid over a dancer video and Aurora. Footage: Free Stock video by <a href="http://www.videezy.com/">Videezy</a>.</sub>
+
+### Added
+- **The workspace layout, now the default for new and upgrading installs.** The old
+  two-panel layout is *Classic layout* under Setup ▸ General for this release, and goes
+  away in v2.1.
+- **Build shows the layer stack as pictures**: each row is the stack blended up to that
+  layer, and Master on top is the final output. The inspector beside it shows whatever you
+  select, with every section the effect brings, and the chain editor opens there too.
+- **A catalog of effect pictures** along the bottom of Build, in families, with search and
+  favorites. Hover a picture to see it move; click it to load it, or drag it onto the stack
+  to replace a layer's effect or add a layer.
+- **Scenes are a strip of cues** in the drawer, in Build and Perform. Each cue shows its
+  preset's picture, transitions sit between them and the playhead runs along the strip.
+- **Setup is a list of pages**, each device saying its state in words beside an On/Off
+  switch. NDI, the virtual camera, Spout, Syphon and Ableton Link are all there, and
+  Triggers can map Timeline, Tempo ÷2, Tempo ×2 and Tap tempo.
+- **Send the output to a second display** in a borderless window with no interface on it.
+  Pick the display under the output preview; Esc closes it.
+- **Every control has a Bind** that opens Bindings with that control already picked, and a
+  bound control names its source on its row (◀ Kick).
+- **Four guided tours**: First run, which starts by itself once, then Bindings, Chains, and
+  Layers and blending, from the Tours menu or Setup ▸ Tutorials.
+- **Interface scale** from 80 to 200 % under Setup ▸ Appearance, or Ctrl + and Ctrl −. The
+  output is untouched.
+- **Themes Light, Gray, Black, and Blue and orange**, plus custom themes: *Save a copy to
+  edit* writes fifteen named colors to a file, and Appearance lists any that fail contrast.
+
+### Changed
+- **No state is shown by color alone**, and no text is smaller than 12 px at 100 % scale.
+  Status lights have a shape per state, and selections differ by fill, outline or words.
+- **Midnight, Ember, Neon and High Contrast are retired.** A saved choice moves to the
+  nearest new theme.
+- **The chain editor opens with C** (for chain) instead of G.
+- **Post-processing belongs to the preset**: selecting a layer no longer changes it. Master
+  can reset to any effect's recommended look, *Previous settings* undoes a reset, and
+  editing it marks the preset as changed.
+- **The app opens with an empty Layer 1 over the F**, and Clear stack and a new preset
+  return to that. An empty layer is see-through instead of a dark gradient.
+- **The launch effect is called Fosfora and traces an F.** Presets and bindings that name
+  it Phosphor still load it, and new setups record to a Fosfora folder.
+- **Bindings**: the *Effect* tab is now *Preset*, layers are numbered from 1, the window is
+  solid, and an open card no longer cuts off its name, source and target.
+
+### Fixed
+- **Adding a video layer no longer freezes the app** for ~15 s while it decodes; decoding
+  runs in the background with a progress bar and a Cancel button.
+- **Kaleidoscope no longer draws a seam** from the center while it turns: *segments* steps
+  in whole numbers. A trama effect can mark such a parameter `"integers"` in its manifest.
+- Deleting a scene no longer closes the one you were editing, and a long scene name in a
+  non-Latin script no longer crashes the app.
+- Launching no longer logs a "missing field `layers`" warning for every preset with saved
+  bindings.
+- A section opens or closes from a click anywhere on its title bar, not only its arrow.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

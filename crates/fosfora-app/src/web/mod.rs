@@ -37,11 +37,11 @@ pub struct WebSystem {
 }
 
 impl WebSystem {
-    pub fn new() -> Self {
-        let config = WebConfig::load();
+    /// The system with `config` and nothing opened: no server started.
+    fn unconnected(config: WebConfig) -> Self {
         let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(64);
 
-        let mut sys = Self {
+        Self {
             inbound_rx: Some(inbound_rx),
             inbound_tx,
             clients: Arc::new(Mutex::new(Vec::new())),
@@ -55,7 +55,18 @@ impl WebSystem {
             last_state_broadcast: Instant::now(),
             bind_values: std::collections::HashMap::new(),
             preview_images: std::collections::HashMap::new(),
-        };
+        }
+    }
+
+    /// For tests: default settings and nothing opened, so nothing on the
+    /// machine running them is read or touched.
+    #[cfg(test)]
+    pub(crate) fn offline() -> Self {
+        Self::unconnected(WebConfig::default())
+    }
+
+    pub fn new() -> Self {
+        let mut sys = Self::unconnected(WebConfig::load());
 
         if sys.config.enabled {
             sys.start_server();

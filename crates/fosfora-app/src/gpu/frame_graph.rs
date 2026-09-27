@@ -8,10 +8,11 @@
 
 use wgpu::{CommandEncoder, Device, Queue};
 
-use crate::effect::format::{PfxEffect, PostProcessDef};
+use crate::effect::format::PfxEffect;
 use crate::gpu::chain_targets::ChainTargets;
 use crate::gpu::compositor::{Compositor, LayerComposite};
 use crate::gpu::layer::LayerStack;
+use crate::gpu::layer_thumbs::{LayerThumbs, ThumbKind};
 use crate::gpu::postprocess::AlphaMode;
 use crate::gpu::render_target::RenderTarget;
 use crate::settings::AlphaOutputMode;
@@ -93,10 +94,11 @@ impl<'a> MasterInput<'a> {
 }
 
 /// Execute every enabled layer and composite the stack; returns the HDR source
-/// for post-processing plus the active layer's postprocess settings.
+/// for post-processing. Post-processing settings are the caller's: they belong
+/// to the preset, not to any layer (#3147).
 ///
 /// Layer behavior is unchanged: no layers → the compositor's cleared
-/// accumulator with default postprocess; a single fully-opaque layer skips
+/// accumulator; a single fully-opaque layer skips
 /// compositing; otherwise bottom-first composite with the list reversed so the
 /// top of the UI list renders visually on top.
 ///
@@ -107,17 +109,24 @@ impl<'a> MasterInput<'a> {
 /// runs inside the same loop iteration as its layer, before the next
 /// iteration's backdrop snapshot, so an `@backdrop` layer sees the *chained*
 /// stack beneath it.
+///
+/// `thumbs`, when given, receives each layer's picture alone (after its chain)
+/// and each stage of the blend, for the v2 layer rows (#3123). A disabled layer
+/// is not executed; its alone thumbnail is taken from the picture it last
+/// rendered, and it has no blended stage — the row beneath it already shows
+/// what passes up.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_and_composite<'a>(
     layer_stack: &'a LayerStack,
     compositor: &'a mut Compositor,
     trama: Option<&'a mut crate::trama::TramaSystem>,
     chain_targets: &'a ChainTargets,
+    thumbs: Option<&LayerThumbs>,
     device: &Device,
     queue: &Queue,
     encoder: &mut CommandEncoder,
     profiler: crate::gpu::profiler::ProfilerHandle<'_>,
-) -> (&'a RenderTarget, PostProcessDef) {
+) -> &'a RenderTarget {
     // Everything below is layer work; scopes opened by layers would nest
     // here if they ever grow their own. Chains open their own "trama" scope
     // under it, so the profiler panel still splits the two.
@@ -134,22 +143,25 @@ pub(crate) fn execute_and_composite<'a>(
         .map(|(i, _)| i)
         .collect();
 
-    let active_postprocess = || {
-        layer_stack
-            .active()
-            .map(|l| l.postprocess.clone())
-            .unwrap_or_default()
-    };
+    if let Some(th) = thumbs {
+        for (i, layer) in layer_stack.layers.iter().enumerate() {
+            if !layer.enabled {
+                th.tap(
+                    device,
+                    encoder,
+                    &layer.final_targets().0.view,
+                    ThumbKind::Alone,
+                    i,
+                );
+            }
+        }
+    }
 
-    let (source, master_in, postprocess) = if enabled.is_empty() {
+    let (source, master_in) = if enabled.is_empty() {
         // The accumulator's own parity never advances (nothing calls flip() on
         // it), so this target is stable.
         let target = compositor.accumulator.write_target() as &RenderTarget;
-        (
-            target,
-            MasterInput::stable(target),
-            PostProcessDef::default(),
-        )
+        (target, MasterInput::stable(target))
     } else if enabled.len() == 1 && layer_stack.layers[enabled[0]].opacity >= 1.0 {
         // Single-layer fast path: skip compositing entirely (only when fully opaque)
         let layer = &layer_stack.layers[enabled[0]];
@@ -168,6 +180,16 @@ pub(crate) fn execute_and_composite<'a>(
             encoder,
             profiler,
         );
+        if let Some(th) = thumbs {
+            th.tap(device, encoder, &target.view, ThumbKind::Alone, enabled[0]);
+            th.tap(
+                device,
+                encoder,
+                &target.view,
+                ThumbKind::Blended,
+                enabled[0],
+            );
+        }
         // A chain output is a fixed slot; a raw layer target ping-pongs.
         let master_in = if std::ptr::eq(target, raw) {
             let (current, other) = layer.final_targets();
@@ -175,7 +197,7 @@ pub(crate) fn execute_and_composite<'a>(
         } else {
             MasterInput::stable(target)
         };
-        (target, master_in, active_postprocess())
+        (target, master_in)
     } else {
         // Multi-layer: execute visually bottom-first (the UI list's top renders
         // on top, so walk it in reverse), so a layer that samples `@backdrop`
@@ -201,34 +223,47 @@ pub(crate) fn execute_and_composite<'a>(
             // `run_layer_chain` returns nothing borrowed from `trama`, which
             // is what lets `layer_outputs` keep accumulating while `&mut
             // TramaSystem` is re-borrowed on every iteration.
+            let target = run_layer_chain(
+                trama.as_deref_mut(),
+                layer,
+                raw,
+                chain_targets,
+                device,
+                queue,
+                encoder,
+                profiler,
+            );
+            if let Some(th) = thumbs {
+                th.tap(device, encoder, &target.view, ThumbKind::Alone, idx);
+            }
             layer_outputs.push(LayerComposite {
-                target: run_layer_chain(
-                    trama.as_deref_mut(),
-                    layer,
-                    raw,
-                    chain_targets,
-                    device,
-                    queue,
-                    encoder,
-                    profiler,
-                ),
+                target,
                 blend_mode: layer.blend_mode,
                 opacity: layer.opacity,
                 displace_amount: layer.displace_amount,
             });
         }
 
-        let composited = compositor.composite(device, queue, encoder, &layer_outputs);
-        (
-            composited,
-            MasterInput::stable(composited),
-            active_postprocess(),
-        )
+        // Stage k of the blend is the k-th layer from the bottom.
+        let bottom_first: Vec<usize> = enabled.iter().rev().copied().collect();
+        let composited = compositor.composite_tapped(
+            device,
+            queue,
+            encoder,
+            &layer_outputs,
+            &mut |encoder, stage, picture| {
+                if let Some(th) = thumbs {
+                    let slot = bottom_first[stage];
+                    th.tap(device, encoder, &picture.view, ThumbKind::Blended, slot);
+                }
+            },
+        );
+        (composited, MasterInput::stable(composited))
     };
 
     // The master chain runs on the composited frame, upstream of postprocess.
     let Some(t) = trama else {
-        return (source, postprocess);
+        return source;
     };
 
     // A chain whose layer is disabled never reached the loop above, so its
@@ -262,7 +297,7 @@ pub(crate) fn execute_and_composite<'a>(
     // the canvas, because its thumbnails have to update as the patch is built.
     let contributes = t.master.contributes();
     if (!contributes && !t.master_on_screen()) || !chain_targets.has(ChainId::Master) {
-        return (source, postprocess);
+        return source;
     }
     let out = chain_targets.get(ChainId::Master);
     let parity = t.parity();
@@ -279,7 +314,7 @@ pub(crate) fn execute_and_composite<'a>(
         encoder,
         profiler,
     );
-    (if contributes { out } else { source }, postprocess)
+    if contributes { out } else { source }
 }
 
 /// Run `layer`'s chain and return the target that should be composited for it:
@@ -395,8 +430,15 @@ mod tests {
         // nothing to do with chains.
         let mut stack = LayerStack::new();
         for i in 0..layers {
-            let mut layer = crate::gpu::layer_builder::new_default_layer(&ctx, format!("host{i}"))
-                .expect("layer");
+            // The default shader's gradient: opaque, and the same every
+            // frame. An empty layer (what new_default_layer makes since
+            // #3126) draws nothing, and every chain over nothing looks alike.
+            let mut layer = crate::gpu::layer_builder::new_shader_layer(
+                &ctx,
+                format!("host{i}"),
+                crate::gpu::layer_builder::read_default_shader(),
+            )
+            .expect("layer");
             // Zeroed uniforms mean resolution 0, and most shaders divide by it
             // — the picture comes back all-NaN, which compares equal to itself
             // and would let every assertion below pass vacuously.
@@ -431,6 +473,19 @@ mod tests {
         trama: &mut crate::trama::TramaSystem,
         targets: &mut ChainTargets,
     ) -> Vec<u8> {
+        frame_tapped(device, queue, stack, compositor, trama, targets, None).0
+    }
+
+    /// [`frame`], with the v2 layer-row thumbnails tapped.
+    fn frame_tapped(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        stack: &mut LayerStack,
+        compositor: &mut Compositor,
+        trama: &mut crate::trama::TramaSystem,
+        targets: &mut ChainTargets,
+        thumbs: Option<&LayerThumbs>,
+    ) -> (Vec<u8>, wgpu::TextureView) {
         let template = stack.layers[0]
             .as_effect()
             .map(|e| e.uniforms)
@@ -445,11 +500,12 @@ mod tests {
         let master_live = trama.master_live();
         targets.sync(device, stack, master_live, |c| trama.drop_chain(c));
         let mut encoder = device.create_command_encoder(&Default::default());
-        let (source, _) = execute_and_composite(
+        let source = execute_and_composite(
             stack,
             compositor,
             Some(trama),
             targets,
+            thumbs,
             device,
             queue,
             &mut encoder,
@@ -460,7 +516,7 @@ mod tests {
         for layer in &mut stack.layers {
             layer.flip();
         }
-        snapshot(device, queue, &view, DIM)
+        (snapshot(device, queue, &view, DIM), view)
     }
 
     // Run: cargo test -p fosfora-app -- --ignored chain_post_processes_its_own_layer
@@ -1904,6 +1960,125 @@ mod tests {
     // (x, y) depends only on (x mod cell, y mod cell). Non-periodic output IS
     // the bug, so that is what this measures. Restore `let cells = vec2f(n *
     // res.x / res.y, n)` addressing and it goes red.
+    /// The luma of an rgba16f pixel, decoded from its raw half floats.
+    fn luma16(f: &[u8], x: u32, y: u32) -> f32 {
+        let half = |b: &[u8]| {
+            let h = u16::from_le_bytes([b[0], b[1]]);
+            let (sign, exp, man) = (
+                (h >> 15) as u32,
+                ((h >> 10) & 0x1f) as i32,
+                (h & 0x3ff) as f32,
+            );
+            let v = if exp == 0 {
+                man * 2f32.powi(-24)
+            } else {
+                (1.0 + man / 1024.0) * 2f32.powi(exp - 15)
+            };
+            if sign == 1 { -v } else { v }
+        };
+        let i = ((y * DIM + x) * 8) as usize;
+        0.2126 * half(&f[i..]) + 0.7152 * half(&f[i + 2..]) + 0.0722 * half(&f[i + 4..])
+    }
+
+    // Kevin's live check (#3128): Kaleidoscope drew a break from the center
+    // to the left edge. atan2 wraps from +pi to -pi on that line, and the
+    // pattern closes over the wrap only if a whole number of wedges fits the
+    // circle: a slider left at 6.4 segments leaves a partial wedge there.
+    // Measured as the jump between the two rows either side of the line, on
+    // the left (the wrap) against the right (no wrap: the floor).
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn kaleidoscope_has_no_seam_where_the_angle_wraps() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+        stack.ensure_chain(0).expect("a slot is free");
+        let node = {
+            let k = trama
+                .registry
+                .get(&EffectId("kaleido".into()))
+                .expect("kaleido ships");
+            let g = trama
+                .registry
+                .get(&EffectId("gradient".into()))
+                .expect("gradient ships");
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            // A ramp down the frame: it changes with the angle inside every
+            // wedge, so a wedge that does not close shows. (The host layer's
+            // picture is radially symmetric, and hid the seam entirely.)
+            let input = graph.add_node(
+                NodeKind::Source {
+                    effect: g.id.clone(),
+                },
+                0,
+                &g.params,
+            );
+            graph
+                .params_mut(input)
+                .unwrap()
+                .params
+                .set("angle", crate::params::ParamValue::Float(0.25));
+            let n = graph.add_node(
+                NodeKind::Effect {
+                    effect: k.id.clone(),
+                },
+                1,
+                &k.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, n, 0).unwrap();
+            graph.connect(n, out, 0).unwrap();
+            n
+        };
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (above, below) = (DIM / 2 - 1, DIM / 2);
+        let mut seams = Vec::new();
+        for (segments, rotate) in [6.4_f32, 7.7, 9.5, 12.25, 15.3, 6.0, 15.0]
+            .into_iter()
+            .flat_map(|s| [(s, 0.13_f32), (s, 0.31)])
+        {
+            {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let p = graph.params_mut(node).expect("just added");
+                p.params
+                    .set("segments", crate::params::ParamValue::Float(segments));
+                // Turned: unturned, the fold mirrors the two sides of the
+                // line onto each other and even a partial wedge meets itself
+                // there. Spin turns it all the time, which is how it showed.
+                p.params
+                    .set("rotate", crate::params::ParamValue::Float(rotate));
+            }
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(
+                    &device,
+                    &queue,
+                    &mut stack,
+                    &mut compositor,
+                    &mut trama,
+                    &mut targets,
+                );
+            }
+            let jump = |xs: std::ops::Range<u32>| {
+                let n = xs.len() as f32;
+                xs.map(|x| (luma16(&out, x, above) - luma16(&out, x, below)).abs())
+                    .sum::<f32>()
+                    / n
+            };
+            let (left, right) = (jump(2..DIM / 2 - 4), jump(DIM / 2 + 4..DIM - 2));
+            eprintln!("segments {segments} rotate {rotate}: left {left:.4} right {right:.4}");
+            // The floor is the right side's own row-to-row change; a seam
+            // read 5x it at 6.4 segments before segments were whole.
+            if left > right * 1.5 + 1e-3 {
+                seams.push(format!(
+                    "{segments} segments, rotate {rotate}: {left} vs {right}"
+                ));
+            }
+        }
+        assert!(seams.is_empty(), "a seam where the angle wraps: {seams:#?}");
+        assert!(pollster::block_on(device.pop_error_scope()).is_none());
+    }
+
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn pixelates_grid_is_the_same_cell_everywhere() {
@@ -2078,5 +2253,109 @@ mod tests {
             trama.canvas.has_view(ChainId::Master),
             "the master graph outlives its target, so its view must too"
         );
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored layer_thumbnails_show_the_stack_so_far
+    //
+    // The v2 layer rows (#3123): each row's picture is the stack blended up to
+    // that layer, and its inset is the layer alone. Two identical layers, the
+    // top one Added, so the only way the two blended thumbnails can differ is
+    // the blend itself. Tap each stage BEFORE its pass instead of after (the
+    // accumulator's previous contents) and the top row shows the bottom row's
+    // picture: the inequality goes red.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn layer_thumbnails_show_the_stack_so_far() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 2);
+        // Index 0 is the top of the list, drawn over index 1.
+        stack.layers[0].blend_mode = crate::gpu::layer::BlendMode::Add;
+        let thumbs = LayerThumbs::new(&device);
+        let read = |kind, slot| thumbs.read(&device, &queue, kind, slot);
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let run = |stack: &mut LayerStack,
+                   compositor: &mut Compositor,
+                   trama: &mut crate::trama::TramaSystem,
+                   targets: &mut ChainTargets| {
+            frame_tapped(
+                &device,
+                &queue,
+                stack,
+                compositor,
+                trama,
+                targets,
+                Some(&thumbs),
+            )
+        };
+        // A reference thumbnail of any picture, through the same blit, into
+        // a slot no layer uses.
+        let spare = crate::bindings::catalog::MAX_LAYERS - 1;
+        let reference = |view: &wgpu::TextureView| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            thumbs.tap(&device, &mut encoder, view, ThumbKind::Alone, spare);
+            queue.submit([encoder.finish()]);
+            thumbs.read(&device, &queue, ThumbKind::Alone, spare)
+        };
+
+        // Two frames, so the second runs on flipped layers like the live app.
+        run(&mut stack, &mut compositor, &mut trama, &mut targets);
+        let (_, source) = run(&mut stack, &mut compositor, &mut trama, &mut targets);
+
+        let top_alone = read(ThumbKind::Alone, 0);
+        let bottom_alone = read(ThumbKind::Alone, 1);
+        let top_blended = read(ThumbKind::Blended, 0);
+        let bottom_blended = read(ThumbKind::Blended, 1);
+        assert!(
+            top_alone.chunks(4).any(|p| p[..3] != [0, 0, 0]),
+            "the layer must render something, or every equality below is black = black"
+        );
+        assert_eq!(
+            top_alone, bottom_alone,
+            "the two layers are the same picture"
+        );
+        assert_eq!(
+            bottom_blended, bottom_alone,
+            "the bottom row's stack so far is the bottom layer"
+        );
+        assert_ne!(
+            top_blended, bottom_blended,
+            "the top row must show the top layer ADDED onto the one beneath"
+        );
+        assert_eq!(
+            top_blended,
+            reference(&source),
+            "the top row's stack so far is the composite that goes on to Master"
+        );
+
+        // Hide the top layer: the bottom one now takes the solo fast path,
+        // and the hidden layer's inset still shows what it last rendered. A
+        // FRESH set of thumbnails, because the old one still holds the top
+        // layer's picture from the frame before and would pass this whether
+        // or not a hidden layer is tapped at all — and after a reorder that
+        // leftover would be some other layer's picture.
+        stack.layers[0].enabled = false;
+        let fresh = LayerThumbs::new(&device);
+        let (_, source) = frame_tapped(
+            &device,
+            &queue,
+            &mut stack,
+            &mut compositor,
+            &mut trama,
+            &mut targets,
+            Some(&fresh),
+        );
+        let read = |kind, slot| fresh.read(&device, &queue, kind, slot);
+        assert_eq!(read(ThumbKind::Blended, 1), reference(&source));
+        assert_eq!(read(ThumbKind::Alone, 1), bottom_alone);
+        assert_eq!(
+            read(ThumbKind::Alone, 0),
+            top_alone,
+            "a hidden layer keeps its picture in the row"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
     }
 }

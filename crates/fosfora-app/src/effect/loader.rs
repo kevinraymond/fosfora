@@ -31,6 +31,23 @@ pub fn shipped_effects_for_test() -> Vec<PfxEffect> {
     effects
 }
 
+/// The effect the app opens on, and a fresh stack starts from.
+pub const LAUNCH_EFFECT: &str = "Fosfora";
+
+/// Effects that were renamed, as (old name, new name). The launch effect was
+/// "Phosphor" until the app was; presets, bindings and loop specs saved
+/// before still say so.
+const RENAMED_EFFECTS: &[(&str, &str)] = &[("Phosphor", "Fosfora")];
+
+/// An effect's current name for `name`, which may be one it had before a
+/// rename. Anything else comes back unchanged.
+pub fn current_effect_name(name: &str) -> &str {
+    RENAMED_EFFECTS
+        .iter()
+        .find(|(old, _)| *old == name)
+        .map_or(name, |(_, new)| new)
+}
+
 static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Pin the assets directory, for a frontend that knows where its assets are (the XR
@@ -1068,6 +1085,46 @@ mod composite_decay_guard {
 
 #[cfg(test)]
 mod tests {
+    // The launch effect was "Phosphor" until the app was renamed; presets,
+    // bindings and loop specs saved before say so. Each rename must point at
+    // an effect that ships, and no shipped effect may still use an old name,
+    // or the old saves would find nothing (or the wrong thing).
+    #[test]
+    fn renamed_effects_point_at_shipped_effects() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "pfx"))
+            .map(|e| {
+                let v: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(e.path()).unwrap()).unwrap();
+                v["name"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n == LAUNCH_EFFECT),
+            "{LAUNCH_EFFECT} does not ship"
+        );
+        let starter = crate::ui::tour::STARTER_EFFECT;
+        assert!(
+            names.iter().any(|n| n == starter),
+            "the Layers tour's {starter} does not ship"
+        );
+        for (old, new) in RENAMED_EFFECTS {
+            assert!(
+                names.iter().any(|n| n == new),
+                "{old} -> {new}: {new} does not ship"
+            );
+            assert!(
+                !names.iter().any(|n| n == old),
+                "an effect is still called {old}"
+            );
+            assert_eq!(current_effect_name(old), *new);
+        }
+        assert_eq!(current_effect_name("Aurora"), "Aurora");
+    }
+
     use super::*;
     use crate::gpu::test_gpu::{gpu_guard, test_gpu};
 
@@ -1950,7 +2007,7 @@ mod tests {
     // the same number.
     #[test]
     fn float_offset_seeds_collapse_at_particle_scale() {
-        // seed_base = u.seed + f32(idx) * 17.31, the phosphor/builtin convention,
+        // seed_base = u.seed + f32(idx) * 17.31, the fosfora/builtin convention,
         // at the 2,000,000 particles those effects actually ship.
         let seed_base = 30_000.0f32 + 2_000_000.0f32 * 17.31;
         assert!(
@@ -2892,10 +2949,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 "a reaction-diffusion integrator, not an image: nothing decays, and its \
                  step size is scaled by frame_steps() so the chemistry advances the same \
                  amount per second at any frame rate",
-            ),
-            (
-                "phosphor.wgsl",
-                "unreferenced legacy file; phosphor.pfx runs the chronoflow history path",
             ),
         ];
 

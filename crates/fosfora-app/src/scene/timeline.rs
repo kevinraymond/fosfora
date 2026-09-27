@@ -161,6 +161,50 @@ impl Timeline {
         }
     }
 
+    /// Move the cue at `from` so it lands at `to` (an index in the list
+    /// after the move). Playback follows the cues, so the cue that was
+    /// playing keeps playing wherever it moved.
+    pub fn move_cue(&mut self, from: usize, to: usize) {
+        let n = self.cues.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        let cue = self.cues.remove(from);
+        self.cues.insert(to, cue);
+        self.remap(|i| {
+            if i == from {
+                to
+            } else if from < to && i > from && i <= to {
+                i - 1
+            } else if to < from && i >= to && i < from {
+                i + 1
+            } else {
+                i
+            }
+        });
+    }
+
+    /// Insert `cue` at `at` (clamped to the end), shifting the cues after it.
+    pub fn insert_cue(&mut self, at: usize, cue: SceneCue) {
+        let at = at.min(self.cues.len());
+        self.cues.insert(at, cue);
+        self.remap(|i| if i >= at { i + 1 } else { i });
+    }
+
+    /// Re-point the playback state after the cue list was reordered.
+    fn remap(&mut self, f: impl Fn(usize) -> usize) {
+        match &mut self.state {
+            PlaybackState::Idle => {}
+            PlaybackState::Holding { cue_index, .. } => *cue_index = f(*cue_index),
+            PlaybackState::Transitioning {
+                from_cue, to_cue, ..
+            } => {
+                *from_cue = f(*from_cue);
+                *to_cue = f(*to_cue);
+            }
+        }
+    }
+
     /// Stop the timeline.
     pub fn stop(&mut self) {
         self.active = false;
@@ -757,5 +801,48 @@ mod tests {
         assert!(matches!(event, TimelineEvent::None));
         let event = tl.tick(1.0);
         assert!(matches!(event, TimelineEvent::None));
+    }
+
+    fn cue_named(name: &str) -> SceneCue {
+        SceneCue::new(name)
+    }
+
+    fn names(tl: &Timeline) -> Vec<&str> {
+        tl.cues.iter().map(|c| c.preset_name.as_str()).collect()
+    }
+
+    // Dragging cues around the strip while a scene plays must not change
+    // which cue is playing: the state holds indices, so each move re-points
+    // them.
+    #[test]
+    fn moving_cues_keeps_the_playing_cue_playing() {
+        let mut tl = Timeline::new(
+            vec![
+                cue_named("A"),
+                cue_named("B"),
+                cue_named("C"),
+                cue_named("D"),
+            ],
+            false,
+            AdvanceMode::Manual,
+        );
+        tl.start(1); // B
+        tl.move_cue(1, 3);
+        assert_eq!(names(&tl), ["A", "C", "D", "B"]);
+        assert_eq!(tl.cues[tl.current_cue_index()].preset_name, "B");
+        tl.move_cue(0, 2); // A past the playing B's neighbors
+        assert_eq!(names(&tl), ["C", "D", "A", "B"]);
+        assert_eq!(tl.cues[tl.current_cue_index()].preset_name, "B");
+        tl.move_cue(3, 0);
+        assert_eq!(names(&tl), ["B", "C", "D", "A"]);
+        assert_eq!(tl.current_cue_index(), 0);
+        tl.insert_cue(0, cue_named("E"));
+        assert_eq!(names(&tl), ["E", "B", "C", "D", "A"]);
+        assert_eq!(tl.cues[tl.current_cue_index()].preset_name, "B");
+        tl.insert_cue(99, cue_named("F"));
+        assert_eq!(names(&tl).last(), Some(&"F"));
+        // Out of range does nothing.
+        tl.move_cue(9, 0);
+        assert_eq!(tl.cues.len(), 6);
     }
 }

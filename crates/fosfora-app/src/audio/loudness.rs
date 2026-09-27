@@ -86,7 +86,7 @@ impl Biquad {
 
 /// BS.1770 stage 1: high-shelf boost (~+4 dB above ~1.68 kHz), re-derived for `fs`.
 /// Coefficients follow the libebur128 formulation (bilinear-transformed at the actual
-/// sample rate — Phosphor has no resampler, so device rates vary).
+/// sample rate — Fosfora has no resampler, so device rates vary).
 fn k_weight_shelf(fs: f32) -> Biquad {
     let f0 = 1681.974450955533_f64;
     let g_db = 3.999843853973347_f64;
