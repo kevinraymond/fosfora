@@ -272,13 +272,53 @@ the effect's own sim and feedback passes.
 
 ## Audio (S6)
 
+Setup (commit `01fde39`, Quest 3 v207, board #3193): the core's
+`AudioSystem` and `HopAnalyzer` unchanged, driven on device two ways.
+`debug.fosfora.audio file`: the bundled test track looped through cpal's
+AAudio output (44.1 kHz stereo F32, the device default), every played frame
+also pushed into a ring that the core's analysis thread reads
+(`AudioSystem::from_ring`, added for this). `debug.fosfora.audio mic`: the
+core's own cpal capture (`AudioSystem::new`). `aaudio`: a raw AAudio input
+stream with a chosen input preset. Features drive the S5 sim (bass → flow
+speed, rms and the beat pulse → sprite size) or the S4 quad's effect.
+
 | Item | Value |
 |---|---|
-| Test track, known BPM | |
-| Detected BPM after lock | |
-| Lock-in time (s) | |
-| Audio-to-photon latency (ms, method) | |
-| Mic source reacts? | |
+| Test track, known BPM | "Ember Glow" by oglsdl, CC0, OpenGameArt; seconds 30–75 bundled as `assets/xr/audio/ember_glow_excerpt.ogg` (45 s, 48 kHz stereo Vorbis, 670 KB; source, checksum and license in `assets/xr/audio/LICENSE.md`). Stated 140 BPM; measured 140.0 ±0.25 BPM over the whole track by onset autocorrelation at 0.25 BPM lag resolution, in every 30 s window |
+| Decoded on device by | the core's symphonia path (`fosfora_app::decode`, new `decode` feature, no desktop crates); 45.0 s at 48 kHz, resampled to the 44.1 kHz output by the playback callback |
+| Detected BPM after lock (file tap) | 139.7–140.0 (`raw_bpm`, two runs: 139.7–139.9 and 139.7–140.0), steady for the rest of each 70 s run |
+| Lock-in time (s) | first published value at 13.9 s, at 140 by ~19 s (the published BPM ramps through the 0.5 s / 1 s smoother); the desktop `--analyze` on the same file: anchor earned at 3.4 s of audio, 140.24 BPM |
+| Beat pulses on the beat? (file tap) | 98 beats after lock in the second run: phase concentration R 0.80 against the 140 BPM grid, circular jitter 46 ms, inter-beat intervals 5–95 % 395–480 ms (median 412). First run (same content from a raw file): R 0.16, 131 ms, 395–646 ms. Desktop `--analyze` on the excerpt: R 0.46, 85 ms, 405–444 ms. Beat times are the playhead position at the render frame that saw the pulse counter change (±14 ms) |
+| Mic source reacts? | Yes: with music in the room (Kevin, headset worn) the core's capture reads peaks 0.07–0.08 with bass/onset following, and an XR-owned stream at I16 or F32, 44.1 or 48 kHz likewise. Input preset comparison (`debug.fosfora.audio loop`: the clip on the headset speakers, analysis on the AAudio microphones): **not measurable unworn**. With the headset off, even with the proximity fake and playback confirmed running at media volume 8/15 to the speaker, `VoiceRecognition`, `Unprocessed` and `Generic` all read a peak of 0.0000 for 60 s each. The Quest mutes the microphones when the headset is not worn, below Android (the recording client is "not silenced", mic mute is off, the app op is allowed). A worn 3-minute loopback run per preset is still to do |
+| Audio-to-photon latency (ms, method) | **Not yet filmed** (the plan's method: a click track and the lens on a phone's slow-motion camera; needs a person and a phone). Estimate from the stages, for the file path: AAudio output latency (not queried yet; typically 20–40 ms on Quest 3) + analysis hop 512 samples at 44.1 kHz (11.6 ms) + the analysis thread's 10 ms poll + one render frame to observe the pulse (≤ 13.9 ms at 72 Hz) + the runtime's predicted display time (about two frames, 28 ms). About 80–105 ms from speaker to photon for beat pulses; continuous features add the interpolator's 1.5-hop playhead delay (17 ms). The device-side part (tap → pulse seen by the render loop) is bounded by the beat-time jitter above |
+
+### S6 notes
+
+- **Silent capture, explained.** The first mic runs read a peak of 1e-4
+  (digital silence) whether the headset was worn or not. The room was quiet
+  and AAudio's default input preset (`VOICE_RECOGNITION`, which cpal cannot
+  change) runs the Quest's voice processing, which floors a quiet room to
+  zero. With music the same stream alternates between real audio and hard
+  zeros every few seconds: the voice preset gates music as noise. The XR
+  crate therefore opens the microphones itself through the `ndk` crate's
+  AAudio binding with a selectable preset (`debug.fosfora.micpreset`).
+- **App not responding.** The main loop never drained Android input events;
+  the first time a wearer generated input the queue backed up and Android
+  showed "Fosfora VR is not responding". Fixed by draining
+  `input_events_iter` every loop (nothing consumes them yet; hands come
+  through OpenXR in S7).
+- **Core additions (board #3244, on `xr`, additive, desktop unchanged):**
+  `AudioSystem::from_ring(ring, sample_rate, callback_count, …)` runs the
+  existing analysis thread over a caller-fed ring (auto-reconnect off, a
+  new `CaptureBackend::External`), and a `decode` feature (`symphonia`,
+  implied by `analyze`) mounts `analyze/decode.rs` at `fosfora_app::decode`
+  so the XR build decodes without desktop crates.
+- **Unworn = muted microphones.** The `prox_close` fake keeps the app
+  running but not the microphones: every unworn run reads a peak of 1e-4 or
+  0, every worn run reads real audio. Mic measurements need a wearer;
+  file-tap measurements do not.
+- `RECORD_AUDIO` is in the manifest and granted with `adb shell pm grant`;
+  the in-app runtime permission request is still to do.
 
 ## Mixed reality (S7)
 

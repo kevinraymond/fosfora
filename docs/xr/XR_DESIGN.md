@@ -216,6 +216,36 @@ Resolve into the swapchain layer through a final render pass (layout rule above)
 Additive vs alpha resolve follows the effect. Over passthrough (S7), output
 premultiplied alpha.
 
+## Audio on device (S6)
+
+*As built (`crates/fosfora-xr/src/audio.rs`, `playback.rs`, board #3193).*
+The core's `AudioSystem` runs unchanged on Android: cpal's AAudio host is in
+the no-default-features build, `AudioSystem::new` opens the microphones at
+the device default (44.1 kHz stereo F32) and the `fosfora-audio` thread,
+channel, interpolator and pulse counters work as on desktop. The render side
+polls `latest_features(dt)`, `latest_spectrum/mel/dmfcc` and the pulse
+counters once per frame and builds the `HopOutput` the headless scene
+renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
+
+- **Input preset.** AAudio's default `VOICE_RECOGNITION` preset (cpal sets
+  none) runs the Quest's voice processing, which gates music. The XR crate
+  opens the microphones itself through `ndk::audio` with an explicit preset
+  and feeds `AudioSystem::from_ring`; see `MEASURED.md` for which preset.
+- **File playback.** The bundled CC0 track (`assets/xr/audio/`, staged into
+  the APK) is decoded with the core's `decode` feature (symphonia) and looped
+  through a cpal output stream at the device rate, with linear resampling in
+  the callback. Every played frame is also pushed into a ring the core's
+  analysis thread reads (`from_ring`), so the visuals follow what the
+  speakers play; the callback allocates nothing and bumps the watchdog's
+  counter. Knobs: `debug.fosfora.audio synth|mic|micxr|aaudio|file`,
+  `debug.fosfora.file <path>`, `debug.fosfora.micpreset`, `micfmt`, `micrate`.
+- **Input events.** The main loop drains `AndroidApp::input_events_iter`
+  every pass. Nothing consumes them yet, but an undrained queue makes Android
+  flag the app as not responding as soon as a wearer generates input.
+- Later: the in-app `RECORD_AUDIO` runtime request (via `jni`), AEC when the
+  headset both plays and listens, and a real render-thread split only if the
+  measurements say the CPU side is the bottleneck (it is under 1 ms now).
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:
