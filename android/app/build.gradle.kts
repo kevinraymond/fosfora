@@ -59,7 +59,7 @@ android {
 // them into internal storage on first run or when the stamp changes
 // (docs/xr/XR_DESIGN.md, "Assets on Android"). The NDK asset API cannot list
 // subdirectories, hence the manifest. Kept to what the effects need: shaders,
-// effect definitions and the XR scenes; no images, media or fonts.
+// effect definitions, the XR scenes and the S6 test track; no images or fonts.
 val xrAssetsDir = layout.buildDirectory.dir("generated/xrassets")
 
 val stageXrAssets by tasks.registering(Sync::class) {
@@ -70,6 +70,11 @@ val stageXrAssets by tasks.registering(Sync::class) {
     // the shared effects so the same loader finds them.
     from(rootProject.file("../assets/xr/effects")) {
         into("effects")
+    }
+    // The S6 test track (CC0; assets/xr/audio/LICENSE.md).
+    from(rootProject.file("../assets/xr/audio")) {
+        include("*.ogg")
+        into("audio")
     }
     into(xrAssetsDir.map { it.dir("assets") })
     doLast {

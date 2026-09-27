@@ -130,17 +130,28 @@ impl XrScene {
             .unwrap_or(0)
     }
 
-    /// Advance the effect by one frame and refresh `quad_texture`. Submits
-    /// its own command buffers; call before recording the eye passes.
-    pub fn step(&mut self, ts: f64, dt: f32) {
+    /// The synthetic groove for this frame (S4), with a matching fake
+    /// waveform.
+    pub fn synth(&mut self, ts: f64) -> HopOutput {
         let hop = synth_hop(self.frame, self.fps, ts);
+        self.frame = self.frame.wrapping_add(1);
         let rms = hop.frame.features.rms;
         for (i, s) in self.waveform.iter_mut().enumerate() {
             *s = rms
                 * ((ts * 110.0 + i as f64 * 110.0 / 48_000.0) * std::f64::consts::TAU).sin() as f32;
         }
-        self.renderer.step(ts, dt, &hop, &self.waveform, true);
-        self.frame = self.frame.wrapping_add(1);
+        hop
+    }
+
+    /// The synthetic waveform from the last `synth` call.
+    pub fn synth_waveform(&self) -> &[f32] {
+        &self.waveform
+    }
+
+    /// Advance the effect by one frame on `hop` and refresh `quad_texture`.
+    /// Submits its own command buffers; call before recording the eye passes.
+    pub fn step(&mut self, ts: f64, dt: f32, hop: &HopOutput, waveform: &[f32]) {
+        self.renderer.step(ts, dt, hop, waveform, true);
 
         let mut encoder =
             self.renderer

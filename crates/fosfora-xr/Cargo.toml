@@ -30,11 +30,16 @@ ash = { version = "0.38", default-features = false, features = ["loaded", "std",
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
 # The core, without desktop crates (seam from S3).
-fosfora-app = { path = "../fosfora-app", default-features = false }
+fosfora-app = { path = "../fosfora-app", default-features = false, features = ["decode"] }
 # Same wgpu as fosfora-app (27), Vulkan backend only; `wgpu::hal` is the
 # interop surface. glam matches core.
 wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl", "parking_lot"] }
 bytemuck = { version = "1", features = ["derive"] }
+# Same cpal as core; its AAudio host does capture (core) and playback (S6).
+cpal = "0.17.3"
+# Raw AAudio for the microphone path: cpal cannot set the input preset, and
+# the Quest processes the default (voice recognition) preset for speech.
+ndk = { version = "0.9", default-features = false, features = ["audio", "api-level-28"] }
 
 [lints]
 workspace = true

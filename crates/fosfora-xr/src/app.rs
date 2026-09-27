@@ -9,8 +9,10 @@ use anyhow::{Context, Result};
 use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
+use crate::audio::LiveAudio;
 use crate::gfx::Gfx;
 use crate::particles3d::{Params, Particles3d};
+use crate::playback::{Clip, Playback};
 use crate::scene::XrScene;
 use crate::xr::{Flow, XrContext, XrSession};
 
@@ -74,6 +76,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     );
     // Spike knobs, settable without a rebuild:
     //   adb shell setprop debug.fosfora.mode quad|particles     (default particles)
+    //   adb shell setprop debug.fosfora.audio synth|mic|micxr|aaudio|file  (default synth; mic needs RECORD_AUDIO;
+    //       mic = the core's capture; micxr = an XR-owned cpal stream with debug.fosfora.micfmt i16|f32 and
+    //       debug.fosfora.micrate <Hz>; aaudio = raw AAudio with debug.fosfora.micpreset
+    //       unprocessed|generic|voice|camcorder; file = the test clip looping on the speakers, analysis on its tap;
+    //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
+    //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
+    //       48 kHz stereo f32 file ending in .f32; default: the bundled CC0 track under assets/audio/)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -90,6 +99,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         Some("quad") => Mode::Quad,
         _ => Mode::Particles,
     };
+    let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     let quality = match debug_prop("debug.fosfora.quality").as_deref() {
         Some("low") => ParticleQuality::Low,
         Some("medium") => ParticleQuality::Medium,
@@ -121,7 +131,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale}"
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale}"
     );
 
     let mut session = XrSession::new(&xr, &mut gfx, eye_scale)?;
@@ -129,6 +139,59 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         session.request_refresh_rate(hz);
     }
 
+    let mut live_audio = None;
+    let mut playback = None;
+    match audio_source.as_str() {
+        "mic" => live_audio = Some(LiveAudio::mic()),
+        "micxr" => {
+            let format = match debug_prop("debug.fosfora.micfmt").as_deref() {
+                Some("f32") => cpal::SampleFormat::F32,
+                _ => cpal::SampleFormat::I16,
+            };
+            let rate = debug_prop("debug.fosfora.micrate")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(48_000);
+            live_audio = Some(LiveAudio::mic_with(format, rate).context("XR mic stream")?);
+        }
+        "aaudio" | "loop" => {
+            use ndk::audio::AudioInputPreset;
+            let preset = match debug_prop("debug.fosfora.micpreset").as_deref() {
+                Some("generic") => AudioInputPreset::Generic,
+                Some("voice") => AudioInputPreset::VoiceRecognition,
+                Some("camcorder") => AudioInputPreset::Camcorder,
+                _ => AudioInputPreset::Unprocessed,
+            };
+            let rate = debug_prop("debug.fosfora.micrate")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(48_000);
+            live_audio = Some(LiveAudio::mic_aaudio(preset, rate).context("AAudio mic")?);
+            if audio_source == "loop" {
+                let clip = Clip::decode(&dirs.assets.join("audio").join("ember_glow_excerpt.ogg"))?;
+                let unused_tap =
+                    std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
+                playback = Some(Playback::start(clip, unused_tap).context("starting playback")?);
+            }
+        }
+        "file" => {
+            let path = debug_prop("debug.fosfora.file")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| dirs.assets.join("audio").join("ember_glow_excerpt.ogg"));
+            let clip = if path.extension().is_some_and(|e| e == "f32") {
+                Clip::from_raw_f32_stereo(&path, 48_000)?
+            } else {
+                Clip::decode(&path)?
+            };
+            let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
+            let p = Playback::start(clip, tap.clone()).context("starting playback")?;
+            live_audio = Some(LiveAudio::from_ring(
+                tap,
+                p.output_rate(),
+                p.callback_count(),
+            ));
+            playback = Some(p);
+        }
+        _ => {}
+    }
     let mut scene = None;
     let mut particles = None;
     let mut static_quad = None;
@@ -192,6 +255,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut destroyed = false;
     let mut last_t = 0.0f32;
     let mut frame_index = 0u64;
+    let mut beat_env = 0.0f32;
 
     loop {
         // While the session is running, Android events are drained without
@@ -224,6 +288,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 info!("android: {name}");
             }
         });
+        // Drain Android input events (controller buttons, touch). Nothing
+        // consumes them yet (hands and controllers come through OpenXR in
+        // S7), but an undrained queue makes Android flag the app as not
+        // responding as soon as a wearer generates any input.
+        if let Ok(mut events) = app.input_events_iter() {
+            while events.next(|_| android_activity::InputStatus::Unhandled) {}
+        }
         if destroyed {
             // The activity is going away and the glue waits for this thread to
             // return. The session is torn down by Drop; xrDestroySession is
@@ -249,16 +320,42 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             &mut stats,
             particles.as_ref(),
             || {
+                // This frame's audio: the headset microphones or the
+                // synthetic 120 BPM groove.
+                let hop = match live_audio.as_mut() {
+                    Some(a) => a.frame(dt, f64::from(t)),
+                    None => synth_hop_for(frame_index, t),
+                };
+                let f = hop.frame.features;
+                if hop.beat_fired {
+                    beat_env = 1.0;
+                    if let Some(p) = &playback {
+                        // Beat timing evidence (S6): where in the clip the
+                        // beat fired, against the track's known 140 BPM grid.
+                        info!("beat at clip {:.4} s", p.position_secs());
+                    }
+                }
+                beat_env *= (-dt * 6.0).exp();
                 if let Some(scene) = scene.as_mut() {
-                    scene.step(f64::from(t), dt);
+                    match live_audio.as_mut() {
+                        Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
+                        None => {
+                            let hop = scene.synth(f64::from(t));
+                            let wave = scene.synth_waveform().to_vec();
+                            scene.step(f64::from(t), dt, &hop, &wave);
+                        }
+                    }
                 }
                 if let Some(p) = particles.as_ref() {
-                    // Same synthetic groove as the S4 quad: rms drives the
-                    // sprite size, bass the flow speed.
-                    let f = crate::scene::synth_hop(frame_index as u32, NOMINAL_FPS, f64::from(t))
-                        .frame
-                        .features;
-                    p.update(queue, t, dt, 0.6 + 1.2 * f.bass, 0.7 + 0.9 * f.rms);
+                    // bass drives the flow speed, rms and the beat pulse
+                    // the sprite size.
+                    p.update(
+                        queue,
+                        t,
+                        dt,
+                        0.6 + 1.2 * f.bass,
+                        (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env),
+                    );
                 }
             },
         )?;
@@ -267,11 +364,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             if let Some(scene) = &scene {
                 info!("particles alive {}", scene.alive_count());
             }
+            if let Some(p) = &playback {
+                info!(
+                    "playback: {:.1} s into the clip · {} frames played at {} Hz",
+                    p.position_secs(),
+                    p.frames_played(),
+                    p.output_rate()
+                );
+            }
         }
     }
 
     drop(session);
     drop(scene);
+    drop(playback);
+    drop(live_audio);
     drop(particles);
     drop(static_quad);
     drop(gfx);
@@ -329,6 +436,12 @@ fn static_quad_texture(
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+/// The S4 synthetic groove as a hop, for the particles mode without a
+/// scene.
+fn synth_hop_for(frame_index: u64, t: f32) -> fosfora_app::audio::hop::HopOutput {
+    crate::scene::synth_hop(frame_index as u32, NOMINAL_FPS, f64::from(t))
 }
 
 /// A slow, dim hue sweep behind the quad: shows the frame loop is alive
