@@ -146,7 +146,7 @@ pub struct Params {
     pub flow_scale: f32,
     /// Particle lifetime in seconds (the sim randomizes 30..100 % of it).
     pub lifetime: f32,
-    /// Downward acceleration in m/s^2 (0 = the pure S5 flow sim).
+    /// Downward drift speed in m/s (0 = the pure S5 flow sim).
     pub gravity: f32,
     /// Cull sprites nearer than this to the eye (meters; 0 = off).
     pub near_cull: f32,

@@ -154,9 +154,11 @@ fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let flow = curl((p.pos - sim.cube_center) * sim.flow_scale);
     // Blend toward the field rather than snapping, for smooth trails.
-    // Gravity is applied after the blend so the flow does not cancel it.
-    p.vel = mix(p.vel, flow * sim.speed, 0.1);
-    p.vel.y -= sim.gravity * sim.dt;
+    // Gravity is a steady downward drift folded into the target velocity:
+    // an acceleration would be damped away by the blend (10 % per frame
+    // leaves g*dt/0.1, a few cm/s), and a drift is what settles particles
+    // onto real surfaces at a visible rate.
+    p.vel = mix(p.vel, flow * sim.speed - vec3<f32>(0.0, sim.gravity, 0.0), 0.1);
     p.pos += p.vel * sim.dt;
     collide(&p);
     p.life -= sim.dt;

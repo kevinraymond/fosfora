@@ -25,8 +25,8 @@ struct Sim {
     // non-instanced call (the vertex index alone picks particle and corner).
     verts_per_sprite: u32,
     pull: u32,
-    // Downward acceleration (m/s^2); 0 for the pure flow sim (S5), small in
-    // mixed reality (S7) so particles settle on real surfaces.
+    // Downward drift speed (m/s); 0 for the pure flow sim (S5), a few tenths
+    // in mixed reality (S7) so particles settle on real surfaces.
     gravity: f32,
     // Sprites nearer than this to the eye (view-space depth, meters) are
     // culled: a 4 mm sprite at 10 cm covers a huge patch of the screen, and

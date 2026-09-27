@@ -44,8 +44,12 @@ fn vs_particle(
     let p = particles[particle];
     let corner = corners[corner_index];
     let age = 1.0 - clamp(p.life / sim.lifetime, 0.0, 1.0);
-    // Fade in and out over the life so respawns don't pop.
-    let fade = smoothstep(0.0, 0.1, age) * (1.0 - smoothstep(0.85, 1.0, age));
+    // Fade in and out over the life so respawns don't pop, and toward the
+    // cube faces so the sim's bounds never read as hard edges in a room.
+    let d = abs(p.pos - sim.cube_center) / sim.cube_half;
+    let edge = max(d.x, max(d.y, d.z));
+    let fade = smoothstep(0.0, 0.1, age) * (1.0 - smoothstep(0.85, 1.0, age))
+        * (1.0 - smoothstep(0.7, 1.0, edge));
     let radius = sim.base_size * sim.size * (0.6 + 0.8 * p.seed);
     let view_pos = eye.view * vec4<f32>(p.pos, 1.0);
     let offset = vec4<f32>(corner * radius, 0.0, 0.0);

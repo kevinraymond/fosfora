@@ -44,7 +44,10 @@ const MR_CUBE_CENTER: [f32; 3] = [0.0, 1.1, -0.9];
 const MR_CUBE_HALF_M: f32 = 1.1;
 const MR_CUBE_Y: f32 = 1.0;
 const MR_CUBE_HALF_WEARER_M: f32 = 1.5;
-const MR_GRAVITY: f32 = 0.15;
+const MR_GRAVITY: f32 = 0.3;
+/// Added to every hand joint's radius so a hand carves a visible channel
+/// through the cloud (a bare 1 cm joint holds a fraction of one particle).
+const MR_HAND_PAD_M: f32 = 0.06;
 const MR_RESTITUTION: f32 = 0.4;
 /// Sprites nearer than this to the eye are culled in mixed reality (the
 /// user stands inside the cube; near sprites are pure fill-rate cost).
@@ -130,7 +133,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
-    //   adb shell setprop debug.fosfora.gravity 0.15             (m/s^2; default 0.15 in mr, 0 otherwise)
+    //   adb shell setprop debug.fosfora.gravity 0.3              (downward drift m/s; default 0.3 in mr, 0 otherwise)
+    //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
     //   adb shell setprop debug.fosfora.nearcull 0.3             (cull sprites nearer than this, m; default 0.3 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.quad 0|1                 (the static test quad; default on in particles, off in mr)
@@ -168,6 +172,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     });
     // An explicit cube stays where it is put; otherwise mr follows the wearer.
     let recenter_on_wearer = mixed && cube_knob.is_none();
+    let hand_pad = debug_prop("debug.fosfora.handpad")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(MR_HAND_PAD_M);
     let (cube_center, cube_half) = cube_knob.unwrap_or(if mixed {
         (MR_CUBE_CENTER, MR_CUBE_HALF_M)
     } else {
@@ -469,7 +476,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 let mut set = ObstacleSet::new(MR_RESTITUTION, SPRITE_RADIUS_M * size_scale);
                 for s in &input.hands.spheres {
-                    set.push_sphere(*s);
+                    set.push_sphere([s[0], s[1], s[2], s[3] + hand_pad]);
                 }
                 for b in &input.room_boxes {
                     set.push_box(b);
