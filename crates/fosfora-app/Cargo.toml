@@ -18,6 +18,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "fosfora"
 path = "src/main.rs"
+required-features = ["desktop"]
 
 [dependencies]
 # GPU
@@ -25,21 +26,22 @@ wgpu = "27"
 # WGSL front-end validation before pipeline creation (trama I5) — keep the major
 # in lockstep with wgpu's transitive naga so the lock stays single-version
 naga = { version = "27", features = ["wgsl-in"] }
-# Windowing
-winit = "0.30"
-# UI
+# Windowing (desktop feature)
+winit = { version = "0.30", optional = true }
+# UI. egui + egui-wgpu stay unconditional: the XR build renders an egui panel to a
+# texture. The winit/editor-widget side is desktop-only.
 egui = "0.33"
 egui-wgpu = "0.33"
-egui-winit = "0.33"
+egui-winit = { version = "0.33", optional = true }
 # trama node-graph canvas — 0.9.x is the egui-0.33 line (0.10+ track egui 0.34/0.35)
-egui-snarl = "0.9"
+egui-snarl = { version = "0.9", optional = true }
 # Audio
 cpal = "0.17.3"
 # FFT
 rustfft = "6"
 # File watching
-notify = "8"
-notify-debouncer-mini = "0.6"
+notify = { version = "8", optional = true }
+notify-debouncer-mini = { version = "0.6", optional = true }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -56,20 +58,20 @@ bytemuck = { version = "1", features = ["derive"] }
 # Block on async (wgpu init)
 pollster = "0.4"
 # System theme detection
-dark-light = "2"
+dark-light = { version = "2", optional = true }
 # MIDI input
-midir = "0.10"
+midir = { version = "0.10", optional = true }
 # OSC input/output
 rosc = "0.11"
 # Ableton Link session sync. Vendors Link (GPL-2.0-or-later) — see the `link`
 # feature comment and the deny.toml exception before adding it anywhere.
 rusty_link = { version = "0.4.9", optional = true }
 # Clean shutdown for the headless --signal loop (no SIGINT handling exists elsewhere)
-ctrlc = "3"
+ctrlc = { version = "3", optional = true }
 # XDG config paths
 dirs = "6"
 # WebSocket server
-tungstenite = "0.28"
+tungstenite = { version = "0.28", optional = true }
 # Image loading (particle sprites, media layers)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # WebP animation decoding (image crate only decodes first frame)
@@ -77,13 +79,13 @@ image-webp = "0.2"
 # GIF decoding (animated GIF frame extraction)
 gif = "0.13"
 # Native file dialogs
-rfd = "0.15"
+rfd = { version = "0.15", optional = true }
 # Linear algebra (camera, projection)
 glam = "0.29"
 # glTF/GLB import (3D-model obstacle source #1851) — pure Rust, no system deps
 gltf = "1"
 # Code editor widget (shader editor)
-egui_code_editor = "0.2"
+egui_code_editor = { version = "0.2", optional = true }
 # Dynamic library loading (NDI runtime, PulseAudio runtime on Linux)
 libloading = "0.8"
 # Webcam capture
@@ -91,9 +93,11 @@ nokhwa = { version = "0.10", features = ["input-native"], optional = true }
 # ONNX Runtime for depth estimation (MiDaS) — load-dynamic: runtime dylib loading, no build-time linking
 ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, features = ["load-dynamic"] }
 # HTTP client for downloads (depth model + runtime, splat demo scene #1800).
-# Unconditional: a feature-gated one-click demo for the flagship Splat effect
-# would silently vanish in default builds — worse than the ~100s-KB size cost.
-ureq = { version = "3", features = ["native-tls"] }
+# On in every desktop build (the `desktop` feature, which is default): a feature-gated
+# one-click demo for the flagship Splat effect would silently vanish in default builds —
+# worse than the ~100s-KB size cost. Off only for non-desktop (XR) lib builds, where
+# native-tls does not build.
+ureq = { version = "3", features = ["native-tls"], optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
@@ -171,35 +175,53 @@ tempfile = "3"
 workspace = true
 
 [features]
-default = []
+default = ["desktop"]
+# Everything that needs a desktop OS: windowing, the egui-winit shell and editor
+# widgets, native file dialogs, MIDI, the web remote, file watching, HTTP downloads.
+# Off, the lib builds for aarch64-linux-android with none of these crates, for the
+# XR frontend. Every feature below that touches a desktop path implies it.
+desktop = [
+    "dep:winit",
+    "dep:egui-winit",
+    "dep:egui-snarl",
+    "dep:egui_code_editor",
+    "dep:notify",
+    "dep:notify-debouncer-mini",
+    "dep:dark-light",
+    "dep:midir",
+    "dep:ctrlc",
+    "dep:tungstenite",
+    "dep:rfd",
+    "dep:ureq",
+]
 # Exactly what the release downloads ship: release.yml builds with this, so
 # `cargo build --release --features release` reproduces a download. The
 # platform-sharing three are inert off their OS. Deliberately NOT in it:
 # `analyze` (dev tooling), `link` (makes the binary GPL), `profiling`.
-release = ["video", "ndi", "webcam", "depth", "v4l2", "spout", "syphon"]
-video = []
-ndi = []
+release = ["desktop", "video", "ndi", "webcam", "depth", "v4l2", "spout", "syphon"]
+video = ["desktop"]
+ndi = ["desktop"]
 # Virtual camera via v4l2loopback (GH #6). Inert off-Linux: the dep is
 # target-scoped and all code is #[cfg(target_os = "linux")]-gated, so one
 # flat feature string works on every CI matrix leg.
-v4l2 = ["dep:v4l"]
+v4l2 = ["desktop", "dep:v4l"]
 # Spout texture sharing (GH #5). Inert off-Windows: the dep is target-scoped
 # (and itself a stub off-Windows) and all code is cfg-gated, so one flat
 # feature string works on every CI matrix leg.
-spout = ["dep:spout2-rs"]
+spout = ["desktop", "dep:spout2-rs"]
 # Syphon texture sharing (GH #4). Inert off-macOS: the deps are target-scoped
 # and all code is cfg-gated, so one flat feature string works on every CI
 # matrix leg.
-syphon = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
-webcam = ["nokhwa"]
-depth = ["webcam", "ort", "flate2", "tar", "zip"]
+syphon = ["desktop", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
+webcam = ["desktop", "nokhwa"]
+depth = ["desktop", "webcam", "ort", "flate2", "tar", "zip"]
 # Ableton Link tempo/phase sync (workstream B). rusty_link vendors Ableton
 # Link, which is GPL-2.0-or-later (proprietary licensing available from
 # Ableton) — a binary built with this feature is distributed under GPL terms.
 # Deliberately absent from default and from the `release` feature so shipped
 # binaries stay MIT/Apache; building with it yourself is fine.
-link = ["dep:rusty_link"]
+link = ["desktop", "dep:rusty_link"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).
-analyze = ["symphonia"]
-profiling = ["wgpu-profiler"]
+analyze = ["desktop", "symphonia"]
+profiling = ["desktop", "wgpu-profiler"]
 wgpu-profiler = ["dep:wgpu-profiler"]

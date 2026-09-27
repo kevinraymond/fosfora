@@ -15,11 +15,13 @@
 
 #[cfg(feature = "analyze")]
 pub mod analyze;
+#[cfg(feature = "desktop")]
 pub mod app;
 pub mod audio;
 pub mod bindings;
 #[cfg(feature = "depth")]
 pub mod depth;
+#[cfg(feature = "desktop")]
 pub mod download;
 pub mod effect;
 pub mod gpu;
@@ -27,9 +29,11 @@ pub mod headless;
 #[cfg(feature = "link")]
 pub mod link;
 pub mod media;
+#[cfg(feature = "desktop")]
 pub mod midi;
 #[cfg(feature = "ndi")]
 pub mod ndi;
+#[cfg(feature = "desktop")]
 pub mod osc;
 #[cfg(any(
     feature = "ndi",
@@ -41,6 +45,7 @@ pub mod output;
 pub mod params;
 pub mod paths;
 pub mod preset;
+#[cfg(feature = "desktop")]
 pub mod recording;
 pub mod scene;
 pub mod settings;
@@ -53,7 +58,15 @@ pub mod syphon;
 #[cfg(test)]
 mod test_alloc;
 pub mod trama;
+#[cfg(feature = "desktop")]
 pub mod ui;
+/// Without `desktop`, only the theme: `SettingsConfig` persists a `ThemeMode`, and it
+/// is plain egui, which every build has.
+#[cfg(not(feature = "desktop"))]
+pub mod ui {
+    pub mod theme;
+}
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
 pub mod v4l2;
+#[cfg(feature = "desktop")]
 pub mod web;

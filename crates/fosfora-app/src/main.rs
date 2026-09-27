@@ -13,13 +13,6 @@ use fosfora_app::media;
 use fosfora_app::midi;
 #[cfg(feature = "ndi")]
 use fosfora_app::ndi;
-#[cfg(any(
-    feature = "ndi",
-    all(target_os = "linux", feature = "v4l2"),
-    all(target_os = "windows", feature = "spout"),
-    all(target_os = "macos", feature = "syphon")
-))]
-use fosfora_app::output;
 use fosfora_app::params;
 use fosfora_app::paths;
 use fosfora_app::recording;
