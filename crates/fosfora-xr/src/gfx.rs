@@ -1,4 +1,5 @@
-//! Vulkan interop and the XR-side renderer (S2 stereo pipeline, S4 quad).
+//! Vulkan interop and the XR-side renderer (S2 stereo pipeline, S4 quad,
+//! S5 particle passes).
 //!
 //! The OpenXR runtime creates the Vulkan instance and device
 //! (`XR_KHR_vulkan_enable2`) from create-infos that carry exactly the
@@ -17,6 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
+use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::xr::XrContext;
 
 /// Top of the range the Quest runtime reports (1.0 .. 1.2). Everything the
@@ -43,12 +45,27 @@ pub struct RawHandles {
     pub queue_family_index: u32,
 }
 
+/// One eye's camera for a frame, in the reference space.
+#[derive(Debug, Clone, Copy)]
+pub struct EyeCamera {
+    pub view: Mat4,
+    pub proj: Mat4,
+}
+
+impl EyeCamera {
+    pub fn view_proj(&self) -> Mat4 {
+        self.proj * self.view
+    }
+}
+
 pub struct Gfx {
     // Field order is drop order: bindings and the pipeline go before the
     // device, the device before the adapter and instance.
     quad: Option<QuadBinding>,
     quad_layout: wgpu::BindGroupLayout,
     eyes: Vec<EyeUniform>,
+    /// Per-eye depth attachment at the swapchain size (`set_eye_extent`).
+    depth: Vec<wgpu::TextureView>,
     pipeline: wgpu::RenderPipeline,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -305,6 +322,7 @@ impl Gfx {
             quad: None,
             quad_layout,
             eyes,
+            depth: Vec::new(),
             pipeline,
             device,
             queue,
@@ -375,6 +393,32 @@ impl Gfx {
         );
     }
 
+    /// Size the eye's depth attachment to its swapchain. Call once per eye,
+    /// in eye order, after the swapchains exist.
+    pub fn set_eye_extent(&mut self, eye: usize, width: u32, height: u32) {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("xr-eye-depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if eye < self.depth.len() {
+            self.depth[eye] = view;
+        } else {
+            debug_assert_eq!(eye, self.depth.len());
+            self.depth.push(view);
+        }
+    }
+
     /// Wrap an OpenXR swapchain image as a wgpu texture plus a full view. The
     /// no-op drop callback keeps wgpu from freeing the image: OpenXR owns it.
     pub fn wrap_swapchain_image(
@@ -429,20 +473,37 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render the quad into both eyes and submit once. The render
+    /// Render both eyes and submit once: the quad (depth-writing) and then
+    /// the S5 particles (depth-tested, additive) into each eye. The render
     /// pass is the last use of each swapchain image this frame, so it ends in
     /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
-    pub fn render(&self, targets: &[&wgpu::TextureView], view_projs: &[Mat4], clear: [f32; 4]) {
-        for (eye, vp) in self.eyes.iter().zip(view_projs) {
-            self.queue
-                .write_buffer(&eye.buffer, 0, bytemuck::bytes_of(&vp.to_cols_array()));
+    pub fn render(
+        &self,
+        targets: &[&wgpu::TextureView],
+        cameras: &[EyeCamera],
+        clear: [f32; 4],
+        particles: Option<&Particles3d>,
+    ) {
+        for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
+            self.queue.write_buffer(
+                &eye.buffer,
+                0,
+                bytemuck::bytes_of(&cam.view_proj().to_cols_array()),
+            );
+            if let Some(p) = particles {
+                p.set_eye(&self.queue, i, cam.view, cam.proj);
+            }
         }
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("xr-frame"),
             });
-        for (eye, target) in self.eyes.iter().zip(targets) {
+        if let Some(p) = particles {
+            p.step(&mut encoder);
+        }
+        for (i, (eye, target)) in self.eyes.iter().zip(targets).enumerate() {
+            let depth = self.depth.get(i);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr-eye"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -459,7 +520,16 @@ impl Gfx {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: depth.map(|view| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -468,6 +538,9 @@ impl Gfx {
                 pass.set_bind_group(0, &eye.bind_group, &[]);
                 pass.set_bind_group(1, &quad.bind_group, &[]);
                 pass.draw(0..6, 0..1);
+            }
+            if let Some(p) = particles {
+                p.draw(&mut pass, i);
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -613,7 +686,14 @@ fn build_quad_pipeline(
             cull_mode: None,
             ..wgpu::PrimitiveState::default()
         },
-        depth_stencil: None,
+        // The quad writes depth so S5 particles behind it are hidden.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: &shader,

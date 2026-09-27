@@ -6,7 +6,8 @@
 //! `cargo ndk -t arm64-v8a clippy -p fosfora-xr` or `scripts/xr/run.sh lint`.
 //!
 //! Spike state: S1 packaging/launch, S2 wgpu on the runtime's Vulkan device,
-//! S4 one core effect on a world-locked quad.
+//! S4 one core effect on a world-locked quad, S5 world-space particles on
+//! the billboard path.
 
 #[cfg(target_os = "android")]
 mod app;
@@ -15,6 +16,8 @@ mod assets;
 #[cfg(target_os = "android")]
 mod gfx;
 pub mod math;
+#[cfg(target_os = "android")]
+mod particles3d;
 #[cfg(target_os = "android")]
 mod scene;
 #[cfg(target_os = "android")]

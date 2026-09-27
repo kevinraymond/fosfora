@@ -164,7 +164,7 @@ impl XrScene {
 /// A steady 120 BPM groove: the core's synthetic beat grid plus band energies
 /// that pump on the beat and drift slowly, so Flux has bass, onsets, rms and
 /// a moving centroid to react to.
-fn synth_hop(frame: u32, fps: u32, ts: f64) -> HopOutput {
+pub fn synth_hop(frame: u32, fps: u32, ts: f64) -> HopOutput {
     let mut f = fosfora_app::headless::loop_driver::synth_features(frame, fps, BPM);
     let beat_env = (-f.beat_phase * 5.0).exp();
     let slow = (ts * 0.25).sin() as f32 * 0.5 + 0.5;

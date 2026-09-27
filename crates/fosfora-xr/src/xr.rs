@@ -9,8 +9,9 @@ use log::{info, warn};
 use openxr as xr;
 
 use crate::app::FrameStats;
-use crate::gfx::Gfx;
+use crate::gfx::{EyeCamera, Gfx};
 use crate::math;
+use crate::particles3d::Particles3d;
 
 pub const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 pub const EYE_COUNT: usize = 2;
@@ -188,10 +189,14 @@ pub struct XrSession {
     running: bool,
     events: xr::EventDataBuffer,
     has_refresh_rate_ext: bool,
+    /// Display rate to request when the session becomes ready (S5 sweep).
+    wanted_hz: Option<f32>,
 }
 
 impl XrSession {
-    pub fn new(ctx: &XrContext, gfx: &Gfx) -> Result<Self> {
+    /// `eye_scale` scales the runtime's recommended per-eye swapchain size
+    /// (1.0 = recommended); the compositor resamples to the display.
+    pub fn new(ctx: &XrContext, gfx: &mut Gfx, eye_scale: f32) -> Result<Self> {
         // SAFETY: every handle comes from `Gfx`, which created the instance and
         // device through XR_KHR_vulkan_enable2 for this system and keeps them
         // alive longer than the session (drop order in `app::run_inner`). The
@@ -242,9 +247,15 @@ impl XrSession {
         // runs once per eye anyway.
         let mut eyes = Vec::with_capacity(EYE_COUNT);
         for (i, view) in ctx.views.iter().enumerate() {
+            let scale = |v: u32| {
+                (((v as f32) * eye_scale).round() as u32).clamp(
+                    64,
+                    view.max_image_rect_width.max(view.max_image_rect_height),
+                )
+            };
             let extent = vk::Extent2D {
-                width: view.recommended_image_rect_width,
-                height: view.recommended_image_rect_height,
+                width: scale(view.recommended_image_rect_width),
+                height: scale(view.recommended_image_rect_height),
             };
             let swapchain = session
                 .create_swapchain(&xr::SwapchainCreateInfo {
@@ -268,11 +279,12 @@ impl XrSession {
                 })
                 .collect::<Result<Vec<_>>>()?;
             info!(
-                "eye {i}: swapchain {}x{} {format:?}, {} images wrapped as wgpu textures",
+                "eye {i}: swapchain {}x{} {format:?} (scale {eye_scale}), {} images wrapped as wgpu textures",
                 extent.width,
                 extent.height,
                 images.len()
             );
+            gfx.set_eye_extent(i, extent.width, extent.height);
             eyes.push(Eye {
                 images,
                 swapchain,
@@ -291,11 +303,19 @@ impl XrSession {
             running: false,
             events: xr::EventDataBuffer::new(),
             has_refresh_rate_ext: ctx.has_refresh_rate_ext,
+            wanted_hz: None,
         })
     }
 
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    /// Ask the runtime for this display rate once the session runs
+    /// (`XR_FB_display_refresh_rate`; the runtime may refuse or change it
+    /// later, which `DisplayRefreshRateChangedFB` logs).
+    pub fn request_refresh_rate(&mut self, hz: f32) {
+        self.wanted_hz = Some(hz);
     }
 
     /// Drain the OpenXR event queue and drive the session state machine:
@@ -319,6 +339,18 @@ impl XrSession {
                             self.session.begin(VIEW_TYPE).context("xrBeginSession")?;
                             self.running = true;
                             self.log_refresh_rate();
+                            if let Some(hz) = self.wanted_hz {
+                                if self.has_refresh_rate_ext {
+                                    match self.session.request_display_refresh_rate(hz) {
+                                        Ok(()) => info!("requested display refresh rate {hz} Hz"),
+                                        Err(e) => warn!("xrRequestDisplayRefreshRateFB({hz}): {e}"),
+                                    }
+                                } else {
+                                    warn!(
+                                        "cannot request {hz} Hz: XR_FB_display_refresh_rate missing"
+                                    );
+                                }
+                            }
                         }
                         xr::SessionState::STOPPING => {
                             self.session.end().context("xrEndSession")?;
@@ -372,6 +404,7 @@ impl XrSession {
         gfx: &Gfx,
         clear: [f32; 4],
         stats: &mut FrameStats,
+        particles: Option<&Particles3d>,
         before_render: impl FnOnce(),
     ) -> Result<()> {
         let frame_state = self.waiter.wait().context("xrWaitFrame")?;
@@ -397,8 +430,8 @@ impl XrSession {
             .session
             .locate_views(VIEW_TYPE, frame_state.predicted_display_time, &self.space)
             .context("xrLocateViews")?;
-        let view_projs: Vec<glam::Mat4> = views.iter().map(view_projection).collect();
-        log_stereo(view_flags, &views, &view_projs);
+        let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
+        log_stereo(view_flags, &views, &cameras);
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -417,7 +450,7 @@ impl XrSession {
             .zip(image_indices.iter())
             .map(|(eye, &index)| &eye.images[index as usize].1)
             .collect();
-        gfx.render(&targets, &view_projs, clear);
+        gfx.render(&targets, &cameras, clear, particles);
 
         for eye in &mut self.eyes {
             eye.swapchain
@@ -462,10 +495,10 @@ impl XrSession {
     }
 }
 
-fn view_projection(view: &xr::View) -> glam::Mat4 {
+fn camera(view: &xr::View) -> EyeCamera {
     let q = view.pose.orientation;
     let p = view.pose.position;
-    math::view_projection(
+    let (view, proj) = math::view_and_projection(
         [q.x, q.y, q.z, q.w],
         [p.x, p.y, p.z],
         math::Fov {
@@ -476,7 +509,8 @@ fn view_projection(view: &xr::View) -> glam::Mat4 {
         },
         NEAR,
         FAR,
-    )
+    );
+    EyeCamera { view, proj }
 }
 
 /// Center of the world-locked quad (`app::QUAD_CENTER`), for the stereo log.
@@ -486,12 +520,13 @@ const STEREO_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 1.5, -1.5);
 /// eye sees the quad center, against the angle IPD/distance predicts.
 /// Stereo correctness can't be judged by a one-eyed wearer, so this is the
 /// evidence for it (board #3221).
-fn log_stereo(flags: xr::ViewStateFlags, views: &[xr::View], view_projs: &[glam::Mat4]) {
+fn log_stereo(flags: xr::ViewStateFlags, views: &[xr::View], cameras: &[EyeCamera]) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static FRAME: AtomicU64 = AtomicU64::new(0);
     if !FRAME.fetch_add(1, Ordering::Relaxed).is_multiple_of(360) || views.len() != 2 {
         return;
     }
+    let view_projs: Vec<glam::Mat4> = cameras.iter().map(EyeCamera::view_proj).collect();
     let pos =
         |v: &xr::View| glam::Vec3::new(v.pose.position.x, v.pose.position.y, v.pose.position.z);
     let (p0, p1) = (pos(&views[0]), pos(&views[1]));
@@ -526,4 +561,39 @@ fn log_stereo(flags: xr::ViewStateFlags, views: &[xr::View], view_projs: &[glam:
         views[0].fov.angle_up.to_degrees(),
         views[0].fov.angle_down.to_degrees(),
     );
+    log_depth_probes(&view_projs, expected);
+}
+
+/// S5 depth evidence: two probe points on the quad's line of sight, half a
+/// meter nearer and farther than the quad center. Correct stereo depth means
+/// the nearer probe has the larger disparity and the smaller depth-buffer
+/// value in both eyes, so a particle there passes the quad's depth test and
+/// one behind fails it.
+fn log_depth_probes(view_projs: &[glam::Mat4], quad_disparity: f32) {
+    let probe = |name: &str, dz: f32| {
+        let p = STEREO_TARGET + glam::Vec3::new(0.0, 0.0, dz);
+        let ndc = |i: usize| {
+            let c = view_projs[i] * p.extend(1.0);
+            (c.x / c.w, c.z / c.w)
+        };
+        let (x0, z0) = ndc(0);
+        let (x1, z1) = ndc(1);
+        let quad_z = |i: usize| {
+            let c = view_projs[i] * STEREO_TARGET.extend(1.0);
+            c.z / c.w
+        };
+        info!(
+            "depth probe {name} (quad z {dz:+.2} m): eye0 ndc.x {x0:.3} depth {z0:.5} (quad {:.5}) · eye1 ndc.x {x1:.3} depth {z1:.5} (quad {:.5}) · ndc.x disparity {:.3} (quad {:.3}) · quad disparity {quad_disparity:.2}°",
+            quad_z(0),
+            quad_z(1),
+            x0 - x1,
+            {
+                let q0 = view_projs[0] * STEREO_TARGET.extend(1.0);
+                let q1 = view_projs[1] * STEREO_TARGET.extend(1.0);
+                q0.x / q0.w - q1.x / q1.w
+            }
+        );
+    };
+    probe("near", 0.5);
+    probe("far", -0.5);
 }

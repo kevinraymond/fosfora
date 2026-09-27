@@ -10,6 +10,7 @@ use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
 use crate::gfx::Gfx;
+use crate::particles3d::{Params, Particles3d};
 use crate::scene::XrScene;
 use crate::xr::{Flow, XrContext, XrSession};
 
@@ -25,6 +26,20 @@ const QUAD_WIDTH_M: f32 = 1.2;
 pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
 const DEFAULT_EFFECT: &str = "Flux";
 const NOMINAL_FPS: u32 = 72;
+/// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
+/// the particles sit in front of it and half behind (the depth gate).
+const DEFAULT_COUNT: u32 = 500_000;
+const CUBE_HALF_M: f32 = 1.0;
+const SPRITE_RADIUS_M: f32 = 0.004;
+
+/// What the frame renders, from `debug.fosfora.mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// S4: one core effect on the quad.
+    Quad,
+    /// S5: world-space particles around a static quad.
+    Particles,
+}
 
 pub fn run(app: &AndroidApp) {
     android_logger::init_once(
@@ -50,7 +65,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // device goes away.
     let sdk_version = u32::try_from(app.config().sdk_version()).unwrap_or(0);
     let mut gfx = Gfx::new(&xr, sdk_version)?;
-    let mut session = XrSession::new(&xr, &gfx)?;
 
     let dirs = crate::assets::install(app).context("installing assets")?;
     info!(
@@ -59,8 +73,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         dirs.config.display()
     );
     // Spike knobs, settable without a rebuild:
+    //   adb shell setprop debug.fosfora.mode quad|particles     (default particles)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
+    //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
+    //   adb shell setprop debug.fosfora.emit <particles per second>   (mode quad)
+    //   adb shell setprop debug.fosfora.count <particles>        (mode particles)
+    //   adb shell setprop debug.fosfora.sim 0                    (freeze the S5 sim: draw cost only)
+    //   adb shell setprop debug.fosfora.size 0.5                 (sprite radius multiplier)
+    //   adb shell setprop debug.fosfora.tri 0                    (6-vertex quads instead of 3-vertex sprites)
+    //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
+    //   adb shell setprop debug.fosfora.hz 90                    (request a display rate)
+    //   adb shell setprop debug.fosfora.eyescale 0.75            (swapchain size vs recommended)
+    // Clear a knob with `setprop debug.fosfora.<name> ""`.
+    let mode = match debug_prop("debug.fosfora.mode").as_deref() {
+        Some("quad") => Mode::Quad,
+        _ => Mode::Particles,
+    };
     let quality = match debug_prop("debug.fosfora.quality").as_deref() {
         Some("low") => ParticleQuality::Low,
         Some("medium") => ParticleQuality::Medium,
@@ -74,31 +103,89 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             Some((w.parse().ok()?, h.parse().ok()?))
         })
         .unwrap_or((SCENE_WIDTH, SCENE_HEIGHT));
-    info!("scene: {scene_w}x{scene_h}, particle quality {quality:?}");
-    //   adb shell setprop debug.fosfora.effect "Flux"   (any effect name)
-    let effect = debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_EFFECT.to_owned());
-    let scene_dir =
-        write_single_effect_scene(&dirs.config, &effect).context("writing the scene")?;
-    let mut scene = XrScene::new(
-        &gfx.device,
-        &gfx.queue,
-        scene_w,
-        scene_h,
-        quality,
-        &scene_dir,
-        NOMINAL_FPS,
-    )
-    .context("creating the scene")?;
-    //   adb shell setprop debug.fosfora.emit <particles per second>
-    if let Some(rate) = debug_prop("debug.fosfora.emit").and_then(|v| v.parse::<f32>().ok()) {
-        scene.set_emit_rate(rate);
-    }
-    gfx.set_quad(
-        &scene.quad_view,
-        QUAD_WIDTH_M,
-        scene_w as f32 / scene_h as f32,
-        QUAD_CENTER,
+    let count = debug_prop("debug.fosfora.count")
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_COUNT)
+        .max(1);
+    let sim_enabled = debug_prop("debug.fosfora.sim").as_deref() != Some("0");
+    let size_scale = debug_prop("debug.fosfora.size")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| (0.01..=10.0).contains(s))
+        .unwrap_or(1.0);
+    // Defaults are the cheapest form measured in S5 (MEASURED.md).
+    let triangles = debug_prop("debug.fosfora.tri").as_deref() != Some("0");
+    let pull = debug_prop("debug.fosfora.pull").as_deref() != Some("0");
+    let hz = debug_prop("debug.fosfora.hz").and_then(|v| v.parse::<f32>().ok());
+    let eye_scale = debug_prop("debug.fosfora.eyescale")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| (0.1..=2.0).contains(s))
+        .unwrap_or(1.0);
+    info!(
+        "mode {mode:?} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale}"
     );
+
+    let mut session = XrSession::new(&xr, &mut gfx, eye_scale)?;
+    if let Some(hz) = hz {
+        session.request_refresh_rate(hz);
+    }
+
+    let mut scene = None;
+    let mut particles = None;
+    let mut static_quad = None;
+    match mode {
+        Mode::Quad => {
+            //   adb shell setprop debug.fosfora.effect "Flux"   (any effect name)
+            let effect =
+                debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_EFFECT.to_owned());
+            let scene_dir =
+                write_single_effect_scene(&dirs.config, &effect).context("writing the scene")?;
+            let mut s = XrScene::new(
+                &gfx.device,
+                &gfx.queue,
+                scene_w,
+                scene_h,
+                quality,
+                &scene_dir,
+                NOMINAL_FPS,
+            )
+            .context("creating the scene")?;
+            if let Some(rate) = debug_prop("debug.fosfora.emit").and_then(|v| v.parse::<f32>().ok())
+            {
+                s.set_emit_rate(rate);
+            }
+            gfx.set_quad(
+                &s.quad_view,
+                QUAD_WIDTH_M,
+                scene_w as f32 / scene_h as f32,
+                QUAD_CENTER,
+            );
+            scene = Some(s);
+        }
+        Mode::Particles => {
+            // A static, opaque quad at the S4 placement: the depth reference
+            // the particles are judged against. It costs nothing to render,
+            // so the sweep numbers are the particles'.
+            let (tex, view) = static_quad_texture(&gfx.device, &gfx.queue);
+            gfx.set_quad(&view, QUAD_WIDTH_M, 16.0 / 9.0, QUAD_CENTER);
+            static_quad = Some(tex);
+            let mut p = Particles3d::new(
+                &gfx.device,
+                count,
+                crate::xr::EYE_COUNT,
+                Params {
+                    triangles,
+                    pull,
+                    cube_center: QUAD_CENTER,
+                    cube_half: CUBE_HALF_M,
+                    base_size: SPRITE_RADIUS_M * size_scale,
+                    flow_scale: 1.0,
+                    lifetime: 12.0,
+                },
+            );
+            p.sim_enabled = sim_enabled;
+            particles = Some(p);
+        }
+    }
 
     let started = Instant::now();
     let mut stats = FrameStats::default();
@@ -155,19 +242,93 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let t = started.elapsed().as_secs_f32();
         let dt = (t - last_t).clamp(1.0 / 120.0, 1.0 / 30.0);
         last_t = t;
-        session.frame(&gfx, background_color(t), &mut stats, || {
-            scene.step(f64::from(t), dt);
-        })?;
+        let queue = &gfx.queue;
+        session.frame(
+            &gfx,
+            background_color(t),
+            &mut stats,
+            particles.as_ref(),
+            || {
+                if let Some(scene) = scene.as_mut() {
+                    scene.step(f64::from(t), dt);
+                }
+                if let Some(p) = particles.as_ref() {
+                    // Same synthetic groove as the S4 quad: rms drives the
+                    // sprite size, bass the flow speed.
+                    let f = crate::scene::synth_hop(frame_index as u32, NOMINAL_FPS, f64::from(t))
+                        .frame
+                        .features;
+                    p.update(queue, t, dt, 0.6 + 1.2 * f.bass, 0.7 + 0.9 * f.rms);
+                }
+            },
+        )?;
         frame_index += 1;
         if frame_index.is_multiple_of(72) {
-            info!("particles alive {}", scene.alive_count());
+            if let Some(scene) = &scene {
+                info!("particles alive {}", scene.alive_count());
+            }
         }
     }
 
     drop(session);
     drop(scene);
+    drop(particles);
+    drop(static_quad);
     drop(gfx);
     Ok(())
+}
+
+/// A 256x256 opaque test card for the S5 quad: a gray ramp with a bright
+/// border, so occlusion by the quad is visible in a screencap and the quad
+/// itself is easy to find.
+fn static_quad_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    const N: u32 = 256;
+    let mut pixels = vec![0u8; (N * N * 4) as usize];
+    for y in 0..N {
+        for x in 0..N {
+            let border = x < 8 || y < 8 || x >= N - 8 || y >= N - 8;
+            let checker = ((x / 32) + (y / 32)) % 2 == 0;
+            let v = if border {
+                220
+            } else if checker {
+                90
+            } else {
+                40
+            };
+            let i = ((y * N + x) * 4) as usize;
+            pixels[i..i + 4].copy_from_slice(&[v, v, v + 20, 255]);
+        }
+    }
+    let size = wgpu::Extent3d {
+        width: N,
+        height: N,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("xr-static-quad"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(N * 4),
+            rows_per_image: Some(N),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
 
 /// A slow, dim hue sweep behind the quad: shows the frame loop is alive

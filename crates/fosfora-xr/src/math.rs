@@ -24,6 +24,19 @@ pub fn view_projection(
     near: f32,
     far: f32,
 ) -> Mat4 {
+    let (view, proj) = view_and_projection(orientation, position, fov, near, far);
+    proj * view
+}
+
+/// The two halves of [`view_projection`], for shaders that billboard in view
+/// space (S5) and need them apart.
+pub fn view_and_projection(
+    orientation: [f32; 4],
+    position: [f32; 3],
+    fov: Fov,
+    near: f32,
+    far: f32,
+) -> (Mat4, Mat4) {
     let pose = Mat4::from_rotation_translation(
         Quat::from_xyzw(
             orientation[0],
@@ -33,7 +46,7 @@ pub fn view_projection(
         ),
         Vec3::from_array(position),
     );
-    projection(fov, near, far) * pose.inverse()
+    (pose.inverse(), projection(fov, near, far))
 }
 
 pub fn projection(fov: Fov, near: f32, far: f32) -> Mat4 {
