@@ -49,7 +49,7 @@ const MR_GRAVITY: f32 = 0.5;
 /// carry particles straight through the settle-and-bounce behavior.
 const MR_FLOW: f32 = 0.35;
 /// Outward speed a hand gives the particles it touches (m/s).
-const MR_HAND_KICK: f32 = 0.6;
+const MR_HAND_KICK: f32 = 0.3;
 /// Added to every hand joint's radius so a hand carves a visible channel
 /// through the cloud (a bare 1 cm joint holds a fraction of one particle).
 const MR_HAND_PAD_M: f32 = 0.06;
@@ -141,6 +141,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.gravity 0.3              (downward drift m/s; default 0.3 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
     //   adb shell setprop debug.fosfora.handocc 0.0              (m added to each joint's depth-occluder cube beyond the joint radius)
+    //   adb shell setprop debug.fosfora.handkick 0.3             (outward speed, m/s, a hand gives the particles it touches)
     //   adb shell setprop debug.fosfora.flow 0.35                (flow speed multiplier; default 0.35 in mr, 1 otherwise)
     //   adb shell setprop debug.fosfora.occluders 0|1            (obstacles drawn depth-only so real objects hide sprites; default on in mr)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
@@ -189,6 +190,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .unwrap_or(MR_HAND_PAD_M);
     // The occluder cube hugs the joint itself (a cube already reads larger
     // than the finger inside it; +2 cm looked like a 1-inch force field).
+    let hand_kick = debug_prop("debug.fosfora.handkick")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(MR_HAND_KICK);
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -496,7 +500,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
                     (hand_pad - hand_occ).max(0.0),
-                    MR_HAND_KICK,
+                    hand_kick,
                 );
                 for s in &input.hands.spheres {
                     set.push_sphere([s[0], s[1], s[2], s[3] + hand_pad]);

@@ -62,7 +62,11 @@ fn collide(p: ptr<function, Particle>) {
             if vn < 0.0 {
                 (*p).vel -= (1.0 + restitution) * vn * n;
             }
-            (*p).vel += n * obstacles.sphere_kick;
+            // Bring the outward speed up to the kick, never beyond it: a
+            // particle that stays inside the pad must not accumulate speed
+            // frame after frame (that read as a fountain around the hands).
+            let outward = dot((*p).vel, n);
+            (*p).vel += n * max(obstacles.sphere_kick - outward, 0.0);
         }
     }
     for (var k = 0u; k < min(obstacles.box_count, MAX_BOXES); k++) {
