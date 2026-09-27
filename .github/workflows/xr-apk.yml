@@ -131,9 +131,16 @@ jobs:
         run: |
           apk=android/app/build/outputs/apk/debug/app-debug.apk
           apksigner="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          echo "apksigner: $apksigner"
           # The cert digest must be identical run to run; that is what lets
-          # `adb install -r` replace the previous build.
-          "$apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate (DN|SHA-256)'
+          # `adb install -r` replace the previous build. Print apksigner's whole
+          # output on failure: its errors go to stdout, next to the cert lines.
+          if ! certs=$("$apksigner" verify --print-certs "$apk" 2>&1); then
+            printf '%s\n' "$certs"
+            echo "::error::apksigner could not verify $apk"
+            exit 1
+          fi
+          printf '%s\n' "$certs" | grep -E 'certificate (DN|SHA-256)' || printf '%s\n' "$certs"
           name="fosfora-xr-debug-${SHA::7}.apk"
           mkdir -p staging
           cp "$apk" "staging/$name"
