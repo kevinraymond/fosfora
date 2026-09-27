@@ -1147,27 +1147,6 @@ pub fn should_auto_start(settings: &crate::settings::SettingsConfig) -> bool {
             .any(|k| k == Tour::FirstRun.key())
 }
 
-/// The tours, each with a way to start it: Setup › Tutorials.
-pub fn draw_tutorials(ui: &mut Ui) {
-    let tc = theme_colors(ui.ctx());
-    for &t in Tour::ALL {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(t.name()).size(BODY_SIZE).strong());
-                ui.label(
-                    RichText::new(format!("{} {} steps.", t.description(), t.steps().len()))
-                        .size(SMALL_SIZE)
-                        .color(tc.text_secondary),
-                );
-            });
-        });
-        if ui.button(format!("Start {}", t.name())).clicked() {
-            start(ui.ctx(), t);
-        }
-        ui.add_space(6.0);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,10 +15,9 @@ use crate::ui::theme::tokens::{MIN_INTERACT_HEIGHT, SMALL_SIZE};
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
-    appearance_panel, audio_panel, catalog_panel, cue_strip, layer_panel, media_panel, midi_panel,
-    osc_panel, output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel,
-    scene_panel, settings_panel, stack_panel, status_bar, triggers_panel, volumetric_panel,
-    web_panel,
+    audio_panel, catalog_panel, cue_strip, layer_panel, media_panel, output_window_panel,
+    param_panel, postfx_panel, preset_panel, scene_panel, stack_panel, status_bar,
+    volumetric_panel,
 };
 use super::{tour, widgets};
 use crate::audio::AudioSystem;
@@ -1119,7 +1118,8 @@ fn perform_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32)
         });
 }
 
-/// Setup: audio, control surfaces and preferences, at full width.
+/// Setup: a list of pages and one page at a time ([`super::setup`]), with
+/// the output on the right.
 fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -> f32 {
     // On the right at Build's width, so the output is in the same place in
     // every workspace.
@@ -1131,95 +1131,7 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
         .show(ctx, |ui| {
             output_section(ui, "v2_setup_out", s.display);
         });
-
-    egui::CentralPanel::default()
-        .frame(panel_frame(fill))
-        .show(ctx, |ui| {
-            ScrollArea::vertical().show(ui, |ui| {
-                // Cards across the width rather than one tall stack: Setup is
-                // the widest workspace and a single column wasted most of it.
-                // One column per ~420 px, capped at three.
-                let n = ((ui.available_width() / 420.0).floor() as usize).clamp(1, 3);
-                let rec_info: Option<recording_panel::RecordingInfo> = ui
-                    .ctx()
-                    .data_mut(|d| d.get_temp(egui::Id::new("recording_info")));
-                ui.columns(n, |cols| {
-                    let col = |i: usize| i % n;
-
-                    widgets::section(
-                        &mut cols[col(0)],
-                        "v2_setup_audio",
-                        "Audio",
-                        None,
-                        true,
-                        |ui| {
-                            audio_panel::draw_audio_panel(ui, s.audio, s.uniforms);
-                        },
-                    );
-
-                    let c = &mut cols[col(1)];
-                    widgets::section(c, "v2_setup_midi", "MIDI", None, true, |ui| {
-                        midi_panel::draw_midi_panel(ui, s.midi);
-                    });
-                    widgets::section(c, "v2_setup_osc", "OSC", None, true, |ui| {
-                        osc_panel::draw_osc_panel(ui, s.osc);
-                    });
-                    let mapped = s.midi.config.triggers.len() + s.osc.config.triggers.len();
-                    let trig_badge = (mapped > 0).then(|| format!("{mapped}"));
-                    widgets::section(
-                        c,
-                        "v2_setup_triggers",
-                        "Triggers",
-                        trig_badge.as_deref(),
-                        false,
-                        |ui| {
-                            triggers_panel::draw_triggers_table(ui, s.midi, s.osc);
-                        },
-                    );
-
-                    let c = &mut cols[col(2)];
-                    widgets::section(c, "v2_setup_web", "Web", None, false, |ui| {
-                        web_panel::draw_web_panel(ui, s.web);
-                    });
-                    if let Some(ref info) = rec_info {
-                        let badge = info.recording.then_some("REC");
-                        widgets::section(c, "v2_setup_rec", "Recording", badge, false, |ui| {
-                            recording_panel::draw_recording_panel(ui, info);
-                        });
-                    }
-                    widgets::section(c, "v2_setup_look", "Appearance", None, true, |ui| {
-                        appearance_panel::draw_appearance_panel(
-                            ui,
-                            &s.settings.theme,
-                            s.settings.ui_scale,
-                        );
-                    });
-                    widgets::section(c, "v2_setup_tours", "Tutorials", None, true, |ui| {
-                        tour::draw_tutorials(ui);
-                    });
-                    widgets::section(c, "v2_setup_global", "Global", None, true, |ui| {
-                        settings_panel::draw_settings_panel(
-                            ui,
-                            s.settings.particle_quality,
-                            s.settings.band_scale,
-                            s.settings.use_ffmpeg_webcam,
-                            s.settings.auto_reconnect,
-                            s.settings.output_alpha,
-                            s.settings.classic_layout,
-                        );
-                    });
-                });
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Streams (NDI, virtual camera, Spout, Syphon) are still only in the \
-                         Classic layout.",
-                    )
-                    .size(SMALL_SIZE)
-                    .color(theme_colors(ui.ctx()).text_secondary),
-                );
-            });
-        });
+    super::setup::draw(ctx, s, fill);
     output.response.rect.left()
 }
 

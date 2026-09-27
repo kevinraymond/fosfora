@@ -15,15 +15,14 @@
 
 - New **workspace layout**, in Settings ▸ Global: turn off *Classic layout* for
   Perform, Build and Setup instead of two narrow side panels, with the output as a
-  preview rather than the backdrop. Streams are still Classic-only, and the switch
-  goes away in v2.1.
+  preview rather than the backdrop. The switch goes away in v2.1.
 
 - Hiding the interface is no longer a dead end: a hint names the way back, and Esc
   returns you instead of asking whether to quit.
 
 - **Send the output to a second display**, in a borderless window with no interface
   on it, so the workspace can stay on one screen while a projector carries the
-  picture. Pick the display under *Outputs* (Classic) or *Setup ▸ Output*; the frame
+  picture. Pick the display under the output preview, or *Outputs* in Classic; the frame
   keeps its own aspect ratio instead of stretching, and Esc closes the window.
 
 - In the workspace layout, **Build shows the layer stack as pictures**: each row is the
@@ -131,6 +130,12 @@
   turns. It happened whenever *segments* was not a whole number: its slider now steps
   in whole numbers, and a fraction from an older preset rounds. A trama effect can mark
   any such parameter with `"integers"` in its manifest.
+
+- In the workspace layout, **Setup is a list of pages**: Audio, Control, Outputs and
+  streams, Sync, Appearance, Tutorials and General, each marked on, waiting or off, with
+  every device a block that says its state in words beside an On/Off switch. NDI, the
+  virtual camera, Spout, Syphon and Ableton Link are all there, and Triggers can now map
+  Timeline, Tempo ÷2, Tempo ×2 and Tap tempo.
 
 - In the Bindings window, an open card no longer cuts off its name, source and
   target, and the source list no longer draws values over the uniform names beside

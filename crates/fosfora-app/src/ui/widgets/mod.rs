@@ -62,53 +62,52 @@ pub enum Mark {
 }
 
 pub fn paint_mark(ui: &mut Ui, mark: Mark) -> egui::Response {
-    let tc = theme_colors(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
-    let c = rect.center();
-    let p = ui.painter();
+    paint_mark_at(
+        ui.painter(),
+        &theme_colors(ui.ctx()),
+        rect.center(),
+        mark,
+        1.0,
+    );
+    resp
+}
+
+/// [`paint_mark`] at `c`, `scale` times its 10 px size, without taking space.
+pub fn paint_mark_at(
+    p: &egui::Painter,
+    tc: &crate::ui::theme::colors::ThemeColors,
+    c: egui::Pos2,
+    mark: Mark,
+    scale: f32,
+) {
+    let v = |x: f32, y: f32| egui::Vec2::new(x, y) * scale;
     match mark {
         Mark::Active => {
-            p.circle_filled(c, 3.5, tc.success);
+            p.circle_filled(c, 3.5 * scale, tc.success);
         }
         Mark::Idle => {
-            p.circle_stroke(c, 3.0, Stroke::new(1.2_f32, tc.text_secondary));
+            p.circle_stroke(c, 3.0 * scale, Stroke::new(1.2 * scale, tc.text_secondary));
         }
         Mark::Off => {
             p.line_segment(
-                [c - egui::Vec2::new(3.0, 0.0), c + egui::Vec2::new(3.0, 0.0)],
-                Stroke::new(1.2_f32, tc.text_dim),
+                [c - v(3.0, 0.0), c + v(3.0, 0.0)],
+                Stroke::new(1.2 * scale, tc.text_dim),
             );
         }
         Mark::Warn => {
             p.add(egui::Shape::convex_polygon(
-                vec![
-                    c + egui::Vec2::new(0.0, -4.0),
-                    c + egui::Vec2::new(4.0, 3.5),
-                    c + egui::Vec2::new(-4.0, 3.5),
-                ],
+                vec![c + v(0.0, -4.0), c + v(4.0, 3.5), c + v(-4.0, 3.5)],
                 tc.warning,
                 Stroke::NONE,
             ));
         }
         Mark::Fault => {
-            let s = Stroke::new(1.6_f32, tc.error);
-            p.line_segment(
-                [
-                    c + egui::Vec2::new(-3.5, -3.5),
-                    c + egui::Vec2::new(3.5, 3.5),
-                ],
-                s,
-            );
-            p.line_segment(
-                [
-                    c + egui::Vec2::new(-3.5, 3.5),
-                    c + egui::Vec2::new(3.5, -3.5),
-                ],
-                s,
-            );
+            let s = Stroke::new(1.6 * scale, tc.error);
+            p.line_segment([c + v(-3.5, -3.5), c + v(3.5, 3.5)], s);
+            p.line_segment([c + v(-3.5, 3.5), c + v(3.5, -3.5)], s);
         }
     }
-    resp
 }
 
 /// A header that takes a click anywhere on it: the full width, and at least
