@@ -144,12 +144,22 @@ impl Room {
             return;
         }
         self.started = true;
-        if let Err(e) = self.query() {
-            warn!("scene: {e:#}");
+        self.query_any();
+    }
+
+    /// The LOCAL storage filter (Meta's sample) failed validation on v207
+    /// (`ERROR_VALIDATION_FAILURE`, Sep 27); the unfiltered query works. Try
+    /// the filter first, fall back to no filter.
+    fn query_any(&mut self) {
+        if let Err(e) = self.query(true) {
+            warn!("scene: filtered query: {e:#}; retrying unfiltered");
+            if let Err(e) = self.query(false) {
+                warn!("scene: {e:#}");
+            }
         }
     }
 
-    fn query(&mut self) -> Result<()> {
+    fn query(&mut self, filter_local: bool) -> Result<()> {
         let exts = self.instance.exts();
         let fp = exts
             .fb_spatial_entity_query
@@ -164,7 +174,7 @@ impl Room {
             location: sys::SpaceStorageLocationFB::LOCAL,
         };
         let filter: *const sys::SpaceFilterInfoBaseHeaderFB =
-            if exts.fb_spatial_entity_storage.is_some() {
+            if filter_local && exts.fb_spatial_entity_storage.is_some() {
                 ptr::from_ref(&storage_filter).cast()
             } else {
                 ptr::null()
@@ -190,7 +200,15 @@ impl Room {
             )
         };
         check(result).context("xrQuerySpacesFB")?;
-        info!("scene: query started (request {})", request.into_raw());
+        info!(
+            "scene: query started (request {}, {})",
+            request.into_raw(),
+            if filter.is_null() {
+                "no filter"
+            } else {
+                "LOCAL storage filter"
+            }
+        );
         self.request = Some(request);
         Ok(())
     }
@@ -272,9 +290,8 @@ impl Room {
             return;
         }
         info!("scene: Space Setup finished ({result:?}); querying again");
-        if let Err(e) = self.query() {
-            warn!("scene: {e:#}");
-        }
+        self.capture = None;
+        self.query_any();
     }
 
     fn retrieve(&mut self, request: sys::AsyncRequestIdFB) -> Result<()> {

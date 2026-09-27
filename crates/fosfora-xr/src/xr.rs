@@ -597,6 +597,19 @@ impl XrSession {
             .session
             .locate_views(VIEW_TYPE, frame_state.predicted_display_time, &self.space)
             .context("xrLocateViews")?;
+        let tracked = xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID;
+        if !view_flags.contains(tracked) {
+            // Just put on, or tracking lost: the runtime rejects a projection
+            // layer built from these poses (ERROR_POSE_INVALID at
+            // xrEndFrame). Show passthrough alone, or nothing.
+            let passthrough_layer = self.passthrough_layer();
+            let layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> =
+                passthrough_layer.iter().map(as_layer_base).collect();
+            self.stream
+                .end(frame_state.predicted_display_time, self.blend_mode, &layers)
+                .context("xrEndFrame (views not tracked)")?;
+            return Ok(());
+        }
         let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
         log_stereo(view_flags, &views, &cameras);
 
@@ -660,30 +673,9 @@ impl XrSession {
             .layer_flags(layer_flags)
             .space(&self.space)
             .views(&projection_views);
-        // The openxr crate does not re-export its passthrough layer builder,
-        // so the raw struct is filled in directly (spec: `space` is null and
-        // `flags` empty for a reconstruction layer).
-        let passthrough_layer =
-            self.passthrough
-                .as_ref()
-                .map(|p| xr::sys::CompositionLayerPassthroughFB {
-                    ty: xr::sys::CompositionLayerPassthroughFB::TYPE,
-                    next: std::ptr::null(),
-                    flags: xr::CompositionLayerFlags::EMPTY,
-                    space: xr::sys::Space::NULL,
-                    layer_handle: p.layer.as_raw(),
-                });
+        let passthrough_layer = self.passthrough_layer();
         let mut layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = Vec::with_capacity(2);
-        if let Some(p) = &passthrough_layer {
-            // SAFETY: `CompositionLayerBase` is `repr(transparent)` over
-            // `XrCompositionLayerBaseHeader`, and every composition layer
-            // struct, this one included, starts with that header (the spec's
-            // polymorphic layer rule, which is also how the openxr crate's
-            // own builders deref to the base). `p` outlives `layers`.
-            layers.push(unsafe {
-                &*std::ptr::from_ref(p).cast::<xr::CompositionLayerBase<'_, xr::Vulkan>>()
-            });
-        }
+        layers.extend(passthrough_layer.iter().map(as_layer_base));
         layers.push(&layer);
         stats.record_cpu(cpu_start.elapsed());
         self.stream
@@ -691,6 +683,37 @@ impl XrSession {
             .context("xrEndFrame")?;
         Ok(())
     }
+}
+
+impl XrSession {
+    /// The passthrough composition layer for this frame, if passthrough is
+    /// on. The openxr crate does not re-export its builder, so the raw struct
+    /// is filled in directly (spec: `space` is null and `flags` empty for a
+    /// reconstruction layer).
+    fn passthrough_layer(&self) -> Option<xr::sys::CompositionLayerPassthroughFB> {
+        self.passthrough
+            .as_ref()
+            .map(|p| xr::sys::CompositionLayerPassthroughFB {
+                ty: xr::sys::CompositionLayerPassthroughFB::TYPE,
+                next: std::ptr::null(),
+                flags: xr::CompositionLayerFlags::EMPTY,
+                space: xr::sys::Space::NULL,
+                layer_handle: p.layer.as_raw(),
+            })
+    }
+}
+
+/// View a raw passthrough layer as the polymorphic layer base `xrEndFrame`
+/// takes.
+fn as_layer_base(
+    p: &xr::sys::CompositionLayerPassthroughFB,
+) -> &xr::CompositionLayerBase<'_, xr::Vulkan> {
+    // SAFETY: `CompositionLayerBase` is `repr(transparent)` over
+    // `XrCompositionLayerBaseHeader`, and every composition layer struct,
+    // this one included, starts with that header (the spec's polymorphic
+    // layer rule, which is also how the openxr crate's own builders deref to
+    // the base). The returned borrow lives as long as `p`.
+    unsafe { &*std::ptr::from_ref(p).cast::<xr::CompositionLayerBase<'_, xr::Vulkan>>() }
 }
 
 fn camera(view: &xr::View) -> EyeCamera {
