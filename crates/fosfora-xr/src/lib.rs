@@ -12,6 +12,7 @@
 mod app;
 #[cfg(target_os = "android")]
 mod gfx;
+pub mod math;
 #[cfg(target_os = "android")]
 mod xr;
 

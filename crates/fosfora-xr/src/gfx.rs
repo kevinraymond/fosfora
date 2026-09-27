@@ -1,34 +1,77 @@
-//! Vulkan through `ash`, with the instance and device created by the OpenXR
-//! runtime (`XR_KHR_vulkan_enable2`). S1 only clears swapchain images; S2
-//! replaces this with wgpu on the same instance/device/queue.
+//! Vulkan interop and the S2 test renderer.
+//!
+//! The OpenXR runtime creates the Vulkan instance and device
+//! (`XR_KHR_vulkan_enable2`) from create-infos that carry exactly the
+//! extensions and features wgpu-hal asks for; both are then wrapped into
+//! wgpu 27 through `wgpu::hal` (`Instance::from_raw` → `expose_adapter` →
+//! `device_from_raw` → `wgpu::Instance::from_hal` and friends). Swapchain
+//! images become `wgpu::Texture`s that wgpu never frees: OpenXR owns them.
 
-use std::ffi::CStr;
+use std::ffi::c_char;
 
 use anyhow::{Context, Result, anyhow};
 use ash::vk::{self, Handle as _};
-use log::info;
+use glam::Mat4;
+use log::{error, info, warn};
 use openxr as xr;
+use wgpu::hal;
+use wgpu::hal::api::Vulkan as HalVk;
 
 use crate::xr::XrContext;
 
-/// Command buffers / fences in rotation. Two is enough: xrWaitFrame already
-/// throttles the CPU to one frame ahead of the compositor.
-pub const FRAMES_IN_FLIGHT: usize = 2;
+/// Top of the range the Quest runtime reports (1.0 .. 1.2). Everything the
+/// core needs is available at 1.1; 1.2 promotes timeline semaphores.
+const VK_API_VERSION: u32 = vk::API_VERSION_1_2;
+
+/// Matches the desktop surface choice (`gpu/context.rs`); the runtime offers
+/// the same `R8G8B8A8_SRGB` for swapchains.
+pub const SWAPCHAIN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const SWAPCHAIN_VK_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
+
+/// The limits the core's pipeline layouts rely on (`gpu/context.rs`). Below
+/// these the S2 gate says stop and report.
+const REQUIRED_STORAGE_BUFFERS_PER_STAGE: u32 = 16;
+const REQUIRED_BIND_GROUPS: u32 = 5;
+
+/// Raw handles the OpenXR session binding needs. They stay valid as long as
+/// the owning `Gfx` (wgpu keeps the instance and device alive).
+#[derive(Clone, Copy)]
+pub struct RawHandles {
+    pub instance: vk::Instance,
+    pub physical_device: vk::PhysicalDevice,
+    pub device: vk::Device,
+    pub queue_family_index: u32,
+}
 
 pub struct Gfx {
-    _entry: ash::Entry,
-    pub instance: ash::Instance,
-    pub physical_device: vk::PhysicalDevice,
-    pub device: ash::Device,
-    pub queue_family_index: u32,
-    pub queue: vk::Queue,
-    command_pool: vk::CommandPool,
-    command_buffers: Vec<vk::CommandBuffer>,
-    fences: Vec<vk::Fence>,
+    // Field order is drop order: the pipeline and buffers go before the
+    // device, the device before the adapter and instance.
+    eyes: Vec<EyeUniform>,
+    pipeline: wgpu::RenderPipeline,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    _adapter: wgpu::Adapter,
+    _instance: wgpu::Instance,
+    pub raw: RawHandles,
+    pub swapchain_vk_format: vk::Format,
+}
+
+struct EyeUniform {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Adapter limits recorded for `docs/xr/MEASURED.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct RecordedLimits {
+    pub max_storage_buffers_per_shader_stage: u32,
+    pub max_bind_groups: u32,
+    pub max_storage_buffer_binding_size: u32,
+    pub max_buffer_size: u64,
 }
 
 impl Gfx {
-    pub fn new(ctx: &XrContext) -> Result<Self> {
+    pub fn new(ctx: &XrContext, android_sdk_version: u32) -> Result<Self> {
         // SAFETY: loads the system `libvulkan.so`, Android's Vulkan loader.
         let entry = unsafe { ash::Entry::load() }.context("loading libvulkan.so")?;
         // openxr-sys and ash spell the `vkGetInstanceProcAddr` pointer type
@@ -37,15 +80,32 @@ impl Gfx {
         let get_instance_proc_addr: xr::sys::platform::VkGetInstanceProcAddr =
             unsafe { std::mem::transmute(entry.static_fn().get_instance_proc_addr) };
 
+        // ---- Instance: what wgpu-hal wants, created by the runtime. ----
+        let instance_flags = wgpu::InstanceFlags::empty();
+        let instance_extensions =
+            hal::vulkan::Instance::desired_extensions(&entry, VK_API_VERSION, instance_flags)
+                .map_err(|e| anyhow!("wgpu-hal desired_extensions: {e}"))?;
+        info!(
+            "vulkan instance extensions for wgpu: {}",
+            instance_extensions
+                .iter()
+                .map(|e| e.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let instance_ext_ptrs: Vec<*const c_char> =
+            instance_extensions.iter().map(|e| e.as_ptr()).collect();
         let app_info = vk::ApplicationInfo::default()
             .application_name(c"Fosfora VR")
             .application_version(1)
             .engine_name(c"fosfora")
             .engine_version(1)
-            .api_version(vk::make_api_version(0, 1, 1, 0));
-        let instance_info = vk::InstanceCreateInfo::default().application_info(&app_info);
-        // SAFETY: `instance_info` is a complete, valid VkInstanceCreateInfo that
-        // outlives the call; the runtime adds the extensions it needs.
+            .api_version(VK_API_VERSION);
+        let instance_info = vk::InstanceCreateInfo::default()
+            .application_info(&app_info)
+            .enabled_extension_names(&instance_ext_ptrs);
+        // SAFETY: `instance_info` is a complete, valid VkInstanceCreateInfo
+        // that outlives the call; the runtime appends what it needs.
         let raw_instance = unsafe {
             ctx.instance.create_vulkan_instance(
                 ctx.system,
@@ -60,53 +120,104 @@ impl Gfx {
                 vk::Result::from_raw(r)
             )
         })?;
-        // SAFETY: `raw_instance` is a live VkInstance created with this entry's
-        // `vkGetInstanceProcAddr`.
-        let instance = unsafe {
+        // SAFETY: `raw_instance` is a live VkInstance created with this
+        // entry's `vkGetInstanceProcAddr`.
+        let ash_instance = unsafe {
             ash::Instance::load(
                 entry.static_fn(),
                 vk::Instance::from_raw(raw_instance as u64),
             )
         };
+        // SAFETY: the instance was created from `entry` with exactly
+        // `instance_extensions`, `VK_API_VERSION` and `instance_flags`;
+        // `drop_callback` is None so wgpu-hal owns and destroys it.
+        let hal_instance = unsafe {
+            hal::vulkan::Instance::from_raw(
+                entry.clone(),
+                ash_instance,
+                VK_API_VERSION,
+                android_sdk_version,
+                None,
+                instance_extensions,
+                instance_flags,
+                wgpu::MemoryBudgetThresholds::default(),
+                false,
+                None,
+            )
+        }
+        .map_err(|e| anyhow!("wgpu-hal Instance::from_raw: {e}"))?;
 
-        // SAFETY: `instance` was created through `create_vulkan_instance` above.
+        // ---- Physical device: the one the runtime renders with. ----
+        // SAFETY: the instance came from `create_vulkan_instance` above.
         let physical_device = vk::PhysicalDevice::from_raw(
             unsafe {
-                ctx.instance
-                    .vulkan_graphics_device(ctx.system, instance.handle().as_raw() as _)
+                ctx.instance.vulkan_graphics_device(
+                    ctx.system,
+                    hal_instance
+                        .shared_instance()
+                        .raw_instance()
+                        .handle()
+                        .as_raw() as _,
+                )
             }
             .context("xrGetVulkanGraphicsDevice2KHR")? as u64,
         );
-        // SAFETY: `physical_device` belongs to `instance`.
-        let props = unsafe { instance.get_physical_device_properties(physical_device) };
-        // SAFETY: `device_name` is a NUL-terminated fixed array filled by the driver.
-        let name = unsafe { CStr::from_ptr(props.device_name.as_ptr()) }.to_string_lossy();
+        let exposed = hal_instance
+            .expose_adapter(physical_device)
+            .ok_or_else(|| anyhow!("wgpu-hal rejected the runtime's physical device"))?;
         info!(
-            "vulkan device: {name} · api {}.{}.{} · driver {:#x} · vendor {:#x} device {:#x}",
-            vk::api_version_major(props.api_version),
-            vk::api_version_minor(props.api_version),
-            vk::api_version_patch(props.api_version),
-            props.driver_version,
-            props.vendor_id,
-            props.device_id,
+            "wgpu adapter: {} ({:?}, driver {} {}) · backend {:?}",
+            exposed.info.name,
+            exposed.info.device_type,
+            exposed.info.driver,
+            exposed.info.driver_info,
+            exposed.info.backend
         );
+        let limits = record_limits(&exposed.capabilities.limits);
+        info!("wgpu features: {:?}", exposed.features);
+        info!("wgpu downlevel: {:?}", exposed.capabilities.downlevel.flags);
 
-        // SAFETY: `physical_device` belongs to `instance`.
-        let families =
-            unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
+        // ---- Device: extensions + features wgpu-hal needs, created by the runtime. ----
+        let features = wgpu::Features::empty();
+        let device_extensions = exposed.adapter.required_device_extensions(features);
+        info!(
+            "vulkan device extensions for wgpu: {}",
+            device_extensions
+                .iter()
+                .map(|e| e.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let mut phd_features = exposed
+            .adapter
+            .physical_device_features(&device_extensions, features);
+
+        // SAFETY: `physical_device` belongs to the hal instance's VkInstance.
+        let families = unsafe {
+            hal_instance
+                .shared_instance()
+                .raw_instance()
+                .get_physical_device_queue_family_properties(physical_device)
+        };
         let queue_family_index = families
             .iter()
             .position(|f| f.queue_flags.contains(vk::QueueFlags::GRAPHICS))
             .ok_or_else(|| anyhow!("no graphics queue family"))?
             as u32;
-
         let priorities = [1.0f32];
         let queue_infos = [vk::DeviceQueueCreateInfo::default()
             .queue_family_index(queue_family_index)
             .queue_priorities(&priorities)];
-        let device_info = vk::DeviceCreateInfo::default().queue_create_infos(&queue_infos);
-        // SAFETY: `device_info` is complete and valid for the duration of the
-        // call, and `physical_device` is the one the runtime selected.
+        let device_ext_ptrs: Vec<*const c_char> =
+            device_extensions.iter().map(|e| e.as_ptr()).collect();
+        let device_info = phd_features.add_to_device_create(
+            vk::DeviceCreateInfo::default()
+                .queue_create_infos(&queue_infos)
+                .enabled_extension_names(&device_ext_ptrs),
+        );
+        // SAFETY: `device_info` (and the feature structs chained by wgpu-hal)
+        // is complete and valid for the duration of the call, and
+        // `physical_device` is the one the runtime selected.
         let raw_device = unsafe {
             ctx.instance.create_vulkan_device(
                 ctx.system,
@@ -117,182 +228,318 @@ impl Gfx {
         }
         .context("xrCreateVulkanDeviceKHR")?
         .map_err(|r| anyhow!("vkCreateDevice via runtime: {:?}", vk::Result::from_raw(r)))?;
-        // SAFETY: `raw_device` is a live VkDevice created from `instance`.
-        let device = unsafe {
-            ash::Device::load(instance.fp_v1_0(), vk::Device::from_raw(raw_device as u64))
+        // SAFETY: `raw_device` is a live VkDevice created from this instance.
+        let ash_device = unsafe {
+            ash::Device::load(
+                hal_instance.shared_instance().raw_instance().fp_v1_0(),
+                vk::Device::from_raw(raw_device as u64),
+            )
         };
-        // SAFETY: queue family `queue_family_index` with one queue was requested above.
-        let queue = unsafe { device.get_device_queue(queue_family_index, 0) };
-
-        // SAFETY: plain object creation on a live device; the pool is destroyed in Drop.
-        let command_pool = unsafe {
-            device.create_command_pool(
-                &vk::CommandPoolCreateInfo::default()
-                    .queue_family_index(queue_family_index)
-                    .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER),
+        // SAFETY: the device was created from this adapter with
+        // `queue_family_index`, `device_extensions` and the feature set
+        // `physical_device_features()` produced; `drop_callback` is None so
+        // wgpu-hal owns and destroys it.
+        let open_device = unsafe {
+            exposed.adapter.device_from_raw(
+                ash_device,
                 None,
+                &device_extensions,
+                features,
+                &wgpu::MemoryHints::Performance,
+                queue_family_index,
+                0,
             )
         }
-        .context("vkCreateCommandPool")?;
-        // SAFETY: `command_pool` is live; the buffers are freed with it.
-        let command_buffers = unsafe {
-            device.allocate_command_buffers(
-                &vk::CommandBufferAllocateInfo::default()
-                    .command_pool(command_pool)
-                    .command_buffer_count(FRAMES_IN_FLIGHT as u32),
+        .map_err(|e| anyhow!("wgpu-hal device_from_raw: {e}"))?;
+
+        let raw = RawHandles {
+            instance: hal_instance.shared_instance().raw_instance().handle(),
+            physical_device,
+            device: open_device.device.raw_device().handle(),
+            queue_family_index,
+        };
+
+        // ---- wgpu on top. ----
+        // SAFETY: `hal_instance` is a live, usable Vulkan hal instance.
+        let instance = unsafe { wgpu::Instance::from_hal::<HalVk>(hal_instance) };
+        // SAFETY: `exposed` was produced by that instance's `expose_adapter`.
+        let adapter = unsafe { instance.create_adapter_from_hal::<HalVk>(exposed) };
+        // SAFETY: `open_device` was created from this adapter; the requested
+        // features (none) are a subset of what it supports.
+        let (device, queue) = unsafe {
+            adapter.create_device_from_hal::<HalVk>(
+                open_device,
+                &wgpu::DeviceDescriptor {
+                    label: Some("fosfora-xr-device"),
+                    required_features: features,
+                    required_limits: wgpu::Limits {
+                        max_storage_buffers_per_shader_stage: REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+                        max_bind_groups: REQUIRED_BIND_GROUPS,
+                        max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+                        max_buffer_size: limits.max_buffer_size,
+                        ..wgpu::Limits::default()
+                    },
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    trace: wgpu::Trace::Off,
+                },
             )
         }
-        .context("vkAllocateCommandBuffers")?;
-        let fences = (0..FRAMES_IN_FLIGHT)
-            .map(|_| {
-                // SAFETY: plain object creation on a live device; destroyed in Drop.
-                unsafe {
-                    device.create_fence(
-                        &vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED),
-                        None,
-                    )
-                }
-                .context("vkCreateFence")
-            })
-            .collect::<Result<Vec<_>>>()?;
+        .context("wgpu create_device_from_hal")?;
+        device.on_uncaptured_error(std::sync::Arc::new(|e| error!("wgpu error: {e}")));
+        device
+            .set_device_lost_callback(|reason, msg| error!("wgpu device lost ({reason:?}): {msg}"));
+
+        let (pipeline, eyes) = build_triangle_pipeline(&device);
+        info!("wgpu device ready");
 
         Ok(Self {
-            _entry: entry,
-            instance,
-            physical_device,
+            eyes,
+            pipeline,
             device,
-            queue_family_index,
             queue,
-            command_pool,
-            command_buffers,
-            fences,
+            _adapter: adapter,
+            _instance: instance,
+            raw,
+            swapchain_vk_format: SWAPCHAIN_VK_FORMAT,
         })
     }
 
-    /// Wait for slot `slot`'s previous submission, then start recording into
-    /// its command buffer.
-    pub fn begin_commands(&self, slot: usize) -> Result<vk::CommandBuffer> {
-        let fence = self.fences[slot];
-        let cmd = self.command_buffers[slot];
-        // SAFETY: `fence` and `cmd` belong to this device; the fence was either
-        // created signaled or signaled by the submission of this slot, so
-        // resetting and re-recording cannot race the GPU.
-        unsafe {
-            self.device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .context("vkWaitForFences")?;
-            self.device
-                .reset_fences(&[fence])
-                .context("vkResetFences")?;
-            self.device
-                .begin_command_buffer(
-                    cmd,
-                    &vk::CommandBufferBeginInfo::default()
-                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-                )
-                .context("vkBeginCommandBuffer")?;
-        }
-        Ok(cmd)
-    }
-
-    /// Clear a swapchain image and leave it in `COLOR_ATTACHMENT_OPTIMAL`, the
-    /// layout OpenXR requires at `xrReleaseSwapchainImage`.
-    pub fn record_clear(&self, cmd: vk::CommandBuffer, image: vk::Image, color: [f32; 4]) {
-        let range = vk::ImageSubresourceRange {
-            aspect_mask: vk::ImageAspectFlags::COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
+    /// Wrap an OpenXR swapchain image as a wgpu texture plus a full view. The
+    /// no-op drop callback keeps wgpu from freeing the image: OpenXR owns it.
+    pub fn wrap_swapchain_image(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
         };
-        let to_transfer = vk::ImageMemoryBarrier::default()
-            .image(image)
-            .subresource_range(range)
-            // Contents are discarded: UNDEFINED is valid whatever layout the
-            // compositor left the image in.
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::empty())
-            .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
-        let to_attachment = vk::ImageMemoryBarrier::default()
-            .image(image)
-            .subresource_range(range)
-            .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(
-                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        let hal_desc = hal::TextureDescriptor {
+            label: Some("xr-swapchain-image"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SWAPCHAIN_FORMAT,
+            usage: wgpu::TextureUses::COLOR_TARGET,
+            memory_flags: hal::MemoryFlags::empty(),
+            view_formats: vec![],
+        };
+        // SAFETY: the image was created by the runtime with COLOR_ATTACHMENT
+        // usage, this format and size (`xrCreateSwapchain`); the Some(no-op)
+        // callback means wgpu-hal never destroys it, and OpenXR keeps it alive
+        // until the swapchain is destroyed, which happens before this device.
+        let hal_texture = unsafe {
+            self.device
+                .as_hal::<HalVk>()
+                .ok_or_else(|| anyhow!("wgpu device is not Vulkan"))?
+                .texture_from_raw(image, &hal_desc, Some(Box::new(|| {})))
+        };
+        // SAFETY: `hal_texture` belongs to this device and matches `desc`.
+        let texture = unsafe {
+            self.device.create_texture_from_hal::<HalVk>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("xr-swapchain-image"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: SWAPCHAIN_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                },
             )
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED);
-        // SAFETY: `cmd` is in the recording state (from `begin_commands`) and
-        // `image` is a swapchain image the runtime handed us for this frame
-        // (acquired and waited on) with TRANSFER_DST usage.
-        unsafe {
-            self.device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_transfer],
-            );
-            self.device.cmd_clear_color_image(
-                cmd,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &vk::ClearColorValue { float32: color },
-                &[range],
-            );
-            self.device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[to_attachment],
-            );
-        }
+        };
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok((texture, view))
     }
 
-    /// End recording and submit on the queue the OpenXR session was bound to.
-    pub fn submit(&self, cmd: vk::CommandBuffer, slot: usize) -> Result<()> {
-        let cmds = [cmd];
-        let submit = vk::SubmitInfo::default().command_buffers(&cmds);
-        // SAFETY: `cmd` was recorded by `begin_commands` / `record_clear` in
-        // this slot and the slot's fence was reset in `begin_commands`.
-        unsafe {
-            self.device
-                .end_command_buffer(cmd)
-                .context("vkEndCommandBuffer")?;
-            self.device
-                .queue_submit(self.queue, &[submit], self.fences[slot])
-                .context("vkQueueSubmit")?;
+    /// Render the test triangle into both eyes and submit once. The render
+    /// pass is the last use of each swapchain image this frame, so it ends in
+    /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
+    pub fn render(&self, targets: &[&wgpu::TextureView], view_projs: &[Mat4], clear: [f32; 4]) {
+        for (eye, vp) in self.eyes.iter().zip(view_projs) {
+            self.queue
+                .write_buffer(&eye.buffer, 0, bytemuck::bytes_of(&vp.to_cols_array()));
         }
-        Ok(())
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr-frame"),
+            });
+        for (eye, target) in self.eyes.iter().zip(targets) {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("xr-eye"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: f64::from(clear[0]),
+                            g: f64::from(clear[1]),
+                            b: f64::from(clear[2]),
+                            a: f64::from(clear[3]),
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &eye.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
     }
 }
 
-impl Drop for Gfx {
-    fn drop(&mut self) {
-        // SAFETY: the session (and with it every swapchain image) is already
-        // gone (drop order in `app::run_inner`); after the idle wait nothing
-        // references these objects.
-        unsafe {
-            if let Err(e) = self.device.device_wait_idle() {
-                log::warn!("vkDeviceWaitIdle: {e:?}");
-            }
-            for fence in self.fences.drain(..) {
-                self.device.destroy_fence(fence, None);
-            }
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
-        }
-        info!("vulkan device destroyed");
+fn record_limits(l: &wgpu::Limits) -> RecordedLimits {
+    let rec = RecordedLimits {
+        max_storage_buffers_per_shader_stage: l.max_storage_buffers_per_shader_stage,
+        max_bind_groups: l.max_bind_groups,
+        max_storage_buffer_binding_size: l.max_storage_buffer_binding_size,
+        max_buffer_size: l.max_buffer_size,
+    };
+    info!(
+        "adapter limits: max_storage_buffers_per_shader_stage {} · max_bind_groups {} · max_storage_buffer_binding_size {} · max_buffer_size {} · max_texture_dimension_2d {} · max_compute_workgroup_storage_size {} · max_compute_invocations_per_workgroup {} · max_compute_workgroups_per_dimension {} · max_uniform_buffer_binding_size {} · max_push_constant_size {}",
+        l.max_storage_buffers_per_shader_stage,
+        l.max_bind_groups,
+        l.max_storage_buffer_binding_size,
+        l.max_buffer_size,
+        l.max_texture_dimension_2d,
+        l.max_compute_workgroup_storage_size,
+        l.max_compute_invocations_per_workgroup,
+        l.max_compute_workgroups_per_dimension,
+        l.max_uniform_buffer_binding_size,
+        l.max_push_constant_size,
+    );
+    if rec.max_storage_buffers_per_shader_stage < REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        || rec.max_bind_groups < REQUIRED_BIND_GROUPS
+    {
+        // The S2 gate: below this the core's pipeline layouts have to change.
+        warn!(
+            "ADAPTER LIMITS BELOW CORE REQUIREMENTS: storage buffers/stage {} (need {}), bind groups {} (need {})",
+            rec.max_storage_buffers_per_shader_stage,
+            REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+            rec.max_bind_groups,
+            REQUIRED_BIND_GROUPS
+        );
     }
+    rec
+}
+
+const TRIANGLE_WGSL: &str = r"
+struct Eye { view_proj: mat4x4<f32> }
+@group(0) @binding(0) var<uniform> eye: Eye;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) color: vec3<f32>,
+}
+
+// A triangle 1.5 m ahead of the stage origin, base at 1.2 m, apex at 1.7 m.
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
+    var p = array<vec3<f32>, 3>(
+        vec3<f32>(-0.3, 1.2, -1.5),
+        vec3<f32>( 0.3, 1.2, -1.5),
+        vec3<f32>( 0.0, 1.7, -1.5),
+    );
+    var c = array<vec3<f32>, 3>(
+        vec3<f32>(1.0, 0.25, 0.2),
+        vec3<f32>(0.2, 1.0, 0.3),
+        vec3<f32>(0.25, 0.4, 1.0),
+    );
+    var out: VsOut;
+    out.pos = eye.view_proj * vec4<f32>(p[i], 1.0);
+    out.color = c[i];
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+";
+
+fn build_triangle_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, Vec<EyeUniform>) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("xr-triangle"),
+        source: wgpu::ShaderSource::Wgsl(TRIANGLE_WGSL.into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-eye-uniform"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(64),
+            },
+            count: None,
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("xr-triangle"),
+        bind_group_layouts: &[&bgl],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xr-triangle"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SWAPCHAIN_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    let eyes = (0..crate::xr::EYE_COUNT)
+        .map(|i| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("xr-eye-view-proj"),
+                size: 64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(if i == 0 { "xr-eye-0" } else { "xr-eye-1" }),
+                layout: &bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            EyeUniform { buffer, bind_group }
+        })
+        .collect();
+    (pipeline, eyes)
 }

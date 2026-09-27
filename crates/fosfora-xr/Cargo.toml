@@ -15,6 +15,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 log = "0.4"
 anyhow = "1"
+# Matches core; `math.rs` builds and tests on every target.
+glam = "0.29"
 
 # All real dependencies are Android-only so the desktop workspace build (CI, I1)
 # never links OpenXR or the Android glue.
@@ -26,6 +28,10 @@ openxr = { version = "0.22", default-features = false, features = ["loaded"] }
 ash = { version = "0.38", default-features = false, features = ["loaded", "std", "debug"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.15"
+# Same wgpu as fosfora-app (27), Vulkan backend only; `wgpu::hal` is the
+# interop surface. glam matches core.
+wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl", "parking_lot"] }
+bytemuck = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

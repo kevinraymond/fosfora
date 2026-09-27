@@ -35,7 +35,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let xr = XrContext::new(app)?;
     // Declared before `session` so it is dropped after it: OpenXR must release
     // its Vulkan objects (swapchain images) before the device goes away.
-    let gfx = Gfx::new(&xr)?;
+    let sdk_version = u32::try_from(app.config().sdk_version()).unwrap_or(0);
+    let gfx = Gfx::new(&xr, sdk_version)?;
     let mut session = XrSession::new(&xr, &gfx)?;
 
     let started = Instant::now();

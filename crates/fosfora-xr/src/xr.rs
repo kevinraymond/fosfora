@@ -10,17 +10,13 @@ use openxr as xr;
 
 use crate::app::FrameStats;
 use crate::gfx::Gfx;
+use crate::math;
 
 pub const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 pub const EYE_COUNT: usize = 2;
 
-/// Swapchain formats in order of preference. sRGB matches the desktop surface
-/// choice (`gpu/context.rs`); the runtime then handles the transfer function.
-const PREFERRED_FORMATS: [vk::Format; 3] = [
-    vk::Format::R8G8B8A8_SRGB,
-    vk::Format::B8G8R8A8_SRGB,
-    vk::Format::R8G8B8A8_UNORM,
-];
+const NEAR: f32 = 0.05;
+const FAR: f32 = 100.0;
 
 /// Instance-level state: created once, before any Vulkan object exists.
 pub struct XrContext {
@@ -141,12 +137,12 @@ impl XrContext {
             "vulkan requirements: {} .. {}",
             reqs.min_api_version_supported, reqs.max_api_version_supported
         );
-        let wanted = xr::Version::new(1, 1, 0);
+        let wanted = xr::Version::new(1, 2, 0);
         if wanted < reqs.min_api_version_supported
             || wanted.major() > reqs.max_api_version_supported.major()
         {
             bail!(
-                "runtime wants Vulkan {} .. {}, we target 1.1",
+                "runtime wants Vulkan {} .. {}, we target 1.2",
                 reqs.min_api_version_supported,
                 reqs.max_api_version_supported
             );
@@ -170,8 +166,10 @@ pub enum Flow {
 }
 
 struct Eye {
+    /// wgpu wrappers first: they must go before the swapchain that owns the
+    /// images (field drop order).
+    images: Vec<(wgpu::Texture, wgpu::TextureView)>,
     swapchain: xr::Swapchain<xr::Vulkan>,
-    images: Vec<vk::Image>,
     extent: vk::Extent2D,
 }
 
@@ -189,7 +187,6 @@ pub struct XrSession {
     state: xr::SessionState,
     running: bool,
     events: xr::EventDataBuffer,
-    frame_slot: usize,
     has_refresh_rate_ext: bool,
 }
 
@@ -198,15 +195,15 @@ impl XrSession {
         // SAFETY: every handle comes from `Gfx`, which created the instance and
         // device through XR_KHR_vulkan_enable2 for this system and keeps them
         // alive longer than the session (drop order in `app::run_inner`). The
-        // queue is the one `Gfx` submits to.
+        // queue is the one wgpu submits to.
         let (session, waiter, stream) = unsafe {
             ctx.instance.create_session::<xr::Vulkan>(
                 ctx.system,
                 &xr::vulkan::SessionCreateInfo {
-                    instance: gfx.instance.handle().as_raw() as _,
-                    physical_device: gfx.physical_device.as_raw() as _,
-                    device: gfx.device.handle().as_raw() as _,
-                    queue_family_index: gfx.queue_family_index,
+                    instance: gfx.raw.instance.as_raw() as _,
+                    physical_device: gfx.raw.physical_device.as_raw() as _,
+                    device: gfx.raw.device.as_raw() as _,
+                    queue_family_index: gfx.raw.queue_family_index,
                     queue_index: 0,
                 },
             )
@@ -235,15 +232,14 @@ impl XrSession {
             .map(|f| format!("{:?}", vk::Format::from_raw(*f as i32)))
             .collect();
         info!("swapchain formats: {}", format_names.join(" "));
-        let format = PREFERRED_FORMATS
-            .iter()
-            .copied()
-            .find(|f| formats.contains(&(f.as_raw() as u32)))
-            .ok_or_else(|| anyhow!("no preferred swapchain format offered"))?;
+        let format = gfx.swapchain_vk_format;
+        if !formats.contains(&(format.as_raw() as u32)) {
+            bail!("runtime does not offer swapchain format {format:?}");
+        }
 
-        // One 2D swapchain per eye rather than a two-layer array: S2 wraps each
-        // image as a plain wgpu 2D texture, and the compute raster in S5 runs
-        // once per eye anyway.
+        // One 2D swapchain per eye rather than a two-layer array: each image
+        // is wrapped as a plain wgpu 2D texture, and the compute raster in S5
+        // runs once per eye anyway.
         let mut eyes = Vec::with_capacity(EYE_COUNT);
         for (i, view) in ctx.views.iter().enumerate() {
             let extent = vk::Extent2D {
@@ -253,9 +249,7 @@ impl XrSession {
             let swapchain = session
                 .create_swapchain(&xr::SwapchainCreateInfo {
                     create_flags: xr::SwapchainCreateFlags::EMPTY,
-                    // TRANSFER_DST for S1's vkCmdClearColorImage; S2 renders.
-                    usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT
-                        | xr::SwapchainUsageFlags::TRANSFER_DST,
+                    usage_flags: xr::SwapchainUsageFlags::COLOR_ATTACHMENT,
                     format: format.as_raw() as u32,
                     sample_count: 1,
                     width: extent.width,
@@ -265,36 +259,37 @@ impl XrSession {
                     mip_count: 1,
                 })
                 .with_context(|| format!("xrCreateSwapchain (eye {i})"))?;
-            let images: Vec<vk::Image> = swapchain
+            let images = swapchain
                 .enumerate_images()
                 .context("xrEnumerateSwapchainImages")?
                 .into_iter()
-                .map(vk::Image::from_raw)
-                .collect();
+                .map(|raw| {
+                    gfx.wrap_swapchain_image(vk::Image::from_raw(raw), extent.width, extent.height)
+                })
+                .collect::<Result<Vec<_>>>()?;
             info!(
-                "eye {i}: swapchain {}x{} {format:?}, {} images",
+                "eye {i}: swapchain {}x{} {format:?}, {} images wrapped as wgpu textures",
                 extent.width,
                 extent.height,
                 images.len()
             );
             eyes.push(Eye {
-                swapchain,
                 images,
+                swapchain,
                 extent,
             });
         }
 
         Ok(Self {
-            session,
-            waiter,
-            stream,
-            space,
             eyes,
+            space,
+            stream,
+            waiter,
+            session,
             blend_mode: ctx.blend_mode,
             state: xr::SessionState::UNKNOWN,
             running: false,
             events: xr::EventDataBuffer::new(),
-            frame_slot: 0,
             has_refresh_rate_ext: ctx.has_refresh_rate_ext,
         })
     }
@@ -323,7 +318,6 @@ impl XrSession {
                         xr::SessionState::READY => {
                             self.session.begin(VIEW_TYPE).context("xrBeginSession")?;
                             self.running = true;
-                            self.frame_slot = 0;
                             self.log_refresh_rate();
                         }
                         xr::SessionState::STOPPING => {
@@ -370,9 +364,10 @@ impl XrSession {
         }
     }
 
-    /// One frame: wait, begin, locate views, clear both eyes, submit a
-    /// projection layer. Must only be called while the session is running.
-    pub fn frame(&mut self, gfx: &Gfx, color: [f32; 4], stats: &mut FrameStats) -> Result<()> {
+    /// One frame: wait, begin, locate views, render both eyes through wgpu,
+    /// submit a projection layer. Must only be called while the session is
+    /// running.
+    pub fn frame(&mut self, gfx: &Gfx, clear: [f32; 4], stats: &mut FrameStats) -> Result<()> {
         let frame_state = self.waiter.wait().context("xrWaitFrame")?;
         self.stream.begin().context("xrBeginFrame")?;
         let period = std::time::Duration::from_nanos(
@@ -394,6 +389,7 @@ impl XrSession {
             .session
             .locate_views(VIEW_TYPE, frame_state.predicted_display_time, &self.space)
             .context("xrLocateViews")?;
+        let view_projs: Vec<glam::Mat4> = views.iter().map(view_projection).collect();
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -406,12 +402,13 @@ impl XrSession {
                 .context("xrWaitSwapchainImage")?;
         }
 
-        let cmd = gfx.begin_commands(self.frame_slot)?;
-        for (eye, &index) in self.eyes.iter().zip(image_indices.iter()) {
-            gfx.record_clear(cmd, eye.images[index as usize], color);
-        }
-        gfx.submit(cmd, self.frame_slot)?;
-        self.frame_slot = (self.frame_slot + 1) % crate::gfx::FRAMES_IN_FLIGHT;
+        let targets: Vec<&wgpu::TextureView> = self
+            .eyes
+            .iter()
+            .zip(image_indices.iter())
+            .map(|(eye, &index)| &eye.images[index as usize].1)
+            .collect();
+        gfx.render(&targets, &view_projs, clear);
 
         for eye in &mut self.eyes {
             eye.swapchain
@@ -453,4 +450,21 @@ impl XrSession {
             .context("xrEndFrame")?;
         Ok(())
     }
+}
+
+fn view_projection(view: &xr::View) -> glam::Mat4 {
+    let q = view.pose.orientation;
+    let p = view.pose.position;
+    math::view_projection(
+        [q.x, q.y, q.z, q.w],
+        [p.x, p.y, p.z],
+        math::Fov {
+            left: view.fov.angle_left,
+            right: view.fov.angle_right,
+            up: view.fov.angle_up,
+            down: view.fov.angle_down,
+        },
+        NEAR,
+        FAR,
+    )
 }

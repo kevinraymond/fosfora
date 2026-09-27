@@ -98,46 +98,51 @@ Reference: [philpax/wgpu-openxr-example](https://github.com/philpax/wgpu-openxr-
 (older wgpu; the names have drifted) and the
 [openxrs Vulkan example](https://github.com/Ralith/openxrs/blob/master/openxr/examples/vulkan.rs).
 
-1. `xrGetVulkanGraphicsRequirements2KHR`: check the Vulkan API version range.
-2. Instance: build `VkInstanceCreateInfo` with the extensions wgpu-hal expects
-   (**VERIFY** the hal helper for desired instance extensions in 27), then
-   `xrCreateVulkanInstanceKHR`.
-3. `xrGetVulkanGraphicsDevice2KHR` gives the `VkPhysicalDevice`.
-4. Device: ask wgpu-hal which device extensions and features it needs for the
-   requested wgpu features (**VERIFY**: the hal adapter exposes helpers for
-   required device extensions and physical-device features), then call
-   `xrCreateVulkanDeviceKHR` with them. Keep the queue family index; use queue 0.
-5. Wrap: hal `Instance::from_raw` → `expose_adapter(physical_device)` → hal
-   `device_from_raw` → `wgpu::Instance::from_hal`,
-   `Instance::create_adapter_from_hal`, `Adapter::create_device_from_hal`
-   (**VERIFY** exact names and signatures in 27; all are `unsafe`, so add
-   `// SAFETY:` comments).
-6. Session graphics binding `XrGraphicsBindingVulkan2KHR`: instance, physical
-   device, device, queue family, queue index 0. It **must** be the same queue
-   wgpu submits to.
-7. Swapchains: format chosen from `xrEnumerateSwapchainFormats`. Prefer
-   `R8G8B8A8_SRGB`; desktop also picks an sRGB surface format
-   (`gpu/context.rs`). Size = the recommended per-eye image size. One swapchain
-   per eye, or one two-layer array; log the choice. For each image: hal
-   `texture_from_raw` with **no drop callback that frees it** (OpenXR owns the
-   image), then `Device::create_texture_from_hal`. Usage: `RENDER_ATTACHMENT`,
-   plus `COPY_DST` if needed.
-8. **Image layout at release.** OpenXR expects the image in
-   `COLOR_ATTACHMENT_OPTIMAL` at `xrReleaseSwapchainImage`. wgpu tracks layouts
-   itself. Make the **last** use of each swapchain texture per frame a
-   render-pass color-attachment write (a final blit or composite pass), never a
-   copy or compute write. **VERIFY** with validation layers in S2.
-9. Frame: `xrWaitFrame` → `xrBeginFrame` → `xrLocateViews` (predicted display
-   time) → acquire, then wait (timeout), then render and submit → release →
-   `xrEndFrame` with a `CompositionLayerProjection` (plus a passthrough layer
-   first, in S7).
+*Verified in S2 against wgpu-hal 27.0.4 / wgpu 27.0.1 (`crates/fosfora-xr/src/gfx.rs`):*
+
+1. `xrGetVulkanGraphicsRequirements2KHR`: Quest v207 reports 1.0 .. 1.2; we
+   target 1.2.
+2. Instance: `hal::vulkan::Instance::desired_extensions(&entry, version, flags)`
+   gives the names (on device: `VK_KHR_surface`, `VK_KHR_android_surface`,
+   `VK_EXT_swapchain_colorspace`, `VK_KHR_get_physical_device_properties2`);
+   put them in `VkInstanceCreateInfo`, call `xrCreateVulkanInstanceKHR`, then
+   `hal::vulkan::Instance::from_raw(entry, ash_instance, version, sdk, None,
+   extensions, flags, MemoryBudgetThresholds::default(), false, None)`.
+3. `xrGetVulkanGraphicsDevice2KHR` gives the `VkPhysicalDevice`;
+   `hal_instance.expose_adapter(phd)` gives the `ExposedAdapter` (info,
+   features, limits).
+4. Device: `adapter.required_device_extensions(features)` (on device:
+   `VK_KHR_swapchain`, `VK_EXT_robustness2`, `VK_KHR_external_memory_fd`), then
+   `adapter.physical_device_features(&exts, features).add_to_device_create(info)`
+   chains the feature structs; call `xrCreateVulkanDeviceKHR` with that, then
+   `adapter.device_from_raw(ash_device, None, &exts, features, &hints, family, 0)`.
+5. Wrap: `wgpu::Instance::from_hal::<Vulkan>`, `create_adapter_from_hal`,
+   `create_device_from_hal` with the core's limits (16 storage buffers per
+   stage, 5 bind groups). All `unsafe`, each with a `// SAFETY:` comment.
+6. Session graphics binding `XrGraphicsBindingVulkan2KHR`: the same instance,
+   physical device, device, queue family 0, queue index 0 that wgpu submits to.
+7. Swapchains: one `R8G8B8A8_SRGB` swapchain per eye at the recommended
+   1680x1760, 3 images each. Each image: `device.as_hal::<Vulkan>()
+   .texture_from_raw(image, &hal_desc, Some(Box::new(|| {})))` (the no-op drop
+   callback keeps wgpu from freeing it), then `create_texture_from_hal`.
+8. **Image layout at release.** A render pass with `LoadOp::Clear` /
+   `StoreOp::Store` is the last use of each swapchain image per frame, so it
+   ends in `COLOR_ATTACHMENT_OPTIMAL`. Measured: zero stale frames over 73 s,
+   no wgpu validation errors. No Vulkan validation layer exists on the device;
+   bundling `VK_LAYER_KHRONOS_validation` in a debug APK is a follow-up if S5
+   shows layout trouble.
+9. Frame: `xrWaitFrame` → `xrBeginFrame` → `xrLocateViews` → acquire + wait
+   both eyes → one wgpu submit (two render passes) → release → `xrEndFrame`
+   with a `CompositionLayerProjection` (plus a passthrough layer first, in S7).
 
 ## Per-eye camera
 
 From each `XrView`: pose → view matrix (inverse of the pose); fov
 (angleLeft, angleRight, angleUp, angleDown, all asymmetric) → projection.
 wgpu uses depth 0..1, so build the projection for that range; reverse-Z optional
-(Fosfora uses Depth32Float). Use glam 0.29 to match core.
+(Fosfora uses Depth32Float). Use glam 0.29 to match core. *S2:*
+`crates/fosfora-xr/src/math.rs` (host-tested: near/far map to 0/1, fov edges
+map to clip edges, view parallax sign).
 
 ## World-space particles (S5)
 

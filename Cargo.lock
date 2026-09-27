@@ -1731,8 +1731,11 @@ dependencies = [
  "android_logger",
  "anyhow",
  "ash",
+ "bytemuck",
+ "glam",
  "log",
  "openxr",
+ "wgpu",
 ]
 
 [[package]]
