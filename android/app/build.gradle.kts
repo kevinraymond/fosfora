@@ -24,6 +24,21 @@ android {
         }
     }
 
+    // CI signs debug APKs with one stable key (xr-apk.yml decodes the
+    // XR_DEBUG_KEYSTORE_B64 secret) so each build installs over the last with
+    // `adb install -r`. With XR_DEBUG_KEYSTORE unset, Gradle's default
+    // ~/.android/debug.keystore applies as before.
+    System.getenv("XR_DEBUG_KEYSTORE")?.let { keystore ->
+        val pass = System.getenv("XR_DEBUG_KEYSTORE_PASS")
+            ?: error("XR_DEBUG_KEYSTORE is set but XR_DEBUG_KEYSTORE_PASS is not")
+        signingConfigs.getByName("debug") {
+            storeFile = file(keystore)
+            storePassword = pass
+            keyAlias = System.getenv("XR_DEBUG_KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = pass
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
