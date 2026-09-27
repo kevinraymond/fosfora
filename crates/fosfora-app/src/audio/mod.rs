@@ -116,6 +116,9 @@ use crate::settings::BandScale;
 #[allow(dead_code)]
 enum CaptureBackend {
     Cpal(AudioCapture),
+    /// Samples come from a caller-owned producer (`AudioSystem::from_ring`);
+    /// nothing to hold open.
+    External,
     #[cfg(target_os = "linux")]
     Pulse(pulse_capture::PulseCapture),
     #[cfg(target_os = "windows")]
@@ -382,6 +385,44 @@ impl AudioSystem {
             tempo,
             Arc::new(RingBuffer::new()),
         )
+    }
+
+    /// The analysis pipeline over samples the caller produces instead of a
+    /// capture device: `ring` must receive interleaved stereo f32 at
+    /// `sample_rate` from a single producer, which also bumps
+    /// `callback_count` per delivery so the watchdog can tell a stalled
+    /// producer from silence. Auto-reconnect is off: there is no device to
+    /// reopen. Added for the XR build's file playback tap (S6), where the
+    /// visuals must follow what the speakers play, not what the microphones
+    /// hear.
+    pub fn from_ring(
+        ring: Arc<RingBuffer>,
+        sample_rate: u32,
+        callback_count: Arc<AtomicU64>,
+        band_scale: BandScale,
+        tuning: Arc<Mutex<StructureConfig>>,
+        tempo: Arc<Mutex<TempoControl>>,
+    ) -> Self {
+        let opened = OpenedBackend {
+            ring,
+            sample_rate: sample_rate as f32,
+            device_name: "external".to_owned(),
+            callback_count,
+            backend: CaptureBackend::External,
+            using_native_backend: false,
+            capture_failed: Arc::new(AtomicBool::new(false)),
+            silence_delivers_data: true,
+        };
+        let mut system = Self::from_opened(
+            Ok(opened),
+            None,
+            band_scale,
+            tuning,
+            tempo,
+            Arc::new(RingBuffer::new()),
+        );
+        system.set_auto_reconnect(false);
+        system
     }
 
     /// Build the analysis pipeline and all render-facing state around an already-opened

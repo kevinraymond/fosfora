@@ -221,7 +221,10 @@ depth = ["desktop", "webcam", "ort", "flate2", "tar", "zip"]
 # Deliberately absent from default and from the `release` feature so shipped
 # binaries stay MIT/Apache; building with it yourself is fine.
 link = ["desktop", "dep:rusty_link"]
+# Song-file decoding on its own (no desktop crates): the XR build decodes its
+# bundled test track with it (S6).
+decode = ["symphonia"]
 # `--analyze <file>`: offline song analysis, no GPU and no window (#2027).
-analyze = ["desktop", "symphonia"]
+analyze = ["desktop", "decode"]
 profiling = ["desktop", "wgpu-profiler"]
 wgpu-profiler = ["dep:wgpu-profiler"]
