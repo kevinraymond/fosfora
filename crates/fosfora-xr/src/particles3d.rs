@@ -67,6 +67,11 @@ pub struct ObstacleSet {
     box_count: u32,
     restitution: f32,
     margin: f32,
+    /// Subtracted from a sphere's radius for its depth occluder cube.
+    sphere_shrink: f32,
+    /// Outward speed (m/s) given to particles a sphere touches.
+    sphere_kick: f32,
+    _pad: [f32; 2],
     spheres: [[f32; 4]; MAX_SPHERES],
     box_center: [[f32; 4]; MAX_BOXES],
     box_rot: [[f32; 4]; MAX_BOXES],
@@ -76,11 +81,15 @@ pub struct ObstacleSet {
 impl ObstacleSet {
     /// `restitution` is the fraction of normal velocity kept on a bounce,
     /// `margin` the clearance around every obstacle (meters, roughly the
-    /// sprite radius).
-    pub fn new(restitution: f32, margin: f32) -> Self {
+    /// sprite radius), `sphere_shrink` how much smaller than its collision
+    /// radius a sphere's depth occluder is, `sphere_kick` the outward speed
+    /// a touched particle gets (m/s).
+    pub fn new(restitution: f32, margin: f32, sphere_shrink: f32, sphere_kick: f32) -> Self {
         Self {
             restitution,
             margin,
+            sphere_shrink,
+            sphere_kick,
             ..Self::zeroed()
         }
     }
@@ -159,6 +168,8 @@ pub struct Particles3d {
     /// False freezes the sim after `WARMUP_FRAMES` (no compute pass) so a
     /// measurement isolates the draw cost.
     pub sim_enabled: bool,
+    /// Draw the obstacles as depth-only occluders (S7 mixed reality).
+    pub occluders: bool,
     frames: Cell<u32>,
     /// Cube placement, changeable per frame (`set_cube`): mixed reality
     /// centers it on the wearer once tracking is valid.
@@ -175,6 +186,12 @@ pub struct Particles3d {
     eye_bind_groups: Vec<wgpu::BindGroup>,
     step_pipeline: wgpu::ComputePipeline,
     draw_pipeline: wgpu::RenderPipeline,
+    /// S7 depth-only occluders (obstacle boxes and hand spheres as cubes).
+    occluder_pipeline: wgpu::RenderPipeline,
+    occluder_bind_group: wgpu::BindGroup,
+    /// Instances the occluder draw covers: boxes + spheres of the last
+    /// `set_obstacles`.
+    occluder_count: Cell<u32>,
 }
 
 impl Particles3d {
@@ -350,6 +367,79 @@ impl Particles3d {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        // Occluders: the obstacle block alone in the vertex stage, plus the
+        // eye camera.
+        let occluder_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr-particles3d-occluder"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("particles3d_occluder.wgsl").into()),
+        });
+        let occluder_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr-particles3d-occluder"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<ObstacleSet>() as u64
+                    ),
+                },
+                count: None,
+            }],
+        });
+        let occluder_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr-particles3d-occluder"),
+            layout: &occluder_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: obstacles.as_entire_binding(),
+            }],
+        });
+        let occluder_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xr-particles3d-occluder"),
+                bind_group_layouts: &[&occluder_layout, &eye_layout],
+                push_constant_ranges: &[],
+            });
+        let occluder_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr-particles3d-occluder"),
+            layout: Some(&occluder_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &occluder_shader,
+                entry_point: Some("vs_occluder"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            // Depth only: the real object hides sprites behind it, the
+            // passthrough image shows through where nothing else is drawn.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &occluder_shader,
+                entry_point: Some("fs_occluder"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SWAPCHAIN_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::empty(),
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
         let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xr-particles3d-draw"),
             bind_group_layouts: &[&read_layout, &eye_layout],
@@ -419,6 +509,7 @@ impl Particles3d {
         );
         Self {
             sim_enabled: true,
+            occluders: false,
             frames: Cell::new(0),
             cube: Cell::new((params.cube_center, params.cube_half)),
             count,
@@ -433,6 +524,9 @@ impl Particles3d {
             eye_bind_groups,
             step_pipeline,
             draw_pipeline,
+            occluder_pipeline,
+            occluder_bind_group,
+            occluder_count: Cell::new(0),
         }
     }
 
@@ -468,6 +562,20 @@ impl Particles3d {
     /// Upload this frame's obstacles (S7: hand joints, scene boxes, floor).
     pub fn set_obstacles(&self, queue: &wgpu::Queue, set: &ObstacleSet) {
         queue.write_buffer(&self.obstacles, 0, bytemuck::bytes_of(set));
+        self.occluder_count.set(set.box_count + set.sphere_count);
+    }
+
+    /// Draw every obstacle as a depth-only cube into the current eye pass,
+    /// before `draw`, so real furniture and hands hide sprites behind them.
+    pub fn draw_occluders(&self, pass: &mut wgpu::RenderPass<'_>, eye: usize) {
+        let n = self.occluder_count.get();
+        if !self.occluders || n == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.occluder_pipeline);
+        pass.set_bind_group(0, &self.occluder_bind_group, &[]);
+        pass.set_bind_group(1, &self.eye_bind_groups[eye], &[]);
+        pass.draw(0..36, 0..n);
     }
 
     /// Upload one eye's camera. `view_proj` must equal `proj * view`.

@@ -540,6 +540,7 @@ impl Gfx {
                 pass.draw(0..6, 0..1);
             }
             if let Some(p) = particles {
+                p.draw_occluders(&mut pass, i);
                 p.draw(&mut pass, i);
             }
         }

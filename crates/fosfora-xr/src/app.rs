@@ -44,7 +44,12 @@ const MR_CUBE_CENTER: [f32; 3] = [0.0, 1.1, -0.9];
 const MR_CUBE_HALF_M: f32 = 1.1;
 const MR_CUBE_Y: f32 = 1.0;
 const MR_CUBE_HALF_WEARER_M: f32 = 1.5;
-const MR_GRAVITY: f32 = 0.3;
+const MR_GRAVITY: f32 = 0.5;
+/// Flow-speed multiplier in mixed reality: the S5 swirl (~1 m/s) would
+/// carry particles straight through the settle-and-bounce behavior.
+const MR_FLOW: f32 = 0.35;
+/// Outward speed a hand gives the particles it touches (m/s).
+const MR_HAND_KICK: f32 = 0.6;
 /// Added to every hand joint's radius so a hand carves a visible channel
 /// through the cloud (a bare 1 cm joint holds a fraction of one particle).
 const MR_HAND_PAD_M: f32 = 0.06;
@@ -135,6 +140,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.3              (downward drift m/s; default 0.3 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
+    //   adb shell setprop debug.fosfora.flow 0.35                (flow speed multiplier; default 0.35 in mr, 1 otherwise)
+    //   adb shell setprop debug.fosfora.occluders 0|1            (obstacles drawn depth-only so real objects hide sprites; default on in mr)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
     //   adb shell setprop debug.fosfora.nearcull 0.3             (cull sprites nearer than this, m; default 0.3 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.quad 0|1                 (the static test quad; default on in particles, off in mr)
@@ -172,6 +179,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     });
     // An explicit cube stays where it is put; otherwise mr follows the wearer.
     let recenter_on_wearer = mixed && cube_knob.is_none();
+    let flow_mul = debug_prop("debug.fosfora.flow")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(if mixed { MR_FLOW } else { 1.0 });
+    let occluders = toggle("debug.fosfora.occluders", mixed);
     let hand_pad = debug_prop("debug.fosfora.handpad")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(MR_HAND_PAD_M);
@@ -360,6 +371,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 },
             );
             p.sim_enabled = sim_enabled;
+            p.occluders = occluders;
             particles = Some(p);
         }
     }
@@ -474,7 +486,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head[2]
                     );
                 }
-                let mut set = ObstacleSet::new(MR_RESTITUTION, SPRITE_RADIUS_M * size_scale);
+                let mut set = ObstacleSet::new(
+                    MR_RESTITUTION,
+                    SPRITE_RADIUS_M * size_scale,
+                    (hand_pad - 0.02).max(0.0),
+                    MR_HAND_KICK,
+                );
                 for s in &input.hands.spheres {
                     set.push_sphere([s[0], s[1], s[2], s[3] + hand_pad]);
                 }
@@ -524,7 +541,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     queue,
                     t,
                     dt,
-                    0.6 + 1.2 * f.bass,
+                    (0.6 + 1.2 * f.bass) * flow_mul,
                     (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env) * boost,
                 );
             }

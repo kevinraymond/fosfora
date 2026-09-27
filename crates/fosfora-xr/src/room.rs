@@ -56,6 +56,11 @@ const PLANE_HALF_THICKNESS_M: f32 = 0.02;
 /// plenty and keeps the per-frame cost at zero.
 const RELOCATE_EVERY: Duration = Duration::from_secs(1);
 const MAX_RESULTS: u32 = 64;
+/// Empty query results tolerated (retried every `QUERY_RETRY_EVERY`) before
+/// the room is taken to be missing: right after the session focuses the
+/// runtime returned 0 anchors for a room that a later query found (Sep 27).
+const EMPTY_RESULTS_BEFORE_CAPTURE: u32 = 6;
+const QUERY_RETRY_EVERY: Duration = Duration::from_secs(3);
 /// Labels the query asks the runtime to report as-is (spec: without this
 /// list newer labels are folded into legacy ones).
 const RECOGNIZED_LABELS: &CStr = c"DESK,COUCH,FLOOR,CEILING,WALL_FACE,WINDOW_FRAME,DOOR_FRAME,STORAGE,BED,SCREEN,LAMP,PLANT,TABLE,OTHER,INVISIBLE_WALL_FACE,WALL_ART,GLOBAL_MESH";
@@ -92,6 +97,11 @@ pub struct Room {
     capture_used: bool,
     /// Anchors the last query returned, before any were dropped.
     returned: usize,
+    /// Empty results so far; the runtime answers with nothing until it has
+    /// relocalized in the room, so the query is retried before Space Setup
+    /// is considered.
+    empty_results: u32,
+    retry_at: Option<Instant>,
     /// Launch Space Setup when the query returns no anchors.
     allow_capture: bool,
     started: bool,
@@ -137,6 +147,8 @@ impl Room {
             capture: None,
             capture_used: false,
             returned: 0,
+            empty_results: 0,
+            retry_at: None,
             allow_capture,
             started: false,
             anchors: Vec::new(),
@@ -239,7 +251,14 @@ impl Room {
     pub fn query_complete(&mut self, request: sys::AsyncRequestIdFB, result: sys::Result) {
         if self.request == Some(request) {
             if self.returned == 0 && self.capture.is_none() {
-                if self.allow_capture && !self.capture_used {
+                self.empty_results += 1;
+                if self.empty_results < EMPTY_RESULTS_BEFORE_CAPTURE {
+                    info!(
+                        "scene: no anchors yet ({}/{}), retrying in {:?}",
+                        self.empty_results, EMPTY_RESULTS_BEFORE_CAPTURE, QUERY_RETRY_EVERY
+                    );
+                    self.retry_at = Some(Instant::now() + QUERY_RETRY_EVERY);
+                } else if self.allow_capture && !self.capture_used {
                     self.capture_used = true;
                     self.request_capture();
                 } else {
@@ -247,6 +266,8 @@ impl Room {
                         "scene: no anchors: run Space Setup on the headset (or set debug.fosfora.scenecapture 1 to launch it)"
                     );
                 }
+            } else {
+                self.empty_results = 0;
             }
             info!(
                 "scene: query complete ({result:?}), {} anchors ({} planes, {} volumes)",
@@ -497,8 +518,13 @@ impl Room {
         Ok(())
     }
 
-    /// Relocate the anchors (rate limited) and rebuild `boxes`.
+    /// Relocate the anchors (rate limited) and rebuild `boxes`; also fires
+    /// a pending query retry.
     pub fn locate(&mut self, time: xr::Time) {
+        if self.retry_at.is_some_and(|t| Instant::now() >= t) {
+            self.retry_at = None;
+            self.query_any();
+        }
         if self.anchors.is_empty() {
             return;
         }
@@ -527,9 +553,14 @@ impl Room {
             if res == sys::Result::SUCCESS && location.location_flags.contains(valid) {
                 if anchor.pose.is_none() {
                     let p = location.pose.position;
+                    let o = location.pose.orientation;
+                    // The anchor's local +Z in the base space: for planes the
+                    // normal, for volumes the top-face normal (should be
+                    // world up for floors and table tops).
+                    let up = glam::Quat::from_xyzw(o.x, o.y, o.z, o.w) * glam::Vec3::Z;
                     info!(
-                        "scene: anchor {} located at ({:.2}, {:.2}, {:.2})",
-                        anchor.label, p.x, p.y, p.z
+                        "scene: anchor {} located at ({:.2}, {:.2}, {:.2}), local +Z -> ({:.2}, {:.2}, {:.2})",
+                        anchor.label, p.x, p.y, p.z, up.x, up.y, up.z
                     );
                 }
                 anchor.pose = Some(location.pose);

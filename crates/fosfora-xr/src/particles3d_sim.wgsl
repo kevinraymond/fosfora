@@ -12,6 +12,13 @@ struct Obstacles {
     // and the clearance added around every obstacle (meters).
     restitution: f32,
     margin: f32,
+    // Occluder-only (particles3d_occluder.wgsl); padding here.
+    sphere_shrink: f32,
+    // Outward speed given to a particle a sphere (hand) touches, so hands
+    // visibly push the cloud instead of just carving it.
+    sphere_kick: f32,
+    _pad1: f32,
+    _pad2: f32,
     // xyz center, w radius.
     spheres: array<vec4<f32>, 64>,
     // Boxes: center xyz; rotation as a quaternion (box -> world); half extents.
@@ -55,6 +62,7 @@ fn collide(p: ptr<function, Particle>) {
             if vn < 0.0 {
                 (*p).vel -= (1.0 + restitution) * vn * n;
             }
+            (*p).vel += n * obstacles.sphere_kick;
         }
     }
     for (var k = 0u; k < min(obstacles.box_count, MAX_BOXES); k++) {
