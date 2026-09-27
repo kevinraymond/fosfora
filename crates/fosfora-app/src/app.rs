@@ -535,7 +535,7 @@ impl App {
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
         let now = Instant::now();
-        Ok(Self {
+        let mut app = Self {
             gpu,
             mel_last_commit: None,
             mel_commit_interval: 1.0 / 43.0, // ~43 Hz audio-hop column rate
@@ -625,7 +625,9 @@ impl App {
             depth_download: None,
             #[cfg(feature = "profiling")]
             gpu_profiler,
-        })
+        };
+        app.open_launch_stack();
+        Ok(app)
     }
 
     /// Close the second output window, if one is open (#3122). Dropping it
@@ -2034,6 +2036,25 @@ impl App {
             }
             None => log::error!("Failed to create layer: default shader pipeline error"),
         }
+    }
+
+    /// The stack a launch opens with (#3126): an empty Layer 1 over the
+    /// launch effect as Layer 2, with Layer 1 selected. The first effect
+    /// picked in the catalog lands on top of the F, so the stack shows a
+    /// blend (and the First run tour has one to explain) from the start.
+    fn open_launch_stack(&mut self) {
+        self.add_layer();
+        let n = self.layer_stack.layers.len();
+        if n < 2 {
+            return;
+        }
+        // add_layer appends at the bottom; the empty layer goes on top.
+        self.move_layer(n - 1, 0);
+        for (i, layer) in self.layer_stack.layers.iter_mut().enumerate() {
+            layer.name = format!("Layer {}", i + 1);
+        }
+        self.layer_stack.active_layer = 0;
+        self.sync_active_layer();
     }
 
     /// Remove all layers and create one fresh layer with the launch effect.

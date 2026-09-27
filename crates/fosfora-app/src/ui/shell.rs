@@ -20,7 +20,7 @@ use super::panels::{
     scene_panel, settings_panel, stack_panel, status_bar, triggers_panel, volumetric_panel,
     web_panel,
 };
-use super::widgets;
+use super::{tour, widgets};
 use crate::audio::AudioSystem;
 use crate::effect::EffectLoader;
 use crate::effect::format::PostProcessDef;
@@ -98,8 +98,9 @@ pub struct ShellState<'a> {
     pub particle_info: Option<super::panels::particle_panel::ParticleInfo>,
     pub status_error: &'a Option<(String, std::time::Instant)>,
     pub settings: &'a SettingsConfig,
-    /// The layer rows' pictures (#3123).
-    pub layer_thumbs: &'a crate::gpu::layer_thumbs::LayerThumbs,
+    /// The layer rows' pictures (#3123). `None` where there is no GPU: the
+    /// rows then draw without them.
+    pub layer_thumbs: Option<&'a crate::gpu::layer_thumbs::LayerThumbs>,
     /// Per layer: does its effect's own post-processing equal Master's?
     pub postfx_matches: &'a [bool],
     /// The finished frame and its aspect ratio, drawn as the output preview.
@@ -158,6 +159,14 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button(egui::RichText::new("Tours").size(12.0), |ui| {
+                        for &t in crate::ui::tour::Tour::ALL {
+                            if ui.button(t.name()).on_hover_text(t.description()).clicked() {
+                                crate::ui::tour::start(ui.ctx(), t);
+                                ui.close();
+                            }
+                        }
+                    });
                     if ui
                         .button(egui::RichText::new("Full output").size(12.0))
                         .on_hover_text("Hide the interface — Esc or D brings it back")
@@ -304,17 +313,20 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
                 let layer_badge = format!("{}/{}", s.layers.len(), 8);
                 widgets::section(ui, "v2_layers", "Stack", Some(&layer_badge), true, |ui| {
                     let pics = stack_panel::StackPictures {
-                        thumbs: Some(s.layer_thumbs),
+                        thumbs: s.layer_thumbs,
                         aspect: s.display.map_or(16.0 / 9.0, |(_, a)| a),
                     };
-                    stack_panel::draw_stack(
-                        ui,
-                        s.layers,
-                        s.active_layer,
-                        s.master_chain,
-                        &postfx_on(s.postprocess),
-                        &pics,
-                    );
+                    let r = ui.scope(|ui| {
+                        stack_panel::draw_stack(
+                            ui,
+                            s.layers,
+                            s.active_layer,
+                            s.master_chain,
+                            &postfx_on(s.postprocess),
+                            &pics,
+                        );
+                    });
+                    tour::anchor(ui, tour::Anchor::Stack, r.response.rect);
                 });
                 // Closed to start: in Build the stack is what this column is
                 // for.
@@ -342,6 +354,7 @@ fn build_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
     egui::CentralPanel::default()
         .frame(panel_frame(fill))
         .show(ctx, |ui| {
+            tour::anchor(ui, tour::Anchor::Inspector, ui.max_rect());
             ScrollArea::vertical().show(ui, |ui| {
                 inspector_width(ui);
                 if stack_panel::master_selected(ui.ctx()) {
@@ -398,6 +411,7 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
         .filter(|t| tabs.contains(t))
         .unwrap_or(tabs[0]);
     let visible = s.effect_loader.effects.iter().filter(|e| !e.hidden).count();
+    let touring = tour::is_running(ctx);
     let scene = s.scene;
     let playing = scene.timeline.as_ref().filter(|t| t.active);
 
@@ -420,9 +434,15 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
                         .color(tc.text_secondary),
                 );
             } else {
+                // A tour step points at one tab; the others stay shut.
                 for &t in tabs {
                     let text = egui::RichText::new(t.label()).size(12.0).strong();
-                    if ui.selectable_label(open && t == tab, text).clicked() {
+                    let on = open && t == tab;
+                    if ui
+                        .add_enabled(on || !touring, egui::Button::selectable(on, text))
+                        .on_disabled_hover_text(tour::NOT_DURING)
+                        .clicked()
+                    {
                         picked = Some(t);
                     }
                 }
@@ -478,7 +498,7 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
                 d.insert_temp(tab_id, t);
                 d.insert_temp(open_id, true);
             });
-        } else if r.clicked() {
+        } else if r.clicked() && !touring {
             ui.ctx().data_mut(|d| d.insert_temp(open_id, !open));
         }
     };
@@ -502,6 +522,7 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
             ui.add_space(4.0);
             match tab {
                 DrawerTab::Catalog => {
+                    tour::anchor(ui, tour::Anchor::Catalog, ui.max_rect());
                     let active = s.layers.get(s.active_layer);
                     let target = catalog_panel::Target {
                         current: active.and_then(|l| l.effect_index),
@@ -527,6 +548,17 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
                 }
             }
         });
+    });
+}
+
+/// Open Build's drawer on the catalog.
+pub(crate) fn show_catalog(ctx: &Context) {
+    ctx.data_mut(|d| {
+        d.insert_temp(
+            egui::Id::new("v2_drawer_tab").with("build"),
+            DrawerTab::Catalog,
+        );
+        d.insert_temp(egui::Id::new("v2_drawer_open").with("build"), true);
     });
 }
 
@@ -659,8 +691,13 @@ fn chain_line(
                 .size(13.0)
                 .color(tc.text_secondary),
         );
+        let touring = tour::is_running(ui.ctx());
         if ui
-            .button(egui::RichText::new("Edit chain  (C)").size(12.0))
+            .add_enabled(
+                !touring,
+                egui::Button::new(egui::RichText::new("Edit chain  (C)").size(12.0)),
+            )
+            .on_disabled_hover_text(tour::NOT_DURING)
             .clicked()
         {
             open(ui.ctx());
@@ -683,6 +720,8 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
     );
     let desc = if layer.is_media {
         layer.media_file_name.clone().unwrap_or_default()
+    } else if layer.effect_index.is_none() {
+        "Nothing yet: click a picture in the catalog to load an effect here.".to_string()
     } else {
         layer
             .effect_index
@@ -1057,6 +1096,9 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
                             &s.settings.theme,
                             s.settings.ui_scale,
                         );
+                    });
+                    widgets::section(c, "v2_setup_tours", "Tutorials", None, true, |ui| {
+                        tour::draw_tutorials(ui);
                     });
                     widgets::section(c, "v2_setup_global", "Global", None, true, |ui| {
                         settings_panel::draw_settings_panel(

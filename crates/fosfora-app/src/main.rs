@@ -229,6 +229,13 @@ impl ApplicationHandler for FosforaApp {
                     },
                 ..
             } if !egui_consumed || !app.egui_overlay.wants_keyboard() => {
+                // A tour takes every shortcut but Esc: each of them changes
+                // the view a step describes (#3126).
+                if key != KeyCode::Escape
+                    && crate::ui::tour::is_running(&app.egui_overlay.context())
+                {
+                    return;
+                }
                 match key {
                     KeyCode::Escape => {
                         // Cancel a half-finished click-to-bind, then close the
@@ -256,6 +263,10 @@ impl ApplicationHandler for FosforaApp {
                             app.binding_matrix.open = false;
                         } else if !app.egui_overlay.visible {
                             app.egui_overlay.toggle_visible();
+                        } else if crate::ui::tour::current(&app.egui_overlay.context()).is_some()
+                        {
+                            // The tour sees the same Escape in its own frame
+                            // and ends itself; here it only must not quit.
                         } else if app.trama.canvas_open && !app.settings.classic_layout {
                             app.trama.canvas_open = false;
                         } else if app.output_window.is_some() {
@@ -975,6 +986,15 @@ impl ApplicationHandler for FosforaApp {
                     let active_params = app.layer_stack.active_mut();
                     if let Some(layer) = active_params {
                         if !app.shader_editor.open && !app.settings.classic_layout {
+                            // The First run tour, once (#3126).
+                            let auto_id = egui::Id::new("tour_auto_started");
+                            if app.egui_overlay.visible
+                                && crate::ui::tour::should_auto_start(&app.settings)
+                                && !ctx.data(|d| d.get_temp::<bool>(auto_id).unwrap_or(false))
+                            {
+                                ctx.data_mut(|d| d.insert_temp(auto_id, true));
+                                crate::ui::tour::start(&ctx, crate::ui::tour::Tour::FirstRun);
+                            }
                             // v2 workspace shell (#3122)
                             let mut shell = crate::ui::shell::ShellState {
                                 audio: &mut app.audio,
@@ -999,7 +1019,7 @@ impl ApplicationHandler for FosforaApp {
                                 particle_info,
                                 status_error: &app.status_error,
                                 settings: &app.settings,
-                                layer_thumbs: &app.layer_thumbs,
+                                layer_thumbs: Some(&app.layer_thumbs),
                                 postfx_matches: &postfx_matches,
                                 display: app.egui_overlay.display_tex.map(|t| {
                                     (
@@ -1016,6 +1036,9 @@ impl ApplicationHandler for FosforaApp {
                                 app.egui_overlay.visible,
                                 &mut shell,
                             );
+                            if app.egui_overlay.visible {
+                                crate::ui::tour::draw(&ctx);
+                            }
                         } else if !app.shader_editor.open {
                             crate::ui::panels::draw_panels(
                                 &ctx,
@@ -1661,6 +1684,18 @@ impl ApplicationHandler for FosforaApp {
                     }
                     if want != app.settings.ui_scale {
                         app.settings.ui_scale = want;
+                        app.settings.save();
+                    }
+                }
+
+                // A tour finished or skipped: it no longer starts by itself.
+                let tour_done: Option<&'static str> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("tour_done")));
+                if let Some(key) = tour_done {
+                    if !app.settings.tours_done.iter().any(|k| k == key) {
+                        app.settings.tours_done.push(key.to_string());
                         app.settings.save();
                     }
                 }

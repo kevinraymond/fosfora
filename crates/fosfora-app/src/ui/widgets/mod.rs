@@ -153,8 +153,19 @@ pub fn section(
     add_body: impl FnOnce(&mut Ui),
 ) {
     let tc = theme_colors(ui.ctx());
+    let reveal = crate::ui::tour::reveals(ui.ctx(), id);
+    let name = id;
     let id = ui.make_persistent_id(id);
-    let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    #[cfg(test)]
+    record_section(ui.ctx(), name, id);
+    #[cfg(not(test))]
+    let _ = name;
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    if reveal && !state.is_open() {
+        // A tour step points inside: open it, and leave it open.
+        state.set_open(true);
+        state.store(ui.ctx());
+    }
 
     card_frame(ui).show(ui, |ui| {
         let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
@@ -184,6 +195,33 @@ pub fn section(
             add_body(ui);
         }
     });
+}
+
+/// Tests close sections by the name their draw call gives them; the egui
+/// id behind that name depends on where the section is drawn.
+#[cfg(test)]
+fn record_section(ctx: &egui::Context, name: &str, id: egui::Id) {
+    ctx.data_mut(|d| {
+        let seen =
+            d.get_temp_mut_or_default::<Vec<(String, egui::Id)>>(egui::Id::new("test_section_ids"));
+        if !seen.iter().any(|(n, i)| n == name && *i == id) {
+            seen.push((name.to_string(), id));
+        }
+    });
+}
+
+/// Close every section drawn so far under `name`, as a click on its
+/// header would.
+#[cfg(test)]
+pub(crate) fn close_section(ctx: &egui::Context, name: &str) {
+    let ids: Vec<(String, egui::Id)> = ctx
+        .data(|d| d.get_temp(egui::Id::new("test_section_ids")))
+        .unwrap_or_default();
+    for (_, id) in ids.iter().filter(|(n, _)| n == name) {
+        let mut state = CollapsingState::load_with_default_open(ctx, *id, true);
+        state.set_open(false);
+        state.store(ctx);
+    }
 }
 
 /// Draw a solid triangle indicator for collapsible sections.

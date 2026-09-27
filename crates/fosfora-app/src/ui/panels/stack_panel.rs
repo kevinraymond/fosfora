@@ -45,7 +45,8 @@ pub fn show_layer_in_inspector(ctx: &egui::Context) {
     select_master(ctx, false);
 }
 
-fn select_layer(ctx: &egui::Context, i: usize) {
+/// Select layer `i` and show it in the inspector.
+pub fn select_layer(ctx: &egui::Context, i: usize) {
     select_master(ctx, false);
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("select_layer"), i));
 }
@@ -76,6 +77,8 @@ pub fn layer_kind(layer: &LayerInfo) -> &'static str {
         "Camera"
     } else if layer.is_media {
         "Media"
+    } else if layer.effect_index.is_none() {
+        "Empty"
     } else {
         "Effect"
     }
@@ -578,14 +581,24 @@ fn row_menu(ui: &mut Ui, layers: &[LayerInfo], i: usize) {
         send(ui, "layer_toggle_pin", (i, !layer.pinned));
         ui.close();
     }
-    if ui.button("Edit chain").clicked() {
+    if ui
+        .add_enabled(
+            !crate::ui::tour::is_running(ui.ctx()),
+            egui::Button::new("Edit chain"),
+        )
+        .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
+        .clicked()
+    {
         ui.ctx()
             .data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_layer"), i));
         ui.close();
     }
     ui.separator();
     if ui
-        .add_enabled(layers.len() > 1, egui::Button::new("Remove layer"))
+        .add_enabled(
+            layers.len() > 1 && !crate::ui::tour::is_running(ui.ctx()),
+            egui::Button::new("Remove layer"),
+        )
         .clicked()
     {
         ui.ctx()
@@ -595,8 +608,14 @@ fn row_menu(ui: &mut Ui, layers: &[LayerInfo], i: usize) {
 }
 
 fn add_buttons(ui: &mut Ui, count: usize) {
-    let can_add = count < MAX_LAYERS;
-    let full = format!("The stack is full ({MAX_LAYERS} layers)");
+    // A tour describes the stack as it stands; none of these may change it.
+    let touring = crate::ui::tour::is_running(ui.ctx());
+    let can_add = count < MAX_LAYERS && !touring;
+    let full = if touring {
+        crate::ui::tour::NOT_DURING.to_string()
+    } else {
+        format!("The stack is full ({MAX_LAYERS} layers)")
+    };
     ui.horizontal(|ui| {
         let b = ui
             .add_enabled(can_add, egui::Button::new("+ Effect layer"))
@@ -631,13 +650,13 @@ fn add_buttons(ui: &mut Ui, count: usize) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            clear_all(ui, count);
+            clear_all(ui, count, touring);
         });
     });
 }
 
 /// Two clicks within three seconds: clearing the stack is not undoable.
-fn clear_all(ui: &mut Ui, count: usize) {
+fn clear_all(ui: &mut Ui, count: usize, touring: bool) {
     let armed_id = egui::Id::new("v2_clear_all_armed");
     let now = ui.input(|i| i.time);
     let armed = ui
@@ -651,9 +670,10 @@ fn clear_all(ui: &mut Ui, count: usize) {
     };
     if ui
         .add_enabled(
-            count > 0,
+            count > 0 && !touring,
             egui::Button::new(RichText::new(label).size(12.0)),
         )
+        .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
         .on_hover_text("Replace every layer with a single default layer")
         .clicked()
     {

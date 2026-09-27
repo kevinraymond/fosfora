@@ -569,34 +569,38 @@ fn tile_menu(ui: &mut Ui, index: usize, e: &PfxEffect, is_fav: bool, target: &Ta
 fn footer(ui: &mut Ui, loader: &EffectLoader, target: &Target) {
     let current = target.current.and_then(|i| loader.effects.get(i));
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        if ui
-            .button("+ New effect")
-            .on_hover_text("Start a new effect from the template")
-            .clicked()
-        {
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::new("new_effect_prompt"), true));
-        }
-        if let Some(e) = current.filter(|e| !e.hidden) {
+    // Each opens the shader editor, which replaces the whole workspace.
+    let touring = crate::ui::tour::is_running(ui.ctx());
+    ui.add_enabled_ui(!touring, |ui| {
+        ui.horizontal(|ui| {
             if ui
-                .button(format!("Copy {} to a new effect", e.name))
-                .on_hover_text("A copy you can edit, starting from the selected layer's effect")
+                .button("+ New effect")
+                .on_hover_text("Start a new effect from the template")
                 .clicked()
             {
                 ui.ctx()
-                    .data_mut(|d| d.insert_temp(egui::Id::new("copy_builtin_prompt"), true));
+                    .data_mut(|d| d.insert_temp(egui::Id::new("new_effect_prompt"), true));
             }
-            if !EffectLoader::is_builtin(e)
-                && ui
-                    .button(format!("Edit {}", e.name))
-                    .on_hover_text("Open its shader in the editor")
+            if let Some(e) = current.filter(|e| !e.hidden) {
+                if ui
+                    .button(format!("Copy {} to a new effect", e.name))
+                    .on_hover_text("A copy you can edit, starting from the selected layer's effect")
                     .clicked()
-            {
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(egui::Id::new("open_shader_editor"), true));
+                {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("copy_builtin_prompt"), true));
+                }
+                if !EffectLoader::is_builtin(e)
+                    && ui
+                        .button(format!("Edit {}", e.name))
+                        .on_hover_text("Open its shader in the editor")
+                        .clicked()
+                {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(egui::Id::new("open_shader_editor"), true));
+                }
             }
-        }
+        })
     });
 }
 

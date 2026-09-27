@@ -100,6 +100,15 @@
 
 - The Bindings window is solid instead of letting the output show through it.
 
+- In the workspace layout, **a First run tour** lights one part of the window at a
+  time: the audio input, the catalog, the stack, the inspector and saving. It starts
+  by itself the first time and replays from the **Tours** menu or *Setup ▸
+  Tutorials*; Esc or Skip tour ends it.
+
+- The app now opens with an empty Layer 1 over the F, so the first effect you pick
+  lands on top of it. An empty layer is see-through until an effect loads, instead of
+  covering everything beneath it with a dark gradient.
+
 ## v1.39.0 — 2026-09-22
 
 <table>

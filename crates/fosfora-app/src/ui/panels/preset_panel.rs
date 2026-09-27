@@ -66,7 +66,12 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
     };
 
     let id = ui.make_persistent_id("sec_presets");
-    let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    if crate::ui::tour::reveals(ui.ctx(), "sec_presets") && !state.is_open() {
+        // A tour step points here: open it, and leave it open.
+        state.set_open(true);
+        state.store(ui.ctx());
+    }
 
     let arrow_color = if dirty { AMBER } else { tc.text_secondary };
     let title_color = if dirty { AMBER } else { tc.text_secondary };
@@ -81,7 +86,7 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
             Color32::from_rgba_unmultiplied(AMBER.r(), AMBER.g(), AMBER.b(), alpha as u8),
         );
     }
-    frame.show(ui, |ui| {
+    let card = frame.show(ui, |ui| {
         let header_response = widgets::header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
             widgets::draw_section_arrow(ui, state.is_open(), arrow_color);
             ui.label(
@@ -131,6 +136,10 @@ pub fn draw_preset_section_open(ui: &mut Ui, store: &PresetStore, default_open: 
             draw_preset_panel(ui, store);
         }
     });
+    // Only open: closed, the section shows no way to save.
+    if state.is_open() {
+        crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::Presets, card.response.rect);
+    }
 }
 
 fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
@@ -176,7 +185,8 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                         |ui| {
                             {
                                 // Reset button (neutral style)
-                                let reset_btn = ui.add(
+                                let reset_btn = ui.add_enabled(
+                                    !crate::ui::tour::is_running(ui.ctx()),
                                     egui::Button::new(
                                         RichText::new("Reset")
                                             .size(SMALL_SIZE)
@@ -190,6 +200,7 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                                     .corner_radius(CornerRadius::same(3)),
                                 );
                                 if reset_btn
+                                    .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
                                     .on_hover_text("Discard changes and reload preset")
                                     .clicked()
                                 {
@@ -311,6 +322,27 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
 
     ui.add_space(4.0);
 
+    // Loading another preset mid-tour replaces the stack a step describes.
+    let touring = crate::ui::tour::is_running(ui.ctx());
+    if touring {
+        ui.label(
+            RichText::new("Presets load once the tour is over.")
+                .size(SMALL_SIZE)
+                .color(tc.text_secondary),
+        );
+    }
+    ui.add_enabled_ui(!touring, |ui| {
+        draw_preset_lists(ui, store, &tc, loading_index);
+    });
+}
+
+/// The built-in and user presets as grids of tiles.
+fn draw_preset_lists(
+    ui: &mut Ui,
+    store: &PresetStore,
+    tc: &crate::ui::theme::colors::ThemeColors,
+    loading_index: Option<usize>,
+) {
     // Read pending_delete state from temp data
     let now = ui.input(|i| i.time);
     let pending_delete: Option<(usize, f64)> = ui
@@ -356,7 +388,7 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                 store,
                 btn_height,
                 gap,
-                &tc,
+                tc,
                 true,
                 pending_delete,
                 &mut new_pending,
@@ -387,7 +419,7 @@ fn draw_preset_panel(ui: &mut Ui, store: &PresetStore) {
                 store,
                 btn_height,
                 gap,
-                &tc,
+                tc,
                 false,
                 pending_delete,
                 &mut new_pending,

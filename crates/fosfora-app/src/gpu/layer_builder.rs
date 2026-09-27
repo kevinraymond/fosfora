@@ -67,10 +67,22 @@ pub(crate) fn prepare_particles(
     )
 }
 
-/// A fresh default-shader effect layer (the core of `App::add_layer`).
+/// What an empty layer draws: nothing. The compositor mixes each layer in
+/// by its alpha, so the layers beneath show through until an effect is
+/// loaded (#3126). It was the default shader's opaque gradient, which hid
+/// everything under a new layer. Just the fragment stage: the pipeline adds
+/// the vertex stage, and its bind group layout is explicit, so the bindings
+/// need not be declared.
+pub(crate) const EMPTY_SHADER: &str = "@fragment
+fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
+    return vec4f(0.0);
+}
+";
+
+/// A fresh empty effect layer (the core of `App::add_layer`).
 pub(crate) fn new_default_layer(ctx: &LayerBuildCtx<'_>, name: String) -> Option<Layer> {
     let hdr_format = GpuContext::hdr_format();
-    let source = read_default_shader();
+    let source = EMPTY_SHADER.to_string();
     let uniform_buffer = UniformBuffer::new(ctx.device);
     let feedback = PingPongTarget::new_cleared(
         ctx.device, ctx.queue, ctx.width, ctx.height, hdr_format, 1.0,
@@ -256,5 +268,19 @@ pub(crate) fn load_effect_into_layer(
             layer.param_store.load_from_defs(&effect.inputs);
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The empty layer's shader compiles as the pipeline builds it.
+    #[test]
+    fn the_empty_shader_is_valid_wgsl() {
+        let full = format!(
+            "{}\n{}",
+            crate::gpu::fullscreen_quad::FULLSCREEN_TRIANGLE_VS,
+            super::EMPTY_SHADER
+        );
+        crate::trama::effect::validate_wgsl(&full).unwrap();
     }
 }

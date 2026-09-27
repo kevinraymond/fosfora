@@ -159,6 +159,10 @@ pub struct SettingsConfig {
     /// applied, so a hand-edited value can't make the interface unusable.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// Guided tours finished or skipped, by key (#3126). The First run tour
+    /// starts by itself until its key is here.
+    #[serde(default)]
+    pub tours_done: Vec<String>,
 }
 
 /// Serde default for [`SettingsConfig::ui_scale`]: `f32`'s `Default` is 0.
@@ -189,6 +193,7 @@ impl Default for SettingsConfig {
             classic_layout: true,
             output_display: None,
             ui_scale: 1.0,
+            tours_done: Vec::new(),
         }
     }
 }

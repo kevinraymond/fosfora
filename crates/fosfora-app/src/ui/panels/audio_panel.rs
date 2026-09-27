@@ -176,7 +176,7 @@ fn draw_device_selector(ui: &mut Ui, audio: &mut AudioSystem) {
     let current = &audio.device_name;
     let selected_text = truncate_device_name(current, 24);
 
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         ui.label(
             RichText::new("Input")
                 .size(SMALL_SIZE)
@@ -214,6 +214,7 @@ fn draw_device_selector(ui: &mut Ui, audio: &mut AudioSystem) {
                 }
             });
     });
+    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::AudioInput, row.response.rect);
 
     ui.add_space(4.0);
 }
@@ -844,7 +845,12 @@ pub fn draw_audio_panel(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderU
         uniforms.brilliance,
     ];
     draw_section_header(ui, "SPECTRUM", "7 bands");
+    let top = ui.cursor().top();
     draw_spectrum_bars(ui, &bands);
+    // The meters are the other half of choosing an input: they show whether
+    // it hears anything.
+    let meters = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.min_rect().bottom());
+    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::AudioInput, meters);
 
     // Dynamics
     draw_section_header(ui, "DYNAMICS", "7 features");
