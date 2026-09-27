@@ -33,12 +33,17 @@ const NOMINAL_FPS: u32 = 72;
 const DEFAULT_COUNT: u32 = 500_000;
 const CUBE_HALF_M: f32 = 1.0;
 const SPRITE_RADIUS_M: f32 = 0.004;
-/// S7 defaults for mixed reality: the cube sits over a desk (center 1.1 m
-/// up, 0.9 m ahead, 1.1 m half edge), a little gravity settles particles on
-/// real surfaces, bounces keep 40 % of the normal speed, and the pinch
-/// toggle triples the sprite size.
+/// S7 defaults for mixed reality: until tracking is valid the cube sits
+/// over a desk at the stage origin (center 1.1 m up, 0.9 m ahead, 1.1 m half
+/// edge); on the first tracked frame it is re-centered on the wearer's head
+/// (x, z) at `MR_CUBE_Y` with `MR_CUBE_HALF_WEARER_M`, so the desk and hands
+/// are inside it whichever way they face. A little gravity settles
+/// particles on real surfaces, bounces keep 40 % of the normal speed, and
+/// the pinch toggle triples the sprite size.
 const MR_CUBE_CENTER: [f32; 3] = [0.0, 1.1, -0.9];
 const MR_CUBE_HALF_M: f32 = 1.1;
+const MR_CUBE_Y: f32 = 1.0;
+const MR_CUBE_HALF_WEARER_M: f32 = 1.5;
 const MR_GRAVITY: f32 = 0.15;
 const MR_RESTITUTION: f32 = 0.4;
 /// Sprites nearer than this to the eye are culled in mixed reality (the
@@ -157,16 +162,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let near_cull = debug_prop("debug.fosfora.nearcull")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if mixed { MR_NEAR_CULL_M } else { 0.0 });
-    let (cube_center, cube_half) = debug_prop("debug.fosfora.cube")
-        .and_then(|v| {
-            let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-            (n.len() == 4).then(|| ([n[0], n[1], n[2]], n[3]))
-        })
-        .unwrap_or(if mixed {
-            (MR_CUBE_CENTER, MR_CUBE_HALF_M)
-        } else {
-            (QUAD_CENTER, CUBE_HALF_M)
-        });
+    let cube_knob = debug_prop("debug.fosfora.cube").and_then(|v| {
+        let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        (n.len() == 4).then(|| ([n[0], n[1], n[2]], n[3]))
+    });
+    // An explicit cube stays where it is put; otherwise mr follows the wearer.
+    let recenter_on_wearer = mixed && cube_knob.is_none();
+    let (cube_center, cube_half) = cube_knob.unwrap_or(if mixed {
+        (MR_CUBE_CENTER, MR_CUBE_HALF_M)
+    } else {
+        (QUAD_CENTER, CUBE_HALF_M)
+    });
     let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     let quality = match debug_prop("debug.fosfora.quality").as_deref() {
         Some("low") => ParticleQuality::Low,
@@ -357,6 +363,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     });
     // Pinch toggles a visible parameter (the sprite size); either hand.
     let mut size_boost = false;
+    let mut recentered = false;
     let mut obstacle_log = (0u32, 0u32, [false; 2]);
 
     let started = Instant::now();
@@ -446,6 +453,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
             }
             if let Some(p) = particles.as_ref() {
+                if recenter_on_wearer && !recentered {
+                    recentered = true;
+                    let center = [input.head[0], MR_CUBE_Y, input.head[2]];
+                    p.set_cube(center, MR_CUBE_HALF_WEARER_M);
+                    info!(
+                        "cube re-centered on the wearer: ({:.2}, {:.2}, {:.2}) half {MR_CUBE_HALF_WEARER_M} (head at ({:.2}, {:.2}, {:.2}))",
+                        center[0],
+                        center[1],
+                        center[2],
+                        input.head[0],
+                        input.head[1],
+                        input.head[2]
+                    );
+                }
                 let mut set = ObstacleSet::new(MR_RESTITUTION, SPRITE_RADIUS_M * size_scale);
                 for s in &input.hands.spheres {
                     set.push_sphere(*s);

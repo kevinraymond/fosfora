@@ -49,6 +49,8 @@ pub struct MrOptions {
 /// Per-frame input the frame loop hands to `before_render`, by value.
 #[derive(Debug, Clone, Default)]
 pub struct FrameInput {
+    /// Midpoint of the two eyes in the reference space this frame.
+    pub head: [f32; 3],
     pub hands: HandsFrame,
     /// Scene anchors as oriented boxes in the reference space (empty until
     /// the query returns, or when the room is off).
@@ -584,7 +586,30 @@ impl XrSession {
             return Ok(());
         }
         let time = frame_state.predicted_display_time;
+        let (view_flags, views) = self
+            .session
+            .locate_views(VIEW_TYPE, time, &self.space)
+            .context("xrLocateViews")?;
+        let tracked = xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID;
+        if !view_flags.contains(tracked) {
+            // Just put on, or tracking lost: the runtime rejects a projection
+            // layer built from these poses (ERROR_POSE_INVALID at
+            // xrEndFrame). Show passthrough alone, or nothing.
+            let passthrough_layer = self.passthrough_layer();
+            let layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> =
+                passthrough_layer.iter().map(as_layer_base).collect();
+            self.stream
+                .end(frame_state.predicted_display_time, self.blend_mode, &layers)
+                .context("xrEndFrame (views not tracked)")?;
+            return Ok(());
+        }
+        let head = {
+            let p = |i: usize| views[i].pose.position;
+            let (a, b) = (p(0), p(views.len() - 1));
+            [(a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5]
+        };
         let input = FrameInput {
+            head,
             hands: self
                 .hands
                 .as_mut()
@@ -600,23 +625,6 @@ impl XrSession {
         };
         before_render(&input);
 
-        let (view_flags, views) = self
-            .session
-            .locate_views(VIEW_TYPE, frame_state.predicted_display_time, &self.space)
-            .context("xrLocateViews")?;
-        let tracked = xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID;
-        if !view_flags.contains(tracked) {
-            // Just put on, or tracking lost: the runtime rejects a projection
-            // layer built from these poses (ERROR_POSE_INVALID at
-            // xrEndFrame). Show passthrough alone, or nothing.
-            let passthrough_layer = self.passthrough_layer();
-            let layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> =
-                passthrough_layer.iter().map(as_layer_base).collect();
-            self.stream
-                .end(frame_state.predicted_display_time, self.blend_mode, &layers)
-                .context("xrEndFrame (views not tracked)")?;
-            return Ok(());
-        }
         let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
         log_stereo(view_flags, &views, &cameras);
 

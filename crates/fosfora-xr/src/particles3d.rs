@@ -160,6 +160,9 @@ pub struct Particles3d {
     /// measurement isolates the draw cost.
     pub sim_enabled: bool,
     frames: Cell<u32>,
+    /// Cube placement, changeable per frame (`set_cube`): mixed reality
+    /// centers it on the wearer once tracking is valid.
+    cube: Cell<([f32; 3], f32)>,
     count: u32,
     triangles: bool,
     params: Params,
@@ -417,6 +420,7 @@ impl Particles3d {
         Self {
             sim_enabled: true,
             frames: Cell::new(0),
+            cube: Cell::new((params.cube_center, params.cube_half)),
             count,
             triangles: params.triangles,
             params,
@@ -435,9 +439,10 @@ impl Particles3d {
     /// Upload this frame's sim inputs. `speed` and `size` are the audio
     /// multipliers (1.0 = neutral).
     pub fn update(&self, queue: &wgpu::Queue, time: f32, dt: f32, speed: f32, size: f32) {
+        let (cube_center, cube_half) = self.cube.get();
         let u = SimUniform {
-            cube_center: self.params.cube_center,
-            cube_half: self.params.cube_half,
+            cube_center,
+            cube_half,
             time,
             dt,
             count: self.count,
@@ -452,6 +457,12 @@ impl Particles3d {
             near_cull: self.params.near_cull,
         };
         queue.write_buffer(&self.sim_uniform, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// Move and resize the cube (meters). Particles outside it respawn
+    /// inside on their next step.
+    pub fn set_cube(&self, center: [f32; 3], half: f32) {
+        self.cube.set((center, half));
     }
 
     /// Upload this frame's obstacles (S7: hand joints, scene boxes, floor).
