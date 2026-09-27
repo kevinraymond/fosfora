@@ -210,6 +210,17 @@ struct Particle {
     flags: vec4f,     // x=age, y=lifetime, z=effect-specific, w=effect-specific
 }
 
+// World layout (opt-in, for the XR build's world-space renderer,
+// builtin/particle_render_world.wgsl; documented here, not enforced):
+//   pos_life.xyz = position in meters relative to the effect anchor, in the
+//                  OpenXR stage convention (+Y up, -Z forward); w = life as above
+//   vel_size.xyz = velocity in m/s; w = sprite radius in meters
+//   color        = rgba, as above
+//   flags        = as above
+// A sim that keeps per-particle state in pos_life.z or vel_size.z in its 2D form
+// (initial size, mass, species, band, height) must move it to flags.zw or the aux
+// buffer in its world variant. The 2D renderers and every 2D sim are unaffected.
+
 // Species convention (multi-species sims: Symbiosis, Polycephalum): the species/organism id is
 // carried in `flags.z` as f32 (read back with `u32(p.flags.z)`), NOT `flags.x` (which is age).
 // Polycephalum uses one species per pitch class 0..11 and stores its heading angle in `flags.w`.
@@ -268,6 +279,22 @@ fn sample_flow_field(pos: vec2f) -> vec2f {
     let sample = textureSampleLevel(flow_field_tex, flow_field_sampler, vec3f(uv, w), 0.0);
     // xyz = curl velocity, scale by strength
     return sample.xy * u.flow_strength;
+}
+
+// Sample the flow field for a world-layout sim (see "World layout" above).
+// pos_m: position in meters relative to the effect anchor. The cube within
+// +-extent_m of the anchor maps onto the texture's [0,1]^3 on all three axes
+// (times flow_scale; the texture repeats). Unlike sample_flow_field nothing
+// scrolls with time: the field is fixed in space, so animate it by offsetting
+// pos_m if the sim wants it to evolve.
+// Returns xyz velocity scaled by flow_strength (m/s under the world layout).
+fn sample_flow_field_3d(pos_m: vec3f, extent_m: f32) -> vec3f {
+    if u.flow_enabled < 0.5 {
+        return vec3f(0.0);
+    }
+    let uvw = (pos_m / max(extent_m, 1e-6) * 0.5 + 0.5) * u.flow_scale;
+    let sample = textureSampleLevel(flow_field_tex, flow_field_sampler, uvw, 0.0);
+    return sample.xyz * u.flow_strength;
 }
 
 // --- Obstacle texture bindings (group 1, bindings 2+3, water 4) ---
