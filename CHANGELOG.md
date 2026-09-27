@@ -105,6 +105,22 @@
   by itself the first time and replays from the **Tours** menu or *Setup ▸
   Tutorials*; Esc or Skip tour ends it.
 
+- In the workspace layout, **every control has a Bind**. It opens Bindings with that
+  control already picked, so one click on a source finishes the binding. A control
+  that follows something names it on its row (◀ Kick), and *Open bindings* under
+  Parameters shows them all. Before, Bindings had no button outside the Classic layout.
+
+- **A Bindings tour**, in the Tours menu: from a control into the matrix and back,
+  covering sources, cards, targets, preset and global bindings, and the M and O
+  buttons as the quick path for one knob.
+
+- The Bindings window's *Effect* tab is now called *Preset*: those bindings are saved
+  with the preset, whichever effects it runs.
+
+- In the Bindings window, an open card no longer cuts off its name, source and
+  target, and the source list no longer draws values over the uniform names beside
+  them. The name has its own line, and Source and Target have a labeled line each.
+
 - The app now opens with an empty Layer 1 over the F, and Clear stack and a new preset
   return to that, so the first effect you pick lands on top of it. An empty layer is see-through until an effect loads, instead of
   covering everything beneath it with a dark gradient.

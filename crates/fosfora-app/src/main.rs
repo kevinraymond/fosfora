@@ -1030,15 +1030,16 @@ impl ApplicationHandler for FosforaApp {
                                 }),
                                 catalog_thumbs: &mut app.catalog_thumbs,
                                 scene: &scene_info,
+                                bindings: &app.binding_bus,
                             };
                             crate::ui::shell::draw_shell(
                                 &ctx,
                                 app.egui_overlay.visible,
                                 &mut shell,
                             );
-                            if app.egui_overlay.visible {
-                                crate::ui::tour::draw(&ctx);
-                            }
+                            // Before the modals read their requests; the
+                            // tour itself draws after them (#3127).
+                            crate::ui::tour::gate(&ctx);
                         } else if !app.shader_editor.open {
                             crate::ui::panels::draw_panels(
                                 &ctx,
@@ -1130,68 +1131,62 @@ impl ApplicationHandler for FosforaApp {
                         }
                     }
 
-                    // Check if sidebar "Matrix" button was clicked
-                    let matrix_open_requested = ctx.data_mut(|d| {
-                        d.get_temp::<bool>(egui::Id::new("open_binding_matrix"))
-                            .unwrap_or(false)
-                    });
-                    if matrix_open_requested {
-                        app.binding_matrix.open = true;
-                        ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new("open_binding_matrix"), false);
-                            d.insert_temp(egui::Id::new("binding_matrix_just_opened"), true);
-                        });
-                    }
+                    // The binding matrix: its requests, then the matrix.
+                    crate::ui::panels::binding_matrix::frame(
+                        &ctx,
+                        &mut app.binding_matrix,
+                        &mut app.binding_bus,
+                        || {
+                            let layers = app
+                                .layer_stack
+                                .layers
+                                .iter()
+                                .enumerate()
+                                .map(|(i, l)| {
+                                    let effect_name = l
+                                        .effect_index()
+                                        .and_then(|idx| app.effect_loader.effects.get(idx))
+                                        .map(|eff| eff.name.clone())
+                                        .unwrap_or_default();
+                                    let param_names = l
+                                        .param_store
+                                        .defs
+                                        .iter()
+                                        .filter(|d| {
+                                            matches!(
+                                                d,
+                                                crate::params::ParamDef::Float { .. }
+                                                    | crate::params::ParamDef::Bool { .. }
+                                            )
+                                        })
+                                        .map(|d| d.name().to_string())
+                                        .collect();
+                                    crate::ui::panels::binding_helpers::LayerParamInfo {
+                                        index: i,
+                                        effect_name,
+                                        param_names,
+                                    }
+                                })
+                                .collect();
+                            crate::ui::panels::binding_helpers::BindingPanelInfo {
+                                layers,
+                                active_layer,
+                                layer_count: layer_infos.len(),
+                                preset_name: app
+                                    .preset_store
+                                    .current_name()
+                                    .unwrap_or("(unsaved)")
+                                    .to_string(),
+                            }
+                        },
+                    );
 
-                    // Draw binding matrix modal
-                    if app.binding_matrix.open {
-                        let layers: Vec<crate::ui::panels::binding_helpers::LayerParamInfo> = app
-                            .layer_stack
-                            .layers
-                            .iter()
-                            .enumerate()
-                            .map(|(i, l)| {
-                                let effect_name = l
-                                    .effect_index()
-                                    .and_then(|idx| app.effect_loader.effects.get(idx))
-                                    .map(|eff| eff.name.clone())
-                                    .unwrap_or_default();
-                                let param_names = l
-                                    .param_store
-                                    .defs
-                                    .iter()
-                                    .filter(|d| {
-                                        matches!(
-                                            d,
-                                            crate::params::ParamDef::Float { .. }
-                                                | crate::params::ParamDef::Bool { .. }
-                                        )
-                                    })
-                                    .map(|d| d.name().to_string())
-                                    .collect();
-                                crate::ui::panels::binding_helpers::LayerParamInfo {
-                                    index: i,
-                                    effect_name,
-                                    param_names,
-                                }
-                            })
-                            .collect();
-                        let bind_info = crate::ui::panels::binding_helpers::BindingPanelInfo {
-                            layers,
-                            active_layer,
-                            layer_count: layer_infos.len(),
-                            preset_name: app
-                                .preset_store
-                                .current_name()
-                                .unwrap_or("(unsaved)")
-                                .to_string(),
-                        };
-                        crate::ui::panels::binding_matrix::draw_binding_matrix(
-                            &ctx,
-                            &mut app.binding_matrix,
-                            &mut app.binding_bus,
-                            &bind_info,
-                        );
+                    // Over everything it points at, the modals included.
+                    if !app.settings.classic_layout
+                        && !app.shader_editor.open
+                        && app.egui_overlay.visible
+                    {
+                        crate::ui::tour::draw(&ctx);
                     }
 
                     // GPU profiler panel

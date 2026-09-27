@@ -18,11 +18,12 @@
 //!   on whichever side of the anchor has room.
 //!
 //! While a tour shows, nothing may take the interface out from under it:
-//! the ways out that sit inside a lit area (Edit chain, loading a preset,
-//! the drawer's tabs, making an effect) are switched off with
+//! the ways out that sit inside a lit area (Edit chain, Bind, loading a
+//! preset, the drawer's tabs, making an effect) are switched off with
 //! [`is_running`], every keyboard shortcut but Esc is ignored, and
-//! [`draw`] drops any request to open another view that still gets
-//! through.
+//! [`gate`] drops any request to open another view that still gets
+//! through. The one view a tour opens itself is the binding matrix: a step
+//! says whether it wants it ([`matrix_wanted`]), and the matrix follows.
 //!
 //! A tour runs only in the workspace layout: the Classic panels register no
 //! anchors. Finishing or skipping one sends `tour_done` with its key, which
@@ -47,28 +48,44 @@ pub enum Anchor {
     Inspector,
     /// The Presets section, where the stack is saved.
     Presets,
+    /// The selected layer's Parameters section in the inspector.
+    Parameters,
+    /// The first row of the Parameters section: a control and its Bind,
+    /// M and O.
+    ParamRow,
+    /// The binding matrix's left column: what can drive a control.
+    MatrixSources,
+    /// The binding matrix's middle column: one card per binding.
+    MatrixCards,
+    /// The binding matrix's right column: what a binding can drive.
+    MatrixTargets,
+    /// The binding matrix's Preset and Global tabs, and Templates.
+    MatrixScope,
 }
 
 /// The tours there are.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tour {
     FirstRun,
+    Bindings,
 }
 
 impl Tour {
-    pub const ALL: &[Tour] = &[Tour::FirstRun];
+    pub const ALL: &[Tour] = &[Tour::FirstRun, Tour::Bindings];
 
     /// The name settings records it under once it is finished or skipped.
     /// Never change one: a renamed key replays the tour for everyone.
     pub fn key(self) -> &'static str {
         match self {
             Tour::FirstRun => "first_run",
+            Tour::Bindings => "bindings",
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Tour::FirstRun => "First run",
+            Tour::Bindings => "Bindings",
         }
     }
 
@@ -77,14 +94,27 @@ impl Tour {
             Tour::FirstRun => {
                 "Choose what it listens to, find an effect, read the stack, shape it, save it."
             }
+            Tour::Bindings => "Make a control follow the bass, a MIDI knob or an OSC message.",
         }
     }
 
     pub fn steps(self) -> &'static [Step] {
         match self {
             Tour::FirstRun => FIRST_RUN,
+            Tour::Bindings => BINDINGS,
         }
     }
+}
+
+/// What a step does with the binding matrix.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Matrix {
+    Shut,
+    Open,
+    /// Open, and the step makes one binding: the first source clicked makes
+    /// it, and each click after that changes its source, so the card the
+    /// next steps describe is the last source picked.
+    PickSource,
 }
 
 /// One stop on a tour.
@@ -99,6 +129,13 @@ pub struct Step {
     /// Collapsible sections to open while this step shows, by the id their
     /// draw call gives them.
     pub reveal: &'static [&'static str],
+    /// Whether the binding matrix shows during this step. The tour holds it
+    /// open or shut: the matrix's own ways to close are off meanwhile.
+    pub matrix: Matrix,
+    /// Drawn in the note under the words, in an inset: a thing the step
+    /// describes, drawn by the code that draws it for real, so the picture
+    /// cannot drift from the interface.
+    pub picture: Option<fn(&mut Ui)>,
 }
 
 /// Build with the drawer showing the catalog and a layer in the inspector.
@@ -124,6 +161,8 @@ const FIRST_RUN: &[Step] = &[
                if they stay flat, try another input.",
         prepare: to_build,
         reveal: &["v2_audio"],
+        matrix: Matrix::Shut,
+        picture: None,
     },
     Step {
         anchor: Anchor::Catalog,
@@ -133,6 +172,8 @@ const FIRST_RUN: &[Step] = &[
                afterwards you can also drag a picture onto the stack to add a layer.",
         prepare: to_catalog,
         reveal: &[],
+        matrix: Matrix::Shut,
+        picture: None,
     },
     Step {
         anchor: Anchor::Stack,
@@ -142,6 +183,8 @@ const FIRST_RUN: &[Step] = &[
                at the top, is what goes out. Click a row to edit it.",
         prepare: to_build,
         reveal: &[],
+        matrix: Matrix::Shut,
+        picture: None,
     },
     Step {
         anchor: Anchor::Inspector,
@@ -151,6 +194,8 @@ const FIRST_RUN: &[Step] = &[
                (C) adds node effects to the layer.",
         prepare: to_build,
         reveal: &[],
+        matrix: Matrix::Shut,
+        picture: None,
     },
     Step {
         anchor: Anchor::Presets,
@@ -159,6 +204,104 @@ const FIRST_RUN: &[Step] = &[
                chains and Master. Replay this tour from Setup › Tutorials.",
         prepare: to_build,
         reveal: &["sec_presets"],
+        matrix: Matrix::Shut,
+        picture: None,
+    },
+];
+
+/// Build, with the topmost layer that runs an effect in the inspector: the
+/// launch stack's Layer 1 is empty, and an empty layer has nothing to bind.
+fn to_effect_layer(ctx: &Context) {
+    to_build(ctx);
+    ctx.data_mut(|d| d.insert_temp(Id::new(SELECT_EFFECT_LAYER), true));
+}
+
+/// The matrix, with the selected layer's first control picked as the
+/// target, so one click on a source makes a binding.
+fn to_matrix_armed(ctx: &Context) {
+    to_build(ctx);
+    ctx.data_mut(|d| d.insert_temp(Id::new(ARM_FIRST_PARAM), true));
+}
+
+/// Asks the shell to select the topmost layer that runs an effect.
+pub const SELECT_EFFECT_LAYER: &str = "tour_select_effect_layer";
+/// Asks the binding matrix to pick the selected layer's first control as
+/// the target.
+pub const ARM_FIRST_PARAM: &str = "tour_arm_first_param";
+
+/// The Bindings tour: the M0 mockup's "make a parameter follow the bass, a
+/// MIDI knob or an OSC message", from the control to the matrix and back.
+const BINDINGS: &[Step] = &[
+    Step {
+        anchor: Anchor::Parameters,
+        title: "Any control can move by itself",
+        body: "A layer's controls can follow the music, a MIDI knob or an OSC message. \
+               After the tour, Bind on a row starts a binding for that control, and Open \
+               bindings under the section shows them all (B). A control that follows \
+               something names it on its row, like this one following the bass:",
+        prepare: to_effect_layer,
+        reveal: &["v2_params"],
+        matrix: Matrix::Shut,
+        picture: Some(super::panels::param_panel::draw_example_row),
+    },
+    Step {
+        anchor: Anchor::MatrixSources,
+        title: "Pick what drives it",
+        body: "This is the binding matrix, opened with the layer's first control picked \
+               as the target (the line at the bottom says which). The left column is \
+               everything that can drive it: the audio analysis, MIDI, OSC and camera \
+               tracking. Click a source, Bass for one, to make the binding. Changed your \
+               mind? Click another.",
+        prepare: to_matrix_armed,
+        reveal: &[],
+        matrix: Matrix::PickSource,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::MatrixCards,
+        title: "Shape it",
+        body: "Each binding is a card: source, then target. Click a card to open it and \
+               shape the response: the range it moves the control through, smoothing, \
+               invert, a gate. Untick Enabled on an open card to turn it off without \
+               losing it.",
+        prepare: to_build,
+        reveal: &[],
+        matrix: Matrix::Open,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::MatrixTargets,
+        title: "Or start from the other side",
+        body: "The right column is everything a binding can drive: each layer's \
+               controls, how a layer blends, post-processing, particles and the scene \
+               transport. Click a target, then a source: the order doesn't matter.",
+        prepare: to_build,
+        reveal: &[],
+        matrix: Matrix::Open,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::MatrixScope,
+        title: "This preset, or every preset",
+        body: "Preset bindings are saved with the preset when you press Save. Global \
+               ones stay whichever preset you load, which suits a controller's knobs. \
+               Templates add a ready-made set to the selected layer.",
+        prepare: to_build,
+        reveal: &[],
+        matrix: Matrix::Open,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::ParamRow,
+        title: "The quick path for one knob",
+        body: "M learns a MIDI control: click it, then move a knob. O does the same for \
+               an OSC address. Those follow the selection: the knob drives the control \
+               of that name on whichever layer is selected. A binding stays on its \
+               layer and can be shaped. Replay this tour from Setup \u{203a} Tutorials.",
+        prepare: to_build,
+        reveal: &["v2_params"],
+        matrix: Matrix::Shut,
+        picture: None,
     },
 ];
 
@@ -200,8 +343,14 @@ pub const NOT_DURING: &str = "Not during the tour";
 /// preset, full output) or reshape the stack it describes (adding,
 /// removing or clearing layers). The controls that send them are off during a tour;
 /// this catches whatever path still gets one through. Each is removed as
-/// the type `main.rs` reads it: a different type would remove nothing.
-fn drop_leaving(ctx: &Context) {
+/// the type its reader reads it: a different type would remove nothing.
+///
+/// Call it after the interface is drawn and before anything reads those
+/// requests: in `main.rs`, before the modals.
+pub fn gate(ctx: &Context) {
+    if !is_running(ctx) {
+        return;
+    }
     ctx.data_mut(|d| {
         for key in LEAVING_USIZE {
             d.remove::<usize>(Id::new(key));
@@ -210,10 +359,11 @@ fn drop_leaving(ctx: &Context) {
             d.remove::<bool>(Id::new(key));
         }
         d.remove::<u32>(Id::new(LEAVING_U32));
+        d.remove::<(usize, String)>(Id::new(LEAVING_PARAM));
     });
 }
 
-/// The requests [`drop_leaving`] drops, by the type each is sent as.
+/// The requests [`gate`] drops, by the type each is sent as.
 const LEAVING_USIZE: [&str; 3] = ["open_trama_on_layer", "pending_preset", "remove_layer"];
 const LEAVING_BOOL: [&str; 9] = [
     "open_trama_on_master",
@@ -227,9 +377,11 @@ const LEAVING_BOOL: [&str; 9] = [
     "clear_all_layers",
 ];
 const LEAVING_U32: &str = "add_webcam_layer";
+/// A control's Bind: (layer, control name).
+const LEAVING_PARAM: &str = "bind_param";
 
 /// Has anything drawn this frame asked to leave the view? For tests, which
-/// look before [`draw`] drops the request.
+/// look before [`gate`] drops the request.
 #[cfg(test)]
 pub(crate) fn leaving_requested(ctx: &Context) -> Option<&'static str> {
     ctx.data(|d| {
@@ -242,7 +394,27 @@ pub(crate) fn leaving_requested(ctx: &Context) -> Option<&'static str> {
                     .find(|k| d.get_temp::<bool>(Id::new(*k)).is_some())
             })
             .or_else(|| d.get_temp::<u32>(Id::new(LEAVING_U32)).map(|_| LEAVING_U32))
+            .or_else(|| {
+                d.get_temp::<(usize, String)>(Id::new(LEAVING_PARAM))
+                    .map(|_| LEAVING_PARAM)
+            })
     })
+}
+
+/// Should the binding matrix show? `None` when no tour is showing (the
+/// matrix is the user's), else whether the step showing wants it.
+pub fn matrix_wanted(ctx: &Context) -> Option<bool> {
+    running(ctx)
+        .and_then(step_of)
+        .map(|s| s.matrix != Matrix::Shut)
+}
+
+/// Is the step showing one where a source click picks the source of the
+/// step's own binding ([`Matrix::PickSource`])?
+pub fn picks_source(ctx: &Context) -> bool {
+    running(ctx)
+        .and_then(step_of)
+        .is_some_and(|s| s.matrix == Matrix::PickSource)
 }
 
 /// Start `tour` from its first step.
@@ -441,7 +613,7 @@ fn around(hole: Rect, screen: Rect) -> [Rect; 4] {
 }
 
 /// Draw the tour showing, if any. Call after everything it points at has
-/// been drawn this frame.
+/// been drawn this frame, the modals included, and after [`gate`].
 pub fn draw(ctx: &Context) {
     let Some(r) = running(ctx) else {
         return;
@@ -450,7 +622,6 @@ pub fn draw(ctx: &Context) {
         end(ctx);
         return;
     };
-    drop_leaving(ctx);
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         end(ctx);
         return;
@@ -465,7 +636,11 @@ pub fn draw(ctx: &Context) {
     // over the hole would take the pointer there, clicks and scrolling both.
     // Middle, so menus and pop-ups opened from inside the hole (the input
     // picker's list) are drawn over the dimming and take their own clicks
-    // by their order, not only because they opened last.
+    // by their order, not only because they opened last. The binding
+    // matrix draws at Middle too while a tour shows, and opens after the
+    // dimming exists: every frame the dimming asks to be on top again, and
+    // egui's end-of-frame sort is stable, so it stays over the matrix even
+    // on a frame the matrix is clicked and asks the same.
     let pieces = match lit {
         Some(h) => around(h, screen).to_vec(),
         None => vec![screen],
@@ -474,7 +649,7 @@ pub fn draw(ctx: &Context) {
         if !piece.is_positive() {
             continue;
         }
-        Area::new(Id::new("tour_dim").with(i))
+        let dim = Area::new(Id::new("tour_dim").with(i))
             .order(Order::Middle)
             .fixed_pos(piece.min)
             .constrain(false)
@@ -482,6 +657,7 @@ pub fn draw(ctx: &Context) {
                 let (rect, _) = ui.allocate_exact_size(piece.size(), Sense::click_and_drag());
                 ui.painter().rect_filled(rect, 0.0, DIM);
             });
+        ctx.move_to_top(dim.response.layer_id);
     }
 
     let size = Vec2::new(CALLOUT_WIDTH, callout_height(ctx));
@@ -513,6 +689,18 @@ pub fn draw(ctx: &Context) {
                     ui.label(RichText::new(step.title).size(18.0).strong());
                     ui.add_space(2.0);
                     ui.label(RichText::new(step.body).size(BODY_SIZE));
+                    if let Some(picture) = step.picture {
+                        ui.add_space(6.0);
+                        egui::Frame::new()
+                            .fill(tc.card_bg)
+                            .stroke(egui::Stroke::new(1.0_f32, tc.card_border))
+                            .corner_radius(4.0)
+                            .inner_margin(egui::Margin::symmetric(8, 6))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                picture(ui);
+                            });
+                    }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Skip tour").clicked() {
@@ -705,9 +893,15 @@ mod tests {
     // its anchor.
     #[test]
     fn nothing_in_a_lit_area_leaves_the_step() {
+        for &tour in Tour::ALL {
+            clicking_inside_stays(tour);
+        }
+    }
+
+    fn clicking_inside_stays(tour: Tour) {
         let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
-        start(&h.ctx, Tour::FirstRun);
-        for (i, step) in Tour::FirstRun.steps().iter().enumerate() {
+        start(&h.ctx, tour);
+        for (i, step) in tour.steps().iter().enumerate() {
             h.settle(30);
             let lit = drawn(&h.ctx, step.anchor).unwrap();
             let mut y = lit.top() + 6.0;
@@ -720,22 +914,22 @@ mod tests {
                 }
                 y += 30.0;
             }
-            assert_eq!(
-                h.leaving,
-                None,
-                "step {}: a click inside asked to leave",
-                i + 1
-            );
-            assert_eq!(current(&h.ctx), Some((Tour::FirstRun, i)));
+            let at = format!("{} step {}", tour.name(), i + 1);
+            assert_eq!(h.leaving, None, "{at}: a click inside asked to leave");
+            assert_eq!(current(&h.ctx), Some((tour, i)));
             h.settle(30);
             assert!(
                 drawn(&h.ctx, step.anchor).is_some(),
-                "step {}: clicking inside hid {:?}",
-                i + 1,
+                "{at}: clicking inside hid {:?}",
                 step.anchor
             );
+            assert_eq!(
+                h.matrix.open,
+                step.matrix != Matrix::Shut,
+                "{at}: the matrix"
+            );
             // As Next does: the clicks have moved the keyboard focus.
-            go_to(&h.ctx, Tour::FirstRun, i + 1);
+            go_to(&h.ctx, tour, i + 1);
         }
     }
 
@@ -768,9 +962,11 @@ mod tests {
             d.insert_temp(Id::new("pending_preset"), 1usize);
             d.insert_temp(Id::new("open_binding_matrix"), true);
             d.insert_temp(Id::new("open_shader_editor"), true);
+            d.insert_temp(Id::new("bind_param"), (1usize, "trail_decay".to_string()));
         });
         h.settle(1);
         assert_eq!(leaving_requested(&h.ctx), None);
+        assert!(!h.matrix.open, "a request opened the matrix mid-tour");
     }
 
     // The click test shows the dimming is there; this shows it is seen:
@@ -931,5 +1127,231 @@ mod tests {
         assert!(!should_auto_start(&s));
         let classic = crate::settings::SettingsConfig::default();
         assert!(classic.classic_layout && !should_auto_start(&classic));
+    }
+
+    // ── The Bindings tour (#3127) ─────────────────────────────────────
+
+    use crate::bindings::types::BindingTarget;
+    use crate::ui::panels::binding_matrix::ArmedEnd;
+    use crate::ui::shell_harness::PARAMS;
+
+    /// The target the Bindings tour picks: the effect layer's first control.
+    fn first_param() -> BindingTarget {
+        BindingTarget::Param {
+            layer: ShellHarness::EFFECT_LAYER,
+            effect: "Effect 0".into(),
+            param: PARAMS[0].into(),
+        }
+    }
+
+    /// Where a source row of the matrix's left column takes a click: left
+    /// of its dot, on the row. A group open from the start: Bands.
+    fn a_source_row(h: &ShellHarness, n: usize) -> (String, Pos2) {
+        let bands = crate::ui::panels::binding_helpers::audio_source_groups()
+            .into_iter()
+            .find(|(_, id, _)| id == "audio_bands")
+            .expect("a Bands group");
+        let key = bands.2[n].to_string();
+        let dot = h.matrix.source_positions[&key];
+        (key, Pos2::new(dot.x - 60.0, dot.y))
+    }
+
+    // The launch stack's Layer 1 is empty: a tour about controls that
+    // showed it would light "No parameters". The first step selects a layer
+    // with an effect, the matrix opens with its first control picked, and
+    // one click on a source makes the binding the next steps describe.
+    #[test]
+    fn the_bindings_tour_binds_the_effect_layers_first_control() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        assert_eq!(h.active_layer, 0);
+        start(&h.ctx, Tour::Bindings);
+        h.settle(30);
+        assert_eq!(h.active_layer, ShellHarness::EFFECT_LAYER);
+        assert!(!h.matrix.open);
+        // The note shows a bound row rather than describing one, whole.
+        let note = callout_rect(&h.ctx).unwrap();
+        let chip = h.text_rect("\u{25c0} Bass").expect("the picture's row");
+        let learn = h.text_rects("M");
+        assert!(note.contains_rect(chip), "{chip:?} is outside {note:?}");
+        assert!(
+            learn
+                .iter()
+                .any(|m| note.contains_rect(*m) && m.left() > chip.right()),
+            "the picture's M sits right of the chip"
+        );
+
+        h.key(Key::Enter);
+        h.settle(30);
+        assert!(h.matrix.open, "the sources step opens the matrix");
+        assert_eq!(h.matrix.armed, Some(ArmedEnd::Target(first_param())));
+
+        let (first, at) = a_source_row(&h, 0);
+        assert!(
+            hole(drawn(&h.ctx, Anchor::MatrixSources).unwrap(), h.screen()).contains(at),
+            "the row is lit"
+        );
+        h.click(at);
+        h.settle(2);
+        let made: Vec<_> = h.bindings.bindings.iter().collect();
+        assert_eq!(made.len(), 1, "one click, one binding");
+        assert_eq!(made[0].source, first);
+        assert_eq!(made[0].target, first_param());
+        assert_eq!(h.matrix.armed, None);
+        let id = made[0].id.clone();
+
+        // Kevin's live check: a second source left the first on the card
+        // and armed itself. It is the step's binding's new source.
+        let (second, at) = a_source_row(&h, 1);
+        h.click(at);
+        h.settle(2);
+        assert_eq!(
+            h.bindings.bindings.len(),
+            1,
+            "a change of mind, not a second binding"
+        );
+        assert_eq!(h.bindings.bindings[0].source, second);
+        assert_eq!(h.matrix.armed, None);
+        assert_eq!(h.matrix.expanded_binding_id.as_deref(), Some(id.as_str()));
+
+        // Cards, then Back: the step shows its binding rather than arming
+        // for another.
+        go_to(&h.ctx, Tour::Bindings, 2);
+        h.settle(30);
+        go_to(&h.ctx, Tour::Bindings, 1);
+        h.settle(30);
+        assert_eq!(h.matrix.armed, None);
+        assert_eq!(h.matrix.expanded_binding_id.as_deref(), Some(id.as_str()));
+        let (source, at) = a_source_row(&h, 0);
+        h.click(at);
+        h.settle(2);
+        assert_eq!(h.bindings.bindings.len(), 1);
+        assert_eq!(h.bindings.bindings[0].source, source);
+
+        // On to the end, as Next does (the click took the keyboard focus):
+        // the last step is back in the inspector.
+        let last = Tour::Bindings.steps().len() - 1;
+        for i in 2..last {
+            go_to(&h.ctx, Tour::Bindings, i);
+            h.settle(30);
+            assert!(h.matrix.open, "step {}", i + 1);
+        }
+        go_to(&h.ctx, Tour::Bindings, last);
+        h.settle(30);
+        assert!(!h.matrix.open, "the M and O step closes the matrix");
+        let row = drawn(&h.ctx, Anchor::ParamRow).expect("the first row is lit");
+        assert!(row.height() < 60.0, "one row, not the section: {row:?}");
+
+        // After the tour a source click is the matrix's own again: it arms.
+        h.key(Key::Escape);
+        h.ctx
+            .data_mut(|d| d.insert_temp(Id::new("open_binding_matrix"), true));
+        h.settle(5);
+        let (source, at) = a_source_row(&h, 1);
+        h.click(at);
+        h.settle(2);
+        assert_eq!(h.matrix.armed, Some(ArmedEnd::Source(source)));
+        assert_eq!(h.bindings.bindings.len(), 1);
+    }
+
+    // The control already has a binding when the tour reaches the step (a
+    // second run of the tour, or one made by hand): the step takes that
+    // binding as its own, and the first click changes its source. Before,
+    // nothing was armed and the click armed the source instead.
+    #[test]
+    fn the_pick_step_takes_the_controls_existing_binding() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        let id = h.bindings.add_binding(
+            "audio.rms".into(),
+            first_param(),
+            crate::bindings::types::BindingScope::Preset,
+        );
+        start(&h.ctx, Tour::Bindings);
+        h.settle(30);
+        go_to(&h.ctx, Tour::Bindings, 1);
+        h.settle(30);
+        assert_eq!(h.matrix.expanded_binding_id.as_deref(), Some(id.as_str()));
+        let (source, at) = a_source_row(&h, 1);
+        h.click(at);
+        h.settle(2);
+        assert_eq!(h.bindings.bindings.len(), 1);
+        assert_eq!(h.bindings.bindings[0].source, source);
+        assert_eq!(h.matrix.armed, None);
+    }
+
+    // The matrix draws after the shell and asks to be on top of its
+    // backdrop; the dimming must still cover it, or a matrix step would be
+    // a spotlight on the whole matrix with every part of it live.
+    #[test]
+    fn the_dimming_covers_the_matrix_but_the_lit_column() {
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        start(&h.ctx, Tour::Bindings);
+        h.settle(30);
+        h.key(Key::Enter);
+        h.settle(30);
+        let layer_at = |h: &ShellHarness, p: Pos2| h.ctx.layer_id_at(p).map(|l| l.id);
+        let is_dim = |id: Option<Id>| (0..4).any(|i| id == Some(Id::new("tour_dim").with(i)));
+        let sources = drawn(&h.ctx, Anchor::MatrixSources).unwrap();
+        let cards = drawn(&h.ctx, Anchor::MatrixCards).unwrap();
+        // Clear of the note, which sits beside the lit column.
+        let note = callout_rect(&h.ctx).unwrap();
+        let cards = Rect::from_min_max(Pos2::new(cards.left(), note.bottom() + 20.0), cards.max);
+        assert!(cards.is_positive(), "room under the note: {cards:?}");
+        assert_eq!(
+            layer_at(&h, sources.center()),
+            Some(Id::new("binding_matrix_area")),
+            "the lit column is the matrix's"
+        );
+        assert!(is_dim(layer_at(&h, cards.center())), "the cards are dimmed");
+        // A click on the dimmed cards makes nothing, and one beside the
+        // matrix closes nothing, not even for the frame before the tour
+        // would open it again.
+        h.click(cards.center());
+        assert!(h.bindings.bindings.is_empty());
+        h.click(Pos2::new(4.0, 200.0));
+        assert!(h.matrix.open, "a click beside it closed it");
+        // Clicking inside the lit column raises the matrix; the dimming
+        // must stay over the rest of it all the same.
+        h.click(sources.center());
+        h.settle(2);
+        assert!(is_dim(layer_at(&h, cards.center())), "after a click inside");
+        // Nor does its own backdrop come up over it, whatever raises it.
+        h.ctx.move_to_top(egui::LayerId::new(
+            Order::Middle,
+            Id::new("matrix_backdrop"),
+        ));
+        h.settle(2);
+        assert_eq!(
+            layer_at(&h, sources.center()),
+            Some(Id::new("binding_matrix_area")),
+            "the backdrop covered the lit column"
+        );
+    }
+
+    // Leaving the tour on a step inside the matrix puts the matrix away:
+    // the tour opened it. A matrix the user opened is theirs.
+    #[test]
+    fn leaving_the_tour_in_the_matrix_puts_the_matrix_away() {
+        for leave in [Key::Escape, Key::Space] {
+            let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+            start(&h.ctx, Tour::Bindings);
+            h.settle(3);
+            h.key(Key::Enter);
+            h.settle(5);
+            assert!(h.matrix.open);
+            if leave == Key::Space {
+                end(&h.ctx); // as Skip tour does
+                h.settle(1);
+            } else {
+                h.key(Key::Escape);
+            }
+            h.settle(2);
+            assert_eq!(current(&h.ctx), None);
+            assert!(!h.matrix.open, "{leave:?} left the matrix open");
+        }
+        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+        h.ctx
+            .data_mut(|d| d.insert_temp(Id::new("open_binding_matrix"), true));
+        h.settle(3);
+        assert!(h.matrix.open);
     }
 }

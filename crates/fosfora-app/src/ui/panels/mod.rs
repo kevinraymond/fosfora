@@ -685,7 +685,7 @@ pub fn draw_panels(
                 } else {
                     // Effect layer: show parameters
                     widgets::section(ui, "sec_params", "Parameters", None, true, |ui| {
-                        param_panel::draw_param_panel(ui, params, midi, osc);
+                        param_panel::draw_param_panel(ui, params, midi, osc, None);
                     });
 
                     // Particle section (shows when active layer has particles)

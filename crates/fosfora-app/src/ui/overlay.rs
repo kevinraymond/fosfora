@@ -47,63 +47,7 @@ impl EguiOverlay {
         // Straight into the options rather than `set_zoom_factor`, which only
         // lands at the next pass: the first frame is laid out at this scale.
         ctx.options_mut(|o| o.zoom_factor = super::panels::appearance_panel::clamp_scale(ui_scale));
-        ctx.set_visuals(palette.visuals());
-        set_theme_colors(&ctx, palette.colors());
-
-        // Register bundled fonts (Inter proportional, JetBrains Mono monospace)
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "Inter-Regular".into(),
-            Arc::new(egui::FontData::from_static(INTER_REGULAR)),
-        );
-        fonts.font_data.insert(
-            "Inter-Bold".into(),
-            Arc::new(egui::FontData::from_static(INTER_BOLD)),
-        );
-        fonts.font_data.insert(
-            "JetBrainsMono".into(),
-            Arc::new(egui::FontData::from_static(JETBRAINS_MONO)),
-        );
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Proportional)
-            .expect("egui always has Proportional font family")
-            .insert(0, "Inter-Regular".into());
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Monospace)
-            .expect("egui always has Monospace font family")
-            .insert(0, "JetBrainsMono".into());
-        ctx.set_fonts(fonts);
-
-        // Dense VJ typography and spacing
-        let mut style = (*ctx.style()).clone();
-        style.spacing.interact_size = egui::vec2(
-            super::theme::tokens::MIN_INTERACT_WIDTH,
-            super::theme::tokens::MIN_INTERACT_HEIGHT,
-        );
-        style.spacing.item_spacing = egui::vec2(
-            super::theme::tokens::SPACING,
-            super::theme::tokens::SPACING_Y,
-        );
-        style.spacing.button_padding = egui::vec2(6.0, 2.0);
-        style.text_styles.insert(
-            egui::TextStyle::Body,
-            egui::FontId::proportional(super::theme::tokens::BODY_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Small,
-            egui::FontId::proportional(super::theme::tokens::SMALL_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::proportional(super::theme::tokens::HEADING_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Monospace,
-            egui::FontId::monospace(super::theme::tokens::MONO_SIZE),
-        );
-        ctx.set_style(style);
+        configure(&ctx, &palette);
 
         let viewport_id = ctx.viewport_id();
         let state = egui_winit::State::new(ctx, viewport_id, window, None, None, None);
@@ -331,4 +275,72 @@ impl EguiOverlay {
             self.renderer.free_texture(id);
         }
     }
+}
+
+/// Dress `ctx` as the interface: the theme's colors, the bundled fonts, and
+/// the dense typography and spacing. The shell tests use it too, so they lay
+/// out text as wide as the app does.
+pub(crate) fn configure(ctx: &Context, palette: &Palette) {
+    ctx.set_visuals(palette.visuals());
+    set_theme_colors(ctx, palette.colors());
+
+    ctx.set_fonts(font_definitions());
+
+    // Dense VJ typography and spacing
+    let mut style = (*ctx.style()).clone();
+    style.spacing.interact_size = egui::vec2(
+        super::theme::tokens::MIN_INTERACT_WIDTH,
+        super::theme::tokens::MIN_INTERACT_HEIGHT,
+    );
+    style.spacing.item_spacing = egui::vec2(
+        super::theme::tokens::SPACING,
+        super::theme::tokens::SPACING_Y,
+    );
+    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::proportional(super::theme::tokens::BODY_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::proportional(super::theme::tokens::SMALL_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Heading,
+        egui::FontId::proportional(super::theme::tokens::HEADING_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Monospace,
+        egui::FontId::monospace(super::theme::tokens::MONO_SIZE),
+    );
+    ctx.set_style(style);
+}
+
+/// The interface's fonts: the bundled Inter (proportional) and JetBrains
+/// Mono (monospace), ahead of egui's own, which fill in what they lack.
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter-Regular".into(),
+        Arc::new(egui::FontData::from_static(INTER_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "Inter-Bold".into(),
+        Arc::new(egui::FontData::from_static(INTER_BOLD)),
+    );
+    fonts.font_data.insert(
+        "JetBrainsMono".into(),
+        Arc::new(egui::FontData::from_static(JETBRAINS_MONO)),
+    );
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .expect("egui always has Proportional font family")
+        .insert(0, "Inter-Regular".into());
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Monospace)
+        .expect("egui always has Monospace font family")
+        .insert(0, "JetBrainsMono".into());
+    fonts
 }

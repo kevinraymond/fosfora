@@ -230,7 +230,7 @@ pub fn draw_osc_badge(ui: &mut Ui, osc: &mut OscSystem, param_name: &str) {
         }
     } else {
         if ui
-            .add(egui::Button::new(RichText::new("O").weak().size(SMALL_SIZE)).min_size(badge_min))
+            .add(crate::ui::panels::param_panel::learn_badge("O"))
             .on_hover_text("OSC learn")
             .clicked()
         {

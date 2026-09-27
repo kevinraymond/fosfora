@@ -109,6 +109,9 @@ pub struct ShellState<'a> {
     pub catalog_thumbs: &'a mut crate::ui::catalog_thumbs::CatalogThumbs,
     /// Scenes, the current cue list and where the timeline is (#3173).
     pub scene: &'a scene_panel::SceneInfo,
+    /// The bindings, read for what drives each control (#3127). Made and
+    /// edited in the binding matrix, which has the bus to itself.
+    pub bindings: &'a crate::bindings::bus::BindingBus,
 }
 
 /// Draw the workspace shell. Returns without drawing when the overlay is
@@ -120,6 +123,18 @@ pub fn draw_shell(ctx: &Context, visible: bool, s: &mut ShellState<'_>) {
     }
     let tc = theme_colors(ctx);
     let ws = Workspace::read(ctx);
+
+    // A tour step that needs a layer with controls (#3127).
+    if ctx
+        .data_mut(|d| d.remove_temp::<bool>(egui::Id::new(tour::SELECT_EFFECT_LAYER)))
+        .is_some()
+        && let Some(i) = s
+            .layers
+            .iter()
+            .position(|l| l.effect_index.is_some() && !l.is_media)
+    {
+        stack_panel::select_layer(ctx, i);
+    }
 
     let top = egui::TopBottomPanel::top("v2_top")
         .exact_height(40.0)
@@ -745,9 +760,18 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
             media_panel::draw_media_panel(ui, info);
         });
     } else {
-        widgets::section(ui, "v2_params", "Parameters", None, true, |ui| {
-            param_panel::draw_param_panel(ui, s.params, s.midi, s.osc);
+        let binds = param_panel::ParamBinds {
+            bus: s.bindings,
+            layer: s.active_layer,
+            effect: layer.effect_name.as_deref().unwrap_or(""),
+        };
+        let r = ui.scope(|ui| {
+            widgets::section(ui, "v2_params", "Parameters", None, true, |ui| {
+                param_panel::draw_param_panel(ui, s.params, s.midi, s.osc, Some(&binds));
+            });
         });
+        tour::anchor(ui, tour::Anchor::Parameters, r.response.rect);
+        bindings_line(ui, s.bindings, s.active_layer);
         if let Some(ref pinfo) = s.particle_info {
             let badge = if pinfo.alive_count >= 1000 {
                 format!("{:.1}K", pinfo.alive_count as f32 / 1000.0)
@@ -764,6 +788,43 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
     let i = s.active_layer;
     chain_line(ui, layer.chain, "none yet", |ctx| {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_layer"), i));
+    });
+}
+
+/// How many bindings drive this layer, and the way into the matrix: under
+/// the Parameters, where someone looking for "make this move" is looking
+/// (#3127, Kevin's call in #3209).
+fn bindings_line(ui: &mut egui::Ui, bus: &crate::bindings::bus::BindingBus, layer: usize) {
+    let tc = theme_colors(ui.ctx());
+    let here = bus
+        .bindings
+        .iter()
+        .filter(|b| b.enabled && !b.source.is_empty() && b.target.layer() == Some(layer))
+        .count();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Bindings").size(13.0).strong());
+        let words = match here {
+            0 => "none on this layer".to_string(),
+            1 => "1 on this layer".to_string(),
+            n => format!("{n} on this layer"),
+        };
+        ui.label(
+            egui::RichText::new(words)
+                .size(13.0)
+                .color(tc.text_secondary),
+        );
+        let touring = tour::is_running(ui.ctx());
+        if ui
+            .add_enabled(
+                !touring,
+                egui::Button::new(egui::RichText::new("Open bindings  (B)").size(12.0)),
+            )
+            .on_disabled_hover_text(tour::NOT_DURING)
+            .clicked()
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new("open_binding_matrix"), true));
+        }
     });
 }
 
