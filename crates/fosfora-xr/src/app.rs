@@ -5,14 +5,26 @@
 use std::time::{Duration, Instant};
 
 use android_activity::{AndroidApp, MainEvent, PollEvent};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
 use crate::gfx::Gfx;
+use crate::scene::XrScene;
 use crate::xr::{Flow, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
 pub const LOG_TAG: &str = "fosfora_xr";
+
+/// S4: the effect renders offscreen at this size and lands on a quad
+/// `QUAD_WIDTH_M` wide, centered at `QUAD_CENTER` in the stage space (1.5 m
+/// ahead, 1.5 m up, facing the user).
+const SCENE_WIDTH: u32 = 1280;
+const SCENE_HEIGHT: u32 = 720;
+const QUAD_WIDTH_M: f32 = 1.2;
+pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
+const DEFAULT_EFFECT: &str = "Flux";
+const NOMINAL_FPS: u32 = 72;
 
 pub fn run(app: &AndroidApp) {
     android_logger::init_once(
@@ -33,15 +45,66 @@ pub fn run(app: &AndroidApp) {
 
 fn run_inner(app: &AndroidApp) -> Result<()> {
     let xr = XrContext::new(app)?;
-    // Declared before `session` so it is dropped after it: OpenXR must release
-    // its Vulkan objects (swapchain images) before the device goes away.
+    // Declared before `session` and `scene` so it is dropped after them:
+    // OpenXR must release its Vulkan objects (swapchain images) before the
+    // device goes away.
     let sdk_version = u32::try_from(app.config().sdk_version()).unwrap_or(0);
-    let gfx = Gfx::new(&xr, sdk_version)?;
+    let mut gfx = Gfx::new(&xr, sdk_version)?;
     let mut session = XrSession::new(&xr, &gfx)?;
+
+    let dirs = crate::assets::install(app).context("installing assets")?;
+    info!(
+        "assets {} · config {}",
+        dirs.assets.display(),
+        dirs.config.display()
+    );
+    // Spike knobs, settable without a rebuild:
+    //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
+    //   adb shell setprop debug.fosfora.scene 1280x720
+    let quality = match debug_prop("debug.fosfora.quality").as_deref() {
+        Some("low") => ParticleQuality::Low,
+        Some("medium") => ParticleQuality::Medium,
+        Some("ultra") => ParticleQuality::Ultra,
+        Some("max") => ParticleQuality::Max,
+        _ => ParticleQuality::High,
+    };
+    let (scene_w, scene_h) = debug_prop("debug.fosfora.scene")
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((SCENE_WIDTH, SCENE_HEIGHT));
+    info!("scene: {scene_w}x{scene_h}, particle quality {quality:?}");
+    //   adb shell setprop debug.fosfora.effect "Flux"   (any effect name)
+    let effect = debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_EFFECT.to_owned());
+    let scene_dir =
+        write_single_effect_scene(&dirs.config, &effect).context("writing the scene")?;
+    let mut scene = XrScene::new(
+        &gfx.device,
+        &gfx.queue,
+        scene_w,
+        scene_h,
+        quality,
+        &scene_dir,
+        NOMINAL_FPS,
+    )
+    .context("creating the scene")?;
+    //   adb shell setprop debug.fosfora.emit <particles per second>
+    if let Some(rate) = debug_prop("debug.fosfora.emit").and_then(|v| v.parse::<f32>().ok()) {
+        scene.set_emit_rate(rate);
+    }
+    gfx.set_quad(
+        &scene.quad_view,
+        QUAD_WIDTH_M,
+        scene_w as f32 / scene_h as f32,
+        QUAD_CENTER,
+    );
 
     let started = Instant::now();
     let mut stats = FrameStats::default();
     let mut destroyed = false;
+    let mut last_t = 0.0f32;
+    let mut frame_index = 0u64;
 
     loop {
         // While the session is running, Android events are drained without
@@ -90,18 +153,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
 
         let t = started.elapsed().as_secs_f32();
-        session.frame(&gfx, clear_color(t), &mut stats)?;
+        let dt = (t - last_t).clamp(1.0 / 120.0, 1.0 / 30.0);
+        last_t = t;
+        session.frame(&gfx, background_color(t), &mut stats, || {
+            scene.step(f64::from(t), dt);
+        })?;
+        frame_index += 1;
+        if frame_index.is_multiple_of(72) {
+            info!("particles alive {}", scene.alive_count());
+        }
     }
 
     drop(session);
+    drop(scene);
     drop(gfx);
     Ok(())
 }
 
-/// A slow hue sweep so the frame loop is visibly alive in both eyes.
-fn clear_color(t: f32) -> [f32; 4] {
-    let hue = (t * 0.08).fract();
-    let [r, g, b] = hsv_to_rgb(hue, 0.85, 0.55);
+/// A slow, dim hue sweep behind the quad: shows the frame loop is alive
+/// without competing with the effect.
+fn background_color(t: f32) -> [f32; 4] {
+    let hue = (t * 0.05).fract();
+    let [r, g, b] = hsv_to_rgb(hue, 0.5, 0.12);
     [r, g, b, 1.0]
 }
 
@@ -122,9 +195,11 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 }
 
 /// Frame pacing counters, reported to logcat once a second. The predicted
-/// display period from `xrWaitFrame` is the display-rate source for S1
+/// display period from `xrWaitFrame` is the display-rate source
 /// (`docs/xr/MEASURED.md`); a "long" frame is a wait-to-wait interval over
-/// 1.5x that period, i.e. at least one missed display period.
+/// 1.5x that period, i.e. at least one missed display period. CPU time is
+/// the span from `xrWaitFrame` returning to `xrEndFrame`, i.e. everything
+/// the app does per frame (effect step, encoding, submits).
 #[derive(Default)]
 pub struct FrameStats {
     window_start: Option<Instant>,
@@ -133,6 +208,9 @@ pub struct FrameStats {
     skipped_render: u32,
     long_frames: u32,
     max_interval: Duration,
+    cpu_sum: Duration,
+    cpu_max: Duration,
+    cpu_n: u32,
     total_long: u32,
     total_frames: u32,
 }
@@ -159,12 +237,19 @@ impl FrameStats {
         let elapsed = now - window_start;
         if elapsed >= Duration::from_secs(1) {
             let hz = 1.0 / period.as_secs_f64();
+            let cpu_avg = if self.cpu_n > 0 {
+                self.cpu_sum.as_secs_f64() * 1e3 / f64::from(self.cpu_n)
+            } else {
+                0.0
+            };
             info!(
-                "frames {}/s · display period {:.3} ms ({:.1} Hz) · max interval {:.2} ms · long {} (total {}/{}) · should_render=false {}",
+                "frames {:.1}/s · display period {:.3} ms ({:.1} Hz) · max interval {:.2} ms · cpu avg {:.2} max {:.2} ms · long {} (total {}/{}) · should_render=false {}",
                 f64::from(self.frames) / elapsed.as_secs_f64(),
                 period.as_secs_f64() * 1e3,
                 hz,
                 self.max_interval.as_secs_f64() * 1e3,
+                cpu_avg,
+                self.cpu_max.as_secs_f64() * 1e3,
                 self.long_frames,
                 self.total_long,
                 self.total_frames,
@@ -175,6 +260,48 @@ impl FrameStats {
             self.skipped_render = 0;
             self.long_frames = 0;
             self.max_interval = Duration::ZERO;
+            self.cpu_sum = Duration::ZERO;
+            self.cpu_max = Duration::ZERO;
+            self.cpu_n = 0;
         }
     }
+
+    pub fn record_cpu(&mut self, cpu: Duration) {
+        self.cpu_sum += cpu;
+        self.cpu_max = self.cpu_max.max(cpu);
+        self.cpu_n += 1;
+    }
+}
+
+/// An Android system property, for spike-time knobs. Empty means unset.
+fn debug_prop(name: &str) -> Option<String> {
+    let out = std::process::Command::new("getprop")
+        .arg(name)
+        .output()
+        .ok()?;
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
+/// A one-cue scene showing `effect` with its default parameters, written
+/// under the config dir in the layout `headless::load::load_scene_dir` reads.
+fn write_single_effect_scene(config: &std::path::Path, effect: &str) -> Result<std::path::PathBuf> {
+    let dir = config
+        .join("scenes")
+        .join(effect.to_lowercase().replace(' ', "_"));
+    std::fs::create_dir_all(&dir)?;
+    let preset = serde_json::json!({ "layers": [{ "effect_name": effect }] });
+    std::fs::write(dir.join("Cue.json"), serde_json::to_string_pretty(&preset)?)?;
+    let scene = serde_json::json!({
+        "version": 1,
+        "name": format!("XR {effect}"),
+        "loop_mode": false,
+        "advance_mode": "Manual",
+        "cues": [{ "preset_name": "Cue", "transition": "Cut", "label": effect }]
+    });
+    std::fs::write(
+        dir.join("_scene.json"),
+        serde_json::to_string_pretty(&scene)?,
+    )?;
+    Ok(dir)
 }

@@ -364,16 +364,23 @@ impl XrSession {
         }
     }
 
-    /// One frame: wait, begin, locate views, render both eyes through wgpu,
-    /// submit a projection layer. Must only be called while the session is
+    /// One frame: wait, begin, run `before_render` (the effect step), locate
+    /// views, render both eyes through wgpu, submit a projection layer. Must only be called while the session is
     /// running.
-    pub fn frame(&mut self, gfx: &Gfx, clear: [f32; 4], stats: &mut FrameStats) -> Result<()> {
+    pub fn frame(
+        &mut self,
+        gfx: &Gfx,
+        clear: [f32; 4],
+        stats: &mut FrameStats,
+        before_render: impl FnOnce(),
+    ) -> Result<()> {
         let frame_state = self.waiter.wait().context("xrWaitFrame")?;
         self.stream.begin().context("xrBeginFrame")?;
         let period = std::time::Duration::from_nanos(
             frame_state.predicted_display_period.as_nanos().max(0) as u64,
         );
         stats.record(period, frame_state.should_render);
+        let cpu_start = std::time::Instant::now();
 
         if !frame_state.should_render
             || self.state != xr::SessionState::VISIBLE && self.state != xr::SessionState::FOCUSED
@@ -384,6 +391,7 @@ impl XrSession {
                 .context("xrEndFrame (empty)")?;
             return Ok(());
         }
+        before_render();
 
         let (view_flags, views) = self
             .session
@@ -442,6 +450,7 @@ impl XrSession {
         let layer = xr::CompositionLayerProjection::new()
             .space(&self.space)
             .views(&projection_views);
+        stats.record_cpu(cpu_start.elapsed());
         self.stream
             .end(
                 frame_state.predicted_display_time,
@@ -470,11 +479,11 @@ fn view_projection(view: &xr::View) -> glam::Mat4 {
     )
 }
 
-/// Center of the S2 test triangle (`gfx::TRIANGLE_WGSL`), for the stereo log.
-const STEREO_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 1.45, -1.5);
+/// Center of the world-locked quad (`app::QUAD_CENTER`), for the stereo log.
+const STEREO_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 1.5, -1.5);
 
 /// Numeric convergence check, every 5 s: the horizontal angle at which each
-/// eye sees the triangle center, against the angle IPD/distance predicts.
+/// eye sees the quad center, against the angle IPD/distance predicts.
 /// Stereo correctness can't be judged by a one-eyed wearer, so this is the
 /// evidence for it (board #3221).
 fn log_stereo(flags: xr::ViewStateFlags, views: &[xr::View], view_projs: &[glam::Mat4]) {

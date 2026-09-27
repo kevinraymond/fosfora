@@ -1,4 +1,4 @@
-//! Vulkan interop and the S2 test renderer.
+//! Vulkan interop and the XR-side renderer (S2 stereo pipeline, S4 quad).
 //!
 //! The OpenXR runtime creates the Vulkan instance and device
 //! (`XR_KHR_vulkan_enable2`) from create-infos that carry exactly the
@@ -44,8 +44,10 @@ pub struct RawHandles {
 }
 
 pub struct Gfx {
-    // Field order is drop order: the pipeline and buffers go before the
+    // Field order is drop order: bindings and the pipeline go before the
     // device, the device before the adapter and instance.
+    quad: Option<QuadBinding>,
+    quad_layout: wgpu::BindGroupLayout,
     eyes: Vec<EyeUniform>,
     pipeline: wgpu::RenderPipeline,
     pub device: wgpu::Device,
@@ -54,6 +56,12 @@ pub struct Gfx {
     _instance: wgpu::Instance,
     pub raw: RawHandles,
     pub swapchain_vk_format: vk::Format,
+}
+
+/// The world-locked quad: its placement uniform plus the texture it shows.
+struct QuadBinding {
+    _uniform: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 struct EyeUniform {
@@ -290,10 +298,12 @@ impl Gfx {
         device
             .set_device_lost_callback(|reason, msg| error!("wgpu device lost ({reason:?}): {msg}"));
 
-        let (pipeline, eyes) = build_triangle_pipeline(&device);
+        let (pipeline, eyes, quad_layout) = build_quad_pipeline(&device);
         info!("wgpu device ready");
 
         Ok(Self {
+            quad: None,
+            quad_layout,
             eyes,
             pipeline,
             device,
@@ -303,6 +313,66 @@ impl Gfx {
             raw,
             swapchain_vk_format: SWAPCHAIN_VK_FORMAT,
         })
+    }
+
+    /// Show `view` on a quad `width_m` wide (height from `aspect` = w/h)
+    /// centered at `center` in the reference space, facing -Z.
+    pub fn set_quad(
+        &mut self,
+        view: &wgpu::TextureView,
+        width_m: f32,
+        aspect: f32,
+        center: [f32; 3],
+    ) {
+        let half = [width_m * 0.5, width_m * 0.5 / aspect];
+        let data: [f32; 8] = [
+            center[0], center[1], center[2], 0.0, half[0], half[1], 0.0, 0.0,
+        ];
+        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-quad-uniform"),
+            size: 32,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&uniform, 0, bytemuck::bytes_of(&data));
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xr-quad-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr-quad"),
+            layout: &self.quad_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.quad = Some(QuadBinding {
+            _uniform: uniform,
+            bind_group,
+        });
+        info!(
+            "quad: {:.2} m x {:.2} m at ({:.2}, {:.2}, {:.2})",
+            half[0] * 2.0,
+            half[1] * 2.0,
+            center[0],
+            center[1],
+            center[2]
+        );
     }
 
     /// Wrap an OpenXR swapchain image as a wgpu texture plus a full view. The
@@ -359,7 +429,7 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render the test triangle into both eyes and submit once. The render
+    /// Render the quad into both eyes and submit once. The render
     /// pass is the last use of each swapchain image this frame, so it ends in
     /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
     pub fn render(&self, targets: &[&wgpu::TextureView], view_projs: &[Mat4], clear: [f32; 4]) {
@@ -393,9 +463,12 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &eye.bind_group, &[]);
-            pass.draw(0..3, 0..1);
+            if let Some(quad) = &self.quad {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &quad.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
         }
         self.queue.submit([encoder.finish()]);
     }
@@ -436,46 +509,48 @@ fn record_limits(l: &wgpu::Limits) -> RecordedLimits {
     rec
 }
 
-const TRIANGLE_WGSL: &str = r"
+const QUAD_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
+struct Quad { center: vec4<f32>, half: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
+@group(1) @binding(0) var<uniform> quad: Quad;
+@group(1) @binding(1) var quad_tex: texture_2d<f32>;
+@group(1) @binding(2) var quad_samp: sampler;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) color: vec3<f32>,
+    @location(0) uv: vec2<f32>,
 }
 
-// A triangle 1.5 m ahead of the stage origin, base at 1.2 m, apex at 1.7 m.
+// Two triangles, corners in the quad's own -1..1 space; it faces -Z.
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
-    var p = array<vec3<f32>, 3>(
-        vec3<f32>(-0.3, 1.2, -1.5),
-        vec3<f32>( 0.3, 1.2, -1.5),
-        vec3<f32>( 0.0, 1.7, -1.5),
+    var c = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
     );
-    var c = array<vec3<f32>, 3>(
-        vec3<f32>(1.0, 0.25, 0.2),
-        vec3<f32>(0.2, 1.0, 0.3),
-        vec3<f32>(0.25, 0.4, 1.0),
-    );
+    let corner = c[i];
+    let world = quad.center.xyz + vec3<f32>(corner.x * quad.half.x, corner.y * quad.half.y, 0.0);
     var out: VsOut;
-    out.pos = eye.view_proj * vec4<f32>(p[i], 1.0);
-    out.color = c[i];
+    out.pos = eye.view_proj * vec4<f32>(world, 1.0);
+    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(in.color, 1.0);
+    return vec4<f32>(textureSample(quad_tex, quad_samp, in.uv).rgb, 1.0);
 }
 ";
 
-fn build_triangle_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, Vec<EyeUniform>) {
+fn build_quad_pipeline(
+    device: &wgpu::Device,
+) -> (wgpu::RenderPipeline, Vec<EyeUniform>, wgpu::BindGroupLayout) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("xr-triangle"),
-        source: wgpu::ShaderSource::Wgsl(TRIANGLE_WGSL.into()),
+        label: Some("xr-quad"),
+        source: wgpu::ShaderSource::Wgsl(QUAD_WGSL.into()),
     });
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    let eye_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("xr-eye-uniform"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -488,13 +563,44 @@ fn build_triangle_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, Vec<
             count: None,
         }],
     });
+    let quad_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-quad"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(32),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("xr-triangle"),
-        bind_group_layouts: &[&bgl],
+        label: Some("xr-quad"),
+        bind_group_layouts: &[&eye_layout, &quad_layout],
         push_constant_ranges: &[],
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("xr-triangle"),
+        label: Some("xr-quad"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
@@ -532,7 +638,7 @@ fn build_triangle_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, Vec<
             });
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(if i == 0 { "xr-eye-0" } else { "xr-eye-1" }),
-                layout: &bgl,
+                layout: &eye_layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
@@ -541,5 +647,5 @@ fn build_triangle_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, Vec<
             EyeUniform { buffer, bind_group }
         })
         .collect();
-    (pipeline, eyes)
+    (pipeline, eyes, quad_layout)
 }

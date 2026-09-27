@@ -1732,9 +1732,11 @@ dependencies = [
  "anyhow",
  "ash",
  "bytemuck",
+ "fosfora-app",
  "glam",
  "log",
  "openxr",
+ "serde_json",
  "wgpu",
 ]
 

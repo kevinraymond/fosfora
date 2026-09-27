@@ -5,14 +5,18 @@
 //! `cargo test`) keeps building unchanged (invariant I1). Lint the real code with
 //! `cargo ndk -t arm64-v8a clippy -p fosfora-xr` or `scripts/xr/run.sh lint`.
 //!
-//! S1 scope: package and launch a native OpenXR app that clears each eye to a
-//! color that changes over time. No wgpu yet; `ash` talks to Vulkan directly.
+//! Spike state: S1 packaging/launch, S2 wgpu on the runtime's Vulkan device,
+//! S4 one core effect on a world-locked quad.
 
 #[cfg(target_os = "android")]
 mod app;
 #[cfg(target_os = "android")]
+mod assets;
+#[cfg(target_os = "android")]
 mod gfx;
 pub mod math;
+#[cfg(target_os = "android")]
+mod scene;
 #[cfg(target_os = "android")]
 mod xr;
 

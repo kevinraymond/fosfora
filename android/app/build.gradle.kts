@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
 }
@@ -36,6 +38,42 @@ android {
         }
     }
 }
+
+// Fosfora assets the XR app needs, staged out of the repo's assets/ tree into
+// the APK's assets/ with a manifest (stamp + file list) the app uses to unpack
+// them into internal storage on first run or when the stamp changes
+// (docs/xr/XR_DESIGN.md, "Assets on Android"). The NDK asset API cannot list
+// subdirectories, hence the manifest. Kept to what the effects need: shaders,
+// effect definitions and the XR scenes; no images, media or fonts.
+val xrAssetsDir = layout.buildDirectory.dir("generated/xrassets")
+
+val stageXrAssets by tasks.registering(Sync::class) {
+    from(rootProject.file("../assets")) {
+        include("effects/**", "shaders/**")
+    }
+    // XR-only effect variants (spike profiling, later XR-tuned effects) join
+    // the shared effects so the same loader finds them.
+    from(rootProject.file("../assets/xr/effects")) {
+        into("effects")
+    }
+    into(xrAssetsDir.map { it.dir("assets") })
+    doLast {
+        val root = xrAssetsDir.get().dir("assets").asFile
+        val files = root.walkTopDown().filter { it.isFile && it.name != "xr_manifest.txt" }
+            .map { it.relativeTo(root).path.replace(File.separatorChar, '/') }
+            .sorted().toList()
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (f in files) {
+            digest.update(f.toByteArray())
+            digest.update(File(root, f).readBytes())
+        }
+        val stamp = digest.digest().joinToString("") { "%02x".format(it) }
+        File(root, "xr_manifest.txt").writeText((listOf(stamp) + files).joinToString("\n") + "\n")
+    }
+}
+
+android.sourceSets.getByName("main").assets.srcDir(xrAssetsDir)
+tasks.named("preBuild") { dependsOn(stageXrAssets) }
 
 dependencies {
     // Khronos OpenXR loader (Apache-2.0). The AAR carries

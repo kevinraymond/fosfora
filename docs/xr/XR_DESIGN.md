@@ -146,6 +146,18 @@ map to clip edges, view parallax sign).
 
 ## World-space particles (S5)
 
+*S4 finding (Quest 3, `crates/fosfora-xr` S4 build, board #3226/#3227):* the
+desktop **compute rasterizer is a ~30 ms fixed GPU cost** on the Adreno 740 at
+1280x720, independent of particle count (84k or 172k alive), resolution,
+feedback passes and post-processing. The **billboard/vertex particle path**
+renders the same effect at 4.6 ms with 87k particles and still holds 72 Hz at
+1.7M particles (9.4 ms, cost tracking `max_count`). So the S5 world-space path
+should be built on the billboard renderer first (instanced quads per eye, sized
+by depth); porting the compute raster is an optimization spike only if the
+billboard ceiling proves too low. The rest of this section describes the
+compute-raster port for that case.
+
+
 The desktop scatter (`assets/shaders/builtin/compute_raster_scatter.wgsl`) does
 `px = (pos.x * 0.5 + 0.5) * w` on screen-space `pos_life.xy`. The XR path adds a
 **separate** scatter/draw shader variant that:
@@ -230,6 +242,13 @@ Android has none of these. Plan:
    the NDK asset manager).
 3. The S3 overrides point `assets_dir()` and `config_root()` there before any
    other core call.
+
+*Done in S4 (`crates/fosfora-xr/src/assets.rs`, `android/app/build.gradle.kts`):*
+Gradle stages `effects/**`, `shaders/**` and the XR-only `assets/xr/effects/*.pfx`
+into the APK with `assets/xr_manifest.txt` (SHA-256 stamp + file list, because
+the NDK asset API cannot list directories). 209 files, 0.9 MB, unpack 21 ms.
+Scenes are generated at runtime from an effect name (one cue, default params)
+under the config dir, so no scene files ship.
 
 ## Glasses notes
 
