@@ -43,7 +43,7 @@ pub(crate) struct ShellHarness {
     pub bindings: BindingBus,
     pub matrix: BindingMatrixState,
     uniforms: ShaderUniforms,
-    loader: EffectLoader,
+    pub loader: EffectLoader,
     postprocess: PostProcessDef,
     volumetric_enabled: bool,
     volumetric: VolumetricParams,
@@ -61,6 +61,10 @@ pub(crate) struct ShellHarness {
     pub leaving: Option<&'static str>,
     /// The chain editor and the layers it edits: with a GPU only.
     pub chains: Option<Chains>,
+    /// What main.rs hands the inspector for effects that have them.
+    pub obstacle_info: Option<crate::ui::panels::obstacle_panel::ObstacleInfo>,
+    pub lattice_info: Option<crate::ui::panels::lattice_panel::LatticeInfo>,
+    pub helix_info: Option<crate::ui::panels::helix_panel::HelixInfo>,
 }
 
 /// What the chain editor draws from: the app's trama system, and real
@@ -191,6 +195,9 @@ impl ShellHarness {
             time: 0.0,
             leaving: None,
             chains: None,
+            obstacle_info: None,
+            lattice_info: None,
+            helix_info: None,
         }
     }
 
@@ -291,6 +298,9 @@ impl ShellHarness {
                 media_info: None,
                 webcam_info: None,
                 particle_info: None,
+                obstacle_info: self.obstacle_info.clone(),
+                lattice_info: self.lattice_info.clone(),
+                helix_info: self.helix_info.clone(),
                 status_error: &None,
                 settings: &self.settings,
                 layer_thumbs: None,

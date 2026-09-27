@@ -95,6 +95,11 @@ pub struct ShellState<'a> {
     pub media_info: Option<media_panel::MediaInfo>,
     pub webcam_info: Option<super::panels::webcam_panel::WebcamInfo>,
     pub particle_info: Option<super::panels::particle_panel::ParticleInfo>,
+    /// The active layer's obstacle, lattice and helix settings: each `Some`
+    /// only for an effect that has them (#3238).
+    pub obstacle_info: Option<super::panels::obstacle_panel::ObstacleInfo>,
+    pub lattice_info: Option<super::panels::lattice_panel::LatticeInfo>,
+    pub helix_info: Option<super::panels::helix_panel::HelixInfo>,
     pub status_error: &'a Option<(String, std::time::Instant)>,
     pub settings: &'a SettingsConfig,
     /// The layer rows' pictures (#3123). `None` where there is no GPU: the
@@ -811,6 +816,7 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
                 super::panels::particle_panel::draw_particle_panel(ui, pinfo);
             });
         }
+        effect_sections(ui, s, layer);
     }
 
     ui.add_space(6.0);
@@ -821,6 +827,46 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
         });
     });
     tour::anchor(ui, tour::Anchor::ChainLine, r.response.rect);
+}
+
+/// The sections only some effects have, in the order the Classic panel
+/// draws them: Obstacle (particle effects), Lattice, Helix, and the
+/// effect's own audio mappings (#3238).
+fn effect_sections(ui: &mut egui::Ui, s: &ShellState<'_>, layer: &crate::gpu::layer::LayerInfo) {
+    use super::panels::{audio_mappings_panel, helix_panel, lattice_panel, obstacle_panel};
+    if let Some(o) = s.obstacle_info.as_ref().filter(|o| o.has_particles) {
+        let badge = o.enabled.then_some("ON");
+        widgets::section(ui, "v2_obstacle", "Obstacle", badge, false, |ui| {
+            obstacle_panel::draw_obstacle_panel(ui, o);
+        });
+    }
+    if let Some(l) = &s.lattice_info {
+        widgets::section(ui, "v2_lattice", "Lattice (3D CA)", None, true, |ui| {
+            lattice_panel::draw_lattice_panel(ui, l);
+        });
+    }
+    if let Some(h) = &s.helix_info {
+        widgets::section(ui, "v2_helix", "Helix (audio ribbon)", None, true, |ui| {
+            helix_panel::draw_helix_panel(ui, h);
+        });
+    }
+    let mappings = layer
+        .effect_index
+        .and_then(|i| s.effect_loader.effects.get(i))
+        .map_or(&[][..], |fx| fx.audio_mappings.as_slice());
+    if !mappings.is_empty() {
+        let badge = mappings.len().to_string();
+        widgets::section(
+            ui,
+            "v2_audio_react",
+            "Audio Reactivity",
+            Some(&badge),
+            false,
+            |ui| {
+                audio_mappings_panel::draw_audio_mappings(ui, mappings);
+            },
+        );
+    }
 }
 
 /// How many bindings drive this layer, and the way into the matrix: under
@@ -1364,5 +1410,100 @@ mod tests {
             width <= INSPECTOR_MAX_WIDTH + 0.5,
             "in a wide column the row is {width:.0} px, past the {INSPECTOR_MAX_WIDTH} cap"
         );
+    }
+
+    // Classic showed these for the effects that have them and the
+    // workspace layout did not (#3238): Obstacle for particle effects,
+    // Lattice, Helix, and the effect's own audio mappings. Each must show
+    // for its effect, inside the middle column, on a laptop's window.
+    #[test]
+    fn the_inspector_has_every_effects_own_sections() {
+        use crate::gpu::particle::types::{ObstacleFit, ObstacleMode};
+        use crate::ui::panels::{helix_panel, lattice_panel, obstacle_panel};
+        use crate::ui::shell_harness::ShellHarness;
+        let mut h = ShellHarness::new(egui::vec2(1206.0, 3000.0));
+        h.obstacle_info = Some(obstacle_panel::ObstacleInfo {
+            enabled: true,
+            mode: ObstacleMode::Bounce,
+            fit: ObstacleFit::Stretch,
+            threshold: 0.5,
+            elasticity: 0.5,
+            source: String::new(),
+            image_path: None,
+            has_particles: true,
+            webcam_available: false,
+            video_available: false,
+            depth_available: false,
+            depth_model_downloaded: false,
+            depth_downloading: None,
+            depth_download_error: None,
+            webcam_devices: vec![],
+            webcam_device_index: 0,
+            water_enabled: false,
+            water_level: 0.0,
+            water_source: 0.0,
+            water_drain: 0.0,
+            water_flux: 0.0,
+            model_spin: 1.0,
+            model_display: 0.0,
+            fluid_enabled: false,
+            fluid_speed: 0.0,
+            fluid_coupling: 0.0,
+            fluid_vorticity: 0.0,
+            fluid_viscosity: 0.0,
+            fluid_grid: 64,
+        });
+        h.lattice_info = Some(lattice_panel::LatticeInfo {
+            params: Default::default(),
+            defaults: Default::default(),
+        });
+        h.helix_info = Some(helix_panel::HelixInfo {
+            params: Default::default(),
+            defaults: Default::default(),
+        });
+        h.loader.effects[0].audio_mappings = vec![crate::effect::format::AudioMapping {
+            feature: "bass".into(),
+            target: "trail_decay".into(),
+        }];
+        stack_panel::select_layer(&h.ctx, ShellHarness::EFFECT_LAYER);
+        h.settle(3);
+        let texts = h.texts();
+        let column = texts
+            .iter()
+            .find(|t| t.0 == "PARAMETERS")
+            .expect("the effect layer's inspector")
+            .2;
+        for title in [
+            "OBSTACLE",
+            "LATTICE (3D CA)",
+            "HELIX (AUDIO RIBBON)",
+            "AUDIO REACTIVITY",
+        ] {
+            let t = texts
+                .iter()
+                .find(|t| t.0 == title)
+                .unwrap_or_else(|| panic!("no {title} section"));
+            assert_eq!(t.2, column, "{title} is not in the inspector");
+        }
+        for (t, r, clip) in texts.iter().filter(|t| t.2 == column) {
+            assert!(
+                r.right() <= clip.right() + 1.0,
+                "{t:?} runs out of the inspector"
+            );
+        }
+
+        // An effect without particles has no Obstacle; one without them has
+        // no Lattice or Helix either.
+        h.obstacle_info.as_mut().unwrap().has_particles = false;
+        h.lattice_info = None;
+        h.helix_info = None;
+        h.settle(2);
+        let texts = h.texts();
+        for title in ["OBSTACLE", "LATTICE (3D CA)", "HELIX (AUDIO RIBBON)"] {
+            assert!(
+                !texts.iter().any(|t| t.0 == title),
+                "{title} shows without its effect"
+            );
+        }
     }
 }

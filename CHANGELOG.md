@@ -137,6 +137,10 @@
   virtual camera, Spout, Syphon and Ableton Link are all there, and Triggers can now map
   Timeline, Tempo ÷2, Tempo ×2 and Tap tempo.
 
+- In the workspace layout, **the inspector shows the sections some effects bring**:
+  Obstacle for particle effects, Lattice, Helix, and Audio Reactivity (the effect's own
+  audio mappings). Before, those were only in the Classic layout.
+
 - In the Bindings window, an open card no longer cuts off its name, source and
   target, and the source list no longer draws values over the uniform names beside
   them. The name has its own line, and Source and Target have a labeled line each.
