@@ -56,9 +56,55 @@ the device; wgpu's own validation reported nothing over the run.
 
 | Step | Commit | Content | Display Hz | Held 60 s? | CPU ms | GPU ms | Tool |
 |---|---|---|---|---|---|---|---|
-| S1 | `c45a9c8` | clear color, both eyes, 1680x1760 sRGB per eye | 72 (runtime default for a new app; 72/80/90/120 offered) | Yes: 74 s, 5362 frames, 1 long frame at session start, max wait-to-wait 17.3 ms after the first second, 0 `should_render=false` | 0.25 (runtime `App=`) | n/a (clear only; runtime `CPU&GPU=0.79`) | in-app `predictedDisplayPeriod` counters (logcat `fosfora_xr`, 1 s windows) + runtime `VrApi` line (`FPS=72/72 Stale=0 Tear=0`) |
-| S2 | `32b4628` | stereo triangle through wgpu, one render pass per eye | 72 | Yes: 73 s, 5287 frames, 0 long frames, max wait-to-wait 15.9 ms after the first second, 0 `should_render=false` | 0.26 (runtime `App=`) | n/a (runtime `CPU&GPU=1.19`) | same as S1 |
-| S4 | | 2D effect on quad | | | | | |
+| S1 | `c45a9c8` | clear color, both eyes, 1680x1760 sRGB per eye | 72 (runtime default for a new app; 72/80/90/120 offered) | Yes: 74 s, 5362 frames, 1 long frame at session start, max wait-to-wait 17.3 ms after the first second, 0 `should_render=false` | not measured (S4 adds it) | 0.25 (runtime `App=`, the app's GPU time) | in-app `predictedDisplayPeriod` counters (logcat `fosfora_xr`, 1 s windows) + runtime `VrApi` line (`FPS=72/72 Stale=0 Tear=0`) |
+| S2 | `32b4628` | stereo triangle through wgpu, one render pass per eye | 72 | Yes: 73 s, 5287 frames, 0 long frames, max wait-to-wait 15.9 ms after the first second, 0 `should_render=false` | not measured | 0.26 (runtime `App=`) | same as S1 |
+| S4 | `fad08e4` | **Flux as shipped** (compute raster, High, ~1.3–2M alive) at 1280x720 on a 1.2 x 0.675 m quad, both eyes, bright and animating | 72 | **No: 6 fps**, every frame long, runtime `Stale=72` | 168 avg (in-app; waiting on the GPU) | 154–170 (runtime `App=`) | same as S1, plus `particles alive` log |
+| S4 | `fad08e4` | `Flux XR Vertex` (billboard path, Low, 87k alive): holds rate but the image is almost black (Flux's look comes from the raster resolve + velocity feedback), so a renderer-cost datum, not a Flux result | 72 | Yes: 78 s, 5511 frames, 1 long frame, max wait-to-wait 14.8 ms, 0 stale | 2.19 avg / 3.49 max | 4.60 median / 5.56 max | same |
+
+### S4 notes (commit `fad08e4`, Quest 3 v207)
+
+Effect: **Flux** (Kevin's pick, board #3202). Offscreen texture 1280x720
+`Rgba8UnormSrgb` (the headless renderer's capture format), copied each frame
+onto a 1.2 x 0.675 m quad at (0, 1.5, -1.5) m in STAGE space. Synthetic
+120 BPM features (`headless::loop_driver::synth_features` plus pumping band
+energies). Assets: 209 files, 0.9 MB, unpacked in 21 ms; 58 effects load.
+Startup to first frame ~300 ms.
+
+**Gate result: the effect runs and animates in both eyes (Flux on the quad
+reads mean RGB 142/106/64, max 247, in the screencap) but the display rate is
+not held: 6 fps.** Sweep
+(`setprop debug.fosfora.{effect,quality,scene,emit}`; GPU ms = runtime `App=`):
+
+| Variant | Quality (max_count) | Offscreen | Alive | fps | GPU ms |
+|---|---|---|---|---|---|
+| Flux (compute raster) | High (2M) | 1280x720 | ~2M | 6 | 154–170 |
+| Flux | Low (500k) | 1280x720 | ~500k | 17 | 51 |
+| Flux | Low | 640x360 | ~500k | 17 | 61 |
+| Flux | Medium (1M) | 640x360 | ~1M | 10 | 93 |
+| Flux, emit 6000/s | Low | 1280x720 | 84k | 24 | 30–38 |
+| Flux, emit 12500/s | Low | 1280x720 | 172k | 22 | 41 |
+| Flux, emit 6000/s | High | 1280x720 | 84k | 18 | 50 |
+| Flux XR NoFeedback (background pass only) | Low | 1280x720 | 84k | 25 | 46 |
+| Flux XR NoFields (no flow/velocity field) | Low | 1280x720 | 84k | 29 | 30 |
+| Flux XR NoPost (no bloom/vignette) | Low | 1280x720 | 84k | 24 | 37 |
+| **Flux XR Vertex (billboard path)** | Low | 1280x720 | 87k | **72** | **4.6** |
+| Flux XR Vertex | Low | 1280x720 | 346k | 72 | 4.6 |
+| Flux XR Vertex | High | 1280x720 | 822k | 72 | 9.8 |
+| Flux XR Vertex | High | 1280x720 | 1.7M | 72 | 9.4 |
+
+Reading: the compute rasterizer is a ~30 ms fixed GPU cost on the Adreno 740
+at this size, independent of alive count, offscreen resolution, feedback
+passes and post. The billboard path holds 72 Hz to 1.7M particles and its GPU
+time tracks `max_count` (buffer/dispatch size), not the alive count. But the
+billboard variant of Flux renders almost nothing (max pixel 98 at 1.7M alive):
+Flux's image is the raster resolve plus the `@particles.velocity` feedback,
+which the billboard path does not produce. So the billboard numbers bound the
+renderer, not the effect. The XR variants are hidden effects in
+`assets/xr/effects/`, staged into the APK only.
+
+Pipeline check: Aurora on the quad reads mean RGB 66/93/69 (max 249), so
+capture → copy → quad sampling is correct in both eyes. Convergence log
+(`stereo:`) unchanged from S2, target now the quad center.
 
 ### S2 notes (commit `32b4628`)
 
