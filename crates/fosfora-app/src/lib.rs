@@ -19,6 +19,10 @@ pub mod analyze;
 pub mod app;
 pub mod audio;
 pub mod bindings;
+/// Song-file decoding (`decode` feature; `analyze` implies it).
+#[cfg(feature = "decode")]
+#[path = "analyze/decode.rs"]
+pub mod decode;
 #[cfg(feature = "depth")]
 pub mod depth;
 #[cfg(feature = "desktop")]

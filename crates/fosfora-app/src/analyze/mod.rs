@@ -10,7 +10,7 @@
 //! * no running-max saturation — features are ranged over the whole song, not a causal ~4 s
 //!   percentile window.
 
-pub mod decode;
+pub use crate::decode;
 pub mod report;
 pub mod schema_dump;
 pub mod structure_offline;
