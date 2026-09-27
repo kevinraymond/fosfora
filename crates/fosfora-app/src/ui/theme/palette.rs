@@ -213,7 +213,10 @@ impl Palette {
         } else {
             Visuals::light()
         };
-        v.override_text_color = Some(p.text);
+        // Text takes each widget state's `fg_stroke`, all `text` below, and
+        // a selected widget's is `sel_fg`. No `override_text_color`: it beats
+        // every one of those, and drew each filled (selected) button's label
+        // in `text` on `sel_bg`, the one fill made to be its opposite.
         v.panel_fill = p.bg;
         v.window_fill = p.panel;
         v.extreme_bg_color = p.well;
@@ -232,7 +235,7 @@ impl Palette {
         w.noninteractive.bg_fill = p.panel;
         w.noninteractive.weak_bg_fill = p.panel;
         w.noninteractive.bg_stroke = Stroke::new(1.0_f32, p.rule);
-        w.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.sub);
+        w.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text);
         w.noninteractive.corner_radius = radius;
 
         w.inactive.bg_fill = p.well;
@@ -408,12 +411,52 @@ mod tests {
         assert!((contrast(rgb(0x777777), Color32::WHITE) - 4.48).abs() < 0.01);
     }
 
+    /// The color each piece of text `draw` paints, as egui will render it.
+    fn painted_text(p: &Palette, draw: impl Fn(&mut egui::Ui)) -> Vec<Color32> {
+        let ctx = egui::Context::default();
+        ctx.set_visuals(p.visuals());
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| draw(ui));
+        });
+        out.shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                // A color set at layout (as `override_text_color` is) is in
+                // the glyphs; a placeholder there takes the shape's.
+                egui::Shape::Text(t) => {
+                    let c = t.galley.job.sections.first()?.format.color;
+                    let fallback = t.override_text_color.unwrap_or(t.fallback_color);
+                    Some(if c == Color32::PLACEHOLDER {
+                        fallback
+                    } else {
+                        c
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Kevin: the filled buttons were "mostly very low contrast", in every
+    // theme. The visuals held the right colors (an earlier test checked
+    // exactly that); `override_text_color` painted over them. So this
+    // looks at the text egui paints.
     #[test]
-    fn selected_text_is_drawn_in_the_selection_foreground() {
-        for (_, p) in BUILT_IN {
-            let v = p.visuals();
-            assert_eq!(v.selection.bg_fill, p.sel_bg);
-            assert_eq!(v.selection.stroke.color, p.sel_fg);
+    fn a_filled_button_reads_on_its_fill() {
+        for (name, p) in BUILT_IN {
+            let on = painted_text(&p, |ui| {
+                let _ = ui.selectable_label(true, "Setup");
+            });
+            assert_eq!(on, vec![p.sel_fg], "{name}");
+            let r = contrast(on[0], p.sel_bg);
+            assert!(r >= 4.5, "{name}: {r:.1}:1");
+            // Everything else keeps the text color.
+            let off = painted_text(&p, |ui| {
+                let _ = ui.selectable_label(false, "Build");
+                ui.label("a label");
+                let _ = ui.button("a button");
+            });
+            assert!(off.iter().all(|c| *c == p.text), "{name}: {off:?}");
         }
     }
 }
