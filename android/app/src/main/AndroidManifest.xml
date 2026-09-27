@@ -9,6 +9,12 @@
     <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
 
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
+    <!-- Scene anchors (S7): USE_ANCHOR_API declares the spatial-entity API;
+         USE_SCENE is a runtime permission (granted with `pm grant` in the
+         spike; the product requests it through JNI). Without USE_ANCHOR_API
+         the runtime hid every XR_FB_spatial_entity* / XR_FB_scene extension
+         from the S1 app (docs/xr/MEASURED.md, S7). -->
+    <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Khronos loader: runtime discovery through the OpenXR runtime broker. -->

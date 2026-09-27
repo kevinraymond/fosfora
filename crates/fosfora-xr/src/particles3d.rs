@@ -40,7 +40,82 @@ struct SimUniform {
     lifetime: f32,
     verts_per_sprite: u32,
     pull: u32,
-    _pad: [u32; 2],
+    gravity: f32,
+    _pad: u32,
+}
+
+/// Obstacle capacities, matching `MAX_SPHERES` / `MAX_BOXES` in the sim WGSL.
+pub const MAX_SPHERES: usize = 64;
+pub const MAX_BOXES: usize = 32;
+
+/// An oriented box obstacle in the reference space: a scene plane (thin
+/// box), a scene volume or the floor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObstacleBox {
+    pub center: [f32; 3],
+    /// Rotation box -> world as a quaternion (x, y, z, w).
+    pub rot: [f32; 4],
+    pub half: [f32; 3],
+}
+
+/// Uniform block for the S7 obstacles, matching `struct Obstacles` in the
+/// sim WGSL. Fixed-capacity so the uniform buffer never resizes.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct ObstacleSet {
+    sphere_count: u32,
+    box_count: u32,
+    restitution: f32,
+    margin: f32,
+    spheres: [[f32; 4]; MAX_SPHERES],
+    box_center: [[f32; 4]; MAX_BOXES],
+    box_rot: [[f32; 4]; MAX_BOXES],
+    box_half: [[f32; 4]; MAX_BOXES],
+}
+
+impl ObstacleSet {
+    /// `restitution` is the fraction of normal velocity kept on a bounce,
+    /// `margin` the clearance around every obstacle (meters, roughly the
+    /// sprite radius).
+    pub fn new(restitution: f32, margin: f32) -> Self {
+        Self {
+            restitution,
+            margin,
+            ..Self::zeroed()
+        }
+    }
+
+    /// Add a sphere (`[x, y, z, radius]`). Beyond the capacity the sphere is
+    /// dropped and `false` returned.
+    pub fn push_sphere(&mut self, sphere: [f32; 4]) -> bool {
+        let i = self.sphere_count as usize;
+        if i >= MAX_SPHERES {
+            return false;
+        }
+        self.spheres[i] = sphere;
+        self.sphere_count += 1;
+        true
+    }
+
+    pub fn push_box(&mut self, b: &ObstacleBox) -> bool {
+        let i = self.box_count as usize;
+        if i >= MAX_BOXES {
+            return false;
+        }
+        self.box_center[i] = [b.center[0], b.center[1], b.center[2], 0.0];
+        self.box_rot[i] = b.rot;
+        self.box_half[i] = [b.half[0], b.half[1], b.half[2], 0.0];
+        self.box_count += 1;
+        true
+    }
+
+    pub fn sphere_count(&self) -> u32 {
+        self.sphere_count
+    }
+
+    pub fn box_count(&self) -> u32 {
+        self.box_count
+    }
 }
 
 /// Per-eye camera block, matching `struct Eye` in the WGSL.
@@ -71,6 +146,8 @@ pub struct Params {
     pub flow_scale: f32,
     /// Particle lifetime in seconds (the sim randomizes 30..100 % of it).
     pub lifetime: f32,
+    /// Downward acceleration in m/s^2 (0 = the pure S5 flow sim).
+    pub gravity: f32,
 }
 
 pub struct Particles3d {
@@ -82,6 +159,7 @@ pub struct Particles3d {
     triangles: bool,
     params: Params,
     sim_uniform: wgpu::Buffer,
+    obstacles: wgpu::Buffer,
     _particles: wgpu::Buffer,
     sim_bind_group: wgpu::BindGroup,
     read_bind_group: wgpu::BindGroup,
@@ -126,6 +204,13 @@ impl Particles3d {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Zeroed: no obstacles until `set_obstacles`.
+        let obstacles = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-particles3d-obstacles"),
+            size: std::mem::size_of::<ObstacleSet>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         // Zeroed: life 0 makes every slot spawn on the first step.
         let particles = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("xr-particles3d-buffer"),
@@ -136,55 +221,79 @@ impl Particles3d {
         // The same two buffers under two layouts: the sim writes the
         // particles, the vertex stage only reads them (a writable storage
         // binding in the vertex stage would need VERTEX_WRITABLE_STORAGE).
+        // The sim group also carries the obstacle block (binding 2); the
+        // draw only reads particles.
         let group_layout = |label: &str, stage: wgpu::ShaderStages, read_only: bool| {
+            let mut entries = vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: stage,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<SimUniform>() as u64
+                        ),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: stage,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(PARTICLE_BYTES),
+                    },
+                    count: None,
+                },
+            ];
+            if !read_only {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: stage,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<ObstacleSet>() as u64
+                        ),
+                    },
+                    count: None,
+                });
+            }
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some(label),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: stage,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(
-                                std::mem::size_of::<SimUniform>() as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: stage,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(PARTICLE_BYTES),
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &entries,
             })
         };
-        let bind = |label: &str, layout: &wgpu::BindGroupLayout| {
+        let bind = |label: &str, layout: &wgpu::BindGroupLayout, with_obstacles: bool| {
+            let mut entries = vec![
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: sim_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: particles.as_entire_binding(),
+                },
+            ];
+            if with_obstacles {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: obstacles.as_entire_binding(),
+                });
+            }
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(label),
                 layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: sim_uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: particles.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             })
         };
         let sim_layout = group_layout("xr-particles3d-sim", wgpu::ShaderStages::COMPUTE, false);
-        let sim_bind_group = bind("xr-particles3d-sim", &sim_layout);
+        let sim_bind_group = bind("xr-particles3d-sim", &sim_layout, true);
         let read_layout = group_layout("xr-particles3d-read", wgpu::ShaderStages::VERTEX, true);
-        let read_bind_group = bind("xr-particles3d-read", &read_layout);
+        let read_bind_group = bind("xr-particles3d-read", &read_layout, false);
         let eye_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xr-particles3d-eye"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -303,6 +412,7 @@ impl Particles3d {
             triangles: params.triangles,
             params,
             sim_uniform,
+            obstacles,
             _particles: particles,
             sim_bind_group,
             read_bind_group,
@@ -329,9 +439,15 @@ impl Particles3d {
             lifetime: self.params.lifetime,
             verts_per_sprite: self.verts_per_sprite(),
             pull: u32::from(self.params.pull),
-            _pad: [0; 2],
+            gravity: self.params.gravity,
+            _pad: 0,
         };
         queue.write_buffer(&self.sim_uniform, 0, bytemuck::bytes_of(&u));
+    }
+
+    /// Upload this frame's obstacles (S7: hand joints, scene boxes, floor).
+    pub fn set_obstacles(&self, queue: &wgpu::Queue, set: &ObstacleSet) {
+        queue.write_buffer(&self.obstacles, 0, bytemuck::bytes_of(set));
     }
 
     /// Upload one eye's camera. `view_proj` must equal `proj * view`.

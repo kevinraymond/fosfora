@@ -7,11 +7,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use ash::vk::{self, Handle as _};
 use log::{info, warn};
 use openxr as xr;
+use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
 use crate::gfx::{EyeCamera, Gfx};
+use crate::input::{Hands, HandsFrame};
 use crate::math;
-use crate::particles3d::Particles3d;
+use crate::particles3d::{ObstacleBox, Particles3d};
+use crate::room::{Passthrough, Room};
 
 pub const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 pub const EYE_COUNT: usize = 2;
@@ -26,6 +29,28 @@ pub struct XrContext {
     pub blend_mode: xr::EnvironmentBlendMode,
     pub views: Vec<xr::ViewConfigurationView>,
     pub has_refresh_rate_ext: bool,
+    /// S7 extensions the runtime offered and the instance enabled.
+    pub has_passthrough: bool,
+    pub has_hand_tracking: bool,
+    /// `XR_FB_scene` + `XR_FB_spatial_entity` + `XR_FB_spatial_entity_query`.
+    pub has_scene: bool,
+}
+
+/// Which S7 features to bring up with the session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MrOptions {
+    pub passthrough: bool,
+    pub hands: bool,
+    pub room: bool,
+}
+
+/// Per-frame input the frame loop hands to `before_render`, by value.
+#[derive(Debug, Clone, Default)]
+pub struct FrameInput {
+    pub hands: HandsFrame,
+    /// Scene anchors as oriented boxes in the reference space (empty until
+    /// the query returns, or when the room is off).
+    pub room_boxes: Vec<ObstacleBox>,
 }
 
 impl XrContext {
@@ -63,6 +88,34 @@ impl XrContext {
         enabled.khr_android_create_instance = true;
         // Optional: lets us read (and later request) the display refresh rate.
         enabled.fb_display_refresh_rate = available.fb_display_refresh_rate;
+        // S7: passthrough, hands, scene. Each behind a runtime check; the
+        // scene trio is enabled only when all three are offered (the query
+        // needs them together).
+        enabled.fb_passthrough = available.fb_passthrough;
+        enabled.ext_hand_tracking = available.ext_hand_tracking;
+        let has_scene =
+            available.fb_scene && available.fb_spatial_entity && available.fb_spatial_entity_query;
+        enabled.fb_scene = has_scene;
+        enabled.fb_spatial_entity = has_scene;
+        enabled.fb_spatial_entity_query = has_scene;
+        enabled.fb_spatial_entity_container = has_scene && available.fb_spatial_entity_container;
+        enabled.meta_spatial_entity_mesh = has_scene && available.meta_spatial_entity_mesh;
+        info!(
+            "S7 extensions: passthrough {} · hand tracking {} · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {}",
+            available.fb_passthrough,
+            available.ext_hand_tracking,
+            has_scene,
+            available.fb_scene,
+            available.fb_spatial_entity,
+            available.fb_spatial_entity_query,
+            available.fb_spatial_entity_container,
+            available.meta_spatial_entity_mesh,
+            available.ext_spatial_plane_tracking,
+            available.ext_spatial_entity,
+            names
+                .iter()
+                .any(|n| n == "XR_META_spatial_entity_room_mesh"),
+        );
 
         let instance = entry
             .create_instance(
@@ -155,6 +208,9 @@ impl XrContext {
             blend_mode,
             views,
             has_refresh_rate_ext: enabled.fb_display_refresh_rate,
+            has_passthrough: enabled.fb_passthrough,
+            has_hand_tracking: enabled.ext_hand_tracking,
+            has_scene,
         })
     }
 }
@@ -179,6 +235,11 @@ struct Eye {
 /// Field order matters: fields drop in declaration order, and the swapchains
 /// and space must be destroyed before the session they belong to.
 pub struct XrSession {
+    // S7 objects first: they hold session-owned handles (passthrough layer,
+    // hand trackers, anchor spaces) and must go before the session.
+    passthrough: Option<Passthrough>,
+    hands: Option<Hands>,
+    room: Option<Room>,
     eyes: Vec<Eye>,
     space: xr::Space,
     stream: xr::FrameStream<xr::Vulkan>,
@@ -196,7 +257,7 @@ pub struct XrSession {
 impl XrSession {
     /// `eye_scale` scales the runtime's recommended per-eye swapchain size
     /// (1.0 = recommended); the compositor resamples to the display.
-    pub fn new(ctx: &XrContext, gfx: &mut Gfx, eye_scale: f32) -> Result<Self> {
+    pub fn new(ctx: &XrContext, gfx: &mut Gfx, eye_scale: f32, mr: MrOptions) -> Result<Self> {
         // SAFETY: every handle comes from `Gfx`, which created the instance and
         // device through XR_KHR_vulkan_enable2 for this system and keeps them
         // alive longer than the session (drop order in `app::run_inner`). The
@@ -292,7 +353,49 @@ impl XrSession {
             });
         }
 
+        // S7 bring-up. A missing extension is logged, not fatal: the gate
+        // records what the runtime offers.
+        let passthrough = if mr.passthrough {
+            if ctx.has_passthrough {
+                Some(Passthrough::new(&session)?)
+            } else {
+                warn!("passthrough requested but XR_FB_passthrough is missing");
+                None
+            }
+        } else {
+            None
+        };
+        let hands = if mr.hands {
+            if ctx.has_hand_tracking {
+                Some(Hands::new(&session)?)
+            } else {
+                warn!("hands requested but XR_EXT_hand_tracking is missing");
+                None
+            }
+        } else {
+            None
+        };
+        let room = if mr.room {
+            if ctx.has_scene {
+                match Room::new(&session, &space) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        warn!("scene query failed to start: {e:#}");
+                        None
+                    }
+                }
+            } else {
+                warn!("room requested but the XR_FB_scene extensions are missing");
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
+            passthrough,
+            hands,
+            room,
             eyes,
             space,
             stream,
@@ -375,6 +478,21 @@ impl XrSession {
                         e.to_display_refresh_rate()
                     );
                 }
+                xr::Event::SpaceQueryResultsAvailableFB(e) => {
+                    let id = e.request_id();
+                    if let Some(room) = self.room.as_mut() {
+                        room.results_available(id);
+                    }
+                }
+                xr::Event::SpaceQueryCompleteFB(e) => {
+                    let (id, result) = (e.request_id(), e.result());
+                    if let Some(room) = self.room.as_mut() {
+                        room.query_complete(id, result);
+                    }
+                }
+                xr::Event::PassthroughStateChangedFB(e) => {
+                    info!("passthrough state changed: {:?}", e.flags());
+                }
                 _ => {}
             }
         }
@@ -396,16 +514,35 @@ impl XrSession {
         }
     }
 
-    /// One frame: wait, begin, run `before_render` (the effect step), locate
-    /// views, render both eyes through wgpu, submit a projection layer. Must only be called while the session is
-    /// running.
+    pub fn has_passthrough(&self) -> bool {
+        self.passthrough.is_some()
+    }
+
+    pub fn has_hands(&self) -> bool {
+        self.hands.is_some()
+    }
+
+    pub fn has_room(&self) -> bool {
+        self.room.is_some()
+    }
+
+    /// Labels of the room anchors found so far, for the once-a-second log.
+    pub fn room_summary(&self) -> Option<String> {
+        self.room.as_ref().map(Room::anchor_summary)
+    }
+
+    /// One frame: wait, begin, locate hands and room anchors at the
+    /// predicted display time, run `before_render` (the effect step) with
+    /// them, locate views, render both eyes through wgpu, submit the
+    /// passthrough layer (if any) under a projection layer. Must only be
+    /// called while the session is running.
     pub fn frame(
         &mut self,
         gfx: &Gfx,
         clear: [f32; 4],
         stats: &mut FrameStats,
         particles: Option<&Particles3d>,
-        before_render: impl FnOnce(),
+        before_render: impl FnOnce(&FrameInput),
     ) -> Result<()> {
         let frame_state = self.waiter.wait().context("xrWaitFrame")?;
         self.stream.begin().context("xrBeginFrame")?;
@@ -424,7 +561,22 @@ impl XrSession {
                 .context("xrEndFrame (empty)")?;
             return Ok(());
         }
-        before_render();
+        let time = frame_state.predicted_display_time;
+        let input = FrameInput {
+            hands: self
+                .hands
+                .as_mut()
+                .map(|h| h.locate(&self.space, time))
+                .unwrap_or_default(),
+            room_boxes: match self.room.as_mut() {
+                Some(room) => {
+                    room.locate(time);
+                    room.boxes.clone()
+                }
+                None => Vec::new(),
+            },
+        };
+        before_render(&input);
 
         let (view_flags, views) = self
             .session
@@ -480,16 +632,47 @@ impl XrSession {
                     )
             })
             .collect();
+        // Over passthrough the projection layer is blended by its alpha
+        // (premultiplied, the wgpu default): where nothing was drawn the
+        // camera image shows through. The blend mode stays OPAQUE; the
+        // passthrough layer underneath is what shows the room.
+        let layer_flags = if self.passthrough.is_some() {
+            xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA
+        } else {
+            xr::CompositionLayerFlags::EMPTY
+        };
         let layer = xr::CompositionLayerProjection::new()
+            .layer_flags(layer_flags)
             .space(&self.space)
             .views(&projection_views);
+        // The openxr crate does not re-export its passthrough layer builder,
+        // so the raw struct is filled in directly (spec: `space` is null and
+        // `flags` empty for a reconstruction layer).
+        let passthrough_layer =
+            self.passthrough
+                .as_ref()
+                .map(|p| xr::sys::CompositionLayerPassthroughFB {
+                    ty: xr::sys::CompositionLayerPassthroughFB::TYPE,
+                    next: std::ptr::null(),
+                    flags: xr::CompositionLayerFlags::EMPTY,
+                    space: xr::sys::Space::NULL,
+                    layer_handle: p.layer.as_raw(),
+                });
+        let mut layers: Vec<&xr::CompositionLayerBase<'_, xr::Vulkan>> = Vec::with_capacity(2);
+        if let Some(p) = &passthrough_layer {
+            // SAFETY: `CompositionLayerBase` is `repr(transparent)` over
+            // `XrCompositionLayerBaseHeader`, and every composition layer
+            // struct, this one included, starts with that header (the spec's
+            // polymorphic layer rule, which is also how the openxr crate's
+            // own builders deref to the base). `p` outlives `layers`.
+            layers.push(unsafe {
+                &*std::ptr::from_ref(p).cast::<xr::CompositionLayerBase<'_, xr::Vulkan>>()
+            });
+        }
+        layers.push(&layer);
         stats.record_cpu(cpu_start.elapsed());
         self.stream
-            .end(
-                frame_state.predicted_display_time,
-                self.blend_mode,
-                &[&layer],
-            )
+            .end(frame_state.predicted_display_time, self.blend_mode, &layers)
             .context("xrEndFrame")?;
         Ok(())
     }

@@ -1,4 +1,90 @@
 // S5 test sim: curl-noise flow in a cube, every slot always alive.
+// S7 adds obstacles: spheres (hand joints) and oriented boxes (scene planes
+// and volumes, the floor) that particles are pushed out of and bounce off.
+
+const MAX_SPHERES: u32 = 64u;
+const MAX_BOXES: u32 = 32u;
+
+struct Obstacles {
+    sphere_count: u32,
+    box_count: u32,
+    // Velocity kept along the normal after a bounce (0 = stick, 1 = elastic)
+    // and the clearance added around every obstacle (meters).
+    restitution: f32,
+    margin: f32,
+    // xyz center, w radius.
+    spheres: array<vec4<f32>, 64>,
+    // Boxes: center xyz; rotation as a quaternion (box -> world); half extents.
+    box_center: array<vec4<f32>, 32>,
+    box_rot: array<vec4<f32>, 32>,
+    box_half: array<vec4<f32>, 32>,
+}
+
+@group(0) @binding(2) var<uniform> obstacles: Obstacles;
+
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
+fn quat_conj(q: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(-q.xyz, q.w);
+}
+
+// sign() that never returns 0, so a particle exactly on a box's mid-plane
+// still picks a side.
+fn side(x: f32) -> f32 {
+    return select(-1.0, 1.0, x >= 0.0);
+}
+
+// Push `p` out of every obstacle it is inside and reflect the inward part of
+// its velocity. One pass per frame is enough at these speeds; a particle
+// deep inside a box (spawned there) exits through the nearest face.
+fn collide(p: ptr<function, Particle>) {
+    let margin = obstacles.margin;
+    let restitution = obstacles.restitution;
+    for (var k = 0u; k < min(obstacles.sphere_count, MAX_SPHERES); k++) {
+        let s = obstacles.spheres[k];
+        let d = (*p).pos - s.xyz;
+        let r = s.w + margin;
+        let dist2 = dot(d, d);
+        if dist2 < r * r {
+            let dist = max(sqrt(dist2), 1e-4);
+            let n = d / dist;
+            (*p).pos = s.xyz + n * r;
+            let vn = dot((*p).vel, n);
+            if vn < 0.0 {
+                (*p).vel -= (1.0 + restitution) * vn * n;
+            }
+        }
+    }
+    for (var k = 0u; k < min(obstacles.box_count, MAX_BOXES); k++) {
+        let c = obstacles.box_center[k].xyz;
+        let q = obstacles.box_rot[k];
+        let h = obstacles.box_half[k].xyz + vec3<f32>(margin);
+        let l = quat_rotate(quat_conj(q), (*p).pos - c);
+        let pen = h - abs(l);
+        if pen.x > 0.0 && pen.y > 0.0 && pen.z > 0.0 {
+            var n_local = vec3<f32>(0.0);
+            var l2 = l;
+            if pen.z <= pen.x && pen.z <= pen.y {
+                n_local.z = side(l.z);
+                l2.z = n_local.z * h.z;
+            } else if pen.x <= pen.y {
+                n_local.x = side(l.x);
+                l2.x = n_local.x * h.x;
+            } else {
+                n_local.y = side(l.y);
+                l2.y = n_local.y * h.y;
+            }
+            (*p).pos = c + quat_rotate(q, l2);
+            let n = quat_rotate(q, n_local);
+            let vn = dot((*p).vel, n);
+            if vn < 0.0 {
+                (*p).vel -= (1.0 + restitution) * vn * n;
+            }
+        }
+    }
+}
 
 // ---- hashing and value noise --------------------------------------------
 
@@ -68,8 +154,11 @@ fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let flow = curl((p.pos - sim.cube_center) * sim.flow_scale);
     // Blend toward the field rather than snapping, for smooth trails.
+    // Gravity is applied after the blend so the flow does not cancel it.
     p.vel = mix(p.vel, flow * sim.speed, 0.1);
+    p.vel.y -= sim.gravity * sim.dt;
     p.pos += p.vel * sim.dt;
+    collide(&p);
     p.life -= sim.dt;
     let d = abs(p.pos - sim.cube_center);
     if p.life <= 0.0 || max(d.x, max(d.y, d.z)) > sim.cube_half {

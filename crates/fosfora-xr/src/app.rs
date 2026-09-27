@@ -11,10 +11,10 @@ use log::{error, info};
 
 use crate::audio::LiveAudio;
 use crate::gfx::Gfx;
-use crate::particles3d::{Params, Particles3d};
+use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback};
 use crate::scene::XrScene;
-use crate::xr::{Flow, XrContext, XrSession};
+use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
 pub const LOG_TAG: &str = "fosfora_xr";
@@ -33,6 +33,18 @@ const NOMINAL_FPS: u32 = 72;
 const DEFAULT_COUNT: u32 = 500_000;
 const CUBE_HALF_M: f32 = 1.0;
 const SPRITE_RADIUS_M: f32 = 0.004;
+/// S7 defaults for mixed reality: the cube sits over a desk (center 1.1 m
+/// up, 0.9 m ahead, 1.1 m half edge), a little gravity settles particles on
+/// real surfaces, bounces keep 40 % of the normal speed, and the pinch
+/// toggle triples the sprite size.
+const MR_CUBE_CENTER: [f32; 3] = [0.0, 1.1, -0.9];
+const MR_CUBE_HALF_M: f32 = 1.1;
+const MR_GRAVITY: f32 = 0.15;
+const MR_RESTITUTION: f32 = 0.4;
+const PINCH_SIZE_BOOST: f32 = 3.0;
+/// The floor obstacle: the STAGE space's y=0 plane, from Space Setup.
+const FLOOR_HALF_M: f32 = 10.0;
+const FLOOR_HALF_THICKNESS_M: f32 = 0.05;
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +53,9 @@ enum Mode {
     Quad,
     /// S5: world-space particles around a static quad.
     Particles,
+    /// S7: world-space particles over passthrough, hands and room as
+    /// obstacles, no quad.
+    Mixed,
 }
 
 pub fn run(app: &AndroidApp) {
@@ -98,11 +113,44 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.pull 0                   (instanced draw instead of vertex pulling)
     //   adb shell setprop debug.fosfora.hz 90                    (request a display rate)
     //   adb shell setprop debug.fosfora.eyescale 0.75            (swapchain size vs recommended)
+    //   adb shell setprop debug.fosfora.mode mr                  (S7: passthrough + hands + room, no quad)
+    //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
+    //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
+    //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
+    //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
+    //   adb shell setprop debug.fosfora.gravity 0.15             (m/s^2; default 0.15 in mr, 0 otherwise)
+    //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
+        Some("mr" | "mixed") => Mode::Mixed,
         _ => Mode::Particles,
     };
+    let mixed = mode == Mode::Mixed;
+    let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
+        Some("0") => false,
+        Some("1") => true,
+        _ => default,
+    };
+    let mr = MrOptions {
+        passthrough: toggle("debug.fosfora.passthrough", mixed),
+        hands: toggle("debug.fosfora.hands", mixed),
+        room: toggle("debug.fosfora.room", mixed),
+    };
+    let floor = toggle("debug.fosfora.floor", mixed);
+    let gravity = debug_prop("debug.fosfora.gravity")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(if mixed { MR_GRAVITY } else { 0.0 });
+    let (cube_center, cube_half) = debug_prop("debug.fosfora.cube")
+        .and_then(|v| {
+            let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            (n.len() == 4).then(|| ([n[0], n[1], n[2]], n[3]))
+        })
+        .unwrap_or(if mixed {
+            (MR_CUBE_CENTER, MR_CUBE_HALF_M)
+        } else {
+            (QUAD_CENTER, CUBE_HALF_M)
+        });
     let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     let quality = match debug_prop("debug.fosfora.quality").as_deref() {
         Some("low") => ParticleQuality::Low,
@@ -135,10 +183,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale}"
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
+        cube_center[0], cube_center[1], cube_center[2]
     );
 
-    let mut session = XrSession::new(&xr, &mut gfx, eye_scale)?;
+    let mut session = XrSession::new(&xr, &mut gfx, eye_scale, mr)?;
     if let Some(hz) = hz {
         session.request_refresh_rate(hz);
     }
@@ -236,13 +285,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
             scene = Some(s);
         }
-        Mode::Particles => {
-            // A static, opaque quad at the S4 placement: the depth reference
-            // the particles are judged against. It costs nothing to render,
-            // so the sweep numbers are the particles'.
-            let (tex, view) = static_quad_texture(&gfx.device, &gfx.queue);
-            gfx.set_quad(&view, QUAD_WIDTH_M, 16.0 / 9.0, QUAD_CENTER);
-            static_quad = Some(tex);
+        Mode::Particles | Mode::Mixed => {
+            // S5: a static, opaque quad at the S4 placement, the depth
+            // reference the particles are judged against. It costs nothing
+            // to render, so the sweep numbers are the particles'. In mixed
+            // reality the real room is the reference, so no quad unless
+            // asked for.
+            if toggle("debug.fosfora.quad", !mixed) {
+                let (tex, view) = static_quad_texture(&gfx.device, &gfx.queue);
+                gfx.set_quad(&view, QUAD_WIDTH_M, 16.0 / 9.0, QUAD_CENTER);
+                static_quad = Some(tex);
+            }
             let mut p = Particles3d::new(
                 &gfx.device,
                 count,
@@ -250,17 +303,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Params {
                     triangles,
                     pull,
-                    cube_center: QUAD_CENTER,
-                    cube_half: CUBE_HALF_M,
+                    cube_center,
+                    cube_half,
                     base_size: SPRITE_RADIUS_M * size_scale,
                     flow_scale: 1.0,
                     lifetime: 12.0,
+                    gravity,
                 },
             );
             p.sim_enabled = sim_enabled;
             particles = Some(p);
         }
     }
+    let floor_box = floor.then_some(ObstacleBox {
+        center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
+        rot: [0.0, 0.0, 0.0, 1.0],
+        half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
+    });
+    // Pinch toggles a visible parameter (the sprite size); either hand.
+    let mut size_boost = false;
+    let mut obstacle_log = (0u32, 0u32, [false; 2]);
 
     let started = Instant::now();
     let mut stats = FrameStats::default();
@@ -328,13 +390,40 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let dt = (t - last_t).clamp(1.0 / 120.0, 1.0 / 30.0);
         last_t = t;
         let queue = &gfx.queue;
+        // Over passthrough the frame starts fully transparent so the camera
+        // image shows wherever nothing is drawn.
         let clear = if flash_frames > 0 {
             flash_frames -= 1;
             [1.0, 1.0, 1.0, 1.0]
+        } else if session.has_passthrough() {
+            [0.0, 0.0, 0.0, 0.0]
         } else {
             background_color(t)
         };
-        session.frame(&gfx, clear, &mut stats, particles.as_ref(), || {
+        session.frame(&gfx, clear, &mut stats, particles.as_ref(), |input| {
+            // S7: hands and room as obstacles, pinch as the toggle.
+            if input.hands.pinch_began.iter().any(|&b| b) {
+                size_boost = !size_boost;
+                info!(
+                    "pinch toggle: sprite size x{} {}",
+                    PINCH_SIZE_BOOST,
+                    if size_boost { "on" } else { "off" }
+                );
+            }
+            if let Some(p) = particles.as_ref() {
+                let mut set = ObstacleSet::new(MR_RESTITUTION, SPRITE_RADIUS_M * size_scale);
+                for s in &input.hands.spheres {
+                    set.push_sphere(*s);
+                }
+                for b in &input.room_boxes {
+                    set.push_box(b);
+                }
+                if let Some(f) = &floor_box {
+                    set.push_box(f);
+                }
+                p.set_obstacles(queue, &set);
+                obstacle_log = (set.sphere_count(), set.box_count(), input.hands.tracked);
+            }
             // This frame's audio: the headset microphones or the
             // synthetic 120 BPM groove.
             let hop = match live_audio.as_mut() {
@@ -367,12 +456,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             if let Some(p) = particles.as_ref() {
                 // bass drives the flow speed, rms and the beat pulse
                 // the sprite size.
+                let boost = if size_boost { PINCH_SIZE_BOOST } else { 1.0 };
                 p.update(
                     queue,
                     t,
                     dt,
                     0.6 + 1.2 * f.bass,
-                    (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env),
+                    (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env) * boost,
                 );
             }
         })?;
@@ -380,6 +470,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         if frame_index.is_multiple_of(72) {
             if let Some(scene) = &scene {
                 info!("particles alive {}", scene.alive_count());
+            }
+            if session.has_hands() || session.has_room() {
+                info!(
+                    "obstacles: {} spheres (hands L {} R {}) · {} boxes (room {} + floor {}) · anchors [{}] · size boost {}",
+                    obstacle_log.0,
+                    obstacle_log.2[0],
+                    obstacle_log.2[1],
+                    obstacle_log.1,
+                    obstacle_log
+                        .1
+                        .saturating_sub(u32::from(floor_box.is_some())),
+                    floor_box.is_some(),
+                    session.room_summary().unwrap_or_default(),
+                    size_boost
+                );
             }
             if let Some(p) = &playback {
                 info!(

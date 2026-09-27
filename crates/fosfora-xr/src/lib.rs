@@ -7,7 +7,8 @@
 //!
 //! Spike state: S1 packaging/launch, S2 wgpu on the runtime's Vulkan device,
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
-//! the billboard path, S6 live audio.
+//! the billboard path, S6 live audio, S7 passthrough, hands and room
+//! geometry as obstacles.
 
 #[cfg(target_os = "android")]
 mod app;
@@ -17,11 +18,15 @@ mod assets;
 mod audio;
 #[cfg(target_os = "android")]
 mod gfx;
+#[cfg(target_os = "android")]
+mod input;
 pub mod math;
 #[cfg(target_os = "android")]
 mod particles3d;
 #[cfg(target_os = "android")]
 mod playback;
+#[cfg(target_os = "android")]
+mod room;
 #[cfg(target_os = "android")]
 mod scene;
 #[cfg(target_os = "android")]
