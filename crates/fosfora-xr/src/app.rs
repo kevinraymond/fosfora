@@ -140,6 +140,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.3              (downward drift m/s; default 0.3 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
+    //   adb shell setprop debug.fosfora.handocc 0.0              (m added to each joint's depth-occluder cube beyond the joint radius)
     //   adb shell setprop debug.fosfora.flow 0.35                (flow speed multiplier; default 0.35 in mr, 1 otherwise)
     //   adb shell setprop debug.fosfora.occluders 0|1            (obstacles drawn depth-only so real objects hide sprites; default on in mr)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
@@ -186,6 +187,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let hand_pad = debug_prop("debug.fosfora.handpad")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(MR_HAND_PAD_M);
+    // The occluder cube hugs the joint itself (a cube already reads larger
+    // than the finger inside it; +2 cm looked like a 1-inch force field).
+    let hand_occ = debug_prop("debug.fosfora.handocc")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.0);
     let (cube_center, cube_half) = cube_knob.unwrap_or(if mixed {
         (MR_CUBE_CENTER, MR_CUBE_HALF_M)
     } else {
@@ -489,7 +495,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
-                    (hand_pad - 0.02).max(0.0),
+                    (hand_pad - hand_occ).max(0.0),
                     MR_HAND_KICK,
                 );
                 for s in &input.hands.spheres {
