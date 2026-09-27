@@ -36,19 +36,37 @@ commit. A claim in a report that isn't here doesn't count (invariant I4).
 
 | Limit | Value | Required |
 |---|---|---|
-| max_storage_buffers_per_shader_stage | | ≥ 16 |
-| max_bind_groups | | ≥ 5 |
-| max_storage_buffer_binding_size | | |
-| max_buffer_size | | |
-| Swapchain format / per-eye size | | |
+| max_storage_buffers_per_shader_stage | 16777216 | ≥ 16 |
+| max_bind_groups | 7 | ≥ 5 |
+| max_storage_buffer_binding_size | 134217728 (128 MiB) | |
+| max_buffer_size | 2147483647 | |
+| Swapchain format / per-eye size | `R8G8B8A8_SRGB` (wgpu `Rgba8UnormSrgb`), 1680x1760, 3 images per eye | |
+
+Commit `32b4628`, Quest 3 v207, wgpu 27.0.1 / wgpu-hal 27.0.4 over the
+runtime-created Vulkan 1.2 device, Adreno 740 (driver build 810c66ceb7,
+06/24/26). Also: max_texture_dimension_2d 16384, max_compute_workgroup_storage_size
+32768, max_compute_invocations_per_workgroup 1024,
+max_compute_workgroups_per_dimension 65535, max_uniform_buffer_binding_size 65536,
+max_push_constant_size 256. Device extensions wgpu-hal enabled:
+`VK_KHR_swapchain`, `VK_EXT_robustness2`, `VK_KHR_external_memory_fd`
+(`VK_EXT_memory_budget` absent, warning only). No Vulkan validation layer on
+the device; wgpu's own validation reported nothing over the run.
 
 ## Frame timing
 
 | Step | Commit | Content | Display Hz | Held 60 s? | CPU ms | GPU ms | Tool |
 |---|---|---|---|---|---|---|---|
 | S1 | `c45a9c8` | clear color, both eyes, 1680x1760 sRGB per eye | 72 (runtime default for a new app; 72/80/90/120 offered) | Yes: 74 s, 5362 frames, 1 long frame at session start, max wait-to-wait 17.3 ms after the first second, 0 `should_render=false` | 0.25 (runtime `App=`) | n/a (clear only; runtime `CPU&GPU=0.79`) | in-app `predictedDisplayPeriod` counters (logcat `fosfora_xr`, 1 s windows) + runtime `VrApi` line (`FPS=72/72 Stale=0 Tear=0`) |
-| S2 | | triangle | | | | | |
+| S2 | `32b4628` | stereo triangle through wgpu, one render pass per eye | 72 | Yes: 73 s, 5287 frames, 0 long frames, max wait-to-wait 15.9 ms after the first second, 0 `should_render=false` | 0.26 (runtime `App=`) | n/a (runtime `CPU&GPU=1.19`) | same as S1 |
 | S4 | | 2D effect on quad | | | | | |
+
+### S2 notes (commit `32b4628`)
+
+- Screencap: the triangle appears in both eyes with opposite-sign parallax
+  (centroid 62% across the left-eye image, 39% across the right-eye image),
+  consistent with an object 1.5 m ahead.
+- **Not verified:** world-stability while moving the head. Nobody wore the
+  headset for this run (Guardian paused, proximity faked). Board question #3220.
 
 ## Particle sweep (S5)
 
