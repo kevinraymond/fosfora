@@ -1,6 +1,6 @@
-// S7 depth-only occluders: every obstacle box (scene anchors, floor) and
-// hand-joint sphere is drawn as a cube into the depth buffer with color
-// writes off, before the sprites. Passthrough carries no depth, so without
+// S7 depth-only occluders: every obstacle box (scene anchors, floor) is
+// drawn as a cube and every hand-joint sphere as a sphere impostor into the
+// depth buffer with color writes off, before the sprites. Passthrough carries no depth, so without
 // this a particle behind a real desk or hand renders on top of it and the
 // obstacle void carved by the sim is invisible. Same `Obstacles` block as
 // the sim (particles3d_sim.wgsl), bound to group 0 binding 0 here.
@@ -60,18 +60,10 @@ fn vs_occluder(
     @builtin(vertex_index) vi: u32,
     @builtin(instance_index) ii: u32,
 ) -> @builtin(position) vec4<f32> {
-    var center = vec3<f32>(0.0);
-    var q = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    var half = vec3<f32>(0.0);
-    if ii < obstacles.box_count {
-        center = obstacles.box_center[ii].xyz;
-        q = obstacles.box_rot[ii];
-        half = obstacles.box_half[ii].xyz;
-    } else {
-        let s = obstacles.spheres[ii - obstacles.box_count];
-        center = s.xyz;
-        half = vec3<f32>(max(s.w - obstacles.sphere_shrink, 0.01));
-    }
+    // Boxes only; spheres go through vs_sphere / fs_sphere below.
+    let center = obstacles.box_center[ii].xyz;
+    let q = obstacles.box_rot[ii];
+    let half = obstacles.box_half[ii].xyz;
     let world = center + quat_rotate(q, cube_corner(vi % 36u) * half);
     return eye.view_proj * vec4<f32>(world, 1.0);
 }
@@ -80,4 +72,61 @@ fn vs_occluder(
 fn fs_occluder() -> @location(0) vec4<f32> {
     // Color writes are masked off; only depth lands.
     return vec4<f32>(0.0);
+}
+
+// ---- hand joints as sphere impostors -----------------------------------
+// A camera-facing disc per sphere whose fragments write the depth of the
+// sphere's surface, so the union of joints reads as a smooth hand rather
+// than a pile of cubes.
+
+struct SphereOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) view_center: vec3<f32>,
+    @location(2) radius: f32,
+}
+
+@vertex
+fn vs_sphere(
+    @builtin(vertex_index) vi: u32,
+    @builtin(instance_index) ii: u32,
+) -> SphereOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let s = obstacles.spheres[ii];
+    let radius = max(s.w - obstacles.sphere_shrink, 0.005);
+    let view_center = (eye.view * vec4<f32>(s.xyz, 1.0)).xyz;
+    let corner = corners[vi % 6u];
+    // The disc sits at the sphere's near point so a sphere that straddles
+    // the near plane is not clipped away whole.
+    let view_pos = view_center + vec3<f32>(corner * radius, radius);
+    var out: SphereOut;
+    out.pos = eye.proj * vec4<f32>(view_pos, 1.0);
+    out.uv = corner;
+    out.view_center = view_center;
+    out.radius = radius;
+    return out;
+}
+
+struct SphereFrag {
+    @builtin(frag_depth) depth: f32,
+    @location(0) color: vec4<f32>,
+}
+
+@fragment
+fn fs_sphere(in: SphereOut) -> SphereFrag {
+    let d2 = dot(in.uv, in.uv);
+    if d2 > 1.0 {
+        discard;
+    }
+    // Surface point toward the camera (view space looks down -z).
+    let z = in.view_center.z + in.radius * sqrt(1.0 - d2);
+    let p = vec3<f32>(in.view_center.xy + in.uv * in.radius, z);
+    let clip = eye.proj * vec4<f32>(p, 1.0);
+    var out: SphereFrag;
+    out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
+    out.color = vec4<f32>(0.0);
+    return out;
 }

@@ -186,12 +186,13 @@ pub struct Particles3d {
     eye_bind_groups: Vec<wgpu::BindGroup>,
     step_pipeline: wgpu::ComputePipeline,
     draw_pipeline: wgpu::RenderPipeline,
-    /// S7 depth-only occluders (obstacle boxes and hand spheres as cubes).
+    /// S7 depth-only occluders: obstacle boxes as cubes, hand joints as
+    /// sphere impostors.
     occluder_pipeline: wgpu::RenderPipeline,
+    sphere_pipeline: wgpu::RenderPipeline,
     occluder_bind_group: wgpu::BindGroup,
-    /// Instances the occluder draw covers: boxes + spheres of the last
-    /// `set_obstacles`.
-    occluder_count: Cell<u32>,
+    /// (boxes, spheres) of the last `set_obstacles`.
+    occluder_counts: Cell<(u32, u32)>,
 }
 
 impl Particles3d {
@@ -319,11 +320,12 @@ impl Particles3d {
         let sim_bind_group = bind("xr-particles3d-sim", &sim_layout, true);
         let read_layout = group_layout("xr-particles3d-read", wgpu::ShaderStages::VERTEX, true);
         let read_bind_group = bind("xr-particles3d-read", &read_layout, false);
+        // Fragment too: the sphere-impostor occluder projects its own depth.
         let eye_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xr-particles3d-eye"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -440,6 +442,42 @@ impl Particles3d {
             cache: None,
         });
 
+        let sphere_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr-particles3d-occluder-sphere"),
+            layout: Some(&occluder_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &occluder_shader,
+                entry_point: Some("vs_sphere"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &occluder_shader,
+                entry_point: Some("fs_sphere"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SWAPCHAIN_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::empty(),
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
         let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xr-particles3d-draw"),
             bind_group_layouts: &[&read_layout, &eye_layout],
@@ -525,8 +563,9 @@ impl Particles3d {
             step_pipeline,
             draw_pipeline,
             occluder_pipeline,
+            sphere_pipeline,
             occluder_bind_group,
-            occluder_count: Cell::new(0),
+            occluder_counts: Cell::new((0, 0)),
         }
     }
 
@@ -562,20 +601,26 @@ impl Particles3d {
     /// Upload this frame's obstacles (S7: hand joints, scene boxes, floor).
     pub fn set_obstacles(&self, queue: &wgpu::Queue, set: &ObstacleSet) {
         queue.write_buffer(&self.obstacles, 0, bytemuck::bytes_of(set));
-        self.occluder_count.set(set.box_count + set.sphere_count);
+        self.occluder_counts.set((set.box_count, set.sphere_count));
     }
 
     /// Draw every obstacle as a depth-only cube into the current eye pass,
     /// before `draw`, so real furniture and hands hide sprites behind them.
     pub fn draw_occluders(&self, pass: &mut wgpu::RenderPass<'_>, eye: usize) {
-        let n = self.occluder_count.get();
-        if !self.occluders || n == 0 {
+        let (boxes, spheres) = self.occluder_counts.get();
+        if !self.occluders || boxes + spheres == 0 {
             return;
         }
-        pass.set_pipeline(&self.occluder_pipeline);
         pass.set_bind_group(0, &self.occluder_bind_group, &[]);
         pass.set_bind_group(1, &self.eye_bind_groups[eye], &[]);
-        pass.draw(0..36, 0..n);
+        if boxes > 0 {
+            pass.set_pipeline(&self.occluder_pipeline);
+            pass.draw(0..36, 0..boxes);
+        }
+        if spheres > 0 {
+            pass.set_pipeline(&self.sphere_pipeline);
+            pass.draw(0..6, 0..spheres);
+        }
     }
 
     /// Upload one eye's camera. `view_proj` must equal `proj * view`.
