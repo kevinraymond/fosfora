@@ -8,7 +8,7 @@ and records the click. This script finds the click times in the video's
 audio and the flash times in its frames, pairs each flash with the click
 before it, and prints the offsets.
 
-    scripts/xr/latency.py video.mp4 [--fps-hint 60]
+    scripts/xr/latency.py video.mp4 [click_bpm, default 120]
 
 Needs ffmpeg and ffprobe on PATH. Frame-time precision is one video frame
 (16.7 ms at 60 fps, 4.2 ms at 240 fps); the click time is sample-accurate.
@@ -25,7 +25,7 @@ def run(cmd):
     return subprocess.run(cmd, check=True, capture_output=True).stdout
 
 
-def main(path):
+def main(path, bpm=120.0):
     info = json.loads(
         run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", path])
     )
@@ -84,22 +84,38 @@ def main(path):
     print(f"video {w}x{h} @ {fps:.2f} fps, {len(frames)} frames · audio {len(audio)/sr:.1f} s")
     print(f"clicks found {len(clicks)} (median spacing {np.median(np.diff(clicks))*1000:.1f} ms if >1)")
     print(f"flashes found {len(flashes)} (median spacing {np.median(np.diff(flashes))*1000:.1f} ms if >1)")
-    if len(clicks) < 3 or len(flashes) < 3:
-        print("not enough events; check the framing (lens fills part of the frame) and the volume")
+    if len(flashes) < 3:
+        print("not enough flashes; check the framing (lens fills part of the frame)")
         return
-    offsets = []
-    for f in flashes:
-        prior = clicks[clicks <= f]
-        if len(prior):
-            offsets.append((f - prior[-1]) * 1000.0)
-    offsets = np.array(offsets)
-    period = 60.0 / 120.0 * 1000.0
-    offsets = offsets[offsets < period]  # a flash more than a beat late paired with the wrong click
+
+    # Both events sit on the click track's 500 ms grid (120 BPM), so fit a
+    # phase to each with a comb over the grid instead of pairing peaks: the
+    # click fit uses the whole envelope (robust to spurious transients), the
+    # flash fit the flash times. Latency = flash phase - click phase, modulo
+    # the period; unambiguous while it is under 500 ms.
+    period = 60.0 / bpm
+    t_env = np.arange(len(env)) / sr
+    ph = np.linspace(0, period, 2000, endpoint=False)
+    # Comb score at 1 ms resolution: sum of envelope at phase + k*period.
+    score = np.array([env[((t_env - p) % period) < 0.002].sum() for p in ph])
+    click_phase = ph[int(np.argmax(score))]
+    flash_ph = (flashes % period)
+    z = np.exp(2j * np.pi * flash_ph / period).mean()
+    flash_phase = (np.angle(z) / (2 * np.pi) % 1.0) * period
+    flash_jitter = np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi) * period
+    lat = (flash_phase - click_phase) % period
+    # Per-flash offsets to the click grid, for the spread.
+    per = ((flashes - click_phase) % period) * 1000.0
     print(
-        f"flash minus click: median {np.median(offsets):.0f} ms · mean {offsets.mean():.0f} ms · "
-        f"std {offsets.std():.0f} ms · n {len(offsets)} · frame quantum {1000/fps:.1f} ms"
+        f"click grid phase {click_phase*1000:.1f} ms · flash grid phase {flash_phase*1000:.1f} ms "
+        f"(circular jitter {flash_jitter*1000:.0f} ms, n {len(flashes)})"
+    )
+    print(
+        f"AUDIO-TO-PHOTON: {lat*1000:.0f} ms (flash grid minus click grid) · per-flash offsets "
+        f"median {np.median(per):.0f} ms, 10-90% {np.percentile(per,10):.0f}..{np.percentile(per,90):.0f} ms · "
+        f"frame quantum {1000/fps:.1f} ms"
     )
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 120.0)

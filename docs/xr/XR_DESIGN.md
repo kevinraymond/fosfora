@@ -250,6 +250,11 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   (measured Sep 27). Product path for room music: a USB mic or a USB audio
   interface from the mixer. Development over Wi-Fi adb, since the port is
   taken.
+- **Latency (measured Sep 27).** Beats flash about 115 ms before the click
+  is heard on the playback path: the tap is early by AAudio's ~190 ms output
+  latency, the display chain is ~75 ms. Delay the tap by the stream's
+  reported output latency (or open the output low-latency) before this is
+  a product path; `scripts/xr/latency.py` re-measures from a phone video.
 - Later: the in-app `RECORD_AUDIO` runtime request (via `jni`), AEC when the
   headset both plays and listens, and a real render-thread split only if the
   measurements say the CPU side is the bottleneck (it is under 1 ms now).

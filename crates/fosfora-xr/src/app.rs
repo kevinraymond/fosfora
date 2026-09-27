@@ -83,7 +83,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
-    //       48 kHz stereo f32 file ending in .f32, or "click" for a 120 BPM click track;
+    //       48 kHz stereo f32 file ending in .f32, or "click" / "click:100" for a click track at that BPM;
     //       default: the bundled CC0 track under assets/audio/)
     //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
     //       audio-to-photon measurement, filmed with a phone)
@@ -182,8 +182,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let path = debug_prop("debug.fosfora.file")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| dirs.assets.join("audio").join("ember_glow_excerpt.ogg"));
-            let clip = if path.as_os_str() == "click" {
-                Clip::click(120.0, 30.0, 48_000)
+            let clip = if let Some(bpm) = path
+                .to_str()
+                .and_then(|p| p.strip_prefix("click"))
+                .map(|rest| rest.trim_start_matches(':').parse::<f32>().unwrap_or(120.0))
+            {
+                Clip::click(bpm, 30.0, 48_000)
             } else if path.extension().is_some_and(|e| e == "f32") {
                 Clip::from_raw_f32_stereo(&path, 48_000)?
             } else {
