@@ -74,6 +74,9 @@ struct Anchor {
     shape: Shape,
     /// Last located pose in the base space, once tracking reports one.
     pose: Option<sys::Posef>,
+    /// The LOCATABLE component is enabled (loaded anchors arrive with it
+    /// off; `xrSetSpaceComponentStatusFB` turns it on asynchronously).
+    locatable: bool,
 }
 
 /// The room's scene anchors as obstacle boxes.
@@ -84,6 +87,11 @@ pub struct Room {
     request: Option<sys::AsyncRequestIdFB>,
     /// Pending `xrRequestSceneCaptureFB`, if one was issued.
     capture: Option<sys::AsyncRequestIdFB>,
+    /// Space Setup is requested at most once per run (a second empty result
+    /// means something else is wrong, and a popup loop is worse than no room).
+    capture_used: bool,
+    /// Anchors the last query returned, before any were dropped.
+    returned: usize,
     /// Launch Space Setup when the query returns no anchors.
     allow_capture: bool,
     started: bool,
@@ -127,6 +135,8 @@ impl Room {
             base: base.as_raw(),
             request: None,
             capture: None,
+            capture_used: false,
+            returned: 0,
             allow_capture,
             started: false,
             anchors: Vec::new(),
@@ -228,8 +238,9 @@ impl Room {
     /// `XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB` arrived.
     pub fn query_complete(&mut self, request: sys::AsyncRequestIdFB, result: sys::Result) {
         if self.request == Some(request) {
-            if self.anchors.is_empty() && self.capture.is_none() {
-                if self.allow_capture {
+            if self.returned == 0 && self.capture.is_none() {
+                if self.allow_capture && !self.capture_used {
+                    self.capture_used = true;
                     self.request_capture();
                 } else {
                     warn!(
@@ -250,6 +261,32 @@ impl Room {
                     .count()
             );
             self.request = None;
+        }
+    }
+
+    /// `XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB` arrived for one
+    /// anchor's component.
+    pub fn set_status_complete(
+        &mut self,
+        space: sys::Space,
+        component: sys::SpaceComponentTypeFB,
+        enabled: bool,
+        result: sys::Result,
+    ) {
+        if component != sys::SpaceComponentTypeFB::LOCATABLE {
+            return;
+        }
+        if let Some(anchor) = self.anchors.iter_mut().find(|a| a.space == space) {
+            if result == sys::Result::SUCCESS && enabled {
+                anchor.locatable = true;
+                self.last_locate = None;
+                info!("scene: anchor {} is now locatable", anchor.label);
+            } else {
+                warn!(
+                    "scene: anchor {}: enabling LOCATABLE failed ({result:?}, enabled {enabled})",
+                    anchor.label
+                );
+            }
         }
     }
 
@@ -332,6 +369,7 @@ impl Room {
             .context("xrRetrieveSpaceQueryResultsFB")?;
         buffer.truncate(results.result_count_output as usize);
         info!("scene: {} anchors returned", buffer.len());
+        self.returned = buffer.len();
 
         for r in buffer {
             let space = r.space;
@@ -356,11 +394,6 @@ impl Room {
             } else {
                 String::from("(unlabeled)")
             };
-            if !enabled(sys::SpaceComponentTypeFB::LOCATABLE) {
-                info!("scene: anchor {label}: not locatable, skipped");
-                destroy_space(&self.instance, space);
-                continue;
-            }
             if label.contains("GLOBAL_MESH") {
                 if let Some(mesh) = exts.meta_spatial_entity_mesh.as_ref() {
                     match mesh_triangle_count(mesh, space) {
@@ -426,12 +459,37 @@ impl Room {
                 destroy_space(&self.instance, space);
                 continue;
             };
-            info!("scene: anchor {label}: {shape:?}");
+            // Loaded anchors come back with LOCATABLE off (all 18 did on
+            // v207); enabling it is asynchronous and completes with
+            // SPACE_SET_STATUS_COMPLETE_FB.
+            let mut locatable = enabled(sys::SpaceComponentTypeFB::LOCATABLE);
+            if !locatable {
+                let set = sys::SpaceComponentStatusSetInfoFB {
+                    ty: sys::SpaceComponentStatusSetInfoFB::TYPE,
+                    next: ptr::null(),
+                    component_type: sys::SpaceComponentTypeFB::LOCATABLE,
+                    enabled: sys::TRUE,
+                    timeout: sys::Duration::NONE,
+                };
+                let mut req = sys::AsyncRequestIdFB::from_raw(0);
+                // SAFETY: `space` is a live anchor handle from this query and
+                // `set` a complete request struct.
+                let res = unsafe { (entity.set_space_component_status)(space, &set, &mut req) };
+                match res {
+                    sys::Result::SUCCESS => {}
+                    // Already on and merely reported stale, or a change in flight.
+                    sys::Result::ERROR_SPACE_COMPONENT_STATUS_ALREADY_SET_FB => locatable = true,
+                    sys::Result::ERROR_SPACE_COMPONENT_STATUS_PENDING_FB => {}
+                    other => warn!("scene: anchor {label}: xrSetSpaceComponentStatusFB {other:?}"),
+                }
+            }
+            info!("scene: anchor {label}: {shape:?}, locatable {locatable}");
             self.anchors.push(Anchor {
                 space,
                 label,
                 shape,
                 pose: None,
+                locatable,
             });
         }
         // Locate right away so the first frame after the query has boxes.
@@ -454,7 +512,7 @@ impl Room {
         self.last_locate = Some(now);
         let locate = self.instance.fp().locate_space;
         let mut located = 0;
-        for anchor in &mut self.anchors {
+        for anchor in self.anchors.iter_mut().filter(|a| a.locatable) {
             let mut location = sys::SpaceLocation {
                 ty: sys::SpaceLocation::TYPE,
                 next: ptr::null_mut(),

@@ -493,6 +493,13 @@ impl XrSession {
                         room.results_available(id);
                     }
                 }
+                xr::Event::SpaceSetStatusCompleteFB(e) => {
+                    let (space, component, enabled, result) =
+                        (e.space(), e.component_type(), e.enabled(), e.result());
+                    if let Some(room) = self.room.as_mut() {
+                        room.set_status_complete(space, component, enabled, result);
+                    }
+                }
                 xr::Event::SceneCaptureCompleteFB(e) => {
                     let (id, result) = (e.request_id(), e.result());
                     if let Some(room) = self.room.as_mut() {
