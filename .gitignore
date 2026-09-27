@@ -32,3 +32,11 @@ __pycache__/
 /bench/out/
 /bench/*.mp3
 /bench/*.signal.jsonl
+
+# XR (crates/fosfora-xr + android/): cargo-ndk output and Gradle state
+/android/app/src/main/jniLibs/
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties

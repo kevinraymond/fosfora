@@ -60,9 +60,10 @@ measurements say the CPU side is the bottleneck.
 ## OpenXR bring-up (Android)
 
 1. **Loader init.** Call `xrInitializeLoaderKHR` with
-   `XrLoaderInitInfoAndroidKHR` (JavaVM and activity from `android-activity` /
-   `ndk-context`) before anything else. **VERIFY** whether the `openxr` crate
-   wraps this or whether you call it through the raw function pointer.
+   `XrLoaderInitInfoAndroidKHR` (JavaVM and activity from `android-activity`)
+   before anything else. *Verified (S1):* `openxr` 0.22 wraps it:
+   `Entry::load(&AndroidPlatformInfo::new(vm, activity))` runs the loader init,
+   and `create_instance(.., &platform)` chains `XrInstanceCreateInfoAndroidKHR`.
 2. **Instance.** Required: `XR_KHR_vulkan_enable2` and
    `XR_KHR_android_create_instance` (chain `XrInstanceCreateInfoAndroidKHR`).
    Optional, enabled only if the runtime lists them, each behind a runtime check:
@@ -73,10 +74,19 @@ measurements say the CPU side is the bottleneck.
    - `XR_EXT_eye_gaze_interaction`, `XR_EXT_hand_interaction`,
      `XR_META_hand_tracking_microgestures`
 
-   Log the runtime's full extension list at startup.
+   Log the runtime's full extension list at startup. *Measured (S1, v207):*
+   84 extensions. Present: `XR_EXT_hand_tracking`, `XR_FB_passthrough`,
+   `XR_FB_display_refresh_rate`, `XR_META_spatial_entity_mesh`,
+   `XR_META_spatial_entity_room_mesh`, `XR_EXT_spatial_plane_tracking`,
+   `XR_EXT_hand_interaction`, `XR_META_hand_tracking_microgestures`,
+   `XR_META_environment_depth`. **Absent:** `XR_FB_scene`,
+   `XR_FB_spatial_entity`, `XR_FB_spatial_entity_query`,
+   `XR_FB_spatial_entity_container`, `XR_EXT_eye_gaze_interaction`. S7's room
+   geometry must use the `XR_EXT_spatial_plane_tracking` / `XR_META_*` routes.
 3. **System** `HEAD_MOUNTED_DISPLAY`, view configuration `PRIMARY_STEREO`,
    environment blend mode `OPAQUE`. Passthrough goes through `XR_FB_passthrough`
-   layers, not an `ALPHA_BLEND` blend mode, on Quest (**VERIFY**).
+   layers on Quest. *Measured (S1):* v207 enumerates both `OPAQUE` and
+   `ALPHA_BLEND`; whether `ALPHA_BLEND` alone gives passthrough is an S7 check.
 4. **Session lifecycle.** Poll events every frame. On READY, begin the session;
    on STOPPING, end it; on EXITING or LOSS_PENDING, tear down. Render only when
    the session is running; submit layers only when VISIBLE or FOCUSED. Treat
@@ -145,7 +155,17 @@ Resolve into the swapchain layer through a final render pass (layout rule above)
 Additive vs alpha resolve follows the effect. Over passthrough (S7), output
 premultiplied alpha.
 
-## Android manifest essentials (VERIFY every line against Meta's native docs)
+## Android manifest essentials
+
+*Verified (S1)* against Meta's public "Android Manifest Settings" page:
+`android.hardware.vr.headtracking` required/version 1, the three intent-filter
+categories, `com.oculus.supportedDevices` (`quest2|questpro|quest3|quest3s`),
+`minSdkVersion 29` / `targetSdkVersion 32`. The page lists no `uses-permission`
+requirements and says nothing about the loader `<queries>`; those come from the
+Khronos loader docs and work on v207 (the loader falls back to
+`/odm/etc/openxr/1/active_runtime.aarch64.json` when both brokers return null).
+The live copy is `android/app/src/main/AndroidManifest.xml`; the package id
+moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
 
 ```xml
 <manifest ... package="dev.fosfora.xr">
@@ -187,11 +207,12 @@ premultiplied alpha.
 
 ## OpenXR loader
 
-Bundle the Khronos Android loader (`libopenxr_loader.so`, Apache-2.0) under
-`jniLibs/arm64-v8a/`. Sources, in order of preference (**VERIFY** availability
-and version): the Khronos Maven AAR `org.khronos.openxr:openxr_loader_for_android`
-through Gradle, or building from `KhronosGroup/OpenXR-SDK-Source`. Record the
-choice and version as a blackboard decision (I6).
+*Decided (S1, board #3211):* the Khronos Maven AAR
+`org.khronos.openxr:openxr_loader_for_android:1.1.63` (Apache-2.0) as a Gradle
+dependency in `android/app/build.gradle.kts`. The AAR ships
+`jni/arm64-v8a/libopenxr_loader.so`, which Gradle packages into the APK, so no
+binary lives in the repo. Building from `KhronosGroup/OpenXR-SDK-Source` stays
+the fallback if a newer loader is ever needed before Maven has it.
 
 ## Assets on Android
 

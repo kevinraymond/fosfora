@@ -1,0 +1,31 @@
+[package]
+name = "fosfora-xr"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Fosfora VR: OpenXR / Android glue for Quest 3 and Meta VR Glasses"
+
+# `cdylib` is what NativeActivity loads (`libfosfora_xr.so`). `rlib` keeps the
+# crate a normal workspace member for `cargo test` / clippy on the desktop, where
+# every module is compiled out (see lib.rs).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+
+# All real dependencies are Android-only so the desktop workspace build (CI, I1)
+# never links OpenXR or the Android glue.
+[target.'cfg(target_os = "android")'.dependencies]
+# `loaded` dlopens `libopenxr_loader.so`; the Khronos loader AAR that the Gradle
+# project depends on puts it in the APK (see android/app/build.gradle.kts).
+openxr = { version = "0.22", default-features = false, features = ["loaded"] }
+# Same major as wgpu-hal 27 (Cargo.lock: ash 0.38) so S2's raw handles line up.
+ash = { version = "0.38", default-features = false, features = ["loaded", "std", "debug"] }
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.15"
+
+[lints]
+workspace = true
