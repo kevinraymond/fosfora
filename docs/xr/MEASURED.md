@@ -453,9 +453,50 @@ hands. With the primer, passthrough's extra cost is inside the noise at 750K
 sprite path amplified. Hands, room anchors and the floor remain below the
 noise floor.
 
-### Functional gate (wearer)
+### Final numbers with the room loaded (72 Hz, `mr` defaults, `794d7df`)
 
-Passthrough composition, bouncing off hands and a real table, and the pinch
-toggle need a wearer and a room from Space Setup; the headless runs above
-tracked no hands and found no anchors (the query completed with 0; Space
-Setup not run on this headset yet). Filled in below when run.
+Headless, but with the room from Space Setup: 16 anchors + floor as obstacle
+boxes and depth occluders, primer, near cull, flow ×0.35, drift 0.5 m/s.
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 250K | 5.5 / 6.2 | 72.0 | 0 of 2032 | 0 | Yes |
+| 500K | 8.6 / 9.5 | 72.0 | 0 of 2026 | 4 | Yes |
+
+Better than the earlier 250K at 8.2 ms: the room's walls, floor and ceiling
+now write depth, so sprites behind real surfaces are rejected, and the
+slower flow keeps more of the cloud settled on surfaces. **MR budget with
+everything on: 500K sprites at 72 Hz (8.6 ms).**
+
+### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
+
+- **Passthrough:** the real room shows behind the particles (confirmed by
+  the wearer; a headset screencap shows the desk, monitors and hands under
+  the cloud).
+- **Room:** Space Setup launched from inside the app (`xrRequestSceneCaptureFB`)
+  and returned 18 anchors: 5 tables, 3 storage units, floor, ceiling, 4
+  walls (one invisible), door and window frames, and a global mesh of
+  87,530 triangles. Anchors arrive with `LOCATABLE` off and are enabled with
+  `xrSetSpaceComponentStatusFB`. Local +Z is world up for tables and the
+  floor, down for the ceiling, horizontal for walls (logged), so the
+  bounded-box placement is right.
+- **Bounce off a real table:** particles land on the desk top and slide
+  off it, not through it (wearer). With gravity as an acceleration nothing
+  settled: the flow blend damps it to a few cm/s; as a 0.5 m/s drift with
+  the flow at ×0.35 it reads.
+- **Hands:** both tracked, 26 joints each, as padded spheres (+6 cm): the
+  cloud parts around the hands and particles bounce off them (wearer).
+  Visually the joint occluders are still wrong (cubes read as cubes; sphere
+  impostors are smoother but not a hand): a follow-up with
+  `XR_FB_hand_tracking_mesh` as the depth occluder.
+- **Pinch:** thumb-index pinch on either hand toggles the sprite size ×3
+  (wearer: "toggles the bloom"), 11–15 mm on, 30–120 mm off.
+- **Bugs found only by wearing it:** the first frame after donning has no
+  view pose and `xrEndFrame` rejects a projection layer (was fatal); the
+  runtime answers the first scene query after focus with 0 anchors for a
+  room it finds 3 s later (was a Space Setup popup loop); the LOCAL storage
+  filter fails validation on v207; and passthrough has no depth, so without
+  depth occluders every collision void is hidden behind the particles that
+  are behind the object.
+- **Not done:** the Meta XR Simulator glasses-input check (macOS only; this
+  session is Linux). Logged, no effect on the decision.
