@@ -750,7 +750,7 @@ mod tests {
         let mut bus = empty_bus();
         let global_id = bus.add_binding(
             "audio.kick".into(),
-            "param.Phosphor.warp".into(),
+            "param.Fosfora.warp".into(),
             BindingScope::Global,
         );
         assert_eq!(global_id, "b_001");
@@ -792,7 +792,7 @@ mod tests {
         let mut bus = empty_bus();
         bus.add_binding(
             "audio.kick".into(),
-            "param.Phosphor.warp".into(),
+            "param.Fosfora.warp".into(),
             BindingScope::Global,
         );
         bus.merge_preset_bindings(vec![preset_binding("b_001", "audio.rms")]);
@@ -824,7 +824,7 @@ mod tests {
 
         let id = bus.add_binding(
             "audio.kick".into(),
-            "param.Phosphor.warp".into(),
+            "param.Fosfora.warp".into(),
             BindingScope::Global,
         );
         assert_eq!(id, "b_001");
@@ -854,12 +854,12 @@ mod tests {
 
         bus.add_binding(
             "audio.kick".into(),
-            "param.Phosphor.warp".into(),
+            "param.Fosfora.warp".into(),
             BindingScope::Global,
         );
         bus.add_binding(
             "audio.rms".into(),
-            "param.Phosphor.warp".into(),
+            "param.Fosfora.warp".into(),
             BindingScope::Global,
         );
         bus.add_binding(
@@ -868,7 +868,7 @@ mod tests {
             BindingScope::Global,
         );
 
-        let warp_bindings = bus.bindings_for_target(&"param.Phosphor.warp".into());
+        let warp_bindings = bus.bindings_for_target(&"param.Fosfora.warp".into());
         assert_eq!(warp_bindings.len(), 2);
 
         let opacity_bindings = bus.bindings_for_target(&"layer.0.opacity".into());

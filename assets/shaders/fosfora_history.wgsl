@@ -1,4 +1,4 @@
-// Phosphor history (#1482 Chronoflow) — the whole effect: long-exposure
+// Fosfora history (#1482 Chronoflow) — the whole effect: long-exposure
 // particle trails advected along the tubes' own motion; the compute-raster
 // particles composite on top of this pass's output each frame.
 //   feedback() = last frame's final image (trails + particles)

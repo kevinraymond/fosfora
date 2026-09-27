@@ -253,7 +253,7 @@ impl LoopSession {
             .effect_loader
             .effects
             .iter()
-            .position(|e| e.name == spec.effect)
+            .position(|e| e.name == crate::effect::loader::current_effect_name(&spec.effect))
             .expect("validated above");
         let effect = sr.effect_loader.effects[idx].clone();
         // A fresh LayerStack is empty — create layer 0 the same way the app's
@@ -1142,7 +1142,7 @@ mod tests {
             // ramp from +33% to -4.4%; see the board for the full cell record.
             SimSite { effect: "Flux",         trail_param: T,    audio: N, mad: 7.00, witness: Some("flux_sim: frame-quantised emission phase, deferred") },
             // Same mechanism, ~a third the magnitude (+10% level, count flat).
-            SimSite { effect: "Phosphor",     trail_param: T,    audio: N, mad: 1.60, witness: Some("phosphor_sim: frame-quantised emission phase") },
+            SimSite { effect: "Fosfora",      trail_param: T,    audio: N, mad: 1.60, witness: Some("fosfora_sim: frame-quantised emission phase") },
             // WATCHED. The u.onset/u.flux/u.zcr kicks are per-frame rates by
             // reading (onset is a held, decayed LEVEL — beat.rs:1918 — not a
             // one-frame pulse, so #2382 makes them rates). All four measure at or

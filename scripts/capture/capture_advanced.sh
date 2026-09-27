@@ -170,7 +170,7 @@ osc() { oscsend localhost 9000 "$@"; }
 hide_ui() { osc /fosfora/overlay/visible f 0.0; }
 hide_ui; sleep 1.5
 
-# Canvas detection needs something animating edge to edge, and boot lands on Phosphor
+# Canvas detection needs something animating edge to edge, and boot lands on Fosfora
 # (hidden) -> Array (a dark centre column on black, which under-reports the canvas by a
 # third) -> Aurora, whose curtain bands fill the frame.
 osc /fosfora/trigger/next_effect f 1.0; sleep 0.8

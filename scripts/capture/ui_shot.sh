@@ -103,7 +103,7 @@ PLAY_PID=$!
 
 xdotool windowactivate --sync "$WIN"; sleep 0.5
 
-# Boot lands on Phosphor (hidden); the first step goes to visible[1], so reaching index i
+# Boot lands on Fosfora (hidden); the first step goes to visible[1], so reaching index i
 # takes i steps. The overlay stays VISIBLE here — it is the subject of the shot.
 steps=$(( TARGET == 0 ? ${#SLUGS[@]} : TARGET ))
 for ((i=0;i<steps;i++)); do

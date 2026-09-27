@@ -41,7 +41,7 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
-BIN = REPO / "target" / "release" / "phosphor-app"
+BIN = REPO / "target" / "release" / "fosfora"
 CATALOG = REPO / "catalog"
 RENDERS = CATALOG / "renders"
 TRACK = CATALOG / "test_track.wav"

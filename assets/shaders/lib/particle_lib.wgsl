@@ -1,4 +1,4 @@
-// Phosphor particle library — shared structs, bindings, and helpers.
+// Fosfora particle library — shared structs, bindings, and helpers.
 // Auto-prepended to all particle compute shaders (same pattern as noise/palette/sdf libs).
 
 struct ParticleUniforms {

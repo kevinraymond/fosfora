@@ -1,29 +1,58 @@
-// Phosphor particle simulation — two particle "worms" tracing a P shape.
-// Each strand is a thick tube of particles that twist around the P spine.
+// Fosfora particle simulation — two particle "worms" tracing an F (the
+// effect traced a P, and was called Phosphor, while the app was).
+// Each strand is a thick tube of particles that twist around the F spine.
 // Cross-section is a filled disc; depth modulates brightness for 3D illusion.
 // Structs, bindings, and helpers are in particle_lib.wgsl (auto-prepended).
 
-// ---- P-shaped spine path ----
+// ---- F-shaped spine path ----
+//
+// An F is two strokes. The first runs up the stem and turns, round a soft
+// corner, into the top bar; the second is the middle bar. `t` in [0, 1)
+// covers both, split by length so the bars are as dense as the stem.
 
-fn eval_p(t: f32) -> vec2f {
-    let stem_t = clamp(t / 0.38, 0.0, 1.0);
-    let stem_bow = sin(stem_t * 3.14159) * 0.015;
-    let stem_tail = (1.0 - stem_t) * (1.0 - stem_t) * (1.0 - stem_t) * 0.05;
-    let stem_pos = vec2f(-0.14 + stem_bow - stem_tail, -0.37 + stem_t * 0.74);
+const F_SPLIT: f32 = 0.8; // t below this is stroke 1
+// An F has nothing at its lower right, so it sits a little right of where
+// the P's stem stood to look centered.
+const F_SHIFT: f32 = 0.03;
 
-    let bowl_s = clamp((t - 0.32) / 0.68, 0.0, 1.0);
-    let angle = bowl_s * 3.14159;
-    let sag = sin(angle) * sin(angle) * -0.08;
-    let bowl_pos = vec2f(-0.14 + 0.38 * sin(angle), 0.15 + 0.22 * cos(angle) + sag);
-
-    let blend = smoothstep(0.30, 0.40, t);
-    return mix(stem_pos, bowl_pos, blend);
+fn eval_f(t: f32) -> vec2f {
+    if t < F_SPLIT {
+        let s = t / F_SPLIT;
+        // The stem: slightly bowed, with the P's flourish at its foot.
+        let stem_t = clamp(s / 0.685, 0.0, 1.0);
+        let stem_bow = sin(stem_t * 3.14159) * 0.015;
+        let stem_tail = (1.0 - stem_t) * (1.0 - stem_t) * (1.0 - stem_t) * 0.05;
+        let stem_pos = vec2f(-0.14 + F_SHIFT + stem_bow - stem_tail, -0.37 + stem_t * 0.74);
+        // The top bar, lifting a little toward its end.
+        let bar_s = clamp((s - 0.685) / 0.315, 0.0, 1.0);
+        let bar_pos = vec2f(
+            -0.14 + F_SHIFT + 0.36 * bar_s,
+            0.37 + sin(bar_s * 3.14159) * 0.012 + bar_s * bar_s * 0.03
+        );
+        // Blending the two across the join rounds the corner.
+        let blend = smoothstep(0.63, 0.74, s);
+        return mix(stem_pos, bar_pos, blend);
+    }
+    // The middle bar, a little above center and shorter than the top one.
+    let m = (t - F_SPLIT) / (1.0 - F_SPLIT);
+    return vec2f(
+        -0.14 + F_SHIFT + 0.015 + 0.27 * m,
+        0.03 + sin(m * 3.14159) * 0.012 + m * m * 0.015
+    );
 }
 
-fn eval_p_tangent(t: f32) -> vec2f {
+fn eval_f_tangent(t: f32) -> vec2f {
+    // Sample within the stroke t is on: across the gap between strokes the
+    // difference would point from the top bar's end to the middle bar.
     let eps = 0.003;
-    let a = eval_p(max(t - eps, 0.0));
-    let b = eval_p(min(t + eps, 0.999));
+    var lo = 0.0;
+    var hi = F_SPLIT - 0.0001;
+    if t >= F_SPLIT {
+        lo = F_SPLIT;
+        hi = 0.999;
+    }
+    let a = eval_f(max(t - eps, lo));
+    let b = eval_f(min(t + eps, hi));
     let d = b - a;
     let len = length(d);
     if len < 0.0001 {
@@ -46,12 +75,12 @@ fn emit_particle(idx: u32) -> Particle {
     let curve_id = step(0.5, uhash_f(sb ^ 0x9e3779b9u));
     let strand_phase = curve_id * 3.14159; // 0 or pi
 
-    // Random position along P path
+    // Random position along the F
     let t = hash(seed_base);
 
     // Base spine position and tangent
-    let base_pos = eval_p(t);
-    let tangent = eval_p_tangent(t);
+    let base_pos = eval_f(t);
+    let tangent = eval_f_tangent(t);
     let perp = vec2f(-tangent.y, tangent.x);
 
     // Scale

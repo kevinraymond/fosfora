@@ -216,11 +216,11 @@ impl App {
         let mut effect_loader = EffectLoader::new();
         effect_loader.scan_effects_directory();
 
-        // Prefer Phosphor as default, fall back to first effect
+        // Prefer the launch effect, fall back to the first one
         let default_idx = effect_loader
             .effects
             .iter()
-            .position(|e| e.name == "Phosphor")
+            .position(|e| e.name == crate::effect::loader::LAUNCH_EFFECT)
             .or(if effect_loader.effects.is_empty() {
                 None
             } else {
@@ -2036,18 +2036,18 @@ impl App {
         }
     }
 
-    /// Remove all layers and create one fresh layer with the Phosphor default effect.
+    /// Remove all layers and create one fresh layer with the launch effect.
     pub fn clear_all_layers(&mut self) {
         self.cancel_media_loads();
         self.layer_stack.layers.clear();
         self.layer_stack.active_layer = 0;
         self.add_layer();
-        // Load Phosphor as default on the fresh layer
+        // Load the launch effect on the fresh layer
         if let Some(idx) = self
             .effect_loader
             .effects
             .iter()
-            .position(|e| e.name == "Phosphor")
+            .position(|e| e.name == crate::effect::loader::LAUNCH_EFFECT)
         {
             self.load_effect(idx);
         }

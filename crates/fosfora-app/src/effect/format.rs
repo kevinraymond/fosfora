@@ -124,7 +124,7 @@ pub struct PostProcessDef {
     pub vignette_enabled: bool,
     #[serde(default = "default_true")]
     pub grain_enabled: bool,
-    /// Tonemap operator: "aces" (default, Phosphor house look) or "linear"
+    /// Tonemap operator: "aces" (default, Fosfora house look) or "linear"
     /// (raw passthrough clamp, matching SuperSplat for the Splat effect).
     #[serde(default = "default_tonemap")]
     pub tonemap: String,

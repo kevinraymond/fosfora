@@ -24,9 +24,22 @@ const BUILTIN_PRESETS: &[(&str, &str)] = &[
     ("Spectral Eye", BUILTIN_SPECTRAL_EYE),
 ];
 
+fn de_effect_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let name = String::deserialize(d)?;
+    Ok(crate::effect::loader::current_effect_name(&name).to_string())
+}
+
+fn de_image_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let path = Option::<String>::deserialize(d)?;
+    Ok(path.map(|p| crate::gpu::particle::source_loader::current_image_path(&p)))
+}
+
 /// Per-layer state saved in a preset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerPreset {
+    /// Read through [`current_effect_name`](crate::effect::loader::current_effect_name),
+    /// so a preset saved before an effect was renamed still finds it.
+    #[serde(deserialize_with = "de_effect_name")]
     pub effect_name: String,
     #[serde(default)]
     pub params: HashMap<String, ParamValue>,
@@ -64,8 +77,9 @@ pub struct LayerPreset {
     /// True if particle source is webcam.
     #[serde(default)]
     pub particle_webcam: Option<bool>,
-    /// Absolute path to static image used as particle source.
-    #[serde(default)]
+    /// Absolute path to static image used as particle source. A renamed
+    /// built-in image is read by its new name.
+    #[serde(default, deserialize_with = "de_image_path")]
     pub particle_image_path: Option<String>,
     /// Absolute path to the 3D model used as particle source (#1993). Mutually
     /// exclusive with `particle_image_path` — a model is rendered to a frame rather
@@ -571,6 +585,25 @@ mod tests {
     fn sanitize_name_65_truncated() {
         let s = "b".repeat(65);
         assert_eq!(PresetStore::sanitize_name(&s).len(), 64);
+    }
+
+    // Presets saved while the launch effect was called Phosphor (most of
+    // them: it is the effect every new stack starts on) load it by its new
+    // name, and save that name back.
+    #[test]
+    fn a_preset_naming_phosphor_loads_fosfora() {
+        let lp: LayerPreset = serde_json::from_str(
+            r#"{"effect_name": "Phosphor",
+                "particle_image_path": "/a/assets/images/raster_phosphor.png"}"#,
+        )
+        .unwrap();
+        assert_eq!(lp.effect_name, "Fosfora");
+        assert_eq!(
+            lp.particle_image_path.as_deref(),
+            Some("/a/assets/images/raster_fosfora.png")
+        );
+        let back = serde_json::to_string(&lp).unwrap();
+        assert!(back.contains(r#""effect_name":"Fosfora""#), "{back}");
     }
 
     #[test]

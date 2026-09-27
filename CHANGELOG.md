@@ -45,6 +45,10 @@
 - Deleting a scene no longer closes the one you were editing, and a long scene name
   in a non-Latin script no longer crashes the app.
 
+- The effect that opens on launch now traces an **F for Fosfora** and is called Fosfora.
+  Presets and bindings saved with its old name, Phosphor, still load it. The built-in
+  PHOSPHOR particle image now spells FOSFORA, and new setups record to a Fosfora folder.
+
 - **Adding a video layer no longer freezes the app.** A video decodes every frame
   before it plays, which took ~15 s with nothing on screen; it now decodes in the
   background with a progress bar and a Cancel button where the layer will appear.

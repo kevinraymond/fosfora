@@ -2749,7 +2749,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // End-to-end Chronoflow probe (#1482) through the REAL production pieces: a
     // ParticleSystem with `velocity_field` (compute raster + velocity resolve),
     // the shared chronoflow_velocity.wgsl self-advecting field reading
-    // `@particles.velocity`, and phosphor_history.wgsl advecting the trail image
+    // `@particles.velocity`, and fosfora_history.wgsl advecting the trail image
     // — particles composite into the history target each frame exactly as in the
     // app. Particles emit at center under strong +x gravity, so:
     //   1. long-exposure trails accumulate (lit coverage ≫ the snapped frame's),
@@ -2823,11 +2823,11 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
             1,
         );
         let pipe_hist = mk(
-            include_str!("../../../../assets/shaders/phosphor_history.wgsl"),
+            include_str!("../../../../assets/shaders/fosfora_history.wgsl"),
             1,
         );
 
-        // Same wiring as phosphor.pfx: velocity (½ res, reads @particles.velocity),
+        // Same wiring as fosfora.pfx: velocity (½ res, reads @particles.velocity),
         // history (full res, reads velocity; particles composite on top).
         let mut executor = assemble(
             &device,
@@ -2869,7 +2869,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
         u.resolution = [w as f32, h as f32];
         u.delta_time = 1.0 / 60.0;
         u.rms = 0.4;
-        // phosphor_history params: 0 trail_decay (exposure), 1 beat_snap, 2 flow_stretch.
+        // fosfora_history params: 0 trail_decay (exposure), 1 beat_snap, 2 flow_stretch.
         u.params[0] = 0.9;
         u.params[1] = 0.7;
         u.params[2] = 0.5;

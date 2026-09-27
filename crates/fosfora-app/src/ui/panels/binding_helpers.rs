@@ -15,7 +15,7 @@ pub const WS_COLOR: Color32 = Color32::from_rgb(0xE0, 0x90, 0x40); // orange
 pub struct LayerParamInfo {
     /// Layer index.
     pub index: usize,
-    /// Effect name on this layer (e.g. "Phosphor"), empty if no effect.
+    /// Effect name on this layer (e.g. "Fosfora"), empty if no effect.
     pub effect_name: String,
     /// Param names available on this layer (Float and Bool only).
     pub param_names: Vec<String>,

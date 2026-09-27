@@ -20,6 +20,24 @@ fn builtin_display_name(file_name: &str) -> Option<String> {
     Some(stem[..stem.len() - ext.len() - 1].to_string())
 }
 
+/// Built-in images that were renamed, as (old file, new file). The PHOSPHOR
+/// picture became FOSFORA with the app.
+const RENAMED_IMAGES: &[(&str, &str)] = &[("raster_phosphor.png", "raster_fosfora.png")];
+
+/// `path` with a renamed built-in image's old file name swapped for its new
+/// one, in the same folder: presets store the full path to a built-in image,
+/// and one saved before the rename would otherwise fail to load.
+pub fn current_image_path(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return path.to_string();
+    };
+    match RENAMED_IMAGES.iter().find(|(old, _)| *old == name) {
+        Some((_, new)) => p.with_file_name(new).to_string_lossy().into_owned(),
+        None => path.to_string(),
+    }
+}
+
 /// Discover built-in raster_*.png images in the assets/images/ directory.
 /// Returns display names (e.g. "skull", "phoenix") sorted alphabetically.
 /// Cached after first call.
@@ -535,6 +553,28 @@ mod tests {
     }
 
     /// The naming convention itself, independent of what happens to be on disk.
+    #[test]
+    fn a_renamed_image_resolves_to_its_new_file() {
+        assert_eq!(
+            current_image_path("/opt/fosfora/assets/images/raster_phosphor.png"),
+            "/opt/fosfora/assets/images/raster_fosfora.png"
+        );
+        assert_eq!(
+            current_image_path("raster_phosphor.png"),
+            "raster_fosfora.png"
+        );
+        assert_eq!(
+            current_image_path("/x/raster_skull.png"),
+            "/x/raster_skull.png"
+        );
+        // Every new file ships, and no old one does.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/images");
+        for (old, new) in RENAMED_IMAGES {
+            assert!(dir.join(new).exists(), "{new} does not ship");
+            assert!(!dir.join(old).exists(), "{old} still ships");
+        }
+    }
+
     #[test]
     fn builtin_display_name_strips_only_real_raster_pngs() {
         assert_eq!(
