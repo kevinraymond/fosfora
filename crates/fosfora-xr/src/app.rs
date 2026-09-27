@@ -41,6 +41,9 @@ const MR_CUBE_CENTER: [f32; 3] = [0.0, 1.1, -0.9];
 const MR_CUBE_HALF_M: f32 = 1.1;
 const MR_GRAVITY: f32 = 0.15;
 const MR_RESTITUTION: f32 = 0.4;
+/// Sprites nearer than this to the eye are culled in mixed reality (the
+/// user stands inside the cube; near sprites are pure fill-rate cost).
+const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
 /// The floor obstacle: the STAGE space's y=0 plane, from Space Setup.
 const FLOOR_HALF_M: f32 = 10.0;
@@ -117,9 +120,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.passthrough 0|1          (override the mode's default)
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
+    //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.15             (m/s^2; default 0.15 in mr, 0 otherwise)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
+    //   adb shell setprop debug.fosfora.nearcull 0.3             (cull sprites nearer than this, m; default 0.3 in mr, 0 otherwise)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -136,11 +141,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
         room: toggle("debug.fosfora.room", mixed),
+        scene_capture: toggle("debug.fosfora.scenecapture", false),
     };
     let floor = toggle("debug.fosfora.floor", mixed);
     let gravity = debug_prop("debug.fosfora.gravity")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if mixed { MR_GRAVITY } else { 0.0 });
+    let near_cull = debug_prop("debug.fosfora.nearcull")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(if mixed { MR_NEAR_CULL_M } else { 0.0 });
     let (cube_center, cube_half) = debug_prop("debug.fosfora.cube")
         .and_then(|v| {
             let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
@@ -183,7 +192,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| (0.1..=2.0).contains(s))
         .unwrap_or(1.0);
     info!(
-        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
+        "mode {mode:?} · audio {audio_source} · scene {scene_w}x{scene_h} · quality {quality:?} · count {count} · sim {sim_enabled} · size x{size_scale} · tri {triangles} · pull {pull} · hz {hz:?} · eye scale {eye_scale} · mr {mr:?} · floor {floor} · gravity {gravity} · near cull {near_cull} · cube ({:.2}, {:.2}, {:.2}) half {cube_half}",
         cube_center[0], cube_center[1], cube_center[2]
     );
 
@@ -309,6 +318,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     flow_scale: 1.0,
                     lifetime: 12.0,
                     gravity,
+                    near_cull,
                 },
             );
             p.sim_enabled = sim_enabled;

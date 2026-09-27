@@ -7,6 +7,11 @@
 #   scripts/xr/sweep.sh [--counts "100000 250000 ..."] [--hz "72 90"]
 #                       [--eyescale "1.0"] [--seconds 30] [--sim 1|0]
 #                       [--size 1.0] [--tri 1|0] [--pull 1|0] [--out FILE]
+#                       [--mode particles|mr] [--set "name=value;name=value"]
+#
+# --mode picks the debug.fosfora.mode the app starts in (S7 uses mr) and
+# --set applies extra debug.fosfora.<name> knobs to every run (e.g.
+# "passthrough=1;hands=0;room=0" for the S7 matrix); they are cleared afterwards.
 #
 # The headset can sit unworn: the script fakes the proximity sensor and
 # pauses Guardian for the run (board #3215) and restores both afterwards.
@@ -29,6 +34,8 @@ size=1.0
 tri=1
 pull=1
 out=""
+mode=particles
+set_knobs=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --counts) counts="$2"; shift 2 ;;
@@ -40,6 +47,8 @@ while [ $# -gt 0 ]; do
         --tri) tri="$2"; shift 2 ;;
         --pull) pull="$2"; shift 2 ;;
         --out) out="$2"; shift 2 ;;
+        --mode) mode="$2"; shift 2 ;;
+        --set) set_knobs="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -52,6 +61,9 @@ headless_on() {
     sleep 3
 }
 headless_off() {
+    for kv in ${set_knobs//;/ }; do
+        adb shell setprop "debug.fosfora.${kv%%=*}" '""'
+    done
     adb shell setprop debug.oculus.guardian_pause 0
     adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
 }
@@ -62,7 +74,7 @@ emit() {
     if [ -n "$out" ]; then echo -e "$1" >> "$out"; fi
 }
 
-emit "# S5 sweep $(date -Is) · commit $(git rev-parse --short HEAD) · ${seconds}s per run"
+emit "# sweep $(date -Is) · commit $(git rev-parse --short HEAD) · ${seconds}s per run · mode $mode · set [$set_knobs]"
 emit "count\thz\teyescale\tsim\tsize\ttri\tpull\tframes_per_s\tlong\ttotal\tcpu_avg_ms\tgpu_med_ms\tgpu_max_ms\truntime_fps\tstale"
 
 headless_on
@@ -70,7 +82,10 @@ for es in $eyescales; do
 for hz in $hzs; do
 for count in $counts; do
     adb shell am force-stop "$PACKAGE"
-    adb shell setprop debug.fosfora.mode particles
+    adb shell setprop debug.fosfora.mode "$mode"
+    for kv in ${set_knobs//;/ }; do
+        adb shell setprop "debug.fosfora.${kv%%=*}" "${kv#*=}"
+    done
     adb shell setprop debug.fosfora.count "$count"
     adb shell setprop debug.fosfora.hz "$hz"
     adb shell setprop debug.fosfora.eyescale "$es"

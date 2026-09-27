@@ -42,6 +42,8 @@ pub struct MrOptions {
     pub passthrough: bool,
     pub hands: bool,
     pub room: bool,
+    /// Launch Space Setup when the room query finds no anchors.
+    pub scene_capture: bool,
 }
 
 /// Per-frame input the frame loop hands to `before_render`, by value.
@@ -100,6 +102,8 @@ impl XrContext {
         enabled.fb_spatial_entity_query = has_scene;
         enabled.fb_spatial_entity_container = has_scene && available.fb_spatial_entity_container;
         enabled.meta_spatial_entity_mesh = has_scene && available.meta_spatial_entity_mesh;
+        enabled.fb_spatial_entity_storage = has_scene && available.fb_spatial_entity_storage;
+        enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
         info!(
             "S7 extensions: passthrough {} · hand tracking {} · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {}",
             available.fb_passthrough,
@@ -377,7 +381,7 @@ impl XrSession {
         };
         let room = if mr.room {
             if ctx.has_scene {
-                match Room::new(&session, &space) {
+                match Room::new(&session, &space, mr.scene_capture) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         warn!("scene query failed to start: {e:#}");
@@ -438,6 +442,11 @@ impl XrSession {
                     info!("session state {:?} -> {state:?}", self.state);
                     self.state = state;
                     match state {
+                        xr::SessionState::FOCUSED => {
+                            if let Some(room) = self.room.as_mut() {
+                                room.start();
+                            }
+                        }
                         xr::SessionState::READY => {
                             self.session.begin(VIEW_TYPE).context("xrBeginSession")?;
                             self.running = true;
@@ -482,6 +491,12 @@ impl XrSession {
                     let id = e.request_id();
                     if let Some(room) = self.room.as_mut() {
                         room.results_available(id);
+                    }
+                }
+                xr::Event::SceneCaptureCompleteFB(e) => {
+                    let (id, result) = (e.request_id(), e.result());
+                    if let Some(room) = self.room.as_mut() {
+                        room.capture_complete(id, result);
                     }
                 }
                 xr::Event::SpaceQueryCompleteFB(e) => {

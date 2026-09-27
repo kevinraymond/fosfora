@@ -82,6 +82,11 @@ pub struct Room {
     session: sys::Session,
     base: sys::Space,
     request: Option<sys::AsyncRequestIdFB>,
+    /// Pending `xrRequestSceneCaptureFB`, if one was issued.
+    capture: Option<sys::AsyncRequestIdFB>,
+    /// Launch Space Setup when the query returns no anchors.
+    allow_capture: bool,
+    started: bool,
     anchors: Vec<Anchor>,
     last_locate: Option<Instant>,
     /// Current obstacle boxes in the base space; rebuilt on relocate.
@@ -92,10 +97,17 @@ pub struct Room {
 }
 
 impl Room {
-    /// Start the scene query. Needs `XR_FB_scene`, `XR_FB_spatial_entity`
-    /// and `XR_FB_spatial_entity_query` enabled on the instance, and the
-    /// `com.oculus.permission.USE_SCENE` runtime permission granted.
-    pub fn new(session: &xr::Session<xr::Vulkan>, base: &xr::Space) -> Result<Self> {
+    /// Prepare the scene query (`start` issues it once the session is
+    /// focused). Needs `XR_FB_scene`, `XR_FB_spatial_entity` and
+    /// `XR_FB_spatial_entity_query` enabled on the instance, and the
+    /// `com.oculus.permission.USE_SCENE` runtime permission granted. With
+    /// `allow_capture`, an empty result launches Space Setup
+    /// (`XR_FB_scene_capture`) and the query reruns when it completes.
+    pub fn new(
+        session: &xr::Session<xr::Vulkan>,
+        base: &xr::Space,
+        allow_capture: bool,
+    ) -> Result<Self> {
         let instance = session.instance().clone();
         let exts = instance.exts();
         if exts.fb_scene.is_none()
@@ -109,37 +121,61 @@ impl Room {
                 exts.fb_spatial_entity_query.is_some()
             ));
         }
-        let mut room = Self {
+        let room = Self {
             instance,
             session: session.as_raw(),
             base: base.as_raw(),
             request: None,
+            capture: None,
+            allow_capture,
+            started: false,
             anchors: Vec::new(),
             last_locate: None,
             boxes: Vec::new(),
             mesh_triangles: None,
         };
-        room.query()?;
         Ok(room)
     }
 
+    /// Issue the query (once). Called when the session is first focused:
+    /// Meta's samples query from a running session.
+    pub fn start(&mut self) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        if let Err(e) = self.query() {
+            warn!("scene: {e:#}");
+        }
+    }
+
     fn query(&mut self) -> Result<()> {
-        let fp = self
-            .instance
-            .exts()
+        let exts = self.instance.exts();
+        let fp = exts
             .fb_spatial_entity_query
             .as_ref()
             .expect("checked in Room::new");
-        // No filter: every anchor the runtime knows for this session (the
-        // room set up in Space Setup). Storage-location filters need
-        // XR_FB_spatial_entity_storage, which the runtime may not list.
+        // Filter to locally stored anchors (the room from Space Setup), as
+        // Meta's scene sample does, when the storage extension is enabled;
+        // otherwise no filter.
+        let storage_filter = sys::SpaceStorageLocationFilterInfoFB {
+            ty: sys::SpaceStorageLocationFilterInfoFB::TYPE,
+            next: ptr::null(),
+            location: sys::SpaceStorageLocationFB::LOCAL,
+        };
+        let filter: *const sys::SpaceFilterInfoBaseHeaderFB =
+            if exts.fb_spatial_entity_storage.is_some() {
+                ptr::from_ref(&storage_filter).cast()
+            } else {
+                ptr::null()
+            };
         let info = sys::SpaceQueryInfoFB {
             ty: sys::SpaceQueryInfoFB::TYPE,
             next: ptr::null(),
             query_action: sys::SpaceQueryActionFB::LOAD,
             max_result_count: MAX_RESULTS,
             timeout: sys::Duration::NONE,
-            filter: ptr::null(),
+            filter,
             exclude_filter: ptr::null(),
         };
         let mut request = sys::AsyncRequestIdFB::from_raw(0);
@@ -174,6 +210,15 @@ impl Room {
     /// `XR_TYPE_EVENT_DATA_SPACE_QUERY_COMPLETE_FB` arrived.
     pub fn query_complete(&mut self, request: sys::AsyncRequestIdFB, result: sys::Result) {
         if self.request == Some(request) {
+            if self.anchors.is_empty() && self.capture.is_none() {
+                if self.allow_capture {
+                    self.request_capture();
+                } else {
+                    warn!(
+                        "scene: no anchors: run Space Setup on the headset (or set debug.fosfora.scenecapture 1 to launch it)"
+                    );
+                }
+            }
             info!(
                 "scene: query complete ({result:?}), {} anchors ({} planes, {} volumes)",
                 self.anchors.len(),
@@ -187,6 +232,48 @@ impl Room {
                     .count()
             );
             self.request = None;
+        }
+    }
+
+    /// Ask the runtime to run Space Setup (`xrRequestSceneCaptureFB`).
+    fn request_capture(&mut self) {
+        let Some(fp) = self.instance.exts().fb_scene_capture.as_ref() else {
+            warn!(
+                "scene: no anchors and XR_FB_scene_capture is not enabled; run Space Setup by hand"
+            );
+            return;
+        };
+        let info = sys::SceneCaptureRequestInfoFB {
+            ty: sys::SceneCaptureRequestInfoFB::TYPE,
+            next: ptr::null(),
+            request_byte_count: 0,
+            request: ptr::null(),
+        };
+        let mut request = sys::AsyncRequestIdFB::from_raw(0);
+        // SAFETY: `info` is a complete request struct (an empty request
+        // means the default capture flow) and the session handle is live.
+        let res = unsafe { (fp.request_scene_capture)(self.session, &info, &mut request) };
+        match check(res) {
+            Ok(()) => {
+                info!(
+                    "scene: no anchors, Space Setup requested (request {})",
+                    request.into_raw()
+                );
+                self.capture = Some(request);
+            }
+            Err(e) => warn!("scene: xrRequestSceneCaptureFB: {e:#}"),
+        }
+    }
+
+    /// `XR_TYPE_EVENT_DATA_SCENE_CAPTURE_COMPLETE_FB` arrived: rerun the
+    /// query so the new room becomes obstacles.
+    pub fn capture_complete(&mut self, request: sys::AsyncRequestIdFB, result: sys::Result) {
+        if self.capture != Some(request) {
+            return;
+        }
+        info!("scene: Space Setup finished ({result:?}); querying again");
+        if let Err(e) = self.query() {
+            warn!("scene: {e:#}");
         }
     }
 

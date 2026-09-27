@@ -28,7 +28,10 @@ struct Sim {
     // Downward acceleration (m/s^2); 0 for the pure flow sim (S5), small in
     // mixed reality (S7) so particles settle on real surfaces.
     gravity: f32,
-    _pad1: u32,
+    // Sprites nearer than this to the eye (view-space depth, meters) are
+    // culled: a 4 mm sprite at 10 cm covers a huge patch of the screen, and
+    // in mixed reality the user stands inside the cube. 0 = off.
+    near_cull: f32,
 }
 
 struct Particle {

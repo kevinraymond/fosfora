@@ -18,8 +18,8 @@ crates/fosfora-xr/
       session.rs      session + lifecycle state machine
       swapchain.rs    per-eye swapchains → wgpu textures
       frame.rs        wait/begin/locate/render/end
-      input.rs        hand tracking, pinch, (later) eye gaze
-      scene.rs        passthrough, planes/mesh (S7)
+      input.rs        hand tracking, pinch, (later) eye gaze (S7)
+      room.rs         passthrough layer, scene anchors as obstacles (S7)
     gfx/
       interop.rs      OpenXR Vulkan instance/device → wgpu (S2)
       eye.rs          per-eye view/projection from XrView (glam)
@@ -81,8 +81,12 @@ measurements say the CPU side is the bottleneck.
    `XR_EXT_hand_interaction`, `XR_META_hand_tracking_microgestures`,
    `XR_META_environment_depth`. **Absent:** `XR_FB_scene`,
    `XR_FB_spatial_entity`, `XR_FB_spatial_entity_query`,
-   `XR_FB_spatial_entity_container`, `XR_EXT_eye_gaze_interaction`. S7's room
-   geometry must use the `XR_EXT_spatial_plane_tracking` / `XR_META_*` routes.
+   `XR_FB_spatial_entity_container`, `XR_EXT_eye_gaze_interaction`.
+   *Corrected (S7):* the `XR_FB_scene` / `XR_FB_spatial_entity*` family and
+   `XR_EXT_spatial_entity` were hidden only because the manifest lacked
+   `com.oculus.permission.USE_ANCHOR_API` (97 extensions once declared; see
+   "Android manifest essentials"). `XR_EXT_eye_gaze_interaction` stays absent
+   on the Quest 3, as expected.
 3. **System** `HEAD_MOUNTED_DISPLAY`, view configuration `PRIMARY_STEREO`,
    environment blend mode `OPAQUE`. Passthrough goes through `XR_FB_passthrough`
    layers on Quest. *Measured (S1):* v207 enumerates both `OPAQUE` and
@@ -259,6 +263,53 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   headset both plays and listens, and a real render-thread split only if the
   measurements say the CPU side is the bottleneck (it is under 1 ms now).
 
+## Mixed reality (S7)
+
+*As built (`crates/fosfora-xr/src/room.rs`, `input.rs`, `particles3d_sim.wgsl`,
+board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
+
+- **Passthrough.** `XR_FB_passthrough`: one `XrPassthroughFB` and one
+  reconstruction `XrPassthroughLayerFB`, both created with
+  `IS_RUNNING_AT_CREATION` (the `openxr` 0.22 wrapper's `start()` calls the
+  pause entry point, so the flag avoids it). Each frame submits the
+  passthrough layer first, then the projection layer with
+  `BLEND_TEXTURE_SOURCE_ALPHA`; the eye targets clear to alpha 0 and the
+  sprites write premultiplied color, so the room shows wherever nothing is
+  drawn. The environment blend mode stays `OPAQUE` (the `ALPHA_BLEND` question
+  from S1 is moot: on Quest the passthrough *layer* is the mechanism). The
+  crate does not re-export the passthrough layer builder, so `xr.rs` fills the
+  raw `XrCompositionLayerPassthroughFB` and casts it to the base header, as
+  the crate's own builders do.
+- **Hands.** `XR_EXT_hand_tracking`, one tracker per hand, joints located in
+  the stage space at the predicted display time. Every joint with a valid
+  position becomes an obstacle sphere with the runtime's joint radius (up to
+  52). Pinch = thumb tip to index tip under 15 mm, released over 30 mm; the
+  rising edge toggles a visible parameter (sprite size ×3). Controllers are
+  not read (I5).
+- **Room.** `XR_FB_scene` over `XR_FB_spatial_entity_query`, through
+  `openxr-sys` function pointers (no safe wrapper exists): `xrQuerySpacesFB`
+  with a `LOCAL` storage-location filter once the session is focused,
+  results on `SPACE_QUERY_RESULTS_AVAILABLE_FB`, components read with
+  `xrGetSpaceComponentStatusFB`, bounds from `xrGetSpaceBoundingBox3DFB`
+  (volumes) or `xrGetSpaceBoundingBox2DFB` (planes, given a 4 cm
+  thickness), labels from `xrGetSpaceSemanticLabelsFB`. Anchors are located
+  once a second (`xrLocateSpace` against the stage space) and become
+  oriented boxes. The stage floor (y = 0) is a box too. No anchors →
+  `xrRequestSceneCaptureFB` launches Space Setup when
+  `debug.fosfora.scenecapture 1`, and the query reruns on
+  `SCENE_CAPTURE_COMPLETE_FB`. The global mesh is counted, not used.
+- **Sim.** An obstacle uniform block (64 spheres, 32 boxes, restitution,
+  margin) read by `collide()` after integration: push out along the sphere
+  normal or the nearest box face, reflect the inward velocity (restitution
+  0.4), one pass per frame. Gravity 0.15 m/s² in `mr` so particles settle on
+  surfaces. Sprites nearer than 0.3 m to the eye are culled in the vertex
+  stage: in `mr` the user stands inside the cube and near sprites are pure
+  fill-rate cost (numbers in `MEASURED.md`).
+- **Not taken.** The `XR_EXT_spatial_entity` + `XR_EXT_spatial_plane_tracking`
+  route (future-based, more API surface for the same planes) and
+  `XR_META_spatial_entity_room_mesh` (no public binding). Both stay options
+  for the product.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:
@@ -277,6 +328,7 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   <uses-feature android:name="oculus.software.handtracking" android:required="false"/>
   <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true"/>
   <uses-permission android:name="com.oculus.permission.HAND_TRACKING"/>
+  <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API"/>
   <uses-permission android:name="com.oculus.permission.USE_SCENE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
   <uses-permission android:name="org.khronos.openxr.permission.OPENXR"/>
@@ -308,6 +360,12 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   Meta publishes it.
 - Runtime permissions (`USE_SCENE`, `RECORD_AUDIO`) need a request at runtime.
   Spike: `adb shell pm grant`. Product: a JNI call to `Activity.requestPermissions`.
+- **The manifest gates extension enumeration** (measured S7, v207): without
+  `com.oculus.permission.USE_ANCHOR_API` the runtime listed 84 extensions and
+  none of `XR_FB_scene`, `XR_FB_scene_capture`, `XR_FB_spatial_entity*`,
+  `XR_EXT_spatial_entity`, `XR_EXT_spatial_anchor`, `XR_META_spatial_entity_discovery`
+  or `_persistence`; with it, 97. Declare every capability the app may use
+  before reading the extension list into a design decision.
 
 ## OpenXR loader
 

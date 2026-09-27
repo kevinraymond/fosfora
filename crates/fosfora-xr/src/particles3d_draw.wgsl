@@ -51,6 +51,10 @@ fn vs_particle(
     let offset = vec4<f32>(corner * radius, 0.0, 0.0);
     var out: VsOut;
     out.pos = eye.proj * (view_pos + offset);
+    if -view_pos.z < sim.near_cull {
+        // Behind the near plane: the whole sprite is clipped away.
+        out.pos = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    }
     out.uv = corner;
     // Hue by seed, brightness by speed and life.
     let speed = length(p.vel);

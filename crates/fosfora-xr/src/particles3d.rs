@@ -41,7 +41,7 @@ struct SimUniform {
     verts_per_sprite: u32,
     pull: u32,
     gravity: f32,
-    _pad: u32,
+    near_cull: f32,
 }
 
 /// Obstacle capacities, matching `MAX_SPHERES` / `MAX_BOXES` in the sim WGSL.
@@ -148,6 +148,8 @@ pub struct Params {
     pub lifetime: f32,
     /// Downward acceleration in m/s^2 (0 = the pure S5 flow sim).
     pub gravity: f32,
+    /// Cull sprites nearer than this to the eye (meters; 0 = off).
+    pub near_cull: f32,
 }
 
 pub struct Particles3d {
@@ -440,7 +442,7 @@ impl Particles3d {
             verts_per_sprite: self.verts_per_sprite(),
             pull: u32::from(self.params.pull),
             gravity: self.params.gravity,
-            _pad: 0,
+            near_cull: self.params.near_cull,
         };
         queue.write_buffer(&self.sim_uniform, 0, bytemuck::bytes_of(&u));
     }
