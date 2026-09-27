@@ -1,11 +1,12 @@
 # Native vs pivot — decision (Oct 4, 2026)
 
-*Draft written at the S7 gate (Sep 27, 2026). Numbers from `MEASURED.md`;
-task ids are blackboard entries.*
+*Written at the S7 gate (Sep 27, 2026); decided by Kevin the same day.
+Numbers from `MEASURED.md`; task ids are blackboard entries.*
 
-Recommendation: **continue native** (Rust + OpenXR + wgpu, one repo).
+Decision: **continue native** (Rust + OpenXR + wgpu, one repo). Recommended
+at the S7 gate and accepted Sep 27, 2026, a week ahead of the Oct 4 date.
 
-Gates: S1 pass · S2 pass · S3 pass (seam merged to main) · S4 partial (a
+Gates: S1 pass · S2 pass · S3 pass (seam merged to main; the S6 core audio additions followed as PR #40, merged Sep 27) · S4 partial (a
 core compute-raster effect as shipped runs at 6 fps on the quad; the
 billboard path holds 72 Hz, and C3a landed a world-space render entry in
 core) · S5 pass, revised (750K sprites at 72 and 90 Hz, but only with a
