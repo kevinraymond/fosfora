@@ -9,6 +9,12 @@ repository = "https://github.com/kevinraymond/fosfora"
 readme = "../../README.md"
 publish = false
 
+# The engine is a library so a non-desktop frontend (the XR app) can depend on it;
+# the `fosfora` binary is the desktop shell over it.
+[lib]
+name = "fosfora_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fosfora"
 path = "src/main.rs"

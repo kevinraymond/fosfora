@@ -48,7 +48,7 @@ pub(crate) fn apply_cue_param_overrides<'a>(
 /// Param values + opacities for every layer at one instant — the endpoints a
 /// ParamMorph transition interpolates between.
 #[derive(Debug, Clone)]
-pub(crate) struct MorphSnapshot {
+pub struct MorphSnapshot {
     pub params: Vec<HashMap<String, ParamValue>>,
     pub opacities: Vec<f32>,
 }

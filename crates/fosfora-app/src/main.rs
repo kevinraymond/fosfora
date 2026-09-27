@@ -1,47 +1,39 @@
 #[cfg(feature = "analyze")]
-mod analyze;
-mod app;
-mod audio;
-mod bindings;
+use fosfora_app::analyze;
+use fosfora_app::app;
+use fosfora_app::audio;
 #[cfg(feature = "depth")]
-mod depth;
-mod download;
-mod effect;
-mod gpu;
-mod headless;
+use fosfora_app::depth;
+use fosfora_app::effect;
+use fosfora_app::gpu;
+use fosfora_app::headless;
 #[cfg(feature = "link")]
-mod link;
-mod media;
-mod midi;
+use fosfora_app::link;
+use fosfora_app::media;
+use fosfora_app::midi;
 #[cfg(feature = "ndi")]
-mod ndi;
-mod osc;
+use fosfora_app::ndi;
 #[cfg(any(
     feature = "ndi",
     all(target_os = "linux", feature = "v4l2"),
     all(target_os = "windows", feature = "spout"),
     all(target_os = "macos", feature = "syphon")
 ))]
-mod output;
-mod params;
-mod paths;
-mod preset;
-mod recording;
-mod scene;
-mod settings;
-mod shader;
-mod signal;
+use fosfora_app::output;
+use fosfora_app::params;
+use fosfora_app::paths;
+use fosfora_app::recording;
+use fosfora_app::scene;
+use fosfora_app::settings;
+use fosfora_app::signal;
 #[cfg(all(target_os = "windows", feature = "spout"))]
-mod spout;
+use fosfora_app::spout;
 #[cfg(all(target_os = "macos", feature = "syphon"))]
-mod syphon;
-#[cfg(test)]
-mod test_alloc;
-mod trama;
-mod ui;
+use fosfora_app::syphon;
+use fosfora_app::trama;
+use fosfora_app::ui;
 #[cfg(all(target_os = "linux", feature = "v4l2"))]
-mod v4l2;
-mod web;
+use fosfora_app::v4l2;
 
 use std::path::PathBuf;
 use std::sync::Arc;
