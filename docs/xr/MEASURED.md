@@ -226,6 +226,18 @@ edges in the screencap. Not worth the resolution on this path.
   The screencap at 500K shows the quad as a sparser rectangle in both eyes:
   sprites behind it fail the depth test, sprites in front draw over it.
 - CPU per frame 0.6–0.8 ms at every count (the draw is one call per eye).
+- **15-minute soak at 750K, 90 Hz** (commit `0dec960`, `scripts/xr/soak.sh`,
+  headset unworn on AC power, samples every 15 s): the rate held for the
+  whole run (90–91 fps in every sample). Stale frames only in the first
+  3 minutes (four samples with 3–14 stale, 35 of the run's 52 long frames
+  in the first 4 minutes, 0 stale after that); GPU 7.7–8.5 ms throughout;
+  GPU clock alternating 640 / 599 MHz from minute 4 on (no drop in frame
+  rate); runtime power level 0 and thermal status 0 throughout (no
+  throttling). Battery temperature 32.0 → 43.0 °C, still rising about
+  0.7 °C/min at the end, so a longer session is untested; charging over USB
+  adds heat, so a worn, unplugged run would differ in both directions.
+  The Android thermal service's per-zone values (SoC, board, surface) never
+  refreshed over adb on v207, so the battery sensor is the only live one.
 
 ### Proposal: how existing sims get a real `z` (feeds C3)
 

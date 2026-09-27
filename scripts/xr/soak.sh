@@ -2,8 +2,10 @@
 # S5 thermal soak on a Quest over adb: run the installed APK at one setting
 # for a long time and sample, every --every seconds, the runtime's frame
 # line (FPS, stale, App GPU ms, CPU/GPU MHz, its own temperature, power
-# level) and Android's thermal service (throttle status, SoC / board /
-# surface / battery temperatures). Throttling shows up as the GPU MHz
+# level), the thermal service's throttle status, and the battery
+# temperature from `dumpsys battery` (the one live sensor readable over adb
+# on v207: the thermal service's per-zone values are cached and never
+# refresh, and sysfs is not readable). Throttling shows up as the GPU MHz
 # dropping, App= rising and Thermal Status leaving 0.
 #
 #   scripts/xr/soak.sh [--count 750000] [--hz 90] [--minutes 15] [--every 15]
@@ -48,21 +50,15 @@ emit() {
 }
 
 therm() {
-    # name=value pairs from the thermal service, plus its status.
-    adb shell dumpsys thermalservice | python3 -c '
-import re, sys
-s = sys.stdin.read()
-st = re.search(r"Thermal Status: (\d+)", s)
-vals = dict(re.findall(r"mValue=([\d.]+), mType=\d+, mName=([\w-]+)", s)[::-1])
-vals = {v: k for k, v in vals.items()}
-def g(n): return vals.get(n, "-")
-print("\t".join([st.group(1) if st else "-", g("soc-usr"), g("pcb1-usr"), g("surf-virt-usr"), g("batt-virt-usr")]))
-'
+    # Throttle status (0 = none) and the battery temperature in tenths of C.
+    st=$(adb shell dumpsys thermalservice | awk -F': ' '/Thermal Status/ {print $2}' | tr -d '\r')
+    bt=$(adb shell dumpsys battery | awk '/temperature/ {printf "%.1f", $2 / 10}')
+    printf '%s\t%s' "${st:--}" "${bt:--}"
 }
 
 charging=$(adb shell dumpsys battery | awk '/AC powered|USB powered/ {printf "%s %s ", $1, $3}')
 emit "# S5 soak $(date -Is) · commit $(git rev-parse --short HEAD) · count $count · $hz Hz · $minutes min · powered: $charging"
-emit "t_s\tfps\tstale\tapp_ms\tcpu_mhz\tgpu_mhz\tvrapi_temp\tpls\tthermal_status\tsoc_c\tpcb_c\tsurface_c\tbatt_c\tapp_frames_per_s\tlong_total"
+emit "t_s\tfps\tstale\tapp_ms\tcpu_mhz\tgpu_mhz\tvrapi_temp\tpls\tthermal_status\tbatt_c\tapp_frames_per_s\tlong_total"
 
 adb shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
 adb shell setprop debug.oculus.guardian_pause 1
