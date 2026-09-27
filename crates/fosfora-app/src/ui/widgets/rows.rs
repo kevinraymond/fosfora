@@ -40,6 +40,8 @@ pub struct ParamRow<'a> {
     show_value: bool,
     enabled: bool,
     formatter: Option<fn(f64) -> String>,
+    /// Slider step: whole numbers only when set to 1.
+    step: Option<f64>,
 }
 
 impl<'a> ParamRow<'a> {
@@ -52,6 +54,7 @@ impl<'a> ParamRow<'a> {
             show_value: true,
             enabled: true,
             formatter: None,
+            step: None,
         }
     }
 
@@ -85,6 +88,16 @@ impl<'a> ParamRow<'a> {
         self
     }
 
+    /// A float that only takes whole numbers: the slider steps by 1 and the
+    /// value shows no decimals.
+    pub fn integer(mut self, on: bool) -> Self {
+        if on {
+            self.step = Some(1.0);
+            self.formatter = Some(|v| format!("{v:.0}"));
+        }
+        self
+    }
+
     /// `[label | slider fills | value]`. Generic over egui's `Numeric` so one
     /// function serves f32/u32/i32 rows alike.
     pub fn show_slider<T: egui::emath::Numeric>(
@@ -95,12 +108,14 @@ impl<'a> ParamRow<'a> {
     ) -> RowResponse {
         self.show_impl(ui, value, |ui, this, value| {
             ui.spacing_mut().slider_width = ui.available_width();
-            ui.add(
-                egui::Slider::new(value, range)
-                    .clamping(egui::SliderClamping::Always)
-                    .logarithmic(this.logarithmic)
-                    .show_value(false),
-            )
+            let mut slider = egui::Slider::new(value, range)
+                .clamping(egui::SliderClamping::Always)
+                .logarithmic(this.logarithmic)
+                .show_value(false);
+            if let Some(step) = this.step {
+                slider = slider.step_by(step);
+            }
+            ui.add(slider)
         })
     }
 
@@ -273,4 +288,82 @@ fn row_label(ui: &mut Ui, label: &str, width: f32) -> Response {
         },
     )
     .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One frame of a row holding `value`, with `events`. Returns the texts
+    /// painted and where the slider was.
+    fn frame(
+        ctx: &egui::Context,
+        value: &mut f32,
+        integer: bool,
+        events: Vec<egui::Event>,
+    ) -> (Vec<String>, egui::Rect) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 100.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut slider = egui::Rect::NOTHING;
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let r =
+                    ParamRow::new("segments")
+                        .integer(integer)
+                        .show_slider(ui, value, 2.0..=24.0);
+                slider = r.response.rect;
+            });
+        });
+        let texts = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        (texts, slider)
+    }
+
+    // Kaleidoscope's segments (#3128): a whole-number parameter shows no
+    // decimals, and a click on its slider lands on a whole number.
+    #[test]
+    fn an_integer_row_shows_and_takes_whole_numbers() {
+        // 6.4, as an older preset or a modulation can leave it: the shader
+        // rounds it to 6, and the row says 6.
+        let ctx = egui::Context::default();
+        let mut v = 6.4_f32;
+        let (texts, _) = frame(&ctx, &mut v, true, vec![]);
+        assert!(texts.iter().any(|t| t == "6"), "{texts:?}");
+        let mut plain = 6.4_f32;
+        let (texts, _) = frame(&egui::Context::default(), &mut plain, false, vec![]);
+        assert!(
+            texts.iter().any(|t| t == "6.40"),
+            "a plain float keeps decimals: {texts:?}"
+        );
+
+        let (_, slider) = frame(&ctx, &mut v, true, vec![]);
+        let at = egui::pos2(slider.left() + slider.width() * 0.43, slider.center().y);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &ctx,
+            &mut v,
+            true,
+            vec![egui::Event::PointerMoved(at), button(true)],
+        );
+        frame(&ctx, &mut v, true, vec![button(false)]);
+        assert!((v - 6.4).abs() > 0.5, "the click moved it: {v}");
+        assert_eq!(v, v.round(), "{v} is not whole");
+    }
 }

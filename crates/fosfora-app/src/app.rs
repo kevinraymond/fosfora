@@ -1429,16 +1429,7 @@ impl App {
         // No layer to select falls back to the master chain rather than
         // leaving last frame's id in place: that id may name a layer that is
         // gone, and the canvas would file the master graph under it.
-        if self.trama.canvas_open {
-            let active = self.layer_stack.active_layer;
-            self.trama.active_chain = match self.trama.canvas_target {
-                crate::trama::CanvasTarget::Master => crate::trama::node::ChainId::Master,
-                crate::trama::CanvasTarget::SelectedLayer => self
-                    .layer_stack
-                    .ensure_chain(active)
-                    .unwrap_or(crate::trama::node::ChainId::Master),
-            };
-        }
+        self.trama.resolve_active_chain(&mut self.layer_stack);
         self.trama.update(
             &mut self.layer_stack,
             dt,

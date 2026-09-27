@@ -1108,6 +1108,7 @@ impl ApplicationHandler for FosforaApp {
                         .register_previews(&app.gpu.device, &mut app.egui_overlay.renderer);
                     app.layer_thumbs
                         .register(&app.gpu.device, &mut app.egui_overlay.renderer);
+                    crate::trama::ui::canvas::follow_tour(&ctx, &mut app.trama);
                     if app.settings.classic_layout || app.shader_editor.open {
                         crate::trama::ui::canvas::draw_trama_window(
                             &ctx,

@@ -786,9 +786,12 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
 
     ui.add_space(6.0);
     let i = s.active_layer;
-    chain_line(ui, layer.chain, "none yet", |ctx| {
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_layer"), i));
+    let r = ui.scope(|ui| {
+        chain_line(ui, layer.chain, "none yet", |ctx| {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_trama_on_layer"), i));
+        });
     });
+    tour::anchor(ui, tour::Anchor::ChainLine, r.response.rect);
 }
 
 /// How many bindings drive this layer, and the way into the matrix: under

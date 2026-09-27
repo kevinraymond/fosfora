@@ -50,6 +50,11 @@ pub struct TramaManifest {
     /// speed`. See [`super::node::RatePhase`] for what the latter does.
     #[serde(default)]
     pub rates: Vec<String>,
+    /// Float parameters that only take whole numbers (Kaleidoscope's
+    /// segments): the slider steps by 1 and shows no decimals. The shader
+    /// still rounds, since a modulation or an older preset can hand it 6.4.
+    #[serde(default)]
+    pub integers: Vec<String>,
 }
 
 /// Scalar slots available to one node's params — the ABI v3 ceiling
@@ -72,6 +77,8 @@ pub enum EffectLoadError {
     DuplicateParam(String),
     #[error("`rates` names `{0}`, which is not a Float parameter of this effect")]
     BadRate(String),
+    #[error("`integers` names `{0}`, which is not a Float parameter of this effect")]
+    BadInteger(String),
     #[error("params need {needed} scalar slots; the ABI caps a node at {cap}")]
     ParamOverflow { needed: usize, cap: usize },
     #[error("manifest id `{id}` does not match file stem `{stem}`")]
@@ -130,6 +137,15 @@ fn check_manifest(m: &TramaManifest) -> Result<(), EffectLoadError> {
             return Err(EffectLoadError::BadRate(rate.clone()));
         }
     }
+    for name in &m.integers {
+        let is_float = m
+            .params
+            .iter()
+            .any(|d| d.name() == name && matches!(d, ParamDef::Float { .. }));
+        if !is_float {
+            return Err(EffectLoadError::BadInteger(name.clone()));
+        }
+    }
     let needed: usize = m
         .params
         .iter()
@@ -181,6 +197,8 @@ pub struct EffectDef {
     pub params: Vec<ParamDef>,
     /// Names of the Float parameters delivered as running integrals.
     pub rates: Vec<String>,
+    /// Names of the Float parameters that take whole numbers only.
+    pub integers: Vec<String>,
     pub pipeline: ShaderPipeline,
     /// The file on disk no longer compiles, and this is the LAST-GOOD version
     /// still rendering (I4). Holds the full diagnostic; every node of this
@@ -396,6 +414,7 @@ fn load_one(
         inputs: manifest.inputs,
         params: manifest.params,
         rates: manifest.rates,
+        integers: manifest.integers,
         pipeline,
         error: None,
     })
@@ -463,6 +482,40 @@ mod tests {
                 .rates
                 .is_empty()
         );
+    }
+
+    // `integers` shapes the slider, so a name that is not a Float parameter
+    // is a mistake worth a load error, as for `rates`.
+    #[test]
+    fn manifest_integers_must_name_float_params() {
+        let with = |ints: &str| {
+            manifest(&format!(
+                r#"{{ "name": "X", "id": "x", "kind": "effect", "inputs": 1,
+                     "params": [
+                       {{ "type": "Float", "name": "segments", "default": 6.0, "min": 2.0, "max": 24.0 }},
+                       {{ "type": "Bool", "name": "invert", "default": false }}
+                     ],
+                     "integers": {ints} }}"#
+            ))
+        };
+        assert_eq!(with(r#"["segments"]"#).unwrap().integers, ["segments"]);
+        assert!(matches!(with(r#"["segs"]"#), Err(EffectLoadError::BadInteger(n)) if n == "segs"));
+        assert!(
+            matches!(with(r#"["invert"]"#), Err(EffectLoadError::BadInteger(n)) if n == "invert")
+        );
+    }
+
+    // Kaleidoscope's segments are whole (#3128): a fraction drew a seam.
+    #[test]
+    fn kaleidoscope_declares_its_segments_whole() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../assets/trama/effects/kaleido.wgsl"),
+        )
+        .unwrap();
+        let start = src.find(MANIFEST_HEADER).unwrap() + MANIFEST_HEADER.len();
+        let end = src[start..].find("*/").unwrap() + start;
+        assert_eq!(manifest(&src[start..end]).unwrap().integers, ["segments"]);
     }
 
     // The shipped effects, as a guard on the PATTERN: a trama shader that

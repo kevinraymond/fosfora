@@ -117,6 +117,16 @@
 - The Bindings window's *Effect* tab is now called *Preset*: those bindings are saved
   with the preset, whichever effects it runs.
 
+- **A Chains tour**, in the Tours menu: from a layer's Chain line into the chain editor,
+  covering nodes and wires, a node's controls, the master chain and Export/Import. If
+  the layer's chain is empty it starts one (Layer input, Kaleidoscope, Output) so the
+  picture changes; deleting those two nodes puts the layer back as it was.
+
+- **Kaleidoscope no longer draws a seam** from the center to the left edge while it
+  turns. It happened whenever *segments* was not a whole number: its slider now steps
+  in whole numbers, and a fraction from an older preset rounds. A trama effect can mark
+  any such parameter with `"integers"` in its manifest.
+
 - In the Bindings window, an open card no longer cuts off its name, source and
   target, and the source list no longer draws values over the uniform names beside
   them. The name has its own line, and Source and Target have a labeled line each.

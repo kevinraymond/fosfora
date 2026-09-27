@@ -6,6 +6,10 @@
 //! passes it, offline (no audio device, MIDI port, socket or server) and
 //! without a GPU (the layer rows draw without their pictures), then the
 //! binding matrix and the tour over it, in the order `main.rs` does.
+//!
+//! The chain editor needs a GPU (its nodes are compiled effects with live
+//! previews), so it is drawn only by a harness made [`ShellHarness::with_chains`],
+//! whose tests are `#[ignore]`d like the other GPU probes.
 
 use egui::{Context, Event, Key, Pos2, RawInput, Rect, Vec2};
 
@@ -47,7 +51,7 @@ pub(crate) struct ShellHarness {
     osc: OscSystem,
     web: WebSystem,
     presets: PresetStore,
-    layers: Vec<LayerInfo>,
+    pub layers: Vec<LayerInfo>,
     settings: SettingsConfig,
     thumbs: CatalogThumbs,
     scene: SceneInfo,
@@ -55,6 +59,15 @@ pub(crate) struct ShellHarness {
     /// The first request to leave the view a tour step shows, seen between
     /// the shell and the tour, which drops it.
     pub leaving: Option<&'static str>,
+    /// The chain editor and the layers it edits: with a GPU only.
+    pub chains: Option<Chains>,
+}
+
+/// What the chain editor draws from: the app's trama system, and real
+/// layers for the chains to live on (one per harness layer).
+pub(crate) struct Chains {
+    pub trama: crate::trama::TramaSystem,
+    pub stack: crate::gpu::layer::LayerStack,
 }
 
 fn effect(name: &str, category: &str) -> PfxEffect {
@@ -173,7 +186,52 @@ impl ShellHarness {
             scene: super::panels::cue_strip::sample(false),
             time: 0.0,
             leaving: None,
+            chains: None,
         }
+    }
+
+    /// [`Self::new`] with the chain editor: a GPU device (the shared probe
+    /// one), the shipped trama effects, and a real layer under each harness
+    /// layer. For `#[ignore]`d tests.
+    pub fn with_chains(size: Vec2) -> Self {
+        use crate::gpu::context::GpuContext;
+        // The effects load CWD-relative, from the repo root.
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let mut loader = EffectLoader::new();
+        loader.scan_effects_directory();
+        let placeholder = crate::gpu::placeholder::PlaceholderTexture::new(
+            &device,
+            &queue,
+            GpuContext::hdr_format(),
+        );
+        let audio = crate::gpu::audio_textures::AudioTextures::new(&device, &queue);
+        const DIM: u32 = 64;
+        let build = crate::gpu::layer_builder::LayerBuildCtx {
+            device: &device,
+            queue: &queue,
+            pipeline_cache: None,
+            width: DIM,
+            height: DIM,
+            placeholder: &placeholder,
+            audio_textures: &audio,
+            particle_quality: Default::default(),
+            backdrop: None,
+        };
+        let mut h = Self::new(size);
+        let mut stack = crate::gpu::layer::LayerStack::new();
+        for l in &h.layers {
+            let layer = crate::gpu::layer_builder::new_default_layer(&build, l.name.clone())
+                .expect("a layer");
+            stack.layers.push(layer);
+        }
+        let trama =
+            crate::trama::TramaSystem::new(&device, None, &loader, &placeholder, &audio, DIM, DIM);
+        h.chains = Some(Chains { trama, stack });
+        h
     }
 
     pub fn screen(&self) -> Rect {
@@ -194,6 +252,17 @@ impl ShellHarness {
             events,
             ..Default::default()
         };
+        // As App::update does before the interface: the canvas on its chain.
+        if let Some(c) = &mut self.chains {
+            c.stack.active_layer = self.active_layer;
+            c.trama.resolve_active_chain(&mut c.stack);
+            for (info, layer) in self.layers.iter_mut().zip(&c.stack.layers) {
+                info.chain = layer
+                    .chain
+                    .as_ref()
+                    .and_then(|c| crate::gpu::layer::ChainBadge::of(&c.graph));
+            }
+        }
         let ctx = self.ctx.clone();
         ctx.run(input, |ctx| {
             let active = self.active_layer;
@@ -232,6 +301,17 @@ impl ShellHarness {
                 self.leaving = crate::ui::tour::leaving_requested(ctx);
             }
             crate::ui::tour::gate(ctx);
+            if let Some(c) = &mut self.chains {
+                crate::trama::ui::canvas::follow_tour(ctx, &mut c.trama);
+                if let Some(bounds) = crate::ui::modal::bounds(ctx) {
+                    crate::trama::ui::canvas::draw_trama_modal(
+                        ctx,
+                        &mut c.trama,
+                        &mut c.stack,
+                        bounds,
+                    );
+                }
+            }
             let (layers, params) = (&self.layers, &self.params);
             crate::ui::panels::binding_matrix::frame(
                 ctx,

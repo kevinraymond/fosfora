@@ -430,8 +430,15 @@ mod tests {
         // nothing to do with chains.
         let mut stack = LayerStack::new();
         for i in 0..layers {
-            let mut layer = crate::gpu::layer_builder::new_default_layer(&ctx, format!("host{i}"))
-                .expect("layer");
+            // The default shader's gradient: opaque, and the same every
+            // frame. An empty layer (what new_default_layer makes since
+            // #3126) draws nothing, and every chain over nothing looks alike.
+            let mut layer = crate::gpu::layer_builder::new_shader_layer(
+                &ctx,
+                format!("host{i}"),
+                crate::gpu::layer_builder::read_default_shader(),
+            )
+            .expect("layer");
             // Zeroed uniforms mean resolution 0, and most shaders divide by it
             // — the picture comes back all-NaN, which compares equal to itself
             // and would let every assertion below pass vacuously.
@@ -1953,6 +1960,125 @@ mod tests {
     // (x, y) depends only on (x mod cell, y mod cell). Non-periodic output IS
     // the bug, so that is what this measures. Restore `let cells = vec2f(n *
     // res.x / res.y, n)` addressing and it goes red.
+    /// The luma of an rgba16f pixel, decoded from its raw half floats.
+    fn luma16(f: &[u8], x: u32, y: u32) -> f32 {
+        let half = |b: &[u8]| {
+            let h = u16::from_le_bytes([b[0], b[1]]);
+            let (sign, exp, man) = (
+                (h >> 15) as u32,
+                ((h >> 10) & 0x1f) as i32,
+                (h & 0x3ff) as f32,
+            );
+            let v = if exp == 0 {
+                man * 2f32.powi(-24)
+            } else {
+                (1.0 + man / 1024.0) * 2f32.powi(exp - 15)
+            };
+            if sign == 1 { -v } else { v }
+        };
+        let i = ((y * DIM + x) * 8) as usize;
+        0.2126 * half(&f[i..]) + 0.7152 * half(&f[i + 2..]) + 0.0722 * half(&f[i + 4..])
+    }
+
+    // Kevin's live check (#3128): Kaleidoscope drew a break from the center
+    // to the left edge. atan2 wraps from +pi to -pi on that line, and the
+    // pattern closes over the wrap only if a whole number of wedges fits the
+    // circle: a slider left at 6.4 segments leaves a partial wedge there.
+    // Measured as the jump between the two rows either side of the line, on
+    // the left (the wrap) against the right (no wrap: the floor).
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn kaleidoscope_has_no_seam_where_the_angle_wraps() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+        stack.ensure_chain(0).expect("a slot is free");
+        let node = {
+            let k = trama
+                .registry
+                .get(&EffectId("kaleido".into()))
+                .expect("kaleido ships");
+            let g = trama
+                .registry
+                .get(&EffectId("gradient".into()))
+                .expect("gradient ships");
+            let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+            // A ramp down the frame: it changes with the angle inside every
+            // wedge, so a wedge that does not close shows. (The host layer's
+            // picture is radially symmetric, and hid the seam entirely.)
+            let input = graph.add_node(
+                NodeKind::Source {
+                    effect: g.id.clone(),
+                },
+                0,
+                &g.params,
+            );
+            graph
+                .params_mut(input)
+                .unwrap()
+                .params
+                .set("angle", crate::params::ParamValue::Float(0.25));
+            let n = graph.add_node(
+                NodeKind::Effect {
+                    effect: k.id.clone(),
+                },
+                1,
+                &k.params,
+            );
+            let out = graph.output_node();
+            graph.connect(input, n, 0).unwrap();
+            graph.connect(n, out, 0).unwrap();
+            n
+        };
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (above, below) = (DIM / 2 - 1, DIM / 2);
+        let mut seams = Vec::new();
+        for (segments, rotate) in [6.4_f32, 7.7, 9.5, 12.25, 15.3, 6.0, 15.0]
+            .into_iter()
+            .flat_map(|s| [(s, 0.13_f32), (s, 0.31)])
+        {
+            {
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let p = graph.params_mut(node).expect("just added");
+                p.params
+                    .set("segments", crate::params::ParamValue::Float(segments));
+                // Turned: unturned, the fold mirrors the two sides of the
+                // line onto each other and even a partial wedge meets itself
+                // there. Spin turns it all the time, which is how it showed.
+                p.params
+                    .set("rotate", crate::params::ParamValue::Float(rotate));
+            }
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(
+                    &device,
+                    &queue,
+                    &mut stack,
+                    &mut compositor,
+                    &mut trama,
+                    &mut targets,
+                );
+            }
+            let jump = |xs: std::ops::Range<u32>| {
+                let n = xs.len() as f32;
+                xs.map(|x| (luma16(&out, x, above) - luma16(&out, x, below)).abs())
+                    .sum::<f32>()
+                    / n
+            };
+            let (left, right) = (jump(2..DIM / 2 - 4), jump(DIM / 2 + 4..DIM - 2));
+            eprintln!("segments {segments} rotate {rotate}: left {left:.4} right {right:.4}");
+            // The floor is the right side's own row-to-row change; a seam
+            // read 5x it at 6.4 segments before segments were whole.
+            if left > right * 1.5 + 1e-3 {
+                seams.push(format!(
+                    "{segments} segments, rotate {rotate}: {left} vs {right}"
+                ));
+            }
+        }
+        assert!(seams.is_empty(), "a seam where the angle wraps: {seams:#?}");
+        assert!(pollster::block_on(device.pop_error_scope()).is_none());
+    }
+
     #[test]
     #[ignore = "requires a GPU/software adapter"]
     fn pixelates_grid_is_the_same_cell_everywhere() {

@@ -730,6 +730,37 @@ pub fn draw_trama_window(
     }
 }
 
+/// Let a showing tour hold the chain editor open on the chain a step names,
+/// or shut (#3128). A editor the tour opened closes when the tour ends; one
+/// the user opened before is theirs. Call before [`draw_trama_modal`].
+pub fn follow_tour(ctx: &egui::Context, trama: &mut TramaSystem) {
+    let held_id = egui::Id::new("trama_held_by_tour");
+    let held = ctx.data(|d| d.get_temp::<bool>(held_id).unwrap_or(false));
+    let now_held = match crate::ui::tour::chain_wanted(ctx) {
+        Some(crate::ui::tour::ChainEditor::Shut) => {
+            trama.canvas_open = false;
+            false
+        }
+        Some(crate::ui::tour::ChainEditor::Open(tab)) => {
+            trama.canvas_open = true;
+            trama.canvas_target = match tab {
+                crate::ui::tour::ChainTab::Layer => CanvasTarget::SelectedLayer,
+                crate::ui::tour::ChainTab::Master => CanvasTarget::Master,
+            };
+            true
+        }
+        None => {
+            if held {
+                trama.canvas_open = false;
+            }
+            false
+        }
+    };
+    if now_held != held {
+        ctx.data_mut(|d| d.insert_temp(held_id, now_held));
+    }
+}
+
 /// The workspace shell's host: a modal over Build's stack and inspector,
 /// stopping at the output column so the output stays in view, like the
 /// binding matrix. `bounds` is [`crate::ui::modal::bounds`]. A click beside
@@ -748,8 +779,16 @@ pub fn draw_trama_modal(
     let rect = bounds.shrink(12.0);
     let pad = 12.0;
     let mut close = false;
-    egui::Area::new(egui::Id::new("trama_modal"))
-        .order(egui::Order::Foreground)
+    // During a tour: Middle, under the tour's dimming, and a sublayer of
+    // its backdrop so it stays over that (as the binding matrix does).
+    let touring = crate::ui::tour::is_running(ctx);
+    let order = if touring {
+        egui::Order::Middle
+    } else {
+        egui::Order::Foreground
+    };
+    let area = egui::Area::new(egui::Id::new("trama_modal"))
+        .order(order)
         .fixed_pos(rect.min)
         .constrain(false)
         .show(ctx, |ui| {
@@ -766,8 +805,9 @@ pub fn draw_trama_modal(
                         ui.label(egui::RichText::new("Chain editor").size(16.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             close = ui
-                                .button("Done  (C / Esc)")
+                                .add_enabled(!touring, egui::Button::new("Done  (C / Esc)"))
                                 .on_hover_text("Close the chain editor")
+                                .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
                                 .clicked();
                         });
                     });
@@ -775,6 +815,11 @@ pub fn draw_trama_modal(
                     draw_trama_body(ui, trama, layer_stack);
                 });
         });
+    if touring {
+        ctx.set_sublayer(beside.layer_id, area.response.layer_id);
+    }
+    // During a tour the dimming takes a click beside the editor before the
+    // backdrop can; Done stays off for the keyboard, which can still reach it.
     if close || (beside.clicked() && !egui::Popup::is_any_open(ctx)) {
         trama.canvas_open = false;
     }
@@ -849,17 +894,45 @@ fn draw_trama_body(
         status,
         last_origin,
     } = canvas;
+    // The Chains tour's starter chain (#3128): on the step that asks, an
+    // empty LAYER chain gets Layer input -> an effect -> Output, laid out
+    // and with the effect selected so its controls show. Once per visit to
+    // the step, so deleting the nodes there does not bring them back.
+    // Only once the canvas shows the SELECTED layer's chain: for a frame
+    // after it opens it can still show the chain it showed last time, which
+    // may be another layer's.
+    let mut select = None;
+    if host == Some(selected)
+        && *canvas_target == CanvasTarget::SelectedLayer
+        && crate::ui::tour::take_seed(ui.ctx())
+    {
+        if let Some(def) = crate::trama::starter::pick(&registry.effects) {
+            let (effect, params) = (def.id.clone(), def.params.clone());
+            if let Some(st) = crate::trama::starter::seed(graph, &effect, &params) {
+                views.remove(&active_chain);
+                layouts.insert(active_chain, st.layout);
+                select = Some(st.effect);
+            }
+        }
+    }
     let view = views.entry(active_chain).or_insert_with(|| {
         // The view owns the positions from here on.
         let layout = layouts.remove(&active_chain).unwrap_or_default();
         ChainView::new(graph, &layout)
     });
+    if select.is_some() {
+        view.selected = select;
+    }
     // Last frame's selection — the inspector draws before the canvas, the
     // standard one-frame egui lag.
     let selected = view.selected;
+    // During a tour the tabs and the files stay put: each would change what
+    // a step describes, and the files open dialogs over it.
+    let touring = crate::ui::tour::is_running(ui.ctx());
     ui.horizontal(|ui| {
         // Tabs say what they are in words; the selected one is
         // marked by egui's fill and strong text, not by hue.
+        let mut tabs = egui::Rect::NOTHING;
         for (target, text, tip) in [
             (
                 CanvasTarget::SelectedLayer,
@@ -874,20 +947,25 @@ fn draw_trama_body(
                          before tonemapping",
             ),
         ] {
-            if ui
-                .selectable_label(*canvas_target == target, text)
+            let tab = ui
+                .add_enabled(
+                    !touring,
+                    egui::Button::selectable(*canvas_target == target, text.as_str()),
+                )
                 .on_hover_text(tip)
-                .clicked()
-            {
+                .on_disabled_hover_text(crate::ui::tour::NOT_DURING);
+            tabs = tabs.union(tab.rect);
+            if tab.clicked() {
                 *canvas_target = target;
             }
         }
+        crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::ChainTabs, tabs);
         ui.separator();
-        if ui
-            .small_button("Export…")
+        let export = ui
+            .add_enabled(!touring, egui::Button::new("Export…").small())
             .on_hover_text("Save this chain as a .fio.json file")
-            .clicked()
-        {
+            .on_disabled_hover_text(crate::ui::tour::NOT_DURING);
+        if export.clicked() {
             io.export(crate::trama::ser::ChainDoc::capture(graph, |node| {
                 view.snarl
                     .nodes_pos_ids()
@@ -895,13 +973,18 @@ fn draw_trama_body(
                     .map(|(_, pos, _)| [pos.x, pos.y])
             }));
         }
-        if ui
-            .small_button("Import…")
+        let import = ui
+            .add_enabled(!touring, egui::Button::new("Import…").small())
             .on_hover_text("Replace this chain with one from a .fio.json file")
-            .clicked()
-        {
+            .on_disabled_hover_text(crate::ui::tour::NOT_DURING);
+        if import.clicked() {
             io.import(active_chain);
         }
+        crate::ui::tour::anchor(
+            ui,
+            crate::ui::tour::Anchor::ChainFiles,
+            export.rect.union(import.rect),
+        );
         ui.separator();
         ui.weak(format!(
             "pool {pool_in_use}/{pool_total} · fb {feedback_pairs} · prev {preview_targets}"
@@ -939,7 +1022,7 @@ fn draw_trama_body(
     // sliders greedily fill available width, so a resizable panel in
     // an auto-sizing window ratchets the window wider on every
     // selection. 315 px is the budget rows.rs columns are sized for.
-    egui::SidePanel::right("trama-inspector")
+    let inspector = egui::SidePanel::right("trama-inspector")
         .resizable(false)
         .exact_width(315.0)
         .show_inside(ui, |ui| {
@@ -947,7 +1030,13 @@ fn draw_trama_body(
                 super::inspector::draw_inspector(ui, graph, registry, audio_view, selected);
             });
         });
+    crate::ui::tour::anchor(
+        ui,
+        crate::ui::tour::Anchor::ChainInspector,
+        inspector.response.rect,
+    );
     egui::CentralPanel::default().show_inside(ui, |ui| {
+        crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::ChainCanvas, ui.max_rect());
         let origin = ui.next_widget_position();
         let translate = last_origin.map_or(egui::Vec2::ZERO, |o| origin - o);
         *last_origin = Some(origin);

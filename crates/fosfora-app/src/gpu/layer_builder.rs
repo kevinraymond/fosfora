@@ -81,8 +81,18 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
 /// A fresh empty effect layer (the core of `App::add_layer`).
 pub(crate) fn new_default_layer(ctx: &LayerBuildCtx<'_>, name: String) -> Option<Layer> {
+    new_shader_layer(ctx, name, EMPTY_SHADER.to_string())
+}
+
+/// A fresh effect layer drawing `source`, a fragment stage, with no effect
+/// loaded. The GPU probes host chains on one drawing the default shader: an
+/// empty layer draws nothing, and a chain shifting nothing proves nothing.
+pub(crate) fn new_shader_layer(
+    ctx: &LayerBuildCtx<'_>,
+    name: String,
+    source: String,
+) -> Option<Layer> {
     let hdr_format = GpuContext::hdr_format();
-    let source = EMPTY_SHADER.to_string();
     let uniform_buffer = UniformBuffer::new(ctx.device);
     let feedback = PingPongTarget::new_cleared(
         ctx.device, ctx.queue, ctx.width, ctx.height, hdr_format, 1.0,

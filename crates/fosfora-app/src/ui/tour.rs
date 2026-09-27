@@ -61,6 +61,16 @@ pub enum Anchor {
     MatrixTargets,
     /// The binding matrix's Preset and Global tabs, and Templates.
     MatrixScope,
+    /// The inspector's Chain line: the layer's chain and Edit chain.
+    ChainLine,
+    /// The chain editor's canvas: nodes and wires.
+    ChainCanvas,
+    /// The chain editor's right-hand panel: the selected node's controls.
+    ChainInspector,
+    /// The chain editor's Layer and Master tabs.
+    ChainTabs,
+    /// The chain editor's Export and Import.
+    ChainFiles,
 }
 
 /// The tours there are.
@@ -68,10 +78,11 @@ pub enum Anchor {
 pub enum Tour {
     FirstRun,
     Bindings,
+    Chains,
 }
 
 impl Tour {
-    pub const ALL: &[Tour] = &[Tour::FirstRun, Tour::Bindings];
+    pub const ALL: &[Tour] = &[Tour::FirstRun, Tour::Bindings, Tour::Chains];
 
     /// The name settings records it under once it is finished or skipped.
     /// Never change one: a renamed key replays the tour for everyone.
@@ -79,6 +90,7 @@ impl Tour {
         match self {
             Tour::FirstRun => "first_run",
             Tour::Bindings => "bindings",
+            Tour::Chains => "chains",
         }
     }
 
@@ -86,6 +98,7 @@ impl Tour {
         match self {
             Tour::FirstRun => "First run",
             Tour::Bindings => "Bindings",
+            Tour::Chains => "Chains",
         }
     }
 
@@ -95,26 +108,69 @@ impl Tour {
                 "Choose what it listens to, find an effect, read the stack, shape it, save it."
             }
             Tour::Bindings => "Make a control follow the bass, a MIDI knob or an OSC message.",
+            Tour::Chains => "Build a trama node chain on a layer, and on the master.",
         }
+    }
+
+    /// Does any step open the chain editor? Those need a GPU to draw.
+    #[cfg(test)]
+    pub fn uses_chains(self) -> bool {
+        self.steps().iter().any(|s| {
+            matches!(
+                s.modal,
+                Modal::LayerChain | Modal::LayerChainStarter | Modal::MasterChain
+            )
+        })
     }
 
     pub fn steps(self) -> &'static [Step] {
         match self {
             Tour::FirstRun => FIRST_RUN,
             Tour::Bindings => BINDINGS,
+            Tour::Chains => CHAINS,
         }
     }
 }
 
-/// What a step does with the binding matrix.
+/// Which view a step holds open over the workspace, if any. The tour holds
+/// it open or shut while the step shows: the view's own ways to close are
+/// off meanwhile, and a view the tour opened closes when the tour ends.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Matrix {
+pub enum Modal {
+    None,
+    /// The binding matrix.
+    Matrix,
+    /// The matrix, and the step makes one binding: the first source clicked
+    /// makes it, and each click after that changes its source, so the card
+    /// the next steps describe is the last source picked.
+    MatrixPickSource,
+    /// The chain editor on the selected layer's chain.
+    LayerChain,
+    /// The chain editor on the selected layer's chain, and an empty chain
+    /// gets the starter chain ([`crate::trama::starter`]) as the step opens.
+    LayerChainStarter,
+    /// The chain editor on the master chain.
+    MasterChain,
+}
+
+impl Modal {
+    fn matrix(self) -> bool {
+        matches!(self, Modal::Matrix | Modal::MatrixPickSource)
+    }
+}
+
+/// Which chain the chain editor shows during a step that holds it open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChainTab {
+    Layer,
+    Master,
+}
+
+/// What a step wants of the chain editor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChainEditor {
     Shut,
-    Open,
-    /// Open, and the step makes one binding: the first source clicked makes
-    /// it, and each click after that changes its source, so the card the
-    /// next steps describe is the last source picked.
-    PickSource,
+    Open(ChainTab),
 }
 
 /// One stop on a tour.
@@ -129,9 +185,8 @@ pub struct Step {
     /// Collapsible sections to open while this step shows, by the id their
     /// draw call gives them.
     pub reveal: &'static [&'static str],
-    /// Whether the binding matrix shows during this step. The tour holds it
-    /// open or shut: the matrix's own ways to close are off meanwhile.
-    pub matrix: Matrix,
+    /// The view held open over the workspace during this step.
+    pub modal: Modal,
     /// Drawn in the note under the words, in an inset: a thing the step
     /// describes, drawn by the code that draws it for real, so the picture
     /// cannot drift from the interface.
@@ -161,7 +216,7 @@ const FIRST_RUN: &[Step] = &[
                if they stay flat, try another input.",
         prepare: to_build,
         reveal: &["v2_audio"],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: None,
     },
     Step {
@@ -172,7 +227,7 @@ const FIRST_RUN: &[Step] = &[
                afterwards you can also drag a picture onto the stack to add a layer.",
         prepare: to_catalog,
         reveal: &[],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: None,
     },
     Step {
@@ -183,7 +238,7 @@ const FIRST_RUN: &[Step] = &[
                at the top, is what goes out. Click a row to edit it.",
         prepare: to_build,
         reveal: &[],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: None,
     },
     Step {
@@ -194,7 +249,7 @@ const FIRST_RUN: &[Step] = &[
                (C) adds node effects to the layer.",
         prepare: to_build,
         reveal: &[],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: None,
     },
     Step {
@@ -204,7 +259,7 @@ const FIRST_RUN: &[Step] = &[
                chains and Master. Replay this tour from Setup › Tutorials.",
         prepare: to_build,
         reveal: &["sec_presets"],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: None,
     },
 ];
@@ -241,7 +296,7 @@ const BINDINGS: &[Step] = &[
                something names it on its row, like this one following the bass:",
         prepare: to_effect_layer,
         reveal: &["v2_params"],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
         picture: Some(super::panels::param_panel::draw_example_row),
     },
     Step {
@@ -254,7 +309,7 @@ const BINDINGS: &[Step] = &[
                mind? Click another.",
         prepare: to_matrix_armed,
         reveal: &[],
-        matrix: Matrix::PickSource,
+        modal: Modal::MatrixPickSource,
         picture: None,
     },
     Step {
@@ -266,7 +321,7 @@ const BINDINGS: &[Step] = &[
                losing it.",
         prepare: to_build,
         reveal: &[],
-        matrix: Matrix::Open,
+        modal: Modal::Matrix,
         picture: None,
     },
     Step {
@@ -277,7 +332,7 @@ const BINDINGS: &[Step] = &[
                transport. Click a target, then a source: the order doesn't matter.",
         prepare: to_build,
         reveal: &[],
-        matrix: Matrix::Open,
+        modal: Modal::Matrix,
         picture: None,
     },
     Step {
@@ -288,7 +343,7 @@ const BINDINGS: &[Step] = &[
                Templates add a ready-made set to the selected layer.",
         prepare: to_build,
         reveal: &[],
-        matrix: Matrix::Open,
+        modal: Modal::Matrix,
         picture: None,
     },
     Step {
@@ -300,7 +355,72 @@ const BINDINGS: &[Step] = &[
                layer and can be shaped. Replay this tour from Setup \u{203a} Tutorials.",
         prepare: to_build,
         reveal: &["v2_params"],
-        matrix: Matrix::Shut,
+        modal: Modal::None,
+        picture: None,
+    },
+];
+
+/// The Chains tour: trama node chains, from the inspector's Chain line into
+/// the chain editor. The canvas step puts a starter chain on an empty layer
+/// chain (Kevin's call, #3224), so the steps after it point at real nodes.
+const CHAINS: &[Step] = &[
+    Step {
+        anchor: Anchor::ChainLine,
+        title: "A chain runs after the effect",
+        body: "Each layer has a chain of trama nodes that work on its picture after its \
+               effect: blur, kaleidoscope, color key, feedback and more. This line says \
+               what the chain holds. After the tour, Edit chain (C) opens it; the next \
+               steps open it for you.",
+        prepare: to_effect_layer,
+        reveal: &[],
+        modal: Modal::None,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::ChainCanvas,
+        title: "Nodes and wires",
+        body: "If this layer's chain was empty, the tour started one: Layer input, the \
+               layer's own picture, runs into Kaleidoscope, which runs into Output. What \
+               reaches Output is what the layer shows, so the output has changed. \
+               Right-click the canvas to add a node, drag from one pin to another to wire \
+               them, and right-click a wire to remove it.",
+        prepare: to_build,
+        reveal: &[],
+        modal: Modal::LayerChainStarter,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::ChainInspector,
+        title: "Shape a node",
+        body: "Click a node to see its controls here. Under each one, mod makes it \
+               follow an oscillator or the music. Right-click a node to bypass or delete \
+               it: delete the tour's two nodes and the layer is as it was.",
+        prepare: to_build,
+        reveal: &[],
+        modal: Modal::LayerChain,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::ChainTabs,
+        title: "One layer, or the whole mix",
+        body: "The Layer tab shows the selected layer's chain. Master's chain runs on the \
+               mix of every layer, before tonemapping: a look for the whole output goes \
+               there. Its tab counts its nodes, so a forgotten master chain shows.",
+        prepare: to_build,
+        reveal: &[],
+        modal: Modal::MasterChain,
+        picture: None,
+    },
+    Step {
+        anchor: Anchor::ChainFiles,
+        title: "Keep it, or share it",
+        body: "A preset saves every chain with it. After the tour, Export writes this \
+               chain to a .fio.json file and Import replaces it with one, so a chain can \
+               move between presets or people. Replay this tour from Setup \u{203a} \
+               Tutorials.",
+        prepare: to_build,
+        reveal: &[],
+        modal: Modal::LayerChain,
         picture: None,
     },
 ];
@@ -404,18 +524,55 @@ pub(crate) fn leaving_requested(ctx: &Context) -> Option<&'static str> {
 /// Should the binding matrix show? `None` when no tour is showing (the
 /// matrix is the user's), else whether the step showing wants it.
 pub fn matrix_wanted(ctx: &Context) -> Option<bool> {
-    running(ctx)
-        .and_then(step_of)
-        .map(|s| s.matrix != Matrix::Shut)
+    running(ctx).and_then(step_of).map(|s| s.modal.matrix())
 }
 
 /// Is the step showing one where a source click picks the source of the
-/// step's own binding ([`Matrix::PickSource`])?
+/// step's own binding ([`Modal::MatrixPickSource`])?
 pub fn picks_source(ctx: &Context) -> bool {
     running(ctx)
         .and_then(step_of)
-        .is_some_and(|s| s.matrix == Matrix::PickSource)
+        .is_some_and(|s| s.modal == Modal::MatrixPickSource)
 }
+
+/// Should the chain editor show, and on which chain? `None` when no tour is
+/// showing: the editor is the user's.
+pub fn chain_wanted(ctx: &Context) -> Option<ChainEditor> {
+    running(ctx).and_then(step_of).map(|s| match s.modal {
+        Modal::LayerChain | Modal::LayerChainStarter => ChainEditor::Open(ChainTab::Layer),
+        Modal::MasterChain => ChainEditor::Open(ChainTab::Master),
+        _ => ChainEditor::Shut,
+    })
+}
+
+/// Is the step showing one that puts the starter chain on an empty layer
+/// chain ([`Modal::LayerChainStarter`])? The editor seeds while this holds
+/// and the chain it shows is an empty layer chain: once, since a seeded
+/// chain is no longer empty.
+pub fn seeds_chain(ctx: &Context) -> bool {
+    running(ctx)
+        .and_then(step_of)
+        .is_some_and(|s| s.modal == Modal::LayerChainStarter)
+}
+
+/// Should the chain editor put the starter chain on the empty layer chain
+/// it shows? True once per visit to a [`Modal::LayerChainStarter`] step: the
+/// first call answers and marks the visit, whether or not the chain turns
+/// out to be empty.
+pub fn take_seed(ctx: &Context) -> bool {
+    if !seeds_chain(ctx) {
+        return false;
+    }
+    let id = Id::new(SEEDED);
+    let seeded = ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if !seeded {
+        ctx.data_mut(|d| d.insert_temp(id, true));
+    }
+    !seeded
+}
+
+/// Set by [`take_seed`] for the step showing; cleared as each step opens.
+const SEEDED: &str = "tour_chain_seeded";
 
 /// Start `tour` from its first step.
 pub fn start(ctx: &Context, tour: Tour) {
@@ -428,6 +585,7 @@ fn go_to(ctx: &Context, tour: Tour, step: usize) {
     };
     (s.prepare)(ctx);
     ctx.data_mut(|d| {
+        d.remove::<bool>(Id::new(SEEDED));
         d.insert_temp(
             state_id(),
             Running {
@@ -841,9 +999,23 @@ mod tests {
     // advanced the way a keyboard user would.
     #[test]
     fn every_step_lights_its_anchor_on_screen() {
+        for &tour in Tour::ALL.iter().filter(|t| !t.uses_chains()) {
+            anchors_on_screen(tour, ShellHarness::new);
+        }
+    }
+
+    // The chain editor needs a GPU: run with --ignored.
+    #[test]
+    #[ignore = "requires a wgpu adapter: draws the chain editor"]
+    fn every_chains_step_lights_its_anchor_on_screen() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        anchors_on_screen(Tour::Chains, ShellHarness::with_chains);
+    }
+
+    fn anchors_on_screen(tour: Tour, make: fn(Vec2) -> ShellHarness) {
         for size in [Vec2::new(1206.0, 760.0), Vec2::new(1920.0, 1080.0)] {
-            for &tour in Tour::ALL {
-                let mut h = ShellHarness::new(size);
+            {
+                let mut h = make(size);
                 hide_everything(&mut h);
                 start(&h.ctx, tour);
                 for (i, step) in tour.steps().iter().enumerate() {
@@ -893,13 +1065,20 @@ mod tests {
     // its anchor.
     #[test]
     fn nothing_in_a_lit_area_leaves_the_step() {
-        for &tour in Tour::ALL {
-            clicking_inside_stays(tour);
+        for &tour in Tour::ALL.iter().filter(|t| !t.uses_chains()) {
+            clicking_inside_stays(tour, ShellHarness::new);
         }
     }
 
-    fn clicking_inside_stays(tour: Tour) {
-        let mut h = ShellHarness::new(Vec2::new(1400.0, 900.0));
+    #[test]
+    #[ignore = "requires a wgpu adapter: draws the chain editor"]
+    fn nothing_in_a_lit_chains_area_leaves_the_step() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        clicking_inside_stays(Tour::Chains, ShellHarness::with_chains);
+    }
+
+    fn clicking_inside_stays(tour: Tour, make: fn(Vec2) -> ShellHarness) {
+        let mut h = make(Vec2::new(1400.0, 900.0));
         start(&h.ctx, tour);
         for (i, step) in tour.steps().iter().enumerate() {
             h.settle(30);
@@ -909,6 +1088,17 @@ mod tests {
                 let mut x = lit.left() + 6.0;
                 while x < lit.right() {
                     h.click(Pos2::new(x, y));
+                    // Straight after the click: the tour sets the tab again
+                    // next frame, so a switch shows only now.
+                    if let (Some(c), Some(ChainEditor::Open(tab))) =
+                        (&h.chains, chain_wanted(&h.ctx))
+                    {
+                        let want = match tab {
+                            ChainTab::Layer => crate::trama::CanvasTarget::SelectedLayer,
+                            ChainTab::Master => crate::trama::CanvasTarget::Master,
+                        };
+                        assert!(c.trama.canvas_target == want, "a click switched the tab");
+                    }
                     h.settle(1);
                     x += 30.0;
                 }
@@ -916,6 +1106,9 @@ mod tests {
             }
             let at = format!("{} step {}", tour.name(), i + 1);
             assert_eq!(h.leaving, None, "{at}: a click inside asked to leave");
+            let dialogs =
+                crate::trama::persist::DIALOGS_ASKED.load(std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(dialogs, 0, "{at}: a click asked for a file dialog");
             assert_eq!(current(&h.ctx), Some((tour, i)));
             h.settle(30);
             assert!(
@@ -923,11 +1116,14 @@ mod tests {
                 "{at}: clicking inside hid {:?}",
                 step.anchor
             );
-            assert_eq!(
-                h.matrix.open,
-                step.matrix != Matrix::Shut,
-                "{at}: the matrix"
-            );
+            assert_eq!(h.matrix.open, step.modal.matrix(), "{at}: the matrix");
+            if let Some(c) = &h.chains {
+                assert_eq!(
+                    c.trama.canvas_open,
+                    matches!(chain_wanted(&h.ctx), Some(ChainEditor::Open(_))),
+                    "{at}: the chain editor"
+                );
+            }
             // As Next does: the clicks have moved the keyboard focus.
             go_to(&h.ctx, tour, i + 1);
         }
@@ -1353,5 +1549,202 @@ mod tests {
             .data_mut(|d| d.insert_temp(Id::new("open_binding_matrix"), true));
         h.settle(3);
         assert!(h.matrix.open);
+    }
+
+    // ── The Chains tour (#3128): GPU, run with --ignored ──────────────
+
+    /// The graph of harness layer `i`'s chain, if it has one.
+    fn chain_nodes(h: &ShellHarness, i: usize) -> Option<usize> {
+        let c = h.chains.as_ref().unwrap();
+        c.stack.layers[i]
+            .chain
+            .as_ref()
+            .map(|c| c.graph.nodes().len())
+    }
+
+    fn contributes(h: &ShellHarness, i: usize) -> bool {
+        let c = h.chains.as_ref().unwrap();
+        c.stack.layers[i]
+            .chain
+            .as_ref()
+            .is_some_and(|c| c.graph.contributes())
+    }
+
+    // Kevin's call (#3224): the canvas step puts Layer input -> Kaleidoscope
+    // -> Output on the selected effect layer's empty chain, so the picture
+    // changes and the next steps have nodes to point at. Once: deleting
+    // them on the step does not bring them back, and neither does Back.
+    #[test]
+    #[ignore = "requires a wgpu adapter: draws the chain editor"]
+    fn the_chains_tour_starts_a_chain_on_the_effect_layer_once() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        let mut h = ShellHarness::with_chains(Vec2::new(1400.0, 900.0));
+        // The editor was last open on Layer 1, so for a frame after it opens
+        // again it still shows that chain: the seed must wait for the
+        // selected layer's.
+        h.chains.as_mut().unwrap().trama.canvas_open = true;
+        h.settle(3);
+        h.chains.as_mut().unwrap().trama.canvas_open = false;
+        h.settle(2);
+        assert_eq!(chain_nodes(&h, 0), Some(1), "Layer 1 has an empty chain");
+        start(&h.ctx, Tour::Chains);
+        h.settle(30);
+        assert_eq!(h.active_layer, ShellHarness::EFFECT_LAYER);
+        assert_eq!(
+            chain_nodes(&h, 0),
+            Some(1),
+            "the empty Layer 1 is untouched"
+        );
+
+        h.key(Key::Enter);
+        h.settle(30);
+        let e = ShellHarness::EFFECT_LAYER;
+        assert_eq!(chain_nodes(&h, e), Some(3), "input, effect, output");
+        assert!(contributes(&h, e), "the picture reaches Output");
+        assert_eq!(
+            chain_nodes(&h, 0),
+            Some(1),
+            "only the selected layer's chain"
+        );
+        // Kevin's settings, by the shipped manifest's own names.
+        {
+            let c = h.chains.as_ref().unwrap();
+            let g = &c.stack.layers[e].chain.as_ref().unwrap().graph;
+            let fx = g
+                .nodes()
+                .iter()
+                .find(|n| matches!(n.kind, crate::trama::node::NodeKind::Effect { .. }))
+                .unwrap();
+            for &(name, want) in crate::trama::starter::STARTER_SETTINGS {
+                let got = match fx.params.get(name) {
+                    Some(crate::params::ParamValue::Float(v)) => Some(*v),
+                    _ => None,
+                };
+                assert_eq!(got, Some(want), "{name}");
+            }
+        }
+        // Segments are whole numbers, and say so (#3128): the manifest's
+        // "integers" reaches the inspector. 6.4 reads as the 6 it renders.
+        {
+            let c = h.chains.as_mut().unwrap();
+            let g = &mut c.stack.layers[e].chain.as_mut().unwrap().graph;
+            let fx = g
+                .nodes()
+                .iter()
+                .find(|n| matches!(n.kind, crate::trama::node::NodeKind::Effect { .. }))
+                .unwrap()
+                .id;
+            g.params_mut(fx)
+                .unwrap()
+                .params
+                .set("segments", crate::params::ParamValue::Float(6.4));
+        }
+        h.settle(2);
+        assert!(h.text_rect("6").is_some() && h.text_rect("6.40").is_none());
+        {
+            let c = h.chains.as_mut().unwrap();
+            let g = &mut c.stack.layers[e].chain.as_mut().unwrap().graph;
+            let fx = g
+                .nodes()
+                .iter()
+                .find(|n| matches!(n.kind, crate::trama::node::NodeKind::Effect { .. }))
+                .unwrap()
+                .id;
+            g.params_mut(fx)
+                .unwrap()
+                .params
+                .set("segments", crate::params::ParamValue::Float(15.0));
+        }
+        // The effect is selected, so the inspector shows its controls.
+        assert!(h.text_rect("Kaleidoscope").is_some() || h.text_rect("Pixelate").is_some());
+        // And the stack's Chain line says so, as the app's would.
+        assert!(h.layers[e].chain.is_some_and(|b| b.active && b.nodes == 2));
+
+        // Deleted on the step: stays deleted.
+        {
+            let c = h.chains.as_mut().unwrap();
+            let g = &mut c.stack.layers[e].chain.as_mut().unwrap().graph;
+            let ids: Vec<_> = g
+                .nodes()
+                .iter()
+                .map(|n| n.id)
+                .filter(|&id| id != g.output_node())
+                .collect();
+            for id in ids {
+                g.remove_node(id).unwrap();
+            }
+        }
+        h.settle(5);
+        assert_eq!(chain_nodes(&h, e), Some(1), "not seeded twice on one visit");
+        // Back and forward again: an empty chain gets a fresh start.
+        go_to(&h.ctx, Tour::Chains, 0);
+        h.settle(30);
+        go_to(&h.ctx, Tour::Chains, 1);
+        h.settle(30);
+        assert_eq!(chain_nodes(&h, e), Some(3));
+    }
+
+    // A chain with anything in it is the user's: the tour leaves it alone.
+    #[test]
+    #[ignore = "requires a wgpu adapter: draws the chain editor"]
+    fn the_chains_tour_leaves_a_users_chain_alone() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        let mut h = ShellHarness::with_chains(Vec2::new(1400.0, 900.0));
+        let e = ShellHarness::EFFECT_LAYER;
+        {
+            let c = h.chains.as_mut().unwrap();
+            c.stack.ensure_chain(e).unwrap();
+            let g = &mut c.stack.layers[e].chain.as_mut().unwrap().graph;
+            g.add_node(crate::trama::node::NodeKind::Feedback, 1, &[]);
+        }
+        start(&h.ctx, Tour::Chains);
+        h.settle(30);
+        h.key(Key::Enter);
+        h.settle(30);
+        assert_eq!(chain_nodes(&h, e), Some(2), "Output and the user's node");
+    }
+
+    // The editor draws after the shell; the dimming must cover all of it but
+    // the lit part, and leaving the tour must put away the editor it opened.
+    #[test]
+    #[ignore = "requires a wgpu adapter: draws the chain editor"]
+    fn the_dimming_covers_the_chain_editor_and_leaving_puts_it_away() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        let mut h = ShellHarness::with_chains(Vec2::new(1400.0, 900.0));
+        start(&h.ctx, Tour::Chains);
+        h.settle(30);
+        go_to(&h.ctx, Tour::Chains, 2); // the node inspector
+        h.settle(30);
+        let lit = drawn(&h.ctx, Anchor::ChainInspector).unwrap();
+        let canvas = drawn(&h.ctx, Anchor::ChainCanvas).unwrap();
+        let is_dim = |id: Option<Id>| (0..4).any(|i| id == Some(Id::new("tour_dim").with(i)));
+        let layer_at = |h: &ShellHarness, p: Pos2| h.ctx.layer_id_at(p).map(|l| l.id);
+        assert_eq!(layer_at(&h, lit.center()), Some(Id::new("trama_modal")));
+        let note = callout_rect(&h.ctx).unwrap();
+        let spot = [canvas.left_top(), canvas.left_bottom()]
+            .into_iter()
+            .map(|p| p + (canvas.center() - p) * 0.2)
+            .find(|p| !note.contains(*p))
+            .unwrap();
+        assert!(is_dim(layer_at(&h, spot)), "the canvas is dimmed");
+        // Beside the editor: closes nothing.
+        h.click(Pos2::new(4.0, 300.0));
+        assert!(h.chains.as_ref().unwrap().trama.canvas_open);
+        // Its own backdrop never comes up over it, whatever raises it.
+        h.ctx.move_to_top(egui::LayerId::new(
+            Order::Middle,
+            Id::new("trama_modal_backdrop"),
+        ));
+        h.settle(2);
+        assert_eq!(
+            layer_at(&h, lit.center()),
+            Some(Id::new("trama_modal")),
+            "the backdrop covered the lit panel"
+        );
+
+        h.key(Key::Escape);
+        h.settle(2);
+        assert_eq!(current(&h.ctx), None);
+        assert!(!h.chains.as_ref().unwrap().trama.canvas_open);
     }
 }

@@ -160,6 +160,14 @@ pub fn draw_inspector(
     // Creating/removing a slot goes through `set_modulation` after the node
     // borrow ends; in-place config tweaks go straight through `mods`.
     let mut slot_action: Option<(String, Option<Modulation>)> = None;
+    // The manifest's whole-number parameters: stepped sliders, no decimals.
+    let integers: Vec<String> = match graph.node(id).map(|n| &n.kind) {
+        Some(NodeKind::Source { effect } | NodeKind::Effect { effect }) => registry
+            .get(effect)
+            .map(|d| d.integers.clone())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
     {
         let node = graph.params_mut(id).expect("checked above");
         let node_id = node.id;
@@ -179,15 +187,19 @@ pub fn draw_inspector(
                         _ => *default,
                     };
                     let mut val = current;
-                    let tip = format!("{min:.2} – {max:.2} · default {default:.2}");
+                    let whole = integers.contains(name);
+                    let tip = if whole {
+                        format!("{min:.0} – {max:.0}, whole numbers · default {default:.0}")
+                    } else {
+                        format!("{min:.2} – {max:.2} · default {default:.2}")
+                    };
                     let (reset, row) = ui
                         .horizontal(|ui| {
                             let reset = reset_button(ui, "Reset to default");
-                            let row = ParamRow::new(name).tooltip(&tip).show_slider(
-                                ui,
-                                &mut val,
-                                *min..=*max,
-                            );
+                            let row = ParamRow::new(name)
+                                .tooltip(&tip)
+                                .integer(whole)
+                                .show_slider(ui, &mut val, *min..=*max);
                             (reset, row)
                         })
                         .inner;

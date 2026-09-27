@@ -169,6 +169,11 @@ pub fn load_into(
 /// The file dialogs behind the canvas's Export and Import buttons. They run
 /// on their own thread, like every other dialog in the app — a native dialog
 /// blocks its caller, and the caller here would be the render loop.
+/// Export and Import asked for a file dialog: under test they count here
+/// instead of opening one on the desktop of whoever runs the tests.
+pub(crate) static DIALOGS_ASKED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub struct ChainIo {
     tx: std::sync::mpsc::Sender<Imported>,
     rx: std::sync::mpsc::Receiver<Imported>,
@@ -196,6 +201,10 @@ impl ChainIo {
     /// line; the document was captured by the caller, so the chain can go on
     /// being edited while the dialog is open.
     pub fn export(&self, doc: ChainDoc) {
+        if cfg!(test) {
+            DIALOGS_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         let spawned = std::thread::Builder::new()
             .name("file-dialog".into())
             .spawn(move || {
@@ -222,6 +231,10 @@ impl ChainIo {
     /// Ask for a file to load into `chain`. The answer arrives through
     /// [`Self::drain`] on some later frame.
     pub fn import(&self, chain: ChainId) {
+        if cfg!(test) {
+            DIALOGS_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         let tx = self.tx.clone();
         let spawned = std::thread::Builder::new()
             .name("file-dialog".into())
