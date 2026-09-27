@@ -564,6 +564,14 @@ fn draw_preset_grid(
                     is_current,
                 );
 
+                // Dragged: a cue for the Scenes strip (#3173).
+                response.dnd_set_drag_payload(super::cue_strip::PresetDrag {
+                    name: pname.clone(),
+                });
+                if response.dragged() {
+                    preset_drag_ghost(ui.ctx(), pname);
+                }
+
                 // Left click: load/reload preset (also clears pending delete)
                 if response.clicked() {
                     *new_pending = None;
@@ -621,6 +629,32 @@ fn tile_cols(width: f32, gap: f32) -> usize {
     (((width + gap) / (TILE_MIN_WIDTH + gap)).floor() as usize).clamp(2, TILE_MAX_COLS)
 }
 
+/// The preset's name follows the pointer while it is dragged.
+fn preset_drag_ghost(ctx: &egui::Context, name: &str) {
+    let Some(pos) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+    let tc = theme_colors(ctx);
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("v2_preset_ghost"));
+    let painter = ctx.layer_painter(layer);
+    let galley = painter.layout_no_wrap(
+        name.to_string(),
+        egui::FontId::proportional(13.0),
+        tc.text_primary,
+    );
+    let rect = egui::Rect::from_min_size(pos + Vec2::new(12.0, 12.0), galley.size())
+        .expand2(Vec2::new(8.0, 5.0));
+    painter.rect(
+        rect,
+        CornerRadius::same(4),
+        tc.card_bg,
+        Stroke::new(1.5_f32, tc.text_primary),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.min + Vec2::new(8.0, 5.0), galley, tc.text_primary);
+}
+
 /// One preset as a tile of exactly `size`: the name wraps onto a second line
 /// and ends in an ellipsis past that, so a long name never widens the grid.
 fn preset_tile(
@@ -632,7 +666,8 @@ fn preset_tile(
     text_color: Color32,
     selected: bool,
 ) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    // Draggable too, onto the Scenes strip (#3173); a click still loads.
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, name));
     let visuals = ui.style().interact(&response);

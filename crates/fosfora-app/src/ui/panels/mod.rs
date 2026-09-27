@@ -5,6 +5,7 @@ pub mod binding_helpers;
 pub mod binding_matrix;
 pub mod bindings_panel;
 pub mod catalog_panel;
+pub mod cue_strip;
 pub mod effect_panel;
 pub mod helix_panel;
 pub mod lattice_panel;

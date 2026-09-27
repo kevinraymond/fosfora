@@ -3393,24 +3393,48 @@ impl App {
 
     /// Load a scene and start its timeline.
     pub fn load_scene(&mut self, index: usize) {
-        let scene = match self.scene_store.load(index) {
-            Some(s) => s.clone(),
-            None => return,
-        };
-
-        self.scene_store.current_scene = Some(index);
-
-        self.timeline = Timeline::new(scene.cues.clone(), scene.loop_mode, scene.advance_mode);
-
+        if !self.open_scene(index) {
+            return;
+        }
         // Start at cue 0
         let event = self.timeline.start(0);
         self.process_timeline_event(event);
+    }
 
+    /// Make scene `index` the one being edited, without playing it: the
+    /// workspace opens a scene with a click and plays it with a double-click
+    /// (#3173). Returns false when there is no such scene.
+    pub fn open_scene(&mut self, index: usize) -> bool {
+        let Some(scene) = self.scene_store.load(index).cloned() else {
+            return false;
+        };
+        self.scene_store.current_scene = Some(index);
+        self.timeline = Timeline::new(scene.cues.clone(), scene.loop_mode, scene.advance_mode);
         log::info!(
-            "Loaded scene '{}' with {} cues",
+            "Opened scene '{}' with {} cues",
             scene.name,
             scene.cues.len()
         );
+        true
+    }
+
+    /// A new cue for `preset_name`, as the cue list adds one: a cut, and in
+    /// Timer mode a hold so the timer can advance.
+    pub fn new_cue(&self, preset_name: String) -> crate::scene::types::SceneCue {
+        let hold_secs = matches!(
+            self.timeline.advance_mode,
+            crate::scene::types::AdvanceMode::Timer
+        )
+        .then_some(4.0);
+        crate::scene::types::SceneCue {
+            preset_name,
+            transition: crate::scene::types::TransitionType::Cut,
+            transition_secs: 1.0,
+            hold_secs,
+            label: None,
+            param_overrides: Vec::new(),
+            transition_beats: None,
+        }
     }
 
     /// Auto-save current timeline state back to the active scene on disk.
@@ -3572,11 +3596,27 @@ impl App {
             .timeline
             .cues
             .iter()
-            .map(|c| crate::ui::panels::scene_panel::CueDisplayInfo {
-                preset_name: c.display_name().to_string(),
-                transition: c.transition,
-                transition_secs: c.transition_secs,
-                hold_secs: c.hold_secs,
+            .map(|c| {
+                let preset = self
+                    .preset_store
+                    .presets
+                    .iter()
+                    .find(|(n, _)| *n == c.preset_name)
+                    .map(|(_, p)| p);
+                crate::ui::panels::scene_panel::CueDisplayInfo {
+                    preset_name: c.display_name().to_string(),
+                    transition: c.transition,
+                    transition_secs: c.transition_secs,
+                    hold_secs: c.hold_secs,
+                    label: c.label.clone(),
+                    effect: preset.and_then(|p| {
+                        p.layers
+                            .iter()
+                            .find(|l| l.media_path.is_none() && l.webcam_device.is_none())
+                            .map(|l| l.effect_name.clone())
+                    }),
+                    layers: preset.map_or(0, |p| p.layers.len()),
+                }
             })
             .collect();
         crate::ui::panels::scene_panel::SceneInfo {

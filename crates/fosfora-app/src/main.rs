@@ -2304,6 +2304,38 @@ impl ApplicationHandler for FosforaApp {
                 if let Some(idx) = load_scene_idx {
                     app.load_scene(idx);
                 }
+                // Opening a scene edits it without playing it (#3173).
+                let open_scene: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("open_scene")));
+                if let Some(idx) = open_scene {
+                    app.open_scene(idx);
+                }
+                let rename_scene: Option<(usize, String)> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("scene_rename")));
+                if let Some((idx, name)) = rename_scene {
+                    if let Err(e) = app.scene_store.rename(idx, &name) {
+                        app.status_error = Some((
+                            format!("Could not rename the scene: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+                let duplicate_scene: Option<usize> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("scene_duplicate")));
+                if let Some(idx) = duplicate_scene {
+                    if let Err(e) = app.scene_store.duplicate(idx) {
+                        app.status_error = Some((
+                            format!("Could not duplicate the scene: {e}"),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
                 let delete_scene: Option<usize> = app
                     .egui_overlay
                     .context()
@@ -2367,26 +2399,44 @@ impl ApplicationHandler for FosforaApp {
                     .data_mut(|d| d.remove_temp(egui::Id::new("scene_add_cue")));
                 let mut scene_dirty = false;
                 if let Some(preset_name) = add_cue {
-                    // In Timer mode, default hold_secs so the timer can advance
-                    let hold_secs = if matches!(
-                        app.timeline.advance_mode,
-                        crate::scene::types::AdvanceMode::Timer
-                    ) {
-                        Some(4.0)
-                    } else {
-                        None
-                    };
-                    let cue = crate::scene::types::SceneCue {
-                        preset_name,
-                        transition: crate::scene::types::TransitionType::Cut,
-                        transition_secs: 1.0,
-                        hold_secs,
-                        label: None,
-                        param_overrides: Vec::new(),
-                        transition_beats: None,
-                    };
+                    let cue = app.new_cue(preset_name);
                     app.timeline.cues.push(cue);
                     scene_dirty = true;
+                }
+                // The workspace's cue strip (#3173): a preset dropped between
+                // cues, a cue dragged to a new place, a cue's name, and a
+                // Timer cue that waits for Go instead.
+                let ctx = app.egui_overlay.context().clone();
+                let take = |key: &str| egui::Id::new(key);
+                if let Some((name, at)) =
+                    ctx.data_mut(|d| d.remove_temp::<(String, usize)>(take("scene_insert_cue")))
+                {
+                    let cue = app.new_cue(name);
+                    app.timeline.insert_cue(at, cue);
+                    scene_dirty = true;
+                }
+                if let Some((from, to)) =
+                    ctx.data_mut(|d| d.remove_temp::<(usize, usize)>(take("scene_move_cue")))
+                {
+                    app.timeline.move_cue(from, to);
+                    scene_dirty = true;
+                }
+                if let Some((idx, label)) =
+                    ctx.data_mut(|d| d.remove_temp::<(usize, String)>(take("scene_set_cue_label")))
+                {
+                    if let Some(cue) = app.timeline.cues.get_mut(idx) {
+                        let label = label.trim();
+                        cue.label = (!label.is_empty()).then(|| label.to_string());
+                        scene_dirty = true;
+                    }
+                }
+                if let Some(idx) =
+                    ctx.data_mut(|d| d.remove_temp::<usize>(take("scene_clear_cue_hold")))
+                {
+                    if let Some(cue) = app.timeline.cues.get_mut(idx) {
+                        cue.hold_secs = None;
+                        scene_dirty = true;
+                    }
                 }
                 let scene_jump: Option<usize> = app
                     .egui_overlay

@@ -77,6 +77,18 @@ const PIC: Vec2 = Vec2::new(176.0, 99.0);
 const NAME_H: f32 = 20.0;
 /// The card's margin around the picture and its name.
 const CARD_PAD: f32 = 5.0;
+/// Space between cards, both ways.
+const GAP: f32 = 10.0;
+/// What sits above the grid (tabs and search) and below it (the authoring
+/// buttons).
+const TOOLBAR_H: f32 = 30.0;
+const FOOTER_H: f32 = 30.0;
+
+/// How tall the catalog is when it shows `rows` whole rows of cards.
+pub fn height_for_rows(rows: usize) -> f32 {
+    let card = PIC.y + NAME_H + 2.0 * CARD_PAD;
+    TOOLBAR_H + 6.0 + rows as f32 * card + rows.saturating_sub(1) as f32 * GAP + FOOTER_H
+}
 
 /// Which tab is open.
 #[derive(Clone, PartialEq, Eq)]
@@ -249,10 +261,12 @@ pub fn draw_catalog(
     }
 
     ui.add_space(6.0);
-    let footer_h = 30.0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .max_height((ui.available_height() - footer_h).max(PIC.y + NAME_H + 2.0 * CARD_PAD))
+        // Always shown: with one row in view, nothing else said there were
+        // more below.
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .max_height((ui.available_height() - FOOTER_H).max(PIC.y + NAME_H + 2.0 * CARD_PAD))
         .show(ui, |ui| {
             if shown.is_empty() {
                 let msg = if tab == Tab::Favorites && q.is_empty() {
@@ -264,7 +278,7 @@ pub fn draw_catalog(
                 return;
             }
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
+                ui.spacing_mut().item_spacing = Vec2::splat(GAP);
                 for &(i, e) in &shown {
                     let still = thumbs.get(ui.ctx(), e);
                     // While hovered, the picture plays its loop from the
@@ -809,6 +823,97 @@ mod tests {
     // must survive the pointer leaving the catalog, and the row must read
     // which part of it the pointer is over. Stop the tile setting its
     // payload and every case here fails.
+    /// Lay the catalog out in exactly `height_for_rows(rows)`, 1400 wide,
+    /// with 30 effects. Returns (each row's top, the bottom of the last whole
+    /// row it should show, where the footer's text starts and ends).
+    fn laid_out(rows: usize) -> (Vec<f32>, f32, f32, f32) {
+        let ctx = egui::Context::default();
+        crate::ui::theme::colors::set_theme_colors(
+            &ctx,
+            crate::ui::theme::palette::Palette::GRAY.colors(),
+        );
+        let mut loader = EffectLoader::for_test("");
+        loader.effects = (0..30).map(|i| effect(&format!("Effect {i}"))).collect();
+        let mut thumbs = CatalogThumbs::new("/nonexistent".into());
+        let h = height_for_rows(rows);
+        let mut out = None;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, h),
+                )),
+                ..Default::default()
+            };
+            out = Some(ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        let target = Target {
+                            current: None,
+                            locked: false,
+                            can_add: true,
+                            active: 0,
+                        };
+                        draw_catalog(ui, &loader, &[], &mut thumbs, &target);
+                    });
+            }));
+        }
+        let footer = out
+            .unwrap()
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "+ New effect" => {
+                    Some((t.pos.y, t.pos.y + t.galley.size().y))
+                }
+                _ => None,
+            })
+            .expect("the footer is drawn");
+        let rect = |i: usize| {
+            ctx.read_response(tile_id(&format!("Effect {i}")))
+                .unwrap()
+                .rect
+        };
+        let mut tops: Vec<f32> = (0..30).map(|i| rect(i).top()).collect();
+        let last_whole = (0..30)
+            .filter(|&i| {
+                let mut r: Vec<f32> = tops.clone();
+                r.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+                (rect(i).top() - r[rows - 1]).abs() < 1.0
+            })
+            .map(|i| rect(i).bottom())
+            .fold(f32::MIN, f32::max);
+        tops.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+        (tops, last_whole, footer.0, footer.1)
+    }
+
+    // The drawer's heights come from `height_for_rows`: its default from
+    // two rows, its minimum from one. Laid out at exactly that height the
+    // last row is whole above the footer, the footer is whole in view (at
+    // one row, "+ New effect" had scrolled away under the grid), and the
+    // next row starts past it.
+    #[test]
+    fn height_for_rows_shows_that_many_whole_rows_and_the_footer() {
+        for rows in [1, 2] {
+            let (tops, last, footer_top, footer_bottom) = laid_out(rows);
+            assert!(tops.len() > rows, "30 cards in {} rows", tops.len());
+            assert!(
+                last <= footer_top,
+                "{rows} rows: row {rows} ends at {last}, below the footer at {footer_top}"
+            );
+            assert!(
+                footer_bottom <= height_for_rows(rows),
+                "{rows} rows: the footer ends at {footer_bottom}, out of view"
+            );
+            assert!(
+                tops[rows] > footer_top - 20.0,
+                "{rows} rows: another row is in view at {}",
+                tops[rows]
+            );
+        }
+    }
+
     #[test]
     fn dragging_a_picture_onto_the_stack_replaces_or_inserts() {
         let mut h = Harness::new();

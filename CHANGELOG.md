@@ -37,9 +37,13 @@
   load it into the selected layer, or drag it onto the stack to replace a layer's
   effect or add a new layer.
 
-- In the workspace layout, **scenes, the cue list and the timeline are in the drawer
-  along the bottom**: a Scenes tab beside the catalog in Build, and on its own in
-  Perform. Its bar says which cue is playing even while the drawer is closed.
+- In the workspace layout, **a scene is a strip of cues in the drawer along the
+  bottom**, beside the catalog in Build and on its own in Perform. Each cue shows its
+  preset's picture, each transition sits between two cues, and the playhead runs along
+  the strip. Drag presets in or cues around; a click edits a cue, a double-click plays it.
+
+- Deleting a scene no longer closes the one you were editing, and a long scene name
+  in a non-Latin script no longer crashes the app.
 
 - **Adding a video layer no longer freezes the app.** A video decodes every frame
   before it plays, which took ~15 s with nothing on screen; it now decodes in the

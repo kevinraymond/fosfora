@@ -15,9 +15,9 @@ use crate::ui::theme::tokens::{MIN_INTERACT_HEIGHT, SMALL_SIZE};
 use egui::{Context, Frame, Margin, ScrollArea};
 
 use super::panels::{
-    appearance_panel, audio_panel, catalog_panel, layer_panel, media_panel, midi_panel, osc_panel,
-    output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel, scene_panel,
-    settings_panel, stack_panel, status_bar, timeline_bar, triggers_panel, volumetric_panel,
+    appearance_panel, audio_panel, catalog_panel, cue_strip, layer_panel, media_panel, midi_panel,
+    osc_panel, output_window_panel, param_panel, postfx_panel, preset_panel, recording_panel,
+    scene_panel, settings_panel, stack_panel, status_bar, triggers_panel, volumetric_panel,
     web_panel,
 };
 use super::widgets;
@@ -496,16 +496,8 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
         return;
     }
     let screen_h = ctx.content_rect().height();
-    egui::TopBottomPanel::bottom(egui::Id::new("v2_drawer").with(key))
-        .default_height(if ws == Workspace::Perform {
-            260.0
-        } else {
-            340.0
-        })
-        .height_range(160.0..=(screen_h * 0.6).max(200.0))
-        .resizable(true)
-        .frame(frame)
-        .show(ctx, |ui| {
+    drawer_panel(key, screen_h).frame(frame).show(ctx, |ui| {
+        drawer_body(ui, |ui| {
             header(ui);
             ui.add_space(4.0);
             match tab {
@@ -525,79 +517,70 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
                         &target,
                     );
                 }
-                DrawerTab::Scenes => scenes_tab(ui, scene),
+                DrawerTab::Scenes => {
+                    let (loader, thumbs) = (s.effect_loader, &mut *s.catalog_thumbs);
+                    let mut pics = |ctx: &egui::Context, name: &str| {
+                        let e = loader.effects.iter().find(|e| e.name == name)?;
+                        thumbs.get(ctx, e)
+                    };
+                    cue_strip::draw(ui, scene, &mut pics);
+                }
             }
         });
+    });
 }
 
-/// Widest the scene library column gets.
-const SCENE_LIBRARY_MAX: f32 = 420.0;
-/// Widest a cue row gets: at the drawer's full width its hold time sat a
-/// window's width from its name.
-const CUE_LIST_MAX: f32 = 760.0;
+/// The drawer's panel: `key` names the workspace it belongs to, so each
+/// keeps its own height.
+fn drawer_panel(key: &str, screen_h: f32) -> egui::TopBottomPanel {
+    egui::TopBottomPanel::bottom(egui::Id::new("v2_drawer").with(key))
+        .default_height(drawer_default_height(screen_h))
+        .height_range(drawer_min_height(screen_h)..=drawer_max_height(screen_h))
+        .resizable(true)
+}
 
-/// The Scenes tab: the timeline across the top while a scene plays, then the
-/// saved scenes and the transport on the left and the cue list beside them.
-/// Each column scrolls on its own, so the transport stays put under a long
-/// cue list.
-fn scenes_tab(ui: &mut egui::Ui, scene: &scene_panel::SceneInfo) {
-    let tc = theme_colors(ui.ctx());
-    if let Some(tl) = scene.timeline.as_ref().filter(|t| t.active) {
-        let names: Vec<String> = scene
-            .cue_list
-            .iter()
-            .map(|c| c.preset_name.clone())
-            .collect();
-        timeline_bar::draw_timeline_bar(ui, tl, &names);
-        ui.add_space(6.0);
-    }
-    let h = ui.available_height();
-    let gap = 16.0;
-    let left_w = (ui.available_width() * 0.34)
-        .clamp(260.0, SCENE_LIBRARY_MAX)
-        .min(ui.available_width());
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(
-            egui::vec2(left_w, h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ScrollArea::vertical()
-                    .id_salt("v2_scene_library")
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        scene_panel::draw_scene_library(ui, scene);
-                        if scene.current_scene.is_some() {
-                            ui.add_space(6.0);
-                            scene_panel::draw_transport(ui, scene);
-                        }
-                    });
-            },
-        );
-        let w = ui.available_width().min(CUE_LIST_MAX);
-        ui.allocate_ui_with_layout(
-            egui::vec2(w, h),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ScrollArea::vertical()
-                    .id_salt("v2_scene_cues")
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        if scene.current_scene.is_some() {
-                            scene_panel::draw_cue_list(ui, scene, None);
-                        } else {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Pick a scene, or save a new one, to see and edit its cues.",
-                                )
-                                .size(12.0)
-                                .color(tc.text_secondary),
-                            );
-                        }
-                    });
-            },
-        );
-    });
+/// Draw the drawer's contents in exactly the drawer's space. A resizable
+/// egui panel keeps the height its contents USED last frame: the catalog
+/// filled it and the Scenes tab didn't, so each tab switch resized the
+/// drawer, and a scene loaded into a short one was cut off until the next
+/// switch. The contents go in a child of the drawer's own size, so neither
+/// a short tab nor a tall one changes it; only a drag does.
+fn drawer_body(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    let rect = ui.available_rect_before_wrap();
+    let mut body = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    body.set_clip_rect(rect.intersect(ui.clip_rect()));
+    add(&mut body);
+    ui.advance_cursor_after_rect(rect);
+}
+
+/// Shortest the drawer can be dragged: one whole row of the catalog with
+/// its toolbar and footer. Any shorter and "+ New effect" scrolled away
+/// under the grid.
+fn drawer_min_height(screen_h: f32) -> f32 {
+    (DRAWER_CHROME + catalog_panel::height_for_rows(1)).min(drawer_max_height(screen_h))
+}
+
+/// Tallest the drawer can be dragged in a window `screen_h` tall.
+fn drawer_max_height(screen_h: f32) -> f32 {
+    (screen_h * 0.6).max(200.0)
+}
+
+/// The drawer's frame margins and header, above what a tab draws.
+const DRAWER_CHROME: f32 = 12.0 + MIN_INTERACT_HEIGHT + 4.0;
+
+/// The drawer's height until someone drags it: a quarter of the window, and
+/// never less than three quarters of what two whole catalog rows need, so
+/// the second row shows its top edge. At one row and nothing more, nothing
+/// said there were more below; at a third of the window (Kevin, #3173) it
+/// was a quarter too tall.
+fn drawer_default_height(screen_h: f32) -> f32 {
+    let two_rows = DRAWER_CHROME + catalog_panel::height_for_rows(2);
+    (0.75 * (screen_h / 3.0).max(two_rows))
+        .clamp(drawer_min_height(screen_h), drawer_max_height(screen_h))
 }
 
 /// Widest the inspector's content gets, however wide its column is.
@@ -1153,44 +1136,6 @@ mod tests {
         out
     }
 
-    /// A scene library of three, the first current and playing its second
-    /// of three cues.
-    fn scenes(playing: bool) -> scene_panel::SceneInfo {
-        use crate::scene::timeline::{TimelineInfo, TimelineInfoState};
-        use crate::scene::types::{AdvanceMode, TransitionType};
-        let cue = |name: &str, transition| scene_panel::CueDisplayInfo {
-            preset_name: name.to_string(),
-            transition,
-            transition_secs: 1.0,
-            hold_secs: Some(4.0),
-        };
-        scene_panel::SceneInfo {
-            scene_store_names: vec!["Opener".into(), "Middle".into(), "Close".into()],
-            current_scene: Some(0),
-            timeline: Some(TimelineInfo {
-                active: playing,
-                cue_count: 3,
-                current_cue: 1,
-                state: if playing {
-                    TimelineInfoState::Holding {
-                        elapsed: 1.0,
-                        hold_secs: Some(4.0),
-                    }
-                } else {
-                    TimelineInfoState::Idle
-                },
-                loop_mode: false,
-                advance_mode: AdvanceMode::BeatSync { beats_per_cue: 8 },
-            }),
-            preset_names: vec!["Tide".into(), "Sumi".into()],
-            cue_list: vec![
-                cue("Tide", TransitionType::Cut),
-                cue("Sumi", TransitionType::Dissolve),
-                cue("Pegboard", TransitionType::ParamMorph),
-            ],
-        }
-    }
-
     /// Run `draw` in a panel `size` large for a few frames; returns the
     /// height of what it drew.
     fn drawn_height(size: egui::Vec2, mut draw: impl FnMut(&mut egui::Ui)) -> f32 {
@@ -1216,48 +1161,106 @@ mod tests {
         h
     }
 
-    // Each piece of the Scenes tab is as tall as its rows, in a panel with
-    // far more height than it needs. A row laid out with a bare
-    // `with_layout` takes all the height below it; that bit the section
-    // headers and the preset rows in #3125, and a click test passed both.
-    #[test]
-    fn scene_pieces_are_as_tall_as_their_rows() {
-        let tall = egui::vec2(1400.0, 2000.0);
-        for playing in [false, true] {
-            let info = scenes(playing);
-            let lib = drawn_height(tall, |ui| scene_panel::draw_scene_library(ui, &info));
-            assert!(lib < 160.0, "playing {playing}: the library is {lib} tall");
-            let tr = drawn_height(tall, |ui| scene_panel::draw_transport(ui, &info));
-            assert!(tr < 160.0, "playing {playing}: the transport is {tr} tall");
-            // Three two-line cue cards and the add row.
-            let cues = drawn_height(tall, |ui| scene_panel::draw_cue_list(ui, &info, None));
-            assert!(
-                cues < 300.0,
-                "playing {playing}: three cues are {cues} tall"
-            );
-            let bar = drawn_height(tall, |ui| {
-                if let Some(tl) = &info.timeline {
-                    timeline_bar::draw_timeline_bar(ui, tl, &[]);
-                }
-            });
-            assert!(bar < 40.0, "playing {playing}: the timeline is {bar} tall");
-        }
-    }
-
-    // The Scenes tab fills its drawer and no more: its two columns take the
-    // height they are given, and a column taller than that scrolls.
+    // The Scenes tab fills its drawer and no more, whatever the drawer's
+    // height: the scene list and the strip take the height they are given,
+    // and scroll past it. A row laid out with a bare `with_layout` takes all
+    // the height below it; that bit the section headers and the preset rows
+    // in #3125, and a click test passed both times.
     #[test]
     fn the_scenes_tab_stays_inside_its_drawer() {
-        for h in [160.0, 300.0] {
+        for h in [160.0, 300.0, 600.0] {
             for playing in [false, true] {
-                let info = scenes(playing);
-                let drawn = drawn_height(egui::vec2(1400.0, h), |ui| scenes_tab(ui, &info));
+                let info = cue_strip::sample(playing);
+                let drawn = drawn_height(egui::vec2(1400.0, h), |ui| {
+                    cue_strip::draw(ui, &info, &mut |_, _| None);
+                });
                 assert!(
                     drawn <= h,
                     "a {h} px drawer drew {drawn} px (playing {playing})"
                 );
             }
         }
+    }
+
+    /// The drawer's height after each frame, drawing `body_h` points of
+    /// content per frame in turn.
+    fn drawer_heights(body_h: &[f32], fill: bool) -> Vec<f32> {
+        let ctx = Context::default();
+        body_h
+            .iter()
+            .map(|&h| {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 1000.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut got = 0.0;
+                let _ = ctx.run(input, |ctx| {
+                    got = drawer_panel("t", 1000.0)
+                        .show(ctx, |ui| {
+                            let body = |ui: &mut egui::Ui| {
+                                ui.allocate_space(egui::vec2(10.0, h));
+                            };
+                            if fill {
+                                drawer_body(ui, body);
+                            } else {
+                                body(ui);
+                            }
+                        })
+                        .response
+                        .rect
+                        .height();
+                });
+                got
+            })
+            .collect()
+    }
+
+    // Switching between a tab that fills the drawer and one that doesn't
+    // resized it every time, and a scene loaded into the shrunken drawer
+    // was cut off. The height is the user's alone.
+    #[test]
+    fn the_drawer_keeps_its_height_whatever_a_tab_draws() {
+        let tabs = [60.0, 60.0, 900.0, 60.0, 300.0, 60.0];
+        let heights = drawer_heights(&tabs, true);
+        let want = drawer_default_height(1000.0);
+        for (i, h) in heights.iter().enumerate() {
+            assert!(
+                (h - want).abs() < 1.0,
+                "frame {i}: the drawer is {h}, not {want}"
+            );
+        }
+        // Drawn straight into the panel, a short tab shrinks the drawer and
+        // a tall one grows it.
+        let loose = drawer_heights(&tabs, false);
+        assert!(loose[1] < want - 20.0, "{loose:?}");
+        assert!(loose[2] > want + 50.0, "{loose:?}");
+    }
+
+    #[test]
+    fn the_default_drawer_is_a_quarter_of_the_window_and_peeks_at_a_second_row() {
+        let two_rows = DRAWER_CHROME + catalog_panel::height_for_rows(2);
+        let one_row = DRAWER_CHROME + catalog_panel::height_for_rows(1);
+        assert_eq!(drawer_default_height(1800.0), 450.0);
+        for h in [700.0, 900.0, 1080.0, 1440.0] {
+            let d = drawer_default_height(h);
+            assert!(d >= (h / 4.0).min(drawer_max_height(h)) - 0.5, "{h}: {d}");
+            // One whole row and the top of the next.
+            assert!(d > one_row + 20.0 && d >= 0.75 * two_rows - 0.5, "{h}: {d}");
+        }
+    }
+
+    #[test]
+    fn the_drawer_drags_no_shorter_than_one_catalog_row() {
+        let one_row = DRAWER_CHROME + catalog_panel::height_for_rows(1);
+        for h in [700.0, 1000.0, 1440.0] {
+            assert_eq!(drawer_min_height(h), one_row, "{h}");
+            assert!(drawer_default_height(h) >= one_row, "{h}");
+        }
+        // A window too small for even that still leaves room above.
+        assert!(drawer_min_height(300.0) <= drawer_max_height(300.0));
     }
 
     #[test]

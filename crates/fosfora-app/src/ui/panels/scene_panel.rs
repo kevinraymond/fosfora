@@ -23,6 +23,12 @@ pub struct CueDisplayInfo {
     pub transition: TransitionType,
     pub transition_secs: f32,
     pub hold_secs: Option<f32>,
+    /// The cue's own name, when it has one.
+    pub label: Option<String>,
+    /// The preset's first effect, whose catalog picture stands for the cue.
+    pub effect: Option<String>,
+    /// How many layers the preset has.
+    pub layers: usize,
 }
 
 /// The whole scene section, one piece under the next, for a side column.
