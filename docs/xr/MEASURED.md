@@ -14,7 +14,7 @@ commit. A claim in a report that isn't here doesn't count (invariant I4).
 | cargo-ndk | 4.1.2 |
 | Quest 3 Horizon OS version | v207 (`207.0.0.297.1234`), Android 14 / SDK 34, `ro.ovr.os.api.version` 160 |
 | OpenXR loader (source, version) | (S1) |
-| Desktop baseline: clippy / test wall time | |
+| Desktop baseline: clippy / test wall time | ci.yml lint+test matrix all green on `3f7cce0` (warm cache, 32 threads): fmt 1s, clippy ×8 sets 110s, test ×7 sets 368s (default: 1022 passed, 0 failed, 111 ignored), `cargo deny` ok; total 479s |
 
 ## Adapter limits (S2)
 
