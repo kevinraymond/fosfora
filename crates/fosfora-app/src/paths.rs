@@ -6,13 +6,28 @@
 //! may call `dirs::config_dir()` directly.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 pub const CONFIG_DIR_NAME: &str = "fosfora";
 const LEGACY_CONFIG_DIR_NAME: &str = "phosphor";
 
+static CONFIG_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Put the config root somewhere else, for a frontend with its own storage (the XR
+/// app uses its Android files dir). Call it before anything reads config: files read
+/// earlier came from the default root. Only the first call wins; a later one hands the
+/// path back.
+pub fn set_config_root(dir: PathBuf) -> Result<(), PathBuf> {
+    CONFIG_ROOT_OVERRIDE.set(dir)
+}
+
 /// `<config_dir>/fosfora` — `~/.config/fosfora` on Linux,
-/// `~/Library/Application Support/fosfora` on macOS, `%APPDATA%\fosfora` on Windows.
+/// `~/Library/Application Support/fosfora` on macOS, `%APPDATA%\fosfora` on Windows —
+/// unless [`set_config_root`] moved it.
 pub fn config_root() -> PathBuf {
+    if let Some(dir) = CONFIG_ROOT_OVERRIDE.get() {
+        return dir.clone();
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(CONFIG_DIR_NAME)
@@ -21,6 +36,10 @@ pub fn config_root() -> PathBuf {
 /// One-time move of the legacy `phosphor` config directory to its `fosfora` name.
 /// Called once at startup, before any config file is read.
 pub fn migrate_legacy_config_dir() {
+    // A relocated root was never a `phosphor` directory.
+    if CONFIG_ROOT_OVERRIDE.get().is_some() {
+        return;
+    }
     if let Some(base) = dirs::config_dir() {
         migrate_in(&base);
     }

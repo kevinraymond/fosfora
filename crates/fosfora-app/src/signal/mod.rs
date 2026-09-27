@@ -16,20 +16,22 @@ pub mod section;
 pub mod sink;
 pub mod types;
 
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
-
-use anyhow::{Context, Result, anyhow};
-
-use crate::audio::beat::TempoControl;
-use crate::audio::{ANALYSIS_HOP, AudioSystem};
-use crate::settings::SettingsConfig;
-
-use emitter::{EmitCfg, SignalEmitter};
-use sink::UdpSink;
-use types::SignalConfig;
+// Everything below the types is the `--signal` / `--signal-dump` CLI driver, which
+// only the desktop binary runs.
+#[cfg(feature = "desktop")]
+use {
+    crate::audio::beat::TempoControl,
+    crate::audio::{ANALYSIS_HOP, AudioSystem},
+    crate::settings::SettingsConfig,
+    anyhow::{Context, Result, anyhow},
+    emitter::{EmitCfg, SignalEmitter},
+    sink::UdpSink,
+    std::sync::Arc,
+    std::sync::Mutex,
+    std::sync::atomic::{AtomicBool, Ordering},
+    std::time::{Duration, Instant},
+    types::SignalConfig,
+};
 
 /// CLI overrides for `--signal` / `--signal-dump`. Merged over the loaded
 /// `signal.json`; never saved back.
@@ -43,6 +45,7 @@ pub struct SignalCliArgs {
     pub device: Option<String>,
 }
 
+#[cfg(feature = "desktop")]
 fn merged_config(args: &SignalCliArgs) -> SignalConfig {
     let mut cfg = SignalConfig::load();
     if let Some(h) = &args.host {
@@ -63,6 +66,7 @@ fn merged_config(args: &SignalCliArgs) -> SignalConfig {
     cfg
 }
 
+#[cfg(feature = "desktop")]
 fn emit_cfg(cfg: &SignalConfig) -> EmitCfg {
     EmitCfg {
         tx_rate_hz: cfg.tx_rate_hz,
@@ -73,6 +77,7 @@ fn emit_cfg(cfg: &SignalConfig) -> EmitCfg {
 
 /// `--signal`: the live headless analysis-broadcast loop. No window, no GPU —
 /// just the audio engine and a UDP socket.
+#[cfg(feature = "desktop")]
 pub fn run(args: &SignalCliArgs) -> Result<()> {
     let cfg = merged_config(args);
 
