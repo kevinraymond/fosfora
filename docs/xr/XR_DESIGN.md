@@ -244,6 +244,12 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
 - **Input events.** The main loop drains `AndroidApp::input_events_iter`
   every pass. Nothing consumes them yet, but an undrained queue makes Android
   flag the app as not responding as soon as a wearer generates input.
+- **External microphone.** The headset's experimental external-mic setting
+  routes Android's default input to a USB audio class device in the port;
+  the core's capture then works unchanged and delivers full-range audio
+  (measured Sep 27). Product path for room music: a USB mic or a USB audio
+  interface from the mixer. Development over Wi-Fi adb, since the port is
+  taken.
 - Later: the in-app `RECORD_AUDIO` runtime request (via `jni`), AEC when the
   headset both plays and listens, and a real render-thread split only if the
   measurements say the CPU side is the bottleneck (it is under 1 ms now).
