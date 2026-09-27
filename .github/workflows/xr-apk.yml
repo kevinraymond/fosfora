@@ -1,0 +1,147 @@
+name: XR APK
+
+# Builds the Quest debug APK (crates/fosfora-xr + android/) on every push to
+# `xr`, signed with one stable debug key so consecutive artifacts install over
+# each other with `adb install -r`. The desktop checks run from ci.yml.
+
+on:
+  push:
+    branches: [xr]
+    paths:
+      - 'crates/**'
+      - 'android/**'
+      - 'assets/**'
+      - 'scripts/xr/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/xr-apk.yml'
+  # Same-repo PRs into `xr` get the secrets too, so a change to this workflow
+  # or the Gradle project is proven before it lands.
+  pull_request:
+    branches: [xr]
+    paths:
+      - 'crates/**'
+      - 'android/**'
+      - 'assets/**'
+      - 'scripts/xr/**'
+      - 'Cargo.*'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/xr-apk.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: xr-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same NDK as the dev host (docs/xr/MEASURED.md, S0), so CI and local builds
+  # link against the same sysroot. Installed below if the runner image lacks it.
+  XR_NDK_VERSION: 27.0.12077973
+  CARGO_NDK_VERSION: 4.1.2
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    name: Debug APK (arm64-v8a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Android NDK
+        run: |
+          ndk="$ANDROID_HOME/ndk/$XR_NDK_VERSION"
+          if [ ! -d "$ndk" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$XR_NDK_VERSION" > /dev/null
+          fi
+          echo "NDK: $(grep Pkg.Revision "$ndk/source.properties")  ($ndk)"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: xr-apk-aarch64-linux-android
+
+      - name: Cache cargo-ndk
+        id: cargo-ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-${{ env.CARGO_NDK_VERSION }}-${{ runner.os }}
+      - name: Install cargo-ndk
+        if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-ndk --locked --version "$CARGO_NDK_VERSION"
+
+      # run.sh's lint is `cargo ndk ... clippy -p fosfora-xr --all-targets -- -D warnings`,
+      # the same check a developer runs before pushing.
+      - name: Clippy (fosfora-xr, aarch64-linux-android)
+        run: scripts/xr/run.sh lint
+
+      - name: Debug keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.XR_DEBUG_KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.XR_DEBUG_KEYSTORE_PASS }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASS" ]; then
+            echo "::error title=Missing debug keystore secret::Set XR_DEBUG_KEYSTORE_B64 and XR_DEBUG_KEYSTORE_PASS (repo Settings > Secrets and variables > Actions)."
+            cat <<'EOF'
+          The APK is signed with one stable debug key so builds install over each
+          other. Create it once (or reuse ~/.android/debug.keystore, password "android"):
+
+            keytool -genkeypair -v -storetype PKCS12 -keystore fosfora-xr-debug.p12 \
+              -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Fosfora XR Debug" -storepass PASSWORD -keypass PASSWORD
+
+          then add it as repository secrets:
+
+            base64 -w0 fosfora-xr-debug.p12 | gh secret set XR_DEBUG_KEYSTORE_B64
+            gh secret set XR_DEBUG_KEYSTORE_PASS
+          EOF
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/xr-debug.keystore"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$keystore"
+          echo "XR_DEBUG_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+
+      # run.sh's build: cargo ndk (release profile) into jniLibs, then
+      # `./gradlew assembleDebug`. Install and launch need a device, so they stay local.
+      - name: Build APK
+        env:
+          XR_DEBUG_KEYSTORE_PASS: ${{ secrets.XR_DEBUG_KEYSTORE_PASS }}
+        run: scripts/xr/run.sh build
+
+      - name: Verify signature and stage artifact
+        id: stage
+        env:
+          # A PR's github.sha is the test merge commit; name the APK after the head.
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          apksigner="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          # The cert digest must be identical run to run; that is what lets
+          # `adb install -r` replace the previous build.
+          "$apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate (DN|SHA-256)'
+          name="fosfora-xr-debug-${SHA::7}.apk"
+          mkdir -p staging
+          cp "$apk" "staging/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.stage.outputs.name }}
+          path: staging/${{ steps.stage.outputs.name }}
+          retention-days: 14
+          if-no-files-found: error
