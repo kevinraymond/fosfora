@@ -168,16 +168,158 @@ CI jobs. `mesa-vulkan-drivers` gives software Vulkan for GPU tests.)
 
 ---
 
-## C3: world-space ports of the lead effects (placeholder)
+## C3a: world-space particle render path in core (against `main`)
 
-*Write the full brief with Kevin after S5. A candidate for `/effort ultracode`,
-since the work splits into parallel per-effect pieces.*
+*Approved by Kevin Sep 27 (board #3240) after S5 (board #3192, #3233). Runs
+alone; nothing on `xr` depends on it until C3b. It is the only C3 change to
+shared structure, so it lands on `main` as its own small PR, like the seam.*
+
+> You are working in the Fosfora repo on a new branch `xr-particles-world`,
+> cut from `main` (not from `xr`). Fosfora is a real-time audio-reactive
+> visual engine: about 130K lines of Rust in `crates/fosfora-app` (a library
+> plus a thin binary; wgpu 27; toolchain pinned at 1.97.0). Read `CLAUDE.md`,
+> `ARCHITECTURE-NOTES.md` and `.github/workflows/ci.yml` first. The XR
+> measurements that motivate this live on the `xr` branch only:
+> `git show origin/xr:docs/xr/MEASURED.md` (section "Particle sweep (S5)",
+> especially "What the cost is" and "Proposal"). Don't commit anything under
+> `docs/xr/` or `crates/fosfora-xr/` to this branch; don't touch `ui/`,
+> `app.rs` or `main.rs`.
+>
+> **Background.** Fosfora's particle sims write screen-space NDC into
+> `pos_life.xy` and the billboard renderer (`gpu/particle/system.rs`,
+> `assets/shaders/builtin/particle_render.wgsl`) draws them with
+> `draw_indirect`, one instance per alive particle, no camera. A Quest 3 build
+> (a separate crate that depends on `fosfora-app` with
+> `default-features = false`) needs to draw particles that live in **meters
+> in 3D**, once per eye through that eye's view and projection, with a depth
+> test against other geometry. Measured on the Quest 3's Adreno 740, the
+> instanced draw is per-instance bound: one non-instanced draw where the
+> vertex index picks the particle ("vertex pulling") is 1.5x cheaper, and
+> 3-vertex sprites another 1.25–1.6x. That is the shape to build.
+>
+> **Goal:** add a world-space render entry to `ParticleSystem` behind a clean
+> API, with **zero behavior change on desktop**: no existing shader, pipeline,
+> bind group layout or `.pfx` semantics change, and the new pipeline is
+> created only when first used.
+>
+> **Invariants**
+> - Every command in `ci.yml` passes unchanged, every clippy feature
+>   combination included, `-D warnings`, workspace pedantic lints.
+>   `cargo deny check` passes. No new dependencies.
+> - `AudioFeatures` ABI and golden vectors untouched (`audio/features.rs`,
+>   `audio/schema.rs`, `GOLDEN_HOPS`).
+> - The `Particle` layout (four `vec4f` SoA components, `particle_lib.wgsl`)
+>   and `ParticleUniforms` are unchanged. No new per-particle buffer.
+> - Every new `unsafe` block has a `// SAFETY:` comment (none expected).
+> - US English spelling in code, comments and docs.
+>
+> **Tasks**
+> 1. **Layout convention, documented not enforced.** In `particle_lib.wgsl`
+>    (near `struct Particle`) and in the `ParticleSystem` docs, define the
+>    world layout a sim may opt into: `pos_life.xyz` = position in meters
+>    relative to the effect anchor (+Y up, −Z forward, the OpenXR stage
+>    convention), `vel_size.xyz` = velocity in m/s, `vel_size.w` = sprite
+>    radius in meters, `color` as today, `flags` as today. Sims that keep
+>    per-particle state in `pos_life.z` / `vel_size.z` today (most do:
+>    initial size, mass, species, band, height) must move it to `flags.zw`
+>    or the `aux` buffer in their world variant; that is C3b's job, not this
+>    task's. Nothing changes for the existing 2D sims.
+> 2. **Indirect args for a pulled draw.** Extend
+>    `builtin/particle_prepare_indirect.wgsl` (or add a sibling) to also
+>    write a second 16-byte indirect buffer `[3 * alive, 1, 0, 0]`
+>    (vertex count, one instance) from `counters[0]`, so the world draw needs
+>    no CPU readback of the alive count. Keep the existing
+>    `[6, alive, 0, 0]` buffer as is.
+> 3. **Shader `builtin/particle_render_world.wgsl`.** Group 0 = the existing
+>    render bind group layout (`render_bgl`: SoA buffers read-only, render
+>    uniforms, alive indices), unchanged. Group 1 = a new `WorldCamera`
+>    uniform: `view: mat4x4f`, `proj: mat4x4f`, `anchor: vec4f` (xyz added to
+>    every position, w unused), `gain: f32` and padding. Vertex entry:
+>    `particle = alive_indices[vertex_index / 3u]`, `corner = vertex_index %
+>    3u` into a triangle that circumscribes the unit disc
+>    (`(-1.732, -1), (1.732, -1), (0, 2)`), position =
+>    `proj * (view * vec4f(pos + anchor, 1) + vec4f(corner * radius, 0, 0))`
+>    so the sprite has a size in meters and faces the eye. Fragment: the
+>    same soft disc as `particle_render.wgsl` mode 0 (`exp(-d²·2)`,
+>    discard below 0.01), premultiplied output. Sprite atlas modes, trails
+>    and spin are out of scope (mode 0 only; document it).
+> 4. **API.** On `ParticleSystem`:
+>    ```rust
+>    pub struct WorldCamera { pub view: glam::Mat4, pub proj: glam::Mat4, pub anchor: glam::Vec3 }
+>    pub struct WorldTarget<'a> { pub color: &'a wgpu::TextureView, pub color_format: wgpu::TextureFormat,
+>                                 pub depth: Option<&'a wgpu::TextureView>, pub depth_format: wgpu::TextureFormat }
+>    pub fn render_world(&mut self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue,
+>                        target: WorldTarget<'_>, camera: &WorldCamera, load: wgpu::LoadOp<wgpu::Color>)
+>    ```
+>    It records one render pass (color `load`, depth load, **depth test
+>    `Less`, depth write off**) and one `draw_indirect` on the new buffer,
+>    using the additive or alpha blend the effect's `blend` selects, as the
+>    2D path does. Pipelines are cached per `(color_format, depth_format)`
+>    and built on first call; the camera uniform buffer is created on first
+>    call too. Which SoA index to bind: the caller may call this either
+>    inside the frame (before `flip`, like `render`) or after
+>    `SceneRenderer::step` returned (after `flip`). Make the index explicit
+>    and safe: for example `render_world` always draws the buffers the last
+>    `dispatch` wrote, tracked by a field set in `dispatch` and `flip`,
+>    and document it. Also expose `pub fn alive_count(&self) -> u32` if it
+>    isn't public already.
+> 5. **3D flow sampling.** In `particle_lib.wgsl` add
+>    `fn sample_flow_field_3d(pos_m: vec3f, extent_m: f32) -> vec3f` that
+>    maps a position within ±extent_m of the anchor to the existing 3D flow
+>    texture's [0,1]³ (all three axes; today's `sample_flow_field` maps 2D
+>    clip space and scrolls z with time) and returns the xyz velocity. The
+>    existing 2D function is untouched.
+> 6. **Tests**, using the headless device (`headless/gpu.rs`, software
+>    Vulkan is available in CI):
+>    - a test sim (`#[cfg(test)]` WGSL string or a file under
+>      `assets/shaders/builtin/test/` if that pattern exists) that spawns a
+>      handful of particles at fixed world positions, one `dispatch`, then
+>      `render_world` into a 256x256 `Rgba8Unorm` target with a known
+>      `WorldCamera` (identity view at the origin, a symmetric 90° projection,
+>      near 0.05, far 100). Assert each particle's pixel lands within 2 px of
+>      the analytically projected point, and that a particle behind the far
+>      plane or outside the frustum draws nothing.
+>    - the same with a depth texture pre-filled so half the image is
+>      "near": assert particles in that half are hidden and the other half
+>      visible.
+>    - the indirect buffer holds `[3 * alive, 1, 0, 0]` after a dispatch.
+>    - `cargo test` (default features), `cargo clippy --all-targets -- -D
+>      warnings` for the default build and for `--no-default-features`, and
+>      `cargo check -p fosfora-app --lib --no-default-features --target
+>      aarch64-linux-android` (install the target with rustup) all pass.
+> 7. No `CHANGELOG.md` entry (nothing user-facing on desktop). Commit
+>    messages carry the rationale. Open a PR into `main` titled
+>    "particles: world-space render entry for the XR build", with the
+>    measured motivation in one paragraph and a list of the public API added.
+>
+> **Deliverable:** the PR URL, its CI run green, and one paragraph on
+> anything you had to decide that the brief left open (for example how the
+> ping-pong index is tracked). Don't add the render entry to any desktop
+> code path.
+
+**Gate (Kevin, then local):** desktop CI green on the PR; `cargo check` for
+Android passes; the tests above pass; the diff touches only
+`gpu/particle/*`, the two builtin shaders, `particle_lib.wgsl` and tests.
+Then Kevin merges, `xr` merges `main`, and C3b starts.
+
+## C3b: world-space ports of Flux, Murmur, Tide (after C3a)
+
+*Lead effects picked by Kevin Sep 27 (board #3239). Brief to write once C3a
+is on `main`; it can split into one cloud session per effect.*
 
 Outline:
-- Input: S5's world-space scatter path and particle-layout decision, the
-  measured particle budget, and Kevin's list of 2–3 lead effects.
-- Per effect: sim changes for a real `z` (layout per the S5 decision), audio
-  mappings unchanged, obstacle modes working in 3D, one preset tuned for
-  seated viewing.
-- Acceptance per effect: runs at the S5 budget on device (Kevin verifies), and
-  desktop CI is untouched.
+- Input: C3a's `render_world` + `sample_flow_field_3d`, the S5 budget
+  (about 1M sprites at 72 Hz and 750K at 90 Hz on Quest 3 before the
+  effect's own passes), and the layout convention from C3a task 1.
+- Per effect, an XR variant sim under `assets/xr/shaders/<name>_xr_sim.wgsl`
+  with a hidden `.pfx` under `assets/xr/effects/` (the S4 pattern): world
+  `xyz` in meters in a ~2 m volume at the anchor, per-particle state moved
+  out of the `.z` slots, audio mappings unchanged, obstacle modes working in
+  3D where the effect uses them, one preset tuned for seated viewing.
+  Flux: curl flow through `sample_flow_field_3d`. Murmur: 3D boids
+  (topological neighbors in 3D, predator avoidance in 3D). Tide: height
+  becomes real `y`, the sheet pours onto a horizontal plane at the anchor.
+- Desktop CI untouched; the variants are hidden and staged into the APK only.
+- Acceptance per effect: Kevin verifies on device at the S5 budget
+  (`MEASURED.md` row per effect); a headless test renders one frame of each
+  variant without validation errors.
