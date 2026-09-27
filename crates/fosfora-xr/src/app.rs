@@ -83,7 +83,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
-    //       48 kHz stereo f32 file ending in .f32; default: the bundled CC0 track under assets/audio/)
+    //       48 kHz stereo f32 file ending in .f32, or "click" for a 120 BPM click track;
+    //       default: the bundled CC0 track under assets/audio/)
+    //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
+    //       audio-to-photon measurement, filmed with a phone)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -179,7 +182,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let path = debug_prop("debug.fosfora.file")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| dirs.assets.join("audio").join("ember_glow_excerpt.ogg"));
-            let clip = if path.extension().is_some_and(|e| e == "f32") {
+            let clip = if path.as_os_str() == "click" {
+                Clip::click(120.0, 30.0, 48_000)
+            } else if path.extension().is_some_and(|e| e == "f32") {
                 Clip::from_raw_f32_stereo(&path, 48_000)?
             } else {
                 Clip::decode(&path)?
@@ -259,6 +264,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut last_t = 0.0f32;
     let mut frame_index = 0u64;
     let mut beat_env = 0.0f32;
+    let flash = debug_prop("debug.fosfora.flash").as_deref() == Some("1");
+    let mut flash_frames = 0u32;
 
     loop {
         // While the session is running, Android events are drained without
@@ -317,51 +324,54 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let dt = (t - last_t).clamp(1.0 / 120.0, 1.0 / 30.0);
         last_t = t;
         let queue = &gfx.queue;
-        session.frame(
-            &gfx,
-            background_color(t),
-            &mut stats,
-            particles.as_ref(),
-            || {
-                // This frame's audio: the headset microphones or the
-                // synthetic 120 BPM groove.
-                let hop = match live_audio.as_mut() {
-                    Some(a) => a.frame(dt, f64::from(t)),
-                    None => synth_hop_for(frame_index, t),
-                };
-                let f = hop.frame.features;
-                if hop.beat_fired {
-                    beat_env = 1.0;
-                    if let Some(p) = &playback {
-                        // Beat timing evidence (S6): where in the clip the
-                        // beat fired, against the track's known 140 BPM grid.
-                        info!("beat at clip {:.4} s", p.position_secs());
+        let clear = if flash_frames > 0 {
+            flash_frames -= 1;
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            background_color(t)
+        };
+        session.frame(&gfx, clear, &mut stats, particles.as_ref(), || {
+            // This frame's audio: the headset microphones or the
+            // synthetic 120 BPM groove.
+            let hop = match live_audio.as_mut() {
+                Some(a) => a.frame(dt, f64::from(t)),
+                None => synth_hop_for(frame_index, t),
+            };
+            let f = hop.frame.features;
+            if hop.beat_fired {
+                beat_env = 1.0;
+                if flash {
+                    flash_frames = 2;
+                }
+                if let Some(p) = &playback {
+                    // Beat timing evidence (S6): where in the clip the
+                    // beat fired, against the track's known 140 BPM grid.
+                    info!("beat at clip {:.4} s", p.position_secs());
+                }
+            }
+            beat_env *= (-dt * 6.0).exp();
+            if let Some(scene) = scene.as_mut() {
+                match live_audio.as_mut() {
+                    Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
+                    None => {
+                        let hop = scene.synth(f64::from(t));
+                        let wave = scene.synth_waveform().to_vec();
+                        scene.step(f64::from(t), dt, &hop, &wave);
                     }
                 }
-                beat_env *= (-dt * 6.0).exp();
-                if let Some(scene) = scene.as_mut() {
-                    match live_audio.as_mut() {
-                        Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
-                        None => {
-                            let hop = scene.synth(f64::from(t));
-                            let wave = scene.synth_waveform().to_vec();
-                            scene.step(f64::from(t), dt, &hop, &wave);
-                        }
-                    }
-                }
-                if let Some(p) = particles.as_ref() {
-                    // bass drives the flow speed, rms and the beat pulse
-                    // the sprite size.
-                    p.update(
-                        queue,
-                        t,
-                        dt,
-                        0.6 + 1.2 * f.bass,
-                        (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env),
-                    );
-                }
-            },
-        )?;
+            }
+            if let Some(p) = particles.as_ref() {
+                // bass drives the flow speed, rms and the beat pulse
+                // the sprite size.
+                p.update(
+                    queue,
+                    t,
+                    dt,
+                    0.6 + 1.2 * f.bass,
+                    (0.7 + 0.9 * f.rms) * (1.0 + 0.5 * beat_env),
+                );
+            }
+        })?;
         frame_index += 1;
         if frame_index.is_multiple_of(72) {
             if let Some(scene) = &scene {

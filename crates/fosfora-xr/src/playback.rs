@@ -18,6 +18,31 @@ pub struct Clip {
 }
 
 impl Clip {
+    /// A synthetic click track for the audio-to-photon measurement: a 2 ms
+    /// burst of 1 kHz every beat at `bpm`, `secs` long, stereo at `rate`.
+    /// Sharp enough for a phone recording to time, and the core's beat
+    /// tracker locks to it within a few beats.
+    pub fn click(bpm: f32, secs: f32, rate: u32) -> Self {
+        let frames = (secs * rate as f32) as usize;
+        let period = (60.0 / bpm * rate as f32) as usize;
+        let burst = rate as usize * 2 / 1000;
+        let mut samples = vec![0.0f32; frames * 2];
+        for i in 0..frames {
+            let k = i % period;
+            if k < burst {
+                let env = 1.0 - k as f32 / burst as f32;
+                let v = 0.8 * env * (i as f32 / rate as f32 * 1000.0 * std::f32::consts::TAU).sin();
+                samples[2 * i] = v;
+                samples[2 * i + 1] = v;
+            }
+        }
+        info!("playback: click track {bpm} BPM, {secs} s at {rate} Hz");
+        Self {
+            samples,
+            sample_rate: rate,
+        }
+    }
+
     /// Decode a song file with the core's decoder (`decode` feature:
     /// symphonia; OGG Vorbis for the bundled track). Stereo interleaved at
     /// the file's own rate.
