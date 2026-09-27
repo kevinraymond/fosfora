@@ -20,7 +20,7 @@
 #     different parts of the music and late ones missed the drop altogether.
 #
 # Effect order is deterministic: `EffectLoader::scan_effects_directory` sorts by .pfx filename
-# and cycling skips `hidden` effects. The app boots on Phosphor (hidden), so the first
+# and cycling skips `hidden` effects. The app boots on Fosfora (hidden), so the first
 # next_effect lands on visible[1], not visible[0] — hence the wrap at the end.
 #
 # `--only` films a named subset without paying for the other 32. The ring is still walked in
@@ -252,7 +252,7 @@ step() { oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0; }
 # Step to Aurora before measuring. Motion detection needs something that animates edge to edge:
 # measuring against Array (a dark centre column on black) found only the lit middle and
 # under-reported the canvas by a third. Aurora's curtain bands fill the frame.
-# Boot is Phosphor (hidden) -> visible[1] Array -> visible[2] Aurora.
+# Boot is Fosfora (hidden) -> visible[1] Array -> visible[2] Aurora.
 step; sleep 0.8; step; sleep 3.0
 
 # Canvas geometry, both numbers straight from X.

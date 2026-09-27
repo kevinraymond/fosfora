@@ -32,7 +32,8 @@ pub const MAX_LAYERS: usize = 8;
 // If the binding-matrix UI ever enumerates its target columns from here instead
 // of building its own list, these become load-bearing everywhere and the gate
 // can go.
-/// `postfx.{leaf}` — applies to the **active** layer's post chain only.
+/// `postfx.{leaf}` — applies to Master's post-processing, which belongs to the
+/// preset rather than to any one layer (#3147).
 #[cfg(any(feature = "analyze", test))]
 pub const POSTFX_TARGETS: &[&str] = &[
     "bloom_threshold",

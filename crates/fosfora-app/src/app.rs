@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -17,7 +18,7 @@ use crate::gpu::particle::ParticleSystem;
 use crate::gpu::pass_executor::PassExecutor;
 use crate::gpu::placeholder::PlaceholderTexture;
 use crate::gpu::postprocess::PostProcessChain;
-use crate::gpu::render_target::PingPongTarget;
+use crate::gpu::render_target::{PingPongTarget, RenderTarget};
 use crate::gpu::shader_compiler::{CompileResult, ShaderCompiler};
 use crate::gpu::{GpuContext, ShaderPipeline, ShaderUniforms, UniformBuffer};
 use crate::media::MediaLayer;
@@ -71,11 +72,40 @@ pub struct App {
     pub preset_loader: PresetLoader,
     // Settings
     pub settings: SettingsConfig,
+    /// Theme files from the themes folder (#3125), read at startup and on
+    /// Reload in Appearance.
+    pub custom_themes: Vec<crate::ui::theme::custom::CustomTheme>,
     // Layers
     pub layer_stack: LayerStack,
     // Compositor + post-processing (separate from layer_stack to avoid borrow conflicts)
     pub compositor: Compositor,
     pub post_process: PostProcessChain,
+    /// Master post-processing (#3147): one setting for the whole preset,
+    /// saved with it. Each layer still carries its effect's own
+    /// `postprocess` block, but only as a suggestion — selecting a layer
+    /// never changes this. See [`App::adopt_layer_postprocess`].
+    pub master_postprocess: PostProcessDef,
+    /// What Master's post-processing was before it was last replaced by a
+    /// reset, for the inspector's way back. Cleared when a preset loads.
+    pub master_postprocess_previous: Option<PostProcessDef>,
+    /// The finished frame, off-screen (#3122). Post-processing renders here
+    /// instead of straight onto the swapchain, and the window gets a blit of
+    /// it. That indirection is what lets the v2 interface show the output as a
+    /// preview inside a panel, and lets a second window present the same frame,
+    /// without either of them re-running the post chain.
+    pub display: RenderTarget,
+    /// The v2 layer rows' pictures (#3123): each layer alone, and the stack
+    /// blended up to it. Tapped only while the workspace shell is on screen.
+    pub layer_thumbs: crate::gpu::layer_thumbs::LayerThumbs,
+    /// The v2 catalog's effect pictures, decoded on first use (#3124).
+    pub catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs,
+    /// The second output window, when one is open (#3122). It presents the
+    /// display target above and carries no interface. Opened and closed from
+    /// `main.rs`, where the `ActiveEventLoop` that can create a window lives.
+    pub output_window: Option<crate::output_window::OutputWindow>,
+    /// The displays the window system reports, refreshed periodically from the
+    /// event loop so the picker lists a projector plugged in mid-session.
+    pub displays: Vec<crate::output_window::DisplayInfo>,
     /// Volumetric Mode (R3): global toggle + params, applied to the active
     /// particle layer each frame. The renderer itself lives inside the layer's
     /// `ParticleSystem` (where the particle buffers are reachable).
@@ -124,6 +154,10 @@ pub struct App {
     /// eagerly at the timeline event instead would be clobbered by the async
     /// path, whose decode lands whole frames later.
     pub pending_cue_overrides: Option<usize>,
+    /// Media files decoding for new layers, oldest first. A video pre-decodes
+    /// every frame, which took ~15 s with the app frozen and nothing on
+    /// screen while it ran on this thread.
+    pub media_loads: Vec<MediaLoad>,
     pub midi_clock: MidiClock,
     /// Whether MIDI clock was playing last frame (for rising-edge transport detection).
     pub midi_clock_was_playing: bool,
@@ -182,11 +216,11 @@ impl App {
         let mut effect_loader = EffectLoader::new();
         effect_loader.scan_effects_directory();
 
-        // Prefer Phosphor as default, fall back to first effect
+        // Prefer the launch effect, fall back to the first one
         let default_idx = effect_loader
             .effects
             .iter()
-            .position(|e| e.name == "Phosphor")
+            .position(|e| e.name == crate::effect::loader::LAUNCH_EFFECT)
             .or(if effect_loader.effects.is_empty() {
                 None
             } else {
@@ -393,6 +427,8 @@ impl App {
             gpu.surface_config.height,
         );
 
+        let layer_thumbs = crate::gpu::layer_thumbs::LayerThumbs::new(&gpu.device);
+
         // Post-processing chain
         let post_process = PostProcessChain::new(
             &gpu.device,
@@ -400,6 +436,15 @@ impl App {
             hdr_format,
             gpu.surface_config.width,
             gpu.surface_config.height,
+        );
+
+        // Display target: the finished frame, in the surface's own format so the
+        // blit to the swapchain is a straight copy.
+        let display = Self::new_display(
+            &gpu.device,
+            gpu.surface_config.width,
+            gpu.surface_config.height,
+            gpu.format,
         );
 
         let shader_watcher = ShaderWatcher::new();
@@ -431,7 +476,16 @@ impl App {
         preset_store.scan();
         let mut scene_store = SceneStore::new();
         scene_store.scan();
-        let egui_overlay = EguiOverlay::new(&gpu.device, gpu.format, &window, settings.theme);
+        let custom_themes =
+            crate::ui::theme::custom::load_dir(&crate::ui::theme::custom::themes_dir());
+        let egui_overlay = EguiOverlay::new(
+            &gpu.device,
+            gpu.format,
+            &window,
+            settings.theme.palette(&custom_themes),
+            settings.ui_scale,
+        );
+        crate::ui::theme::custom::publish(&egui_overlay.context(), &custom_themes);
         #[cfg(feature = "ndi")]
         let ndi = crate::ndi::NdiSystem::new(
             &gpu.device,
@@ -481,7 +535,7 @@ impl App {
         let gpu_profiler = crate::gpu::profiler::Profiler::new(&gpu.device);
 
         let now = Instant::now();
-        Ok(Self {
+        let mut app = Self {
             gpu,
             mel_last_commit: None,
             mel_commit_interval: 1.0 / 43.0, // ~43 Hz audio-hop column rate
@@ -508,18 +562,27 @@ impl App {
             transition_renderer: None,
             dissolve_capture_pending: None,
             pending_cue_overrides: None,
+            media_loads: Vec::new(),
             midi_clock: MidiClock::new(),
             midi_clock_was_playing: false,
             midi_clock_beat_crossed: false,
             morph_from: None,
             morph_to: None,
             settings,
+            custom_themes,
             egui_overlay,
             effect_loader,
             window,
             layer_stack,
             compositor,
             post_process,
+            master_postprocess: PostProcessDef::default(),
+            master_postprocess_previous: None,
+            display,
+            layer_thumbs,
+            catalog_thumbs: crate::ui::catalog_thumbs::CatalogThumbs::shipped(),
+            output_window: None,
+            displays: Vec::new(),
             volumetric_enabled: false,
             volumetric_params: crate::gpu::volumetric::VolumetricParams::default(),
             placeholder,
@@ -562,7 +625,18 @@ impl App {
             depth_download: None,
             #[cfg(feature = "profiling")]
             gpu_profiler,
-        })
+        };
+        app.open_launch_stack();
+        Ok(app)
+    }
+
+    /// Close the second output window, if one is open (#3122). Dropping it
+    /// drops its surface with it — the surface holds the window alive, so the
+    /// two can only go together.
+    pub fn close_output_window(&mut self) {
+        if let Some(ow) = self.output_window.take() {
+            log::info!("Output window closed ({})", ow.display_name);
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -603,6 +677,10 @@ impl App {
             }
         }
         self.post_process.resize(&self.gpu.device, width, height);
+        self.display = Self::new_display(&self.gpu.device, width, height, self.gpu.format);
+        let display_view = self.display_view_for_egui();
+        self.egui_overlay
+            .set_display_texture(&self.gpu.device, &display_view);
         self.trama.resize(width, height);
         self.chain_targets.resize(width, height);
         self.egui_overlay
@@ -846,9 +924,7 @@ impl App {
             }
             if let Some(pp_enabled) = osc_result.postprocess_enabled {
                 self.post_process.enabled = pp_enabled;
-                if let Some(layer) = self.layer_stack.active_mut() {
-                    layer.postprocess.enabled = pp_enabled;
-                }
+                self.master_postprocess.enabled = pp_enabled;
             }
             if let Some(vol_enabled) = osc_result.volumetric_enabled {
                 self.volumetric_enabled = vol_enabled;
@@ -944,9 +1020,7 @@ impl App {
             }
             if let Some(pp_enabled) = web_result.postprocess_enabled {
                 self.post_process.enabled = pp_enabled;
-                if let Some(layer) = self.layer_stack.active_mut() {
-                    layer.postprocess.enabled = pp_enabled;
-                }
+                self.master_postprocess.enabled = pp_enabled;
             }
 
             // Handle effect loads from web
@@ -1355,16 +1429,7 @@ impl App {
         // No layer to select falls back to the master chain rather than
         // leaving last frame's id in place: that id may name a layer that is
         // gone, and the canvas would file the master graph under it.
-        if self.trama.canvas_open {
-            let active = self.layer_stack.active_layer;
-            self.trama.active_chain = match self.trama.canvas_target {
-                crate::trama::CanvasTarget::Master => crate::trama::node::ChainId::Master,
-                crate::trama::CanvasTarget::SelectedLayer => self
-                    .layer_stack
-                    .ensure_chain(active)
-                    .unwrap_or(crate::trama::node::ChainId::Master),
-            };
-        }
+        self.trama.resolve_active_chain(&mut self.layer_stack);
         self.trama.update(
             &mut self.layer_stack,
             dt,
@@ -1701,10 +1766,17 @@ impl App {
                             .postprocess
                             .clone()
                             .unwrap_or_default();
-                        self.layer_stack.layers[layer_idx].postprocess = pp;
-                        if layer_idx == self.layer_stack.active_layer {
-                            self.post_process.enabled =
-                                self.layer_stack.layers[layer_idx].postprocess.enabled;
+                        // Master follows an edited .pfx only while it is
+                        // still exactly what that effect suggested — someone
+                        // tuning the effect's file sees the change; someone
+                        // who has since tuned Master keeps their own.
+                        let old = std::mem::replace(
+                            &mut self.layer_stack.layers[layer_idx].postprocess,
+                            pp.clone(),
+                        );
+                        if self.master_postprocess == old {
+                            self.master_postprocess = pp;
+                            self.post_process.enabled = self.master_postprocess.enabled;
                         }
                     }
                 }
@@ -1744,6 +1816,43 @@ impl App {
             log::info!("Dropped {dropped} preset binding(s) targeting layer {layer_idx}");
         }
         self.load_effect_on_layer(layer_idx, index);
+    }
+
+    /// Put a catalog effect on the stack (#3124): onto a layer, replacing its
+    /// effect, or as a new layer at an index. Either way the layer it lands on
+    /// is selected, and — a user's pick, like [`Self::load_effect`] — starts
+    /// without the preset bindings that aimed at the effect it replaced.
+    /// Returns false when nothing changed: a locked layer, a full stack.
+    pub fn place_effect(
+        &mut self,
+        effect_index: usize,
+        at: crate::ui::panels::catalog_panel::CatalogDrop,
+    ) -> bool {
+        use crate::ui::panels::catalog_panel::CatalogDrop;
+        if effect_index >= self.effect_loader.effects.len() {
+            return false;
+        }
+        match at {
+            CatalogDrop::Replace(i) => {
+                if self.layer_stack.layers.get(i).is_none_or(|l| l.locked) {
+                    return false;
+                }
+                self.layer_stack.active_layer = i;
+            }
+            CatalogDrop::Insert(pos) => {
+                let n = self.layer_stack.layers.len();
+                self.add_layer();
+                if self.layer_stack.layers.len() == n {
+                    return false;
+                }
+                // add_layer appends at the bottom and selects it; the move
+                // carries the selection along.
+                self.move_layer(n, pos.min(n));
+                self.layer_stack.active_layer = pos.min(n);
+            }
+        }
+        self.load_effect(effect_index);
+        true
     }
 
     /// Load an effect on a specific layer.
@@ -1826,11 +1935,16 @@ impl App {
 
         match result {
             Ok(()) => {
-                // If this is the active layer, update global postprocess + grid
-                // selection — UI state, so it stays out of the shared core.
+                // An effect loaded onto the only layer IS the output, so its
+                // own post-processing becomes Master's. On a stack of several
+                // it stays a suggestion the Master inspector offers (#3147):
+                // an overlay on layer 5 asking for a linear tonemap must not
+                // restyle the four layers beneath it.
+                if self.layer_stack.layers.len() == 1 {
+                    self.adopt_layer_postprocess(layer_idx);
+                }
+                // Grid selection is UI state, so it stays out of the shared core.
                 if layer_idx == self.layer_stack.active_layer {
-                    self.post_process.enabled =
-                        self.layer_stack.layers[layer_idx].postprocess.enabled;
                     self.effect_loader.current_effect = Some(effect_index);
                 }
                 self.shader_watcher.drain_changes();
@@ -1915,24 +2029,138 @@ impl App {
         }
     }
 
-    /// Remove all layers and create one fresh layer with the Phosphor default effect.
+    /// The stack a launch opens with (#3126), and Clear stack returns to: an
+    /// empty Layer 1 over the launch effect as Layer 2, with Layer 1
+    /// selected. Expects the launch effect to be the only layer. The first effect
+    /// picked in the catalog lands on top of the F, so the stack shows a
+    /// blend (and the First run tour has one to explain) from the start.
+    fn open_launch_stack(&mut self) {
+        self.add_layer();
+        let n = self.layer_stack.layers.len();
+        if n < 2 {
+            return;
+        }
+        // add_layer appends at the bottom; the empty layer goes on top.
+        self.move_layer(n - 1, 0);
+        for (i, layer) in self.layer_stack.layers.iter_mut().enumerate() {
+            layer.name = format!("Layer {}", i + 1);
+        }
+        self.layer_stack.active_layer = 0;
+        self.sync_active_layer();
+    }
+
+    /// Remove all layers and start again from the launch stack (Clear
+    /// stack, New preset): the launch effect, and an empty Layer 1 over it.
     pub fn clear_all_layers(&mut self) {
+        self.cancel_media_loads();
         self.layer_stack.layers.clear();
         self.layer_stack.active_layer = 0;
         self.add_layer();
-        // Load Phosphor as default on the fresh layer
+        // Load the launch effect on the fresh layer
         if let Some(idx) = self
             .effect_loader
             .effects
             .iter()
-            .position(|e| e.name == "Phosphor")
+            .position(|e| e.name == crate::effect::loader::LAUNCH_EFFECT)
         {
             self.load_effect(idx);
         }
+        self.open_launch_stack();
     }
 
     /// Add a new media layer from a file path.
-    pub fn add_media_layer(&mut self, path: std::path::PathBuf) {
+    /// Start decoding a media file for a new layer, off this thread. The
+    /// layer appears when the decode finishes ([`Self::poll_media_loads`]);
+    /// until then [`Self::media_loads`] says how far it has got.
+    pub fn start_media_layer(&mut self, path: std::path::PathBuf) {
+        let max = crate::bindings::catalog::MAX_LAYERS;
+        if self.layer_stack.layers.len() + self.media_loads.len() >= max {
+            log::warn!("Maximum {max} layers reached");
+            return;
+        }
+        let progress = std::sync::Arc::new(crate::media::decoder::MediaProgress::default());
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (p, job) = (progress.clone(), path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("media-decode".into())
+            .spawn(move || {
+                let _ = tx.send(crate::media::decoder::load_media_with(&job, &p));
+            });
+        if let Err(e) = spawned {
+            self.status_error = Some((format!("Could not start loading: {e}"), Instant::now()));
+            return;
+        }
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        log::info!("Loading media: {}", path.display());
+        self.media_loads.push(MediaLoad {
+            path,
+            file_name,
+            progress,
+            rx,
+            started: Instant::now(),
+        });
+    }
+
+    /// Add the layers whose media finished decoding. Returns how many.
+    pub fn poll_media_loads(&mut self) -> usize {
+        let mut added = 0;
+        let mut i = 0;
+        while i < self.media_loads.len() {
+            match self.media_loads[i].rx.try_recv() {
+                Ok(result) => {
+                    let load = self.media_loads.remove(i);
+                    match result {
+                        Ok(source) => {
+                            log::info!(
+                                "Decoded {} in {:.1} s",
+                                load.file_name,
+                                load.started.elapsed().as_secs_f32()
+                            );
+                            self.add_media_layer_from_source(load.path, source);
+                            added += 1;
+                        }
+                        Err(e) if load.progress.cancel.load(Ordering::Relaxed) => {
+                            log::info!("Cancelled loading {}: {e}", load.file_name);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to load media '{}': {e}", load.path.display());
+                            self.status_error = Some((e, Instant::now()));
+                        }
+                    }
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => i += 1,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.media_loads.remove(i);
+                }
+            }
+        }
+        added
+    }
+
+    /// Stop decoding `index` of [`Self::media_loads`] (the UI's Cancel).
+    pub fn cancel_media_load(&mut self, index: usize) {
+        if index < self.media_loads.len() {
+            let load = self.media_loads.remove(index);
+            load.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Stop every pending decode: the stack it was meant for is being
+    /// replaced (a preset load, Clear stack).
+    pub fn cancel_media_loads(&mut self) {
+        for load in self.media_loads.drain(..) {
+            load.progress.cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn add_media_layer_from_source(
+        &mut self,
+        path: std::path::PathBuf,
+        source: crate::media::decoder::MediaSource,
+    ) {
         let num = self.layer_stack.layers.len();
         if num >= crate::bindings::catalog::MAX_LAYERS {
             log::warn!(
@@ -1941,33 +2169,24 @@ impl App {
             );
             return;
         }
-
-        match crate::media::decoder::load_media(&path) {
-            Ok(source) => {
-                let hdr_format = GpuContext::hdr_format();
-                let media_layer = MediaLayer::new(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    hdr_format,
-                    self.gpu.surface_config.width,
-                    self.gpu.surface_config.height,
-                    source,
-                    path.clone(),
-                );
-                let file_name = media_layer.file_name.clone();
-                let name = format!("Layer {}", num + 1);
-                self.layer_stack
-                    .layers
-                    .push(Layer::new_media(name, media_layer));
-                self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
-                self.sync_active_layer();
-                log::info!("Added media layer: {}", file_name);
-            }
-            Err(e) => {
-                log::error!("Failed to load media '{}': {e}", path.display());
-                self.status_error = Some((e, Instant::now()));
-            }
-        }
+        let hdr_format = GpuContext::hdr_format();
+        let media_layer = MediaLayer::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            hdr_format,
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+            source,
+            path,
+        );
+        let file_name = media_layer.file_name.clone();
+        let name = format!("Layer {}", num + 1);
+        self.layer_stack
+            .layers
+            .push(Layer::new_media(name, media_layer));
+        self.layer_stack.active_layer = self.layer_stack.layers.len() - 1;
+        self.sync_active_layer();
+        log::info!("Added media layer: {}", file_name);
     }
 
     /// Add a webcam layer. Starts capture if not already running.
@@ -2187,6 +2406,7 @@ impl App {
             layer_stack: &mut self.layer_stack,
             effects: &self.effect_loader.effects,
             uniforms: &mut self.uniforms,
+            postprocess: &mut self.master_postprocess,
             pending_triggers: &mut self.binding_bus.pending_triggers,
         };
         crate::bindings::apply::apply_binding_target(&mut ctx, target, value, rising);
@@ -2385,6 +2605,7 @@ impl App {
     }
 
     fn load_preset_inner(&mut self, index: usize) {
+        self.cancel_media_loads();
         let preset = match self.preset_store.load(index) {
             Some(p) => p.clone(),
             None => return,
@@ -2654,7 +2875,11 @@ impl App {
                         if path.exists() && crate::media::video::ffmpeg_available() {
                             match crate::media::video::probe_video(&path) {
                                 Ok(meta) => {
-                                    match crate::media::video::decode_all_frames(&path, &meta) {
+                                    match crate::media::video::decode_all_frames(
+                                        &path,
+                                        &meta,
+                                        &Default::default(),
+                                    ) {
                                         Ok((frames, delays_ms)) => {
                                             if let Some(ps) = self
                                                 .layer_stack
@@ -3020,9 +3245,8 @@ impl App {
             .active_layer
             .min(self.layer_stack.layers.len().saturating_sub(1));
         self.sync_active_layer();
-        if let Some(layer) = self.layer_stack.active_mut() {
-            layer.postprocess = preset.postprocess.clone();
-        }
+        self.master_postprocess = preset.postprocess.clone();
+        self.master_postprocess_previous = None;
         self.post_process.enabled = preset.postprocess.enabled;
         // Restore the global Volumetric (R3) mode. Disable when the preset has
         // no volumetric block so an earlier preset's volumetric can't bleed into
@@ -3126,34 +3350,106 @@ impl App {
         crate::gpu::layer::ChainBadge::of(&self.trama.master)
     }
 
-    /// Get the current postprocess def from active layer.
+    /// The display target: the finished frame, in the surface's own format so
+    /// the blit to the swapchain is a straight copy — and viewable without its
+    /// `-srgb` suffix, for [`Self::display_view_for_egui`].
+    fn new_display(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> RenderTarget {
+        let plain = format.remove_srgb_suffix();
+        let extra: &[wgpu::TextureFormat] = if plain == format { &[] } else { &[plain] };
+        RenderTarget::new_with_view_formats(device, width, height, format, 1.0, "display", extra)
+    }
+
+    /// The finished frame as egui must sample it: WITHOUT the `-srgb`
+    /// decode. egui-wgpu treats every sampled texture as gamma-encoded and
+    /// converts it to linear itself (`fs_main_linear_framebuffer`), so an
+    /// `-srgb` view is decoded twice — the output preview read darker and
+    /// more contrasty than the real output, much like the tonemap. The same
+    /// trap the trama previews document.
+    pub fn display_view_for_egui(&self) -> wgpu::TextureView {
+        self.display
+            .view_as(self.display.format.remove_srgb_suffix())
+    }
+
+    /// Master post-processing, as a preset saves it.
     pub fn current_postprocess(&self) -> PostProcessDef {
-        self.layer_stack
-            .active()
-            .map(|l| l.postprocess.clone())
-            .unwrap_or_default()
+        self.master_postprocess.clone()
+    }
+
+    /// Make layer `idx`'s effect's own post-processing Master's.
+    pub fn adopt_layer_postprocess(&mut self, idx: usize) {
+        if let Some(layer) = self.layer_stack.layers.get(idx) {
+            self.replace_master_postprocess(layer.postprocess.clone());
+        }
+    }
+
+    /// Replace Master's post-processing, keeping the settings it replaces as
+    /// the inspector's "Previous settings".
+    pub fn replace_master_postprocess(&mut self, pp: PostProcessDef) {
+        replace_keeping_previous(
+            &mut self.master_postprocess,
+            &mut self.master_postprocess_previous,
+            pp,
+        );
+        self.post_process.enabled = self.master_postprocess.enabled;
+    }
+
+    /// Go back to the settings the last replacement replaced. That keeps the
+    /// ones it leaves, so pressing it again comes back.
+    pub fn restore_previous_postprocess(&mut self) {
+        if let Some(prev) = self.master_postprocess_previous.clone() {
+            self.replace_master_postprocess(prev);
+        }
     }
 
     /// Load a scene and start its timeline.
     pub fn load_scene(&mut self, index: usize) {
-        let scene = match self.scene_store.load(index) {
-            Some(s) => s.clone(),
-            None => return,
-        };
-
-        self.scene_store.current_scene = Some(index);
-
-        self.timeline = Timeline::new(scene.cues.clone(), scene.loop_mode, scene.advance_mode);
-
+        if !self.open_scene(index) {
+            return;
+        }
         // Start at cue 0
         let event = self.timeline.start(0);
         self.process_timeline_event(event);
+    }
 
+    /// Make scene `index` the one being edited, without playing it: the
+    /// workspace opens a scene with a click and plays it with a double-click
+    /// (#3173). Returns false when there is no such scene.
+    pub fn open_scene(&mut self, index: usize) -> bool {
+        let Some(scene) = self.scene_store.load(index).cloned() else {
+            return false;
+        };
+        self.scene_store.current_scene = Some(index);
+        self.timeline = Timeline::new(scene.cues.clone(), scene.loop_mode, scene.advance_mode);
         log::info!(
-            "Loaded scene '{}' with {} cues",
+            "Opened scene '{}' with {} cues",
             scene.name,
             scene.cues.len()
         );
+        true
+    }
+
+    /// A new cue for `preset_name`, as the cue list adds one: a cut, and in
+    /// Timer mode a hold so the timer can advance.
+    pub fn new_cue(&self, preset_name: String) -> crate::scene::types::SceneCue {
+        let hold_secs = matches!(
+            self.timeline.advance_mode,
+            crate::scene::types::AdvanceMode::Timer
+        )
+        .then_some(4.0);
+        crate::scene::types::SceneCue {
+            preset_name,
+            transition: crate::scene::types::TransitionType::Cut,
+            transition_secs: 1.0,
+            hold_secs,
+            label: None,
+            param_overrides: Vec::new(),
+            transition_beats: None,
+        }
     }
 
     /// Auto-save current timeline state back to the active scene on disk.
@@ -3315,11 +3611,27 @@ impl App {
             .timeline
             .cues
             .iter()
-            .map(|c| crate::ui::panels::scene_panel::CueDisplayInfo {
-                preset_name: c.display_name().to_string(),
-                transition: c.transition,
-                transition_secs: c.transition_secs,
-                hold_secs: c.hold_secs,
+            .map(|c| {
+                let preset = self
+                    .preset_store
+                    .presets
+                    .iter()
+                    .find(|(n, _)| *n == c.preset_name)
+                    .map(|(_, p)| p);
+                crate::ui::panels::scene_panel::CueDisplayInfo {
+                    preset_name: c.display_name().to_string(),
+                    transition: c.transition,
+                    transition_secs: c.transition_secs,
+                    hold_secs: c.hold_secs,
+                    label: c.label.clone(),
+                    effect: preset.and_then(|p| {
+                        p.layers
+                            .iter()
+                            .find(|l| l.media_path.is_none() && l.webcam_device.is_none())
+                            .map(|l| l.effect_name.clone())
+                    }),
+                    layers: preset.map_or(0, |p| p.layers.len()),
+                }
             })
             .collect();
         crate::ui::panels::scene_panel::SceneInfo {
@@ -3349,6 +3661,66 @@ impl App {
                 }
             },
         )
+    }
+
+    /// Put the finished frame on the window — or don't.
+    ///
+    /// The v1 layout draws its panels over a full-window render, so the window
+    /// gets the composite. The workspace shell shows the output in a preview
+    /// instead, and blitting it full-window as well left the render glowing
+    /// through every panel's translucent fill. There the window gets the
+    /// interface's own ground, and the composite reaches the eye only through
+    /// the preview.
+    ///
+    /// Hiding the interface (F) means full output in either layout.
+    ///
+    /// A free function rather than a method: the frame holds
+    /// `&mut self.compositor` across this point, and `&self` collides with it.
+    /// These arguments are disjoint fields, which borrowck accepts.
+    #[allow(clippy::too_many_arguments)]
+    fn present_display(
+        device: &wgpu::Device,
+        post_process: &PostProcessChain,
+        display: &RenderTarget,
+        encoder: &mut wgpu::CommandEncoder,
+        surface_view: &wgpu::TextureView,
+        output_fills_window: bool,
+        ground: egui::Color32,
+    ) {
+        if output_fills_window {
+            post_process.blit_target(device, encoder, display, surface_view);
+            return;
+        }
+        let c = ground;
+        // The surface is sRGB; a clear color is given in linear space.
+        let lin = |v: u8| {
+            let s = v as f64 / 255.0;
+            if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shell-ground"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: surface_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: lin(c.r()),
+                        g: lin(c.g()),
+                        b: lin(c.b()),
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -3388,6 +3760,15 @@ impl App {
         // for the rest of the frame, and the resolver reads &self.
         let alpha_mode = self.resolve_output_alpha();
 
+        // The second output window's frame, taken here for the same reason:
+        // `acquire` needs `&mut self.output_window` and the compositor borrow
+        // below outlives every point where the blit is actually encoded. `None`
+        // means no window is open, or its surface skipped this frame.
+        let output_frame = match self.output_window {
+            Some(ref mut ow) => ow.acquire(&self.gpu.device),
+            None => None,
+        };
+
         // Previews while patching in Layers mode: `execute_and_composite`
         // only runs the trama executor in Trama mode, which would leave the
         // canvas thumbnails frozen while building a patch before switching
@@ -3414,13 +3795,19 @@ impl App {
             trama.drop_chain(chain);
         });
 
+        // Only the workspace shell draws layer rows with pictures; the Classic
+        // panels and a hidden interface pay nothing for them.
+        let tap_thumbs = !self.settings.classic_layout && self.egui_overlay.visible;
+
         // Compute the HDR source from layer execution + compositing — shared
         // with the dissolve re-render below and the headless renderer.
-        let (source, postprocess) = crate::gpu::frame_graph::execute_and_composite(
+        let postprocess = self.master_postprocess.clone();
+        let source = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
             &mut self.compositor,
             Some(&mut self.trama),
             &self.chain_targets,
+            tap_thumbs.then_some(&self.layer_thumbs),
             &self.gpu.device,
             &self.gpu.queue,
             &mut encoder,
@@ -3462,11 +3849,14 @@ impl App {
             targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
                 trama.drop_chain(chain);
             });
-            let (new_source, new_pp) = crate::gpu::frame_graph::execute_and_composite(
+            // The preset just loaded set Master's post-processing.
+            let new_pp = self.master_postprocess.clone();
+            let new_source = crate::gpu::frame_graph::execute_and_composite(
                 &self.layer_stack,
                 &mut self.compositor,
                 Some(&mut self.trama),
                 &self.chain_targets,
+                tap_thumbs.then_some(&self.layer_thumbs),
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
@@ -3496,13 +3886,13 @@ impl App {
             } else {
                 new_source
             };
-            // Post-process → surface
+            // Post-process → display target, then blit that to the window (#3122)
             self.post_process.render(
                 &self.gpu.device,
                 &self.gpu.queue,
                 &mut encoder,
                 source,
-                &surface_view,
+                &self.display.view,
                 self.uniforms.time,
                 self.uniforms.rms,
                 self.uniforms.onset,
@@ -3510,6 +3900,36 @@ impl App {
                 &new_pp,
                 alpha_mode,
             );
+            Self::present_display(
+                &self.gpu.device,
+                &self.post_process,
+                &self.display,
+                &mut encoder,
+                &surface_view,
+                self.settings.classic_layout || !self.egui_overlay.visible,
+                self.egui_overlay.palette.bg,
+            );
+            if tap_thumbs {
+                self.layer_thumbs.tap(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.display.view,
+                    crate::gpu::layer_thumbs::ThumbKind::Master,
+                    0,
+                );
+            }
+            // Second output window: the same finished frame, full-window, with
+            // no interface over it (#3122).
+            if let Some((ref frame, ref view)) = output_frame {
+                self.post_process.blit_target_letterboxed(
+                    &self.gpu.device,
+                    &mut encoder,
+                    &self.display,
+                    view,
+                    frame.texture.width(),
+                    frame.texture.height(),
+                );
+            }
 
             // NDI capture
             #[cfg(feature = "ndi")]
@@ -3614,6 +4034,9 @@ impl App {
             }
 
             output.present();
+            if let Some((frame, _)) = output_frame {
+                frame.present();
+            }
             return Ok(());
         }
 
@@ -3644,20 +4067,68 @@ impl App {
             source
         };
 
-        // Post-process → surface
-        self.post_process.render(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &mut encoder,
-            source,
-            &surface_view,
-            self.uniforms.time,
-            self.uniforms.rms,
-            self.uniforms.onset,
-            self.uniforms.flatness,
-            &postprocess,
-            alpha_mode,
-        );
+        // Post-process → display target, then blit that to the window (#3122).
+        // Both are scoped so the profiler reports the indirection's own cost:
+        // `display-blit` is exactly what the off-screen target added.
+        {
+            #[cfg(feature = "profiling")]
+            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+            #[cfg(not(feature = "profiling"))]
+            let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            let mut scope = profiler.scope("post", &mut encoder);
+            self.post_process.render(
+                &self.gpu.device,
+                &self.gpu.queue,
+                scope.encoder(),
+                source,
+                &self.display.view,
+                self.uniforms.time,
+                self.uniforms.rms,
+                self.uniforms.onset,
+                self.uniforms.flatness,
+                &postprocess,
+                alpha_mode,
+            );
+        }
+        {
+            #[cfg(feature = "profiling")]
+            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
+            #[cfg(not(feature = "profiling"))]
+            let profiler = crate::gpu::profiler::ProfilerHandle::none();
+            let mut scope = profiler.scope("display-blit", &mut encoder);
+            Self::present_display(
+                &self.gpu.device,
+                &self.post_process,
+                &self.display,
+                scope.encoder(),
+                &surface_view,
+                self.settings.classic_layout || !self.egui_overlay.visible,
+                self.egui_overlay.palette.bg,
+            );
+            // Master's row picture, from the finished frame (#3123).
+            if tap_thumbs {
+                self.layer_thumbs.tap(
+                    &self.gpu.device,
+                    scope.encoder(),
+                    &self.display.view,
+                    crate::gpu::layer_thumbs::ThumbKind::Master,
+                    0,
+                );
+            }
+            // Second output window: the same finished frame, full-window, with
+            // no interface over it (#3122). Inside the `display-blit` scope so
+            // the profiler counts what the second present costs.
+            if let Some((ref frame, ref view)) = output_frame {
+                self.post_process.blit_target_letterboxed(
+                    &self.gpu.device,
+                    scope.encoder(),
+                    &self.display,
+                    view,
+                    frame.texture.width(),
+                    frame.texture.height(),
+                );
+            }
+        }
 
         // NDI capture: render composite to capture texture + copy to staging
         #[cfg(feature = "ndi")]
@@ -3767,6 +4238,9 @@ impl App {
         }
 
         output.present();
+        if let Some((frame, _)) = output_frame {
+            frame.present();
+        }
 
         Ok(())
     }
@@ -3976,6 +4450,15 @@ fn changes_touch_effect(
             .is_some_and(|pd| touches(&pd.compute_shader))
 }
 
+/// A media file decoding for a new layer on its own thread.
+pub struct MediaLoad {
+    pub path: std::path::PathBuf,
+    pub file_name: String,
+    pub progress: std::sync::Arc<crate::media::decoder::MediaProgress>,
+    rx: crossbeam_channel::Receiver<Result<crate::media::decoder::MediaSource, String>>,
+    pub started: Instant,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4037,5 +4520,37 @@ mod tests {
             &[PathBuf::from("/assets/shaders/unrelated.wgsl")],
             false
         ));
+    }
+}
+
+/// `*current = new`, with the old value kept in `previous`. Replacing a value
+/// with itself keeps the older `previous`: a reset that changed nothing must
+/// not lose the way back.
+fn replace_keeping_previous<T: PartialEq>(current: &mut T, previous: &mut Option<T>, new: T) {
+    if *current != new {
+        *previous = Some(std::mem::replace(current, new));
+    }
+}
+
+#[cfg(test)]
+mod postprocess_reset_tests {
+    use super::replace_keeping_previous;
+
+    #[test]
+    fn a_replacement_keeps_the_way_back_and_going_back_swaps() {
+        let (mut cur, mut prev) = ("mine", None);
+        replace_keeping_previous(&mut cur, &mut prev, "sumi");
+        assert_eq!((cur, prev), ("sumi", Some("mine")));
+        // "Previous settings" is a replacement with the previous value.
+        let back = prev.unwrap();
+        replace_keeping_previous(&mut cur, &mut prev, back);
+        assert_eq!((cur, prev), ("mine", Some("sumi")));
+    }
+
+    #[test]
+    fn a_replacement_that_changes_nothing_keeps_the_older_way_back() {
+        let (mut cur, mut prev) = ("sumi", Some("mine"));
+        replace_keeping_previous(&mut cur, &mut prev, "sumi");
+        assert_eq!((cur, prev), ("sumi", Some("mine")));
     }
 }

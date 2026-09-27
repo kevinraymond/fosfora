@@ -124,7 +124,7 @@ pub struct PostProcessDef {
     pub vignette_enabled: bool,
     #[serde(default = "default_true")]
     pub grain_enabled: bool,
-    /// Tonemap operator: "aces" (default, Phosphor house look) or "linear"
+    /// Tonemap operator: "aces" (default, Fosfora house look) or "linear"
     /// (raw passthrough clamp, matching SuperSplat for the Splat effect).
     #[serde(default = "default_tonemap")]
     pub tonemap: String,
@@ -218,8 +218,11 @@ pub struct PfxEffect {
     /// If true, effect is hidden from UI (not shown in effects panel or next/prev cycling).
     #[serde(default)]
     pub hidden: bool,
-    /// Browser grouping bucket: `"effect"` (default) lists normally, `"overlay"` groups
-    /// under the Overlay section. Free-form so future families need no schema change.
+    /// The catalog family: one of `ui::panels::catalog_panel::FAMILIES`
+    /// (`"particles"`, `"fluid"`, `"life"`, `"pattern"`, `"3d"`, `"media"`,
+    /// `"overlay"`). `"effect"`, the default, names none and lists under Other.
+    /// Classic's panel groups `"overlay"` on its own. A test holds every
+    /// shipped effect to a family.
     #[serde(
         default = "default_category",
         skip_serializing_if = "is_default_category"

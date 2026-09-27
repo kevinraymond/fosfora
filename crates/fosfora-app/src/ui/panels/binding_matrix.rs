@@ -1,3 +1,4 @@
+use crate::ui::theme::tokens::SMALL_SIZE;
 use std::collections::{HashMap, HashSet};
 
 use egui::{
@@ -29,7 +30,7 @@ pub enum ScopeTab {
 /// then pick both ends from combo boxes that re-listed all ~330 sources and
 /// ~150 targets with no filter. Clicking a row on either side now arms it, and
 /// clicking a row on the other side completes the binding.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum ArmedEnd {
     Source(String),
     Target(BindingTarget),
@@ -72,6 +73,18 @@ pub struct BindingMatrixState {
     pub flow_phase: f32,
     /// Cached texture handles for WS bridge preview thumbnails.
     pub preview_textures: HashMap<String, egui::TextureHandle>,
+    /// A tour opened it, and it goes away when the tour does.
+    pub held_by_tour: bool,
+    /// The binding of a tour step that picks a source
+    /// ([`crate::ui::tour::Matrix::PickSource`]): while that step shows, a
+    /// source click changes its source instead of starting another.
+    pub tour_binding: Option<BindingId>,
+    /// This frame: the target a source click binds straight away, without
+    /// arming the source first (the tour binding's, on its step).
+    repoint: Option<BindingTarget>,
+    /// Where the cards column was laid out this frame, at the width it was
+    /// given.
+    pub(crate) cards_rect: Rect,
 }
 
 impl BindingMatrixState {
@@ -114,6 +127,10 @@ impl BindingMatrixState {
             hovered_binding_id: None,
             flow_phase: 0.0,
             preview_textures: HashMap::new(),
+            held_by_tour: false,
+            tour_binding: None,
+            repoint: None,
+            cards_rect: Rect::NOTHING,
         }
     }
 }
@@ -121,6 +138,123 @@ impl BindingMatrixState {
 // ---------------------------------------------------------------------------
 // Main draw function
 // ---------------------------------------------------------------------------
+
+/// One frame of the matrix, as the app runs it: take the requests to open
+/// it, then draw it if it is open. `main.rs` and the shell tests both call
+/// this, so the tests open and drive the matrix the way the app does.
+/// `info` is built only when the matrix shows.
+///
+/// The requests, all from the interface drawn earlier in the frame:
+/// - `open_binding_matrix`: open it.
+/// - `bind_param` (layer, control): a control's Bind. Open its binding if
+///   it has one, else pick it as the target, so one click on a source
+///   finishes the binding.
+/// - a tour step: the tour holds the matrix open or shut while it shows
+///   ([`crate::ui::tour::matrix_wanted`]), and may ask for the selected
+///   layer's first control as the target. A matrix the tour opened closes
+///   when the tour ends.
+pub fn frame(
+    ctx: &Context,
+    state: &mut BindingMatrixState,
+    bus: &mut BindingBus,
+    info: impl FnOnce() -> BindingPanelInfo,
+) {
+    let (open_requested, bind_param, arm_first) = ctx.data_mut(|d| {
+        (
+            d.remove_temp::<bool>(Id::new("open_binding_matrix"))
+                .unwrap_or(false),
+            d.remove_temp::<(usize, String)>(Id::new("bind_param")),
+            d.remove_temp::<bool>(Id::new(crate::ui::tour::ARM_FIRST_PARAM))
+                .unwrap_or(false),
+        )
+    });
+    if open_requested || bind_param.is_some() {
+        state.open = true;
+        ctx.data_mut(|d| d.insert_temp(Id::new("binding_matrix_just_opened"), true));
+    }
+    match crate::ui::tour::matrix_wanted(ctx) {
+        Some(want) => {
+            state.held_by_tour = want;
+            state.open = want;
+        }
+        // Skipped or ended on a step inside it: the tour opened it, so
+        // leaving the tour puts it away, as Esc in main.rs would.
+        None if state.held_by_tour => {
+            state.held_by_tour = false;
+            state.open = false;
+        }
+        None => {}
+    }
+    if !state.open {
+        return;
+    }
+    let info = info();
+    let param = bind_param.or_else(|| {
+        arm_first
+            .then(|| info.active_param_names().first().cloned())
+            .flatten()
+            .map(|p| (info.active_layer, p))
+    });
+    if let Some((layer, param)) = param {
+        let effect = info
+            .layers
+            .iter()
+            .find(|l| l.index == layer)
+            .map(|l| l.effect_name.clone())
+            .unwrap_or_default();
+        let target = BindingTarget::Param {
+            layer,
+            effect,
+            param,
+        };
+        let opened = focus_target(state, bus, target);
+        if arm_first {
+            // The tour's pick-a-source step: its binding is the one the
+            // control already has (back on the step, or made before the
+            // tour), else the one the first click makes.
+            state.tour_binding = opened;
+        }
+    }
+    draw_binding_matrix(ctx, state, bus, &info);
+}
+
+/// Show `target`: its binding's card open if something drives it, else the
+/// target picked, waiting for a source. Either way its group is open in the
+/// right-hand column. Returns the binding it opened, if it opened one.
+fn focus_target(
+    state: &mut BindingMatrixState,
+    bus: &BindingBus,
+    target: BindingTarget,
+) -> Option<BindingId> {
+    state.source_filter.clear();
+    state.target_filter.clear();
+    if let BindingTarget::Param { layer, effect, .. } = &target {
+        state
+            .expanded_target_groups
+            .insert(param_group_label(*layer, effect));
+    }
+    match bus
+        .bindings
+        .iter()
+        .find(|b| !b.source.is_empty() && b.target.same_destination(&target))
+    {
+        Some(b) => {
+            state.scope_tab = match b.scope {
+                BindingScope::Preset => ScopeTab::Effect,
+                BindingScope::Global => ScopeTab::Global,
+            };
+            state.expanded_binding_id = Some(b.id.clone());
+            state.armed = None;
+            Some(b.id.clone())
+        }
+        None => {
+            // A layer's control belongs with the preset.
+            state.scope_tab = ScopeTab::Effect;
+            state.armed = Some(ArmedEnd::Target(target));
+            None
+        }
+    }
+}
 
 pub fn draw_binding_matrix(
     ctx: &Context,
@@ -144,14 +278,28 @@ pub fn draw_binding_matrix(
     state.card_positions.clear();
     state.hovered_binding_id = None;
 
+    // A tour holds the matrix open while a step points into it (#3127): the
+    // ways to close it are off, and it draws under the tour's dimming.
+    let touring = crate::ui::tour::is_running(ctx);
+
+    // In the workspace the matrix covers Build's stack and inspector and stops
+    // at the output column (#3125); in Classic it has the whole window.
+    let bounded = crate::ui::modal::bounds(ctx);
     #[allow(deprecated)]
-    let screen = ctx.input(|i| i.screen_rect());
+    let screen = bounded.unwrap_or_else(|| ctx.input(|i| i.screen_rect()));
     let tc = theme_colors(ctx);
 
-    // Backdrop — paint a dimming rectangle over the whole screen
-    let backdrop_layer = egui::LayerId::new(Order::Middle, Id::new("matrix_backdrop"));
-    let painter = ctx.layer_painter(backdrop_layer);
-    painter.rect_filled(screen, 0.0, tc.backdrop);
+    // Backdrop: dims what the matrix covers. In the workspace it also takes
+    // the clicks, so nothing under the matrix reacts to them.
+    let mut backdrop_layer = None;
+    if bounded.is_some() {
+        let r = crate::ui::modal::backdrop(ctx, "matrix_backdrop", screen);
+        backdrop_layer = Some(r.layer_id);
+    } else {
+        let backdrop_layer = egui::LayerId::new(Order::Middle, Id::new("matrix_backdrop"));
+        let painter = ctx.layer_painter(backdrop_layer);
+        painter.rect_filled(screen, 0.0, tc.backdrop);
+    }
 
     // Reads LAST frame's popup state (sampled before this frame's widgets),
     // so the click/Esc that dismisses a popup — source picker, target combo,
@@ -166,7 +314,7 @@ pub fn draw_binding_matrix(
     }
 
     // Area for the matrix content — centered on window width, max width capped
-    let margin = 40.0;
+    let margin = if bounded.is_some() { 12.0 } else { 40.0 };
     let frame_pad = 12.0; // inner_margin on the frame below
     let max_w = 1200.0;
     let actual_w = (screen.width() - margin * 2.0).min(max_w);
@@ -176,12 +324,24 @@ pub fn draw_binding_matrix(
         pos2(screen.min.x + x_offset + actual_w, screen.max.y - margin),
     );
 
+    // Foreground, over its backdrop; during a tour, Middle, where the tour's
+    // dimming can cover it. Middle is also where the backdrop is, so the
+    // matrix is made the backdrop's sublayer: egui puts it directly above
+    // the backdrop and leaves the dimming over both.
+    let order = if touring {
+        Order::Middle
+    } else {
+        Order::Foreground
+    };
     let area_resp = egui::Area::new(Id::new("binding_matrix_area"))
-        .order(Order::Foreground)
+        .order(order)
         .fixed_pos(content_rect.min)
         .show(ctx, |ui| {
+            // Solid, like every other surface of the interface: the output
+            // behind it is dimmed by the backdrop, not read through it.
             let frame = egui::Frame::new()
-                .fill(Color32::TRANSPARENT)
+                .fill(tc.panel)
+                .stroke(egui::Stroke::new(1.0_f32, tc.card_border))
                 .corner_radius(8.0)
                 .inner_margin(egui::Margin::same(12));
 
@@ -202,14 +362,26 @@ pub fn draw_binding_matrix(
                 // One target-option build per frame, shared by both columns.
                 let targets = build_target_options(info);
 
+                // On the tour's pick-a-source step, once its binding exists,
+                // a source click is that binding's new source.
+                let picking = crate::ui::tour::picks_source(ui.ctx());
+                let tour_binding = state
+                    .tour_binding
+                    .clone()
+                    .filter(|id| picking && bus.get_binding(id).is_some());
+                state.repoint = tour_binding
+                    .as_ref()
+                    .and_then(|id| bus.get_binding(id))
+                    .map(|b| b.target.clone());
+
                 // Three columns
                 let avail = ui.available_size();
                 let col_source_w = 240.0;
                 let col_target_w = 240.0;
                 let col_center_w = (avail.x - col_source_w - col_target_w - 24.0).max(200.0);
 
-                // Fully opaque side panels (tc.panel may have ~90% alpha)
-                let side_bg = Color32::from_rgb(tc.panel.r(), tc.panel.g(), tc.panel.b());
+                // The three columns are cards on the frame.
+                let side_bg = tc.card_bg;
                 let side_pad = 6.0;
 
                 // Set by whichever column completed a click-to-bind this frame;
@@ -231,6 +403,8 @@ pub fn draw_binding_matrix(
                             }
                         });
                     });
+                    let col = left_resp.response.rect;
+                    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::MatrixSources, col);
                     ui.painter().set(
                         left_bg_idx,
                         egui::Shape::rect_filled(left_resp.response.rect, 6.0, side_bg),
@@ -238,25 +412,22 @@ pub fn draw_binding_matrix(
 
                     ui.add_space(8.0);
 
-                    // Center: Binding cards (semi-transparent bg)
+                    // Center: Binding cards
                     let center_bg_idx = ui.painter().add(egui::Shape::Noop);
                     let center_resp = ui.vertical(|ui| {
                         ui.set_width(col_center_w);
                         ui.set_height(avail.y - 60.0);
                         draw_center_column(ui, state, bus, info, &targets);
                     });
+                    let col = center_resp.response.rect;
+                    // The width it is given: a row too wide for it widens
+                    // the response instead of stopping at the edge.
+                    state.cards_rect =
+                        Rect::from_min_size(col.min, egui::vec2(col_center_w, col.height()));
+                    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::MatrixCards, col);
                     ui.painter().set(
                         center_bg_idx,
-                        egui::Shape::rect_filled(
-                            center_resp.response.rect,
-                            6.0,
-                            Color32::from_rgba_unmultiplied(
-                                tc.panel.r(),
-                                tc.panel.g(),
-                                tc.panel.b(),
-                                128,
-                            ),
-                        ),
+                        egui::Shape::rect_filled(center_resp.response.rect, 6.0, side_bg),
                     );
 
                     ui.add_space(8.0);
@@ -274,6 +445,8 @@ pub fn draw_binding_matrix(
                             }
                         });
                     });
+                    let col = right_resp.response.rect;
+                    crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::MatrixTargets, col);
                     ui.painter().set(
                         right_bg_idx,
                         egui::Shape::rect_filled(right_resp.response.rect, 6.0, side_bg),
@@ -283,11 +456,25 @@ pub fn draw_binding_matrix(
                 // A click-to-bind completed: create it and open its card, so the
                 // transforms and the name are one click away rather than a hunt.
                 if let Some((source, target)) = pending_bind {
-                    let scope = match state.scope_tab {
-                        ScopeTab::Effect => BindingScope::Preset,
-                        ScopeTab::Global => BindingScope::Global,
+                    let id = match tour_binding {
+                        Some(id) => {
+                            if let Some(b) = bus.get_binding_mut(&id) {
+                                b.source = source;
+                            }
+                            id
+                        }
+                        None => {
+                            let scope = match state.scope_tab {
+                                ScopeTab::Effect => BindingScope::Preset,
+                                ScopeTab::Global => BindingScope::Global,
+                            };
+                            let id = bus.add_binding(source, target, scope);
+                            if picking {
+                                state.tour_binding = Some(id.clone());
+                            }
+                            id
+                        }
                     };
-                    let id = bus.add_binding(source, target, scope);
                     state.expanded_binding_id = Some(id);
                 }
 
@@ -295,6 +482,10 @@ pub fn draw_binding_matrix(
                 draw_footer(ui, state, bus);
             });
         });
+
+    if touring && let Some(backdrop) = backdrop_layer {
+        ctx.set_sublayer(backdrop, area_resp.response.layer_id);
+    }
 
     // Close on click outside the content area (skip on the frame the matrix was just opened)
     let just_opened = ctx.data_mut(|d| {
@@ -306,19 +497,36 @@ pub fn draw_binding_matrix(
             d.insert_temp(egui::Id::new("binding_matrix_just_opened"), false);
         });
     } else {
+        // Beside the matrix, but not on the output column it leaves open.
         let clicked_outside = ctx.input(|i| {
             i.pointer.any_click()
-                && i.pointer
-                    .interact_pos()
-                    .is_some_and(|pos| !area_resp.response.rect.contains(pos))
+                && i.pointer.interact_pos().is_some_and(|pos| {
+                    !area_resp.response.rect.contains(pos) && screen.contains(pos)
+                })
         });
-        if clicked_outside && !popup_was_open {
+        if clicked_outside && !popup_was_open && !touring {
             state.open = false;
         }
     }
 
-    // Draw connection lines (Pass 2 — after layout)
-    draw_connections(ctx, state, bus);
+    // Draw connection lines (Pass 2 — after layout), over the columns on
+    // the matrix's own layer, so whatever covers the matrix covers them.
+    draw_connections(ctx, area_resp.response.layer_id, state, bus);
+}
+
+/// A row's dot in the side columns: filled in `color` when the row is bound,
+/// an outline in the dim text color when not, so bound reads without hue.
+fn bound_dot(ui: &egui::Ui, center: egui::Pos2, radius: f32, bound: bool, color: Color32) {
+    let tc = theme_colors(ui.ctx());
+    if bound {
+        ui.painter().circle_filled(center, radius, color);
+    } else {
+        ui.painter().circle_stroke(
+            center,
+            radius - 0.5,
+            egui::Stroke::new(1.0_f32, tc.text_dim),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,18 +559,20 @@ fn draw_header(
             let active = info.layers.iter().find(|l| l.index == info.active_layer);
             let (label, known) = match active {
                 Some(l) if !l.effect_name.is_empty() => (
-                    format!("Layer {} \u{2022} {}", l.index, l.effect_name),
+                    format!("Layer {} \u{2022} {}", l.index + 1, l.effect_name),
                     true,
                 ),
                 _ => (
-                    format!("Layer {} \u{2022} no effect", info.active_layer),
+                    format!("Layer {} \u{2022} no effect", info.active_layer + 1),
                     false,
                 ),
             };
             let fg = if known { tc.accent } else { tc.text_dim };
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(label.clone(), egui::FontId::proportional(11.0), fg);
+            let galley = ui.painter().layout_no_wrap(
+                label.clone(),
+                egui::FontId::proportional(SMALL_SIZE),
+                fg,
+            );
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(galley.size().x + 16.0, 22.0), Sense::hover());
             ui.painter()
@@ -380,7 +590,7 @@ fn draw_header(
             );
             resp.on_hover_text(if known {
                 "Templates apply here, and the Params group below belongs to this layer.\n\
-                 Switch layers in the Layers panel to bind a different one."
+                 Select a different layer in the stack to bind that one."
             } else {
                 "This layer has no effect loaded, so it has no parameters to bind."
             });
@@ -394,7 +604,11 @@ fn draw_header(
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let (r, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 3.0, color);
-                ui.label(RichText::new(label).size(8.0).color(tc.text_secondary));
+                ui.label(
+                    RichText::new(label)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
             });
         };
         legend(ui, AUDIO_COLOR, "Audio");
@@ -405,24 +619,24 @@ fn draw_header(
         ui.add_space(12.0);
 
         // Scope tabs
-        let tab_btn = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
+        // The active tab is the inverted selection fill (#3125).
+        let tab_btn = |ui: &mut egui::Ui, label: &str, active: bool| -> egui::Response {
             let color = if active {
-                tc.text_primary
+                tc.on_selection
             } else {
                 tc.text_secondary
             };
             let fill = if active {
-                tc.hover_fill
+                tc.selection
             } else {
                 Color32::TRANSPARENT
             };
             ui.add(
-                egui::Button::new(RichText::new(label).size(10.0).color(color))
+                egui::Button::new(RichText::new(label).size(SMALL_SIZE).color(color))
                     .fill(fill)
                     .corner_radius(4.0)
                     .min_size(egui::vec2(60.0, 20.0)),
             )
-            .clicked()
         };
         let (fx_on, gl_on) = bus.bindings.iter().fold((0usize, 0usize), |(f, g), b| {
             if !b.enabled {
@@ -433,32 +647,38 @@ fn draw_header(
                 (f, g + 1)
             }
         });
+        // "Preset", not "Effect": these are saved with the preset, whichever
+        // effects it runs (the scope has always been BindingScope::Preset).
         let fx_label = if fx_on > 0 {
-            format!("Effect ({fx_on})")
+            format!("Preset ({fx_on})")
         } else {
-            "Effect".to_string()
+            "Preset".to_string()
         };
         let gl_label = if gl_on > 0 {
             format!("Global ({gl_on})")
         } else {
             "Global".to_string()
         };
-        if tab_btn(ui, &fx_label, state.scope_tab == ScopeTab::Effect) {
+        let fx = tab_btn(ui, &fx_label, state.scope_tab == ScopeTab::Effect)
+            .on_hover_text("Saved with the preset when you save it");
+        if fx.clicked() {
             state.scope_tab = ScopeTab::Effect;
         }
-        if tab_btn(ui, &gl_label, state.scope_tab == ScopeTab::Global) {
+        let gl = tab_btn(ui, &gl_label, state.scope_tab == ScopeTab::Global)
+            .on_hover_text("Kept whichever preset is loaded");
+        if gl.clicked() {
             state.scope_tab = ScopeTab::Global;
         }
 
         // Templates
         ui.add_space(8.0);
-        egui::ComboBox::from_id_salt("matrix_templates")
-            .selected_text(RichText::new("Templates").size(9.0))
+        let templates = egui::ComboBox::from_id_salt("matrix_templates")
+            .selected_text(RichText::new("Templates").size(SMALL_SIZE))
             .width(100.0)
             .show_ui(ui, |ui| {
                 for tmpl in templates::builtin_templates() {
                     if ui
-                        .button(RichText::new(tmpl.name).size(9.0))
+                        .button(RichText::new(tmpl.name).size(SMALL_SIZE))
                         .on_hover_text(tmpl.description)
                         .clicked()
                     {
@@ -474,11 +694,15 @@ fn draw_header(
                     }
                 }
             });
+        let scope = fx.rect.union(gl.rect).union(templates.response.rect);
+        crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::MatrixScope, scope);
 
         // Right: close button
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let touring = crate::ui::tour::is_running(ui.ctx());
             if ui
-                .add(
+                .add_enabled(
+                    !touring,
                     egui::Button::new(
                         RichText::new("\u{00d7}")
                             .size(16.0)
@@ -486,6 +710,7 @@ fn draw_header(
                     )
                     .frame(false),
                 )
+                .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
                 .clicked()
             {
                 state.open = false;
@@ -507,16 +732,20 @@ fn draw_filter_box(ui: &mut egui::Ui, filter: &mut String, id: &str) {
         ui.add(
             egui::TextEdit::singleline(filter)
                 .id_salt(id)
-                .hint_text(RichText::new("filter").size(8.0))
+                .hint_text(RichText::new("filter").size(SMALL_SIZE))
                 .desired_width(width)
-                .font(egui::FontId::proportional(9.0)),
+                .font(egui::FontId::proportional(SMALL_SIZE)),
         );
         if !filter.is_empty()
             && ui
                 .add(
-                    egui::Button::new(RichText::new("\u{00d7}").size(9.0).color(tc.text_dim))
-                        .frame(false)
-                        .min_size(egui::vec2(14.0, 14.0)),
+                    egui::Button::new(
+                        RichText::new("\u{00d7}")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_dim),
+                    )
+                    .frame(false)
+                    .min_size(egui::vec2(14.0, 14.0)),
                 )
                 .on_hover_text("Clear filter")
                 .clicked()
@@ -537,7 +766,7 @@ fn draw_source_column(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("SOURCES")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .strong()
                 .color(tc.text_secondary),
         );
@@ -558,7 +787,7 @@ fn draw_source_column(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
+                    egui::Button::new(RichText::new(icon).size(SMALL_SIZE).color(tc.text_dim))
                         .frame(false)
                         .min_size(egui::vec2(14.0, 14.0)),
                 )
@@ -638,7 +867,7 @@ fn draw_source_column(
                     } else {
                         "no sources yet"
                     })
-                    .size(8.0)
+                    .size(SMALL_SIZE)
                     .color(tc.text_dim),
                 );
             }
@@ -724,7 +953,7 @@ fn draw_source_group(
         Pos2::new(x, cy),
         egui::Align2::LEFT_CENTER,
         caret,
-        egui::FontId::proportional(7.0),
+        egui::FontId::proportional(SMALL_SIZE),
         tc.text_secondary,
     );
     x += 12.0;
@@ -732,7 +961,7 @@ fn draw_source_group(
     // Label
     let label_galley = ui.painter().layout_no_wrap(
         label.to_string(),
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(SMALL_SIZE),
         tc.text_primary,
     );
     ui.painter().galley(
@@ -747,7 +976,7 @@ fn draw_source_group(
             Pos2::new(header_rect.right() - 6.0, cy),
             egui::Align2::RIGHT_CENTER,
             format!("{mapped_count}"),
-            egui::FontId::proportional(7.0),
+            egui::FontId::proportional(SMALL_SIZE),
             color,
         );
     }
@@ -790,15 +1019,9 @@ fn draw_source_group(
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.add_space(12.0); // indent
 
-                // Mapped dot
-                let dot_color = if is_bound {
-                    source_color(key)
-                } else {
-                    tc.text_dim
-                };
+                // Mapped dot: filled when bound, a ring when not (#3125).
                 let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
-                ui.painter()
-                    .circle_filled(dot_rect.center(), 2.5, dot_color);
+                bound_dot(ui, dot_rect.center(), 2.5, is_bound, source_color(key));
 
                 // Label
                 let label_color = if is_bound {
@@ -806,7 +1029,7 @@ fn draw_source_group(
                 } else {
                     tc.text_secondary
                 };
-                ui.label(RichText::new(&friendly).size(9.0).color(label_color));
+                ui.label(RichText::new(&friendly).size(SMALL_SIZE).color(label_color));
 
                 // Mini bar (32x3)
                 let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 3.0), Sense::hover());
@@ -825,7 +1048,7 @@ fn draw_source_group(
                 // Value
                 ui.label(
                     RichText::new(format!("{val:.2}"))
-                        .size(7.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_dim),
                 );
 
@@ -833,13 +1056,7 @@ fn draw_source_group(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (anchor_rect, _) =
                         ui.allocate_exact_size(egui::vec2(6.0, 6.0), Sense::hover());
-                    let anchor_color = if is_bound {
-                        source_color(key).linear_multiply(0.7)
-                    } else {
-                        tc.hover_border
-                    };
-                    ui.painter()
-                        .circle_filled(anchor_rect.center(), 3.0, anchor_color);
+                    bound_dot(ui, anchor_rect.center(), 3.0, is_bound, source_color(key));
                     // Store anchor position for bezier
                     state
                         .source_positions
@@ -868,7 +1085,14 @@ fn draw_source_group(
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             if click.clicked() {
-                match state.armed.clone() {
+                // The tour's binding takes the source; otherwise the click
+                // finishes an armed target, or arms this source.
+                match state
+                    .repoint
+                    .clone()
+                    .map(ArmedEnd::Target)
+                    .or(state.armed.clone())
+                {
                     Some(ArmedEnd::Target(t)) => {
                         pending_bind = Some((key.to_string(), t));
                         state.armed = None;
@@ -944,7 +1168,7 @@ fn draw_target_column(
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("TARGETS")
-                .size(8.0)
+                .size(SMALL_SIZE)
                 .strong()
                 .color(tc.text_secondary),
         );
@@ -958,7 +1182,7 @@ fn draw_target_column(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(icon).size(7.0).color(tc.text_dim))
+                    egui::Button::new(RichText::new(icon).size(SMALL_SIZE).color(tc.text_dim))
                         .frame(false)
                         .min_size(egui::vec2(14.0, 14.0)),
                 )
@@ -1021,7 +1245,7 @@ fn draw_target_column(
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new("no targets match")
-                        .size(8.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_dim),
                 );
             }
@@ -1066,14 +1290,14 @@ fn draw_target_column(
                         Pos2::new(x, cy),
                         egui::Align2::LEFT_CENTER,
                         caret,
-                        egui::FontId::proportional(7.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         tc.text_secondary,
                     );
                     x += 12.0;
 
                     let label_galley = ui.painter().layout_no_wrap(
                         current_group.to_string(),
-                        egui::FontId::proportional(9.0),
+                        egui::FontId::proportional(SMALL_SIZE),
                         tc.text_primary,
                     );
                     ui.painter().galley(
@@ -1131,8 +1355,7 @@ fn draw_target_column(
                     } else {
                         let (dot_rect, _) =
                             ui.allocate_exact_size(egui::vec2(5.0, 5.0), Sense::hover());
-                        ui.painter()
-                            .circle_filled(dot_rect.center(), 2.0, tc.text_dim);
+                        bound_dot(ui, dot_rect.center(), 2.5, false, tc.text_dim);
                     }
 
                     // Label
@@ -1141,7 +1364,11 @@ fn draw_target_column(
                     } else {
                         tc.text_secondary
                     };
-                    ui.label(RichText::new(&opt.label).size(9.0).color(label_color));
+                    ui.label(
+                        RichText::new(&opt.label)
+                            .size(SMALL_SIZE)
+                            .color(label_color),
+                    );
 
                     // Output bar — show last value from any binding targeting this
                     // Match both new-format (param.0.Effect.name) and old-format (param.Effect.name)
@@ -1221,7 +1448,7 @@ fn draw_center_column(
 
     ui.label(
         RichText::new("BINDINGS")
-            .size(8.0)
+            .size(SMALL_SIZE)
             .strong()
             .color(tc.text_secondary),
     );
@@ -1261,7 +1488,7 @@ fn draw_center_column(
                 ui.add_space(20.0);
                 ui.label(
                     RichText::new("No bindings in this scope")
-                        .size(10.0)
+                        .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
                 ui.add_space(8.0);
@@ -1333,7 +1560,7 @@ fn draw_center_column(
                 btn_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "+ New Binding",
-                egui::FontId::proportional(10.0),
+                egui::FontId::proportional(SMALL_SIZE),
                 if btn_resp.hovered() {
                     tc.text_primary
                 } else {
@@ -1534,7 +1761,7 @@ fn draw_binding_card(
             };
             ui.label(
                 RichText::new(crate::ui::widgets::truncate_chars(&display, 24))
-                    .size(9.0)
+                    .size(SMALL_SIZE)
                     .strong()
                     .color(tc.text_primary),
             )
@@ -1546,7 +1773,7 @@ fn draw_binding_card(
                 && !binding_source.is_empty()
                 && !bus.last_snapshot.contains_key(&binding_source)
             {
-                ui.label(RichText::new("\u{26a0}").size(8.0).color(tc.warning))
+                ui.label(RichText::new("\u{26a0}").size(SMALL_SIZE).color(tc.warning))
                     .on_hover_text(
                         "Source not currently available \u{2014} check the device or re-Learn",
                     );
@@ -1556,7 +1783,7 @@ fn draw_binding_card(
             // bites: change a layer's effect and every binding onto its params
             // stops resolving, while still rendering a perfectly plausible label.
             if enabled && !binding_target.is_unset() && !target_is_live(&binding_target, targets) {
-                ui.label(RichText::new("\u{2717}").size(8.0).color(tc.warning))
+                ui.label(RichText::new("\u{2717}").size(SMALL_SIZE).color(tc.warning))
                     .on_hover_text(format!(
                         "Target no longer exists \u{2014} \u{201c}{binding_target}\u{201d}.\n\
                          The layer it names has a different effect now, or is gone.\n\
@@ -1566,7 +1793,11 @@ fn draw_binding_card(
 
             // Transform chain summary pills
             if binding_transforms.is_empty() {
-                ui.label(RichText::new("passthrough").size(8.0).color(tc.text_dim));
+                ui.label(
+                    RichText::new("passthrough")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_dim),
+                );
             } else {
                 for t in &binding_transforms {
                     let icon = transform_icon(t);
@@ -1576,7 +1807,7 @@ fn draw_binding_card(
                     ui.add(
                         egui::Button::new(
                             RichText::new(pill_text)
-                                .size(8.0)
+                                .size(SMALL_SIZE)
                                 .color(src_rgba(src_color, 170)),
                         )
                         .fill(src_rgba(src_color, 20))
@@ -1594,13 +1825,17 @@ fn draw_binding_card(
 
                 // Collapse/expand chevron
                 let chevron = if expanded { "\u{25b2}" } else { "\u{25bc}" };
-                ui.label(RichText::new(chevron).size(7.0).color(tc.text_secondary));
+                ui.label(
+                    RichText::new(chevron)
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
 
                 // Output value + bar
                 if enabled && last_output > 0.001 {
                     ui.label(
                         RichText::new(format!("{:.2}", last_output))
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(src_rgba(src_color, 145)),
                     );
 
@@ -1621,7 +1856,7 @@ fn draw_binding_card(
                 if enabled && last_input > 0.001 {
                     ui.label(
                         RichText::new(format!("{:.2}", last_input))
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
 
@@ -1756,17 +1991,20 @@ fn draw_expanded_content(
     let mut name = name_init.to_string();
     let mut enabled_val = enabled;
 
-    // ─── Top row: name + collapse + delete ───
+    // ─── The name, the whole width: it holds "Source → Layer n param" ───
+    let auto_name = make_display_name(&source, &target);
+    ui.add(
+        egui::TextEdit::singleline(&mut name)
+            .desired_width(ui.available_width())
+            .font(egui::TextStyle::Small)
+            .hint_text(&auto_name),
+    );
+    ui.add_space(2.0);
+
+    // ─── Enabled, and Duplicate and Delete on the right ───
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let auto_name = make_display_name(&source, &target);
-        ui.add(
-            egui::TextEdit::singleline(&mut name)
-                .desired_width(140.0)
-                .font(egui::TextStyle::Small)
-                .hint_text(&auto_name),
-        );
-        ui.checkbox(&mut enabled_val, RichText::new("Enabled").size(8.0));
+        ui.checkbox(&mut enabled_val, RichText::new("Enabled").size(SMALL_SIZE));
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Delete — two-stage confirmation
@@ -1778,7 +2016,7 @@ fn draw_expanded_content(
             };
             if ui
                 .add(
-                    egui::Button::new(RichText::new(del_label).size(8.0).color(del_color))
+                    egui::Button::new(RichText::new(del_label).size(SMALL_SIZE).color(del_color))
                         .fill(if is_armed {
                             Color32::from_rgba_unmultiplied(0xE0, 0x60, 0x60, 30)
                         } else {
@@ -1799,7 +2037,7 @@ fn draw_expanded_content(
                 .add(
                     egui::Button::new(
                         RichText::new("Duplicate")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_secondary),
                     )
                     .frame(false),
@@ -1814,20 +2052,44 @@ fn draw_expanded_content(
 
     ui.add_space(6.0);
 
-    // ─── Pickers row: Source | Target (above the dark inset) ───
+    // ─── Source, then Target, a line each (above the dark inset) ───
+    // One line each, labeled: side by side, the target was cut to a few
+    // letters in a card of ordinary width.
+    let label_w = ["Source", "Target"]
+        .iter()
+        .map(|t| {
+            ui.painter()
+                .layout_no_wrap(
+                    t.to_string(),
+                    egui::FontId::proportional(SMALL_SIZE),
+                    Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    let picker_label = |ui: &mut egui::Ui, text: &str| {
+        let (r, _) = ui.allocate_exact_size(egui::vec2(label_w, 18.0), Sense::hover());
+        ui.painter().text(
+            pos2(r.left(), r.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::proportional(SMALL_SIZE),
+            tc.text_secondary,
+        );
+    };
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        // Source picker
+        picker_label(ui, "Source");
         draw_matrix_source_picker(ui, state, bus, id, &mut source, tc);
-
-        ui.label(RichText::new("\u{2192}").size(10.0).color(tc.text_dim));
-
-        // Target picker
-        let total_w = ui.available_width();
+    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        picker_label(ui, "Target");
         let current_label = target_display_label(&target, targets);
         egui::ComboBox::from_id_salt(format!("matrix_target_{id}"))
-            .selected_text(RichText::new(&current_label).size(9.0))
-            .width((total_w - 10.0).min(200.0))
+            .selected_text(RichText::new(&current_label).size(SMALL_SIZE))
+            .width(ui.available_width().max(80.0))
             .show_ui(ui, |ui| {
                 // Same filter the target column uses, so this popup narrows too
                 // instead of re-listing every param of every effect on every layer.
@@ -1845,14 +2107,14 @@ fn draw_expanded_content(
                         current_group = opt.group.as_ref();
                         ui.label(
                             RichText::new(current_group)
-                                .size(8.0)
+                                .size(SMALL_SIZE)
                                 .strong()
                                 .color(tc.text_secondary),
                         );
                     }
                     let selected = target == opt.id;
                     if ui
-                        .selectable_label(selected, RichText::new(&opt.label).size(9.0))
+                        .selectable_label(selected, RichText::new(&opt.label).size(SMALL_SIZE))
                         .clicked()
                     {
                         target = opt.id.clone();
@@ -1861,7 +2123,7 @@ fn draw_expanded_content(
                 if !any {
                     ui.label(
                         RichText::new("no targets match")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
                 }
@@ -1896,27 +2158,27 @@ fn draw_expanded_content(
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(ref raw) = runtime.last_raw {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Raw").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Raw").size(SMALL_SIZE).color(tc.text_dim));
                             ui.label(
                                 RichText::new(&raw.display)
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(tc.text_secondary),
                             );
                         });
                     }
                     if let Some(input) = runtime.last_input {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Norm").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Norm").size(SMALL_SIZE).color(tc.text_dim));
                             draw_inline_bar(ui, input, 40.0, 3.0, tc.text_dim, tc.meter_bg);
                             ui.label(
                                 RichText::new(format!("{:.3}", input))
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(tc.text_secondary),
                             );
                         });
                     }
                 } else {
-                    ui.label(RichText::new("--").size(8.0).color(tc.text_dim));
+                    ui.label(RichText::new("--").size(SMALL_SIZE).color(tc.text_dim));
                 }
             });
 
@@ -1928,7 +2190,7 @@ fn draw_expanded_content(
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Transforms")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .strong()
                             .color(tc.text_secondary),
                     );
@@ -1936,7 +2198,9 @@ fn draw_expanded_content(
                     // "+ Transform" add button
                     let add_resp = ui.add(
                         egui::Button::new(
-                            RichText::new("+ Add").size(7.0).color(tc.text_secondary),
+                            RichText::new("+ Add")
+                                .size(SMALL_SIZE)
+                                .color(tc.text_secondary),
                         )
                         .fill(tc.hover_fill)
                         .corner_radius(3.0)
@@ -1981,7 +2245,9 @@ fn draw_expanded_content(
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            RichText::new(label).size(9.0).color(tc.text_primary),
+                                            RichText::new(label)
+                                                .size(SMALL_SIZE)
+                                                .color(tc.text_primary),
                                         )
                                         .frame(false)
                                         .min_size(egui::vec2(100.0, 22.0)),
@@ -2000,7 +2266,11 @@ fn draw_expanded_content(
 
                 let label_w = 60.0;
                 if transforms.is_empty() {
-                    ui.label(RichText::new("passthrough").size(8.0).color(tc.text_dim));
+                    ui.label(
+                        RichText::new("passthrough")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_dim),
+                    );
                 } else {
                     let mut to_remove: Option<usize> = None;
                     for (i, t) in transforms.iter().enumerate() {
@@ -2023,7 +2293,7 @@ fn draw_expanded_content(
                                 Pos2::new(label_rect.left() + 2.0, label_rect.center().y),
                                 egui::Align2::LEFT_CENTER,
                                 format!("{icon} {label}"),
-                                egui::FontId::proportional(8.0),
+                                egui::FontId::proportional(SMALL_SIZE),
                                 tc.text_secondary,
                             );
                             label_resp.on_hover_text(tooltip);
@@ -2039,7 +2309,7 @@ fn draw_expanded_content(
                                         .add(
                                             egui::Button::new(
                                                 RichText::new("\u{00d7}")
-                                                    .size(9.0)
+                                                    .size(SMALL_SIZE)
                                                     .color(tc.text_dim),
                                             )
                                             .frame(false)
@@ -2117,17 +2387,17 @@ fn draw_expanded_content(
                 if let Some(runtime) = bus.runtime(id) {
                     if let Some(output) = runtime.last_output {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Out").size(7.0).color(tc.text_dim));
+                            ui.label(RichText::new("Out").size(SMALL_SIZE).color(tc.text_dim));
                             draw_inline_bar(ui, output, 40.0, 3.0, src_color, tc.meter_bg);
                             ui.label(
                                 RichText::new(format!("{:.3}", output))
-                                    .size(8.0)
+                                    .size(SMALL_SIZE)
                                     .color(src_color),
                             );
                         });
                     }
                 } else {
-                    ui.label(RichText::new("--").size(8.0).color(tc.text_dim));
+                    ui.label(RichText::new("--").size(SMALL_SIZE).color(tc.text_dim));
                 }
             });
         });
@@ -2288,12 +2558,12 @@ fn draw_transform_params_inline(
             let curves = crate::bindings::transforms::CURVE_TYPES;
             let mut selected = curve_type.clone();
             egui::ComboBox::from_id_salt(format!("xf_curve_{binding_id}_{transform_idx}"))
-                .selected_text(RichText::new(&selected).size(8.0))
+                .selected_text(RichText::new(&selected).size(SMALL_SIZE))
                 .width(100.0)
                 .show_ui(ui, |ui| {
                     for &ct in curves {
                         if ui
-                            .selectable_label(selected == ct, RichText::new(ct).size(8.0))
+                            .selectable_label(selected == ct, RichText::new(ct).size(SMALL_SIZE))
                             .clicked()
                         {
                             selected = ct.to_string();
@@ -2318,6 +2588,16 @@ fn draw_transform_params_inline(
 // Matrix source picker (simplified for the expanded card)
 // ---------------------------------------------------------------------------
 
+/// The shader uniform an audio source also reaches, shown beside it in the
+/// picker; nothing for the others.
+fn source_uniform(key: &str) -> String {
+    if key.starts_with("audio.") {
+        audio_source_info(key).uniform
+    } else {
+        String::new()
+    }
+}
+
 fn draw_matrix_source_picker(
     ui: &mut egui::Ui,
     state: &mut BindingMatrixState,
@@ -2333,12 +2613,36 @@ fn draw_matrix_source_picker(
             friendly_source_label(source)
         };
 
+        // The combo takes the row, less the Learn button beside it.
+        let learn_w = ui
+            .painter()
+            .layout_no_wrap(
+                "Learn".to_string(),
+                egui::FontId::proportional(SMALL_SIZE),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+            + 2.0 * ui.spacing().button_padding.x
+            + ui.spacing().item_spacing.x;
         egui::ComboBox::from_id_salt(format!("matrix_source_{id}"))
-            .selected_text(RichText::new(&current_display).size(9.0))
-            .width(200.0)
+            .selected_text(RichText::new(&current_display).size(SMALL_SIZE))
+            .width((ui.available_width() - learn_w).max(80.0))
             .height(350.0)
             .show_ui(ui, |ui| {
-                ui.set_min_width(260.0);
+                // As wide as its widest row, measured: names, meters, values
+                // and uniforms each in their own column.
+                let groups = all_source_groups(&bus.last_snapshot);
+                let rows: Vec<(String, String)> = groups
+                    .iter()
+                    .flat_map(|g| g.keys.iter())
+                    .map(|k| (friendly_source_label(k), source_uniform(k)))
+                    .collect();
+                let cols = SourceRowColumns::measure(
+                    ui,
+                    rows.iter().map(|(n, u)| (n.as_str(), u.as_str())),
+                );
+                ui.set_min_width(cols.width(ui));
                 ui.spacing_mut().item_spacing.y = 1.0;
 
                 // Same filter the column uses, so typing "kick" here narrows the
@@ -2349,7 +2653,7 @@ fn draw_matrix_source_picker(
                 let tc = theme_colors(ui.ctx());
                 let mut any = false;
                 // One list, shared with the column — see all_source_groups.
-                for group in all_source_groups(&bus.last_snapshot) {
+                for group in groups {
                     let keys = filter_source_keys(&group, &state.source_filter);
                     if keys.is_empty() {
                         continue;
@@ -2358,22 +2662,18 @@ fn draw_matrix_source_picker(
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new(&group.label)
-                            .size(7.0)
+                            .size(SMALL_SIZE)
                             .strong()
                             .color(group.color.linear_multiply(0.7)),
                     );
                     ui.add_space(1.0);
                     for key in keys {
                         let val = bus.last_snapshot.get(key).map(|(v, _)| *v).unwrap_or(0.0);
-                        let info = audio_source_info(key);
                         let friendly = friendly_source_label(key);
-                        let uniform = if key.starts_with("audio.") {
-                            info.uniform
-                        } else {
-                            String::new()
-                        };
+                        let uniform = source_uniform(key);
                         draw_source_row(
                             ui,
+                            &cols,
                             key,
                             &friendly,
                             &uniform,
@@ -2388,7 +2688,7 @@ fn draw_matrix_source_picker(
                     ui.add_space(4.0);
                     ui.label(
                         RichText::new("no sources match")
-                            .size(8.0)
+                            .size(SMALL_SIZE)
                             .color(tc.text_dim),
                     );
                 }
@@ -2405,7 +2705,7 @@ fn draw_matrix_source_picker(
             let color = Color32::from_rgba_unmultiplied(0xE0, 0xA0, 0x40, (alpha * 255.0) as u8);
             if ui
                 .add(egui::Button::new(
-                    RichText::new("..").color(color).size(9.0),
+                    RichText::new("..").color(color).size(SMALL_SIZE),
                 ))
                 .on_hover_text("Cancel learn")
                 .clicked()
@@ -2414,7 +2714,7 @@ fn draw_matrix_source_picker(
             }
             ui.ctx().request_repaint();
         } else if ui
-            .add(egui::Button::new(RichText::new("Learn").size(9.0)))
+            .add(egui::Button::new(RichText::new("Learn").size(SMALL_SIZE)))
             .on_hover_text("Learn from next MIDI/OSC")
             .clicked()
         {
@@ -2430,9 +2730,13 @@ fn draw_matrix_source_picker(
 // Connection lines (bezier curves)
 // ---------------------------------------------------------------------------
 
-fn draw_connections(ctx: &Context, state: &BindingMatrixState, bus: &BindingBus) {
+fn draw_connections(
+    ctx: &Context,
+    line_layer: egui::LayerId,
+    state: &BindingMatrixState,
+    bus: &BindingBus,
+) {
     let tc = theme_colors(ctx);
-    let line_layer = egui::LayerId::new(Order::Foreground, Id::new("matrix_lines"));
     // Hard-stop all cables at the column area (union covers the inter-column
     // gaps the curves cross) so nothing paints over the header or footer.
     let clip = state
@@ -2602,7 +2906,7 @@ fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) 
                 bus.bindings.len(),
                 unique_targets.len(),
             ))
-            .size(9.0)
+            .size(SMALL_SIZE)
             .color(tc.text_secondary),
         );
         // Click-to-bind is only discoverable if the half-finished state says so.
@@ -2620,9 +2924,125 @@ fn draw_footer(ui: &mut egui::Ui, state: &BindingMatrixState, bus: &BindingBus) 
                 RichText::new(format!(
                     "\u{2014}  {what} \u{201c}{name}\u{201d} armed \u{00b7} pick a {other} to bind, Esc to cancel"
                 ))
-                .size(9.0)
+                .size(SMALL_SIZE)
                 .color(tc.accent),
             );
         }
     });
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use crate::bindings::types::{BindingScope, BindingTarget};
+    use crate::ui::shell_harness::{PARAMS, ShellHarness};
+    use egui::{Id, Rect};
+
+    /// Texts that collide: any two whose boxes overlap, or any cut by its clip.
+    fn collisions(texts: &[(String, Rect, Rect)]) -> Vec<String> {
+        let mut bad = Vec::new();
+        for (i, (a, ra, ca)) in texts.iter().enumerate() {
+            if !ca.expand(0.5).contains_rect(*ra) {
+                bad.push(format!("{a:?} is cut off: {ra:?} in {ca:?}"));
+            }
+            for (b, rb, _) in &texts[i + 1..] {
+                if ra.shrink(0.5).intersects(rb.shrink(0.5)) {
+                    bad.push(format!("{a:?} {ra:?} overlaps {b:?} {rb:?}"));
+                }
+            }
+        }
+        bad
+    }
+
+    /// The matrix open on one binding's card, at a window where the card
+    /// column is narrow.
+    fn open_card() -> (ShellHarness, Rect) {
+        let mut h = ShellHarness::new(egui::vec2(1206.0, 760.0));
+        h.active_layer = ShellHarness::EFFECT_LAYER;
+        let id = h.bindings.add_binding(
+            "audio.loudness_trend".into(),
+            BindingTarget::Param {
+                layer: ShellHarness::EFFECT_LAYER,
+                effect: "Effect 0".into(),
+                param: PARAMS[2].into(),
+            },
+            BindingScope::Preset,
+        );
+        h.matrix.expanded_binding_id = Some(id);
+        h.ctx
+            .data_mut(|d| d.insert_temp(Id::new("open_binding_matrix"), true));
+        h.settle(5);
+        let cards = h.matrix.card_viewport;
+        assert!(cards.is_positive());
+        (h, cards)
+    }
+
+    // Kevin's live check: the name box, Enabled, and the Source and Target
+    // pickers were squeezed onto shared rows and cut each other off: the
+    // name's hint clipped in a 140 px box, the target cut to "bea".
+    #[test]
+    fn an_open_card_cuts_nothing_off() {
+        let (mut h, _) = open_card();
+        let column = h.matrix.cards_rect;
+        // Paint order is layer order: from the title on, the matrix and
+        // what is over it, not the workspace under it.
+        let texts: Vec<_> = h
+            .texts()
+            .into_iter()
+            .skip_while(|(t, _, _)| t != "BINDING MATRIX")
+            .filter(|(_, r, _)| column.intersects(*r))
+            .collect();
+        assert!(!texts.is_empty(), "the matrix is drawn");
+        let whole = |want: &str| {
+            texts
+                .iter()
+                .find(|(t, _, _)| t == want)
+                // Inside its clip, and inside the column: a row wider than
+                // the column spills past its edge, clipped or not.
+                .map(|(_, r, c)| {
+                    c.expand(0.5).contains_rect(*r) && column.expand(0.5).contains_rect(*r)
+                })
+        };
+        for want in [
+            "Enabled",
+            "Duplicate",
+            "Delete",
+            "Source",
+            "Target",
+            // The name box's hint, the source and the target, unshortened.
+            "Loudness Trend \u{2192} L2 flow_stretch",
+            "Loudness Trend",
+            PARAMS[2],
+        ] {
+            assert_eq!(whole(want), Some(true), "{want:?} is missing or cut off");
+        }
+        let bad = collisions(&texts);
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    // And the source list: long uniforms ran over the value and the meter.
+    #[test]
+    fn the_source_list_keeps_its_columns_apart() {
+        let (mut h, cards) = open_card();
+        let label = h
+            .texts()
+            .into_iter()
+            .find(|(t, _, c)| t == "Source" && *c == cards)
+            .map(|(_, r, _)| r)
+            .expect("the Source line");
+        h.click(egui::pos2(label.right() + 60.0, label.center().y));
+        h.settle(3);
+        let texts = h.texts();
+        let clip = texts
+            .iter()
+            .find(|(t, _, _)| t == "u.loudness_trend")
+            .map(|(_, _, c)| *c)
+            .expect("the list is open and shows the uniforms");
+        let list: Vec<_> = texts
+            .into_iter()
+            .filter(|(_, r, c)| *c == clip && clip.contains_rect(*r))
+            .collect();
+        assert!(list.len() > 30, "only {} texts in the list", list.len());
+        let bad = collisions(&list);
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
 }

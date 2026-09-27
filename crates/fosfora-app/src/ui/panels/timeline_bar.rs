@@ -46,9 +46,11 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
                 .as_ref()
                 .map_or(false, |(_, to, _, _)| *to == i);
 
-            // Background color — accent for active cue
-            let bg = if is_current && transition_state.is_none() {
-                tc.accent.linear_multiply(0.25)
+            // The playing cue is outlined, not filled: the playhead crosses
+            // it and was lost on a solid selection fill (#3173).
+            let playing = is_current && transition_state.is_none();
+            let bg = if playing {
+                tc.card_bg
             } else if is_to {
                 tc.accent.linear_multiply(0.10)
             } else {
@@ -63,17 +65,9 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
             // Draw block background
             painter.rect_filled(rect, CornerRadius::same(2), bg);
 
-            // Draw border — green for current cue
-            let border_color = if is_current && transition_state.is_none() {
-                egui::Stroke::new(
-                    1.0_f32,
-                    Color32::from_rgba_unmultiplied(
-                        tc.accent.r(),
-                        tc.accent.g(),
-                        tc.accent.b(),
-                        80,
-                    ),
-                )
+            // A heavy outline on the playing cue, a hairline on the rest.
+            let border_color = if playing {
+                egui::Stroke::new(2.0_f32, tc.text_primary)
             } else {
                 egui::Stroke::new(1.0_f32, tc.card_border)
             };
@@ -81,7 +75,7 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
                 rect,
                 CornerRadius::same(2),
                 border_color,
-                StrokeKind::Outside,
+                StrokeKind::Inside,
             );
 
             // From-cue during transition: striped overlay
@@ -165,8 +159,8 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
                 }
             } else {
                 // Single-line cue name
-                let label_color = if is_current && transition_state.is_none() {
-                    tc.accent
+                let label_color = if playing {
+                    tc.text_primary
                 } else {
                     tc.text_secondary
                 };
@@ -190,29 +184,22 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
             }
         }
 
-        // Playhead indicator
+        // Playhead indicator, in the text color so it shows on any cue.
+        // Measured from the bar's own left edge: from x = 0 it sat the
+        // panel's margin short of where it belonged.
+        let base_x = ui.min_rect().min.x;
         let base_y = ui.min_rect().min.y;
         match &timeline.state {
-            TimelineInfoState::Transitioning {
-                to,
-                progress,
-                transition_type,
-                ..
-            } => {
-                let cue_x = *to as f32 * block_width;
+            TimelineInfoState::Transitioning { to, progress, .. } => {
+                let cue_x = base_x + *to as f32 * block_width;
                 let playhead_x = cue_x + progress * block_width;
                 let top = egui::pos2(playhead_x, base_y);
                 let bottom = egui::pos2(playhead_x, base_y + bar_height);
-                let playhead_color = match transition_type {
-                    TransitionType::Dissolve => tc.accent,
-                    TransitionType::ParamMorph => tc.success,
-                    TransitionType::Cut => tc.accent,
-                };
                 ui.painter()
-                    .line_segment([top, bottom], egui::Stroke::new(2.0_f32, playhead_color));
+                    .line_segment([top, bottom], egui::Stroke::new(2.0_f32, tc.text_primary));
             }
             TimelineInfoState::Holding { elapsed, hold_secs } => {
-                let cue_x = timeline.current_cue as f32 * block_width;
+                let cue_x = base_x + timeline.current_cue as f32 * block_width;
                 let playhead_x = if let Some(hold) = hold_secs {
                     let frac = (elapsed / hold).min(1.0);
                     cue_x + frac * block_width
@@ -222,11 +209,87 @@ pub fn draw_timeline_bar(ui: &mut Ui, timeline: &TimelineInfo, cue_names: &[Stri
                 let top = egui::pos2(playhead_x, base_y);
                 let bottom = egui::pos2(playhead_x, base_y + bar_height);
                 ui.painter()
-                    .line_segment([top, bottom], egui::Stroke::new(2.0_f32, tc.accent));
+                    .line_segment([top, bottom], egui::Stroke::new(2.0_f32, tc.text_primary));
             }
             _ => {}
         }
     });
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene::types::AdvanceMode;
+
+    /// Draw a playing three-cue bar `left` points in from the window's edge,
+    /// holding cue 1 a quarter of the way through. Returns the playhead's x
+    /// and the bar's left edge.
+    fn playhead_x(left: f32) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        crate::ui::theme::colors::set_theme_colors(
+            &ctx,
+            crate::ui::theme::palette::Palette::GRAY.colors(),
+        );
+        let tl = TimelineInfo {
+            active: true,
+            cue_count: 3,
+            current_cue: 1,
+            state: TimelineInfoState::Holding {
+                elapsed: 1.0,
+                hold_secs: Some(4.0),
+            },
+            loop_mode: false,
+            advance_mode: AdvanceMode::Manual,
+        };
+        let mut bar_left = 0.0;
+        let mut out = None;
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            out = Some(ctx.run(input, |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(left as i8, 4)))
+                    .show(ctx, |ui| {
+                        bar_left = ui.max_rect().left();
+                        draw_timeline_bar(ui, &tl, &[]);
+                    });
+            }));
+        }
+        // The playhead is the only vertical line segment drawn.
+        let x = out
+            .unwrap()
+            .shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::LineSegment { points, .. } if points[0].x == points[1].x => {
+                    Some(points[0].x)
+                }
+                _ => None,
+            })
+            .expect("a playhead");
+        (x, bar_left)
+    }
+
+    // The playhead was placed from x = 0 rather than from the bar's left
+    // edge: in Classic's 2 px margin nobody saw it, and in the workspace
+    // drawer it sat the margin short of the playing cue.
+    #[test]
+    fn the_playhead_is_inside_the_playing_cue_wherever_the_bar_starts() {
+        for left in [0.0, 10.0, 60.0] {
+            let (x, bar_left) = playhead_x(left);
+            let block = (1200.0 - 2.0 * left) / 3.0;
+            let want = bar_left + block * 1.25;
+            assert!(
+                (x - want).abs() < 1.0,
+                "margin {left}: the playhead is at {x:.1}, a quarter into cue 2 is {want:.1}"
+            );
+        }
+    }
 }

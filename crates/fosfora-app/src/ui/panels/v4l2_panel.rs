@@ -40,7 +40,7 @@ pub fn draw_v4l2_panel(ui: &mut Ui, info: &V4l2Info) {
         );
         ui.label(
             RichText::new(
-                "sudo modprobe v4l2loopback devices=1 video_nr=10 \\\n  card_label=\"Phosphor\" exclusive_caps=1",
+                "sudo modprobe v4l2loopback devices=1 video_nr=10 \\\n  card_label=\"Fosfora\" exclusive_caps=1",
             )
             .size(SMALL_SIZE - 1.0)
             .monospace(),

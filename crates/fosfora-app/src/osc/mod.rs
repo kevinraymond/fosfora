@@ -84,9 +84,9 @@ pub struct OscSystem {
 }
 
 impl OscSystem {
-    pub fn new() -> Self {
-        let config = OscConfig::load();
-        let mut sys = Self {
+    /// The system with `config` and nothing opened: no socket bound.
+    fn unconnected(config: OscConfig) -> Self {
+        Self {
             receiver: None,
             shutdown: None,
             thread_handle: None,
@@ -97,7 +97,18 @@ impl OscSystem {
             last_address: None,
             last_tx_time: Instant::now(),
             last_raw_values: std::collections::HashMap::new(),
-        };
+        }
+    }
+
+    /// For tests: default settings and nothing opened, so nothing on the
+    /// machine running them is read or touched.
+    #[cfg(test)]
+    pub(crate) fn offline() -> Self {
+        Self::unconnected(OscConfig::default())
+    }
+
+    pub fn new() -> Self {
+        let mut sys = Self::unconnected(OscConfig::load());
 
         // Start receiver if enabled
         if sys.config.enabled {

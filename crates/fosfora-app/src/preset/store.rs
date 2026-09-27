@@ -24,9 +24,22 @@ const BUILTIN_PRESETS: &[(&str, &str)] = &[
     ("Spectral Eye", BUILTIN_SPECTRAL_EYE),
 ];
 
+fn de_effect_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let name = String::deserialize(d)?;
+    Ok(crate::effect::loader::current_effect_name(&name).to_string())
+}
+
+fn de_image_path<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let path = Option::<String>::deserialize(d)?;
+    Ok(path.map(|p| crate::gpu::particle::source_loader::current_image_path(&p)))
+}
+
 /// Per-layer state saved in a preset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerPreset {
+    /// Read through [`current_effect_name`](crate::effect::loader::current_effect_name),
+    /// so a preset saved before an effect was renamed still finds it.
+    #[serde(deserialize_with = "de_effect_name")]
     pub effect_name: String,
     #[serde(default)]
     pub params: HashMap<String, ParamValue>,
@@ -64,8 +77,9 @@ pub struct LayerPreset {
     /// True if particle source is webcam.
     #[serde(default)]
     pub particle_webcam: Option<bool>,
-    /// Absolute path to static image used as particle source.
-    #[serde(default)]
+    /// Absolute path to static image used as particle source. A renamed
+    /// built-in image is read by its new name.
+    #[serde(default, deserialize_with = "de_image_path")]
     pub particle_image_path: Option<String>,
     /// Absolute path to the 3D model used as particle source (#1993). Mutually
     /// exclusive with `particle_image_path` — a model is rendered to a frame rather
@@ -251,6 +265,16 @@ impl PresetStore {
             .collect()
     }
 
+    /// Is this file stem a `<preset>.bindings.json` sidecar rather than a preset?
+    ///
+    /// Sidecars sit in the presets folder and end in `.json`, so the scan picked
+    /// them up, failed to find `layers` and logged a warning per file on every
+    /// launch (#2664). The stem of `Flovid.bindings.json` is `Flovid.bindings`,
+    /// which is what this reads.
+    fn is_bindings_sidecar(stem: &str) -> bool {
+        stem.ends_with(".bindings")
+    }
+
     pub fn scan(&mut self) {
         self.presets.clear();
         self.builtin_count = 0;
@@ -299,6 +323,9 @@ impl PresetStore {
                 .unwrap_or("")
                 .to_string();
             if name.is_empty() {
+                continue;
+            }
+            if Self::is_bindings_sidecar(&name) {
                 continue;
             }
             // Skip user presets that shadow built-in names
@@ -558,6 +585,25 @@ mod tests {
     fn sanitize_name_65_truncated() {
         let s = "b".repeat(65);
         assert_eq!(PresetStore::sanitize_name(&s).len(), 64);
+    }
+
+    // Presets saved while the launch effect was called Phosphor (most of
+    // them: it is the effect every new stack starts on) load it by its new
+    // name, and save that name back.
+    #[test]
+    fn a_preset_naming_phosphor_loads_fosfora() {
+        let lp: LayerPreset = serde_json::from_str(
+            r#"{"effect_name": "Phosphor",
+                "particle_image_path": "/a/assets/images/raster_phosphor.png"}"#,
+        )
+        .unwrap();
+        assert_eq!(lp.effect_name, "Fosfora");
+        assert_eq!(
+            lp.particle_image_path.as_deref(),
+            Some("/a/assets/images/raster_fosfora.png")
+        );
+        let back = serde_json::to_string(&lp).unwrap();
+        assert!(back.contains(r#""effect_name":"Fosfora""#), "{back}");
     }
 
     #[test]
@@ -992,6 +1038,22 @@ mod tests {
         let def = VolumetricParams::default();
         assert_eq!(params.march_steps, def.march_steps);
         assert!((params.cam_distance - def.cam_distance).abs() < 1e-6);
+    }
+
+    // ---- Preset scan tests ----
+
+    /// The scan reads every `*.json` in the presets folder, and bindings
+    /// sidecars live there too. Before #2664 each one produced a "missing field
+    /// `layers`" warning on every launch. Drop the `.bindings` check and the
+    /// first assertion fails; the rest guard the names that must still load,
+    /// including a preset whose own name ends in "bindings".
+    #[test]
+    fn bindings_sidecars_are_not_presets() {
+        assert!(PresetStore::is_bindings_sidecar("Flovid.bindings"));
+        assert!(PresetStore::is_bindings_sidecar("trama test 1.bindings"));
+        assert!(!PresetStore::is_bindings_sidecar("Flovid"));
+        assert!(!PresetStore::is_bindings_sidecar("Bindings 01"));
+        assert!(!PresetStore::is_bindings_sidecar("my bindings"));
     }
 
     // ---- Built-in preset tests ----

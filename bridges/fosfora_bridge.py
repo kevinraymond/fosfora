@@ -17,7 +17,7 @@ Usage:
         bridge.push({"sensor_x": read_sensor()})
         time.sleep(1/30)
 
-Protocol: see phosphor-binding-bus-addendum.md §2.5
+Protocol and options: see bridges/README.md
 """
 
 import json

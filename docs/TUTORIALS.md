@@ -55,7 +55,7 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **56 built-in effects**, plus 2 hidden ones (the signature **Phosphor**
+Fosfora ships with **56 built-in effects**, plus 2 hidden ones (the signature **Fosfora**
 intro visual you see at startup, and a rasterizer stress test).
 
 **Shaders** (11): pure fragment shaders, no particles.
@@ -608,7 +608,7 @@ trama is a small node graph that post-processes a layer's picture *after* the la
 
 ### Quick Start
 
-1. Select a layer and press **G** to open the trama canvas. The **Layer: _name_** tab is that layer's chain
+1. Select a layer and press **C** (for chain) to open the trama canvas. The **Layer: _name_** tab is that layer's chain
 2. Right-click the canvas → **Sources → Layer input**. That node is the layer's own picture
 3. Right-click → **Effects → Transform**
 4. Drag from **Layer input**'s output pin to Transform's input, then from Transform to **Output**
@@ -691,6 +691,7 @@ Wire Mix's output to both **Output** and **Transform**, Transform into **Feedbac
 - **Share a single chain** with **Export…** / **Import…** in the canvas header: a `.fio.json` file holding just that chain. Import replaces the chain on the canvas. If a file uses an effect you don't have, its node comes in titled `missing: <id>` and renders magenta, with its wires and values kept. Install the effect and it comes back.
 - **Effect files reload while you work.** trama effects are plain `.wgsl` files in `assets/trama/effects/`, each starting with a small JSON manifest. Save one and every node using it picks up the new shader on the next frame. Save a typo and nothing blanks: the last version that compiled keeps rendering, the node's title reads `· ERROR`, and the inspector shows the compiler's message until you fix it. Change the manifest and live nodes follow it by name: surviving parameters keep their values, new ones get defaults, removed ones (and wires into removed inputs) go, and the log says which. Delete the file and its nodes turn into `missing:` placeholders until it comes back.
 - **Writing an effect with a speed?** Don't multiply by `u.time`. `u.time * speed` multiplies every *change* in speed by how long the app has been running, so a modulated speed strobes. List the parameter under `"rates"` in the manifest (`"rates": ["speed"]`) and the shader receives its running total (`speed × dt`, summed every frame) in that parameter's slot instead of the slider value: write `param(1u)` where you would have written `u.time * param(1u)`. `hue_drift.wgsl` and `noise_field.wgsl` are the examples.
+- **A parameter that only makes sense whole** (a count of wedges, steps, copies): list it under `"integers"` in the manifest (`"integers": ["segments"]`) and its slider steps by one and shows no decimals. Round it in the shader too, since a modulation or an older preset can still hand it a fraction. `kaleido.wgsl` is the example.
 - **Transparency is real.** Transform leaves transparent pixels where it has nothing to show. With layers beneath, they show through; on a single layer the frame is black there. For transparent *output* (NDI, Spout, Syphon), see [Output alpha](alpha.md#output-alpha-modes). **Auto** follows the layers' own overlay tags and doesn't look inside chains, so pick **Passthrough** if a chain is what creates the transparency.
 - **The master chain announces itself.** Whenever it holds nodes, a **Master** row appears under the layer list with the same diamond and node count as a layer's badge: filled and *chain on output* when it is processing the frame, hollow and *chain, inactive* when nothing reaches its Output. Click the diamond to open the canvas on the Master tab.
 - **Cost** is small: a 10-node chain at 1080p measures under 1 ms of GPU time per frame on an RTX 4090. Each chain that exists holds one full-resolution buffer; the working buffers inside chains are shared between all of them.
@@ -1244,6 +1245,8 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 |-----|--------|
 | **D** | Toggle UI overlay |
 | **F** | Toggle fullscreen |
+| **B** | Binding matrix |
+| **C** | trama chain editor |
 | **Esc** | Quit (with confirmation dialog) |
 | **[** | Previous layer |
 | **]** | Next layer |
@@ -1251,9 +1254,25 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 | **T** | Toggle timeline play/stop |
 | **Tab** | Cycle UI widgets |
 
-### Themes
+### Themes and interface scale
 
-Fosfora supports multiple UI themes. Change the theme in the settings area of the UI. Available themes follow WCAG 2.2 AA contrast standards for accessibility.
+Pick a theme under **Appearance** (Setup in the workspace layout, Settings in Classic):
+Light, Gray and Black use no hue at all, and Blue and orange uses a pair that stays
+distinct for red–green color blindness. Every built-in theme meets WCAG 2.2 AA contrast.
+
+**Interface scale** (80–200 %) sets how large text and controls are drawn; Ctrl + and
+Ctrl − change it too, and Ctrl 0 resets it.
+
+To make your own theme, press **Save a copy to edit**. It writes the theme in use to
+`~/.config/fosfora/themes/` as fifteen named colors:
+
+```json
+{ "name": "Night shift", "base": "Black", "colors": { "text": "#F4E9D8", "accent": "#56B4E9" } }
+```
+
+A file only needs the colors it changes; the rest come from `base` (Gray when it names
+none). Press **Reload** after editing. A color that is not readable against its
+background is listed under the theme, with its contrast ratio.
 
 ### Configuration Files
 
@@ -1261,7 +1280,8 @@ All configuration is stored in `~/.config/fosfora/`:
 
 | File | Contents |
 |------|----------|
-| `settings.json` | Theme, audio device |
+| `settings.json` | Theme, interface scale, audio device |
+| `themes/*.json` | Custom themes |
 | `midi.json` | MIDI port, CC mappings, trigger bindings |
 | `osc.json` | OSC ports, address mappings, TX rate |
 | `web.json` | WebSocket port, enabled flag |

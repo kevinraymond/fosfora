@@ -141,6 +141,33 @@ pub struct SettingsConfig {
     /// reproduces pre-overlay behavior byte-for-byte on old settings files.
     #[serde(default)]
     pub output_alpha: AlphaOutputMode,
+    /// Keep the v1 two-side-panel layout instead of the v2 workspace shell
+    /// (#3122). Off by default, and a settings file from before v2.0.0 has no
+    /// such field, so upgrading installs open in the workspace too (Kevin,
+    /// M6 #3130); this switch is the way back. It ships for one release and
+    /// goes away in v2.1.
+    #[serde(default)]
+    pub classic_layout: bool,
+    /// Display the second output window was last opened on, by name (#3122).
+    /// A name rather than an index: displays come and go and winit reorders
+    /// them, and an index would send the output to whatever took that slot.
+    /// It seeds the picker only — the window is never opened on its own.
+    #[serde(default)]
+    pub output_display: Option<String>,
+    /// Interface scale, 1.0 = 100 % (#3125): egui's zoom factor, so text,
+    /// controls and spacing grow together. Clamped to 80–200 % where it is
+    /// applied, so a hand-edited value can't make the interface unusable.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    /// Guided tours finished or skipped, by key (#3126). The First run tour
+    /// starts by itself until its key is here.
+    #[serde(default)]
+    pub tours_done: Vec<String>,
+}
+
+/// Serde default for [`SettingsConfig::ui_scale`]: `f32`'s `Default` is 0.
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 /// Serde default for [`SettingsConfig::auto_reconnect`] — see the note on that field.
@@ -152,7 +179,7 @@ impl Default for SettingsConfig {
     fn default() -> Self {
         Self {
             version: 1,
-            theme: ThemeMode::Dark,
+            theme: ThemeMode::Gray,
             audio_device: None,
             band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
@@ -163,6 +190,10 @@ impl Default for SettingsConfig {
             auto_reconnect: true,
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),
+            classic_layout: false,
+            output_display: None,
+            ui_scale: 1.0,
+            tours_done: Vec::new(),
         }
     }
 }
@@ -194,7 +225,7 @@ mod tests {
     fn settings_config_defaults() {
         let c = SettingsConfig::default();
         assert_eq!(c.version, 1);
-        assert_eq!(c.theme, ThemeMode::Dark);
+        assert_eq!(c.theme, ThemeMode::Gray);
         assert!(c.audio_device.is_none());
     }
 
@@ -204,7 +235,7 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(c2.version, 1);
-        assert_eq!(c2.theme, ThemeMode::Dark);
+        assert_eq!(c2.theme, ThemeMode::Gray);
     }
 
     #[test]
@@ -245,6 +276,19 @@ mod tests {
     }
 
     #[test]
+    fn an_upgrading_install_opens_in_the_workspace() {
+        // A v1 settings file has no classic_layout: v2.0.0 opens it in the
+        // workspace, the same as a fresh install. A saved choice is kept.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(!c.classic_layout);
+        assert!(!SettingsConfig::default().classic_layout);
+        let json = r#"{"version":1,"theme":"Dark","classic_layout":true}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(c.classic_layout);
+    }
+
+    #[test]
     fn favorite_effects_roundtrip() {
         let c = SettingsConfig {
             favorite_effects: vec!["Beam".to_string(), "Lattice Clouds".to_string()],
@@ -257,26 +301,27 @@ mod tests {
 
     #[test]
     fn settings_config_all_themes_roundtrip() {
-        for mode in ThemeMode::ALL {
+        let custom = ThemeMode::Custom("night-shift".into());
+        for mode in ThemeMode::BUILT_IN.into_iter().chain([custom]) {
             let c = SettingsConfig {
-                theme: *mode,
+                theme: mode.clone(),
                 ..Default::default()
             };
             let json = serde_json::to_string(&c).unwrap();
             let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
-            assert_eq!(c2.theme, *mode);
+            assert_eq!(c2.theme, mode);
         }
     }
 
     #[test]
     fn settings_config_non_default_theme_persists() {
         let c = SettingsConfig {
-            theme: ThemeMode::HighContrast,
+            theme: ThemeMode::BlueOrange,
             ..Default::default()
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: SettingsConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(c2.theme, ThemeMode::HighContrast);
+        assert_eq!(c2.theme, ThemeMode::BlueOrange);
     }
 
     #[test]
@@ -307,6 +352,14 @@ mod tests {
     }
 
     #[test]
+    fn ui_scale_defaults_to_full_size_when_missing() {
+        // A bare #[serde(default)] would load 0 %, and egui draws nothing at zoom 0.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(c.ui_scale, 1.0);
+    }
+
+    #[test]
     fn auto_reconnect_off_roundtrips() {
         let c = SettingsConfig {
             auto_reconnect: false,
@@ -321,10 +374,20 @@ mod tests {
     }
 
     #[test]
-    fn settings_config_old_cvd_theme_falls_back_to_default() {
-        // Users with old CVD theme names in settings.json should fall back to Dark
-        let json = r#"{"version":1,"theme":"Deuteranopia"}"#;
-        let c: SettingsConfig = serde_json::from_str(json).unwrap_or_default();
-        assert_eq!(c.theme, ThemeMode::Dark);
+    fn settings_with_a_retired_theme_keep_everything_else() {
+        // settings.json is parsed whole: an unknown theme name would reset every
+        // setting in it, so every name any release wrote still loads (#3125).
+        for (old, now) in [
+            ("Dark", ThemeMode::Gray),
+            ("Midnight", ThemeMode::BlueOrange),
+            ("Deuteranopia", ThemeMode::BlueOrange),
+            ("Protanopia", ThemeMode::BlueOrange),
+            ("Tritanopia", ThemeMode::Gray),
+        ] {
+            let json = format!(r#"{{"version":1,"theme":"{old}","auto_reconnect":false}}"#);
+            let c: SettingsConfig = serde_json::from_str(&json).expect(old);
+            assert_eq!(c.theme, now, "{old}");
+            assert!(!c.auto_reconnect, "{old} reset the other settings");
+        }
     }
 }

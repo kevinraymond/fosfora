@@ -1,3 +1,4 @@
+use crate::ui::theme::tokens::SMALL_SIZE;
 use egui::{Color32, Pos2, RichText, Ui};
 
 use crate::bindings::sources::SourceSnapshot;
@@ -14,7 +15,7 @@ pub const WS_COLOR: Color32 = Color32::from_rgb(0xE0, 0x90, 0x40); // orange
 pub struct LayerParamInfo {
     /// Layer index.
     pub index: usize,
-    /// Effect name on this layer (e.g. "Phosphor"), empty if no effect.
+    /// Effect name on this layer (e.g. "Fosfora"), empty if no effect.
     pub effect_name: String,
     /// Param names available on this layer (Float and Bool only).
     pub param_names: Vec<String>,
@@ -65,6 +66,11 @@ pub struct TargetOption {
     pub group: std::borrow::Cow<'static, str>,
 }
 
+/// The target column's group for layer `layer`'s controls.
+pub fn param_group_label(layer: usize, effect: &str) -> String {
+    format!("Layer {} \u{2022} {}", layer + 1, effect)
+}
+
 pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
     let mut targets = Vec::new();
 
@@ -80,7 +86,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         // work out which effect it belonged to, and every target under it is
         // pinned to that layer's index.
         let group_label: std::borrow::Cow<'static, str> =
-            format!("Layer {} \u{2022} {}", lp.index, lp.effect_name).into();
+            param_group_label(lp.index, &lp.effect_name).into();
         for name in &lp.param_names {
             targets.push(TargetOption {
                 id: BindingTarget::Param {
@@ -104,7 +110,7 @@ pub fn build_target_options(info: &BindingPanelInfo) -> Vec<TargetOption> {
         ] {
             targets.push(TargetOption {
                 id: BindingTarget::Layer { layer: i, field },
-                label: format!("Layer {i} {}", field.as_str()),
+                label: format!("Layer {} {}", i + 1, field.as_str()),
                 group: "Layers".into(),
             });
         }
@@ -797,7 +803,7 @@ pub fn draw_source_badge(ui: &mut Ui, source: &str) {
     ui.add(
         egui::Button::new(
             RichText::new(abbrev)
-                .size(7.0)
+                .size(SMALL_SIZE)
                 .color(Color32::WHITE)
                 .strong(),
         )
@@ -936,9 +942,10 @@ pub fn ws_source_display_name(source_name: &str) -> String {
 pub fn friendly_target(target: &BindingTarget) -> String {
     match target {
         BindingTarget::Unset => String::new(),
-        BindingTarget::Param { layer, param, .. } => format!("L{layer} {param}"),
+        // Layers are numbered from 1 on screen, as in the stack.
+        BindingTarget::Param { layer, param, .. } => format!("L{} {param}", layer + 1),
         BindingTarget::LegacyParam { param, .. } => param.clone(),
-        BindingTarget::Layer { layer, field } => format!("L{layer} {}", field.as_str()),
+        BindingTarget::Layer { layer, field } => format!("L{} {}", layer + 1, field.as_str()),
         BindingTarget::GlobalMasterOpacity => "master opacity".to_string(),
         BindingTarget::PostFx(field) | BindingTarget::Particle(field) => field.replace('_', " "),
         BindingTarget::Uniform(field) => format!("u.{field}"),
@@ -968,10 +975,78 @@ pub fn target_is_live(target: &BindingTarget, targets: &[TargetOption]) -> bool 
     !target.is_unset() && targets.iter().any(|t| t.id.same_destination(target))
 }
 
+/// The column widths of a list of [`draw_source_row`]s, measured from the
+/// text they will show, so no name runs into its meter and no uniform into
+/// its value. The rows used to sit at fixed offsets from the right edge,
+/// and a long uniform (`u.loudness_trend`) was drawn over the value and the
+/// meter beside it.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceRowColumns {
+    pub name: f32,
+    pub uniform: f32,
+}
+
+const ROW_PAD: f32 = 6.0;
+const ROW_GAP: f32 = 12.0;
+const ROW_BAR: f32 = 36.0;
+
+impl SourceRowColumns {
+    /// Wide enough for every `(name, uniform)` in `rows`.
+    pub fn measure<'a>(ui: &Ui, rows: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let font = egui::FontId::proportional(SMALL_SIZE);
+        let width = |t: &str| {
+            if t.is_empty() {
+                0.0
+            } else {
+                ui.painter()
+                    .layout_no_wrap(t.to_string(), font.clone(), Color32::WHITE)
+                    .size()
+                    .x
+            }
+        };
+        rows.into_iter().fold(
+            Self {
+                name: 0.0,
+                uniform: 0.0,
+            },
+            |c, (n, u)| Self {
+                name: c.name.max(width(n)),
+                uniform: c.uniform.max(width(u)),
+            },
+        )
+    }
+
+    fn value(ui: &Ui) -> f32 {
+        ui.painter()
+            .layout_no_wrap(
+                "0.00".to_string(),
+                egui::FontId::proportional(SMALL_SIZE),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+    }
+
+    /// A row's whole width: name, meter, value, uniform, with gaps.
+    pub fn width(&self, ui: &Ui) -> f32 {
+        ROW_PAD
+            + self.name
+            + ROW_GAP
+            + ROW_BAR
+            + ROW_PAD
+            + Self::value(ui)
+            + ROW_GAP
+            + self.uniform
+            + ROW_PAD
+    }
+}
+
 /// Draw a source row in the picker popup.
-/// Layout: [name ·····  bar 0.42  u.field]
+/// Layout: [name ·····  bar 0.42  u.field], in `cols`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_source_row(
     ui: &mut Ui,
+    cols: &SourceRowColumns,
     key: &str,
     friendly_name: &str,
     uniform_ref: &str,
@@ -981,7 +1056,7 @@ pub fn draw_source_row(
     source_out: &mut String,
 ) {
     let row_height = 18.0;
-    let avail_width = ui.available_width().max(260.0);
+    let avail_width = ui.available_width().max(cols.width(ui));
     let desired = egui::vec2(avail_width, row_height);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
 
@@ -1002,31 +1077,32 @@ pub fn draw_source_row(
         ui.visuals().text_color()
     };
     let tc = theme_colors(ui.ctx());
-    let dim_color = tc.text_dim;
+    // The dim text on the selected row's fill would not read.
+    let dim_color = if selected { text_color } else { tc.text_dim };
 
-    let left = rect.left() + 6.0;
+    let left = rect.left() + ROW_PAD;
     let cy = rect.center().y;
 
-    let uniform_right = rect.right() - 4.0;
-    let val_right = rect.right() - 70.0;
-    let bar_right = val_right - 6.0;
-    let bar_width = 36.0;
-    let bar_left = bar_right - bar_width;
+    // Right to left: the uniform, then the value, then the meter.
+    let uniform_right = rect.right() - ROW_PAD;
+    let val_right = uniform_right - cols.uniform - ROW_GAP;
+    let bar_right = val_right - SourceRowColumns::value(ui) - ROW_PAD;
+    let bar_left = bar_right - ROW_BAR;
 
     // Name
     painter.text(
         Pos2::new(left, cy),
         egui::Align2::LEFT_CENTER,
         friendly_name,
-        egui::FontId::proportional(9.0),
+        egui::FontId::proportional(SMALL_SIZE),
         text_color,
     );
 
     // Mini bar
     let bar_rect =
-        egui::Rect::from_min_size(Pos2::new(bar_left, cy - 2.0), egui::vec2(bar_width, 4.0));
+        egui::Rect::from_min_size(Pos2::new(bar_left, cy - 2.0), egui::vec2(ROW_BAR, 4.0));
     painter.rect_filled(bar_rect, 1.0, tc.meter_bg);
-    let fill_w = bar_width * val.clamp(0.0, 1.0);
+    let fill_w = ROW_BAR * val.clamp(0.0, 1.0);
     if fill_w > 0.5 {
         let fill_rect = egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_w, 4.0));
         painter.rect_filled(fill_rect, 1.0, color.linear_multiply(0.7));
@@ -1035,9 +1111,9 @@ pub fn draw_source_row(
     // Value
     painter.text(
         Pos2::new(val_right, cy),
-        egui::Align2::LEFT_CENTER,
+        egui::Align2::RIGHT_CENTER,
         format!("{val:.2}"),
-        egui::FontId::proportional(8.0),
+        egui::FontId::proportional(SMALL_SIZE),
         dim_color,
     );
 
@@ -1047,8 +1123,8 @@ pub fn draw_source_row(
             Pos2::new(uniform_right, cy),
             egui::Align2::RIGHT_CENTER,
             uniform_ref,
-            egui::FontId::proportional(7.0),
-            tc.text_dim,
+            egui::FontId::proportional(SMALL_SIZE),
+            dim_color,
         );
     }
 
@@ -1227,8 +1303,9 @@ mod tests {
         let targets = build_target_options(&info);
         let groups: std::collections::HashSet<&str> =
             targets.iter().map(|t| t.group.as_ref()).collect();
-        assert!(groups.contains("Layer 0 \u{2022} Raster"));
-        assert!(groups.contains("Layer 1 \u{2022} Frost"));
+        // Numbered from 1, as the stack numbers them.
+        assert!(groups.contains("Layer 1 \u{2022} Raster"));
+        assert!(groups.contains("Layer 2 \u{2022} Frost"));
         // The seven fixed ids alone would not have covered those two.
         assert!(groups.len() > 7);
     }
@@ -1309,8 +1386,8 @@ mod tests {
         assert!(target_matches(opt, "warp")); // label
         // The group names its layer and effect even with one layer loaded, so a
         // user can tell what they are about to bind.
-        assert_eq!(opt.group.as_ref(), "Layer 0 \u{2022} Raster");
-        assert!(target_matches(opt, "Layer 0")); // group
+        assert_eq!(opt.group.as_ref(), "Layer 1 \u{2022} Raster");
+        assert!(target_matches(opt, "Layer 1")); // group
         assert!(target_matches(opt, "raster")); // id, case-insensitively
         assert!(!target_matches(opt, "zzzznope"));
 
@@ -1367,5 +1444,18 @@ mod tests {
             .filter(|k| *k != "audio.dominant_chroma")
             .collect();
         assert_eq!(grouped, expected);
+    }
+
+    #[test]
+    fn layers_are_numbered_from_one_as_in_the_stack() {
+        let first = BindingTarget::Layer {
+            layer: 0,
+            field: LayerField::Opacity,
+        };
+        assert_eq!(friendly_target(&first), "L1 opacity");
+        assert_eq!(
+            friendly_target(&BindingTarget::from("param.2.Tide.speed")),
+            "L3 speed"
+        );
     }
 }

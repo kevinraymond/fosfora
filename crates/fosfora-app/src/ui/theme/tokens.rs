@@ -1,39 +1,4 @@
 #![allow(dead_code)]
-use egui::Color32;
-
-// Dark theme colors (WCAG 2.2 AA verified)
-pub const DARK_CANVAS: Color32 = Color32::from_rgb(0x12, 0x12, 0x12);
-pub const DARK_PANEL: Color32 = Color32::from_rgba_premultiplied(0x22, 0x22, 0x22, 0xE6);
-pub const DARK_TEXT_PRIMARY: Color32 = Color32::from_rgb(0xE8, 0xE8, 0xE8); // 12.8:1
-pub const DARK_TEXT_SECONDARY: Color32 = Color32::from_rgb(0xA0, 0xA0, 0xA0); // 6.2:1
-pub const DARK_ACCENT: Color32 = Color32::from_rgb(0x44, 0x88, 0xFF); // VJ accent blue
-pub const DARK_ERROR: Color32 = Color32::from_rgb(0xE0, 0x60, 0x60);
-pub const DARK_WARNING: Color32 = Color32::from_rgb(0xD4, 0xA0, 0x40);
-pub const DARK_SUCCESS: Color32 = Color32::from_rgb(0x50, 0xC0, 0x70);
-pub const DARK_WIDGET_BG: Color32 = Color32::from_rgb(0x2A, 0x2A, 0x2A);
-pub const DARK_WIDGET_BG_HOVER: Color32 = Color32::from_rgb(0x35, 0x35, 0x35);
-pub const DARK_WIDGET_BG_ACTIVE: Color32 = Color32::from_rgb(0x40, 0x40, 0x40);
-pub const DARK_SEPARATOR: Color32 = Color32::from_rgb(0x3A, 0x3A, 0x3A);
-
-// Card/section colors
-pub const CARD_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
-pub const CARD_BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
-pub const BEAT_COLOR: Color32 = Color32::from_rgb(0xFF, 0x55, 0x77);
-pub const METER_BG: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A);
-
-// Light theme colors (WCAG 2.2 AA verified)
-pub const LIGHT_CANVAS: Color32 = Color32::from_rgb(0xF5, 0xF5, 0xF5);
-pub const LIGHT_PANEL: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
-pub const LIGHT_TEXT_PRIMARY: Color32 = Color32::from_rgb(0x1A, 0x1A, 0x1A); // 17.4:1
-pub const LIGHT_TEXT_SECONDARY: Color32 = Color32::from_rgb(0x5A, 0x5A, 0x5A);
-pub const LIGHT_ACCENT: Color32 = Color32::from_rgb(0x09, 0x69, 0xA8); // 6.1:1
-pub const LIGHT_ERROR: Color32 = Color32::from_rgb(0xC0, 0x30, 0x30);
-pub const LIGHT_WARNING: Color32 = Color32::from_rgb(0xA0, 0x70, 0x10);
-pub const LIGHT_SUCCESS: Color32 = Color32::from_rgb(0x20, 0x80, 0x40);
-pub const LIGHT_WIDGET_BG: Color32 = Color32::from_rgb(0xE8, 0xE8, 0xE8);
-pub const LIGHT_WIDGET_BG_HOVER: Color32 = Color32::from_rgb(0xDD, 0xDD, 0xDD);
-pub const LIGHT_WIDGET_BG_ACTIVE: Color32 = Color32::from_rgb(0xD0, 0xD0, 0xD0);
-pub const LIGHT_SEPARATOR: Color32 = Color32::from_rgb(0xD5, 0xD5, 0xD5);
 
 // Layout constants
 pub const PANEL_ROUNDING: u8 = 6;
@@ -49,8 +14,69 @@ pub const MIN_INTERACT_HEIGHT: f32 = 22.0;
 pub const MIN_INTERACT_WIDTH: f32 = 40.0;
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
 
-// Typography
-pub const BODY_SIZE: f32 = 12.0;
-pub const HEADING_SIZE: f32 = 11.0;
-pub const MONO_SIZE: f32 = 10.0;
-pub const SMALL_SIZE: f32 = 10.0;
+// Typography (#3125). At 100 % interface scale no text is drawn below
+// MIN_TEXT_SIZE; a test holds every size written in the interface to it.
+pub const MIN_TEXT_SIZE: f32 = 12.0;
+/// Hints, units, badges, dense tables: the floor itself.
+pub const SMALL_SIZE: f32 = MIN_TEXT_SIZE;
+pub const MONO_SIZE: f32 = MIN_TEXT_SIZE;
+pub const HEADING_SIZE: f32 = 13.0;
+pub const BODY_SIZE: f32 = 14.0;
+
+#[cfg(test)]
+mod tests {
+    use super::MIN_TEXT_SIZE;
+    use std::path::Path;
+
+    /// Every font size written as a number in the interface's source, with
+    /// where it is. Covers `.size(12.0)` and `FontId::proportional(12.0)` /
+    /// `monospace(..)`, the two ways a panel sets one.
+    fn literal_sizes(dir: &Path, out: &mut Vec<(String, usize, f32)>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                literal_sizes(&path, out);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (i, line) in text.lines().enumerate() {
+                    for open in [".size(", "FontId::proportional(", "FontId::monospace("] {
+                        for (at, _) in line.match_indices(open) {
+                            let arg = &line[at + open.len()..];
+                            let arg = arg[..arg.find(')').unwrap_or(arg.len())].trim();
+                            let arg = arg.trim_end_matches("f32").trim_end_matches('_');
+                            // Only numbers: a token or an expression is checked
+                            // where it is defined.
+                            if let Ok(v) = arg.parse::<f32>() {
+                                out.push((path.display().to_string(), i + 1, v));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_text_in_the_interface_is_written_below_the_floor() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sizes = Vec::new();
+        for dir in ["ui", "trama/ui"] {
+            literal_sizes(&src.join(dir), &mut sizes);
+        }
+        assert!(
+            sizes.len() > 20,
+            "the scan found almost nothing: {}",
+            sizes.len()
+        );
+        let small: Vec<_> = sizes
+            .iter()
+            .filter(|(_, _, v)| *v < MIN_TEXT_SIZE)
+            .map(|(f, l, v)| format!("{f}:{l} size {v}"))
+            .collect();
+        assert!(
+            small.is_empty(),
+            "text below {MIN_TEXT_SIZE} px; use SMALL_SIZE or larger:\n{}",
+            small.join("\n")
+        );
+    }
+}

@@ -18,6 +18,7 @@ use super::types::{
     ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
+use super::world::{WorldCamera, WorldCameraUniforms, WorldRender, WorldTarget};
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
@@ -27,6 +28,30 @@ const WORKGROUP_SIZE: u32 = 256;
 
 /// GPU compute particle system with ping-pong storage buffers,
 /// alive/dead index lists, and indirect draw for GPU-driven rendering.
+///
+/// # Render paths
+///
+/// [`render`](Self::render) is the desktop path: sims write screen-space NDC
+/// into `pos_life.xy` and it draws them into the HDR target with no camera.
+///
+/// [`render_world`](Self::render_world) is the XR build's path, and no desktop
+/// code calls it. It draws sprites that live in meters in 3D through a
+/// [`WorldCamera`], with a depth test, and reads the *world layout*, which a sim
+/// opts into (documented at `struct Particle` in `particle_lib.wgsl`, not
+/// enforced):
+///
+/// - `pos_life.xyz`: position in meters relative to the effect anchor, OpenXR
+///   stage convention (+Y up, −Z forward); `pos_life.w`: life, as in 2D.
+/// - `vel_size.xyz`: velocity in m/s; `vel_size.w`: sprite radius in meters.
+/// - `color` and `flags`: as in 2D.
+///
+/// A sim that keeps per-particle state in `pos_life.z` or `vel_size.z` in 2D
+/// (initial size, mass, species, band, height) moves it to `flags.zw` or the aux
+/// buffer in its world variant. `particle_lib.wgsl`'s `sample_flow_field_3d`
+/// samples the flow field for such a sim. The world path draws the soft circle
+/// (render mode 0) only: no sprite atlas, trails or spin, and none of the
+/// compute-raster, splat or volumetric modes; blend `"alpha"` selects alpha
+/// blending, anything else additive.
 pub struct ParticleSystem {
     pub max_particles: u32,
     pub uniforms: ParticleUniforms,
@@ -39,6 +64,10 @@ pub struct ParticleSystem {
     color_buffers: [wgpu::Buffer; 2],
     flags_buffers: [wgpu::Buffer; 2],
     current: usize,
+    /// SoA / alive-index side the last `dispatch` wrote (`1 - current` at that
+    /// time). An absolute buffer index, so `flip` leaves it alone: it stays
+    /// correct whether `render_world` runs before or after the flip.
+    last_output: std::cell::Cell<usize>,
 
     // Counter buffer: 4 x atomic<u32> = [alive_count, dead_count, emit_used,
     // aux emit (Cleave shard budget, #1798 — zeroed with the rest each dispatch)]
@@ -75,7 +104,6 @@ pub struct ParticleSystem {
     // Render (alpha blend — for non-glowing sprites)
     render_pipeline_alpha: RenderPipeline,
     render_bind_groups: [BindGroup; 2],
-    #[allow(dead_code)]
     render_bgl: BindGroupLayout,
     // Sprite texture bind group (bind group 1)
     sprite_bind_group: BindGroup,
@@ -83,6 +111,10 @@ pub struct ParticleSystem {
     pub sprite: Option<SpriteAtlas>,
     /// Active blend mode: "additive", "alpha", or "wboit"
     pub blend_mode: String,
+
+    /// World-space (XR) render state, built by the first `render_world` call.
+    /// While `None`, nothing of the world path runs.
+    world: Option<WorldRender>,
 
     // Flow field + obstacle (group 1 for compute)
     flow_field: FlowFieldTexture,
@@ -1330,6 +1362,7 @@ impl ParticleSystem {
             color_buffers,
             flags_buffers,
             current: 0,
+            last_output: std::cell::Cell::new(1),
             counter_buffer,
             alive_index_buffers,
             dead_index_buffer,
@@ -1347,6 +1380,7 @@ impl ParticleSystem {
             render_pipeline_alpha,
             render_bind_groups,
             render_bgl,
+            world: None,
             sprite_bind_group,
             sprite_bgl,
             sprite: None,
@@ -2090,6 +2124,11 @@ impl ParticleSystem {
             pass.set_bind_group(0, &self.prepare_indirect_bind_groups[self.current], &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
+        // 2b. The world path's [3 * alive, 1, 0, 0], once that path exists.
+        if let Some(ref world) = self.world {
+            world.record_prepare(encoder);
+        }
+        self.last_output.set(1 - self.current);
 
         // 3. Prepare trail indirect draw args (if trails active)
         if let (Some(pipeline), Some(bg)) = (
@@ -2436,6 +2475,93 @@ impl ParticleSystem {
         pass.set_bind_group(1, &self.sprite_bind_group, &[]);
         // GPU-driven indirect draw: instance_count set by prepare_indirect shader
         pass.draw_indirect(&self.indirect_args_buffer, 0);
+    }
+
+    /// Draw the particles as world-space sprites through one eye's camera (the
+    /// XR build's path; see "Render paths" on [`ParticleSystem`] for the layout
+    /// it expects). Call once per eye.
+    ///
+    /// Records one render pass: color loaded with `load`, depth (if any) loaded
+    /// and tested `Less` but never written, and one non-instanced
+    /// `draw_indirect` of three vertices per alive particle, with arguments
+    /// written on the GPU so no readback is needed. Blend follows the effect's
+    /// `blend` as in [`render`](Self::render): `"alpha"` is alpha, anything else
+    /// additive; rgb is scaled by the same `composite_gain`.
+    ///
+    /// Always draws what the last [`dispatch`](Self::dispatch) wrote, so it may
+    /// be called inside the frame (before [`flip`](Self::flip), like `render`)
+    /// or after it (e.g. after `SceneRenderer::step` returned). Before any
+    /// dispatch it draws nothing.
+    ///
+    /// The first call builds the world path's shaders, camera ring and indirect
+    /// buffer, and from then on `dispatch` also writes the world draw's
+    /// arguments; each new `(color_format, depth format, blend)` builds its
+    /// pipeline on first use. Up to 16 calls between two queue submissions get
+    /// distinct camera slots.
+    pub fn render_world(
+        &mut self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        queue: &Queue,
+        target: WorldTarget<'_>,
+        camera: &WorldCamera,
+        load: wgpu::LoadOp<wgpu::Color>,
+    ) {
+        let world = match self.world {
+            Some(ref mut world) => world,
+            None => {
+                let world = self.world.insert(WorldRender::new(
+                    device,
+                    &self.render_bgl,
+                    &self.counter_buffer,
+                ));
+                // The dispatch that preceded this first call ran before the
+                // world path existed; fill its arguments now so this frame draws.
+                world.record_prepare(encoder);
+                world
+            }
+        };
+
+        let depth_format = target.depth.map(|_| target.depth_format);
+        let key = (
+            target.color_format,
+            depth_format,
+            self.blend_mode == "alpha",
+        );
+        world.ensure_pipeline(device, key);
+        let offset = world.write_camera(
+            queue,
+            &WorldCameraUniforms::new(camera, self.render_uniforms.composite_gain),
+        );
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("particle-render-world"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target.color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: target.depth.map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(world.pipeline(key));
+        pass.set_bind_group(0, &self.render_bind_groups[self.last_output.get()], &[]);
+        pass.set_bind_group(1, world.camera_bind_group(), &[offset]);
+        pass.draw_indirect(&world.indirect_buffer, 0);
     }
 
     /// Load a sprite atlas and update the sprite bind group.
@@ -5773,5 +5899,484 @@ mod trail_binding_tests {
         dispatch_once(&ps, &device, &queue);
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "flux fluid dispatch must validate: {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod world_render_tests {
+    //! `render_world` (the XR build's path) against analytic projections: a
+    //! test sim spawns particles at fixed world-layout positions, one dispatch,
+    //! then one world-space draw into a 256x256 target through a known camera.
+    use super::*;
+    use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+    use glam::{Mat4, Vec3, Vec4};
+
+    const DIM: u32 = 256;
+    /// Sprite radius in meters, unless a test overrides it per particle.
+    const RADIUS: f32 = 0.05;
+
+    /// Anchor for every test: particles are written relative to it.
+    const ANCHOR: Vec3 = Vec3::new(0.25, -0.5, 0.0);
+
+    /// A sim that makes one particle alive per entry of `particles` (xyz:
+    /// world-layout position, meters relative to the anchor; w: radius).
+    fn sim_src(particles: &[Vec4]) -> String {
+        let noise = include_str!("../../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
+        let list = particles
+            .iter()
+            .map(|p| format!("vec4f({:?}, {:?}, {:?}, {:?})", p.x, p.y, p.z, p.w))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let n = particles.len();
+        format!(
+            "{noise}\n{palette}\n{plib}\n
+var<private> PARTICLES: array<vec4f, {n}> = array<vec4f, {n}>({list});
+@compute @workgroup_size(256)
+fn cs_main(@builtin(global_invocation_id) gid: vec3u) {{
+    let idx = gid.x;
+    if idx >= {n}u {{ return; }}
+    var p: Particle;
+    p.pos_life = vec4f(PARTICLES[idx].xyz, 1.0);
+    p.vel_size = vec4f(0.0, 0.0, 0.0, PARTICLES[idx].w);
+    p.color = vec4f(1.0);
+    p.flags = vec4f(0.0);
+    write_particle(idx, p);
+    mark_alive(idx);
+}}
+"
+        )
+    }
+
+    fn system(device: &Device, queue: &Queue, particles: &[Vec4]) -> ParticleSystem {
+        let def: ParticleDef = serde_json::from_str(r#"{"max_count": 256}"#).unwrap();
+        ParticleSystem::new(
+            device,
+            queue,
+            TextureFormat::Rgba16Float,
+            &def,
+            &sim_src(particles),
+            false,
+        )
+    }
+
+    /// Identity view at the origin, symmetric 90° projection, near 0.05, far 100.
+    fn camera() -> WorldCamera {
+        WorldCamera {
+            view: Mat4::IDENTITY,
+            proj: Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.05, 100.0),
+            anchor: ANCHOR,
+        }
+    }
+
+    /// Pixel (x right, y down) and depth of a world-layout position.
+    fn project(camera: &WorldCamera, rel: Vec3) -> (f32, f32, f32) {
+        let ndc = (camera.proj * camera.view).project_point3(rel + camera.anchor);
+        (
+            (ndc.x * 0.5 + 0.5) * DIM as f32,
+            (0.5 - ndc.y * 0.5) * DIM as f32,
+            ndc.z,
+        )
+    }
+
+    fn poll(device: &Device) {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+    }
+
+    fn texture(device: &Device, format: TextureFormat, label: &str) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: DIM,
+                height: DIM,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        })
+    }
+
+    fn read_buffer(device: &Device, queue: &Queue, src: &wgpu::Buffer, size: u64) -> Vec<u8> {
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("world-probe-staging"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(src, 0, &staging, 0, size);
+        queue.submit([enc.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        poll(device);
+        let data = staging.slice(..).get_mapped_range().to_vec();
+        staging.unmap();
+        data
+    }
+
+    /// Red channel of an `Rgba8Unorm` texture, row-major.
+    fn read_red(device: &Device, queue: &Queue, tex: &wgpu::Texture) -> Vec<u8> {
+        let bpr = DIM * 4;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("world-probe-readback"),
+            size: u64::from(bpr * DIM),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            tex.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(DIM),
+                },
+            },
+            tex.size(),
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        poll(device);
+        let data = buf.slice(..).get_mapped_range().to_vec();
+        buf.unmap();
+        data.chunks_exact(4).map(|px| px[0]).collect()
+    }
+
+    /// Dispatch once, then `render_world` into a cleared 256x256 target, with
+    /// an optional depth attachment. Returns the red channel and the system.
+    fn draw(
+        device: &Device,
+        queue: &Queue,
+        particles: &[Vec4],
+        depth: Option<(&wgpu::TextureView, TextureFormat)>,
+    ) -> (Vec<u8>, ParticleSystem) {
+        let mut ps = system(device, queue, particles);
+        let color = texture(device, TextureFormat::Rgba8Unorm, "world-probe-color");
+        let color_view = color.create_view(&Default::default());
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, queue);
+        ps.render_world(
+            device,
+            &mut enc,
+            queue,
+            WorldTarget {
+                color: &color_view,
+                color_format: TextureFormat::Rgba8Unorm,
+                depth: depth.map(|(v, _)| v),
+                depth_format: depth.map_or(TextureFormat::Depth32Float, |(_, f)| f),
+            },
+            &camera(),
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        );
+        queue.submit([enc.finish()]);
+        poll(device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "world render must validate: {err:?}");
+        (read_red(device, queue, &color), ps)
+    }
+
+    /// Intensity-weighted centroid of the lit pixels within `r` px of `(x, y)`,
+    /// or `None` if none is lit.
+    fn centroid(red: &[u8], x: f32, y: f32, r: f32) -> Option<(f32, f32)> {
+        let (mut sx, mut sy, mut sw) = (0.0, 0.0, 0.0);
+        for py in 0..DIM {
+            for px in 0..DIM {
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                if (cx - x).hypot(cy - y) > r {
+                    continue;
+                }
+                let w = f32::from(red[(py * DIM + px) as usize]);
+                sx += w * cx;
+                sy += w * cy;
+                sw += w;
+            }
+        }
+        (sw > 0.0).then(|| (sx / sw, sy / sw))
+    }
+
+    /// Lit pixels farther than `r` px from every point in `allowed`.
+    fn stray_pixels(red: &[u8], allowed: &[(f32, f32)], r: f32) -> usize {
+        (0..DIM * DIM)
+            .filter(|&i| red[i as usize] > 0)
+            .filter(|&i| {
+                let (cx, cy) = ((i % DIM) as f32 + 0.5, (i / DIM) as f32 + 0.5);
+                allowed.iter().all(|&(x, y)| (cx - x).hypot(cy - y) > r)
+            })
+            .count()
+    }
+
+    /// Each visible particle lands within 2 px of its analytic projection; one
+    /// behind the far plane, one outside the frustum and one behind the eye
+    /// draw nothing.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn world_sprites_land_on_their_projection() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let visible = [
+            Vec3::new(-0.25, 0.5, -2.0), // on axis, 2 m ahead
+            Vec3::new(0.55, 1.1, -1.5),
+            Vec3::new(-1.35, -0.4, -3.0),
+            Vec3::new(1.2, 0.9, -2.5),
+        ];
+        // Radii large enough that each would cover pixels if it were drawn.
+        let culled = [
+            Vec4::new(10.0, -10.0, -150.0, 5.0), // behind the far plane, on screen
+            Vec4::new(3.0, 0.5, -1.0, RADIUS),   // outside the frustum (ndc x > 3)
+            Vec4::new(0.0, 0.5, 2.0, 0.5),       // behind the eye
+        ];
+        let all: Vec<Vec4> = visible
+            .iter()
+            .map(|p| p.extend(RADIUS))
+            .chain(culled)
+            .collect();
+        let (red, _ps) = draw(&device, &queue, &all, None);
+
+        let cam = camera();
+        let mut expected = Vec::new();
+        for rel in visible {
+            let (x, y, _) = project(&cam, rel);
+            let (cx, cy) = centroid(&red, x, y, 12.0)
+                .unwrap_or_else(|| panic!("particle at {rel} drew nothing near ({x}, {y})"));
+            let off = (cx - x).hypot(cy - y);
+            assert!(
+                off <= 2.0,
+                "particle at {rel}: centroid ({cx}, {cy}) is {off} px from ({x}, {y})"
+            );
+            expected.push((x, y));
+        }
+        let stray = stray_pixels(&red, &expected, 12.0);
+        assert_eq!(stray, 0, "culled particles must draw nothing");
+    }
+
+    /// Fill `view` with depth 1 on the right half and `near` on the left half.
+    fn fill_depth(device: &Device, queue: &Queue, view: &wgpu::TextureView, near: f32) {
+        let src = format!(
+            "
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+    var xy = array<vec2f, 6>(
+        vec2f(-1.0, -1.0), vec2f(0.0, -1.0), vec2f(0.0, 1.0),
+        vec2f(0.0, 1.0), vec2f(-1.0, 1.0), vec2f(-1.0, -1.0));
+    return vec4f(xy[i], {near:?}, 1.0);
+}}
+"
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("world-probe-depth-fill"),
+            source: wgpu::ShaderSource::Wgsl(src.into()),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("world-probe-depth-fill"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("world-probe-depth-fill"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..6, 0..1);
+        }
+        queue.submit([enc.finish()]);
+    }
+
+    /// With the left half of the depth buffer holding a surface 1 m ahead,
+    /// particles behind it on the left are hidden, particles on the right and
+    /// one in front of it on the left stay visible.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn world_sprites_respect_depth() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let cam = camera();
+        // The wall: whatever depth a point 1 m ahead projects to.
+        let (_, _, wall) = project(&cam, Vec3::new(0.0, 0.0, -1.0) - cam.anchor);
+        let depth = texture(&device, TextureFormat::Depth32Float, "world-probe-depth");
+        let depth_view = depth.create_view(&Default::default());
+        fill_depth(&device, &queue, &depth_view, wall);
+
+        // Relative to the anchor; x < -ANCHOR.x is the left half.
+        let hidden = [Vec3::new(-1.25, 0.9, -2.0), Vec3::new(-0.95, -0.2, -3.0)];
+        let shown = [
+            Vec3::new(0.75, 0.9, -2.0),
+            Vec3::new(1.05, -0.2, -3.0),
+            Vec3::new(-0.55, 0.5, -0.5), // left half, in front of the wall
+        ];
+        let all: Vec<Vec4> = hidden
+            .iter()
+            .chain(&shown)
+            .map(|p| p.extend(RADIUS))
+            .collect();
+        let (red, _ps) = draw(
+            &device,
+            &queue,
+            &all,
+            Some((&depth_view, TextureFormat::Depth32Float)),
+        );
+
+        let mut expected = Vec::new();
+        for rel in shown {
+            let (x, y, _) = project(&cam, rel);
+            let (cx, cy) = centroid(&red, x, y, 20.0)
+                .unwrap_or_else(|| panic!("particle at {rel} should be visible"));
+            assert!((cx - x).hypot(cy - y) <= 2.0, "particle at {rel} misplaced");
+            expected.push((x, y));
+        }
+        for rel in hidden {
+            let (x, _, z) = project(&cam, rel);
+            assert!(
+                z > wall && x < DIM as f32 / 2.0,
+                "test setup: {rel} not behind"
+            );
+        }
+        let stray = stray_pixels(&red, &expected, 20.0);
+        assert_eq!(stray, 0, "particles behind the near half must be hidden");
+    }
+
+    /// Both eyes recorded into one encoder, after `flip` (the XR frontend's
+    /// order: `SceneRenderer::step` has returned): each eye draws through its
+    /// own camera, and both draw what the dispatch wrote.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn two_eyes_in_one_encoder_after_flip() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let rel = Vec3::new(-0.25, 0.5, -2.0); // straight ahead of the origin
+        let mut ps = system(&device, &queue, &[rel.extend(RADIUS)]);
+        let base = camera();
+        // Eyes 0.5 m left and right of the origin: the sprite lands right of
+        // center in the left eye and left of center in the right eye.
+        let eyes = [-0.5f32, 0.5].map(|x| WorldCamera {
+            view: Mat4::from_translation(Vec3::new(-x, 0.0, 0.0)),
+            ..base
+        });
+        let targets = [0, 1].map(|_| texture(&device, TextureFormat::Rgba8Unorm, "world-eye"));
+
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        queue.submit([enc.finish()]);
+        ps.flip();
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut enc = device.create_command_encoder(&Default::default());
+        for (eye, tex) in eyes.iter().zip(&targets) {
+            let view = tex.create_view(&Default::default());
+            ps.render_world(
+                &device,
+                &mut enc,
+                &queue,
+                WorldTarget {
+                    color: &view,
+                    color_format: TextureFormat::Rgba8Unorm,
+                    depth: None,
+                    depth_format: TextureFormat::Depth32Float,
+                },
+                eye,
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+            );
+        }
+        queue.submit([enc.finish()]);
+        poll(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "world render must validate: {err:?}");
+
+        for (eye, tex) in eyes.iter().zip(&targets) {
+            let red = read_red(&device, &queue, tex);
+            let (x, y, _) = project(eye, rel);
+            let (cx, cy) = centroid(&red, x, y, 12.0)
+                .unwrap_or_else(|| panic!("eye {:?} drew nothing", eye.view.w_axis));
+            assert!(
+                (cx - x).hypot(cy - y) <= 2.0,
+                "eye {:?} misplaced",
+                eye.view.w_axis
+            );
+            assert_eq!(stray_pixels(&red, &[(x, y)], 12.0), 0);
+        }
+    }
+
+    /// After a dispatch with the world path live, its indirect buffer holds
+    /// `[3 * alive, 1, 0, 0]`. The world path is built before any dispatch
+    /// (drawing nothing), so the value can only come from `dispatch`.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn world_indirect_args_follow_alive_count() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let particles: Vec<Vec4> = (0..7)
+            .map(|i| Vec4::new(i as f32 * 0.1, 0.0, -2.0, RADIUS))
+            .collect();
+        let mut ps = system(&device, &queue, &particles);
+        let color = texture(&device, TextureFormat::Rgba8Unorm, "world-probe-color");
+        let color_view = color.create_view(&Default::default());
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.render_world(
+            &device,
+            &mut enc,
+            &queue,
+            WorldTarget {
+                color: &color_view,
+                color_format: TextureFormat::Rgba8Unorm,
+                depth: None,
+                depth_format: TextureFormat::Depth32Float,
+            },
+            &camera(),
+            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        );
+        queue.submit([enc.finish()]);
+        poll(&device);
+        let world = ps.world.as_ref().expect("world path built by render_world");
+        let args = read_buffer(&device, &queue, &world.indirect_buffer, 16);
+        assert_eq!(bytemuck::cast_slice::<u8, u32>(&args), &[0, 1, 0, 0]);
+
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        queue.submit([enc.finish()]);
+        poll(&device);
+        let world = ps.world.as_ref().expect("world path built by render_world");
+        let args = read_buffer(&device, &queue, &world.indirect_buffer, 16);
+        assert_eq!(bytemuck::cast_slice::<u8, u32>(&args), &[21, 1, 0, 0]);
     }
 }

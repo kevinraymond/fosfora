@@ -5,8 +5,8 @@ use egui::Context;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-use super::theme::ThemeMode;
 use super::theme::colors::set_theme_colors;
+use super::theme::palette::Palette;
 
 const INTER_REGULAR: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Regular.ttf");
 const INTER_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/Inter-Bold.ttf");
@@ -16,12 +16,20 @@ pub struct EguiOverlay {
     pub state: egui_winit::State,
     pub renderer: egui_wgpu::Renderer,
     pub visible: bool,
-    pub theme: ThemeMode,
+    /// The theme in use, resolved to its colors.
+    pub palette: Palette,
+    /// egui's handle on the display target (#3122), so a panel can draw the
+    /// finished frame. Registered once and then re-pointed on every resize —
+    /// the target is a new texture after a resize, and an id left pointing at
+    /// the old view samples a destroyed texture.
+    pub display_tex: Option<egui::TextureId>,
     pub pending_effect_load: Option<usize>,
     shapes: Vec<egui::ClippedPrimitive>,
     textures_delta: egui::TexturesDelta,
     screen_descriptor: egui_wgpu::ScreenDescriptor,
     startup_time: Instant,
+    /// When the interface was last hidden, for the way-back hint.
+    hidden_at: Option<Instant>,
     fade_alpha: f32,
     auto_shown: bool,
     user_toggled: bool,
@@ -32,66 +40,14 @@ impl EguiOverlay {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         window: &Window,
-        theme: ThemeMode,
+        palette: Palette,
+        ui_scale: f32,
     ) -> Self {
         let ctx = Context::default();
-        ctx.set_visuals(theme.visuals());
-        set_theme_colors(&ctx, theme.colors());
-
-        // Register bundled fonts (Inter proportional, JetBrains Mono monospace)
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "Inter-Regular".into(),
-            Arc::new(egui::FontData::from_static(INTER_REGULAR)),
-        );
-        fonts.font_data.insert(
-            "Inter-Bold".into(),
-            Arc::new(egui::FontData::from_static(INTER_BOLD)),
-        );
-        fonts.font_data.insert(
-            "JetBrainsMono".into(),
-            Arc::new(egui::FontData::from_static(JETBRAINS_MONO)),
-        );
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Proportional)
-            .expect("egui always has Proportional font family")
-            .insert(0, "Inter-Regular".into());
-        fonts
-            .families
-            .get_mut(&egui::FontFamily::Monospace)
-            .expect("egui always has Monospace font family")
-            .insert(0, "JetBrainsMono".into());
-        ctx.set_fonts(fonts);
-
-        // Dense VJ typography and spacing
-        let mut style = (*ctx.style()).clone();
-        style.spacing.interact_size = egui::vec2(
-            super::theme::tokens::MIN_INTERACT_WIDTH,
-            super::theme::tokens::MIN_INTERACT_HEIGHT,
-        );
-        style.spacing.item_spacing = egui::vec2(
-            super::theme::tokens::SPACING,
-            super::theme::tokens::SPACING_Y,
-        );
-        style.spacing.button_padding = egui::vec2(6.0, 2.0);
-        style.text_styles.insert(
-            egui::TextStyle::Body,
-            egui::FontId::proportional(super::theme::tokens::BODY_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Small,
-            egui::FontId::proportional(super::theme::tokens::SMALL_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Heading,
-            egui::FontId::proportional(super::theme::tokens::HEADING_SIZE),
-        );
-        style.text_styles.insert(
-            egui::TextStyle::Monospace,
-            egui::FontId::monospace(super::theme::tokens::MONO_SIZE),
-        );
-        ctx.set_style(style);
+        // Straight into the options rather than `set_zoom_factor`, which only
+        // lands at the next pass: the first frame is laid out at this scale.
+        ctx.options_mut(|o| o.zoom_factor = super::panels::appearance_panel::clamp_scale(ui_scale));
+        configure(&ctx, &palette);
 
         let viewport_id = ctx.viewport_id();
         let state = egui_winit::State::new(ctx, viewport_id, window, None, None, None);
@@ -115,23 +71,25 @@ impl EguiOverlay {
             state,
             renderer,
             visible: false,
-            theme,
+            palette,
+            display_tex: None,
             pending_effect_load: None,
             shapes: Vec::new(),
             textures_delta: egui::TexturesDelta::default(),
             screen_descriptor,
             startup_time: Instant::now(),
+            hidden_at: None,
             fade_alpha: 1.0,
             auto_shown: false,
             user_toggled: false,
         }
     }
 
-    pub fn set_theme(&mut self, theme: ThemeMode) {
-        self.theme = theme;
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
         let ctx = self.state.egui_ctx();
-        ctx.set_visuals(theme.visuals());
-        set_theme_colors(ctx, theme.colors());
+        ctx.set_visuals(palette.visuals());
+        set_theme_colors(ctx, palette.colors());
     }
 
     pub fn handle_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
@@ -152,6 +110,29 @@ impl EguiOverlay {
         self.visible = !self.visible;
         if self.visible {
             self.fade_alpha = 1.0;
+            self.hidden_at = None;
+        } else {
+            self.hidden_at = Some(Instant::now());
+        }
+    }
+
+    /// Opacity for the "how to get back" hint, which shows for two seconds
+    /// after the interface is hidden and then fades over one.
+    ///
+    /// Without it, hiding the panels leaves a window with no way back written
+    /// anywhere on it — Kevin hit exactly that, pressed Escape, and got the
+    /// quit dialog.
+    pub fn hide_hint_alpha(&self) -> f32 {
+        match self.hidden_at {
+            Some(t) if !self.visible => {
+                let e = t.elapsed().as_secs_f32();
+                if e < 2.0 {
+                    1.0
+                } else {
+                    (1.0 - (e - 2.0)).clamp(0.0, 1.0)
+                }
+            }
+            _ => 0.0,
         }
     }
 
@@ -181,6 +162,32 @@ impl EguiOverlay {
         self.state.egui_ctx().clone()
     }
 
+    /// Point egui at the display target's current view (#3122).
+    ///
+    /// Called once at startup and again after every resize. Re-pointing the
+    /// same id keeps every `ui.image` call site valid across resizes; handing
+    /// out a fresh id each time would leave stale ids sampling a texture that
+    /// no longer exists.
+    pub fn set_display_texture(&mut self, device: &wgpu::Device, view: &wgpu::TextureView) {
+        match self.display_tex {
+            Some(id) => self.renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                view,
+                wgpu::FilterMode::Linear,
+                id,
+            ),
+            None => {
+                self.display_tex = Some(self.renderer.register_native_texture(
+                    device,
+                    view,
+                    wgpu::FilterMode::Linear,
+                ));
+            }
+        }
+    }
+
+    /// `pixels_per_point` is the window's; `end_frame` replaces it with the
+    /// one egui laid the frame out at, which includes the interface scale.
     pub fn resize(&mut self, width: u32, height: u32, pixels_per_point: f32) {
         self.screen_descriptor = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [width, height],
@@ -190,13 +197,17 @@ impl EguiOverlay {
 
     pub fn begin_frame(&mut self, window: &Window) {
         // Refresh theme colors each frame so panels always have them
-        set_theme_colors(self.state.egui_ctx(), self.theme.colors());
+        set_theme_colors(self.state.egui_ctx(), self.palette.colors());
         let raw_input = self.state.take_egui_input(window);
         self.state.egui_ctx().begin_pass(raw_input);
     }
 
     pub fn end_frame(&mut self, window: &Window) {
         let output = self.state.egui_ctx().end_pass();
+        // Render at the scale the frame was laid out at. The window's scale
+        // factor alone leaves out the interface scale (#3125): shapes would be
+        // tessellated at one size and placed at another.
+        self.screen_descriptor.pixels_per_point = output.pixels_per_point;
         self.state
             .handle_platform_output(window, output.platform_output);
         self.shapes = self
@@ -264,4 +275,72 @@ impl EguiOverlay {
             self.renderer.free_texture(id);
         }
     }
+}
+
+/// Dress `ctx` as the interface: the theme's colors, the bundled fonts, and
+/// the dense typography and spacing. The shell tests use it too, so they lay
+/// out text as wide as the app does.
+pub(crate) fn configure(ctx: &Context, palette: &Palette) {
+    ctx.set_visuals(palette.visuals());
+    set_theme_colors(ctx, palette.colors());
+
+    ctx.set_fonts(font_definitions());
+
+    // Dense VJ typography and spacing
+    let mut style = (*ctx.style()).clone();
+    style.spacing.interact_size = egui::vec2(
+        super::theme::tokens::MIN_INTERACT_WIDTH,
+        super::theme::tokens::MIN_INTERACT_HEIGHT,
+    );
+    style.spacing.item_spacing = egui::vec2(
+        super::theme::tokens::SPACING,
+        super::theme::tokens::SPACING_Y,
+    );
+    style.spacing.button_padding = egui::vec2(6.0, 2.0);
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::proportional(super::theme::tokens::BODY_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::proportional(super::theme::tokens::SMALL_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Heading,
+        egui::FontId::proportional(super::theme::tokens::HEADING_SIZE),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Monospace,
+        egui::FontId::monospace(super::theme::tokens::MONO_SIZE),
+    );
+    ctx.set_style(style);
+}
+
+/// The interface's fonts: the bundled Inter (proportional) and JetBrains
+/// Mono (monospace), ahead of egui's own, which fill in what they lack.
+pub(crate) fn font_definitions() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter-Regular".into(),
+        Arc::new(egui::FontData::from_static(INTER_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "Inter-Bold".into(),
+        Arc::new(egui::FontData::from_static(INTER_BOLD)),
+    );
+    fonts.font_data.insert(
+        "JetBrainsMono".into(),
+        Arc::new(egui::FontData::from_static(JETBRAINS_MONO)),
+    );
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .expect("egui always has Proportional font family")
+        .insert(0, "Inter-Regular".into());
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Monospace)
+        .expect("egui always has Monospace font family")
+        .insert(0, "JetBrainsMono".into());
+    fonts
 }

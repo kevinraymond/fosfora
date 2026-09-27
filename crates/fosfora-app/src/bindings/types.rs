@@ -230,6 +230,8 @@ impl std::str::FromStr for BindingTarget {
     }
 }
 
+use crate::effect::loader::current_effect_name;
+
 fn parse_target(s: &str) -> BindingTarget {
     if s.is_empty() {
         return BindingTarget::Unset;
@@ -238,16 +240,19 @@ fn parse_target(s: &str) -> BindingTarget {
     // No shipped effect or param name contains a dot, so segment counts are
     // unambiguous — guarded by a test over every .pfx.
     match parts.as_slice() {
+        // The effect by its current name: a binding saved before the effect
+        // was renamed would otherwise never match its layer again. The file
+        // is rewritten with the new name on the next save.
         ["param", idx, effect, param] => match idx.parse::<usize>() {
             Ok(layer) => BindingTarget::Param {
                 layer,
-                effect: (*effect).to_string(),
+                effect: current_effect_name(effect).to_string(),
                 param: (*param).to_string(),
             },
             Err(_) => BindingTarget::Unknown(s.to_string()),
         },
         ["param", effect, param] => BindingTarget::LegacyParam {
-            effect: (*effect).to_string(),
+            effect: current_effect_name(effect).to_string(),
             param: (*param).to_string(),
         },
         ["layer", idx, field] => match (idx.parse::<usize>(), LayerField::parse(field)) {
@@ -398,6 +403,23 @@ pub enum LearnField {
 mod tests {
     use super::*;
 
+    // A binding saved against the effect's old name must still reach it.
+    #[test]
+    fn a_target_naming_phosphor_reaches_fosfora() {
+        for (old, new) in [
+            (
+                "param.0.Phosphor.trail_decay",
+                "param.0.Fosfora.trail_decay",
+            ),
+            ("param.Phosphor.beat_snap", "param.Fosfora.beat_snap"),
+        ] {
+            let t: BindingTarget = old.into();
+            assert_eq!(t, BindingTarget::from(new), "{old}");
+            let json = serde_json::to_string(&t).unwrap();
+            assert_eq!(json, format!("\"{new}\""), "{old} saves as {json}");
+        }
+    }
+
     #[test]
     fn binding_serde_roundtrip() {
         let b = Binding {
@@ -406,7 +428,7 @@ mod tests {
             enabled: true,
             scope: BindingScope::Global,
             source: "audio.kick".into(),
-            target: "param.Phosphor.warp_intensity".into(),
+            target: "param.Fosfora.warp_intensity".into(),
             transforms: vec![
                 TransformDef::Gate { threshold: 0.5 },
                 TransformDef::Smooth { factor: 0.8 },

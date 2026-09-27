@@ -103,7 +103,7 @@ fn default_true() -> bool {
 fn default_output_dir() -> PathBuf {
     dirs::video_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-        .join("Phosphor")
+        .join("Fosfora")
 }
 
 impl Default for RecordingConfig {

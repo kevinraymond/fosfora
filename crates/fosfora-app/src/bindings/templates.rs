@@ -672,15 +672,15 @@ mod tests {
 
     #[test]
     fn audio_reactive_never_double_binds_one_param() {
-        // Phosphor declares a single param. Without the `claimed` set, kick, centroid
+        // Fosfora declares a single param. Without the `claimed` set, kick, centroid
         // and beat_phase would all land on it and fight, last write winning.
         let mut bus = test_bus();
         let params = vec!["trail_decay".to_string()];
-        bus.apply_template(&AUDIO_REACTIVE, 0, "Phosphor", &params);
+        bus.apply_template(&AUDIO_REACTIVE, 0, "Fosfora", &params);
         assert_eq!(bus.bindings.len(), 2); // one param + layer opacity
         assert_eq!(
             bus.bindings[0].target.to_string(),
-            "param.0.Phosphor.trail_decay"
+            "param.0.Fosfora.trail_decay"
         );
         assert_eq!(bus.bindings[1].target.to_string(), "layer.0.opacity");
     }
@@ -831,7 +831,7 @@ mod tests {
         // to be declared first.
         let mut bus = test_bus();
         let params = vec!["warp".into(), "color".into()];
-        bus.apply_template(&SPECTRAL_BANDS, 0, "Phosphor", &params);
+        bus.apply_template(&SPECTRAL_BANDS, 0, "Fosfora", &params);
         assert_eq!(bus.bindings.len(), 3);
 
         let mut bound: Vec<&str> = bus
@@ -863,7 +863,7 @@ mod tests {
             ),
         );
         let params: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
-        bus.apply_template(&MIDI_FADERS, 0, "Phosphor", &params);
+        bus.apply_template(&MIDI_FADERS, 0, "Fosfora", &params);
         assert_eq!(bus.bindings.len(), 8);
         for (i, b) in bus.bindings.iter().enumerate() {
             assert_eq!(b.source, format!("midi.MPD218.cc.0.{}", i + 1));
@@ -874,7 +874,7 @@ mod tests {
     fn midi_faders_keeps_wildcard_without_live_device() {
         let mut bus = test_bus();
         let params: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
-        bus.apply_template(&MIDI_FADERS, 0, "Phosphor", &params);
+        bus.apply_template(&MIDI_FADERS, 0, "Fosfora", &params);
         // No live MIDI source: the placeholder survives so the UI can flag it.
         assert_eq!(bus.bindings[0].source, "midi.*.cc.0.1");
     }

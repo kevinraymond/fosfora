@@ -183,7 +183,7 @@ impl LoopSpec {
     pub fn validate_for(&self, effects: &[PfxEffect], mode: BestEffort) -> Result<(), String> {
         let effect = effects
             .iter()
-            .find(|e| e.name == self.effect)
+            .find(|e| e.name == crate::effect::loader::current_effect_name(&self.effect))
             .ok_or_else(|| {
                 format!(
                     "effect '{}' not found — is it installed in assets/effects/?",
