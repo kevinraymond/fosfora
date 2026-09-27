@@ -238,7 +238,9 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   analysis thread reads (`from_ring`), so the visuals follow what the
   speakers play; the callback allocates nothing and bumps the watchdog's
   counter. Knobs: `debug.fosfora.audio synth|mic|micxr|aaudio|file`,
-  `debug.fosfora.file <path>`, `debug.fosfora.micpreset`, `micfmt`, `micrate`.
+  `debug.fosfora.file <path>`, `debug.fosfora.micpreset`, `micperf`, `micfmt`,
+  `micrate`. Measured Sep 27: none of the microphone knobs change what the
+  Quest delivers (beamformed, high-passed speech pickup); see `MEASURED.md`.
 - **Input events.** The main loop drains `AndroidApp::input_events_iter`
   every pass. Nothing consumes them yet, but an undrained queue makes Android
   flag the app as not responding as soon as a wearer generates input.

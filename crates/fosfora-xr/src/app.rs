@@ -79,7 +79,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.audio synth|mic|micxr|aaudio|file  (default synth; mic needs RECORD_AUDIO;
     //       mic = the core's capture; micxr = an XR-owned cpal stream with debug.fosfora.micfmt i16|f32 and
     //       debug.fosfora.micrate <Hz>; aaudio = raw AAudio with debug.fosfora.micpreset
-    //       unprocessed|generic|voice|camcorder; file = the test clip looping on the speakers, analysis on its tap;
+    //       unprocessed|generic|voice|camcorder and debug.fosfora.micperf lowlatency|none;
+    //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
     //       48 kHz stereo f32 file ending in .f32; default: the bundled CC0 track under assets/audio/)
@@ -164,7 +165,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let rate = debug_prop("debug.fosfora.micrate")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(48_000);
-            live_audio = Some(LiveAudio::mic_aaudio(preset, rate).context("AAudio mic")?);
+            let low_latency = debug_prop("debug.fosfora.micperf").as_deref() != Some("none");
+            live_audio =
+                Some(LiveAudio::mic_aaudio(preset, rate, low_latency).context("AAudio mic")?);
             if audio_source == "loop" {
                 let clip = Clip::decode(&dirs.assets.join("audio").join("ember_glow_excerpt.ogg"))?;
                 let unused_tap =

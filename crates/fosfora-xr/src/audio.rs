@@ -129,7 +129,11 @@ impl LiveAudio {
     /// input preset (cpal cannot set one; AAudio's default is voice
     /// recognition, which the Quest processes for speech). 16-bit stereo at
     /// `sample_rate`, converted to f32 into a ring the core analyzes.
-    pub fn mic_aaudio(preset: ndk::audio::AudioInputPreset, sample_rate: u32) -> Result<Self> {
+    pub fn mic_aaudio(
+        preset: ndk::audio::AudioInputPreset,
+        sample_rate: u32,
+        low_latency: bool,
+    ) -> Result<Self> {
         use ndk::audio::{
             AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode,
             AudioStreamBuilder,
@@ -144,7 +148,11 @@ impl LiveAudio {
             .channel_count(2)
             .sample_rate(i32::try_from(sample_rate).unwrap_or(48_000))
             .input_preset(preset)
-            .performance_mode(AudioPerformanceMode::LowLatency)
+            .performance_mode(if low_latency {
+                AudioPerformanceMode::LowLatency
+            } else {
+                AudioPerformanceMode::None
+            })
             .data_callback(Box::new(move |_stream, data, frames| {
                 let n = usize::try_from(frames).unwrap_or(0) * 2;
                 // SAFETY: AAudio hands the callback `frames` frames of the
