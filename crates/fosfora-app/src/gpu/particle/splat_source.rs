@@ -137,6 +137,7 @@ pub fn demo_scene_cached(name: &str) -> bool {
 /// Download the named demo scene on a background thread (mirrors
 /// `depth::model::download_model`): .tmp → rename, cancellable, progress
 /// 0–100 / 101 complete / 102 error.
+#[cfg(feature = "desktop")]
 pub fn download_demo_scene(name: &str) -> Arc<crate::download::DownloadProgress> {
     let progress = crate::download::DownloadProgress::new();
     let progress_clone = Arc::clone(&progress);
@@ -986,6 +987,7 @@ impl SplatSceneLoader {
     /// Open a file dialog (background thread, `ParticleSourceLoader` pattern)
     /// then decode the chosen scene. A cancelled dialog drops the sender →
     /// `try_recv` sees Disconnected and resets `loading`.
+    #[cfg(feature = "desktop")]
     pub fn open_dialog(&mut self, target_count: u32, opts: SceneOptions, layer_idx: usize) {
         let load_gen = self.begin_request("choosing file…".to_string());
 

@@ -166,15 +166,18 @@ pub fn load_into(
     Ok(restored.notes)
 }
 
-/// The file dialogs behind the canvas's Export and Import buttons. They run
-/// on their own thread, like every other dialog in the app — a native dialog
-/// blocks its caller, and the caller here would be the render loop.
 /// Export and Import asked for a file dialog: under test they count here
 /// instead of opening one on the desktop of whoever runs the tests.
+#[cfg(feature = "desktop")]
 pub(crate) static DIALOGS_ASKED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// The file dialogs behind the canvas's Export and Import buttons. They run
+/// on their own thread, like every other dialog in the app — a native dialog
+/// blocks its caller, and the caller here would be the render loop.
 pub struct ChainIo {
+    // Only the file dialogs send, and they are desktop-only.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     tx: std::sync::mpsc::Sender<Imported>,
     rx: std::sync::mpsc::Receiver<Imported>,
 }
@@ -193,6 +196,7 @@ impl Default for ChainIo {
 }
 
 impl ChainIo {
+    #[cfg(feature = "desktop")]
     fn dialog() -> rfd::FileDialog {
         rfd::FileDialog::new().add_filter("trama chain", &["json"])
     }
@@ -200,6 +204,7 @@ impl ChainIo {
     /// Ask where to save `doc`, then write it. Nothing comes back but a log
     /// line; the document was captured by the caller, so the chain can go on
     /// being edited while the dialog is open.
+    #[cfg(feature = "desktop")]
     pub fn export(&self, doc: ChainDoc) {
         if cfg!(test) {
             DIALOGS_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -230,6 +235,7 @@ impl ChainIo {
 
     /// Ask for a file to load into `chain`. The answer arrives through
     /// [`Self::drain`] on some later frame.
+    #[cfg(feature = "desktop")]
     pub fn import(&self, chain: ChainId) {
         if cfg!(test) {
             DIALOGS_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

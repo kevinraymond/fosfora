@@ -1,11 +1,15 @@
-use anyhow::Result;
 use std::sync::Arc;
-use wgpu::{
-    Adapter, Device, DeviceDescriptor, ExperimentalFeatures, Instance, InstanceDescriptor,
-    MemoryHints, PowerPreference, Queue, RequestAdapterOptions, Surface, SurfaceConfiguration,
-    TextureFormat, TextureUsages, Trace,
+use wgpu::{Adapter, Device, Instance, Queue, Surface, SurfaceConfiguration, TextureFormat};
+// Building the context needs a winit window, so `new` and its imports are desktop-only.
+#[cfg(feature = "desktop")]
+use {
+    anyhow::Result,
+    wgpu::{
+        DeviceDescriptor, ExperimentalFeatures, InstanceDescriptor, MemoryHints, PowerPreference,
+        RequestAdapterOptions, TextureUsages, Trace,
+    },
+    winit::window::Window,
 };
-use winit::window::Window;
 
 /// Path for persisted pipeline cache data.
 fn pipeline_cache_path() -> std::path::PathBuf {
@@ -29,6 +33,10 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
+    /// The windowed context. Without `desktop` there is no winit window to build a
+    /// surface from; a frontend that brings its own device renders through
+    /// `headless::scene_renderer::SceneRenderer::new`, which takes one.
+    #[cfg(feature = "desktop")]
     pub fn new(window: Arc<Window>) -> Result<Self> {
         let instance = Instance::new(&InstanceDescriptor::default());
 

@@ -13,6 +13,10 @@ pub mod node;
 pub mod persist;
 pub mod ser;
 pub mod starter;
+#[cfg(feature = "desktop")]
+pub mod ui;
+#[cfg(not(feature = "desktop"))]
+#[path = "ui_headless.rs"]
 pub mod ui;
 
 use crate::audio::features::AudioFeatures;

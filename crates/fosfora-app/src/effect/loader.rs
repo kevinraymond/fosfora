@@ -48,9 +48,18 @@ pub fn current_effect_name(name: &str) -> &str {
         .map_or(name, |(_, new)| new)
 }
 
+static ASSETS_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Pin the assets directory, for a frontend that knows where its assets are (the XR
+/// app unpacks them out of its APK). Wins over the search in [`assets_dir`], but only
+/// before its first call: once resolved the directory is fixed for the process, and a
+/// late call hands the path back.
+pub fn set_assets_dir(dir: PathBuf) -> Result<(), PathBuf> {
+    ASSETS_DIR.set(dir)
+}
+
 pub fn assets_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
+    ASSETS_DIR.get_or_init(|| {
         // 1. CWD-relative (dev workflow)
         let cwd = PathBuf::from("assets");
         if cwd.join("effects").is_dir() {
@@ -2639,6 +2648,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             "expected the four overlay effects to be phase_locked, found {checked} — \
              did the glob or the metadata rot?"
         );
+    }
+
+    /// The override only counts before the first lookup; after it, the resolved
+    /// directory stays put and the caller gets its path back.
+    #[test]
+    fn set_assets_dir_after_first_use_is_refused() {
+        let resolved = assets_dir().to_path_buf();
+        let late = PathBuf::from("/nonexistent/fosfora-assets");
+        assert_eq!(set_assets_dir(late.clone()), Err(late));
+        assert_eq!(assets_dir(), resolved);
     }
 
     #[test]

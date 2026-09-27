@@ -1,6 +1,7 @@
 pub mod apply;
 pub mod bus;
 pub mod catalog;
+#[cfg(feature = "desktop")]
 pub mod migration;
 pub mod persistence;
 pub mod sources;

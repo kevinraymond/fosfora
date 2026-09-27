@@ -132,6 +132,16 @@ pub struct ShaderUniforms {
     // 16 bytes (448 total)
 }
 
+// Core code calls `ShaderUniforms::zeroed()`, whose inherent impl lives in `app.rs`,
+// which only desktop builds compile. This is the same impl for the others; fold the
+// two together here once the UI rewrite has landed and `app.rs` is quiet.
+#[cfg(not(feature = "desktop"))]
+impl ShaderUniforms {
+    pub fn zeroed() -> Self {
+        Zeroable::zeroed()
+    }
+}
+
 pub struct UniformBuffer {
     pub buffer: Buffer,
 }

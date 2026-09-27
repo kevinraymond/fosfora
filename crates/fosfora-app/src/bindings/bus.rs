@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::audio::features::AudioFeatures;
+#[cfg(feature = "desktop")]
 use crate::midi::MidiSystem;
+#[cfg(feature = "desktop")]
 use crate::osc::OscSystem;
 
 use super::persistence;
@@ -344,6 +346,7 @@ impl BindingBus {
 
     /// Evaluate all enabled bindings for one frame.
     /// Returns per-binding outputs (target, value, rising edge) for the app to apply.
+    #[cfg(feature = "desktop")]
     pub fn evaluate(
         &mut self,
         audio: Option<&AudioFeatures>,
@@ -376,7 +379,7 @@ impl BindingBus {
     /// `evaluate` so tests — and the headless renderer's `evaluate_offline` —
     /// can drive it without `MidiSystem`/`OscSystem`, whose constructors touch
     /// config files, MIDI ports, and UDP sockets.
-    pub(crate) fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> Vec<BindingOutput> {
+    pub fn evaluate_snapshot(&mut self, snapshot: SourceSnapshot) -> Vec<BindingOutput> {
         if self.bindings.is_empty() {
             self.last_snapshot = snapshot;
             return Vec::new();

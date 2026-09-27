@@ -4,6 +4,7 @@
 
 use rosc::OscType;
 
+#[cfg(feature = "desktop")]
 use crate::osc::sender::OscSender;
 
 pub trait SignalSink {
@@ -13,10 +14,12 @@ pub trait SignalSink {
 }
 
 /// Fire-and-forget UDP, reusing the OSC sender's socket mechanics.
+#[cfg(feature = "desktop")]
 pub struct UdpSink {
     sender: OscSender,
 }
 
+#[cfg(feature = "desktop")]
 impl UdpSink {
     pub fn new(host: &str, port: u16) -> Self {
         let mut sender = OscSender::new();
@@ -25,6 +28,7 @@ impl UdpSink {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl SignalSink for UdpSink {
     fn emit(&mut self, _ts: f64, addr: &str, args: &[OscType]) {
         self.sender.send_message(addr, args.to_vec());
@@ -158,6 +162,7 @@ mod tests {
 
     /// Full addresses go on the wire untouched — the OSC TX prefix must not apply.
     #[test]
+    #[cfg(feature = "desktop")]
     fn udp_sink_round_trips_full_addresses() {
         let rx = UdpSocket::bind("127.0.0.1:0").expect("bind receiver");
         rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();

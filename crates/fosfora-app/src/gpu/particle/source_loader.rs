@@ -187,6 +187,7 @@ impl ParticleSourceLoader {
 
     /// Open a file dialog for images on a background thread, then decode.
     /// The dialog + decode both run off the main thread to avoid freezing.
+    #[cfg(feature = "desktop")]
     pub fn open_image_dialog(&mut self, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;
@@ -244,6 +245,7 @@ impl ParticleSourceLoader {
     ///
     /// Sends back the chosen path only — see [`ParticleSourceResult::Model`] for
     /// why the raster cannot happen here.
+    #[cfg(feature = "desktop")]
     pub fn open_model_dialog(&mut self, request: SourceRequest) {
         self.generation += 1;
         let load_gen = self.generation;

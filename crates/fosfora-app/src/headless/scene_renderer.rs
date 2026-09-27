@@ -80,6 +80,8 @@ pub struct SceneRenderer {
 // path; in default builds the loop driver uses a slice of it.
 #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
 impl SceneRenderer {
+    /// Any device will do: `headless::gpu::create`'s, or one a frontend already
+    /// owns (the XR app's, created through OpenXR). No `GpuContext` or window.
     pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,

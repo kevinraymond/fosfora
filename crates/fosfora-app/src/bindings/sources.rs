@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::audio::features::AudioFeatures;
+#[cfg(feature = "desktop")]
 use crate::midi::MidiSystem;
+#[cfg(feature = "desktop")]
 use crate::osc::OscSystem;
 
 use super::types::SourceRaw;
@@ -182,6 +184,7 @@ pub fn collect_dmfcc_bands(dmfcc: &[f32; 13]) -> SourceSnapshot {
 }
 
 /// Collect MIDI CC values into source snapshot.
+#[cfg(feature = "desktop")]
 pub fn collect_midi(midi: &MidiSystem) -> SourceSnapshot {
     let mut map = HashMap::with_capacity(midi.last_cc_values.len());
 
@@ -206,6 +209,7 @@ pub fn collect_midi(midi: &MidiSystem) -> SourceSnapshot {
 }
 
 /// Collect OSC values into source snapshot.
+#[cfg(feature = "desktop")]
 pub fn collect_osc(osc: &OscSystem) -> SourceSnapshot {
     let mut map = HashMap::with_capacity(osc.last_raw_values.len());
 
@@ -248,6 +252,7 @@ pub fn collect_websocket(ws_values: &HashMap<String, f32>) -> SourceSnapshot {
 }
 
 /// Sanitize device name: replace spaces and dots with underscores.
+#[cfg(feature = "desktop")]
 fn sanitize_device_name(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -333,6 +338,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "desktop")]
     fn test_sanitize_device_name() {
         assert_eq!(sanitize_device_name("MPD218"), "MPD218");
         assert_eq!(sanitize_device_name("My Device 2.0"), "My_Device_2_0");
