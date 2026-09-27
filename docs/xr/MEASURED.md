@@ -65,8 +65,8 @@ the device; wgpu's own validation reported nothing over the run.
 - Screencap: the triangle appears in both eyes with opposite-sign parallax
   (centroid 62% across the left-eye image, 39% across the right-eye image),
   consistent with an object 1.5 m ahead.
-- **Not verified:** world-stability while moving the head. Nobody wore the
-  headset for this run (Guardian paused, proximity faked). Board question #3220.
+- World-stability: verified by Kevin wearing the headset (Sep 27): the triangle
+  stays put while moving and turning, no double vision.
 
 ## Particle sweep (S5)
 
