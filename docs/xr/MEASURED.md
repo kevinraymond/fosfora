@@ -13,8 +13,24 @@ commit. A claim in a report that isn't here doesn't count (invariant I4).
 | JDK | OpenJDK 21.0.11 |
 | cargo-ndk | 4.1.2 |
 | Quest 3 Horizon OS version | v207 (`207.0.0.297.1234`), Android 14 / SDK 34, `ro.ovr.os.api.version` 160 |
-| OpenXR loader (source, version) | (S1) |
+| OpenXR loader (source, version) | Khronos `org.khronos.openxr:openxr_loader_for_android` 1.1.63 from Maven Central (Apache-2.0), packaged by Gradle from the AAR (`jni/arm64-v8a/libopenxr_loader.so`, AAR sha256 `622419d2…ded73`) |
 | Desktop baseline: clippy / test wall time | ci.yml lint+test matrix all green on `3f7cce0` (warm cache, 32 threads): fmt 1s, clippy ×8 sets 110s, test ×7 sets 368s (default: 1022 passed, 0 failed, 111 ignored), `cargo deny` ok; total 479s |
+
+### S1 notes (commit `c45a9c8`, Quest 3 v207)
+
+- Runtime `Oculus 207.297.0`, system `Meta Quest 3`, 84 extensions (list in the
+  app's startup log). Blend modes offered: `OPAQUE`, `ALPHA_BLEND`.
+- Vulkan through the runtime: `Adreno (TM) 740`, API 1.3.295, runtime requires
+  1.0–1.2. Swapchain: `R8G8B8A8_SRGB`, 3 images per eye.
+- Startup to first FOCUSED frame: ~250 ms after `android_main`.
+- Lifecycle: Guardian's tracking-lost dialog and the BACK-key exit dialog take
+  the session FOCUSED → VISIBLE (frames continue with empty `xrEndFrame` while
+  `should_render` is false) and, for Guardian, on to STOPPING → IDLE with
+  `xrEndSession`; the same session resumed READY → FOCUSED afterwards. HOME
+  destroys the activity: Destroy → `android_main` returns ("exited cleanly"),
+  and a relaunch from the library re-initializes in the same process. Choosing
+  Exit in the system dialog kills the process (runtime destroys the client).
+- Headless test setup: headset unworn, `prox_close` broadcast + `debug.oculus.guardian_pause 1` (board #3215).
 
 ## Adapter limits (S2)
 
@@ -30,7 +46,7 @@ commit. A claim in a report that isn't here doesn't count (invariant I4).
 
 | Step | Commit | Content | Display Hz | Held 60 s? | CPU ms | GPU ms | Tool |
 |---|---|---|---|---|---|---|---|
-| S1 | | clear color | | | | | |
+| S1 | `c45a9c8` | clear color, both eyes, 1680x1760 sRGB per eye | 72 (runtime default for a new app; 72/80/90/120 offered) | Yes: 74 s, 5362 frames, 1 long frame at session start, max wait-to-wait 17.3 ms after the first second, 0 `should_render=false` | 0.25 (runtime `App=`) | n/a (clear only; runtime `CPU&GPU=0.79`) | in-app `predictedDisplayPeriod` counters (logcat `fosfora_xr`, 1 s windows) + runtime `VrApi` line (`FPS=72/72 Stale=0 Tear=0`) |
 | S2 | | triangle | | | | | |
 | S4 | | 2D effect on quad | | | | | |
 
