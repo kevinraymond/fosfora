@@ -21,6 +21,7 @@ pub mod system;
 pub mod text_source;
 pub mod types;
 pub mod water;
+pub mod world;
 
 pub use source::{ParticleSource, ParticleSourceKind, SourcePresetFields, SourceSpec};
 pub use source_loader::{
@@ -30,3 +31,4 @@ pub use source_loader::{
 pub use splat_source::{SplatLoadResult, SplatSceneLoader};
 pub use system::ParticleSystem;
 pub use types::{ObstacleFit, ObstacleMode, SourceTransition};
+pub use world::{WorldCamera, WorldTarget};
