@@ -47,3 +47,17 @@ averaging six times the prose per unit of work.
 
 Bump the version in `crates/fosfora-app/Cargo.toml`, update `CHANGELOG.md`, push to main.
 CI auto-tags and releases. Never `git tag` by hand.
+
+## XR work (branch `xr`)
+
+Fosfora VR (Quest 3 / Meta VR Glasses) lives on the `xr` branch. Plan, design and
+measurements are in `docs/xr/` (start with `BUILD_PLAN.md`). Invariants — breaking one
+is a stop-and-ask:
+
+- **I1** Desktop never regresses: every `xr` commit passes everything `ci.yml` runs (fmt, clippy `-D warnings` per feature set, tests).
+- **I2** `AudioFeatures` ABI is frozen: leave `audio/features.rs`, `GOLDEN_HOPS` and `audio/schema.rs` ordering alone.
+- **I3** One repo, no fork: shared code stays in `fosfora-app` behind a `[lib]`; `crates/fosfora-xr` holds only OpenXR/Android/VR glue.
+- **I4** The device is the truth: a device step is done only when its numbers are in `docs/xr/MEASURED.md`.
+- **I5** Hands-first: every interaction works with bare hands; controllers are never required.
+- **I6** MIT/Apache only: never enable `link` (GPL) in XR builds; new crates pass `cargo deny check`; bundled binaries record their source.
+- **I7** Nothing confidential: nothing under the Meta developer NDA is ever committed.
