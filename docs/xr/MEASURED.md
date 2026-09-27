@@ -67,7 +67,7 @@ the device; wgpu's own validation reported nothing over the run.
   consistent with an object 1.5 m ahead.
 - World-locking: verified by Kevin wearing the headset (Sep 27): the triangle
   stays put while moving and turning. (Monocular check; Kevin sees with one eye.)
-- Convergence, numeric (commit `53ed2ac`, tracked, flags 7): runtime
+- Convergence, numeric (commit `eefdc33`, tracked, flags 7): runtime
   IPD 65.0 mm, triangle center 1.52 m from the eye midpoint → expected
   disparity 2.44°; from our per-eye matrices the center sits at +0.62° in the
   left eye and −1.86° in the right eye, disparity 2.48°, convergent. Left-eye
