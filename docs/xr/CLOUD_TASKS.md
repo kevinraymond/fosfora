@@ -304,22 +304,118 @@ Then Kevin merges, `xr` merges `main`, and C3b starts.
 
 ## C3b: world-space ports of Flux, Murmur, Tide (after C3a)
 
-*Lead effects picked by Kevin Sep 27 (board #3239). Brief to write once C3a
-is on `main`; it can split into one cloud session per effect.*
+*Lead effects picked by Kevin Sep 27 (board #3239). C3a is on `main` (PR
+merged Sep 27) and `xr` carries it. One cloud session per effect, Flux first;
+the brief below is for Flux and says what changes for the other two.*
 
-Outline:
-- Input: C3a's `render_world` + `sample_flow_field_3d`, the S5 budget
-  (about 1M sprites at 72 Hz and 750K at 90 Hz on Quest 3 before the
-  effect's own passes), and the layout convention from C3a task 1.
-- Per effect, an XR variant sim under `assets/xr/shaders/<name>_xr_sim.wgsl`
-  with a hidden `.pfx` under `assets/xr/effects/` (the S4 pattern): world
-  `xyz` in meters in a ~2 m volume at the anchor, per-particle state moved
-  out of the `.z` slots, audio mappings unchanged, obstacle modes working in
-  3D where the effect uses them, one preset tuned for seated viewing.
-  Flux: curl flow through `sample_flow_field_3d`. Murmur: 3D boids
-  (topological neighbors in 3D, predator avoidance in 3D). Tide: height
-  becomes real `y`, the sheet pours onto a horizontal plane at the anchor.
-- Desktop CI untouched; the variants are hidden and staged into the APK only.
-- Acceptance per effect: Kevin verifies on device at the S5 budget
-  (`MEASURED.md` row per effect); a headless test renders one frame of each
-  variant without validation errors.
+> You are working in the Fosfora repo on branch `xr`, in a new branch
+> `xr-flux-world` cut from it. Fosfora is a real-time audio-reactive visual
+> engine (`crates/fosfora-app`, ~130K lines of Rust, wgpu 27, toolchain
+> pinned at 1.97.0) with a Quest 3 build in `crates/fosfora-xr`. Read
+> `CLAUDE.md`, `ARCHITECTURE-NOTES.md`, `docs/xr/XR_DESIGN.md` (sections
+> "World-space particles (S5)" and "Mixed reality (S7)"), `docs/xr/MEASURED.md`
+> (sections "Particle sweep (S5)", "Proposal", "Mixed reality (S7)") and
+> `.github/workflows/ci.yml` first. You have no device; the person who
+> dispatched you runs the result on a Quest 3 and fills in the numbers.
+>
+> **Background.** Desktop Fosfora sims write screen-space NDC into
+> `pos_life.xy` and draw through a compute raster or the billboard path.
+> The Quest build draws world-space particles once per eye through
+> `ParticleSystem::render_world` (`crates/fosfora-app/src/gpu/particle/world.rs`,
+> `assets/shaders/builtin/particle_render_world.wgsl`, one non-instanced
+> pulled draw of 3-vertex sprites, premultiplied output, added by C3a). The
+> opt-in world layout is documented in `assets/shaders/lib/particle_lib.wgsl`
+> ("World layout"): `pos_life.xyz` = meters relative to the effect anchor
+> (+Y up, −Z forward), `vel_size.xyz` = m/s, `vel_size.w` = sprite radius in
+> meters; per-particle state a sim keeps in the `.z` slots today moves to
+> `flags.zw` or the `aux` buffer. `sample_flow_field_3d(pos_m, extent_m)` in
+> the same file samples the volumetric flow-field texture for such a sim.
+> The XR crate already drives a core effect headlessly through
+> `fosfora_app::headless::scene_renderer::SceneRenderer`
+> (`crates/fosfora-xr/src/scene.rs`, the S4 quad path) and has its own test
+> sim with obstacles (`crates/fosfora-xr/src/particles3d*`, S5/S7); the
+> world-space product path is meant to replace that test sim.
+>
+> **Measured facts that shape this port (Quest 3, `docs/xr/MEASURED.md`):**
+> - Budget with passthrough, hands, room anchors and depth occluders on:
+>   **500K sprites at 72 Hz (8.6 ms GPU)**; 250K at 5.5 ms. Plan Flux for
+>   ~300K alive so its own passes fit beside the sprites.
+> - The sprite draw is 3× cheaper when the eye pass contains a
+>   depth-writing opaque draw (the "primer" finding, S7). The XR crate
+>   already draws depth occluders and a primer; a port must not rely on
+>   turning that off.
+> - Over passthrough the eye target clears to alpha 0 and sprites must
+>   write premultiplied color; additive color with `OVER` alpha is what the
+>   S5/S7 sim uses and it composites correctly.
+> - Sprites nearer than ~0.3 m to the eye are culled by the XR draw; the
+>   wearer stands inside the cloud, so a port should look right from inside
+>   its volume, not only from a seat in front of it.
+> - Flux as shipped (compute raster + velocity feedback at 1280x720) ran at
+>   6 fps on the quad (S4). The world port keeps the sim and the look of the
+>   flow, not the raster resolve.
+>
+> **Goal (Flux):** an XR variant of Flux that runs its sim in world space
+> and renders through `render_world`, with zero change to desktop Flux or
+> any shared shader, pipeline or `.pfx` semantics.
+>
+> **Invariants**
+> - Every command in `ci.yml` passes unchanged (`cargo fmt --all -- --check`,
+>   `cargo clippy --all-targets -- -D warnings` for the default build and
+>   each feature set, `cargo test`), workspace pedantic lints, `cargo deny
+>   check`. No new dependencies. `cargo ndk -t arm64-v8a --platform 29 clippy
+>   -p fosfora-xr --all-targets -- -D warnings` also passes (install the
+>   `aarch64-linux-android` target and `cargo-ndk 4.1.2`; `scripts/xr/run.sh
+>   lint` wraps it).
+> - `AudioFeatures` ABI and golden vectors untouched. Desktop sims, the 2D
+>   render path, `ui/`, `app.rs`, `main.rs` untouched. Nothing under
+>   `docs/xr/` changes except a MEASURED.md row left for the device run.
+> - Every new `unsafe` block has a `// SAFETY:` comment (none expected).
+> - US English spelling. No mention of any event, deadline or prize.
+>
+> **Tasks**
+> 1. **Sim variant.** `assets/xr/shaders/flux_xr_sim.wgsl` from
+>    `assets/shaders/flux_sim.wgsl`: positions in meters in a volume about
+>    2 m across at the anchor (particles leaving it respawn inside, with a
+>    fade near the bounds as in `crates/fosfora-xr/src/particles3d_draw.wgsl`),
+>    velocity from `sample_flow_field_3d`, the initial-size state moved out
+>    of `pos_life.z` into `flags.zw` or `aux`, audio mappings unchanged
+>    (bass → flow speed, rms and beats → size, as the desktop sim does).
+>    Keep the desktop file byte-identical.
+> 2. **Hidden preset.** `assets/xr/effects/flux_xr_world.pfx` following the
+>    S4 variants in that directory (hidden from the desktop library, staged
+>    into the APK by `android/app/build.gradle.kts` and
+>    `crates/fosfora-xr/src/assets.rs`): points at the XR sim, disables the
+>    raster/feedback passes, one preset tuned for a wearer standing in the
+>    cloud.
+> 3. **Obstacles.** The XR crate feeds hand-joint spheres and room boxes to
+>    its test sim through an `Obstacles` uniform (`particles3d_sim.wgsl`,
+>    `ObstacleSet` in `particles3d.rs`). Give the Flux variant the same
+>    block and `collide()` (copy the WGSL into the XR sim; do not change the
+>    core `ParticleSystem` bind group layouts). If that needs a core hook
+>    (an extra bind group on the compute pass), stop and write the smallest
+>    API you would add instead of adding it.
+> 4. **Drive it.** In `crates/fosfora-xr`, a mode `debug.fosfora.mode
+>    world` (see the knob list in `app.rs`) that loads the hidden preset
+>    through `XrScene`/`SceneRenderer` for the sim step and calls
+>    `render_world` once per eye into the eye pass after the occluders and
+>    primer, with the S7 passthrough, hands, room and floor exactly as
+>    `mode mr` does. Reuse the mixed-mode plumbing; do not fork it.
+> 5. **Tests.** A headless test in `fosfora-app` that loads the XR preset,
+>    steps the sim a few frames and renders one frame through
+>    `render_world` with no validation errors (see the C3a tests in
+>    `world.rs`: `prepare_shader_validates`, `particle_lib_flow_3d_validates`
+>    for the pattern). It must run in CI without a GPU if the existing
+>    headless tests do, or be `#[ignore]` with the same reason they use.
+>
+> **Deliverable:** one PR against `xr` (not `main`), CI green, Android clippy
+> green, the commit body carrying the design rationale (what moved out of
+> `pos_life.z`, how the volume and respawn work, what the preset changes). A
+> short section at the end of the PR body: "Device run needed: `mode world`
+> at 250K and 500K, 72 Hz, with `scripts/xr/sweep.sh --mode world`; fill the
+> MEASURED.md row." Do not claim device numbers.
+>
+> **Murmur and Tide** (later sessions, same shape): Murmur is 3D boids
+> (topological neighbors and predator avoidance in 3D; `murmur_history.wgsl`
+> stays 2D-free), a murmuration in the room at ~200K; Tide's water height
+> becomes real `y` and the sheet pours onto a horizontal plane at the anchor
+> and onto the room's table boxes through the obstacle block.
