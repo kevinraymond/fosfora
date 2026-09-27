@@ -2038,8 +2038,9 @@ impl App {
         }
     }
 
-    /// The stack a launch opens with (#3126): an empty Layer 1 over the
-    /// launch effect as Layer 2, with Layer 1 selected. The first effect
+    /// The stack a launch opens with (#3126), and Clear stack returns to: an
+    /// empty Layer 1 over the launch effect as Layer 2, with Layer 1
+    /// selected. Expects the launch effect to be the only layer. The first effect
     /// picked in the catalog lands on top of the F, so the stack shows a
     /// blend (and the First run tour has one to explain) from the start.
     fn open_launch_stack(&mut self) {
@@ -2057,7 +2058,8 @@ impl App {
         self.sync_active_layer();
     }
 
-    /// Remove all layers and create one fresh layer with the launch effect.
+    /// Remove all layers and start again from the launch stack (Clear
+    /// stack, New preset): the launch effect, and an empty Layer 1 over it.
     pub fn clear_all_layers(&mut self) {
         self.cancel_media_loads();
         self.layer_stack.layers.clear();
@@ -2072,6 +2074,7 @@ impl App {
         {
             self.load_effect(idx);
         }
+        self.open_launch_stack();
     }
 
     /// Add a new media layer from a file path.

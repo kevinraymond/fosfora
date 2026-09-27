@@ -664,7 +664,7 @@ fn clear_all(ui: &mut Ui, count: usize, touring: bool) {
         .data(|d| d.get_temp::<f64>(armed_id))
         .is_some_and(|t| now - t < 3.0);
     let label = if armed {
-        format!("Click again: replace all {count} with one fresh layer")
+        format!("Click again: replace all {count} with the starting stack")
     } else {
         "Clear stack…".to_string()
     };
@@ -674,7 +674,7 @@ fn clear_all(ui: &mut Ui, count: usize, touring: bool) {
             egui::Button::new(RichText::new(label).size(12.0)),
         )
         .on_disabled_hover_text(crate::ui::tour::NOT_DURING)
-        .on_hover_text("Replace every layer with a single default layer")
+        .on_hover_text("Replace every layer with the starting stack: an empty layer over the F")
         .clicked()
     {
         ui.ctx().data_mut(|d| {

@@ -105,8 +105,8 @@
   by itself the first time and replays from the **Tours** menu or *Setup ▸
   Tutorials*; Esc or Skip tour ends it.
 
-- The app now opens with an empty Layer 1 over the F, so the first effect you pick
-  lands on top of it. An empty layer is see-through until an effect loads, instead of
+- The app now opens with an empty Layer 1 over the F, and Clear stack and a new preset
+  return to that, so the first effect you pick lands on top of it. An empty layer is see-through until an effect loads, instead of
   covering everything beneath it with a dark gradient.
 
 ## v1.39.0 — 2026-09-22
