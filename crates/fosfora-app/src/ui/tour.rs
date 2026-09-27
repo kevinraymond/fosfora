@@ -1529,15 +1529,15 @@ mod tests {
 
     #[test]
     fn first_run_starts_by_itself_once_and_only_in_the_workspace() {
-        let mut s = crate::settings::SettingsConfig {
-            classic_layout: false,
-            ..Default::default()
-        };
+        let mut s = crate::settings::SettingsConfig::default();
         assert!(should_auto_start(&s));
         s.tours_done.push(Tour::FirstRun.key().into());
         assert!(!should_auto_start(&s));
-        let classic = crate::settings::SettingsConfig::default();
-        assert!(classic.classic_layout && !should_auto_start(&classic));
+        let classic = crate::settings::SettingsConfig {
+            classic_layout: true,
+            ..Default::default()
+        };
+        assert!(!should_auto_start(&classic));
     }
 
     // ── The Bindings tour (#3127) ─────────────────────────────────────

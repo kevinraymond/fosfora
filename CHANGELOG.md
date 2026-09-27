@@ -5,149 +5,63 @@
 
 ## Unreleased
 
-- The right panel now opens with a live **Output** preview, so the composite stays
-  visible while the interface covers the window. The finished frame is rendered
-  once and shared, costing 0.03 ms per frame.
+## v2.0.0 — 2026-09-27
 
-- Launching no longer logs a "missing field `layers`" warning for every preset that
-  has saved bindings. Those sidecar files sit beside the presets and were being
-  read as presets themselves.
+Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,
+with the output as a live preview beside them instead of behind two narrow side panels.
 
-- New **workspace layout**, in Settings ▸ Global: turn off *Classic layout* for
-  Perform, Build and Setup instead of two narrow side panels, with the output as a
-  preview rather than the backdrop. The switch goes away in v2.1.
+### Added
+- **The workspace layout, now the default for new and upgrading installs.** The old
+  two-panel layout is *Classic layout* under Setup ▸ General for this release, and goes
+  away in v2.1.
+- **Build shows the layer stack as pictures**: each row is the stack blended up to that
+  layer, and Master on top is the final output. The inspector beside it shows whatever you
+  select, with every section the effect brings, and the chain editor opens there too.
+- **A catalog of effect pictures** along the bottom of Build, in families, with search and
+  favorites. Hover a picture to see it move; click it to load it, or drag it onto the stack
+  to replace a layer's effect or add a layer.
+- **Scenes are a strip of cues** in the drawer, in Build and Perform. Each cue shows its
+  preset's picture, transitions sit between them and the playhead runs along the strip.
+- **Setup is a list of pages**, each device saying its state in words beside an On/Off
+  switch. NDI, the virtual camera, Spout, Syphon and Ableton Link are all there, and
+  Triggers can map Timeline, Tempo ÷2, Tempo ×2 and Tap tempo.
+- **Send the output to a second display** in a borderless window with no interface on it.
+  Pick the display under the output preview; Esc closes it.
+- **Every control has a Bind** that opens Bindings with that control already picked, and a
+  bound control names its source on its row (◀ Kick).
+- **Four guided tours**: First run, which starts by itself once, then Bindings, Chains, and
+  Layers and blending, from the Tours menu or Setup ▸ Tutorials.
+- **Interface scale** from 80 to 200 % under Setup ▸ Appearance, or Ctrl + and Ctrl −. The
+  output is untouched.
+- **Themes Light, Gray, Black, and Blue and orange**, plus custom themes: *Save a copy to
+  edit* writes fifteen named colors to a file, and Appearance lists any that fail contrast.
 
-- Hiding the interface is no longer a dead end: a hint names the way back, and Esc
-  returns you instead of asking whether to quit.
+### Changed
+- **No state is shown by color alone**, and no text is smaller than 12 px at 100 % scale.
+  Status lights have a shape per state, and selections differ by fill, outline or words.
+- **Midnight, Ember, Neon and High Contrast are retired.** A saved choice moves to the
+  nearest new theme.
+- **The chain editor opens with C** (for chain) instead of G.
+- **Post-processing belongs to the preset**: selecting a layer no longer changes it. Master
+  can reset to any effect's recommended look, *Previous settings* undoes a reset, and
+  editing it marks the preset as changed.
+- **The app opens with an empty Layer 1 over the F**, and Clear stack and a new preset
+  return to that. An empty layer is see-through instead of a dark gradient.
+- **The launch effect is called Fosfora and traces an F.** Presets and bindings that name
+  it Phosphor still load it, and new setups record to a Fosfora folder.
+- **Bindings**: the *Effect* tab is now *Preset*, layers are numbered from 1, the window is
+  solid, and an open card no longer cuts off its name, source and target.
 
-- **Send the output to a second display**, in a borderless window with no interface
-  on it, so the workspace can stay on one screen while a projector carries the
-  picture. Pick the display under the output preview, or *Outputs* in Classic; the frame
-  keeps its own aspect ratio instead of stretching, and Esc closes the window.
-
-- In the workspace layout, **Build shows the layer stack as pictures**: each row is the
-  stack blended up to that layer, with the layer alone as an inset, and Master on top
-  is the final output. The middle column shows whatever you select, a layer or
-  Master, and the trama chain editor now opens there instead of floating over it.
-
-- In the workspace layout, **Build has a catalog of pictures along the bottom**: every
-  effect in families (Particles, Fluids, Life and growth and more), with search across
-  names and descriptions, and favorites. Hover a picture to see it move. Click it to
-  load it into the selected layer, or drag it onto the stack to replace a layer's
-  effect or add a new layer.
-
-- In the workspace layout, **a scene is a strip of cues in the drawer along the
-  bottom**, beside the catalog in Build and on its own in Perform. Each cue shows its
-  preset's picture, each transition sits between two cues, and the playhead runs along
-  the strip. Drag presets in or cues around; a click edits a cue, a double-click plays it.
-
-- Deleting a scene no longer closes the one you were editing, and a long scene name
-  in a non-Latin script no longer crashes the app.
-
-- The effect that opens on launch now traces an **F for Fosfora** and is called Fosfora.
-  Presets and bindings saved with its old name, Phosphor, still load it. The built-in
-  PHOSPHOR particle image now spells FOSFORA, and new setups record to a Fosfora folder.
-
-- **Adding a video layer no longer freezes the app.** A video decodes every frame
-  before it plays, which took ~15 s with nothing on screen; it now decodes in the
-  background with a progress bar and a Cancel button where the layer will appear.
-
-- **Selecting a layer no longer changes the post-processing.** Bloom, vignette, grain
-  and tonemap belong to the preset: an effect's recommended look is used when it is
-  the only layer, and on a larger stack Master can reset to any effect's look with
-  one click. Presets load exactly as saved, and editing post-processing now marks the
-  preset as changed.
-
-- **Interface scale**, from 80 to 200 %, under *Appearance* in Setup (or Settings in
-  the Classic layout): text, controls and spacing grow together, and the output is
-  untouched. Ctrl + and Ctrl − change it too, and the size is remembered.
-
-- **New themes: Light, Gray, Black, and Blue and orange.** The first three use no hue
-  at all. Blue and orange is navy with orange for what is selected: a pair that stays
-  distinct for red–green color blindness. Midnight, Ember, Neon and High Contrast are retired: a saved choice moves
-  to the nearest new theme, and every other setting is kept.
-
-- **Custom themes**: *Save a copy to edit* writes the theme in use to a file of fifteen
-  named colors in the themes folder. Change any of them, press Reload, and Appearance
-  lists any color that fails contrast minimums.
-
-- **No state is shown by color alone.** Status lights have a shape per state (filled,
-  ring, dash, triangle, cross) and say it in words on hover; the audio light's live,
-  quiet and failed were one dot in three colors. Selected tabs, the current preset,
-  effect and cue, and tiles armed for delete now differ by fill, outline or words.
-
-- **Larger text throughout**: nothing is drawn below 12 px at 100 % scale. Hints,
-  units and tables were 7 to 10 px, and the Bindings matrix was the worst of them.
-
-- **Presets are compact tiles** with names on up to two lines, as many across as the
-  column fits, and opening Presets no longer widens its column.
-
-- A section opens or closes from a click anywhere on its title bar. Clicks on the
-  title's words were missed, so only the arrow and the gaps between words worked.
-
-- Master's post-processing can go back: beside each effect's recommended look,
-  *Previous settings* restores what a reset replaced (press it again to return) and
-  *Defaults* restores the built-in settings. Every choice is always shown, and one
-  that would change nothing is greyed out with the reason on hover.
-
-- The Bindings window numbers layers from 1, as the layer list does; the first layer
-  was shown as Layer 0.
-
-- **The chain editor now opens with C** (for chain) instead of G. The status bar lists
-  it next to B for Bindings. In the workspace layout both open over the stack and
-  inspector, and the output column stays in view beside them.
-
-- The Bindings window is solid instead of letting the output show through it.
-
-- In the workspace layout, **a First run tour** lights one part of the window at a
-  time: the audio input, the catalog, the stack, the inspector and saving. It starts
-  by itself the first time and replays from the **Tours** menu or *Setup ▸
-  Tutorials*; Esc or Skip tour ends it.
-
-- In the workspace layout, **every control has a Bind**. It opens Bindings with that
-  control already picked, so one click on a source finishes the binding. A control
-  that follows something names it on its row (◀ Kick), and *Open bindings* under
-  Parameters shows them all. Before, Bindings had no button outside the Classic layout.
-
-- **A Bindings tour**, in the Tours menu: from a control into the matrix and back,
-  covering sources, cards, targets, preset and global bindings, and the M and O
-  buttons as the quick path for one knob.
-
-- The Bindings window's *Effect* tab is now called *Preset*: those bindings are saved
-  with the preset, whichever effects it runs.
-
-- **A Chains tour**, in the Tours menu: from a layer's Chain line into the chain editor,
-  covering nodes and wires, a node's controls, the master chain and Export/Import. If
-  the layer's chain is empty it starts one (Layer input, Kaleidoscope, Output) so the
-  picture changes; deleting those two nodes puts the layer back as it was.
-
-- **A Layers and blending tour**, in the Tours menu: reading the stack bottom to top,
-  blend modes and opacity with the output left lit so you see each one, a layer's row
-  and menu, adding layers, and Master's post-processing. If the top layer is empty it
-  loads Aurora there in Screen, so there is a blend to try.
-
-- **Kaleidoscope no longer draws a seam** from the center to the left edge while it
-  turns. It happened whenever *segments* was not a whole number: its slider now steps
-  in whole numbers, and a fraction from an older preset rounds. A trama effect can mark
-  any such parameter with `"integers"` in its manifest.
-
-- In the workspace layout, **Setup is a list of pages**: Audio, Control, Outputs and
-  streams, Sync, Appearance, Tutorials and General, each marked on, waiting or off, with
-  every device a block that says its state in words beside an On/Off switch. NDI, the
-  virtual camera, Spout, Syphon and Ableton Link are all there, and Triggers can now map
-  Timeline, Tempo ÷2, Tempo ×2 and Tap tempo.
-
-- In the workspace layout, **the inspector shows the sections some effects bring**:
-  Obstacle for particle effects, Lattice, Helix, and Audio Reactivity (the effect's own
-  audio mappings). Before, those were only in the Classic layout.
-
-- In the Bindings window, an open card no longer cuts off its name, source and
-  target, and the source list no longer draws values over the uniform names beside
-  them. The name has its own line, and Source and Target have a labeled line each.
-
-- The app now opens with an empty Layer 1 over the F, and Clear stack and a new preset
-  return to that, so the first effect you pick lands on top of it. An empty layer is see-through until an effect loads, instead of
-  covering everything beneath it with a dark gradient.
+### Fixed
+- **Adding a video layer no longer freezes the app** for ~15 s while it decodes; decoding
+  runs in the background with a progress bar and a Cancel button.
+- **Kaleidoscope no longer draws a seam** from the center while it turns: *segments* steps
+  in whole numbers. A trama effect can mark such a parameter `"integers"` in its manifest.
+- Deleting a scene no longer closes the one you were editing, and a long scene name in a
+  non-Latin script no longer crashes the app.
+- Launching no longer logs a "missing field `layers`" warning for every preset with saved
+  bindings.
+- A section opens or closes from a click anywhere on its title bar, not only its arrow.
 
 ## v1.39.0 — 2026-09-22
 
