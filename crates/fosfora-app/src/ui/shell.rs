@@ -31,7 +31,7 @@ use crate::osc::OscSystem;
 use crate::params::ParamStore;
 use crate::preset::PresetStore;
 use crate::settings::SettingsConfig;
-use crate::ui::theme::colors::theme_colors;
+use crate::ui::theme::colors::{ThemeColors, theme_colors};
 use crate::web::WebSystem;
 
 /// Which workspace is open. Held in egui data, not in settings: it is where
@@ -438,6 +438,18 @@ impl DrawerTab {
     }
 }
 
+/// A drawer tab's label. Strong text takes its color when it is laid out,
+/// which beats the selected-text color a filled button gives its label: the
+/// open tab was pale text on the pale fill. So that one names it.
+fn drawer_tab_text(label: &str, on: bool, tc: &ThemeColors) -> egui::RichText {
+    let text = egui::RichText::new(label).size(12.0).strong();
+    if on {
+        text.color(tc.on_selection)
+    } else {
+        text
+    }
+}
+
 /// The drawer along the bottom: the catalog and the scenes as tabs in Build
 /// (#3124, #3173), the scenes alone in Perform. Its height is the user's to
 /// drag; closed, it is one line that says how to open it. Each workspace
@@ -482,8 +494,8 @@ fn bottom_drawer(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32, ws:
             } else {
                 // A tour step points at one tab; the others stay shut.
                 for &t in tabs {
-                    let text = egui::RichText::new(t.label()).size(12.0).strong();
                     let on = open && t == tab;
+                    let text = drawer_tab_text(t.label(), on, &tc);
                     if ui
                         .add_enabled(on || !touring, egui::Button::selectable(on, text))
                         .on_disabled_hover_text(tour::NOT_DURING)
@@ -1184,6 +1196,43 @@ fn setup_workspace(ctx: &Context, s: &mut ShellState<'_>, fill: egui::Color32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The open drawer tab was drawn pale on its pale fill (about 1.3:1 in
+    // Gray, the default theme), seen in the v2.0.0 README screenshot.
+    #[test]
+    fn the_open_drawer_tab_reads_on_its_fill() {
+        use crate::ui::theme::palette::contrast;
+        for mode in crate::ui::theme::ThemeMode::BUILT_IN {
+            let p = mode.built_in_palette().unwrap();
+            let tc = p.colors();
+            let ctx = Context::default();
+            ctx.set_visuals(p.visuals());
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let text = drawer_tab_text(DrawerTab::Catalog.label(), true, &tc);
+                    let _ = ui.add(egui::Button::selectable(true, text));
+                });
+            });
+            let painted: Vec<egui::Color32> = out
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        let c = t.galley.job.sections.first()?.format.color;
+                        Some(if c == egui::Color32::PLACEHOLDER {
+                            t.override_text_color.unwrap_or(t.fallback_color)
+                        } else {
+                            c
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(painted.len(), 1, "{mode:?}");
+            let r = contrast(painted[0], tc.selection);
+            assert!(r >= 4.5, "{mode:?}: {r:.1}:1");
+        }
+    }
 
     /// Lay a parameter-style row out in the inspector's frame, in a window
     /// `w` wide. Returns (how far the row's right-hand button reaches past the

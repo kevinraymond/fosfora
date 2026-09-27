@@ -76,21 +76,23 @@ and echo a single layer or the whole frame.
 
 Three steps, and you can't break anything — every setting saves to its own file and can be reset.
 
-1. **Download and open it.** A visual is already running when the window appears. The panels
-   fade in after a second or two, or press **D** to show them right away.
+1. **Download and open it.** A visual is already running when the window appears. The interface
+   fades in after a second or two, or press **D** to show it right away, and a short tour
+   points out each part of it.
 2. **Point it at your audio.** This is the one step worth getting right — see
    [below](#the-visuals-arent-reacting-to-my-music) if nothing moves. Most of the time it just
    works.
-3. **Play something.** Click effects on the left until one grabs you, then press **F** for
-   fullscreen.
+3. **Play something.** Click effects in the catalog along the bottom until one grabs you,
+   then press **F** for the full output.
 
 <p align="center">
-  <img src="assets/media/ui.webp" alt="The Fosfora interface" width="100%" />
+  <img src="assets/media/ui.webp" alt="The Fosfora interface: the layer stack, Fluvid's controls, the output and the effect catalog" width="100%" />
+  <br><sub>Fluvid over a dancer video and Aurora. Footage: Free Stock video by <a href="http://www.videezy.com/">Videezy</a></sub>
 </p>
 
 Every output is built into the official downloads. Spout (Windows) and Syphon (macOS) just
 work — nothing to install. NDI® needs the free [NDI® runtime](https://ndi.video); the Linux
-virtual camera needs the `v4l2loopback` kernel module (its panel shows the one-line setup).
+virtual camera needs the `v4l2loopback` kernel module (Setup ▸ Outputs and streams shows the one-line setup).
 
 <details>
 <summary><strong>Build from source instead</strong></summary>
@@ -196,7 +198,8 @@ launch.)
 ## FAQ
 
 **<a id="the-visuals-arent-reacting-to-my-music"></a>The visuals aren't reacting to my music.**
-Fosfora listens to an *input* device. Open the **Audio** panel and pick the right source:
+Fosfora listens to an *input* device. Pick the right source in the **Input** list under Audio,
+beside the output preview (or in Setup ▸ Audio):
 - **Linux** — pick the **Monitor** of your output device. That's your system audio; a plain
   microphone only hears the room.
 - **Windows** — pick the WASAPI **loopback** device for system audio, or a mic for the room.

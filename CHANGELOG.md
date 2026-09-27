@@ -10,6 +10,10 @@
 Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,
 with the output as a live preview beside them instead of behind two narrow side panels.
 
+<img src="https://raw.githubusercontent.com/kevinraymond/fosfora/v2.0.0/assets/media/ui.webp" width="100%" alt="The Build workspace: the layer stack, Fluvid's controls, the output and the effect catalog">
+
+<sub>Fluvid over a dancer video and Aurora. Footage: Free Stock video by <a href="http://www.videezy.com/">Videezy</a>.</sub>
+
 ### Added
 - **The workspace layout, now the default for new and upgrading installs.** The old
   two-panel layout is *Classic layout* under Setup ▸ General for this release, and goes
