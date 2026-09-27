@@ -152,15 +152,59 @@ desktop **compute rasterizer is a ~30 ms fixed GPU cost** on the Adreno 740 at
 feedback passes and post-processing. The **billboard/vertex particle path**
 renders the same effect at 4.6 ms with 87k particles and still holds 72 Hz at
 1.7M particles (9.4 ms, cost tracking `max_count`). So the S5 world-space path
-should be built on the billboard renderer first (instanced quads per eye, sized
-by depth); porting the compute raster is an optimization spike only if the
-billboard ceiling proves too low. The rest of this section describes the
-compute-raster port for that case.
+is built on the billboard renderer (board #3229, accepted); porting the
+compute raster stays an optimization spike for later, if ever.
 
+**As built (S5, `crates/fosfora-xr/src/particles3d.rs` + `particles3d_*.wgsl`,
+board #3232):** a standalone test sim in the XR crate, not on the core's
+`ParticleSystem` (its buffers are private and its positions are screen-space
+NDC; a port needs core changes, listed in `MEASURED.md` "Particle sweep (S5)").
+- Buffer: one AoS storage buffer, 32 B per particle (`pos: vec3` in stage
+  meters, `life`, `vel: vec3`, `seed`). Every slot stays alive: a particle
+  that dies or leaves the cube respawns in place, so the draw's instance count
+  is the particle count and there is no alive list.
+- Sim: one compute dispatch per frame (256 threads per workgroup), analytic
+  curl of a two-octave sine potential (divergence-free, a few transcendentals
+  per particle), speed and sprite size from the synthetic audio (bass, rms).
+- Draw, once per eye, no vertex buffer. Two shapes: instanced
+  (`draw(0..6, 0..count)`, one instance per sprite, the shape of the core's
+  `draw_indirect`) and **vertex pulling** (`draw(0..6 * count, 0..1)`, the
+  vertex index alone picks particle and corner). On the Adreno 740 the
+  tiler's per-instance cost dominates the instanced form (board #3233:
+  sprite size, swapchain scale, 3-vertex sprites and freezing the sim all
+  leave it unchanged); pulling is about 1.5x cheaper at every count and is
+  the form the numbers below use. The corner offset is applied **in view
+  space** (`view * pos`, then `+ corner * radius_m`, then `proj`), so a
+  sprite has a size in meters and perspective sets its footprint. Additive blend into the sRGB swapchain
+  image. The vertex stage reads the particle buffer through a read-only
+  binding (a writable storage binding in the vertex stage would need
+  `VERTEX_WRITABLE_STORAGE`), so the same WGSL is compiled twice with the
+  declaration swapped.
+- Depth: each eye has a `Depth32Float` attachment at swapchain size. The quad
+  writes depth; particles test (`Less`) and never write, so sprites behind the
+  quad are hidden and sprites in front draw over it. Additive sprites need no
+  order among themselves.
+- Evidence for stereo depth without a binocular viewer: `log_depth_probes`
+  in `xr.rs` prints, every 5 s, the NDC x and depth of two points 0.5 m nearer
+  and farther than the quad center in each eye's matrices; correct depth means
+  nearer = smaller depth value and larger disparity. Plus the screencap: the
+  quad occludes what is behind it.
+- Knobs (`adb shell setprop`): `debug.fosfora.mode` (`particles`, default,
+  or `quad` for the S4 path), `count`, `sim` (`0` freezes the sim after a 2 s
+  warmup to isolate draw cost), `size` (sprite radius multiplier), `tri`
+  (3-vertex sprites), `pull` (vertex pulling), `hz` (requests a display rate
+  via `XR_FB_display_refresh_rate` when the session begins) and `eyescale`
+  (swapchain size vs recommended; the compositor resamples). The runtime
+  switches rates on its own when nothing asks (72 → 90 → 72 seen in one
+  launch), so measurements always set `hz`. `scripts/xr/sweep.sh` runs a
+  count × rate × scale matrix and summarizes logcat (in-app pacing counters
+  plus the runtime's `App=` GPU time, filtered to the app's own pid: the
+  runtime logs a `VrApi` line per process).
 
-The desktop scatter (`assets/shaders/builtin/compute_raster_scatter.wgsl`) does
-`px = (pos.x * 0.5 + 0.5) * w` on screen-space `pos_life.xy`. The XR path adds a
-**separate** scatter/draw shader variant that:
+**Original plan (compute-raster port), kept for the fallback case:** the
+desktop scatter (`assets/shaders/builtin/compute_raster_scatter.wgsl`) does
+`px = (pos.x * 0.5 + 0.5) * w` on screen-space `pos_life.xy`. The XR path
+would add a **separate** scatter/draw shader variant that:
 - reads world `xyz` (new test-sim layout; don't reinterpret existing sims' `z`);
 - does `clip = view_proj[eye] * vec4(xyz, 1)`, discards if `clip.w <= near` or
   outside the frustum, then NDC → pixels as on desktop;

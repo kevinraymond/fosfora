@@ -60,6 +60,8 @@ the device; wgpu's own validation reported nothing over the run.
 | S2 | `32b4628` | stereo triangle through wgpu, one render pass per eye | 72 | Yes: 73 s, 5287 frames, 0 long frames, max wait-to-wait 15.9 ms after the first second, 0 `should_render=false` | not measured | 0.26 (runtime `App=`) | same as S1 |
 | S4 | `fad08e4` | **Flux as shipped** (compute raster, High, ~1.3–2M alive) at 1280x720 on a 1.2 x 0.675 m quad, both eyes, bright and animating | 72 | **No: 6 fps**, every frame long, runtime `Stale=72` | 168 avg (in-app; waiting on the GPU) | 154–170 (runtime `App=`) | same as S1, plus `particles alive` log |
 | S4 | `fad08e4` | `Flux XR Vertex` (billboard path, Low, 87k alive): holds rate but the image is almost black (Flux's look comes from the raster resolve + velocity feedback), so a renderer-cost datum, not a Flux result | 72 | Yes: 78 s, 5511 frames, 1 long frame, max wait-to-wait 14.8 ms, 0 stale | 2.19 avg / 3.49 max | 4.60 median / 5.56 max | same |
+| S5 | `47fb3d0` | S5 test sim, 750K world-space sprites (vertex pulling, 3-vertex), both eyes at 1680x1760 with depth, static quad | 72 | Yes: 63 s, 4555 frames, 0 long frames, 13 stale | 0.67 avg | 10.1 median / 12.9 max (runtime `App=`) | same, via `scripts/xr/sweep.sh` |
+| S5 | `47fb3d0` | same, 750K | 90 | Yes: 63 s, 5678 frames, 0 long frames, 0 stale | 0.59 avg | 8.1 median / 8.8 max | same |
 
 ### S4 notes (commit `fad08e4`, Quest 3 v207)
 
@@ -122,15 +124,139 @@ capture → copy → quad sampling is correct in both eyes. Convergence log
 
 ## Particle sweep (S5)
 
-| Particles | Raster scale | Hz target | GPU ms | Held? | Notes |
-|---|---|---|---|---|---|
-| 100K | 1.0 | 72 | | | |
-| 250K | 1.0 | 72 | | | |
-| 500K | 1.0 | 72 | | | |
-| 1M | 1.0 | 72 | | | |
-| 2M | 1.0 | 72 | | | |
+Setup (commit `47fb3d0`, Quest 3 v207, board #3192): `debug.fosfora.mode
+particles`, the S5 test sim (`crates/fosfora-xr/src/particles3d*`: curl-noise
+flow in a 2 m cube centered on the S4 quad at (0, 1.5, −1.5) m, every slot
+alive, 32 B per particle), drawn once per eye at the recommended 1680x1760
+per-eye swapchain with depth against a static test-card quad. Sprite radius
+4 mm × audio (rms). Rates set through `XR_FB_display_refresh_rate` per run.
+GPU ms = runtime `App=` median over 1 s windows after a 5 s warmup, from the
+app's own `VrApi` line; frames/s and long frames from the in-app counters;
+"Held" = frames/s at the target and 0 stale frames. Runs are 30 s (20 s for
+diagnostics) unless marked 60 s. `scripts/xr/sweep.sh` produced every row.
 
-Ceiling at 72 Hz: — · at 90 Hz: — · at 0.75× raster: —
+### Instanced quads (one instance per sprite, the shape of the core's `draw_indirect`)
+
+| Particles | Hz target | GPU ms (med / max) | frames/s | Held? |
+|---|---|---|---|---|
+| 100K | 72 | 4.8 / 5.0 | 72.0 | Yes |
+| 250K | 72 | 9.4 / 9.9 | 72.0 | Yes |
+| 300K | 72 | 9.7 / 10.2 | 72.0 | Yes |
+| 350K | 72 | 10.7 / 11.1 | 72.0 | Yes |
+| 400K | 72 | 11.5 / 12.1 | 72.0 | Yes (over the 11 ms budget) |
+| 450K | 72 | 12.6 / 14.0 | 68.7 | No |
+| 500K | 72 | 13.9 / 15.8 | 61.8 | No |
+| 1M | 72 | 28.3 / 34.4 | 31.4 | No |
+| 2M | 72 | 164 / 182 | 5.9 | No (see note) |
+| 100K | 90 | 4.7 / 5.0 | 90.0 | Yes |
+| 250K | 90 | 8.1 / 8.5 | 90.0 | Yes |
+| 300K | 90 | 8.7 / 9.0 | 90.0 | Yes |
+| 350K | 90 | 10.1 / 10.8 | 84.8 | No |
+| 400K | 90 | 11.4 / 12.5 | 74.3 | No |
+| 500K | 90 | 14.4 / 15.9 | 59.8 | No |
+| 1M | 90 | 28.2 / 33.7 | 30.0 | No |
+| 2M | 90 | 166 / 183 | 5.8 | No |
+
+Instanced ceiling with GPU ≤ 11 ms: **350K at 72 Hz, 300K at 90 Hz.**
+
+### What the cost is (72 Hz, 20 s runs, GPU ms median)
+
+| Variant | 250K | 500K | 1M |
+|---|---|---|---|
+| Instanced quads (baseline) | 9.4 | 13.9 | 28.3 |
+| Sim frozen after a 2 s warmup (draw only) | 9.0 | 13.6 | 26.2 |
+| Swapchain 0.75× (1260x1320 per eye) | 9.2 | 13.6 | 26.7 |
+| Sprite radius × 0.5 | — | 14.0 | 27.9 |
+| Sprite radius × 0.25 | — | 12.0 | — |
+| 3-vertex sprites, instanced | 9.1 | 13.6 | 26.9 |
+| **Vertex pulling** (one non-instanced draw, quads) | **6.3** | **9.6** | **17.0** |
+| **Vertex pulling, 3-vertex sprites** | — | **7.7** | **10.8** |
+
+Reading: the sim is under 2 ms even at 1M; raster resolution and sprite
+size barely matter (not fill-bound); halving the vertex count of an
+instanced draw does nothing. The tiler's per-instance cost dominates the
+instanced form. One draw of `verts × count` vertices where the vertex index
+picks the particle (vertex pulling) is 1.5× cheaper at every count, and with
+pulling the vertex count matters, so 3-vertex sprites take another 1.25–1.6×.
+Both eyes render in separate passes; multiview was not tried.
+
+### Vertex pulling, 3-vertex sprites (the S5 default from `47fb3d0`)
+
+| Particles | Hz target | Run | GPU ms (med / max) | frames/s | Long frames | Stale | Held? |
+|---|---|---|---|---|---|---|---|
+| 500K | 72 | 20 s | 7.7 / 8.4 | 72.0 | 0 | 0 | Yes |
+| 750K | 72 | 60 s | 10.1 / 12.9 | 72.0 | 0 of 4555 | 13 | Yes (13 stale frames in 63 s) |
+| 1M | 72 | 20 s | 10.8 / 11.5 | 72.0 | 0 | 0 | Yes |
+| 1M | 72 | 60 s | 11.2 / 16.3 | 72.0 | 13 of 4400 | 103 | Marginal: rate held, but long frames and stale frames over 60 s, median over budget |
+| 1.25M | 72 | 20 s | 13.8 / 15.6 | 59.9 | 3 | 174 | No |
+| 1.5M | 72 | 20 s | 15.6 / 19.1 | 52.4 | 51 | 299 | No |
+| 2M | 72 | 20 s | 21.7 / 24.8 | 40.0 | 527 | 452 | No |
+| 500K | 90 | 20 s | 7.6 / 8.1 | 90.0 | 0 | 0 | Yes |
+| 500K | 90 | 60 s | 7.4 / 8.7 | 90.0 | 1 of 5697 | 4 | Yes |
+| 750K | 90 | 20 s | 8.4 / 8.9 | 90.0 | 0 | 0 | Yes |
+| 750K | 90 | 60 s | 8.1 / 8.8 | 90.0 | 0 of 5678 | 0 | Yes |
+| 1M | 90 | 20 s | 11.3 / 12.9 | 75.1 | 2 | 203 | No |
+
+**Ceiling with GPU ≤ 11 ms: 750K at 72 Hz (10.1 ms) and 750K at 90 Hz
+(8.1 ms).** 1M holds 72 Hz in a 20 s run at 10.8 ms but not cleanly over
+60 s. The GPU runs faster per frame at 90 Hz than at 72 Hz for the same
+content (750K: 8.1 vs 10.1 ms; 500K: 7.4 vs 7.7), presumably the runtime's
+dynamic GPU clock (`VrApi` shows GPU level 4 at 640 MHz vs 492 MHz), so the
+90 Hz budget of 11.1 ms is not the handicap it looks like.
+
+### 0.75× raster
+
+Swapchain at 0.75× the recommended size, instanced quads: 250K 9.2 ms, 500K
+13.6 ms, 1M 26.7 ms at 72 Hz (vs 9.4 / 13.9 / 28.3), 500K at 90 Hz 13.5 ms
+(vs 14.4). A 2–5 % gain; the compositor's upscale is visible as softer sprite
+edges in the screencap. Not worth the resolution on this path.
+
+### Notes
+
+- 2M instanced: 164 ms is not the 2× of 1M (28 ms) but 6×; not investigated
+  (the count is far past the ceiling). The 64 MB particle buffer is within
+  the 128 MiB storage binding limit.
+- The runtime changes the display rate on its own when the app requests none
+  (72 → 90 → 72 within one launch), so every row above requested its rate.
+- Stereo depth evidence (`depth probe` log, tracked, IPD 64.9 mm, eye midpoint
+  1.53 m from the quad): a point 0.5 m nearer than the quad center projects to
+  depth 0.9506 in both eyes vs the quad's 0.9672 and the 0.5 m farther point's
+  0.9755, with NDC x disparities 0.543 (near) > 0.524 (quad) > 0.514 (far).
+  Nearer = smaller depth value and larger disparity, in both eyes, as required.
+  The screencap at 500K shows the quad as a sparser rectangle in both eyes:
+  sprites behind it fail the depth test, sprites in front draw over it.
+- CPU per frame 0.6–0.8 ms at every count (the draw is one call per eye).
+
+### Proposal: how existing sims get a real `z` (feeds C3)
+
+Both "reserved" slots are taken: `pos_life.z` holds the initial size in Flux,
+Murmur, Cymatics, Tesla, Cascade, Array, Genesis, Accretion (and Tide's water
+height, Mycelium's generation); `vel_size.z` holds size, mass, species or
+band in Accretion, Tide, Genesis, Ascend, Cleave, Panorama, Cascade, Vessel,
+Array. So no global reinterpretation is safe, and a new SoA component would
+touch every compute layout. **Recommendation: a per-effect layout
+convention, not a core layout change.** An XR variant of a sim
+(`assets/xr/shaders/<name>_xr_sim.wgsl`, hidden `.pfx` as in S4) writes
+`pos_life.xyz` = position in meters relative to the effect anchor and
+`vel_size.xyz` = velocity, and moves whatever it kept in the `.z` slots to
+`flags.zw` or the existing per-particle `aux` buffer (unused by Flux, Murmur,
+Tide, Cascade, Phosphor). Desktop sims and the 2D path are untouched (I1).
+What core must add for the port, behind a clean API (the stop-and-ask for
+C3): (1) a world-space render pipeline variant of `particle_render.wgsl`
+taking a per-eye `view` + `proj` uniform, billboarding in view space and
+using **vertex pulling** (`alive_indices[vertex_index / 3]`) instead of
+`draw_indirect` instances; (2) a `ParticleSystem::render_eye(encoder, color,
+depth, view, proj)` entry (or getters for the current SoA buffers, alive list
+and counters) so `fosfora-xr` can drive it once per eye after
+`SceneRenderer::step`; (3) the flow field sampled in 3D (the texture is
+already `texture_3d`; `sample_flow_field` maps 2D clip space today). Lead
+effects to port first: **Flux** (curl flow, 3D is its natural form, the
+flow-field texture is already volumetric), **Murmur** (a murmuration in the
+room is the strongest VR image; boids generalize to 3D directly), and
+**Tide** (already tracks a height `z` for contact and is billboard-rendered;
+a waterfall onto a real table in S7). Budget for a port at 72 Hz: about 1M
+sprites per effect with pulling + 3-vertex sprites, 500K at 90 Hz, before
+the effect's own sim and feedback passes.
 
 ## Audio (S6)
 
