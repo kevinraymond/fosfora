@@ -755,6 +755,9 @@ the measurements.
 
 ### Debug panel (Sep 28, unworn with `debug.fosfora.hudtest 1`, Flux XR World 400K)
 
+Development only and opt-in: `adb shell setprop debug.fosfora.hud 1`
+before launch (off by default; an app setting may replace the knob).
+
 An egui panel above the left palm (shown while the palm faces the wearer,
 poked with the right index finger): fps, long frames, the runtime's app
 GPU time and utilization (`XR_META_performance_metrics`: 17 counters on

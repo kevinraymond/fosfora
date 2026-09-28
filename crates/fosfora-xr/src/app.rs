@@ -180,7 +180,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
-    //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel above the left palm; default on with hands)
+    //   adb shell setprop debug.fosfora.hud 1                    (opt in to the debug panel above the left palm; needs hands; default off)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
@@ -510,10 +510,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             particles = Some(p);
         }
     }
-    // The debug panel: turn the left palm toward you, poke it with the
-    // right index finger. Its sliders drive these values from now on.
+    // The debug panel, for development only and off unless asked for (an
+    // app setting may replace the knob later): turn the left palm toward
+    // you, point the right hand at it and pinch, or poke it. Its -/+ rows
+    // drive these values from then on. Without it, the values stay the
+    // knobs' and pinches always drive the cloud gestures.
     let hud_test = toggle("debug.fosfora.hudtest", false);
-    let mut hud = (hud_test || toggle("debug.fosfora.hud", mr.hands) && session.has_hands())
+    let mut hud = (hud_test || toggle("debug.fosfora.hud", false) && session.has_hands())
         .then(|| Hud::new(&mut gfx));
     let mut controls = Controls {
         gravity,
