@@ -137,6 +137,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       audio-to-photon measurement, filmed with a phone)
     //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
     //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
+    //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
+    //       speaker sits behind the analysis + display chain and the tap delay lines them up; 0 = AAudio's default)
     //   adb shell setprop debug.fosfora.tapdelay <ms>  (fixed delay of the analysis tap behind the frames
     //       handed to AAudio; default: estimated from the stream's DAC timestamps, minus the detection time,
     //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
@@ -296,6 +298,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let playback_options = PlaybackOptions {
         low_latency: debug_prop("debug.fosfora.playperf").as_deref() != Some("none"),
         tap_delay_ms: debug_prop("debug.fosfora.tapdelay").and_then(|v| v.parse::<f32>().ok()),
+        buffer_ms: debug_prop("debug.fosfora.playbuf").and_then(|v| v.parse::<f32>().ok()),
     };
     match audio_source.as_str() {
         "mic" => live_audio = Some(LiveAudio::mic()),

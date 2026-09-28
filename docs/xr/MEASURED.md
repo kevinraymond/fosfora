@@ -321,7 +321,8 @@ speed, rms and the beat pulse → sprite size) or the S4 quad's effect.
 - **Sound is late, not the visuals.** On the playback path the tap feeds
   the analysis about 190 ms before the speaker emits the same sample, so
   beats flash 115 ms early. Fixed on `xr-audio-latency` (Sep 28, board
-  #3253), see "Playback latency" below. A mic-driven show has the opposite
+  #3253, filmed: −115 → +41 ms with the low-latency output alone, then a
+  buffer sized to the chain), see "Playback latency" below. A mic-driven show has the opposite
   sign and needs the visuals as early as possible.
 - **External USB mic: the fix.** With the Quest's experimental external-mic
   setting and a USB audio class mic in the port, the built-in pipeline is
@@ -352,30 +353,46 @@ exposes the stream: its performance mode, `AAudioStream_getTimestamp` and
 playhead position against the click grid; "offset" = pulse time minus the
 moment the click's frames were handed to AAudio):
 
-| Output stream | Burst / buffer (frames) | Handed → speaker (AAudio timestamps) | Tap delay | Beat pulse offset (median, 5–95 %) | Underruns / min |
+| Output stream | Burst / buffer (frames) | Handed → speaker (AAudio timestamps) | Tap delay | Beat pulse offset (median, 5–95 %) | Underruns |
 |---|---|---|---|---|---|
 | cpal, legacy (S6, `tapdelay 0`) | 1922 / 3844 | not exposed | 0 | 40 ms, 20–80 | 0 |
-| AAudio legacy (`playperf none`) | 1922 / 3844 | 137–215 ms raw, run mean 173 | mean − 45 ms, 2 steps | 161 ms, 140–200 | 0 |
-| **AAudio low latency (default)** | **192 / 1536** | **36 ms, constant** | **0** | **36 ms, 20–36** | **1** |
+| AAudio legacy (`playperf none`) | 1922 / 3844 | 137–215 ms raw, run mean 173 | mean − 76 ms, 2 steps | 161 ms, 140–200 | 0 |
+| AAudio low latency, AAudio's buffer (`playbuf 0`) | 192 / 1536 | 36 ms, constant | 0 | 36 ms, 20–36 | 1 at start |
+| **AAudio low latency, 84 ms buffer (default)** | **192 / 4032** | **88 ms, constant** | **11 ms** | **44 ms, 28–60** | **1 at start** |
 
-- **Low latency is the fix.** The MMAP stream's 36 ms to the speaker is
-  under the ~45 ms the analysis takes from sample to pulse, so the pulse
-  lands at the speaker time with no delay at all, and the timestamp is
-  exact (36.0 ms on every read). The default-mode stream's timestamps
-  saw-tooth by ~80 ms over ~4 s (the reported DAC position runs ~2 %
-  ahead of the frames handed over, then snaps back), so a 5 s median still
-  swung ±20 ms; only a run-long mean holds still.
+- **The film (Kevin, Sep 28, phone at 60 fps, low latency with AAudio's
+  1536-frame buffer, no tap delay): the flash trails the click by 41 ms**
+  (peak-frame offsets cluster at 24 / 41 / 58 ms, the phone's frame
+  quantum; 55 of 70 flashes in the cluster, median 41; the grid fit says
+  52 because bright ember frames over passthrough pass the flash threshold
+  on some beats and 9 clicks have no frame over it). Against −115 ms in
+  S6. With the pulse at 32 ms and the speaker at 36, that makes the
+  display chain after the pulse ~44 ms (two 72 Hz frames plus the phone's
+  quantum), so the whole analysis-and-display chain is ~76 ms.
+- **Low latency is the fix, plus a buffer sized to the chain.** The MMAP
+  stream reports its latency exactly (36.0 ms on every read). Its own
+  buffer is shorter than the 76 ms chain, which leaves the flash 41 ms
+  behind the sound with no delay to trade, so the default asks for 84 ms
+  of buffer (`set_buffer_size_in_frames`; the stream's capacity is
+  requested at twice that): the speaker is then 88 ms behind the
+  handover and the tap delay lines the chain up (`88 − 76 = 11 ms`). The
+  default-mode stream's timestamps saw-tooth by ~80 ms over ~4 s (the
+  reported DAC position runs ~2 % ahead of the frames handed over, then
+  snaps back), so a 5 s median still swung ±20 ms; only a run-long mean
+  holds still.
 - **The tap delay line stays as the fallback**: an output that is not
   MMAP-capable (a USB or Bluetooth device, another headset) gets its
-  frames handed to the analysis `latency − 45 ms` after AAudio, from the
-  run mean, moving only in steps > 15 ms and at most every 2 s. In legacy
-  mode that puts the pulse within 12 ms of the sound against 133 ms early
-  before.
-- **Cost:** one underrun per minute in low-latency mode under the 400K
-  world sim (a 4 ms gap); logged in the playback status line, none in
-  legacy mode. The frame time is unchanged (App 9.45 ms at 400K).
-- **Still open:** the display chain after the pulse (render + compositor)
-  is not in these numbers; the phone film with `flash 1` measures it.
+  frames handed to the analysis `latency − 76 ms` after AAudio, from the
+  run mean, set by the first estimate and then moved only in steps
+  > 15 ms and at most every 2 s.
+- **Cost:** one underrun as the stream starts (the first bursts), none
+  after, in every 60 s run under the 400K world sim; logged in the
+  playback status line. The frame time is unchanged (App 9.45 ms at
+  400K). ndk 0.9 reports AAudio's positive "size set" return from
+  `AAudioStream_setBufferSizeInFrames` as an error; the stream's getter is
+  the truth.
+- **Second film pending** for the 84 ms buffer: expected flash − click
+  within the phone's ±17 ms of zero.
 
 ## Mixed reality (S7)
 

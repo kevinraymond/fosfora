@@ -25,12 +25,20 @@ use ndk::audio::{
     AudioStream, AudioStreamBuilder, AudioUsage, Clockid,
 };
 
-/// From a sample entering the analysis ring to the beat pulse reaching the
-/// render loop: 42–47 ms on the Quest 3 (S6, the app's own log against the
-/// click track). The tap runs this much less than the output latency behind
-/// the speaker, so the pulse and the sound coincide at the analysis; the
-/// display chain after the pulse is what the next film measures.
-const DETECTION_MS: f32 = 45.0;
+/// From a sample entering the analysis ring to the photon: the beat pulse
+/// reaches the render loop 20–44 ms after the frame is handed to AAudio
+/// (median 32; the app's own log against the click track), and the flash
+/// reaches the lens ~44 ms after that (phone film, Sep 28: flash 41 ms
+/// after the sound with a 36 ms output, so 36 + 41 − 32). The tap runs this
+/// much less than the output latency behind the speaker, so the flash and
+/// the sound coincide at the lens.
+const ANALYSIS_TO_PHOTON_MS: f32 = 76.0;
+/// Output latency the low-latency stream is given by default, by buffer
+/// size: `ANALYSIS_TO_PHOTON_MS` plus a margin, so the tap delay above is
+/// small but positive. AAudio's own low-latency buffer (1536 frames, 36 ms
+/// to the speaker) is shorter than the analysis-and-display chain, which
+/// left the flash 41 ms behind the sound with no delay to trade.
+const TARGET_OUTPUT_MS: f32 = 84.0;
 /// The output latency is estimated once per this many played frames (5 per
 /// second at 48 kHz), whatever size the callbacks come in.
 const ESTIMATE_EVERY_FRAMES: usize = 9_600;
@@ -140,6 +148,10 @@ pub struct PlaybackOptions {
     /// timestamps (a knob for the latency measurement; 0 = the old
     /// behavior, tap fed as the frames are handed to AAudio).
     pub tap_delay_ms: Option<f32>,
+    /// Output buffer in ms of audio (rounded up to bursts, capped by the
+    /// stream's capacity); `None` = `TARGET_OUTPUT_MS` in low-latency mode
+    /// and AAudio's default otherwise, `Some(0.0)` = AAudio's default.
+    pub buffer_ms: Option<f32>,
 }
 
 struct Shared {
@@ -182,7 +194,7 @@ pub struct Playback {
 impl Playback {
     /// Start looping `clip` on the default output device. `tap` receives the
     /// played stereo frames at the output rate, `options.tap_delay_ms` or
-    /// the estimated output latency (less `DETECTION_MS`) behind the
+    /// the estimated output latency (less `ANALYSIS_TO_PHOTON_MS`) behind the
     /// speaker.
     pub fn start(clip: Clip, tap: Arc<RingBuffer>, options: PlaybackOptions) -> Result<Self> {
         let requested_rate = clip.sample_rate;
@@ -215,6 +227,13 @@ impl Playback {
             } else {
                 AudioPerformanceMode::None
             })
+            // Room for the buffer size below (a request; the stream reports
+            // what it got).
+            .buffer_capacity_in_frames(
+                (TARGET_OUTPUT_MS.max(options.buffer_ms.unwrap_or(0.0)) / 1000.0
+                    * requested_rate as f32
+                    * 2.0) as i32,
+            )
             .data_callback(Box::new(move |stream, data, frames| {
                 let channels = usize::try_from(stream.channel_count()).unwrap_or(2).max(1);
                 let n = usize::try_from(frames).unwrap_or(0) * channels;
@@ -246,6 +265,35 @@ impl Playback {
             ));
         }
         shared.output_rate.store(rate, Ordering::Relaxed);
+        // Buffer size: enough audio in flight that the speaker is behind the
+        // analysis-and-display chain, so the tap delay can line them up.
+        let buffer_ms = match options.buffer_ms {
+            Some(ms) => ms,
+            None if options.low_latency => TARGET_OUTPUT_MS,
+            None => 0.0,
+        };
+        if buffer_ms > 0.0 {
+            let burst = u32::try_from(stream.frames_per_burst()).unwrap_or(1).max(1);
+            let want = ((buffer_ms / 1000.0 * rate as f32) as u32).div_ceil(burst) * burst;
+            let want = i32::try_from(want)
+                .unwrap_or(i32::MAX)
+                .min(stream.buffer_capacity_in_frames());
+            // AAudio returns the size it set (positive) on success; ndk 0.9
+            // maps every non-zero result to an error, so a positive
+            // "error" is the success path. The stream's own getter is the
+            // truth either way.
+            let result = stream.set_buffer_size_in_frames(want);
+            let got = stream.buffer_size_in_frames();
+            match result {
+                Ok(_) | Err(ndk::audio::AudioError::__Unknown(1..)) => info!(
+                    "playback: buffer {want} frames asked ({buffer_ms:.0} ms), {got} set, capacity {}",
+                    stream.buffer_capacity_in_frames()
+                ),
+                Err(e) => {
+                    error!("playback: set_buffer_size_in_frames({want}): {e:?}, buffer {got}");
+                }
+            }
+        }
         if let Some(ms) = options.tap_delay_ms {
             let frames = ((ms.max(0.0) / 1000.0 * rate as f32) as usize).min(DELAY_CAP_FRAMES);
             shared.delay_frames.store(frames, Ordering::Relaxed);
@@ -409,16 +457,21 @@ fn fill(shared: &Shared, stream: &AudioStream, out: &mut [f32], channels: usize)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             est.0 += ahead * 1000.0;
             est.1 += 1;
+            let first = est.1 == 1;
             let latency_ms = (est.0 / f64::from(est.1)) as f32;
             drop(est);
             shared
                 .latency_cms
                 .store((latency_ms * 100.0) as u32, Ordering::Relaxed);
-            let target_ms = (latency_ms - DETECTION_MS).max(0.0);
+            let target_ms = (latency_ms - ANALYSIS_TO_PHOTON_MS).max(0.0);
             let target = ((target_ms / 1000.0 * output_rate as f32) as usize).min(DELAY_CAP_FRAMES);
             let current = shared.delay_frames.load(Ordering::Relaxed);
             let current_ms = current as f32 / output_rate as f32 * 1000.0;
-            if (target_ms - current_ms).abs() > DELAY_STEP_MS && since_step >= STEP_INTERVAL_FRAMES
+            // The first estimate always sets the delay (from 0); later ones
+            // move it only through the hysteresis and the interval.
+            if first
+                || ((target_ms - current_ms).abs() > DELAY_STEP_MS
+                    && since_step >= STEP_INTERVAL_FRAMES)
             {
                 shared.frames_since_step.store(0, Ordering::Relaxed);
                 shared.delay_frames.store(target, Ordering::Relaxed);
