@@ -76,6 +76,7 @@ const SCHEMA_VERSION: u32 = 4;
 
 pub struct StructureSidecar {
     out: BufWriter<File>,
+    path: String,
     last_tick: f64,
     /// The meta line is written on the first `record`, because the tracker's live config is
     /// not known at construction (it arrives per hop from the shared `Arc<Mutex<_>>`).
@@ -91,6 +92,7 @@ impl StructureSidecar {
             .unwrap_or_else(|e| panic!("FOSFORA_STRUCTURE_SIDECAR: cannot create {path}: {e}"));
         Some(Self {
             out: BufWriter::new(file),
+            path,
             last_tick: -1.0,
             wrote_meta: false,
         })
@@ -146,7 +148,7 @@ impl StructureSidecar {
                 LUFS_SPAN_LU,
                 STRUCTURE_TICK_HZ,
             );
-            let _ = self.out.write_all(meta.as_bytes());
+            self.write(meta.as_bytes());
         }
 
         let fp = fingerprint(pre_norm);
@@ -207,13 +209,33 @@ impl StructureSidecar {
             let _ = write!(line, "{v:.5e}");
         }
         line.push_str("]}\n");
-        let _ = self.out.write_all(line.as_bytes());
+        self.write(line.as_bytes());
+    }
+
+    /// As loud as a failed create, and for the same reason: a full disk otherwise
+    /// truncates the file, the process exits 0, and the bench keeps it as a whole
+    /// track (#106).
+    fn write(&mut self, bytes: &[u8]) {
+        if let Err(e) = self.out.write_all(bytes) {
+            panic!(
+                "FOSFORA_STRUCTURE_SIDECAR: write to {} failed: {e}",
+                self.path
+            );
+        }
     }
 }
 
 impl Drop for StructureSidecar {
     fn drop(&mut self) {
-        let _ = self.out.flush();
+        if let Err(e) = self.out.flush() {
+            // Already unwinding: a second panic would abort, and the first one
+            // has made the run fail anyway.
+            assert!(
+                std::thread::panicking(),
+                "FOSFORA_STRUCTURE_SIDECAR: flush to {} failed: {e}",
+                self.path
+            );
+        }
     }
 }
 

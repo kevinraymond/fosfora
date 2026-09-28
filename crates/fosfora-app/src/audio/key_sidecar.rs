@@ -23,6 +23,7 @@ const DECIMATE: u32 = 4;
 
 pub struct KeySidecar {
     out: BufWriter<File>,
+    path: String,
     hops_seen: u32,
 }
 
@@ -35,6 +36,7 @@ impl KeySidecar {
             .unwrap_or_else(|e| panic!("FOSFORA_KEY_SIDECAR: cannot create {path}: {e}"));
         Some(Self {
             out: BufWriter::new(file),
+            path,
             hops_seen: 0,
         })
     }
@@ -66,12 +68,46 @@ impl KeySidecar {
             let _ = write!(line, "{v:.5e}");
         }
         line.push_str("]}\n");
-        let _ = self.out.write_all(line.as_bytes());
+        // As loud as a failed create: a full disk otherwise truncates the file, the
+        // process exits 0, and the bench keeps it as a whole track (#106).
+        if let Err(e) = self.out.write_all(line.as_bytes()) {
+            panic!("FOSFORA_KEY_SIDECAR: write to {} failed: {e}", self.path);
+        }
     }
 }
 
 impl Drop for KeySidecar {
     fn drop(&mut self) {
-        let _ = self.out.flush();
+        if let Err(e) = self.out.flush() {
+            // Already unwinding: a second panic would abort, and the first one
+            // has made the run fail anyway.
+            assert!(
+                std::thread::panicking(),
+                "FOSFORA_KEY_SIDECAR: flush to {} failed: {e}",
+                self.path
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full disk must fail the run, not leave a truncated file behind an exit 0.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[should_panic(expected = "FOSFORA_KEY_SIDECAR: write to /dev/full failed")]
+    fn a_failed_write_is_loud() {
+        let mut sc = KeySidecar {
+            out: BufWriter::new(File::create("/dev/full").unwrap()),
+            path: "/dev/full".to_owned(),
+            hops_seen: 0,
+        };
+        let e61 = [0.0; N_SEMITONES];
+        // Enough lines to overflow the BufWriter and reach the device.
+        for hop in 0..1000 {
+            sc.record(f64::from(hop), &e61, None, 0.5, false);
+        }
     }
 }
