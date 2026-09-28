@@ -724,6 +724,247 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         );
     }
 
+    // ---- Flux XR Room (board #3317): the room's surfaces as emitters --------
+
+    const XR_FLUX_ROOM_PRESET: &str =
+        include_str!("../../../../../assets/xr/effects/flux_xr_world_room.pfx");
+    const XR_FLUX_COARSE_PRESET: &str =
+        include_str!("../../../../../assets/xr/effects/flux_xr_world_coarse.pfx");
+
+    fn xr_flux_room_preset() -> crate::effect::format::PfxEffect {
+        serde_json::from_str(XR_FLUX_ROOM_PRESET).expect("flux_xr_world_room.pfx parses")
+    }
+
+    /// Flux XR Room is Flux XR World plus one input, `surface_emit` = 1 in
+    /// the slot the sim reads (`XR_SURFACE_PARAM`), on the same sim, count
+    /// and sizes. The other Flux XR presets have fewer inputs than that slot,
+    /// so they read 0 there and keep the volume emitter unchanged.
+    #[test]
+    fn flux_xr_room_preset_turns_on_surface_emission() {
+        use crate::params::types::ParamDef;
+        let room = xr_flux_room_preset();
+        let world = xr_flux_preset();
+        assert_eq!(room.name, "Flux XR Room");
+        assert!(
+            room.hidden,
+            "an XR preset must stay out of the desktop library"
+        );
+        let slot = sim_u32_const(XR_FLUX_SIM, "XR_SURFACE_PARAM") as usize;
+        assert_eq!(room.inputs.len(), slot + 1);
+        assert_eq!(room.inputs[..slot], world.inputs[..]);
+        assert!(
+            matches!(&room.inputs[slot], ParamDef::Float { name, default, .. }
+                if name == "surface_emit" && *default > 0.5),
+            "{:?}",
+            room.inputs[slot]
+        );
+        let coarse: crate::effect::format::PfxEffect =
+            serde_json::from_str(XR_FLUX_COARSE_PRESET).expect("coarse parses");
+        for other in [&world, &coarse] {
+            assert!(
+                other.inputs.len() <= slot,
+                "{} would read param({slot}) as its own input",
+                other.name
+            );
+        }
+        let (rp, wp) = (
+            room.particles.as_ref().unwrap(),
+            world.particles.as_ref().unwrap(),
+        );
+        assert_eq!(rp.compute_shader, wp.compute_shader);
+        assert_eq!(rp.max_count, wp.max_count);
+        assert_eq!(rp.emitter.radius, wp.emitter.radius);
+        assert_eq!(
+            (rp.initial_size, rp.size_end, rp.emit_rate, rp.burst_on_beat),
+            (wp.initial_size, wp.size_end, wp.emit_rate, wp.burst_on_beat)
+        );
+    }
+
+    /// The room tests' table: a 1.0 x 0.7 m plane 0.5 m below, 0.4 m ahead
+    /// of and 0.3 m right of the anchor, in a runtime table's pose (local X
+    /// -> world X, local Y -> world -Z, local +Z -> world +Y), so its top
+    /// face is y = -0.48 over x 0.3 +- 0.5, z -0.4 +- 0.35.
+    const ROOM_TABLE: Vec3 = Vec3::new(0.3, -0.5, -0.4);
+    const ROOM_TABLE_HALF: Vec3 = Vec3::new(0.5, 0.35, 0.02);
+
+    /// The aux block with the room table as the only obstacle, surface kind
+    /// table, emitter weight 1; the head at the anchor, settle drift 0.3 m/s.
+    fn room_table_aux() -> Vec<crate::gpu::particle::types::ParticleAux> {
+        use crate::gpu::particle::types::ParticleAux;
+        let rot = glam::Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let (c, h) = (ROOM_TABLE, ROOM_TABLE_HALF);
+        let mut aux = vec![ParticleAux { home: [0.0; 4] }; 163];
+        aux[0].home = [0.0, 0.0, 0.0, 0.15];
+        aux[1].home = [f32::from_bits(0), f32::from_bits(1), 0.4, 0.005];
+        aux[2].home = [0.0, 0.4, 0.3, 0.0];
+        aux[67].home = [c.x, c.y, c.z, 1.0];
+        aux[99].home = rot.to_array();
+        aux[131].home = [h.x, h.y, h.z, 1.0];
+        aux
+    }
+
+    /// `pfx` (scaled to `count`, 60K/s) stepped at 60 fps with `aux` every
+    /// frame, and the alive positions after each frame count in `capture`.
+    fn flux_room_run(
+        mut pfx: crate::effect::format::PfxEffect,
+        count: u32,
+        aux: &[crate::gpu::particle::types::ParticleAux],
+        capture: &[u32],
+    ) -> Vec<Vec<Vec3>> {
+        use crate::gpu::test_gpu::test_gpu;
+        use crate::headless::scene_renderer::SceneRenderer;
+        const FPS: u32 = 60;
+        let (device, queue) = test_gpu();
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "fosfora_flux_xr_room_{}",
+            pfx.name.replace(' ', "_")
+        ));
+        write_world_scene(&dir, &pfx.name);
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut sr = SceneRenderer::new(
+            (*device).clone(),
+            (*queue).clone(),
+            64,
+            64,
+            crate::settings::ParticleQuality::High,
+            dir.clone(),
+        )
+        .expect("renderer");
+        let pd = pfx.particles.as_mut().unwrap();
+        pd.max_count = count;
+        pd.emit_rate = 60_000.0;
+        sr.effect_loader.effects.push(pfx);
+        sr.install_scene(crate::headless::load::load_scene_dir(&dir).expect("scene loads"));
+        sr.start();
+        assert!(sr.warnings.is_empty(), "warnings: {:?}", sr.warnings);
+        sr.layer_stack.layers[0].enabled = false;
+        let frames = capture.iter().copied().max().unwrap_or(0);
+        let mut out = Vec::new();
+        for frame in 0..frames {
+            let ts = f64::from(frame) / f64::from(FPS);
+            let hop = murmur_hop(frame, FPS);
+            let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
+            particles(&mut sr).update_aux_in_place(&queue, aux);
+            sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
+            let ps = particles(&mut sr);
+            let mut enc = device.create_command_encoder(&Default::default());
+            ps.poll_counter_readback();
+            ps.dispatch(&mut enc, &queue);
+            queue.submit([enc.finish()]);
+            if capture.contains(&(frame + 1)) {
+                out.push(alive(&read_slots(
+                    &device,
+                    &queue,
+                    particles(&mut sr),
+                    count,
+                )));
+            }
+        }
+        wait(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+        out
+    }
+
+    /// The Flux XR Room sim, headless: with one table in the aux block (kind
+    /// table, weight 1, a runtime table's pose: local +Z up), every particle
+    /// is born on the table's top face, and a third of a second later each
+    /// one is still on it or has slid off its edge and is falling beside it
+    /// (the settle drift holds it to the top, the flow slides it); none
+    /// appears anywhere else in the volume.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_xr_room_emits_on_a_table() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let captures = flux_room_run(xr_flux_room_preset(), 20_000, &room_table_aux(), &[5, 20]);
+        let (center, half_x, half_z, half_t) = (
+            ROOM_TABLE,
+            ROOM_TABLE_HALF.x,
+            ROOM_TABLE_HALF.y,
+            ROOM_TABLE_HALF.z,
+        );
+        let top = center.y + half_t;
+        // How far outside the footprint a point is (0 inside).
+        let beyond = |p: Vec3| {
+            ((p.x - center.x).abs() - half_x)
+                .max((p.z - center.z).abs() - half_z)
+                .max(0.0)
+        };
+        // After 5 frames: born on the top face (1 cm above it, held there
+        // by the drift and the collide step), inside the footprint.
+        let early = &captures[0];
+        assert!(early.len() > 200, "only {} particles born", early.len());
+        const SLACK_M: f32 = 0.02;
+        let off: Vec<Vec3> = early
+            .iter()
+            .copied()
+            .filter(|&p| (p.y - top).abs() > SLACK_M || beyond(p) > SLACK_M)
+            .collect();
+        assert!(
+            off.is_empty(),
+            "{} of {} new particles off the table top (y {top}), first {:?}",
+            off.len(),
+            early.len(),
+            off.first()
+        );
+        // After a third of a second: still on the top, or slid off its
+        // edge and falling beside it; nothing above it or out in the volume.
+        let late = &captures[1];
+        assert!(
+            late.len() > early.len(),
+            "{} -> {}",
+            early.len(),
+            late.len()
+        );
+        let stray: Vec<Vec3> = late
+            .iter()
+            .copied()
+            .filter(|&p| {
+                let on_top = (p.y - top).abs() <= SLACK_M && beyond(p) <= SLACK_M;
+                let falling_off = p.y < top && beyond(p) <= 0.15;
+                !(on_top || falling_off)
+            })
+            .collect();
+        let on_top = late
+            .iter()
+            .filter(|&&p| (p.y - top).abs() <= SLACK_M && beyond(p) <= SLACK_M)
+            .count();
+        assert!(
+            stray.is_empty(),
+            "{} of {} particles neither on the table nor falling off it, first {:?}",
+            stray.len(),
+            late.len(),
+            stray.first()
+        );
+        assert!(
+            on_top * 10 > late.len() * 9,
+            "{on_top} of {} on the top",
+            late.len()
+        );
+    }
+
+    /// The surface lanes change nothing for a preset without `surface_emit`:
+    /// Flux XR World, fed the same weighted table, still spawns through the
+    /// whole volume.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_xr_world_ignores_the_surface_lanes() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let born = flux_room_run(xr_flux_preset(), 20_000, &room_table_aux(), &[5])
+            .pop()
+            .expect("one capture");
+        let above = born.iter().filter(|p| p.y > 0.0).count();
+        assert!(
+            above * 4 > born.len(),
+            "{above} of {} particles in the upper half of the volume",
+            born.len()
+        );
+    }
+
     // ---- Murmur XR World (C3b): boids over the 3D spatial hash --------------
 
     const XR_MURMUR_PRESET: &str =

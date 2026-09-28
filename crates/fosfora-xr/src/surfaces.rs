@@ -1,0 +1,326 @@
+//! Room surfaces as particle emitters (board #3317). Plain numbers in, so it
+//! builds and tests on the desktop as well.
+//!
+//! Every obstacle box carries a surface kind (from the scene anchor's
+//! semantic label) and an emitter weight in two lanes of the aux block that
+//! were written 0 before: `aux[67 + k].w` is the kind as a float,
+//! `aux[131 + k].w` the weight in 0..1 (`flux_xr_sim.wgsl`, "Surface
+//! lanes"). A world sim in surface mode picks a box by weight times the
+//! kind's audio gate and spawns on its top face; the other sims and the
+//! depth occluders read only `xyz` and ignore both lanes.
+//!
+//! The top face is found the same way here and in the shader: the box's
+//! local axis whose world direction is closest to vertical, signed to point
+//! up (tables and scene floors are local +Z up, the synthetic stage floor
+//! +Y, the ceiling picks -Z).
+
+use glam::{Quat, Vec3};
+
+/// Surface kinds, as the sim reads them from `aux[67 + k].w`.
+pub const KIND_NONE: u32 = 0;
+pub const KIND_TABLE: u32 = 1;
+pub const KIND_FLOOR: u32 = 2;
+pub const KIND_WALL: u32 = 3;
+pub const KIND_CEILING: u32 = 4;
+pub const KIND_FRAME: u32 = 5;
+pub const KIND_OTHER: u32 = 6;
+
+/// The surface kind of a scene anchor from its semantic labels (the
+/// runtime's comma-separated list, `RECOGNIZED_LABELS` in `room.rs`). When
+/// an anchor carries several, the most specific wins: a table before a
+/// floor, a floor before the rest.
+pub fn surface_kind(label: &str) -> u32 {
+    let kind_of = |l: &str| match l.trim().to_ascii_uppercase().as_str() {
+        "" => KIND_NONE,
+        "DESK" | "TABLE" => KIND_TABLE,
+        "FLOOR" => KIND_FLOOR,
+        "WALL_FACE" | "INVISIBLE_WALL_FACE" => KIND_WALL,
+        "CEILING" => KIND_CEILING,
+        "WINDOW_FRAME" | "DOOR_FRAME" => KIND_FRAME,
+        _ => KIND_OTHER,
+    };
+    // Lower rank = more specific.
+    let rank = |k: u32| match k {
+        KIND_TABLE => 0,
+        KIND_FLOOR => 1,
+        KIND_CEILING => 2,
+        KIND_WALL => 3,
+        KIND_FRAME => 4,
+        KIND_OTHER => 5,
+        _ => 6,
+    };
+    label
+        .split(',')
+        .map(kind_of)
+        .min_by_key(|&k| rank(k))
+        .unwrap_or(KIND_NONE)
+}
+
+/// The synthetic stage floor's emitter flag: 1 when the room returned no
+/// FLOOR box, else 0, so the floor never emits twice.
+pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
+    if room_kinds.into_iter().any(|k| k == KIND_FLOOR) {
+        0.0
+    } else {
+        1.0
+    }
+}
+
+/// A box's upward face: its outward normal, the center of the face and its
+/// two in-plane axes (unit) with their half extents.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TopFace {
+    pub normal: Vec3,
+    pub center: Vec3,
+    pub axes: [Vec3; 2],
+    pub half: [f32; 2],
+}
+
+impl TopFace {
+    /// Of `center` / `rot` (box -> world) / `half`, the face whose outward
+    /// normal points most nearly up.
+    pub fn of(center: Vec3, rot: Quat, half: Vec3) -> Self {
+        let axes = [rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z];
+        let h = half.to_array();
+        // First of the largest |y|, as the shader's comparisons pick it.
+        let mut i = 0;
+        for k in 1..3 {
+            if axes[k].y.abs() > axes[i].y.abs() {
+                i = k;
+            }
+        }
+        let normal = if axes[i].y >= 0.0 { axes[i] } else { -axes[i] };
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        Self {
+            normal,
+            center: center + normal * h[i],
+            axes: [axes[j], axes[k]],
+            half: [h[j], h[k]],
+        }
+    }
+
+    /// Area of the face (m²).
+    pub fn area(&self) -> f32 {
+        4.0 * self.half[0] * self.half[1]
+    }
+
+    /// The point of the face nearest `p`.
+    pub fn nearest(&self, p: Vec3) -> Vec3 {
+        let d = p - self.center;
+        let u = d.dot(self.axes[0]).clamp(-self.half[0], self.half[0]);
+        let v = d.dot(self.axes[1]).clamp(-self.half[1], self.half[1]);
+        self.center + self.axes[0] * u + self.axes[1] * v
+    }
+}
+
+/// Per-kind emitter weights (knobs `debug.fosfora.tableweight` and
+/// `floorweight`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceWeights {
+    /// Scales every table; the largest table (the desk) gets this, the
+    /// others their top-face area's share of it.
+    pub table: f32,
+    pub floor: f32,
+}
+
+impl Default for SurfaceWeights {
+    fn default() -> Self {
+        Self {
+            table: 1.0,
+            floor: 0.5,
+        }
+    }
+}
+
+/// One obstacle box as the weights see it, center relative to the emitter
+/// cube's center (the effect anchor).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceBox {
+    pub kind: u32,
+    /// The box's emitter flag (0 or 1): the synthetic floor's is
+    /// [`synthetic_floor_emit`], every room box's 1.
+    pub emit: f32,
+    pub center: Vec3,
+    pub rot: Quat,
+    pub half: Vec3,
+}
+
+/// The emitter weight in 0..1 of each box, in order: tables by top-face
+/// area against the largest table, floors at `weights.floor`, every other
+/// kind 0 for now. A box whose top face does not reach into the emitter cube
+/// (`cube_half` around the origin, the volume the sim respawns out of) gets
+/// 0, so a dragged anchor never picks a surface its particles would
+/// respawn from at once. The test is on the face's point nearest the
+/// anchor, not its center: the synthetic floor is 20 m across and centered
+/// on the stage origin, not under the anchor.
+pub fn emitter_weights(
+    boxes: &[SurfaceBox],
+    cube_half: f32,
+    weights: SurfaceWeights,
+    out: &mut [f32],
+) {
+    let faces = || {
+        boxes
+            .iter()
+            .map(|b| (b, TopFace::of(b.center, b.rot, b.half)))
+    };
+    let largest_table = faces()
+        .filter(|(b, _)| b.kind == KIND_TABLE && b.emit > 0.0)
+        .map(|(_, f)| f.area())
+        .fold(0.0f32, f32::max);
+    for (w, (b, face)) in out.iter_mut().zip(faces()) {
+        let base = match b.kind {
+            KIND_TABLE if largest_table > 0.0 => weights.table * face.area() / largest_table,
+            KIND_FLOOR => weights.floor,
+            _ => 0.0,
+        };
+        let reach = face.nearest(Vec3::ZERO);
+        let inside = reach.abs().max_element() <= cube_half;
+        *w = if inside {
+            (base * b.emit).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table as the runtime reports one: local +Z up (a -90° turn about X).
+    fn table(center: Vec3, half_xy: [f32; 2]) -> SurfaceBox {
+        SurfaceBox {
+            kind: KIND_TABLE,
+            emit: 1.0,
+            center,
+            rot: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(half_xy[0], half_xy[1], 0.37),
+        }
+    }
+
+    fn synthetic_floor(anchor: Vec3, emit: f32) -> SurfaceBox {
+        SurfaceBox {
+            kind: KIND_FLOOR,
+            emit,
+            center: Vec3::new(0.0, -0.05, 0.0) - anchor,
+            rot: Quat::IDENTITY,
+            half: Vec3::new(10.0, 0.05, 10.0),
+        }
+    }
+
+    fn weights_of(boxes: &[SurfaceBox], cube_half: f32) -> Vec<f32> {
+        let mut out = vec![-1.0; boxes.len()];
+        emitter_weights(boxes, cube_half, SurfaceWeights::default(), &mut out);
+        out
+    }
+
+    #[test]
+    fn labels_map_to_kinds() {
+        assert_eq!(surface_kind("DESK"), KIND_TABLE);
+        assert_eq!(surface_kind("TABLE"), KIND_TABLE);
+        assert_eq!(surface_kind("FLOOR"), KIND_FLOOR);
+        assert_eq!(surface_kind("WALL_FACE"), KIND_WALL);
+        assert_eq!(surface_kind("INVISIBLE_WALL_FACE"), KIND_WALL);
+        assert_eq!(surface_kind("CEILING"), KIND_CEILING);
+        assert_eq!(surface_kind("WINDOW_FRAME"), KIND_FRAME);
+        assert_eq!(surface_kind("DOOR_FRAME"), KIND_FRAME);
+        assert_eq!(surface_kind("STORAGE"), KIND_OTHER);
+        assert_eq!(surface_kind("COUCH"), KIND_OTHER);
+        assert_eq!(surface_kind(""), KIND_NONE);
+        // Several labels: the most specific wins, in any order.
+        assert_eq!(surface_kind("OTHER,TABLE"), KIND_TABLE);
+        assert_eq!(surface_kind("TABLE, DESK"), KIND_TABLE);
+        assert_eq!(surface_kind("STORAGE,FLOOR"), KIND_FLOOR);
+        assert_eq!(surface_kind("desk"), KIND_TABLE);
+    }
+
+    #[test]
+    fn the_top_face_points_up_for_every_measured_orientation() {
+        // Table (+Z up): top face 0.37 above the center.
+        let t = table(Vec3::new(0.0, 0.4, -0.5), [0.6, 0.4]);
+        let f = TopFace::of(t.center, t.rot, t.half);
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5), "{:?}", f.normal);
+        assert!((f.center.y - 0.77).abs() < 1e-5);
+        assert!((f.area() - 0.96).abs() < 1e-5);
+        // Synthetic floor (+Y up): top at y = 0.
+        let s = synthetic_floor(Vec3::ZERO, 1.0);
+        let f = TopFace::of(s.center, s.rot, s.half);
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+        assert!(f.center.y.abs() < 1e-5);
+        // Ceiling (+Z down): the -Z face is the upward one.
+        let rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        assert!((rot * Vec3::Z).abs_diff_eq(Vec3::NEG_Y, 1e-5));
+        let f = TopFace::of(Vec3::new(0.0, 2.5, 0.0), rot, Vec3::new(2.0, 2.0, 0.02));
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+        assert!((f.center.y - 2.52).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_largest_table_weighs_one_and_the_others_by_area() {
+        let boxes = [
+            table(Vec3::new(0.0, -0.5, -0.5), [0.8, 0.4]),
+            table(Vec3::new(0.8, -0.5, 0.3), [0.4, 0.4]),
+            synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 1.0),
+        ];
+        let w = weights_of(&boxes, 1.5);
+        assert!((w[0] - 1.0).abs() < 1e-6, "{w:?}");
+        assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
+        assert!((w[2] - 0.5).abs() < 1e-6, "floor default {w:?}");
+        let mut out = [0.0; 3];
+        emitter_weights(
+            &boxes,
+            1.5,
+            SurfaceWeights {
+                table: 0.5,
+                floor: 1.0,
+            },
+            &mut out,
+        );
+        assert!((out[0] - 0.5).abs() < 1e-6 && (out[1] - 0.25).abs() < 1e-6);
+        assert!((out[2] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_surface_outside_the_emitter_cube_weighs_nothing() {
+        // The desk entirely beyond a 1.5 m cube (x 1.7..3.3), a table
+        // inside it.
+        let boxes = [
+            table(Vec3::new(2.5, -0.5, 0.0), [0.8, 0.4]),
+            table(Vec3::new(0.3, -0.5, 0.0), [0.4, 0.4]),
+        ];
+        let w = weights_of(&boxes, 1.5);
+        assert_eq!(w[0], 0.0);
+        // Still weighed against the desk, which exists in the room.
+        assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
+        // A floor 2 m below the anchor (the top face out of reach in y).
+        let w = weights_of(&[synthetic_floor(Vec3::new(0.0, 2.0, 0.0), 1.0)], 1.5);
+        assert_eq!(w[0], 0.0);
+        // The anchor dragged 5 m across the room: the floor under it still
+        // counts, though its center (the stage origin) is out of the cube.
+        let w = weights_of(&[synthetic_floor(Vec3::new(5.0, 1.0, 3.0), 1.0)], 1.5);
+        assert!((w[0] - 0.5).abs() < 1e-6, "{w:?}");
+    }
+
+    #[test]
+    fn the_synthetic_floor_emits_only_without_a_scene_floor() {
+        assert_eq!(synthetic_floor_emit([KIND_TABLE, KIND_WALL]), 1.0);
+        assert_eq!(synthetic_floor_emit([]), 1.0);
+        assert_eq!(synthetic_floor_emit([KIND_TABLE, KIND_FLOOR]), 0.0);
+        let w = weights_of(&[synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 0.0)], 1.5);
+        assert_eq!(
+            w[0], 0.0,
+            "a flagged-off floor must not double the scene floor"
+        );
+    }
+
+    #[test]
+    fn other_kinds_and_unflagged_boxes_weigh_nothing() {
+        let mut wall = table(Vec3::ZERO, [1.0, 1.0]);
+        wall.kind = KIND_WALL;
+        let mut off = table(Vec3::ZERO, [1.0, 1.0]);
+        off.emit = 0.0;
+        let w = weights_of(&[wall, off], 1.5);
+        assert_eq!(w, vec![0.0, 0.0]);
+    }
+}

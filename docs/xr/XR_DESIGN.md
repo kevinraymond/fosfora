@@ -324,6 +324,58 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `XR_META_spatial_entity_room_mesh` (no public binding). Both stay options
   for the product.
 
+## The room first pass (board #3317)
+
+*The first pass of `ROOM_DESIGN.md`: surfaces as emitters and the floor
+ripple.*
+
+### Surfaces as emitters
+
+- **Surface lanes.** The two `w` lanes of the box rows that were written 0
+  now belong to the aux block contract: `aux[67 + k].w` is the box's
+  surface kind as a float (0 none, 1 table = DESK or TABLE, 2 floor, 3
+  wall, 4 ceiling, 5 door or window frame, 6 other) and `aux[131 + k].w`
+  its emitter weight in 0..1. Row count and offsets are unchanged (163
+  obstacle rows, 170 with Murmur's lanes). The depth occluders, the S5
+  test sim and Murmur read only `xyz`.
+- **Kinds and weights** (`crates/fosfora-xr/src/surfaces.rs`, host-tested).
+  `surface_kind` maps the anchor's label list, most specific label first.
+  Every room box carries an emitter flag of 1; the synthetic stage floor's
+  is 1 only while the room has no FLOOR anchor, so the floor never emits
+  twice. Each frame, where the block is moved into the anchor's frame
+  (`XrScene::set_world_inputs`), `emitter_weights` turns flags into
+  weights: tables by top-face area against the largest table (the desk
+  gets `tableweight`, default 1), floors `floorweight` (default 0.5),
+  other kinds 0 for now. A box whose top face does not reach into the
+  effect's volume (anchor +- `emitter.radius`) weighs 0, so a dragged
+  anchor never emits from a surface it would respawn out of. The test is
+  on the face point nearest the anchor, not the face center: the synthetic
+  floor is 20 m across and centered on the stage origin.
+- **The sim** (`flux_xr_sim.wgsl`, `xr_emit`). A preset whose `param(6)`
+  is above 0.5 spawns on surfaces when the summed weight is positive;
+  otherwise `emit_particle` runs as before. `param(6)`, not `param(0)`:
+  the Flux XR presets' first input is `trail_decay` (0.88), and they have
+  six inputs, so slot 6 reads 0 for them. A spawn draws over the boxes'
+  cumulative weight times the kind's gate (table `0.15 + 0.85 * beat`,
+  floor `0.1 + 0.9 * bass`, others 0.3) against the ungated total; a draw
+  past the gated sum spawns nothing and the slot stays dead this frame,
+  so the emission breathes with the music. The top face is the local axis
+  closest to vertical, signed up (tables and scene floors +Z, the stage
+  floor +Y), sampled uniformly over its part within the volume's half
+  extent of the anchor, 1 cm above it. Floor sparks leave at
+  `0.3 + 1.2 * bass` m/s up with a little lateral jitter; table embers at
+  3 cm/s sideways, so the settle drift sets them on the top and the flow
+  slides them off the edge. Life, color, size and opacity are the volume
+  path's. The out-of-volume respawn goes through the same pick and dies
+  when the gate is shut.
+- **Preset.** `assets/xr/effects/flux_xr_world_room.pfx`, "Flux XR Room":
+  Flux XR World plus a seventh input `surface_emit` = 1, same sim, count,
+  sizes and emission (hidden; the pinch-hold cycle picks it up by file
+  name). Select it with `debug.fosfora.effect 'Flux XR Room'`. Core tests:
+  `flux_xr_room_preset_turns_on_surface_emission`, and on a GPU
+  `flux_xr_room_emits_on_a_table` and
+  `flux_xr_world_ignores_the_surface_lanes`.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:

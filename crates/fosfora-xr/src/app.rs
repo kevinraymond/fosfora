@@ -17,6 +17,7 @@ use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
+use crate::surfaces::SurfaceWeights;
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
@@ -205,6 +206,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
+    //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
+    //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
+    //       table gets this, the others by top-face area)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -294,6 +298,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let open_pad = knob("debug.fosfora.openpad", crate::pose::OPEN_PAD_M);
     let open_kick = knob("debug.fosfora.openkick", crate::pose::OPEN_KICK_M_S);
     let hold_radius = knob("debug.fosfora.holdradius", crate::pose::HOLD_RADIUS_M);
+    // Board #3317: surfaces as emitters (only a world sim in surface mode,
+    // Flux XR Room, reads the weights).
+    let surface_weights = {
+        let d = SurfaceWeights::default();
+        SurfaceWeights {
+            table: knob("debug.fosfora.tableweight", d.table).max(0.0),
+            floor: knob("debug.fosfora.floorweight", d.floor).max(0.0),
+        }
+    };
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -626,10 +639,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut pose_text = [String::from("open"), String::from("open")];
     let mut pose_label = String::from("-");
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
+    // A floor surface; it emits only while the room has no FLOOR anchor
+    // (set per frame below), so the floor never emits twice.
     let floor_box = floor.then_some(ObstacleBox {
         center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
         rot: [0.0, 0.0, 0.0, 1.0],
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
+        kind: crate::surfaces::KIND_FLOOR,
+        emit: 0.0,
     });
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
@@ -1050,7 +1067,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     set.push_box(b);
                 }
                 if let Some(f) = &floor_box {
-                    set.push_box(f);
+                    set.push_box(&ObstacleBox {
+                        emit: crate::surfaces::synthetic_floor_emit(
+                            input.room_boxes.iter().map(|b| b.kind),
+                        ),
+                        ..*f
+                    });
                 }
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
@@ -1061,6 +1083,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         controls.gravity,
                         controls.hand_scare,
                         &set,
+                        surface_weights,
                         &lanes,
                     );
                 }
@@ -1172,7 +1195,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         if frame_index.is_multiple_of(72) {
             if let Some(scene) = &scene {
-                info!("particles alive {}", scene.alive_count());
+                info!(
+                    "particles alive {} · emitter weight {:.2}",
+                    scene.alive_count(),
+                    scene.emitter_weight()
+                );
             }
             if session.has_hands() || session.has_room() {
                 info!(

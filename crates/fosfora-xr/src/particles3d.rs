@@ -18,6 +18,7 @@ use glam::Mat4;
 use log::info;
 
 use crate::gfx::SWAPCHAIN_FORMAT;
+use crate::surfaces::{KIND_NONE, SurfaceBox, SurfaceWeights, emitter_weights};
 
 /// Bytes per particle: `pos: vec3` + `life` + `vel: vec3` + `seed`.
 const PARTICLE_BYTES: u64 = 32;
@@ -61,6 +62,12 @@ pub struct ObstacleBox {
     /// Rotation box -> world as a quaternion (x, y, z, w).
     pub rot: [f32; 4],
     pub half: [f32; 3],
+    /// Surface kind (`surfaces::KIND_*`, 0 none), from the anchor's label.
+    pub kind: u32,
+    /// Emitter flag, 0 or 1 (`surfaces::SurfaceBox::emit`); the weight the
+    /// sim reads is derived from it per frame by
+    /// [`ObstacleSet::set_emitter_weights`].
+    pub emit: f32,
 }
 
 /// Uniform block for the S7 obstacles, matching `struct Obstacles` in the
@@ -116,9 +123,11 @@ impl ObstacleSet {
         if i >= MAX_BOXES {
             return false;
         }
-        self.box_center[i] = [b.center[0], b.center[1], b.center[2], 0.0];
+        // The w lanes carry the surface kind and the emitter flag (the
+        // surface lanes, `surfaces.rs`); occluders and the S5 sim read xyz.
+        self.box_center[i] = [b.center[0], b.center[1], b.center[2], b.kind as f32];
         self.box_rot[i] = b.rot;
-        self.box_half[i] = [b.half[0], b.half[1], b.half[2], 0.0];
+        self.box_half[i] = [b.half[0], b.half[1], b.half[2], b.emit];
         self.box_count += 1;
         true
     }
@@ -148,6 +157,47 @@ impl ObstacleSet {
             .iter_mut()
             .for_each(shift);
         out
+    }
+
+    /// Replace every box's emitter flag with its emitter weight for a world
+    /// sim whose emitter cube is `cube_half` around the origin
+    /// (`surfaces::emitter_weights`). Call on the anchor-relative set
+    /// ([`Self::relative_to`]), once per frame, so the weights follow the
+    /// anchor.
+    pub fn set_emitter_weights(&mut self, cube_half: f32, weights: SurfaceWeights) {
+        let n = self.box_count as usize;
+        let mut boxes = [SurfaceBox {
+            kind: KIND_NONE,
+            emit: 0.0,
+            center: glam::Vec3::ZERO,
+            rot: glam::Quat::IDENTITY,
+            half: glam::Vec3::ZERO,
+        }; MAX_BOXES];
+        for (k, b) in boxes[..n].iter_mut().enumerate() {
+            let (c, h) = (self.box_center[k], self.box_half[k]);
+            *b = SurfaceBox {
+                kind: c[3] as u32,
+                emit: h[3],
+                center: glam::Vec3::new(c[0], c[1], c[2]),
+                rot: glam::Quat::from_array(self.box_rot[k]),
+                half: glam::Vec3::new(h[0], h[1], h[2]),
+            };
+        }
+        let mut out = [0.0f32; MAX_BOXES];
+        emitter_weights(&boxes[..n], cube_half, weights, &mut out[..n]);
+        for (h, w) in self.box_half[..n].iter_mut().zip(out) {
+            h[3] = w;
+        }
+    }
+
+    /// The boxes' emitter weights summed, after
+    /// [`Self::set_emitter_weights`]: 0 leaves a surface-mode sim on its
+    /// volume emitter.
+    pub fn emitter_weight_sum(&self) -> f32 {
+        self.box_half[..self.box_count as usize]
+            .iter()
+            .map(|h| h[3])
+            .sum()
     }
 
     /// The block as the `vec4`s it is made of, in WGSL order: the two header
