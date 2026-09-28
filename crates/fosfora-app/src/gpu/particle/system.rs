@@ -10,7 +10,7 @@ use super::compute_raster::ComputeRasterizer;
 use super::flow_field::FlowFieldTexture;
 use super::obstacle::ObstacleTexture;
 use super::source::ParticleSource;
-use super::spatial_hash::SpatialHashGrid;
+use super::spatial_hash::{SpatialHashGrid, SpatialHashMode, patch_sim_grid_d};
 use super::splat::{SplatDriver, SplatShRec, SplatStatic};
 use super::splat_source::SplatCloud;
 use super::sprite::SpriteAtlas;
@@ -835,17 +835,27 @@ impl ParticleSystem {
 
         // Create spatial hash before pipeline if interaction is enabled,
         // so the query BGL is included in the initial compute pipeline layout.
-        let spatial_hash = if interaction {
-            Some(SpatialHashGrid::new(
-                device,
-                max_particles,
-                def.grid_max,
-                &pos_life_buffers,
-                &uniform_buffer,
-            ))
+        // `interaction_3d` implies `interaction`, whatever the caller passed.
+        let hash_mode = if def.interaction_3d {
+            Some(SpatialHashMode::Volume)
+        } else if interaction {
+            Some(SpatialHashMode::Planar)
         } else {
             None
         };
+        let spatial_hash = hash_mode.map(|mode| {
+            SpatialHashGrid::new(
+                device,
+                max_particles,
+                def.grid_max,
+                mode,
+                &pos_life_buffers,
+                &uniform_buffer,
+            )
+        });
+        // A 3D sim's SH_GRID_D must match the grid just built (see
+        // `patch_sim_grid_d`); 2D sources pass through untouched.
+        let compute_source: &str = &sim_source_for(spatial_hash.as_ref(), compute_source);
 
         // Create reaction-diffusion resources if enabled.
         let (
@@ -1635,9 +1645,10 @@ impl ParticleSystem {
     /// NOTE: This blocks the main thread during compilation. Prefer using
     /// `ShaderCompiler` for background compilation + `swap_compute_pipeline()`.
     pub fn recompile_compute(&mut self, device: &Device, source: &str) {
+        let source = sim_source_for(self.spatial_hash.as_ref(), source);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("particle-compute-hotreload"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+            source: wgpu::ShaderSource::Wgsl(source),
         });
 
         // Build layout with optional trail (group 2) and spatial hash (group 3)
@@ -3385,6 +3396,9 @@ impl ParticleSystem {
             device,
             self.max_particles,
             self.def.grid_max,
+            self.def
+                .spatial_hash_mode()
+                .unwrap_or(SpatialHashMode::Planar),
             &self.pos_life_buffers,
             &self.uniform_buffer,
         );
@@ -5625,6 +5639,20 @@ fn create_wboit_resources(
     )
 }
 
+/// The sim source to compile against `hash`: a 3D grid's edge patched into
+/// `SH_GRID_D`, anything else as given.
+fn sim_source_for<'a>(
+    hash: Option<&SpatialHashGrid>,
+    source: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    match hash {
+        Some(h) if h.mode() == SpatialHashMode::Volume => {
+            std::borrow::Cow::Owned(patch_sim_grid_d(source, h.grid_d()))
+        }
+        _ => std::borrow::Cow::Borrowed(source),
+    }
+}
+
 #[cfg(test)]
 mod trail_binding_tests {
     //! #1921: a particle sim that references `trail_write` with trails off used
@@ -6378,5 +6406,304 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
         let world = ps.world.as_ref().expect("world path built by render_world");
         let args = read_buffer(&device, &queue, &world.indirect_buffer, 16);
         assert_eq!(bytemuck::cast_slice::<u8, u32>(&args), &[21, 1, 0, 0]);
+    }
+}
+
+#[cfg(test)]
+mod spatial_hash_3d_tests {
+    //! The 3D spatial hash end to end: a real `ParticleSystem` built from an
+    //! `interaction_3d` def, eight particles on the corners of a ±0.5 m cube and
+    //! one at the origin, `emitter_radius` 1 m, one `dispatch`. The grid is read
+    //! back directly, and the test sim below reports what `sh_cell_range_3d`
+    //! finds around each particle.
+    use super::*;
+    use crate::gpu::particle::spatial_hash::grid_dims;
+    use crate::gpu::test_gpu::gpu_guard;
+
+    /// For each alive particle: vel_size.x = neighbors found in the 27 cells
+    /// around it (itself excluded), .y = the last one's index (bitcast),
+    /// .z = SH_GRID_D as compiled.
+    const QUERY_SIM: &str = "
+@compute @workgroup_size(256)
+fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
+    let idx = gid.x;
+    if idx >= u.max_particles {
+        return;
+    }
+    var p = read_particle(idx);
+    var found = 0u;
+    var last = 0xffffffffu;
+    if p.pos_life.w > 0.0 {
+        let c = sh_pos_to_cell_3d(p.pos_life.xyz, u.emitter_radius);
+        for (var dz = -1; dz <= 1; dz++) {
+            for (var dy = -1; dy <= 1; dy++) {
+                for (var dx = -1; dx <= 1; dx++) {
+                    let r = sh_cell_range_3d(c + vec3i(dx, dy, dz));
+                    for (var i = 0u; i < r.y; i++) {
+                        let n = sh_sorted_indices[r.x + i];
+                        if n != idx {
+                            found++;
+                            last = n;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    p.vel_size = vec4f(f32(found), bitcast<f32>(last), f32(SH_GRID_D), 0.0);
+    write_particle(idx, p);
+}";
+
+    const ORIGIN: u32 = 8;
+
+    /// Corner `i` (bits x, y, z) of the ±0.5 m cube, then the origin.
+    fn positions() -> Vec<[f32; 4]> {
+        let mut v: Vec<[f32; 4]> = (0..8)
+            .map(|i| {
+                let s = |bit: u32| if i & bit != 0 { 0.5 } else { -0.5 };
+                [s(1), s(2), s(4), 1.0]
+            })
+            .collect();
+        v.push([0.0, 0.0, 0.0, 1.0]);
+        v
+    }
+
+    fn def(grid_max: u32) -> ParticleDef {
+        serde_json::from_str(&format!(
+            r#"{{
+                "max_count": 9,
+                "emit_rate": 0.0,
+                "interaction_3d": true,
+                "grid_max": {grid_max},
+                "emitter": {{ "shape": "point", "radius": 1.0, "position": [0.0, 0.0] }}
+            }}"#
+        ))
+        .expect("probe ParticleDef")
+    }
+
+    fn sim_src() -> String {
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
+        format!(
+            "{}\n{plib}\n{QUERY_SIM}",
+            crate::effect::loader::probe_libs()
+        )
+    }
+
+    fn read<T: bytemuck::Pod>(
+        device: &Device,
+        queue: &Queue,
+        buf: &wgpu::Buffer,
+        len: usize,
+    ) -> Vec<T> {
+        let bytes = (std::mem::size_of::<T>() * len) as u64;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hash-3d-readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hash-3d-readback"),
+        });
+        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, bytes);
+        queue.submit([enc.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .unwrap();
+        let out = bytemuck::cast_slice(&staging.slice(..).get_mapped_range()).to_vec();
+        staging.unmap();
+        out
+    }
+
+    struct Run {
+        d: u32,
+        counts: Vec<u32>,
+        offsets: Vec<u32>,
+        sorted: Vec<u32>,
+        /// vel_size as the test sim wrote it.
+        out: Vec<[f32; 4]>,
+    }
+
+    fn run(grid_max: u32) -> Run {
+        let (device, queue, _) = crate::headless::gpu::create().expect("headless device");
+        let def = def(grid_max);
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // `interaction` false on purpose: `interaction_3d` must imply it.
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            &def,
+            &sim_src(),
+            false,
+        );
+        let hash = ps
+            .spatial_hash
+            .as_ref()
+            .expect("interaction_3d builds a hash");
+        assert_eq!(hash.mode(), SpatialHashMode::Volume);
+        let d = hash.grid_d();
+
+        queue.write_buffer(
+            &ps.pos_life_buffers[ps.current],
+            0,
+            bytemuck::cast_slice(&positions()),
+        );
+        ps.update_uniforms(1.0 / 60.0, 0.0, [1920.0, 1080.0], 0.0);
+        assert_eq!(ps.uniforms.emitter_radius, 1.0);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("hash-3d-probe"),
+        });
+        ps.dispatch(&mut enc, &queue);
+        queue.submit([enc.finish()]);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "3D hash probe must validate: {err:?}");
+
+        let hash = ps.spatial_hash.as_ref().unwrap();
+        let [counts_buf, offsets_buf, sorted_buf] = hash.buffers();
+        let cells = (d * d * d) as usize;
+        Run {
+            d,
+            counts: read(&device, &queue, counts_buf, cells),
+            offsets: read(&device, &queue, offsets_buf, cells),
+            sorted: read(&device, &queue, sorted_buf, 9),
+            out: read(&device, &queue, &ps.vel_size_buffers[1 - ps.current], 9),
+        }
+    }
+
+    /// Cell index of a ±0.5 / 0 coordinate triple under the count pass's mapping.
+    fn expected_cell(p: [f32; 4], d: u32) -> usize {
+        let axis = |v: f32| ((v * 0.5 + 0.5) * d as f32) as u32;
+        ((axis(p[2]) * d + axis(p[1])) * d + axis(p[0])) as usize
+    }
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn corners_and_origin_land_in_their_own_cells() {
+        let _guard = gpu_guard();
+        for grid_max in [4, 8] {
+            let r = run(grid_max);
+            assert_eq!(r.d, grid_max, "grid_max caps the edge at 9 particles");
+            assert_eq!(r.counts.iter().sum::<u32>(), 9, "d={}", r.d);
+
+            // Exclusive scan of the counts: where each cell's run starts.
+            let mut start = vec![0u32; r.counts.len()];
+            for c in 1..start.len() {
+                start[c] = start[c - 1] + r.counts[c - 1];
+            }
+            let pos = positions();
+            let mut seen = std::collections::HashSet::new();
+            for (i, p) in pos.iter().enumerate() {
+                let cell = expected_cell(*p, r.d);
+                assert!(seen.insert(cell), "particle {i} shares cell {cell}");
+                assert_eq!(r.counts[cell], 1, "d={} particle {i} cell {cell}", r.d);
+                assert_eq!(r.sorted[start[cell] as usize], i as u32, "d={}", r.d);
+                // After scatter the offset holds the cell's END; the query
+                // helper subtracts the count to get the start back.
+                assert_eq!(r.offsets[cell], start[cell] + 1, "d={}", r.d);
+            }
+            let center = r.d / 2;
+            assert_eq!(
+                expected_cell(pos[ORIGIN as usize], r.d),
+                ((center * r.d + center) * r.d + center) as usize,
+                "origin sits in the center cell"
+            );
+        }
+    }
+
+    /// At edge 4 the origin (cell 2) is one cell from every corner (1 or 3)
+    /// and the corners are two apart, so each corner finds exactly the origin
+    /// and the origin finds all eight. At edge 8 (2, 4, 6) nothing is adjacent.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn query_finds_the_origin_only_when_it_is_one_cell_away() {
+        let _guard = gpu_guard();
+        let r = run(4);
+        for (i, v) in r.out.iter().enumerate().take(8) {
+            assert_eq!(v[2], 4.0, "SH_GRID_D compiled into the sim");
+            assert_eq!(v[0], 1.0, "corner {i} should find one neighbor");
+            assert_eq!(v[1].to_bits(), ORIGIN, "corner {i} should find the origin");
+        }
+        assert_eq!(r.out[ORIGIN as usize][0], 8.0, "origin finds all corners");
+
+        let r = run(8);
+        for (i, v) in r.out.iter().enumerate() {
+            assert_eq!(v[2], 8.0, "SH_GRID_D compiled into the sim");
+            assert_eq!(v[0], 0.0, "particle {i} should find nothing at edge 8");
+        }
+    }
+
+    /// The shipped interaction effects still get the 2D grid, their sim source
+    /// compiles as given, and a step validates clean.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn shipped_2d_interaction_effects_are_untouched() {
+        let _guard = gpu_guard();
+        let (device, queue, _) = crate::headless::gpu::create().expect("headless device");
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
+        for (name, pfx, sim) in [
+            (
+                "murmur",
+                include_str!("../../../../../assets/effects/murmur.pfx"),
+                include_str!("../../../../../assets/shaders/murmur_sim.wgsl"),
+            ),
+            (
+                "symbiosis",
+                include_str!("../../../../../assets/effects/symbiosis.pfx"),
+                include_str!("../../../../../assets/shaders/symbiosis_sim.wgsl"),
+            ),
+            (
+                "genesis",
+                include_str!("../../../../../assets/effects/genesis.pfx"),
+                include_str!("../../../../../assets/shaders/genesis_sim.wgsl"),
+            ),
+        ] {
+            let effect: crate::effect::format::PfxEffect = serde_json::from_str(pfx).unwrap();
+            let def = effect.particles.expect("particle effect");
+            assert!(def.interaction && !def.interaction_3d, "{name}");
+            assert_eq!(def.spatial_hash_mode(), Some(SpatialHashMode::Planar));
+            let (gw, gh) = grid_dims(def.max_count, def.grid_max);
+            let lib = plib
+                .replace(
+                    "const SH_GRID_W: u32 = 40u;",
+                    &format!("const SH_GRID_W: u32 = {gw}u;"),
+                )
+                .replace(
+                    "const SH_GRID_H: u32 = 40u;",
+                    &format!("const SH_GRID_H: u32 = {gh}u;"),
+                );
+            let src = format!("{}\n{lib}\n{sim}", crate::effect::loader::probe_libs());
+
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut ps = ParticleSystem::new(
+                &device,
+                &queue,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+                &def,
+                &src,
+                def.interaction,
+            );
+            let hash = ps.spatial_hash.as_ref().expect("{name} builds a hash");
+            assert_eq!(hash.mode(), SpatialHashMode::Planar, "{name}");
+            assert_eq!(hash.grid_d(), 1, "{name}");
+            assert_eq!(ps.current_compute_source, src, "{name}: sim source changed");
+            for _ in 0..2 {
+                ps.update_uniforms(1.0 / 60.0, 0.0, [1920.0, 1080.0], 0.0);
+                let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("hash-2d-probe"),
+                });
+                ps.dispatch(&mut enc, &queue);
+                queue.submit([enc.finish()]);
+                ps.flip();
+            }
+            let err = pollster::block_on(device.pop_error_scope());
+            assert!(err.is_none(), "{name} must step clean: {err:?}");
+        }
     }
 }

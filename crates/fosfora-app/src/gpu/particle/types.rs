@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
 use super::emitter::EmitterDef;
+use super::spatial_hash::SpatialHashMode;
 
 /// Size of a single SoA component buffer element (one vec4f = 16 bytes).
 pub const PARTICLE_COMPONENT_STRIDE: u64 = 16;
@@ -414,6 +415,18 @@ pub struct ParticleRenderUniforms {
 }
 
 impl ParticleDef {
+    /// The spatial hash this effect asks for, if any. `interaction_3d` implies
+    /// `interaction`, so it wins when both are set.
+    pub fn spatial_hash_mode(&self) -> Option<SpatialHashMode> {
+        if self.interaction_3d {
+            Some(SpatialHashMode::Volume)
+        } else if self.interaction {
+            Some(SpatialHashMode::Planar)
+        } else {
+            None
+        }
+    }
+
     /// True when `pos_life.z` really holds an accumulated spin angle.
     ///
     /// Only `builtin/particle_sim.wgsl` accumulates one there, and only when
@@ -732,8 +745,16 @@ pub struct ParticleDef {
     pub interaction: bool,
     /// Maximum spatial hash grid dimension (0 = use default count-based heuristic).
     /// Effects with large interaction radii (e.g. Symbiosis) need coarser grids.
+    /// Under `interaction_3d` it caps the cube's edge instead.
     #[serde(default)]
     pub grid_max: u32,
+    /// Hash the grid in 3D instead of 2D; implies `interaction`. Cells cover the
+    /// cube within ±`emitter_radius` meters of the anchor on all three axes (the
+    /// world layout's volume, see `particle_lib.wgsl`), so a sim that opts in must
+    /// keep `pos_life.xyz` in meters. Query with `sh_pos_to_cell_3d` /
+    /// `sh_cell_range_3d`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interaction_3d: bool,
 
     // --- Phase 1: Forces ---
     /// Directional wind force [x, y]

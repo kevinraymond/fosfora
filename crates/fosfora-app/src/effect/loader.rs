@@ -387,6 +387,9 @@ pub struct EffectLoader {
     /// Spatial hash grid dimensions, patched into particle_lib SH_GRID_W/H constants.
     /// Updated when a particle system with interaction is created.
     pub grid_dims: (u32, u32),
+    /// 3D spatial hash grid edge, patched into particle_lib's SH_GRID_D constant.
+    /// Updated alongside `grid_dims`; 1 unless the effect sets `interaction_3d`.
+    pub grid_d: u32,
 }
 
 impl EffectLoader {
@@ -426,6 +429,7 @@ impl EffectLoader {
             lib_source,
             particle_lib_source,
             grid_dims: (40, 40),
+            grid_d: 1,
         }
     }
 
@@ -480,6 +484,11 @@ impl EffectLoader {
             match std::fs::read_to_string(entry.path()) {
                 Ok(json) => match serde_json::from_str::<PfxEffect>(&json) {
                     Ok(mut effect) => {
+                        // `interaction_3d` implies `interaction`: set it so every
+                        // reader of the flag builds and reports the hash.
+                        if let Some(pd) = effect.particles.as_mut() {
+                            pd.interaction |= pd.interaction_3d;
+                        }
                         let path = entry.path().canonicalize().unwrap_or_else(|_| entry.path());
                         log::info!("Found effect: {} ({})", effect.name, path.display());
                         effect.source_path = Some(path);
@@ -536,9 +545,11 @@ impl EffectLoader {
     }
 
     /// Prepend noise library + particle library to a compute shader source.
-    /// Patches spatial hash grid constants (SH_GRID_W/H) to match current grid_dims.
+    /// Patches spatial hash grid constants (SH_GRID_W/H/D) to match current
+    /// grid_dims and grid_d.
     pub fn prepend_compute_libraries(&self, source: &str) -> String {
         let (w, h) = self.grid_dims;
+        let d = self.grid_d;
         let patched_plib = self
             .particle_lib_source
             .replace(
@@ -548,6 +559,10 @@ impl EffectLoader {
             .replace(
                 "const SH_GRID_H: u32 = 40u;",
                 &format!("const SH_GRID_H: u32 = {h}u;"),
+            )
+            .replace(
+                "const SH_GRID_D: u32 = 1u;",
+                &format!("const SH_GRID_D: u32 = {d}u;"),
             );
         format!("{}\n{}\n{}", self.lib_source, patched_plib, source)
     }
@@ -577,6 +592,7 @@ impl EffectLoader {
             lib_source: lib_source.to_string(),
             particle_lib_source: String::new(),
             grid_dims: (40, 40),
+            grid_d: 1,
         }
     }
 
@@ -1415,9 +1431,14 @@ mod tests {
             // Interaction effects read the spatial hash (group 3), whose grid
             // constants the production loader patches into particle_lib for the
             // actual particle count — mirror that or the pipeline layout mismatches.
-            let sim_src = if def.interaction {
-                let (gw, gh) =
-                    crate::gpu::particle::spatial_hash::grid_dims(def.max_count, def.grid_max);
+            let sim_src = if def.interaction || def.interaction_3d {
+                use crate::gpu::particle::spatial_hash::{grid_dims, grid_dims_3d};
+                let (gw, gh) = grid_dims(def.max_count, def.grid_max);
+                let gd = if def.interaction_3d {
+                    grid_dims_3d(def.max_count, def.grid_max)
+                } else {
+                    1
+                };
                 let patched = libs
                     .replace(
                         "const SH_GRID_W: u32 = 40u;",
@@ -1426,6 +1447,10 @@ mod tests {
                     .replace(
                         "const SH_GRID_H: u32 = 40u;",
                         &format!("const SH_GRID_H: u32 = {gh}u;"),
+                    )
+                    .replace(
+                        "const SH_GRID_D: u32 = 1u;",
+                        &format!("const SH_GRID_D: u32 = {gd}u;"),
                     );
                 format!("{patched}\n{sim}")
             } else {

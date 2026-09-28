@@ -54,9 +54,14 @@ pub(crate) fn prepare_particles(
     effect: &PfxEffect,
 ) -> Option<ParticleSystem> {
     let pd = effect.particles.as_ref()?;
-    if pd.interaction {
-        use crate::gpu::particle::spatial_hash::grid_dims;
+    if pd.interaction || pd.interaction_3d {
+        use crate::gpu::particle::spatial_hash::{grid_dims, grid_dims_3d};
         effect_loader.grid_dims = grid_dims(pd.max_count, pd.grid_max);
+        effect_loader.grid_d = if pd.interaction_3d {
+            grid_dims_3d(pd.max_count, pd.grid_max)
+        } else {
+            1
+        };
     }
     crate::gpu::particle::build::build_particle_system(
         ctx.device,

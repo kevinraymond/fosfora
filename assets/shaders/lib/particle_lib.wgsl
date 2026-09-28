@@ -543,6 +543,37 @@ fn sh_cell_range(gx: i32, gy: i32) -> vec2u {
     return vec2u(sh_cell_offsets[cell], sh_cell_counts[cell]);
 }
 
+// 3D mode ("interaction_3d": true in the .pfx): a SH_GRID_D^3 grid over the cube
+// within +-extent meters of the anchor on all three axes, for world-layout sims
+// (see "World layout" above). Pass u.emitter_radius as extent: it is what the
+// count pass hashes with. Same mapping and index order as
+// builtin/spatial_hash_count_3d.wgsl. SH_GRID_D is patched per effect and stays
+// 1 for 2D effects, which use the helpers above.
+const SH_GRID_D: u32 = 1u;
+
+fn sh_pos_to_cell_3d(pos: vec3f, extent: f32) -> vec3i {
+    let g = clamp(
+        vec3u((pos / max(extent, 1e-3) * 0.5 + 0.5) * f32(SH_GRID_D)),
+        vec3u(0u),
+        vec3u(SH_GRID_D - 1u),
+    );
+    return vec3i(g);
+}
+
+// Start index into sh_sorted_indices and count for a 3D cell.
+// Returns vec2u(start, count). If the cell is out of bounds, returns (0, 0).
+fn sh_cell_range_3d(c: vec3i) -> vec2u {
+    let d = i32(SH_GRID_D);
+    if any(c < vec3i(0)) || any(c >= vec3i(d)) {
+        return vec2u(0u, 0u);
+    }
+    let cell = (u32(c.z) * SH_GRID_D + u32(c.y)) * SH_GRID_D + u32(c.x);
+    let count = sh_cell_counts[cell];
+    // The scatter pass bumps each cell's offset once per particle it places, so
+    // by the time the sim runs sh_cell_offsets holds the cell's END.
+    return vec2u(sh_cell_offsets[cell] - count, count);
+}
+
 // --- Hash / random utilities ---
 
 // Integer hash (lowbias32). PREFER THIS for anything index-scaled. The fract-sin
