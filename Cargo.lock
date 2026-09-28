@@ -1739,6 +1739,7 @@ dependencies = [
  "glam",
  "libc",
  "log",
+ "naga",
  "ndk",
  "openxr",
  "serde_json",

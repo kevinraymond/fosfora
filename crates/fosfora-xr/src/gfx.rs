@@ -74,6 +74,11 @@ pub struct Gfx {
     beam: QuadBinding,
     beam_visible: std::cell::Cell<[bool; BEAM_SLOTS]>,
     beam_pipeline: wgpu::RenderPipeline,
+    /// The floor ripple (`set_ripple`, `ripple.rs`): one lit quad on the
+    /// floor.
+    ripple: QuadBinding,
+    ripple_visible: std::cell::Cell<bool>,
+    ripple_pipeline: wgpu::RenderPipeline,
     /// Small sprites marking the virtual (reach-extended) hand joints.
     ghost: QuadBinding,
     ghost_count: std::cell::Cell<u32>,
@@ -374,6 +379,7 @@ impl Gfx {
         let (panel_pipeline, panel_layout) = build_panel_pipeline(&device, &eye_layout);
         let (beam_pipeline, beam) = build_beam_pipeline(&device, &eye_layout);
         let (ghost_pipeline, ghost) = build_ghost_pipeline(&device, &eye_layout);
+        let (ripple_pipeline, ripple) = build_ripple_pipeline(&device, &eye_layout);
         info!("wgpu device ready");
 
         Ok(Self {
@@ -386,6 +392,9 @@ impl Gfx {
             beam,
             beam_visible: std::cell::Cell::new([false; BEAM_SLOTS]),
             beam_pipeline,
+            ripple,
+            ripple_visible: std::cell::Cell::new(false),
+            ripple_pipeline,
             ghost,
             ghost_count: std::cell::Cell::new(0),
             ghost_pipeline,
@@ -547,6 +556,16 @@ impl Gfx {
             bytemuck::cast_slice(&data),
         );
         self.beam_visible.set(visible);
+    }
+
+    /// The floor ripple for this frame (`Ripple::uniform`'s rows), or
+    /// hidden with `None`.
+    pub fn set_ripple(&self, rows: Option<&[[f32; 4]; crate::ripple::UNIFORM_ROWS]>) {
+        if let Some(rows) = rows {
+            self.queue
+                .write_buffer(&self.ripple.uniform, 0, bytemuck::cast_slice(rows));
+        }
+        self.ripple_visible.set(rows.is_some());
     }
 
     /// The ghost sprites for this frame: xyz and radius per point (at most
@@ -723,6 +742,17 @@ impl Gfx {
             }
             if let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
+            }
+            // The floor ripple after the occluders, so a desk or a hand in
+            // front of the floor hides it, and before the sprites, so
+            // embers on the floor draw over the light.
+            if self.ripple_visible.get() {
+                pass.set_pipeline(&self.ripple_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.ripple.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+            if let Some(p) = particles {
                 p.draw(&mut pass, i);
             }
             if let (Some(s), Some(draw)) = (scene.as_deref_mut(), world_draw) {
@@ -1100,6 +1130,106 @@ fn build_beam_pipeline(
         },
     )
 }
+
+/// The floor ripple's pipeline and its uniform (`ripple.rs`): the beam's
+/// setup (premultiplied alpha, depth-tested, no depth write, no culling)
+/// plus a depth bias toward the camera. The floor occluders write depth at
+/// the floor's top face; the quad sits `LIFT_M` above it, and the bias
+/// keeps it in front at grazing angles, where the lift is worth little
+/// depth, the usual decal setup.
+fn build_ripple_pipeline(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::RenderPipeline, QuadBinding) {
+    const BYTES: u64 = 16 * crate::ripple::UNIFORM_ROWS as u64;
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("xr-ripple"),
+        source: wgpu::ShaderSource::Wgsl(crate::ripple::RIPPLE_WGSL.into()),
+    });
+    let ripple_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-ripple"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(BYTES),
+            },
+            count: None,
+        }],
+    });
+    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xr-ripple-uniform"),
+        size: BYTES,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xr-ripple"),
+        layout: &ripple_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("xr-ripple"),
+        bind_group_layouts: &[eye_layout, &ripple_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xr-ripple"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState {
+                constant: RIPPLE_DEPTH_BIAS,
+                slope_scale: RIPPLE_DEPTH_SLOPE_BIAS,
+                clamp: 0.0,
+            },
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SWAPCHAIN_FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (
+        pipeline,
+        QuadBinding {
+            uniform,
+            bind_group,
+        },
+    )
+}
+
+/// The ripple's depth bias toward the camera (negative: nearer), in the
+/// depth format's minimum resolvable units and per unit of depth slope.
+const RIPPLE_DEPTH_BIAS: i32 = -16;
+const RIPPLE_DEPTH_SLOPE_BIAS: f32 = -2.0;
 
 const GHOST_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }

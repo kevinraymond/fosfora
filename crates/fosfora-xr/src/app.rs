@@ -209,6 +209,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       table gets this, the others by top-face area)
+    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat; default on in mr/world)
+    //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
+    //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
+    //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
+    //       the floor, lifted toward the room, for an unworn screencap from a headset lying face up)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -639,6 +644,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut pose_text = [String::from("open"), String::from("open")];
     let mut pose_label = String::from("-");
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
+    // Board #3317: the floor ripple, on the scene floor or the stage floor.
+    let ripple_ceiling = debug_prop("debug.fosfora.rippletest").as_deref() == Some("ceiling");
+    let mut ripple = toggle("debug.fosfora.ripple", mixed).then(|| {
+        crate::ripple::Ripple::new(
+            knob("debug.fosfora.ripplespeed", crate::ripple::SPEED_M_S).max(0.1),
+            knob("debug.fosfora.ripplegain", 1.0).max(0.0),
+        )
+    });
+    info!(
+        "floor ripple {} · surface weights table {} floor {}",
+        ripple.as_ref().map_or("off".to_owned(), |r| format!(
+            "on (speed {} m/s, gain {})",
+            r.speed, r.gain
+        )),
+        surface_weights.table,
+        surface_weights.floor
+    );
     // A floor surface; it emits only while the room has no FLOOR anchor
     // (set per frame below), so the floor never emits twice.
     let floor_box = floor.then_some(ObstacleBox {
@@ -1135,6 +1157,51 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
+            if let Some(r) = ripple.as_mut() {
+                r.update(
+                    t,
+                    dt,
+                    glam::Vec3::from(input.head),
+                    hop.beat_fired,
+                    f.bass.max(f.sub_bass),
+                    f.bass,
+                );
+                // The largest scene floor, else the stage floor.
+                let scene_floor = input
+                    .room_boxes
+                    .iter()
+                    .filter(|b| b.kind == crate::surfaces::KIND_FLOOR)
+                    .map(|b| {
+                        crate::surfaces::TopFace::of(
+                            glam::Vec3::from(b.center),
+                            glam::Quat::from_array(b.rot),
+                            glam::Vec3::from(b.half),
+                        )
+                    })
+                    .max_by(|a, b| a.area().total_cmp(&b.area()));
+                let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
+                let quad = if ripple_ceiling {
+                    input
+                        .room_boxes
+                        .iter()
+                        .find(|b| b.kind == crate::surfaces::KIND_CEILING)
+                        .map(|b| {
+                            let center = glam::Vec3::from(b.center);
+                            crate::ripple::Ripple::quad_under(
+                                crate::surfaces::TopFace::of(
+                                    center,
+                                    glam::Quat::from_array(b.rot),
+                                    glam::Vec3::from(b.half),
+                                ),
+                                center,
+                            )
+                        })
+                } else {
+                    r.quad(scene_floor, stage_top)
+                };
+                let rows = quad.map(|corners| r.uniform(t, corners));
+                gfx.set_ripple(rows.as_ref());
+            }
             if let Some(scene) = scene {
                 match live_audio.as_mut() {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),

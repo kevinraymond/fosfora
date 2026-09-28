@@ -376,6 +376,46 @@ ripple.*
   `flux_xr_room_emits_on_a_table` and
   `flux_xr_world_ignores_the_surface_lanes`.
 
+### The floor ripple
+
+- **What.** One lit quad on the floor inside the eye pass: rings expand
+  from under the wearer on each beat over a soft glow that breathes with
+  the bass. Pale and thin, light rather than material: premultiplied warm
+  white, peak alpha 0.25 (`ripplegain` scales it), so the real floor shows
+  through. Host module `crates/fosfora-xr/src/ripple.rs` (origin smoother,
+  ring list, uniform packing and the WGSL, validated by naga in a host
+  test); pipeline `build_ripple_pipeline` in `gfx.rs`.
+- **Origin.** The head projected onto the floor and low-passed with a
+  0.5 s time constant (by time, not frames), so it sits under the chair,
+  needs no anchor and stays when the wearer turns. Each ring keeps the
+  origin it was born at.
+- **Rings.** Up to 8; a beat adds one and replaces the oldest. Radius
+  `ripplespeed * age` (2.5 m/s), a 0.15 m gaussian profile, intensity
+  `amp * exp(-age / 0.8 s)`, cut at 2.5 s. The amplitude is the low end at
+  the beat, `0.3 + 0.7 * max(bass, sub_bass)`, so every beat shows and a
+  heavy one shows brighter. The glow is 0.3 x bass over a 0.6 m radius.
+- **Why the beat, not the kick.** There is no kick pulse (`kick` is a
+  continuous feature), and the beat is the pulse timed to the sound
+  through the playback tap (board #3253).
+- **Where.** On the scene FLOOR anchor's top face when the room has one
+  (the largest), else a 6 m square centered on the origin over the stage
+  floor.
+- **Draw order and depth.** After `draw_occluders`, so a desk or a hand in
+  front of the floor hides it, and before the world sprites, so embers on
+  the floor draw over the light. Depth test `Less`, no depth write. Both
+  floor occluders write depth at the floor (the stage floor's top at
+  y = 0, the scene plane +-2 cm), so the quad sits 2 cm above the highest
+  floor top and carries a depth bias toward the camera (constant -16,
+  slope -2), the usual decal setup; the lift alone is worth little depth
+  at grazing angles.
+- **Checked unworn** (`debug.fosfora.rippletest ceiling`, a diagnostic
+  that mirrors the floor case under the CEILING anchor for a headset
+  lying face up): the rings show without z-fighting against the ceiling
+  occluder, and the parked hand mesh (`handmeshtest`) cuts a hand-shaped
+  hole in them.
+- **Knobs.** `debug.fosfora.ripple` (0/1, default on in `mr` and `world`),
+  `ripplegain` (1), `ripplespeed` (2.5). No debug panel row.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:
