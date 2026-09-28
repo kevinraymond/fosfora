@@ -1309,6 +1309,46 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         );
     }
 
+    /// The same hand as `murmur_xr_flock_flees_a_hand`, calmed through the
+    /// XR hand-calm lane (aux[2].w = 1, the app's hand scare 0): without the
+    /// scare, five 2 cm joint spheres (no pad, no kick) barely dent the roost.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_calm_hand_does_not_clear_the_roost() {
+        use crate::gpu::test_gpu::gpu_guard;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let eye = ROOST + Vec3::new(0.0, 0.1, 1.2);
+        let palm = ROOST;
+        let near = |pts: &[Vec3]| pts.iter().filter(|p| p.distance(palm) < 0.25).count();
+
+        let without = murmur_positions(COUNT, 120, &murmur_aux(eye));
+        let mut aux = murmur_aux(eye);
+        aux[1].home[0] = f32::from_bits(5);
+        aux[2].home[3] = 1.0;
+        for (k, offset) in [
+            Vec3::ZERO,
+            Vec3::new(0.08, 0.0, 0.0),
+            Vec3::new(-0.08, 0.0, 0.0),
+            Vec3::new(0.0, 0.08, 0.0),
+            Vec3::new(0.0, -0.08, 0.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let c = palm + *offset;
+            aux[3 + k].home = [c.x, c.y, c.z, 0.02];
+        }
+        let calm = murmur_positions(COUNT, 120, &aux);
+
+        let (n0, n1) = (near(&without), near(&calm));
+        eprintln!("birds within 0.25 m of the palm: {n0} without a hand, {n1} with a calm hand");
+        assert!(
+            n1 * 2 > n0,
+            "a calm hand should leave most of the roost: {n1} birds within 0.25 m against {n0} without it"
+        );
+    }
+
     /// Stands one bird 0.6 m ahead of the eye (see
     /// `murmur_xr_bird_in_front_lands_dark`): flying away at 0.2 m/s, 5 s into
     /// a 15 s life, born 10 s ago (spawn fade done), colorless until the real

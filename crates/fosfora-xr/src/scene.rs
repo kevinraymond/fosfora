@@ -242,6 +242,7 @@ impl XrScene {
         head: [f32; 3],
         near_fade_m: f32,
         drift_m_s: f32,
+        hand_scare: f32,
         obstacles: &ObstacleSet,
     ) {
         let Some(world) = self.world.as_mut() else {
@@ -263,6 +264,10 @@ impl XrScene {
         // The obstacle block's second header row has two unused lanes; the
         // sim reads the drift from the third (`flux_xr_sim.wgsl`, aux[2].z).
         world.aux[2].home[2] = drift_m_s;
+        // The fourth lane: how calm the hands leave Murmur's flock, 1 -
+        // scare, so a writer that never sets it keeps the full scare. Flux
+        // ignores it.
+        world.aux[2].home[3] = 1.0 - hand_scare.clamp(0.0, 1.0);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);
         }

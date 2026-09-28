@@ -45,8 +45,10 @@
 // Per-frame XR inputs ride the aux buffer, which Murmur does not otherwise
 // use, in the layout flux_xr_sim.wgsl documents (head + near-fade radius,
 // obstacle header, 64 hand-joint spheres, 32 room boxes). The settle drift
-// lane (aux[2].z) is ignored: birds do not settle. All zero (nothing
-// written yet, or a desktop test) means no obstacles and no near fade.
+// lane (aux[2].z) is ignored: birds do not settle; aux[2].w calms the
+// hands' scare (0 = full scare, 1 = the hands only push; stored as calm so
+// a caller that never writes it keeps the hawk). All zero (nothing written
+// yet, or a desktop test) means no obstacles and no near fade.
 
 const PI: f32 = 3.1415927;
 
@@ -487,6 +489,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // falloff, so a hand counts once however many joints it tracks.
     let sphere_count = min(bitcast<u32>(aux[XR_AUX_HEADER].home.x), XR_MAX_SPHERES);
     let head_row = aux[XR_AUX_HEAD].home;
+    // The app's hand calm (aux[2].w): 1 leaves the hands only their push
+    // (collide), 0 the full scare; the head keeps its own scare.
+    let hand_scare = 1.0 - clamp(aux[XR_AUX_HEADER + 1u].home.w, 0.0, 1.0);
     if pred_str > 0.01 {
         var flee = vec3f(0.0);
         var threat = 0.0;
@@ -495,7 +500,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             let dist2 = dot(away, away);
             if dist2 < HAND_RADIUS_M * HAND_RADIUS_M && dist2 > 1e-8 {
                 let dist = sqrt(dist2);
-                let falloff = 1.0 - smoothstep(0.0, HAND_RADIUS_M, dist);
+                let falloff = (1.0 - smoothstep(0.0, HAND_RADIUS_M, dist)) * hand_scare;
                 flee += away / dist * falloff;
                 threat = max(threat, falloff);
             }
