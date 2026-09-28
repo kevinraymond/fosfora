@@ -1306,6 +1306,14 @@ fn audio_thread(
         if read == 0 {
             continue;
         }
+        // A loopback device carries whatever an upstream app's DSP produced, NaN/Inf included,
+        // and one such sample permanently poisons every running sum and EMA downstream
+        // (loudness, the z-score normalizer). Silence it here, before anything reads it (#51).
+        for s in &mut read_buf[..read] {
+            if !s.is_finite() {
+                *s = 0.0;
+            }
+        }
         // Interleaved L,R off the capture ring — always even-length (ring L/R parity invariant).
         let stereo = &read_buf[..read];
 
@@ -1516,6 +1524,32 @@ pub(crate) mod tests {
                     approx_eq(g, e, 1e-5),
                     "hop {hop} feature {i} ({}): got {g}, expected {e}",
                     schema::FEATURES[i].name,
+                );
+            }
+        }
+    }
+
+    /// A burst of NaN/Inf from the capture device must not leave any feature non-finite, then
+    /// or afterwards: running sums (loudness) and EMAs (normalizer) never recover from one (#51).
+    #[test]
+    fn non_finite_samples_never_reach_the_features() {
+        const SR: f32 = 44100.0;
+        let mut signal = golden_signal(SR, 2.0);
+        for (i, s) in signal[40_000..40_064].iter_mut().enumerate() {
+            *s = match i % 3 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                _ => f32::NEG_INFINITY,
+            };
+        }
+        let frames = run_audio_thread_over(&signal, SR);
+        assert!(!frames.is_empty());
+        for (hop, f) in frames.iter().enumerate() {
+            for (i, v) in f.as_slice().iter().enumerate() {
+                assert!(
+                    v.is_finite(),
+                    "hop {hop} feature {i} ({}) is {v}",
+                    schema::FEATURES[i].name
                 );
             }
         }
