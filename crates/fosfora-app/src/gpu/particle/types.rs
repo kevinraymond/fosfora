@@ -1024,7 +1024,9 @@ fn default_render_mode() -> String {
 /// Supports "#RRGGBB" (alpha defaults to 0xFF) and "#RRGGBBAA".
 pub fn parse_hex_color(s: &str) -> u32 {
     let s = s.trim_start_matches('#');
-    let (r, g, b, a) = match s.len() {
+    // Byte-slicing below: a multibyte char at an odd offset would panic (#104).
+    let len = if s.is_ascii() { s.len() } else { 0 };
+    let (r, g, b, a) = match len {
         6 => {
             let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(0);
             let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(0);
@@ -1214,6 +1216,12 @@ mod tests {
         assert_eq!(parse_hex_color("#0000FF"), 0x0000FFFF);
         assert_eq!(parse_hex_color("#FFFFFF"), 0xFFFFFFFF);
         assert_eq!(parse_hex_color("#000000"), 0x000000FF);
+    }
+
+    #[test]
+    fn parse_hex_color_non_ascii_is_black_not_a_panic() {
+        assert_eq!(parse_hex_color("#é1234"), 0x000000FF);
+        assert_eq!(parse_hex_color("#aé12345"), 0x000000FF);
     }
 
     #[test]

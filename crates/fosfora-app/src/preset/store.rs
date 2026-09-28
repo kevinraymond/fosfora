@@ -376,12 +376,14 @@ impl PresetStore {
                 }
             })
             .collect();
-        let trimmed = sanitized.trim();
-        if trimmed.len() > 64 {
-            trimmed[..64].to_string()
-        } else {
-            trimmed.to_string()
-        }
+        // By characters: a byte slice panicked on a multibyte name (#104).
+        sanitized
+            .trim()
+            .chars()
+            .take(64)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
     }
 
     /// Serialize a preset, refusing one that would not load back. serde_json writes a
@@ -548,6 +550,15 @@ mod tests {
     fn sanitize_name_max_64_chars() {
         let long = "a".repeat(100);
         assert_eq!(PresetStore::sanitize_name(&long).len(), 64);
+    }
+
+    /// A user-typed multibyte name must truncate by character, not panic (#104).
+    #[test]
+    fn sanitize_name_truncates_multibyte_by_char() {
+        let long = format!("a{}", "é".repeat(100));
+        let got = PresetStore::sanitize_name(&long);
+        assert_eq!(got.chars().count(), 64);
+        assert!(got.starts_with("aé"));
     }
 
     #[test]

@@ -494,11 +494,7 @@ impl ApplicationHandler for FosforaApp {
                                                 } else if let Some(text) =
                                                     t.source.strip_prefix("text:")
                                                 {
-                                                    if text.len() > 8 {
-                                                        format!("{}...", &text[..8])
-                                                    } else {
-                                                        text.to_string()
-                                                    }
+                                                    ui::widgets::truncate_chars(text, 9)
                                                 } else if let Some(rest) =
                                                     t.source.strip_prefix("video:")
                                                 {
