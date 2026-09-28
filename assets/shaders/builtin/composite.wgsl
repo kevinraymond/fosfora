@@ -15,6 +15,21 @@ struct CompositeUniforms {
 @group(0) @binding(4) var<uniform> comp: CompositeUniforms;
 
 // --- Blend mode functions (operate per-channel in HDR) ---
+//
+// Screen, Overlay, Hard Light and Exclusion are 0..1 formulas: fed HDR values
+// they invert (Screen of 2 over 2 is 0, so bloom turned black) or go negative
+// (Exclusion of 2 over 2 is -4). They are evaluated on the 0..1 part of each
+// input, and the part above 1 passes through additively, as in Add. For inputs
+// in 0..1 that is exactly the classic formula; above it the result never drops
+// below the bright input's excess and never goes negative (#93).
+
+fn ldr(c: vec3f) -> vec3f {
+    return clamp(c, vec3f(0.0), vec3f(1.0));
+}
+
+fn hdr_excess(bg: vec3f, fg: vec3f) -> vec3f {
+    return max(bg - vec3f(1.0), vec3f(0.0)) + max(fg - vec3f(1.0), vec3f(0.0));
+}
 
 fn blend_normal(bg: vec3f, fg: vec3f) -> vec3f {
     return fg;
@@ -25,7 +40,9 @@ fn blend_add(bg: vec3f, fg: vec3f) -> vec3f {
 }
 
 fn blend_screen(bg: vec3f, fg: vec3f) -> vec3f {
-    return bg + fg - bg * fg;
+    let b = ldr(bg);
+    let f = ldr(fg);
+    return b + f - b * f + hdr_excess(bg, fg);
 }
 
 fn blend_color_dodge(bg: vec3f, fg: vec3f) -> vec3f {
@@ -46,11 +63,13 @@ fn blend_overlay_ch(bg: f32, fg: f32) -> f32 {
 }
 
 fn blend_overlay(bg: vec3f, fg: vec3f) -> vec3f {
+    let b = ldr(bg);
+    let f = ldr(fg);
     return vec3f(
-        blend_overlay_ch(bg.x, fg.x),
-        blend_overlay_ch(bg.y, fg.y),
-        blend_overlay_ch(bg.z, fg.z),
-    );
+        blend_overlay_ch(b.x, f.x),
+        blend_overlay_ch(b.y, f.y),
+        blend_overlay_ch(b.z, f.z),
+    ) + hdr_excess(bg, fg);
 }
 
 fn blend_hard_light_ch(bg: f32, fg: f32) -> f32 {
@@ -62,11 +81,13 @@ fn blend_hard_light_ch(bg: f32, fg: f32) -> f32 {
 }
 
 fn blend_hard_light(bg: vec3f, fg: vec3f) -> vec3f {
+    let b = ldr(bg);
+    let f = ldr(fg);
     return vec3f(
-        blend_hard_light_ch(bg.x, fg.x),
-        blend_hard_light_ch(bg.y, fg.y),
-        blend_hard_light_ch(bg.z, fg.z),
-    );
+        blend_hard_light_ch(b.x, f.x),
+        blend_hard_light_ch(b.y, f.y),
+        blend_hard_light_ch(b.z, f.z),
+    ) + hdr_excess(bg, fg);
 }
 
 fn blend_difference(bg: vec3f, fg: vec3f) -> vec3f {
@@ -74,7 +95,9 @@ fn blend_difference(bg: vec3f, fg: vec3f) -> vec3f {
 }
 
 fn blend_exclusion(bg: vec3f, fg: vec3f) -> vec3f {
-    return bg + fg - 2.0 * bg * fg;
+    let b = ldr(bg);
+    let f = ldr(fg);
+    return b + f - 2.0 * b * f + hdr_excess(bg, fg);
 }
 
 fn blend_subtract(bg: vec3f, fg: vec3f) -> vec3f {

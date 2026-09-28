@@ -530,8 +530,23 @@ mod tests {
         fg_pixels: &[u8],
         uniforms: CompositeUniforms,
     ) -> Vec<u8> {
-        let format = TextureFormat::Rgba8Unorm;
+        let fmt = (TextureFormat::Rgba8Unorm, 4);
+        probe_composite_as(device, queue, dim, fmt, fmt, bg_pixels, fg_pixels, uniforms)
+    }
 
+    /// [`probe_composite`] with explicit `(format, bytes per texel)` for the inputs
+    /// and the output — the HDR probe needs values above 1 on both sides.
+    #[allow(clippy::too_many_arguments)]
+    fn probe_composite_as(
+        device: &Device,
+        queue: &Queue,
+        dim: u32,
+        (in_format, in_bpp): (TextureFormat, u32),
+        (format, out_bpp): (TextureFormat, u32),
+        bg_pixels: &[u8],
+        fg_pixels: &[u8],
+        uniforms: CompositeUniforms,
+    ) -> Vec<u8> {
         let make_input = |label: &str, data: &[u8]| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -543,7 +558,7 @@ mod tests {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format,
+                format: in_format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
@@ -557,7 +572,7 @@ mod tests {
                 data,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(dim * 4),
+                    bytes_per_row: Some(dim * in_bpp),
                     rows_per_image: Some(dim),
                 },
                 wgpu::Extent3d {
@@ -649,7 +664,7 @@ mod tests {
 
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("probe-readback"),
-            size: (dim * dim * 4) as u64,
+            size: u64::from(dim * dim * out_bpp),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -673,7 +688,7 @@ mod tests {
                 buffer: &readback,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(dim * 4),
+                    bytes_per_row: Some(dim * out_bpp),
                     rows_per_image: Some(dim),
                 },
             },
@@ -696,6 +711,88 @@ mod tests {
         let data = slice.get_mapped_range().to_vec();
         readback.unmap();
         data
+    }
+
+    /// f32 → IEEE half bits, for the normal, exactly representable probe values
+    /// below (0, 0.25, 0.5, 2, …); not a general converter.
+    fn f16_bits(v: f32) -> u16 {
+        if v == 0.0 {
+            return 0;
+        }
+        let b = v.to_bits();
+        let sign = ((b >> 16) & 0x8000) as u16;
+        let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+        assert!((1..31).contains(&exp), "{v} is not a normal half");
+        sign | ((exp as u16) << 10) | ((b >> 13) & 0x3ff) as u16
+    }
+
+    /// Composite a uniform opaque `bg` under a uniform opaque `fg` in HDR
+    /// (Rgba16Float in, Rgba32Float out) and return the centre pixel's RGB.
+    fn hdr_blend(device: &Device, queue: &Queue, mode: u32, bg: f32, fg: f32) -> [f32; 3] {
+        let dim = 64;
+        let fill = |v: f32| -> Vec<u8> {
+            let px = [f16_bits(v), f16_bits(v), f16_bits(v), f16_bits(1.0)];
+            let bytes: Vec<u8> = px.iter().flat_map(|h| h.to_le_bytes()).collect();
+            bytes.repeat((dim * dim) as usize)
+        };
+        let out = probe_composite_as(
+            device,
+            queue,
+            dim,
+            (TextureFormat::Rgba16Float, 8),
+            (TextureFormat::Rgba32Float, 16),
+            &fill(bg),
+            &fill(fg),
+            CompositeUniforms {
+                blend_mode: mode,
+                opacity: 1.0,
+                displace_amount: 0.0,
+                _pad1: 0.0,
+            },
+        );
+        let i = ((dim / 2 * dim + dim / 2) * 16) as usize;
+        let f: &[f32] = bytemuck::cast_slice(&out[i..i + 12]);
+        [f[0], f[1], f[2]]
+    }
+
+    /// Screen, Overlay, Hard Light and Exclusion were 0..1 formulas run on HDR
+    /// values: Screen of 2 over 2 gave 0 (bloom turned black), Exclusion gave -4
+    /// (#93). Above 1 they must stay bright and non-negative; within 0..1 they
+    /// must still be the classic formulas.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored blend_modes_survive_hdr
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn blend_modes_survive_hdr_inputs() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let (screen, overlay, hard_light, exclusion) = (2, 5, 6, 8);
+
+        // (mode, bg, fg, expected). The 0..1 rows pin the classic formulas;
+        // the HDR rows are the 0..1 formula on the clamped part plus the
+        // excess above 1 of both inputs.
+        let cases = [
+            (screen, 0.25, 0.5, 0.625),
+            (overlay, 0.25, 0.5, 0.25),
+            (hard_light, 0.25, 0.5, 0.25),
+            (exclusion, 0.25, 0.5, 0.5),
+            (screen, 2.0, 2.0, 3.0),
+            (overlay, 2.0, 2.0, 3.0),
+            (hard_light, 2.0, 2.0, 3.0),
+            (exclusion, 2.0, 2.0, 2.0),
+            // Black over bright bloom leaves Screen and Exclusion untouched.
+            (screen, 2.0, 0.0, 2.0),
+            (exclusion, 2.0, 0.0, 2.0),
+        ];
+        for (mode, bg, fg, want) in cases {
+            let got = hdr_blend(&device, &queue, mode, bg, fg);
+            for c in got {
+                assert!(
+                    (c - want).abs() < 1e-3,
+                    "mode {mode}: bg {bg} fg {fg} gave {got:?}, expected {want}"
+                );
+            }
+        }
     }
 
     /// Background: a horizontal red ramp, so a pixel's red channel encodes the
