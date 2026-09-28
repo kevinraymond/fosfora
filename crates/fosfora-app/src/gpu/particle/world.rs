@@ -818,7 +818,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             pd.composite_decay.is_none(),
             "no feedback background, gain 1"
         );
-        assert_eq!(pd.max_count, 200_000);
+        assert_eq!(
+            pd.max_count, 40_000,
+            "a flock that holds 72 Hz (MEASURED.md)"
+        );
         assert_eq!(pd.max_scaled_count, 0);
         assert!((pd.emitter.radius - 1.5).abs() < 1e-6, "the 3 m cube");
         assert!((pd.initial_size - 0.012).abs() < 1e-6);
