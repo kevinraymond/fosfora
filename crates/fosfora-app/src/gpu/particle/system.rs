@@ -1638,6 +1638,13 @@ impl ParticleSystem {
             .collect()
     }
 
+    /// The `pos_life` buffer the last `dispatch` wrote (test probes read the
+    /// particles back from it).
+    #[cfg(test)]
+    pub(crate) fn pos_life_written(&self) -> &wgpu::Buffer {
+        &self.pos_life_buffers[1 - self.current]
+    }
+
     /// The spatial hash grid this system built, as `((width, height), depth)`:
     /// the values a sim compiled for it must carry in `SH_GRID_W/H/D`. `None`
     /// without particle interaction.

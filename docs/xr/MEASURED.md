@@ -705,6 +705,49 @@ worst. **Worn gate closed (Kevin, Sep 28): fine for now.** PR #183 merged.
 - **Not done:** the Meta XR Simulator glasses-input check (macOS only; this
   session is Linux). Logged, no effect on the decision.
 
+### C3b: Murmur in world space (`mode world`, `effect "Murmur XR World"`, 72 Hz, Sep 28)
+
+The port as delivered (PR #187: K=7 topological neighbors from the 3D hash,
+27 cells x `MAX_PER_CELL` 16 candidates per bird, hands as predators), 30 s
+runs, unworn, 52 hand spheres and 17 boxes reaching the sim:
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 100K | 25.1 / 34.7 | 33.3 | 748 of 1058 | 892 | No |
+| 150K | 47.5 / 68.7 | 17.3 | 400 of 617 | 1369 | No |
+| 200K | 80.5 / 108.5 | 10.9 | 257 of 422 | 1474 | No |
+| 300K | 123.8 / 134.4 | 7.1 | 192 of 315 | 1665 | No |
+
+About 0.25 ms per thousand birds, 5-10x over the frame at the brief's
+200K. A stripped scan (K=5, `MAX_PER_CELL` 2: 54 candidates, 8x fewer)
+is only about twice cheaper, so the per-bird fixed cost rules: 27 cell
+range lookups, two passes over the sphere block (predator, then collide),
+the neighbor positions re-read after the sort.
+
+| Particles, K=5 / 2 per cell | GPU ms (med / max) | frames/s | Long | Held? |
+|---|---|---|---|---|
+| 100K | 13.7 / 19.1 | 63.0 | 78 of 1703 | No |
+| 150K | 23.3 / 36.0 | 36.1 | 782 of 1086 | No |
+| 200K | 31.7 / 48.9 | 24.0 | 567 of 795 | No |
+
+Flux XR World at the same counts, for scale: 100K 3.4 ms, 150K 4.6, 200K
+5.9, 300K 8.7 (whole frame, 72 Hz throughout).
+
+**Decision (Kevin, Sep 28):** the port is not going to budget, and the
+product pivots to room-native effects (`ROOM_DESIGN.md`). Murmur ships
+small, as a flock that lives in the room and flees the hands, if it reads
+worn; the full scan stays (K=7, 16 per cell), with the roost 1 m ahead
+of the anchor and the head as a hawk (review fixes, `f898f07`):
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 30K | 9.2 / 9.9 | 72.0 | 0 of 2031 | 0 | Yes |
+| **40K (preset)** | **9.7 / 12.7** | **72.0** | **2 of 2024** | **17** | **Yes** |
+| 50K | 11.5 / 15.2 | 70.0 | 25 of 1956 | 126 | No |
+
+Worn gate: the flock keeps out of the face, splits around a hand and
+wheels around the desk.
+
 ## Hands-first interaction (I5)
 
 ### Pinch gestures, worn gate (Kevin, Sep 28, `mode world`, Flux XR World 400K, 72 Hz)
