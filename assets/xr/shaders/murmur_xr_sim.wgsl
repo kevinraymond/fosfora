@@ -49,6 +49,29 @@
 // hands' scare (0 = full scare, 1 = the hands only push; stored as calm so
 // a caller that never writes it keeps the hawk). All zero (nothing written
 // yet, or a desktop test) means no obstacles and no near fade.
+//
+// Per-hand lanes follow the obstacle block (board #3314: the hand's pose
+// picks its behavior; the app reads the pose). Every lane is stored so that
+// 0 is the behavior before the lanes existed:
+//   aux[163]            x = the left hand's sphere count (u32 bits): spheres
+//                       [0, x) are the left hand's, the rest the right's
+//   aux[164 + 3h]       hand h (0 left, 1 right): x = calm (1 - scare, times
+//                       aux[2].w's), y = still (>= 0.5: its spheres do not
+//                       push), z = kick calm (its kick is aux[2].y * (1 - z)),
+//                       w = hold strength 0..1 (0 = no hold)
+//   aux[165 + 3h]       the hold's center xyz, w radius (meters)
+//   aux[166 + 3h]       the hold's velocity xyz (m/s): the birds it holds
+//                       move with it; w = seconds since the hold began
+// A hold latches the birds inside its radius during its first
+// HOLD_CAPTURE_S, keeps them inside and carries them with the hand, and
+// lets them go when it ends (or when one falls HOLD_LOSE radii behind). The
+// heading is rebuilt every frame at cruise speed, so a contact alone only
+// parts the flock (MEASURED.md, "Why the hands never scoop"). The latch is
+// what makes it part of the flock: a hold open to every bird that crosses
+// it is a trap that cohesion keeps filling (a test hold at the roost took
+// 70-80 % of the flock in a second). A bird's holder rides in its life
+// lane, which every other reader tests only against 0: pos_life.w = 1 for a
+// free bird, 2 + h for one held by hand h.
 
 const PI: f32 = 3.1415927;
 
@@ -79,6 +102,16 @@ const HAND_RADIUS_M: f32 = 0.4;
 // The wearer's head (aux[0].xyz) is a hawk too, with a wider reach: birds
 // must not fly through the face, and the head is not in the obstacle block.
 const HEAD_RADIUS_M: f32 = 0.6;
+// Holds: a hold latches the free birds inside its radius during its first
+// HOLD_CAPTURE_S seconds; a held bird is steered back inward past HOLD_CORE
+// of the radius (HOLD_STEER, in target direction units: alignment is 1),
+// pulled in at HOLD_SPRING meters per second per meter off the core, carried
+// with the hold's velocity, and let go HOLD_LOSE radii from the center.
+const HOLD_CAPTURE_S: f32 = 0.15;
+const HOLD_CORE: f32 = 0.4;
+const HOLD_STEER: f32 = 4.0;
+const HOLD_SPRING: f32 = 2.0;
+const HOLD_LOSE: f32 = 2.0;
 
 // ---- XR inputs (aux layout: flux_xr_sim.wgsl) ----------------------------------
 
@@ -90,9 +123,22 @@ const XR_AUX_SPHERES: u32 = 3u;
 const XR_AUX_BOX_CENTER: u32 = 67u;   // XR_AUX_SPHERES + XR_MAX_SPHERES
 const XR_AUX_BOX_ROT: u32 = 99u;      // + XR_MAX_BOXES
 const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
+const XR_AUX_HANDS: u32 = 163u;       // + XR_MAX_BOXES
+const XR_AUX_HAND_ROWS: u32 = 3u;
+const XR_AUX_END: u32 = 170u;         // XR_AUX_HANDS + 1 + 2 * XR_AUX_HAND_ROWS
 
 // Fraction of the half extent over which opacity fades out toward the bounds.
 const XR_EDGE_FADE: f32 = 0.3;
+
+// The hand joint sphere k belongs to (0 left, 1 right).
+fn xr_sphere_hand(k: u32) -> u32 {
+    return select(1u, 0u, k < bitcast<u32>(aux[XR_AUX_HANDS].home.x));
+}
+
+// Hand h's behavior lanes: calm, still, kick calm, hold strength.
+fn xr_hand_lanes(h: u32) -> vec4f {
+    return aux[XR_AUX_HANDS + 1u + h * XR_AUX_HAND_ROWS].home;
+}
 
 // ---- random -------------------------------------------------------------------
 
@@ -143,6 +189,11 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
     let margin = header.w;
     let sphere_kick = aux[XR_AUX_HEADER + 1u].home.y;
     for (var k = 0u; k < sphere_count; k++) {
+        let lanes = xr_hand_lanes(xr_sphere_hand(k));
+        if lanes.y >= 0.5 {
+            continue;
+        }
+        let kick = sphere_kick * (1.0 - lanes.z);
         let s = aux[XR_AUX_SPHERES + k].home;
         let d = *pos - s.xyz;
         let r = s.w + margin;
@@ -158,7 +209,7 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
             // Bring the outward speed up to the kick, never beyond it: a
             // particle that stays inside the pad must not accumulate speed.
             let outward = dot(*vel, n);
-            *vel += n * max(sphere_kick - outward, 0.0);
+            *vel += n * max(kick - outward, 0.0);
         }
     }
     for (var k = 0u; k < box_count; k++) {
@@ -483,10 +534,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
     // --- Predators: the wearer's hands ---
     // Every hand-joint sphere repels within HAND_RADIUS_M of its center at a
-    // steady intensity of 1.0 (a hand is always a hawk). The joints act as
-    // one predator: the flight direction is the falloff-weighted sum of the
-    // directions away from each joint, the strength the nearest joint's
-    // falloff, so a hand counts once however many joints it tracks.
+    // steady intensity of its hand's scare (a fist is a hawk; an open or
+    // holding hand is calm). The joints act as one predator: the flight
+    // direction is the falloff-weighted sum of the directions away from each
+    // joint, the strength the nearest joint's falloff, so a hand counts once
+    // however many joints it tracks.
     let sphere_count = min(bitcast<u32>(aux[XR_AUX_HEADER].home.x), XR_MAX_SPHERES);
     let head_row = aux[XR_AUX_HEAD].home;
     // The app's hand calm (aux[2].w): 1 leaves the hands only their push
@@ -500,7 +552,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             let dist2 = dot(away, away);
             if dist2 < HAND_RADIUS_M * HAND_RADIUS_M && dist2 > 1e-8 {
                 let dist = sqrt(dist2);
-                let falloff = (1.0 - smoothstep(0.0, HAND_RADIUS_M, dist)) * hand_scare;
+                let calm = clamp(xr_hand_lanes(xr_sphere_hand(k)).x, 0.0, 1.0);
+                let falloff = (1.0 - smoothstep(0.0, HAND_RADIUS_M, dist)) * hand_scare * (1.0 - calm);
                 flee += away / dist * falloff;
                 threat = max(threat, falloff);
             }
@@ -533,14 +586,51 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
+    // --- Holds: latch, contain and carry (see the aux layout above). The
+    // steering keeps a held bird milling inside the radius with its
+    // neighbors; the spring and the hold's velocity go straight into the
+    // velocity, so the group moves with the hand however fast it goes.
+    // `holder` is 0 for a free bird, 1 + h for one held by hand h.
+    var holder = u32(clamp(life - 0.5, 0.0, 2.0));
+    for (var h = 0u; h < 2u; h++) {
+        let strength = clamp(xr_hand_lanes(h).w, 0.0, 1.0);
+        let base = XR_AUX_HANDS + 1u + h * XR_AUX_HAND_ROWS;
+        let hold = aux[base + 1u].home;
+        let d = distance(hold.xyz, pos);
+        let radius = max(hold.w, 0.02);
+        if holder == 1u + h && (strength <= 0.0 || d > radius * HOLD_LOSE) {
+            holder = 0u;
+        } else if holder == 0u && strength > 0.0 && d < radius
+            && aux[base + 2u].home.w < HOLD_CAPTURE_S {
+            holder = 1u + h;
+        }
+    }
+    var carry = vec3f(0.0);
+    var held = 0.0;
+    if holder > 0u {
+        let h = holder - 1u;
+        let base = XR_AUX_HANDS + 1u + h * XR_AUX_HAND_ROWS;
+        let strength = clamp(xr_hand_lanes(h).w, 0.0, 1.0);
+        let hold = aux[base + 1u].home;
+        let radius = max(hold.w, 0.02);
+        let to_c = hold.xyz - pos;
+        let d = length(to_c);
+        let rim = smoothstep(radius * HOLD_CORE, radius, d);
+        let inward = to_c / max(d, 1e-4);
+        target_vel += inward * HOLD_STEER * strength * rim;
+        carry = (aux[base + 2u].home.xyz + inward * d * HOLD_SPRING * rim) * strength;
+        held = strength;
+    }
+
     // --- Roost centering: steers the heading home, quadratic beyond the free
     // radius (in half extents, as the 2D sim's clip units). In target_vel so
-    // alignment consensus cannot overpower it.
+    // alignment consensus cannot overpower it. A held bird goes where the
+    // hand takes it.
     let to_roost = roost - pos;
     let roost_dist = length(to_roost);
     if roost_dist > ROOST_FREE_M {
         let excess = (roost_dist - ROOST_FREE_M) / half;
-        target_vel += to_roost / roost_dist * excess * excess * 3.0;
+        target_vel += to_roost / roost_dist * excess * excess * 3.0 * (1.0 - held);
     }
 
     // --- Bounds: soft repulsion from each face within BOUNDS_BAND_M (the 2D
@@ -572,7 +662,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let per_bird = 0.85 + uhash_f(idx ^ 0x2545f491u) * 0.3;
     let beat_pulse = 1.0 + sin(u.beat_phase * PI * 2.0) * 0.08;
     let speed = clamp(base_spd * centroid_mod * flux_mod * per_bird * beat_pulse, base_spd * 0.5, base_spd * 2.5);
-    var vel = new_dir * speed;
+    // A hold's carry rides on top: the next frame's heading turns with it.
+    var vel = new_dir * speed + carry;
 
     // Integrate, then push out of hands, furniture and the floor. The
     // reflected velocity is next frame's heading: a bird that meets a table
@@ -637,7 +728,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     col += rim_color * edge_factor * rim_intensity * 0.12;
     col = clamp(col, vec3f(0.0), vec3f(0.35));
 
-    p.pos_life = vec4f(pos, 1.0);
+    p.pos_life = vec4f(pos, 1.0 + f32(holder));
     p.vel_size = vec4f(vel, size);
     p.color = vec4f(col, alpha);
     p.flags = vec4f(new_age, max_life, init_size, p.flags.w);  // preserve birth time

@@ -15,6 +15,7 @@ use crate::gfx::Gfx;
 use crate::hud::{Action, Controls, FrameWindow, Hud, View};
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback, PlaybackOptions};
+use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
@@ -32,6 +33,10 @@ const DEFAULT_EFFECT: &str = "Flux";
 /// C3b: the world-layout effect `mode world` runs unless
 /// `debug.fosfora.effect` names another.
 const DEFAULT_WORLD_EFFECT: &str = "Flux XR World";
+/// The world effects that read the per-hand lanes (board #3314): there the
+/// hand's pose picks its behavior and its pad. The others keep one behavior
+/// for every hand (Flux XR World's worn-approved pad and kick).
+const POSE_EFFECTS: [&str; 1] = ["Murmur XR World"];
 const NOMINAL_FPS: u32 = 72;
 /// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
 /// the particles sit in front of it and half behind (the depth gate).
@@ -192,6 +197,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
     //   adb shell setprop debug.fosfora.handscare 1              (Murmur: hand predator strength 0..1; 0 = hands only push)
+    //   adb shell setprop debug.fosfora.poses 0|1                (Murmur: the hand's pose picks its behavior: fist = predator with handpad/handkick,
+    //       open = push only with openpad/openkick, palm to the ceiling or two palms facing close together = hold; default on;
+    //       0 = every hand a predator, as before)
+    //   adb shell setprop debug.fosfora.openpad 0.05             (Murmur: an open hand's pad, m)
+    //   adb shell setprop debug.fosfora.openkick 0.1             (Murmur: an open hand's kick, m/s)
+    //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -273,6 +284,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let hand_scare = debug_prop("debug.fosfora.handscare")
         .and_then(|v| v.parse::<f32>().ok())
         .map_or(1.0, |v| v.clamp(0.0, 1.0));
+    // Board #3314: hand poses for Murmur (`pose.rs`).
+    let poses_on = toggle("debug.fosfora.poses", true);
+    let knob = |name: &str, default: f32| {
+        debug_prop(name)
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(default)
+    };
+    let open_pad = knob("debug.fosfora.openpad", crate::pose::OPEN_PAD_M);
+    let open_kick = knob("debug.fosfora.openkick", crate::pose::OPEN_KICK_M_S);
+    let hold_radius = knob("debug.fosfora.holdradius", crate::pose::HOLD_RADIUS_M);
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -592,6 +613,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the last log line.
     let mut reach_now: [Option<crate::reach::HandReach>; 2] = [None; 2];
     let mut reach_max = [(0.0f32, 0.0f32); 2];
+    // Hand poses: the detector, each lane row's hold, what was last logged,
+    // and each hand's curl range and highest palm up-ness since the last
+    // log line (the readings the thresholds are tuned on).
+    let mut poses = Poses::default();
+    let mut holds = [HoldTrack::default(); 2];
+    let mut pose_logged = (Default::default(), false);
+    let mut curl_range = [(f32::MAX, 0.0f32); 2];
+    let mut up_max = [f32::MIN; 2];
+    // Each hand's pose for the debug panel's hands line, and the one-line
+    // summary for the log.
+    let mut pose_text = [String::from("open"), String::from("open")];
+    let mut pose_label = String::from("-");
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
     let floor_box = floor.then_some(ObstacleBox {
         center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
@@ -789,6 +822,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         beat: beat_env,
                         audio: &audio_source,
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
+                        pose: &pose_text,
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -860,17 +894,131 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         reach_max[h].1 = reach_max[h].1.max(r.virtual_m);
                     }
                 }
+                // Hand poses (board #3314): read on the real hand, acting
+                // at the far hand. Only the effects that read the lanes get
+                // a behavior per pose; elsewhere every hand is the hawk.
+                let pose_frame = poses.step(
+                    [0, 1].map(|h| HandInput {
+                        palm: input.hands.palm[h]
+                            .map(|(p, q)| (glam::Vec3::from(p), glam::Quat::from_array(q))),
+                        tips: input.hands.finger_tips[h].map(|t| t.map(glam::Vec3::from)),
+                    }),
+                    dt,
+                );
+                let poses_apply = poses_on
+                    && world
+                    && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                let tuning = Tuning {
+                    fist_pad: controls.hand_pad,
+                    fist_kick: controls.hand_kick,
+                    open_pad,
+                    open_kick,
+                    hold_radius,
+                };
+                let plans = if poses_apply {
+                    let far_palm = [0, 1].map(|h| {
+                        input.hands.palm[h].map(|(p, q)| {
+                            (
+                                glam::Vec3::from(p) + offsets[h],
+                                glam::Quat::from_array(q) * glam::Vec3::NEG_Y,
+                            )
+                        })
+                    });
+                    crate::pose::decide(&pose_frame, far_palm, panel_up, &tuning)
+                } else {
+                    [Plan::hawk(&tuning); 2]
+                };
+                for h in 0..2 {
+                    if let Some(c) = pose_frame.curl[h] {
+                        curl_range[h] = (curl_range[h].0.min(c), curl_range[h].1.max(c));
+                    }
+                    if let Some(u) = pose_frame.up[h] {
+                        up_max[h] = up_max[h].max(u);
+                    }
+                }
+                let seen = (pose_frame.pose, pose_frame.together);
+                if poses_apply && seen != pose_logged {
+                    pose_logged = seen;
+                    let reading = |v: Option<f32>| v.map_or("-".to_owned(), |v| format!("{v:.3}"));
+                    info!(
+                        "pose: L {} · R {} · together {} (curl L {} R {} m · up L {} R {} · palms {} m apart{})",
+                        pose_name(pose_frame.pose[0]),
+                        pose_name(pose_frame.pose[1]),
+                        if pose_frame.together { "yes" } else { "no" },
+                        reading(pose_frame.curl[0]),
+                        reading(pose_frame.curl[1]),
+                        reading(pose_frame.up[0]),
+                        reading(pose_frame.up[1]),
+                        reading(pose_frame.apart_m),
+                        if panel_up { " · menu up" } else { "" }
+                    );
+                }
+                let mut behaviors = [Behavior::before_lanes(controls.hand_kick); 2];
+                for h in 0..2 {
+                    let (hold, ended) = holds[h].update(plans[h].hold, dt);
+                    if let Some((kind, secs, travel)) = ended {
+                        info!(
+                            "hold {} ({kind:?}) ended after {secs:.1} s, carried {travel:.2} m",
+                            hand_name(h)
+                        );
+                    }
+                    if let Some(hold) = hold.filter(|h| h.age_s == 0.0) {
+                        info!(
+                            "hold {} began: center ({:.2}, {:.2}, {:.2}) radius {:.2} m",
+                            hand_name(h),
+                            hold.center.x,
+                            hold.center.y,
+                            hold.center.z,
+                            hold.radius
+                        );
+                    }
+                    let p = plans[h];
+                    behaviors[h] = Behavior {
+                        scare: p.scare,
+                        push: p.push,
+                        kick: p.kick,
+                        hold,
+                    };
+                }
+                pose_text = [0, 1].map(|h| {
+                    if !poses_apply {
+                        return "open".to_owned();
+                    }
+                    let pose = if pose_frame.together {
+                        "together"
+                    } else {
+                        pose_name(pose_frame.pose[h])
+                    };
+                    let hold = holds[h]
+                        .current()
+                        .map_or(String::new(), |(_, s)| format!(" hold {s:.1} s"));
+                    format!("{pose}{hold}")
+                });
+                pose_label = if poses_apply {
+                    format!("L {}   R {}", pose_text[0], pose_text[1])
+                } else {
+                    "off (every hand a predator)".to_owned()
+                };
+                let lanes = crate::pose::lane_rows(
+                    u32::try_from(input.hands.sphere_count[0]).unwrap_or(0),
+                    behaviors,
+                    controls.hand_kick,
+                    glam::Vec3::from(anchor),
+                );
+                // The occluder shrink is one value for every sphere: the
+                // smallest pad, so no occluder is smaller than its joint.
+                let min_pad = plans[0].pad.min(plans[1].pad);
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
-                    (controls.hand_pad - hand_occ).max(0.0),
+                    (min_pad - hand_occ).max(0.0),
                     controls.hand_kick,
                 );
                 let mut ghost = Vec::new();
                 for (i, s) in input.hands.spheres.iter().enumerate() {
                     let h = usize::from(i >= input.hands.sphere_count[0]);
                     let c = glam::Vec3::new(s[0], s[1], s[2]) + offsets[h];
-                    set.push_sphere([c.x, c.y, c.z, s[3] + controls.hand_pad]);
+                    set.push_sphere([c.x, c.y, c.z, s[3] + plans[h].pad]);
                     if offsets[h].length() > REACH_GHOST_M {
                         ghost.push([c.x, c.y, c.z, REACH_GHOST_RADIUS_M]);
                     }
@@ -913,6 +1061,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         controls.gravity,
                         controls.hand_scare,
                         &set,
+                        &lanes,
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1055,6 +1204,37 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     );
                 }
                 reach_max = [(0.0, 0.0); 2];
+                // Hand poses: each hand's curl range and highest palm
+                // up-ness this second, against the thresholds.
+                if curl_range.iter().any(|r| r.0 < f32::MAX) {
+                    let range = |r: (f32, f32)| {
+                        if r.0 == f32::MAX {
+                            "-".to_owned()
+                        } else {
+                            format!("{:.3}..{:.3}", r.0, r.1)
+                        }
+                    };
+                    let up = |u: f32| {
+                        if u == f32::MIN {
+                            "-".to_owned()
+                        } else {
+                            format!("{u:.2}")
+                        }
+                    };
+                    info!(
+                        "poses: curl L {} R {} m (fist under {}, open over {}) · up max L {} R {} (palm up over {}) · {}",
+                        range(curl_range[0]),
+                        range(curl_range[1]),
+                        crate::pose::FIST_ON_M,
+                        crate::pose::FIST_OFF_M,
+                        up(up_max[0]),
+                        up(up_max[1]),
+                        crate::pose::PALM_UP_ON,
+                        pose_label
+                    );
+                }
+                curl_range = [(f32::MAX, 0.0); 2];
+                up_max = [f32::MIN; 2];
                 let mm = |d: f32| {
                     if d == f32::MAX {
                         "-".to_owned()
@@ -1271,6 +1451,11 @@ impl FrameStats {
         self.cpu_max = self.cpu_max.max(cpu);
         self.cpu_n += 1;
     }
+}
+
+/// A pose for the log and the panel: `lost` for an untracked hand.
+fn pose_name(pose: Option<Pose>) -> &'static str {
+    pose.map_or("lost", Pose::label)
 }
 
 fn hand_name(h: usize) -> &'static str {

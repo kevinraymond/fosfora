@@ -49,6 +49,8 @@
 //   aux[67..99]     box centers (xyz)
 //   aux[99..131]    box rotations, quaternion box -> world (x, y, z, w)
 //   aux[131..163]   box half extents (xyz)
+//   aux[163..170]   Murmur's per-hand behavior lanes (murmur_xr_sim.wgsl;
+//                   unused here)
 // All zero (nothing written yet, or a desktop test) means no obstacles and
 // no near fade.
 

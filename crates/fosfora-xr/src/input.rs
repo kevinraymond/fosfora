@@ -52,6 +52,9 @@ pub struct HandsFrame {
     /// Index knuckle (proximal joint): the debug panel's ray passes
     /// through it.
     pub index_knuckle: [Option<[f32; 3]>; 2],
+    /// Index, middle, ring and little fingertips, where all four were
+    /// located (hand poses, `pose.rs`).
+    pub finger_tips: [Option<[[f32; 3]; 4]>; 2],
     /// Skinning matrices for the hand meshes, valid where `mesh_ready`.
     pub skins: HandSkins,
     /// The hand has a mesh and every joint was located this frame.
@@ -227,6 +230,20 @@ impl Hands {
             if valid(tip) {
                 let p = tip.pose.position;
                 frame.index_tip[h] = Some([p.x, p.y, p.z, tip.radius]);
+            }
+
+            let tips = [
+                xr::HandJoint::INDEX_TIP,
+                xr::HandJoint::MIDDLE_TIP,
+                xr::HandJoint::RING_TIP,
+                xr::HandJoint::LITTLE_TIP,
+            ]
+            .map(|j| &joints[j.into_raw() as usize]);
+            if tips.iter().all(|j| valid(j)) {
+                frame.finger_tips[h] = Some(tips.map(|j| {
+                    let p = j.pose.position;
+                    [p.x, p.y, p.z]
+                }));
             }
 
             let thumb = &joints[xr::HandJoint::THUMB_TIP.into_raw() as usize];
