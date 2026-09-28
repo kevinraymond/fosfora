@@ -7,8 +7,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Read-only by default; only the publish job below creates the GitHub release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -254,6 +255,8 @@ jobs:
     name: Publish Release
     needs: [build, universal-macos]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
