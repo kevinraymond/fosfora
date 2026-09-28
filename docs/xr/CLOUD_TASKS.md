@@ -419,3 +419,301 @@ the brief below is for Flux and says what changes for the other two.*
 > stays 2D-free), a murmuration in the room at ~200K; Tide's water height
 > becomes real `y` and the sheet pours onto a horizontal plane at the anchor
 > and onto the room's table boxes through the obstacle block.
+
+## C3c: 3D spatial hash in core (against `main`, before Murmur)
+
+*Why a core change: Murmur's topological K=7 neighbors need a neighbor
+query in three dimensions, and core's spatial hash
+(`gpu/particle/spatial_hash.rs`, the three `builtin/spatial_hash_*.wgsl`
+passes, the `sh_*` helpers in `particle_lib.wgsl`) bins `pos_life.xy` over
+clip space only. Binning a world-layout sim through it would clamp every
+position beyond ±1 m to an edge cell and ignore depth entirely. Like C3a,
+this is a small addition to shared structure, so it lands on `main` as its
+own PR and `xr` merges it. Three desktop effects use the hash today (Murmur,
+Symbiosis, Genesis) and `water.rs` patches its grid width; none of them may
+change.*
+
+> Before anything else, set the git identity for this clone:
+> `git config user.name "Kevin Raymond" && git config user.email "kjraym@gmail.com"`.
+> Every commit in this session is authored and committed under that identity,
+> with no `Co-Authored-By`, `Claude-Session` or similar trailers, and no
+> "Generated with" lines or model names anywhere (commits, PR title, PR
+> body). `CLAUDE.md` says the same; it overrides your defaults.
+>
+> You are working in the Fosfora repo on a new branch `xr-hash-3d` cut from
+> `main` (not from `xr`). Fosfora is a real-time audio-reactive visual
+> engine: about 130K lines of Rust in `crates/fosfora-app`, wgpu 27,
+> toolchain pinned at 1.97.0. Read `CLAUDE.md`, `ARCHITECTURE-NOTES.md` and
+> `.github/workflows/ci.yml` first. Don't commit anything under `docs/xr/`
+> or `crates/fosfora-xr/`; don't touch `ui/`, `app.rs` or `main.rs`.
+>
+> **Background.** `SpatialHashGrid` (`crates/fosfora-app/src/gpu/particle/spatial_hash.rs`)
+> is a count / prefix-sum / scatter pipeline over a `GRID_W x GRID_H` grid
+> that maps `pos_life.xy` in clip space [-1,1]² to cells
+> (`builtin/spatial_hash_count.wgsl`, `spatial_hash_scatter.wgsl`,
+> `spatial_hash_prefix_sum.wgsl`; the grid constants are patched into the
+> source by `patch_grid_constants`, and into the sim's `particle_lib.wgsl`
+> `SH_GRID_W/H` by `effect/loader.rs`). A sim opts in with
+> `"interaction": true` in its `.pfx` and queries neighbors with
+> `sh_pos_to_cell(vec2f)` and `sh_cell_range(gx, gy)` over group 3.
+> `grid_dims` sizes the grid for ~16 particles per cell, clamped to
+> [40, 256] (or the `.pfx`'s `grid_max`). World-layout sims (documented
+> under "World layout" in `assets/shaders/lib/particle_lib.wgsl`) keep
+> `pos_life.xyz` in meters within ±`emitter_radius` of an anchor; a Quest
+> murmuration (a later branch) needs K-nearest neighbors in that volume.
+>
+> **Goal:** a 3D mode of the same spatial hash, opt-in per effect, with
+> zero behavior change for every effect that does not opt in.
+>
+> **Invariants**
+> - Every command in `ci.yml` passes unchanged, every clippy feature set,
+>   `-D warnings`, workspace pedantic lints; `cargo deny check` passes. No
+>   new dependencies. No new `unsafe` (if one is needed it gets a
+>   `// SAFETY:` comment).
+> - `AudioFeatures` ABI and golden vectors untouched.
+> - The 2D hash is byte-identical in behavior: the three existing hash
+>   shaders and the `sh_pos_to_cell` / `sh_cell_range` helpers do not
+>   change; Murmur, Symbiosis and Genesis load and step exactly as before
+>   (their `.pfx` files are untouched). `water.rs` keeps its patch.
+> - The `Particle` layout, `ParticleUniforms` and the `.pfx` semantics of
+>   every existing field are unchanged.
+> - US English spelling.
+>
+> **Tasks**
+> 1. **Preset field.** `"interaction_3d": true` on the particle block
+>    (`ParticleDef` in `gpu/particle/types.rs`, `#[serde(default)]`,
+>    implies `interaction`). Document it beside `interaction` and
+>    `grid_max`: cells cover the cube within ±`emitter_radius` meters of
+>    the anchor on all three axes (the world layout's volume), so a sim
+>    that opts in must keep `pos_life.xyz` in meters.
+> 2. **Grid sizing.** `grid_dims_3d(max_particles, grid_max)`: one edge
+>    `d = cbrt(max_particles / 16)`, clamped to [8, 64] (or `grid_max`),
+>    `num_cells = d³`. 200K particles give 23³ = 12,167 cells. The Blelloch
+>    scan in `spatial_hash_prefix_sum.wgsl` chunks `NUM_CELLS` over one
+>    workgroup, so it already handles any count; check it, don't assume.
+> 3. **Count and scatter.** New files `builtin/spatial_hash_count_3d.wgsl`
+>    and `builtin/spatial_hash_scatter_3d.wgsl` (the 2D files stay
+>    byte-identical). Same bindings as the 2D pair; the `Uniforms` struct
+>    extends the prefix it already mirrors far enough to read
+>    `emitter_radius` from the live `ParticleUniforms` (same buffer, same
+>    offsets; add a `const _` or a test that pins the offset). Cell =
+>    `clamp(u32((pos.xyz / extent * 0.5 + 0.5) * GRID_D), 0, GRID_D-1)` per
+>    axis, index `(z * GRID_D + y) * GRID_D + x`, with `extent =
+>    max(u.emitter_radius, 1e-3)`. `SpatialHashGrid::new` takes the mode
+>    (an enum, not a bool) and picks the pair and the dims; `dispatch` is
+>    unchanged.
+> 4. **Query helpers.** In `particle_lib.wgsl`, after the 2D helpers:
+>    `const SH_GRID_D: u32 = 1u;` (patched like `SH_GRID_W/H`, stays 1 for
+>    2D effects), `fn sh_pos_to_cell_3d(pos: vec3f, extent: f32) -> vec3i`
+>    and `fn sh_cell_range_3d(c: vec3i) -> vec2u` (out of range → (0, 0)),
+>    both using the same mapping and index order as the count pass. The 2D
+>    helpers keep their bodies. `effect/loader.rs` patches `SH_GRID_D`
+>    where it patches `SH_GRID_W/H` (both places).
+> 5. **Tests** on the headless device (`headless/gpu.rs`; software Vulkan
+>    is in CI):
+>    - a `#[cfg(test)]` sim (or a test `.pfx` + WGSL under the pattern the
+>      C3a tests in `gpu/particle/world.rs` use) with `interaction_3d`,
+>      eight particles at the corners of a ±0.5 m cube plus one at the
+>      origin, `emitter_radius` 1.0: after one `dispatch`, read back
+>      `cell_counts` and `sorted_indices` and assert each corner sits in
+>      its own cell at the expected index, the origin in the center cell,
+>      and the counts sum to 9.
+>    - the sim side: a query from a corner particle through
+>      `sh_cell_range_3d` over its 27-cell neighborhood finds exactly the
+>      origin particle when the grid edge is small enough, and nothing
+>      when it is not (pick two `grid_max` values that make that true).
+>    - a regression guard: `grid_dims` for the 2D path returns what it
+>      returned before for 40K, 200K and 1.2M particles, and the three
+>      2D hash shader sources still contain their `const GRID_W: u32 = 40u;`
+>      anchors.
+>
+> **Deliverable:** one PR against `main`, CI green, the commit body carrying
+> the rationale (why a separate 3D pair, why `emitter_radius` is the extent,
+> why the 2D path is untouched). No `CHANGELOG.md` entry: nothing user-facing
+> changes until a 3D effect ships. Do not mention any event, deadline or
+> prize anywhere.
+>
+> Before opening the PR, verify: `git log --format='%an <%ae> / %cn <%ce>' main..HEAD`
+> shows only `Kevin Raymond <kjraym@gmail.com>` on every line, and
+> `git log --format=%B main..HEAD | grep -iE 'co-authored|claude|anthropic|generated'`
+> prints nothing. If either check fails, rewrite the commits
+> (`git rebase` / `git commit --amend --reset-author`) until both pass, then
+> re-run both checks and paste their output at the end of your final report.
+> The PR body follows `.github/PULL_REQUEST_TEMPLATE.md` if there is one and
+> contains no model names or session links.
+
+Then Kevin merges (squash), `xr` merges `main`, and C3b Murmur starts.
+
+## C3b Murmur: the murmuration in the room (after C3c)
+
+*Same shape as the Flux port. It inherits everything the Flux world path
+built on `xr`: `mode world`, the `debug.fosfora.effect` knob, the aux
+obstacle block with the head, the settle drift lane, hand spheres and room
+boxes, the near fade, and the eye-pass hook (`prepare_world` before the eye
+pass, `draw_world` inside it). Nothing in `crates/fosfora-xr` should need to
+change; if it does, it is one knob default at most.*
+
+> Before anything else, set the git identity for this clone:
+> `git config user.name "Kevin Raymond" && git config user.email "kjraym@gmail.com"`.
+> Every commit in this session is authored and committed under that identity,
+> with no `Co-Authored-By`, `Claude-Session` or similar trailers, and no
+> "Generated with" lines or model names anywhere (commits, PR title, PR
+> body). `CLAUDE.md` says the same; it overrides your defaults.
+>
+> You are working in the Fosfora repo on branch `xr`, in a new branch
+> `xr-murmur-world` cut from it. Fosfora is a real-time audio-reactive
+> visual engine (`crates/fosfora-app`, ~130K lines of Rust, wgpu 27,
+> toolchain pinned at 1.97.0) with a Quest 3 build in `crates/fosfora-xr`.
+> Read `CLAUDE.md`, `ARCHITECTURE-NOTES.md`, `docs/xr/XR_DESIGN.md`
+> (sections "World-space particles (S5)" and "Mixed reality (S7)"),
+> `docs/xr/MEASURED.md` (sections "Mixed reality (S7)" and "C3b: Flux in
+> world space") and `.github/workflows/ci.yml` first. You have no device;
+> the person who dispatched you runs the result on a Quest 3 and fills in
+> the numbers.
+>
+> **Background.** The Flux world port is the template: read
+> `assets/xr/shaders/flux_xr_sim.wgsl` and `assets/xr/effects/flux_xr_world.pfx`
+> end to end before writing anything, and `crates/fosfora-xr/src/scene.rs`
+> (`new_world`, `set_world_inputs`) for what the app feeds the sim. The
+> aux buffer's first 163 rows carry the XR inputs (head + near-fade radius,
+> the obstacle header with restitution / margin / hand kick / settle drift,
+> 64 hand-joint spheres, 32 room boxes), so a world sim cannot keep
+> per-particle state in `aux`; it has `flags.zw` (Flux uses them for the
+> initial radius and the base opacity). Desktop Murmur
+> (`assets/shaders/murmur_sim.wgsl`, `assets/effects/murmur.pfx`) is 2D
+> boids over the spatial hash: K=7 topological neighbors from a 9-cell
+> scan, Vicsek noise driven by bass, adaptive separation, a predator on
+> onsets and kicks, roost centering, a heading angle in `flags.z`, birth
+> time in `flags.w`, initial size in `pos_life.z`, dark silhouettes with a
+> key-tinted rim light, drawn through the compute raster with a velocity
+> field and a history (streak) pass. The `main` merge that brought C3c
+> gives core a 3D spatial hash: `"interaction_3d": true` in the `.pfx`,
+> `sh_pos_to_cell_3d(pos, extent)` and `sh_cell_range_3d(cell)` in
+> `particle_lib.wgsl`, cells over ±`emitter_radius` on all three axes.
+>
+> **Measured facts that shape this port (Quest 3, `docs/xr/MEASURED.md`):**
+> - Flux in world space at 400K costs 9.3–10.7 ms at 72 Hz with the room,
+>   hands and passthrough on; its sim is ~3.3 ms at 300K (two 3D flow
+>   samples, two noise lookups, a 69-obstacle collide loop) and the draw
+>   ~5.8 ms. The frame budget at 72 Hz is 13.9 ms. Murmur's neighbor scan
+>   is the expensive part: 27 cells × up to `MAX_PER_CELL` candidates per
+>   bird per frame. Plan for **200K birds** and make the per-cell cap and
+>   K constants at the top of the file, so a device sweep can trade them.
+> - The wearer stands inside the volume: the flock must look right from
+>   inside, and the near fade (0.15 m around the head) already handles
+>   sprites at the eyes.
+> - `render_world` has an alpha pipeline (`blend: "alpha"`): the fragment
+>   writes straight color and alpha over a target cleared to alpha 0, which
+>   composites as a premultiplied layer over passthrough. Dark birds with
+>   alpha ~0.9 therefore read as **dark silhouettes against the real
+>   room**, which is the look: keep the desktop's near-black palette and
+>   the rim light, drop the twilight sky.
+>
+> **Goal (Murmur):** an XR variant of Murmur whose flock lives in meters
+> around the wearer, avoids the wearer's hands as predators, wheels around
+> the room's furniture, and renders through `render_world`, with zero
+> change to desktop Murmur or any shared shader, pipeline or `.pfx`
+> semantics.
+>
+> **Invariants**
+> - Every command in `ci.yml` passes unchanged (fmt, clippy per feature set
+>   with `-D warnings`, tests), workspace pedantic lints, `cargo deny check`.
+>   No new dependencies. `scripts/xr/run.sh lint` (Android clippy for
+>   `fosfora-xr`) passes; install the `aarch64-linux-android` target and
+>   `cargo-ndk`.
+> - `AudioFeatures` ABI and golden vectors untouched. Desktop sims, the 2D
+>   render path, the spatial hash, `ui/`, `app.rs`, `main.rs` untouched.
+>   `assets/shaders/murmur_sim.wgsl`, `murmur_history.wgsl`, `murmur_bg.wgsl`
+>   and `assets/effects/murmur.pfx` byte-identical. Nothing under
+>   `docs/xr/` changes except a MEASURED.md row left for the device run.
+> - No core change. If the port needs one, stop and write the smallest
+>   API you would add in the PR body instead of adding it.
+> - Every new `unsafe` block has a `// SAFETY:` comment (none expected).
+> - US English spelling. No mention of any event, deadline or prize.
+>
+> **Tasks**
+> 1. **Sim variant** `assets/xr/shaders/murmur_xr_sim.wgsl`, from the
+>    desktop sim, in the world layout:
+>    - `pos_life.xyz` meters relative to the anchor in the same 3 m cube
+>      as Flux (`emitter.radius` 1.5, read as `u.emitter_radius`);
+>      `vel_size.xyz` m/s, `vel_size.w` sprite radius in meters.
+>    - **Heading is the velocity direction** (`normalize(vel_size.xyz)`),
+>      not a stored angle: every steering term, including the boundary and
+>      roost terms, goes into `target_vel` before the heading low-pass, and
+>      the low-pass runs on the unit vector (slerp-free: normalize the
+>      blend, keep `frame_diffuse` for the rate). That frees `flags.z` for
+>      the initial size (was `pos_life.z`) and keeps `flags.w` as birth
+>      time. Per-bird speed variation stays a hash of `idx`.
+>    - **Neighbors** from `sh_cell_range_3d` over the 27 cells around
+>      `sh_pos_to_cell_3d(pos, u.emitter_radius)`, center cell first, the
+>      same K=7 insertion sort, `MAX_PER_CELL` 16 to start; alignment from
+>      neighbor velocity directions, cohesion toward their center of mass,
+>      the adaptive separation from the K-th distance, the edge factor, all
+>      as the 2D sim does but in 3D.
+>    - **Roost** at the anchor plus 0.5 m up (eye height for a standing
+>      wearer), quadratic beyond 0.5 m as today; **bounds** a soft
+>      repulsion within 0.3 m of the cube's faces (the 2D edge term per
+>      axis) and the Flux respawn when a bird still leaves.
+>    - **Vicsek noise** as a random unit-vector perturbation of the target
+>      direction with the same `eta` from bass; use `xr_rand3` /
+>      `uhash` (copy them from the Flux sim), never fract-sin on `idx`.
+>    - **Predators: the hands.** Copy the aux layout constants and
+>      `xr_collide()` from the Flux sim verbatim. Every hand-joint sphere
+>      in the block repels birds within 0.4 m of it, weighted by
+>      `predator_strength()` and a steady 1.0 intensity (a hand is always a
+>      hawk), added to `target_vel` before the heading low-pass; the
+>      audio predator keeps its onset/kick intensity and becomes a 3D
+>      Lissajous around the roost with strikes into the flock. `xr_collide`
+>      then runs as in Flux so no bird passes through a hand, a table or
+>      the floor (the room boxes are hard obstacles; a bird that touches
+>      one slides). Ignore the settle drift lane (`aux[2].z`): birds do not
+>      settle. Emission near a donor bird uses the 3D probe cell.
+>    - **Look**: dark silhouette colors from the preset's gradient, alpha
+>      0.9 with the spawn fade and the opacity curve, the rim light from
+>      the edge factor and `dominant_chroma`, the near fade around the
+>      head and the edge fade toward the bounds exactly as Flux does them
+>      (opacity evaluated from the base each frame, never compounded).
+>      No depth-based sizing (depth is real now); size from `flags.z`,
+>      neighbor density and rms as today, in meters.
+> 2. **Hidden preset** `assets/xr/effects/murmur_xr_world.pfx` beside the
+>    Flux one: `"interaction": true, "interaction_3d": true`, `blend:
+>    "alpha"`, `render_mode: "billboard"`, `velocity_field: false`, no
+>    velocity or history passes (keep only `background`, as the Flux preset
+>    does), `max_count` 200000, `emit_rate` sized so the flock fills in
+>    ~4 s, `emitter.radius` 1.5, `initial_size` 0.012 m, `size_end` 0.012,
+>    `lifetime` 15, the same inputs and audio mappings as desktop, and
+>    `"hidden": true`. The gradle staging and `assets.rs` pick it up from
+>    the directory; check they do.
+> 3. **Drive it.** `adb shell setprop debug.fosfora.effect "Murmur XR World"`
+>    with `mode world` must load it with no change to `crates/fosfora-xr`.
+>    If a default in `app.rs` (near fade, hand pad, kick) is wrong for
+>    birds, change that one default only under a `world` + effect-name
+>    check and say why in the commit body.
+> 4. **Tests** in `fosfora-app` next to `flux_xr_world_steps_and_renders`
+>    in `gpu/particle/world.rs`: the preset parses with the fields above,
+>    the sim compiles (`interaction_3d` builds the 3D hash), steps a few
+>    frames and renders one frame through `render_world` with the alpha
+>    pipeline and no validation errors; plus one pixel assertion that a
+>    bird placed in front of the camera lands dark (rgb < 0.1) with alpha
+>    > 0.5 in the target. Same CI rules as the C3a tests.
+>
+> **Deliverable:** one PR against `xr` (not `main`), CI green, Android
+> clippy green, the commit body carrying the design rationale (heading from
+> velocity, the 3D neighbor scan and its caps, hands as predators, what the
+> preset drops). End the PR body with: "Device run needed: `mode world`,
+> `debug.fosfora.effect "Murmur XR World"`, `scripts/xr/sweep.sh --mode
+> world --counts "100000 150000 200000 300000"` at 72 Hz; fill the
+> MEASURED.md row; worn gate: the flock splits around a hand and wheels
+> around the desk." Do not claim device numbers.
+>
+> Before opening the PR, verify: `git log --format='%an <%ae> / %cn <%ce>' xr..HEAD`
+> shows only `Kevin Raymond <kjraym@gmail.com>` on every line, and
+> `git log --format=%B xr..HEAD | grep -iE 'co-authored|claude|anthropic|generated'`
+> prints nothing. If either check fails, rewrite the commits
+> (`git rebase` / `git commit --amend --reset-author`) until both pass, then
+> re-run both checks and paste their output at the end of your final report.
+> The PR body follows `.github/PULL_REQUEST_TEMPLATE.md` if there is one and
+> contains no model names or session links.
+
+Then: device sweep, worn gate, squash-merge into `xr`, and Tide (same
+shape; its brief follows once Murmur's numbers are in).
