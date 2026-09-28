@@ -109,11 +109,20 @@ fn cs_flash(@builtin(local_invocation_id) lid: vec3u) {
     let now = post.time;
     let budget = post.flash_budget;
     // A new budget (the setting changed, or the limiter was just switched on)
-    // or a clock that went backwards starts every track afresh.
-    if budget != flash_state.budget || now < flash_state.last_t {
+    // starts every track afresh.
+    if budget != flash_state.budget {
         for (var k = 0u; k < TRACKS; k++) {
             flash_state.tracks[k].st = vec4f(0.0, UNSET, 0.0, 0.0);
             flash_state.tracks[k].rises = vec4f(LONG_AGO);
+        }
+    } else if now < flash_state.last_t {
+        // The clock went backwards: the shader clock wraps hourly
+        // (SHADER_TIME_PERIOD_S), or an offline render restarted. Carry the
+        // rises over as if no time passed. Forgetting them instead would hand
+        // a running strobe a fresh budget at every wrap.
+        let back = vec4f(flash_state.last_t - now);
+        for (var k = 0u; k < TRACKS; k++) {
+            flash_state.tracks[k].rises -= back;
         }
     }
 

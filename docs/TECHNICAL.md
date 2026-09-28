@@ -141,7 +141,7 @@ All fields are accessible in WGSL as `u.field_name`:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `time` | `f32` | Elapsed seconds |
+| `time` | `f32` | Elapsed seconds, wrapped to 0 every hour (3600 s) to keep sub-millisecond precision in long shows. Anything periodic in it jumps once at the wrap; keep cross-frame state in feedback or a `"rates"` accumulator, not in `u.time` |
 | `resolution` | `vec2f` | Viewport size in pixels |
 | `frame_index` | `u32` | Frame counter |
 | `feedback_decay` | `f32` | Feedback blend factor |

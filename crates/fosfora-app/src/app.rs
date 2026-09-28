@@ -746,7 +746,8 @@ impl App {
         }
 
         // Update global time uniforms
-        self.uniforms.time = now.duration_since(self.start_time).as_secs_f32();
+        self.uniforms.time =
+            crate::gpu::uniforms::shader_time(now.duration_since(self.start_time).as_secs_f64());
         self.uniforms.delta_time = dt;
         self.uniforms.resolution = [
             self.gpu.surface_config.width as f32,

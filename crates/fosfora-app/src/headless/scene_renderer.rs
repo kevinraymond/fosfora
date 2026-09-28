@@ -684,7 +684,7 @@ impl SceneRenderer {
         let features = out.frame.features;
 
         // Clock + globals, from the sample clock — no Instant anywhere.
-        self.uniforms.time = ts as f32;
+        self.uniforms.time = crate::gpu::uniforms::shader_time(ts);
         self.uniforms.delta_time = dt;
         self.uniforms.resolution = [self.width as f32, self.height as f32];
         self.uniforms.feedback_decay = 0.88;

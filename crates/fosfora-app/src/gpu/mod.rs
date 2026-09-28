@@ -39,7 +39,8 @@ pub use uniforms::{ShaderUniforms, UniformBuffer};
 /// argument grows. Wrapping is free and visually identical — rotation is mod TAU.
 ///
 /// The same reasoning forbids `angle = time * rate` in a shader when `rate` is
-/// live-editable: `u.time` never wraps, so a rate change jumps the angle by
+/// live-editable: `u.time` runs for an hour before it wraps
+/// ([`uniforms::SHADER_TIME_PERIOD_S`]), so a rate change jumps the angle by
 /// `elapsed × Δrate`. Accumulate on the CPU and wrap instead.
 pub fn wrap_angle(a: f32) -> f32 {
     use std::f32::consts::{PI, TAU};

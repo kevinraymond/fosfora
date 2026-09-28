@@ -1301,6 +1301,17 @@ mod tests {
     /// Run a real chain for `levels.len()` frames at 60 fps over a uniform grey
     /// scene of `levels[i]`, returning each output frame's mean luminance.
     fn run_flash_chain(budget: f32, post_enabled: bool, levels: &[f32]) -> Vec<f32> {
+        run_flash_chain_from(0.0, budget, post_enabled, levels)
+    }
+
+    /// [`run_flash_chain`] on a 60 fps clock that starts `start` seconds in,
+    /// passed through the wrap the live `time` uniform gets.
+    fn run_flash_chain_from(
+        start: f64,
+        budget: f32,
+        post_enabled: bool,
+        levels: &[f32],
+    ) -> Vec<f32> {
         let _guard = crate::gpu::test_gpu::gpu_guard();
         let (device, queue) = crate::gpu::test_gpu::test_gpu();
         // 64 px: one row is exactly the 256-byte copy alignment.
@@ -1366,7 +1377,7 @@ mod tests {
                 &mut encoder,
                 &source,
                 &out_view,
-                i as f32 / 60.0,
+                crate::gpu::uniforms::shader_time(start + i as f64 / 60.0),
                 0.0,
                 0.0,
                 0.0,
@@ -1455,6 +1466,20 @@ mod tests {
         (0..180)
             .map(|i| if (i / 3) % 2 == 0 { 0.0 } else { 1.0 })
             .collect()
+    }
+
+    /// The shader clock wraps hourly (#95). A strobe running across the wrap
+    /// keeps its spent budget rather than getting a fresh one when time jumps
+    /// back to 0.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored flash_limiter
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flash_limiter_holds_the_budget_across_the_clock_wrap() {
+        let start = crate::gpu::uniforms::SHADER_TIME_PERIOD_S - 1.5;
+        let out = run_flash_chain_from(start, 3.0, true, &strobe_10hz());
+        let got = max_flashes_per_second(&out);
+        assert_eq!(got, 3, "{got} flashes in one second across the wrap");
     }
 
     /// The limiter throttles a 10 Hz strobe to the budget, on screen and with
