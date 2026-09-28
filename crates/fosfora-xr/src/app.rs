@@ -632,8 +632,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     tip_min[h] = tip_min[h].min(*d);
                 }
             }
+            // The panel first. While it is up its pinches are its own: no
+            // cloud gestures from either hand (a pinch that just missed a
+            // row moved the cloud), except one already in progress.
+            let panel_up = hud.as_mut().is_some_and(|h| {
+                h.record(&input.perf);
+                if hud_test {
+                    h.place_parked(&gfx, input.head, input.head_rot);
+                    false
+                } else {
+                    h.place(&gfx, &input.hands, input.head, input.head_rot);
+                    h.shown()
+                }
+            });
             let pinches = [0, 1].map(|h| PinchInput {
-                pinching: input.hands.pinching[h],
+                pinching: input.hands.pinching[h] && !(panel_up && gestures.owner() != Some(h)),
                 point: input.hands.pinch_point[h],
             });
             let mut moved = false;
@@ -681,19 +694,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             if let Some(h) = hud.as_mut() {
-                h.record(&input.perf);
-                let shown = if hud_test {
-                    h.place_parked(&gfx, input.head, input.head_rot);
-                    true
-                } else {
-                    h.place(
-                        &gfx,
-                        input.hands.palm[0],
-                        input.hands.index_tip[1],
-                        input.head,
-                    )
-                };
-                if shown {
+                if hud_test || h.shown() {
                     let view = View {
                         mode: mode_name,
                         effect: world.then(|| {

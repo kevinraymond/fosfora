@@ -771,3 +771,27 @@ hand occluders.
 - **Check without a wearer:** `hudtest` parks the panel ahead of the view
   and dumps its texture to `files/config/hud.rgba` at frame 720; the dump
   read back pixel-exact (layout, values and graph as intended).
+
+### Operating the panel without depth judgment (Sep 28, worn)
+
+Requirement: the panel has to work without stereo depth perception, and
+without it judging a fingertip's distance to a floating panel is
+guesswork. Three rounds, from the log:
+
+- **egui widgets, poke only:** "hard to use"; presses registered, clicks
+  were luck (a poke drifts past egui's click tolerance between press and
+  release).
+- **plus a hand ray (shoulder through index knuckle) with pinch, still
+  egui widgets:** ~45 presses, all classified as pokes, 0 button actions
+  fired. Pointing at a panel held over the other hand brings the fingertip
+  within the 10 cm poke band, so the poke took the pointer from the ray
+  every time; and egui's click-on-release failed for the same drift. No
+  ray was visible.
+- **big rows, fire on press, visible beam:** full-width rows 2.5 cm tall
+  picked by the pointer's height alone, left/right halves for Prev/Next and
+  -/+, the target under the pointer fires when the press starts and stays
+  locked until release, held -/+ repeats; poke only within 3 cm; a beam
+  from the knuckle to the hit point; no cloud gestures while the panel is
+  up. **57 of 57 presses fired a target** (12 ray, 45 poke): 10 Next,
+  2 Recenter, 212 steps including repeats; 0 cloud gestures started while
+  the panel was up (17 outside it). Wearer: "much better".

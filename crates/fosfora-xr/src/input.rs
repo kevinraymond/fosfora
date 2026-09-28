@@ -44,6 +44,9 @@ pub struct HandsFrame {
     pub palm: [Option<([f32; 3], [f32; 4])>; 2],
     /// Index fingertip: xyz and the joint radius (the debug panel's poke).
     pub index_tip: [Option<[f32; 4]>; 2],
+    /// Index knuckle (proximal joint): the debug panel's ray passes
+    /// through it.
+    pub index_knuckle: [Option<[f32; 3]>; 2],
     /// Skinning matrices for the hand meshes, valid where `mesh_ready`.
     pub skins: HandSkins,
     /// The hand has a mesh and every joint was located this frame.
@@ -203,6 +206,11 @@ impl Hands {
             if palm.location_flags.contains(posed) {
                 let (p, q) = (palm.pose.position, palm.pose.orientation);
                 frame.palm[h] = Some(([p.x, p.y, p.z], [q.x, q.y, q.z, q.w]));
+            }
+            let knuckle = &joints[xr::HandJoint::INDEX_PROXIMAL.into_raw() as usize];
+            if valid(knuckle) {
+                let p = knuckle.pose.position;
+                frame.index_knuckle[h] = Some([p.x, p.y, p.z]);
             }
             let tip = &joints[xr::HandJoint::INDEX_TIP.into_raw() as usize];
             if valid(tip) {

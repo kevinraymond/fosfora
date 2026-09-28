@@ -168,6 +168,17 @@ impl Gestures {
         }
     }
 
+    /// The hand whose pinch is a gesture in progress (pressed, dragging or
+    /// held), if any.
+    pub fn owner(&self) -> Option<usize> {
+        match self.state {
+            State::Idle => None,
+            State::Pressed { hand, .. } | State::Dragging { hand, .. } | State::Held { hand } => {
+                Some(hand)
+            }
+        }
+    }
+
     /// The hand dragging, if any.
     pub fn dragging(&self) -> Option<usize> {
         match self.state {
