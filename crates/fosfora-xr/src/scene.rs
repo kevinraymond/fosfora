@@ -233,13 +233,15 @@ impl XrScene {
     }
 
     /// Upload this frame's world-mode sim inputs: the wearer's head (for the
-    /// near fade within `near_fade_m`; 0 = off) and the obstacles, both
+    /// near fade within `near_fade_m`; 0 = off), the settle drift
+    /// (`drift_m_s` downward; 0 = none) and the obstacles, the positions
     /// moved into the anchor's frame. Call before [`Self::dispatch_world`].
     pub fn set_world_inputs(
         &mut self,
         queue: &wgpu::Queue,
         head: [f32; 3],
         near_fade_m: f32,
+        drift_m_s: f32,
         obstacles: &ObstacleSet,
     ) {
         let Some(world) = self.world.as_mut() else {
@@ -258,6 +260,9 @@ impl XrScene {
                 .iter()
                 .map(|&home| ParticleAux { home }),
         );
+        // The obstacle block's second header row has two unused lanes; the
+        // sim reads the drift from the third (`flux_xr_sim.wgsl`, aux[2].z).
+        world.aux[2].home[2] = drift_m_s;
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);
         }

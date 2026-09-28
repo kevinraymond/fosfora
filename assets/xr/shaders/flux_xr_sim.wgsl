@@ -20,6 +20,19 @@
 // inside it; one that leaves it respawns at a new random point inside (the 2D
 // sim wraps at the screen edge instead), and opacity fades out over the outer
 // 30 % of the half extent so the bounds never read as a hard edge in a room.
+// The preset's 1.5 m half extent puts the floor (1 m below the anchor, which
+// sits at 1 m) inside the volume, so particles can settle on it and on
+// tables instead of respawning at the boundary.
+//
+// Settle drift: a steady downward speed added at integration, not to the
+// velocity, so the flow keeps its swirl and the collide step (which reflects
+// the velocity) lets a particle rest on a table or the floor and slide with
+// the flow's tangential part. The S7 test sim settled the same way; an
+// acceleration did not read, the flow blend damped it. A particle resting
+// on a horizontal surface ages XR_REST_AGING times faster: with a uniform
+// drift nearly every particle reaches the floor within its life and the
+// cloud sank there (wearer, Sep 27); now it lands, slides for a few
+// seconds, fades and respawns up in the volume.
 //
 // Per-frame XR inputs ride the aux buffer, which Flux does not otherwise use.
 // The XR app writes them with ParticleSystem::update_aux_in_place, all in
@@ -28,7 +41,8 @@
 //   aux[0]          head position xyz; w = near-fade radius (0 = off)
 //   aux[1]          sphere count (u32 bits), box count (u32 bits),
 //                   restitution, margin
-//   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s)
+//   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s),
+//                   z = settle drift (m/s, downward; 0 = none)
 //   aux[3..67]      spheres: xyz center, w radius (hand joints)
 //   aux[67..99]     box centers (xyz)
 //   aux[99..131]    box rotations, quaternion box -> world (x, y, z, w)
@@ -47,6 +61,8 @@ const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
 
 // Fraction of the half extent over which opacity fades out toward the bounds.
 const XR_EDGE_FADE: f32 = 0.3;
+// Extra aging per second for a particle resting on a horizontal surface.
+const XR_REST_AGING: f32 = 2.0;
 
 // ---- random -------------------------------------------------------------------
 
@@ -78,7 +94,10 @@ fn xr_side(x: f32) -> f32 {
 // Push the particle out of every obstacle it is inside and reflect the inward
 // part of its velocity. One pass per frame is enough at these speeds; a
 // particle deep inside a box (spawned there) exits through the nearest face.
-fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) {
+// Returns true when the particle was pushed out through an upward face: it
+// is resting on a table or the floor.
+fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
+    var rested = false;
     let header = aux[XR_AUX_HEADER].home;
     let sphere_count = min(bitcast<u32>(header.x), XR_MAX_SPHERES);
     let box_count = min(bitcast<u32>(header.y), XR_MAX_BOXES);
@@ -129,8 +148,10 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) {
             if vn < 0.0 {
                 *vel -= (1.0 + restitution) * vn * n;
             }
+            rested = rested || n.y > 0.7;
         }
     }
+    return rested;
 }
 
 // ---- flow ---------------------------------------------------------------------
@@ -268,9 +289,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Drag.
     vel *= 1.0 - (1.0 - u.drag) * dt * 60.0;
 
-    // Integrate, then push out of hands, furniture and the floor.
-    pos += vel * dt;
-    xr_collide(&pos, &vel);
+    // Integrate with the settle drift, then push out of hands, furniture and
+    // the floor.
+    let settle = aux[XR_AUX_HEADER + 1u].home.z;
+    pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
+    let rested = xr_collide(&pos, &vel);
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
     // Still alive, so the alive count and the density stay steady.
@@ -317,7 +340,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     p.pos_life = vec4f(pos, 1.0);
     p.vel_size = vec4f(vel, size);
     p.color = vec4f(col, alpha);
-    p.flags.x = new_age;
+    // Resting particles age faster, so surfaces turn over instead of
+    // collecting the whole cloud.
+    p.flags.x = new_age + select(0.0, dt * XR_REST_AGING, rested);
 
     write_particle(idx, p);
     mark_alive(idx);
