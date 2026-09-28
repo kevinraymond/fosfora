@@ -320,11 +320,9 @@ speed, rms and the beat pulse → sprite size) or the S4 quad's effect.
   so the XR build decodes without desktop crates.
 - **Sound is late, not the visuals.** On the playback path the tap feeds
   the analysis about 190 ms before the speaker emits the same sample, so
-  beats flash 115 ms early. Fix (not yet done): delay the tap by the output
-  latency, which AAudio reports per stream (`AAudioStream_getTimestamp` /
-  `ndk::audio::AudioStream::timestamp`), or request the low-latency
-  performance mode for output and measure again. A mic-driven show has the
-  opposite sign and needs the visuals as early as possible.
+  beats flash 115 ms early. Fixed on `xr-audio-latency` (Sep 28, board
+  #3253), see "Playback latency" below. A mic-driven show has the opposite
+  sign and needs the visuals as early as possible.
 - **External USB mic: the fix.** With the Quest's experimental external-mic
   setting and a USB audio class mic in the port, the built-in pipeline is
   bypassed: full-range, unprocessed, tempo locks through the room. The
@@ -344,6 +342,40 @@ speed, rms and the beat pulse → sprite size) or the S4 quad's effect.
   file-tap measurements do not.
 - `RECORD_AUDIO` is in the manifest and granted with `adb shell pm grant`;
   the in-app runtime permission request is still to do.
+
+### Playback latency (`xr-audio-latency`, Sep 28, board #3253)
+
+The playback output moved from cpal to ndk's raw AAudio binding, which
+exposes the stream: its performance mode, `AAudioStream_getTimestamp` and
+`frames_written`. Measured with the 120 BPM click track, 60 s runs, the
+400K Flux world sim running, from the app's own log (the beat pulse's
+playhead position against the click grid; "offset" = pulse time minus the
+moment the click's frames were handed to AAudio):
+
+| Output stream | Burst / buffer (frames) | Handed → speaker (AAudio timestamps) | Tap delay | Beat pulse offset (median, 5–95 %) | Underruns / min |
+|---|---|---|---|---|---|
+| cpal, legacy (S6, `tapdelay 0`) | 1922 / 3844 | not exposed | 0 | 40 ms, 20–80 | 0 |
+| AAudio legacy (`playperf none`) | 1922 / 3844 | 137–215 ms raw, run mean 173 | mean − 45 ms, 2 steps | 161 ms, 140–200 | 0 |
+| **AAudio low latency (default)** | **192 / 1536** | **36 ms, constant** | **0** | **36 ms, 20–36** | **1** |
+
+- **Low latency is the fix.** The MMAP stream's 36 ms to the speaker is
+  under the ~45 ms the analysis takes from sample to pulse, so the pulse
+  lands at the speaker time with no delay at all, and the timestamp is
+  exact (36.0 ms on every read). The default-mode stream's timestamps
+  saw-tooth by ~80 ms over ~4 s (the reported DAC position runs ~2 %
+  ahead of the frames handed over, then snaps back), so a 5 s median still
+  swung ±20 ms; only a run-long mean holds still.
+- **The tap delay line stays as the fallback**: an output that is not
+  MMAP-capable (a USB or Bluetooth device, another headset) gets its
+  frames handed to the analysis `latency − 45 ms` after AAudio, from the
+  run mean, moving only in steps > 15 ms and at most every 2 s. In legacy
+  mode that puts the pulse within 12 ms of the sound against 133 ms early
+  before.
+- **Cost:** one underrun per minute in low-latency mode under the 400K
+  world sim (a 4 ms gap); logged in the playback status line, none in
+  legacy mode. The frame time is unchanged (App 9.45 ms at 400K).
+- **Still open:** the display chain after the pulse (render + compositor)
+  is not in these numbers; the phone film with `flash 1` measures it.
 
 ## Mixed reality (S7)
 
