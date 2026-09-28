@@ -154,6 +154,26 @@ fn load_static_image(path: &Path) -> Result<MediaSource, String> {
     }))
 }
 
+/// Largest GIF logical screen accepted, per side. The header is a u16 pair, so a
+/// hostile or corrupt file can claim 65535×65535 (16 GiB of RGBA) for a few bytes.
+const MAX_GIF_DIM: u32 = 8192;
+
+/// Budget for all pre-decoded GIF frames together (each is a full RGBA canvas).
+const MAX_GIF_DECODED_BYTES: usize = 2 << 30;
+
+/// Byte length of one RGBA canvas for a `width`×`height` GIF, or why it is refused.
+fn gif_canvas_len(width: u32, height: u32) -> Result<usize, String> {
+    if width == 0 || height == 0 || width > MAX_GIF_DIM || height > MAX_GIF_DIM {
+        return Err(format!(
+            "GIF size {width}x{height} is outside 1..={MAX_GIF_DIM} per side"
+        ));
+    }
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| format!("GIF size {width}x{height} overflows"))
+}
+
 /// Load an animated GIF, pre-decoding all frames.
 fn load_gif(path: &Path) -> Result<MediaSource, String> {
     use std::fs::File;
@@ -167,33 +187,49 @@ fn load_gif(path: &Path) -> Result<MediaSource, String> {
 
     let width = reader.width() as u32;
     let height = reader.height() as u32;
+    let canvas_len = gif_canvas_len(width, height)?;
 
     let mut frames = Vec::new();
     let mut delays_ms = Vec::new();
 
     // Accumulator for compositing (GIF frames can be partial updates)
-    let mut canvas = vec![0u8; (width * height * 4) as usize];
+    let mut canvas = vec![0u8; canvas_len];
 
     while let Some(frame) = reader
         .read_next_frame()
         .map_err(|e| format!("GIF frame error: {e}"))?
     {
+        // Every frame is kept as a full canvas copy, so the budget is frames × canvas.
+        if (frames.len() + 1).saturating_mul(canvas_len) > MAX_GIF_DECODED_BYTES {
+            return Err(format!(
+                "GIF too large to pre-decode: {width}x{height} over {}+ frames exceeds {} MiB; \
+                 convert it to a video",
+                frames.len() + 1,
+                MAX_GIF_DECODED_BYTES >> 20
+            ));
+        }
+
         let delay = frame.delay as u32 * 10; // GIF delay is in centiseconds
         delays_ms.push(delay.max(20)); // minimum 20ms to prevent zero-delay
 
         // Composite frame onto canvas at the correct offset
-        let fx = frame.left as u32;
-        let fy = frame.top as u32;
-        let fw = frame.width as u32;
-        let fh = frame.height as u32;
+        // usize throughout: a 65535×65535 frame overflows u32 index math.
+        let (w, h) = (width as usize, height as usize);
+        let fx = frame.left as usize;
+        let fy = frame.top as usize;
+        let fw = frame.width as usize;
+        let fh = frame.height as usize;
+        if frame.buffer.len() < fw * fh * 4 {
+            return Err("GIF frame buffer shorter than its declared size".to_string());
+        }
 
         for y in 0..fh {
             for x in 0..fw {
-                let src_idx = ((y * fw + x) * 4) as usize;
+                let src_idx = (y * fw + x) * 4;
                 let dst_x = fx + x;
                 let dst_y = fy + y;
-                if dst_x < width && dst_y < height {
-                    let dst_idx = ((dst_y * width + dst_x) * 4) as usize;
+                if dst_x < w && dst_y < h {
+                    let dst_idx = (dst_y * w + dst_x) * 4;
                     let src = &frame.buffer[src_idx..src_idx + 4];
                     // Only overwrite if source pixel is not fully transparent
                     if src[3] > 0 {
@@ -371,5 +407,54 @@ mod tests {
         progress.cancel.store(true, Ordering::Relaxed);
         assert!(load_media_with(&path, &progress).is_err());
         assert_eq!(progress.done.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canvas_len_bounds_the_header_size() {
+        assert_eq!(gif_canvas_len(2, 3), Ok(24));
+        assert_eq!(
+            gif_canvas_len(MAX_GIF_DIM, MAX_GIF_DIM),
+            Ok(MAX_GIF_DIM as usize * MAX_GIF_DIM as usize * 4)
+        );
+        assert!(gif_canvas_len(65535, 65535).is_err());
+        assert!(gif_canvas_len(MAX_GIF_DIM + 1, 1).is_err());
+        assert!(gif_canvas_len(0, 10).is_err());
+    }
+
+    /// A one-frame 1×1 GIF whose header claims a `w`×`h` screen.
+    fn tiny_gif(w: u16, h: u16) -> (tempfile::TempDir, std::path::PathBuf) {
+        let mut bytes = b"GIF89a".to_vec();
+        bytes.extend_from_slice(&w.to_le_bytes());
+        bytes.extend_from_slice(&h.to_le_bytes());
+        // Global colour table flag (2 entries), then one 1×1 frame and the trailer.
+        bytes.extend_from_slice(&[0x80, 0, 0, 0, 0, 0, 255, 255, 255]);
+        bytes.extend_from_slice(&[b',', 0, 0, 0, 0, 1, 0, 1, 0, 0]);
+        bytes.extend_from_slice(&[2, 2, 0x44, 0x01, 0, b';']);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.gif");
+        std::fs::write(&path, &bytes).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_small_gif_loads() {
+        let (_dir, path) = tiny_gif(4, 2);
+        assert!(load_gif(&path).is_ok());
+    }
+
+    /// A tiny GIF claiming a 65535×65535 screen is refused up front instead of
+    /// allocating (or, in release, wrapping to) a 16 GiB canvas (#99).
+    #[test]
+    fn a_huge_gif_header_is_refused() {
+        let (_dir, path) = tiny_gif(65535, 65535);
+        match load_gif(&path) {
+            Err(e) => assert!(e.contains("outside"), "{e}"),
+            Ok(_) => panic!("a 65535x65535 GIF must be refused"),
+        }
     }
 }
