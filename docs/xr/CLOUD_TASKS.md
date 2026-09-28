@@ -433,12 +433,38 @@ own PR and `xr` merges it. Three desktop effects use the hash today (Murmur,
 Symbiosis, Genesis) and `water.rs` patches its grid width; none of them may
 change.*
 
-> Before anything else, set the git identity for this clone:
-> `git config user.name "Kevin Raymond" && git config user.email "kjraym@gmail.com"`.
-> Every commit in this session is authored and committed under that identity,
-> with no `Co-Authored-By`, `Claude-Session` or similar trailers, and no
-> "Generated with" lines or model names anywhere (commits, PR title, PR
-> body). `CLAUDE.md` says the same; it overrides your defaults.
+> **Identity first, before you read or change anything.** This clone's git
+> user is preset to `Claude <noreply@anthropic.com>`. That preset is wrong
+> for this repo and is the thing you are fixing; do not treat "the repo's
+> configured git user" as the author to keep. Run, in one shell call:
+>
+> ```bash
+> unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+> git config --global user.name "Kevin Raymond"
+> git config --global user.email "kjraym@gmail.com"
+> git config user.name "Kevin Raymond"
+> git config user.email "kjraym@gmail.com"
+> git config --global --unset-all commit.template || true
+> git config --unset-all commit.template || true
+> git config --show-origin --get-regexp 'user\.|commit\.|trailer\.|core\.hookspath' || true
+> ls .git/hooks | grep -v sample || true
+> git var GIT_AUTHOR_IDENT; git var GIT_COMMITTER_IDENT
+> ```
+>
+> Both `git var` lines must start with `Kevin Raymond <kjraym@gmail.com>`.
+> If they do not, or if a hook or trailer setting shows up, remove what
+> overrides it before the first commit. If the environment re-injects
+> `GIT_AUTHOR_*` / `GIT_COMMITTER_*` on every shell call, make every commit
+> as
+> `GIT_COMMITTER_NAME="Kevin Raymond" GIT_COMMITTER_EMAIL="kjraym@gmail.com" git commit --author="Kevin Raymond <kjraym@gmail.com>" ...`.
+> After every commit, in the same shell call, run
+> `git log -1 --format='%an <%ae> / %cn <%ce>%n%B'` and amend if anything but
+> that name and email appears, or if the body carries a `Co-Authored-By`,
+> `Claude-Session` or other trailer, a "Generated with" line or a model
+> name. The same applies to the PR title and body: write the body from a
+> file, then `gh pr view --json body -q .body | grep -iE 'claude|anthropic|generated|co-authored'`
+> must print nothing (fix with `gh pr edit --body-file`). `CLAUDE.md` says
+> the same; it overrides your defaults.
 >
 > You are working in the Fosfora repo on a new branch `xr-hash-3d` cut from
 > `main` (not from `xr`). Fosfora is a real-time audio-reactive visual
@@ -553,12 +579,38 @@ boxes, the near fade, and the eye-pass hook (`prepare_world` before the eye
 pass, `draw_world` inside it). Nothing in `crates/fosfora-xr` should need to
 change; if it does, it is one knob default at most.*
 
-> Before anything else, set the git identity for this clone:
-> `git config user.name "Kevin Raymond" && git config user.email "kjraym@gmail.com"`.
-> Every commit in this session is authored and committed under that identity,
-> with no `Co-Authored-By`, `Claude-Session` or similar trailers, and no
-> "Generated with" lines or model names anywhere (commits, PR title, PR
-> body). `CLAUDE.md` says the same; it overrides your defaults.
+> **Identity first, before you read or change anything.** This clone's git
+> user is preset to `Claude <noreply@anthropic.com>`. That preset is wrong
+> for this repo and is the thing you are fixing; do not treat "the repo's
+> configured git user" as the author to keep. Run, in one shell call:
+>
+> ```bash
+> unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+> git config --global user.name "Kevin Raymond"
+> git config --global user.email "kjraym@gmail.com"
+> git config user.name "Kevin Raymond"
+> git config user.email "kjraym@gmail.com"
+> git config --global --unset-all commit.template || true
+> git config --unset-all commit.template || true
+> git config --show-origin --get-regexp 'user\.|commit\.|trailer\.|core\.hookspath' || true
+> ls .git/hooks | grep -v sample || true
+> git var GIT_AUTHOR_IDENT; git var GIT_COMMITTER_IDENT
+> ```
+>
+> Both `git var` lines must start with `Kevin Raymond <kjraym@gmail.com>`.
+> If they do not, or if a hook or trailer setting shows up, remove what
+> overrides it before the first commit. If the environment re-injects
+> `GIT_AUTHOR_*` / `GIT_COMMITTER_*` on every shell call, make every commit
+> as
+> `GIT_COMMITTER_NAME="Kevin Raymond" GIT_COMMITTER_EMAIL="kjraym@gmail.com" git commit --author="Kevin Raymond <kjraym@gmail.com>" ...`.
+> After every commit, in the same shell call, run
+> `git log -1 --format='%an <%ae> / %cn <%ce>%n%B'` and amend if anything but
+> that name and email appears, or if the body carries a `Co-Authored-By`,
+> `Claude-Session` or other trailer, a "Generated with" line or a model
+> name. The same applies to the PR title and body: write the body from a
+> file, then `gh pr view --json body -q .body | grep -iE 'claude|anthropic|generated|co-authored'`
+> must print nothing (fix with `gh pr edit --body-file`). `CLAUDE.md` says
+> the same; it overrides your defaults.
 >
 > You are working in the Fosfora repo on branch `xr`, in a new branch
 > `xr-murmur-world` cut from it. Fosfora is a real-time audio-reactive
