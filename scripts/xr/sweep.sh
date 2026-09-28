@@ -64,6 +64,11 @@ headless_off() {
     for kv in ${set_knobs//;/ }; do
         adb shell setprop "debug.fosfora.${kv%%=*}" '""'
     done
+    # The per-run knobs too: a sweep that ended on `--sim 0` once left the
+    # next worn launch frozen after warmup. The mode stays, as the wearer set it.
+    for k in count hz eyescale sim size tri pull; do
+        adb shell setprop "debug.fosfora.$k" '""'
+    done
     adb shell setprop debug.oculus.guardian_pause 0
     adb shell am broadcast -a com.oculus.vrpowermanager.automation_disable >/dev/null
 }
