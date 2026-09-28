@@ -58,9 +58,13 @@ const K: u32 = 7u;
 // at most 27 * MAX_PER_CELL neighbors per frame: the sim's main cost.
 const MAX_PER_CELL: u32 = 16u;
 
-// Roost: the flock's home, 0.5 m above the anchor (eye height for a standing
-// wearer, with the anchor at 1 m), free within ROOST_FREE_M.
-const ROOST_HEIGHT_M: f32 = 0.5;
+// Roost: the flock's home, relative to the anchor, free within ROOST_FREE_M.
+// The app centers the anchor on the wearer's head (x, z) at 1 m, and a
+// pinch-drag moves it, so the roost sits 1 m ahead of the anchor (-Z, the
+// stage's forward) and 1.4 m up: in front of a standing wearer, not at the
+// eyes. A roost at the head packed the flock around the face (review of the
+// port); the head is also a hawk below, so the flock keeps its distance.
+const ROOST_OFFSET_M: vec3f = vec3f(0.0, 0.4, -1.0);
 const ROOST_FREE_M: f32 = 0.5;
 // Bounds: soft repulsion within BOUNDS_BAND_M of the cube's faces, rising to
 // BOUNDS_WEIGHT (target direction units) at the face.
@@ -70,6 +74,9 @@ const BOUNDS_WEIGHT: f32 = 4.0;
 const PREDATOR_RADIUS: f32 = 0.28;
 // Hand predator reach from each joint sphere's center.
 const HAND_RADIUS_M: f32 = 0.4;
+// The wearer's head (aux[0].xyz) is a hawk too, with a wider reach: birds
+// must not fly through the face, and the head is not in the obstacle block.
+const HEAD_RADIUS_M: f32 = 0.6;
 
 // ---- XR inputs (aux layout: flux_xr_sim.wgsl) ----------------------------------
 
@@ -247,22 +254,19 @@ fn emit_particle(idx: u32, half: f32, roost: vec3f) -> Particle {
     var spawn_pos = roost + fallback_dir * pow(r.z, 1.0 / 3.0) * ROOST_FREE_M;
     var heading = xr_sphere_dir(s.x, s.y);
 
-    // Try to emit near an existing alive bird, so the flock grows where it
-    // is and a new bird flies with it at once. The probe covers the roost's
-    // surroundings rather than the whole cube (the 2D sim probes the whole
-    // screen): the flock fills a far smaller share of a volume than of a
-    // screen, and a probe into empty cells falls back to the roost anyway.
-    let probe_pos = clamp(
-        roost + (probe * 2.0 - 1.0) * (ROOST_FREE_M + BOUNDS_BAND_M),
-        vec3f(-0.9 * half),
-        vec3f(0.9 * half),
-    );
-    let probe_range = sh_cell_range_3d(sh_pos_to_cell_3d(probe_pos, u.emitter_radius));
-    if probe_range.y > 0u {
+    // Emit near an existing alive bird, so the flock grows where it is and a
+    // new bird flies with it at once. The donor is a uniformly random alive
+    // bird: the hash's sorted index list holds every alive bird packed from
+    // 0 to the last cell's end, so one lookup finds one wherever the flock
+    // went. A probe around the roost (the first port) refilled the roost
+    // with a second flock whenever the first had fled a hand.
+    let last = SH_GRID_D * SH_GRID_D * SH_GRID_D - 1u;
+    let alive = sh_cell_offsets[last] + sh_cell_counts[last];
+    if alive > 0u {
         // Integer hash: which bird a new one is seeded from decides where the
         // flock grows (see the 2D sim).
-        let pick = uhash(idx + uhash(u32(u.seed * 4096.0))) % probe_range.y;
-        let donor = sh_sorted_indices[probe_range.x + pick];
+        let pick = uhash(idx + uhash(u32(u.seed * 4096.0) ^ bitcast<u32>(probe.x))) % alive;
+        let donor = sh_sorted_indices[pick];
         let donor_pl = pos_life_in[donor];
         if donor_pl.w > 0.0 {
             spawn_pos = donor_pl.xyz + (jitter * 2.0 - 1.0) * 0.02 * half;
@@ -305,7 +309,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
     let half = max(u.emitter_radius, 0.05);
-    let roost = vec3f(0.0, ROOST_HEIGHT_M, 0.0);
+    let roost = ROOST_OFFSET_M;
 
     var p = read_particle(idx);
     let life = p.pos_life.w;
@@ -482,7 +486,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // directions away from each joint, the strength the nearest joint's
     // falloff, so a hand counts once however many joints it tracks.
     let sphere_count = min(bitcast<u32>(aux[XR_AUX_HEADER].home.x), XR_MAX_SPHERES);
-    if pred_str > 0.01 && sphere_count > 0u {
+    let head_row = aux[XR_AUX_HEAD].home;
+    if pred_str > 0.01 {
         var flee = vec3f(0.0);
         var threat = 0.0;
         for (var k = 0u; k < sphere_count; k++) {
@@ -495,7 +500,20 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
                 threat = max(threat, falloff);
             }
         }
-        target_vel += xr_dir_or(flee, vec3f(0.0)) * pred_str * threat;
+        // The head, when the app has written it (w = near-fade radius > 0).
+        if head_row.w > 0.0 {
+            let away = pos - head_row.xyz;
+            let dist2 = dot(away, away);
+            if dist2 < HEAD_RADIUS_M * HEAD_RADIUS_M && dist2 > 1e-8 {
+                let dist = sqrt(dist2);
+                let falloff = 1.0 - smoothstep(0.0, HEAD_RADIUS_M, dist);
+                flee += away / dist * falloff;
+                threat = max(threat, falloff);
+            }
+        }
+        if threat > 0.0 {
+            target_vel += xr_dir_or(flee, vec3f(0.0)) * pred_str * threat;
+        }
     }
 
     // --- Predator: audio (onset / kick), as in the 2D sim ---

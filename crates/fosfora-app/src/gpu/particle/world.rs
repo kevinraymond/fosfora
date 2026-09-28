@@ -995,34 +995,29 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     /// errors. A box obstacle filling x < 0, fed through the aux block as the
     /// XR app does, must keep every bird in the right half of a view from
     /// behind the roost; every bird drawn is dark, and the room stays visible.
-    #[test]
-    #[ignore = "requires a GPU/software adapter"]
-    fn murmur_xr_world_steps_and_renders() {
-        use crate::audio::AudioFrame;
-        use crate::audio::analyzer::{SPECTROGRAM_MELS, SPECTRUM_BINS};
-        use crate::audio::hop::HopOutput;
-        use crate::gpu::particle::types::ParticleAux;
-        use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+    /// The Murmur XR preset in a headless scene renderer, scaled down for a
+    /// software rasterizer, its layer disabled so a test drives the sim
+    /// itself (`particles(&mut sr)`). Opens a validation error scope the
+    /// caller pops.
+    fn murmur_renderer(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        count: u32,
+        emit_rate: f32,
+    ) -> crate::headless::scene_renderer::SceneRenderer {
         use crate::headless::scene_renderer::SceneRenderer;
-
-        const DIM: u32 = 256;
-        const FPS: u32 = 60;
-        const COUNT: u32 = 20_000;
-        let _guard = gpu_guard();
-        let (device, queue) = test_gpu();
-
         // As the scene-renderer probes do: `assets_dir()` is CWD-relative.
         if !std::path::Path::new("assets/effects").is_dir() {
             let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
             std::env::set_current_dir(&repo).unwrap();
         }
-        let dir = std::env::temp_dir().join("fosfora_murmur_xr_world");
+        let dir = std::env::temp_dir().join(format!("fosfora_murmur_xr_world_{count}"));
         write_world_scene(&dir, "Murmur XR World");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut sr = SceneRenderer::new(
-            (*device).clone(),
-            (*queue).clone(),
+            device.clone(),
+            queue.clone(),
             64,
             64,
             crate::settings::ParticleQuality::High,
@@ -1030,31 +1025,65 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         )
         .expect("renderer");
         // The desktop library does not scan assets/xr/; the APK stages the
-        // preset among the effects. Scaled down for a software rasterizer.
+        // preset among the effects.
         let mut pfx = xr_murmur_preset();
         let pd = pfx.particles.as_mut().unwrap();
-        pd.max_count = COUNT;
-        pd.emit_rate = 60_000.0;
+        pd.max_count = count;
+        pd.emit_rate = emit_rate;
         sr.effect_loader.effects.push(pfx);
         sr.install_scene(crate::headless::load::load_scene_dir(&dir).expect("scene loads"));
         sr.start();
         assert!(sr.warnings.is_empty(), "warnings: {:?}", sr.warnings);
         assert_eq!(sr.layer_stack.layers.len(), 1);
         sr.layer_stack.layers[0].enabled = false;
-        fn particles(sr: &mut SceneRenderer) -> &mut crate::gpu::particle::ParticleSystem {
-            sr.layer_stack.layers[0]
-                .as_effect_mut()
-                .and_then(|e| e.pass_executor.particle_system.as_mut())
-                .expect("particle system")
-        }
         let (_, grid_d) = particles(&mut sr)
             .spatial_hash_dims()
             .expect("interaction_3d builds a spatial hash");
         assert!(grid_d > 1, "3D grid edge {grid_d}");
+        sr
+    }
 
-        // Eye 1.2 m behind the roost (0.5 m above the anchor), looking at it,
-        // with the world default 0.15 m near fade; one box filling x < 0.
-        let eye = Vec3::new(0.0, 0.5, 1.2);
+    fn particles(
+        sr: &mut crate::headless::scene_renderer::SceneRenderer,
+    ) -> &mut crate::gpu::particle::ParticleSystem {
+        sr.layer_stack.layers[0]
+            .as_effect_mut()
+            .and_then(|e| e.pass_executor.particle_system.as_mut())
+            .expect("particle system")
+    }
+
+    /// One hop of loud, bass-heavy synthetic audio at 120 BPM.
+    fn murmur_hop(frame: u32, fps: u32) -> crate::audio::hop::HopOutput {
+        use crate::audio::AudioFrame;
+        use crate::audio::analyzer::{SPECTROGRAM_MELS, SPECTRUM_BINS};
+        use crate::audio::hop::HopOutput;
+        let ts = f64::from(frame) / f64::from(fps);
+        let mut f = crate::headless::loop_driver::synth_features(frame, fps, 120.0);
+        (f.rms, f.bass, f.mid, f.onset) = (0.6, 0.7, 0.5, 0.4);
+        HopOutput {
+            frame: AudioFrame {
+                features: f,
+                spectrum: vec![0.3; SPECTRUM_BINS].into(),
+                mel: vec![0.3; SPECTROGRAM_MELS].into(),
+                dmfcc: [0.0; 13],
+                timestamp: ts,
+                phase_frozen: false,
+                bar_duration: 2.0,
+                beat_time: None,
+                section_boundary: None,
+            },
+            beat_fired: f.beat > 0.5,
+            downbeat_fired: false,
+            drop_fired: false,
+            pre_norm: f,
+        }
+    }
+
+    /// The Murmur tests' aux block: the wearer's head at `eye` with the
+    /// world default 0.15 m near fade, the obstacle header (no spheres, one
+    /// box, restitution 0.4, margin 5 mm, kick 0.4), the box filling x < 0.
+    fn murmur_aux(eye: Vec3) -> Vec<crate::gpu::particle::types::ParticleAux> {
+        use crate::gpu::particle::types::ParticleAux;
         let mut aux = vec![ParticleAux { home: [0.0; 4] }; 163];
         aux[0].home = [eye.x, eye.y, eye.z, 0.15];
         aux[1].home = [f32::from_bits(0), f32::from_bits(1), 0.4, 0.005];
@@ -1062,10 +1091,35 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         aux[67].home = [-2.0, 0.0, 0.0, 0.0];
         aux[99].home = [0.0, 0.0, 0.0, 1.0];
         aux[131].home = [2.0, 3.0, 3.0, 0.0];
+        aux
+    }
+
+    /// `ROOST_OFFSET_M` in the sim: where the flock lives, relative to the
+    /// anchor.
+    const ROOST: Vec3 = Vec3::new(0.0, 0.4, -1.0);
+
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_world_steps_and_renders() {
+        use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+
+        const DIM: u32 = 256;
+        const FPS: u32 = 60;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let mut sr = murmur_renderer(&device, &queue, COUNT, 60_000.0);
+
+        // Eye 1.2 m behind the roost, looking at it; one box filling x < 0.
+        // The head is a hawk within 0.6 m, so from 1.2 m it does not touch
+        // the flock.
+        let roost = ROOST;
+        let eye = roost + Vec3::new(0.0, 0.1, 1.2);
+        let aux = murmur_aux(eye);
 
         let anchor = Vec3::new(0.0, 1.0, 0.0);
         let camera = WorldCamera {
-            view: Mat4::look_at_rh(anchor + eye, anchor + Vec3::new(0.0, 0.5, 0.0), Vec3::Y),
+            view: Mat4::look_at_rh(anchor + eye, anchor + roost, Vec3::Y),
             proj: Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.05, 100.0),
             anchor,
         };
@@ -1078,25 +1132,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         let frames = 60u32;
         for frame in 0..frames {
             let ts = f64::from(frame) / f64::from(FPS);
-            let mut f = crate::headless::loop_driver::synth_features(frame, FPS, 120.0);
-            (f.rms, f.bass, f.mid, f.onset) = (0.6, 0.7, 0.5, 0.4);
-            let hop = HopOutput {
-                frame: AudioFrame {
-                    features: f,
-                    spectrum: vec![0.3; SPECTRUM_BINS].into(),
-                    mel: vec![0.3; SPECTROGRAM_MELS].into(),
-                    dmfcc: [0.0; 13],
-                    timestamp: ts,
-                    phase_frozen: false,
-                    bar_duration: 2.0,
-                    beat_time: None,
-                    section_boundary: None,
-                },
-                beat_fired: f.beat > 0.5,
-                downbeat_fired: false,
-                drop_fired: false,
-                pre_norm: f,
-            };
+            let hop = murmur_hop(frame, FPS);
             let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
             particles(&mut sr).update_aux_in_place(&queue, &aux);
             sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
@@ -1165,6 +1201,108 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(
             opaque < rgba.len() / 4 / 2,
             "{opaque} opaque px: the birds should leave the room visible"
+        );
+    }
+
+    /// Alive bird positions after `frames` frames of the sim with `aux`.
+    fn murmur_positions(
+        count: u32,
+        frames: u32,
+        aux: &[crate::gpu::particle::types::ParticleAux],
+    ) -> Vec<Vec3> {
+        use crate::gpu::test_gpu::test_gpu;
+        const FPS: u32 = 60;
+        let (device, queue) = test_gpu();
+        let mut sr = murmur_renderer(&device, &queue, count, 60_000.0);
+        for frame in 0..frames {
+            let ts = f64::from(frame) / f64::from(FPS);
+            let hop = murmur_hop(frame, FPS);
+            let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
+            particles(&mut sr).update_aux_in_place(&queue, aux);
+            sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
+            let ps = particles(&mut sr);
+            let mut enc = device.create_command_encoder(&Default::default());
+            ps.poll_counter_readback();
+            ps.dispatch(&mut enc, &queue);
+            queue.submit([enc.finish()]);
+        }
+        wait(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+        let ps = particles(&mut sr);
+        let bytes = u64::from(count) * 16;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("murmur-positions"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(ps.pos_life_written(), 0, &staging, 0, bytes);
+        queue.submit([enc.finish()]);
+        staging
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        wait(&device);
+        let out: Vec<Vec3> =
+            bytemuck::cast_slice::<u8, [f32; 4]>(&staging.slice(..).get_mapped_range())
+                .iter()
+                .filter(|p| p[3] > 0.0)
+                .map(|p| Vec3::new(p[0], p[1], p[2]))
+                .collect();
+        staging.unmap();
+        out
+    }
+
+    /// The headline behavior of the port: a hand at the roost is a hawk. Five
+    /// joint spheres (a palm and four fingertips, 2 cm) sit where the flock
+    /// lives; after two seconds of sim the birds within 0.25 m of the palm
+    /// number a small fraction of the count without the hand (3723 -> 512
+    /// after one second on lavapipe; emission keeps seeding birds beside
+    /// the survivors, so the roost never fully empties), and the flock as a
+    /// whole is still there.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_flock_flees_a_hand() {
+        use crate::gpu::test_gpu::gpu_guard;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let eye = ROOST + Vec3::new(0.0, 0.1, 1.2);
+        let palm = ROOST;
+        let near = |pts: &[Vec3]| pts.iter().filter(|p| p.distance(palm) < 0.25).count();
+
+        let without = murmur_positions(COUNT, 120, &murmur_aux(eye));
+        let mut aux = murmur_aux(eye);
+        aux[1].home[0] = f32::from_bits(5);
+        for (k, offset) in [
+            Vec3::ZERO,
+            Vec3::new(0.08, 0.0, 0.0),
+            Vec3::new(-0.08, 0.0, 0.0),
+            Vec3::new(0.0, 0.08, 0.0),
+            Vec3::new(0.0, -0.08, 0.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let c = palm + *offset;
+            aux[3 + k].home = [c.x, c.y, c.z, 0.02];
+        }
+        let with = murmur_positions(COUNT, 120, &aux);
+
+        let (n0, n1) = (near(&without), near(&with));
+        assert!(
+            n0 > 200,
+            "no flock at the roost without a hand: {n0} birds within 0.25 m"
+        );
+        assert!(
+            n1 * 5 < n0,
+            "the hand should clear the roost: {n1} birds within 0.25 m against {n0} without it"
+        );
+        assert!(
+            with.len() * 2 > without.len(),
+            "the flock should survive the hand: {} alive against {}",
+            with.len(),
+            without.len()
         );
     }
 
