@@ -25,6 +25,19 @@ anchor plane inside the eye pass (a handful of triangles, so cheap, but
 the depth interaction with passthrough is untested), and the global mesh as
 a drawn surface.
 
+## A constraint on everything: the wearer is seated
+
+The app is stationary: every interaction has to work from a chair, and a
+seated arm reaches about 0.7 m. The 40K Murmur flock passed its worn gate
+(out of the face, splits around a hand) only after standing and stepping a
+meter toward it. So reach is a product feature, not an effect's: **Go-Go
+arm extension** (board #3308). Within a comfortable reach from the
+shoulder the virtual hand is the real hand; beyond ~0.45 m it travels
+quadratically, so a full stretch reaches ~2 m. The extended joint set feeds
+the sim's spheres (both scaring and pushing), occlusion stays on the real
+hand, and a ghost hand with a wrist beam shows where the hand acts. Subtle
+gain for the first pass. Every candidate below assumes it.
+
 ## Four candidates
 
 Each is one effect on the existing plumbing (`render_world`, the aux
