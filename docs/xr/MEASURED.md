@@ -736,3 +736,19 @@ within 2.5 cm for 0.7 s it is a hold; released before either it is a tap.
   before any drag. Flux XR World at 400K was measured unworn only
   (9.3 ms, C3b above); worn, with the wearer inside the cloud and hands in
   view, it runs over the 13.9 ms budget in bursts. Open.
+
+### Pinch-hold cycles the world effects (Sep 28, unworn, proximity faked)
+
+A pinch-hold switches to the next world-layout preset (every
+`*_xr_world*.pfx`, in file-name order): today Flux XR World (400K) and
+Flux XR World Coarse (150K larger embers in a 2 m volume, a test variant
+until Murmur lands). `debug.fosfora.cycletest 8` switched every 8 s for
+the measurements.
+
+- **Rebuilding on each switch:** 495–507 ms per switch (6 switches), one
+  frozen frame of ~0.5 s each time. Rejected.
+- **Built once at startup, swapped:** each effect builds in 507–530 ms at
+  launch; a switch then costs 0–2 long frames (worst window 29.8 ms max
+  interval, the first switch), 72 fps otherwise. A parked effect resumes
+  where it stopped. Memory: 424 MB PSS with both effects built against
+  392 MB with one.

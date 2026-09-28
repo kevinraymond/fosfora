@@ -179,6 +179,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
+    //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
+    //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -364,7 +366,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         _ => {}
     }
+    // The world effects a pinch-hold cycles through: every
+    // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
+    // starting at `debug.fosfora.effect` (added if it is not one of them).
+    let mut world_effects = discover_world_effects(&dirs.assets.join("effects"));
+    let start_effect =
+        debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
+    let mut world_index = world_effects
+        .iter()
+        .position(|e| *e == start_effect)
+        .unwrap_or_else(|| {
+            world_effects.insert(0, start_effect.clone());
+            0
+        });
+    if mode == Mode::World {
+        info!("world effects (pinch-hold cycles): {world_effects:?}");
+    }
     let mut scene = None;
+    // World mode: the effects not showing, by index in `world_effects`.
+    let mut parked: Vec<Option<XrScene>> = Vec::new();
     let mut particles = None;
     let mut static_quad = None;
     match mode {
@@ -427,25 +447,31 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 static_quad = Some(tex);
             }
             if mode == Mode::World {
-                let effect = debug_prop("debug.fosfora.effect")
-                    .unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
-                let scene_dir = write_single_effect_scene(&dirs.config, &effect)
-                    .context("writing the scene")?;
-                let s = XrScene::new_world(
-                    &gfx.device,
-                    &gfx.queue,
-                    &scene_dir,
-                    &effect,
-                    NOMINAL_FPS,
-                    WorldOptions {
-                        count: count_knob,
-                        size_scale,
-                        sim_enabled,
-                        anchor: cube_center,
-                    },
-                )
-                .context("creating the world scene")?;
-                scene = Some(s);
+                // Every world effect is built up front (~0.5 s each on the
+                // Quest 3) and parked, so a pinch-hold swaps in an instant
+                // instead of stalling the frame loop for a rebuild.
+                for (i, effect) in world_effects.iter().enumerate() {
+                    let started = Instant::now();
+                    let s = new_world_scene(
+                        &gfx,
+                        &dirs.config,
+                        effect,
+                        WorldOptions {
+                            count: count_knob,
+                            size_scale,
+                            sim_enabled,
+                            anchor: cube_center,
+                        },
+                    )?;
+                    info!(
+                        "world effect '{effect}' built in {:.0} ms",
+                        started.elapsed().as_secs_f64() * 1e3
+                    );
+                    parked.push(Some(s));
+                    if i == world_index {
+                        scene = parked[i].take();
+                    }
+                }
             }
             // In world mode the effect is the particles: the test sim keeps
             // only its obstacle block and occluders (count 0).
@@ -491,6 +517,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut tip_min = [f32::MAX; 2];
     let mut size_boost = false;
     let mut recentered = false;
+    // A world effect to switch to after this frame (the scene is borrowed
+    // by the frame while the gesture fires).
+    let mut switch_to: Option<usize> = None;
+    let cycle_test_s = debug_prop("debug.fosfora.cycletest")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| *s > 0.0);
+    let mut last_switch_t = 0.0f32;
     let mut obstacle_log = (0u32, 0u32, [false; 2], [false; 2]);
 
     let started = Instant::now();
@@ -619,6 +652,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     ),
                     Gesture::Hold { hand } => {
                         info!("gesture: hold {}", hand_name(hand));
+                        if world && world_effects.len() > 1 {
+                            switch_to = Some((world_index + 1) % world_effects.len());
+                        }
                     }
                 }
             }
@@ -734,6 +770,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        if let Some(every) = cycle_test_s
+            && world
+            && t - last_switch_t > every
+        {
+            switch_to = Some((world_index + 1) % world_effects.len());
+        }
+        if let Some(next) = switch_to.take()
+            && let Some(mut s) = parked[next].take()
+        {
+            // The parked effect resumes where it stopped, at today's anchor.
+            last_switch_t = t;
+            s.set_anchor(anchor);
+            parked[world_index] = scene.replace(s);
+            world_index = next;
+            info!(
+                "world effect switched to '{}' ({}/{})",
+                world_effects[next],
+                next + 1,
+                world_effects.len()
+            );
+        }
         if frame_index.is_multiple_of(72) {
             if let Some(scene) = &scene {
                 info!("particles alive {}", scene.alive_count());
@@ -791,6 +848,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
 
     drop(session);
     drop(scene);
+    drop(parked);
     drop(playback);
     drop(live_audio);
     drop(particles);
@@ -973,6 +1031,51 @@ fn debug_prop(name: &str) -> Option<String> {
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!v.is_empty()).then_some(v)
+}
+
+/// The world-layout effect `effect`, simulated around `options.anchor`.
+fn new_world_scene(
+    gfx: &Gfx,
+    config: &std::path::Path,
+    effect: &str,
+    options: WorldOptions,
+) -> Result<XrScene> {
+    let scene_dir = write_single_effect_scene(config, effect).context("writing the scene")?;
+    XrScene::new_world(
+        &gfx.device,
+        &gfx.queue,
+        &scene_dir,
+        effect,
+        NOMINAL_FPS,
+        options,
+    )
+    .with_context(|| format!("creating the world scene for '{effect}'"))
+}
+
+/// Names of the world-layout presets in `effects_dir` (files named
+/// `*_xr_world*.pfx`), in file-name order.
+fn discover_world_effects(effects_dir: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(effects_dir)
+        .map(|dir| {
+            dir.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.extension().is_some_and(|x| x == "pfx")
+                        && p.file_stem()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|s| s.contains("_xr_world"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|p| {
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+            Some(json.get("name")?.as_str()?.to_owned())
+        })
+        .collect()
 }
 
 /// A one-cue scene showing `effect` with its default parameters, written
