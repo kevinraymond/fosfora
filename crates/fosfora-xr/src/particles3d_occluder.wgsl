@@ -24,6 +24,17 @@ struct Obstacles {
 
 @group(0) @binding(0) var<uniform> obstacles: Obstacles;
 
+// Skinning matrices for the runtime's hand meshes (XR_FB_hand_tracking_mesh):
+// per hand, one matrix per joint = this frame's joint pose x the inverse of
+// the mesh's bind pose for that joint. HAND_JOINTS matches
+// XR_HAND_JOINT_COUNT_EXT and `HAND_JOINTS` in particles3d.rs.
+const HAND_JOINTS: u32 = 26u;
+struct HandSkins {
+    mats: array<mat4x4<f32>, 52>,
+}
+
+@group(0) @binding(1) var<uniform> hand_skins: HandSkins;
+
 struct Eye {
     view_proj: mat4x4<f32>,
     view: mat4x4<f32>,
@@ -72,6 +83,34 @@ fn vs_occluder(
 fn fs_occluder() -> @location(0) vec4<f32> {
     // Color writes are masked off; only depth lands.
     return vec4<f32>(0.0);
+}
+
+// ---- hand meshes -------------------------------------------------------
+// The runtime's skinned hand mesh (bind pose, static vertex buffer) skinned
+// on the GPU by linear blending of up to four joints, drawn depth-only like
+// the boxes. One draw per tracked hand; the instance index selects the
+// hand's block of skinning matrices. This is what makes a hand read as a
+// hand instead of a row of spheres.
+
+struct HandVertex {
+    @location(0) pos: vec3<f32>,
+    @location(1) weights: vec4<f32>,
+    @location(2) joints: vec4<u32>,
+}
+
+@vertex
+fn vs_hand_mesh(
+    v: HandVertex,
+    @builtin(instance_index) hand: u32,
+) -> @builtin(position) vec4<f32> {
+    let base = hand * HAND_JOINTS;
+    let p = vec4<f32>(v.pos, 1.0);
+    var world = vec3<f32>(0.0);
+    for (var i = 0u; i < 4u; i++) {
+        let joint = min(v.joints[i], HAND_JOINTS - 1u);
+        world += v.weights[i] * (hand_skins.mats[base + joint] * p).xyz;
+    }
+    return eye.view_proj * vec4<f32>(world, 1.0);
 }
 
 // ---- hand joints as sphere impostors -----------------------------------

@@ -160,6 +160,11 @@ impl XrScene {
                     bail!("effect '{effect}' has no particle system");
                 };
                 if let Some(count) = options.count {
+                    // The aux buffer holds one row per particle and the XR
+                    // inputs need `WORLD_AUX_ROWS` of it (`update_aux_in_place`
+                    // drops the upload otherwise, silently losing the
+                    // obstacles), so the count never goes below that.
+                    let count = count.max(WORLD_AUX_ROWS as u32);
                     // Keep the preset's fill: emission scales with the count.
                     particles.emit_rate *= count as f32 / particles.max_count.max(1) as f32;
                     particles.max_count = count;

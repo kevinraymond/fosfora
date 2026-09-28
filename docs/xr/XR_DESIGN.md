@@ -286,6 +286,20 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   52). Pinch = thumb tip to index tip under 15 mm, released over 30 mm; the
   rising edge toggles a visible parameter (sprite size ×3). Controllers are
   not read (I5).
+- **Hand occluders.** The runtime's skinned hand mesh
+  (`XR_FB_hand_tracking_mesh`, `xrGetHandMeshFB` once per hand through the
+  `openxr-sys` function pointer: 1360 vertices, 2314 triangles, 26 joints
+  per hand on v207) is the depth occluder; joint spheres carved a hand-sized
+  channel through the cloud but did not read as a hand. The bind-pose mesh
+  sits in a static vertex buffer (position, four joint weights, four joint
+  indices) and is skinned in the vertex stage from 26 matrices per hand
+  uploaded each frame (located joint pose × inverse bind pose), drawn depth
+  only with color writes off, like the room boxes, before the sprites. Hand
+  scale is estimated from the located bone lengths against the bind pose
+  (no `XrHandTrackingScaleFB` call). The sim keeps colliding with the padded
+  spheres. `debug.fosfora.handmesh 0` falls back to the sphere impostors;
+  `debug.fosfora.handmeshtest "x,y,z"` parks the left mesh in bind pose at
+  that offset from the head for an unworn screencap.
 - **Room.** `XR_FB_scene` over `XR_FB_spatial_entity_query`, through
   `openxr-sys` function pointers (no safe wrapper exists): `xrQuerySpacesFB`
   with a `LOCAL` storage-location filter once the session is focused,

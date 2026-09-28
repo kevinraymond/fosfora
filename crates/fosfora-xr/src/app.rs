@@ -148,6 +148,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
     //   adb shell setprop debug.fosfora.handocc 0.0              (m added to each joint's depth-occluder cube beyond the joint radius)
     //   adb shell setprop debug.fosfora.handkick 0.3             (outward speed, m/s, a hand gives the particles it touches)
+    //   adb shell setprop debug.fosfora.handmesh 0|1             (the runtime's skinned hand mesh as the depth occluder instead of joint spheres; default on)
+    //   adb shell setprop debug.fosfora.handmeshtest "0,0,-0.5" (diagnostic: draw the left hand mesh in bind pose at this offset from the head, in the head's frame, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.flow 0.35                (flow speed multiplier; default 0.35 in mr, 1 otherwise)
     //   adb shell setprop debug.fosfora.occluders 0|1            (obstacles drawn depth-only so real objects hide sprites; default on in mr)
     //   adb shell setprop debug.fosfora.cube "0,1.1,-0.9,1.1"    (sim cube center x,y,z and half edge)
@@ -210,6 +212,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
+    // Draw path check without a wearer: the left mesh, bind pose, parked in
+    // front of the eyes wherever the headset points, so a screencap shows
+    // its silhouette carved out of the cloud.
+    let hand_mesh_test = debug_prop("debug.fosfora.handmeshtest").and_then(|v| {
+        let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        (n.len() == 3).then(|| [n[0], n[1], n[2]])
+    });
     let (cube_center, cube_half) = cube_knob.unwrap_or(if mixed {
         (MR_CUBE_CENTER, MR_CUBE_HALF_M)
     } else {
@@ -421,6 +430,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
             p.sim_enabled = sim_enabled;
             p.occluders = occluders;
+            // The skinned hand mesh occludes when the runtime delivered one
+            // per hand; otherwise (or with the knob off) the joint spheres.
+            p.hand_mesh = toggle("debug.fosfora.handmesh", true);
+            p.set_hand_meshes(&gfx.device, session.hand_meshes());
             particles = Some(p);
         }
     }
@@ -432,7 +445,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Pinch toggles a visible parameter (the sprite size); either hand.
     let mut size_boost = false;
     let mut recentered = false;
-    let mut obstacle_log = (0u32, 0u32, [false; 2]);
+    let mut obstacle_log = (0u32, 0u32, [false; 2], [false; 2]);
 
     let started = Instant::now();
     let mut stats = FrameStats::default();
@@ -558,7 +571,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if let Some(s) = scene.as_deref_mut() {
                     s.set_world_inputs(queue, input.head, near_cull, &set);
                 }
-                obstacle_log = (set.sphere_count(), set.box_count(), input.hands.tracked);
+                if let Some(offset) = hand_mesh_test {
+                    let mut skins = input.hands.skins;
+                    let rot = glam::Quat::from_array(input.head_rot);
+                    let at = glam::Vec3::from(input.head) + rot * glam::Vec3::from(offset);
+                    let parked = glam::Mat4::from_rotation_translation(rot, at).to_cols_array();
+                    if frame_index.is_multiple_of(360) {
+                        info!(
+                            "hand mesh test: left mesh parked at ({:.2}, {:.2}, {:.2}), head ({:.2}, {:.2}, {:.2})",
+                            at.x, at.y, at.z, input.head[0], input.head[1], input.head[2]
+                        );
+                    }
+                    skins[0] = [parked; crate::particles3d::HAND_JOINTS];
+                    p.set_hand_skins(queue, &skins, [true, input.hands.mesh_ready[1]]);
+                } else {
+                    p.set_hand_skins(queue, &input.hands.skins, input.hands.mesh_ready);
+                }
+                obstacle_log = (
+                    set.sphere_count(),
+                    set.box_count(),
+                    input.hands.tracked,
+                    input.hands.mesh_ready,
+                );
             }
             // This frame's audio: the headset microphones or the
             // synthetic 120 BPM groove.
@@ -609,10 +643,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             if session.has_hands() || session.has_room() {
                 info!(
-                    "obstacles: {} spheres (hands L {} R {}) · {} boxes (room {} + floor {}) · anchors [{}] · size boost {}",
+                    "obstacles: {} spheres (hands L {} R {} · mesh L {} R {}) · {} boxes (room {} + floor {}) · anchors [{}] · size boost {}",
                     obstacle_log.0,
                     obstacle_log.2[0],
                     obstacle_log.2[1],
+                    obstacle_log.3[0],
+                    obstacle_log.3[1],
                     obstacle_log.1,
                     obstacle_log
                         .1
