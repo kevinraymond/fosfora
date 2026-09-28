@@ -1,7 +1,9 @@
 // Spatial hash pass 2: Exclusive prefix sum over cell_counts → cell_offsets.
 // Parallel block scan: 256 threads each scan a chunk sequentially,
 // then combine partial sums via shared-memory Blelloch scan.
-// Handles up to 256*256 = 65,536 cells in a single dispatch.
+// One dispatch for any NUM_CELLS (2D grids reach 256*256 = 65,536 cells, 3D ones
+// 64^3 = 262,144); each thread scans NUM_CELLS / 256 cells serially, so the
+// largest 3D grids spend a few hundred microseconds here per frame.
 
 const NUM_CELLS: u32 = 1600u; // patched at pipeline creation
 const WG_SIZE: u32 = 256u;

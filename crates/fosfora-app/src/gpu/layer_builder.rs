@@ -54,17 +54,31 @@ pub(crate) fn prepare_particles(
     effect: &PfxEffect,
 ) -> Option<ParticleSystem> {
     let pd = effect.particles.as_ref()?;
-    if pd.interaction {
-        use crate::gpu::particle::spatial_hash::grid_dims;
+    // A first guess from the unscaled count, for the compile inside
+    // `build_particle_system`; the system re-patches its sim from the grid it
+    // builds, and the loader is set to that grid below so a later background
+    // recompile (hot reload) carries the same constants (board #3292).
+    if pd.spatial_hash_mode().is_some() {
+        use crate::gpu::particle::spatial_hash::{grid_dims, grid_dims_3d};
         effect_loader.grid_dims = grid_dims(pd.max_count, pd.grid_max);
+        effect_loader.grid_d = if pd.interaction_3d {
+            grid_dims_3d(pd.max_count, pd.grid_max)
+        } else {
+            1
+        };
     }
-    crate::gpu::particle::build::build_particle_system(
+    let system = crate::gpu::particle::build::build_particle_system(
         ctx.device,
         ctx.queue,
         effect_loader,
         ctx.particle_quality,
         pd,
-    )
+    );
+    if let Some((wh, d)) = system.as_ref().and_then(|ps| ps.spatial_hash_dims()) {
+        effect_loader.grid_dims = wh;
+        effect_loader.grid_d = d;
+    }
+    system
 }
 
 /// What an empty layer draws: nothing. The compositor mixes each layer in
