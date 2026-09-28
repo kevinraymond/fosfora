@@ -671,6 +671,15 @@ worst. **Worn gate closed (Kevin, Sep 28): fine for now.** PR #183 merged.
 **Next:** the same hook serves the Murmur and Tide ports; the sim trim
 (one flow sample) only if 500K in the small volume is wanted.
 
+### C3b: Murmur in world space (`mode world`, `effect "Murmur XR World"`, 72 Hz)
+
+Pending the device run (`scripts/xr/sweep.sh --mode world --counts "100000 150000 200000 300000"`,
+`K` 7, `MAX_PER_CELL` 16):
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 100K–300K | — | — | — | — | — |
+
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 
 - **Passthrough:** the real room shows behind the particles (confirmed by

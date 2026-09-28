@@ -724,6 +724,576 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         );
     }
 
+    // ---- Murmur XR World (C3b): boids over the 3D spatial hash --------------
+
+    const XR_MURMUR_PRESET: &str =
+        include_str!("../../../../../assets/xr/effects/murmur_xr_world.pfx");
+    const XR_MURMUR_SIM: &str = include_str!("../../../../../assets/xr/shaders/murmur_xr_sim.wgsl");
+    const MURMUR_PRESET: &str = include_str!("../../../../../assets/effects/murmur.pfx");
+
+    fn xr_murmur_preset() -> crate::effect::format::PfxEffect {
+        serde_json::from_str(XR_MURMUR_PRESET).expect("murmur_xr_world.pfx parses")
+    }
+
+    /// A module-scope `u32` constant of a sim compiled behind the preamble.
+    fn sim_u32_const(sim: &str, name: &str) -> u32 {
+        let src = format!("{}\n{sim}", compute_preamble());
+        let module = naga::front::wgsl::parse_str(&src).unwrap();
+        let (_, c) = module
+            .constants
+            .iter()
+            .find(|(_, c)| c.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("const {name}"));
+        match module.global_expressions[c.init] {
+            naga::Expression::Literal(naga::Literal::U32(v)) => v,
+            ref e => panic!("const {name} is {e:?}"),
+        }
+    }
+
+    /// The XR Murmur sim compiles behind the loader's full compute preamble at
+    /// baseline WebGPU capabilities, `array<f32, K>` sized by its tuning const.
+    #[test]
+    fn murmur_xr_sim_validates() {
+        crate::trama::effect::validate_wgsl(&format!("{}\n{XR_MURMUR_SIM}", compute_preamble()))
+            .expect("murmur_xr_sim.wgsl validates");
+        assert_eq!(sim_u32_const(XR_MURMUR_SIM, "K"), 7);
+        assert_eq!(sim_u32_const(XR_MURMUR_SIM, "MAX_PER_CELL"), 16);
+    }
+
+    /// Murmur reads the XR inputs where Flux does: the same 163-row block the
+    /// app uploads (`flux_xr_sim_aux_layout_is_contiguous` pins Flux's side).
+    #[test]
+    fn murmur_xr_sim_aux_layout_matches_flux() {
+        for name in [
+            "XR_AUX_HEAD",
+            "XR_AUX_HEADER",
+            "XR_MAX_SPHERES",
+            "XR_MAX_BOXES",
+            "XR_AUX_SPHERES",
+            "XR_AUX_BOX_CENTER",
+            "XR_AUX_BOX_ROT",
+            "XR_AUX_BOX_HALF",
+        ] {
+            assert_eq!(
+                sim_u32_const(XR_MURMUR_SIM, name),
+                sim_u32_const(XR_FLUX_SIM, name),
+                "{name}"
+            );
+        }
+    }
+
+    /// The preset is a hidden world variant of desktop Murmur: the loader
+    /// resolves its sim, it asks for the 3D hash over the 3 m cube and the
+    /// alpha pipeline, it keeps desktop's inputs and audio mappings, and it
+    /// drops everything the world path cannot draw (compute raster, velocity
+    /// field, the velocity and history passes, post).
+    #[test]
+    fn murmur_xr_preset_is_a_hidden_world_variant() {
+        let pfx = xr_murmur_preset();
+        assert_eq!(pfx.name, "Murmur XR World");
+        assert!(
+            pfx.hidden,
+            "an XR preset must stay out of the desktop library"
+        );
+        let pd = pfx.particles.as_ref().expect("particles");
+        let sim = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/shaders")
+            .join(&pd.compute_shader);
+        let on_disk = std::fs::read_to_string(&sim)
+            .unwrap_or_else(|e| panic!("{} does not resolve: {e}", sim.display()));
+        assert_eq!(on_disk, XR_MURMUR_SIM);
+
+        assert!(pd.interaction && pd.interaction_3d);
+        assert_eq!(
+            pd.spatial_hash_mode(),
+            Some(super::super::spatial_hash::SpatialHashMode::Volume)
+        );
+        assert_eq!(pd.blend, "alpha", "dark silhouettes over passthrough");
+        assert_eq!(pd.render_mode, "billboard");
+        assert!(!pd.velocity_field);
+        assert!(pd.trail_length < 2);
+        assert!(pd.sprite.is_none());
+        assert!(!pd.morph, "morph interleaves aux at a 4x stride");
+        assert!(
+            pd.composite_decay.is_none(),
+            "no feedback background, gain 1"
+        );
+        assert_eq!(pd.max_count, 200_000);
+        assert_eq!(pd.max_scaled_count, 0);
+        assert!((pd.emitter.radius - 1.5).abs() < 1e-6, "the 3 m cube");
+        assert!((pd.initial_size - 0.012).abs() < 1e-6);
+        assert!((pd.size_end - 0.012).abs() < 1e-6);
+        assert!((pd.lifetime - 15.0).abs() < 1e-6);
+        let fill_s = pd.max_count as f32 / pd.emit_rate;
+        assert!((3.5..=4.5).contains(&fill_s), "fills in {fill_s} s");
+
+        assert_eq!(
+            pfx.passes
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["background"]
+        );
+        assert!(pfx.passes.iter().all(|p| !p.feedback));
+        assert!(pfx.postprocess.as_ref().is_some_and(|p| !p.enabled));
+
+        let xr: serde_json::Value = serde_json::from_str(XR_MURMUR_PRESET).unwrap();
+        let desktop: serde_json::Value = serde_json::from_str(MURMUR_PRESET).unwrap();
+        for key in ["inputs", "audio_mappings"] {
+            assert_eq!(xr[key], desktop[key], "{key} match desktop Murmur");
+        }
+        let (xp, dp) = (&xr["particles"], &desktop["particles"]);
+        for key in ["opacity_curve", "color_gradient"] {
+            assert_eq!(xp[key], dp[key], "particles.{key} match desktop Murmur");
+        }
+    }
+
+    /// Scene files for a one-cue scene showing `effect`, as the XR app writes
+    /// for `mode world`.
+    fn write_world_scene(dir: &std::path::Path, effect: &str) {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("Cue.json"),
+            serde_json::json!({ "layers": [{ "effect_name": effect }] }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("_scene.json"),
+            serde_json::json!({
+                "version": 1,
+                "name": format!("XR {effect}"),
+                "loop_mode": false,
+                "advance_mode": "Manual",
+                "cues": [{ "preset_name": "Cue", "transition": "Cut", "label": effect }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// A `DIM` x `DIM` eye color target (sRGB, as the Quest swapchain) and
+    /// depth target.
+    fn eye_targets(device: &wgpu::Device, dim: u32) -> (wgpu::Texture, wgpu::Texture) {
+        let texture = |format, usage, label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: dim,
+                    height: dim,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+                view_formats: &[],
+            })
+        };
+        (
+            texture(
+                TextureFormat::Rgba8UnormSrgb,
+                wgpu::TextureUsages::COPY_SRC,
+                "xr-eye-color",
+            ),
+            texture(
+                TextureFormat::Depth32Float,
+                wgpu::TextureUsages::empty(),
+                "xr-eye-depth",
+            ),
+        )
+    }
+
+    /// The eye pass as the XR app records it: color cleared to alpha 0
+    /// (passthrough), depth to far, then the world draw loads both.
+    fn clear_eye(
+        enc: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+    ) {
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("xr-eye-clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        }));
+    }
+
+    fn wait(device: &wgpu::Device) {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .expect("poll");
+    }
+
+    /// The RGBA8 bytes of a `dim` x `dim` color target, undecoded.
+    fn read_rgba(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: &wgpu::Texture,
+        dim: u32,
+    ) -> Vec<u8> {
+        let bpr = dim * 4;
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-eye-readback"),
+            size: u64::from(bpr * dim),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            color.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bpr),
+                    rows_per_image: Some(dim),
+                },
+            },
+            color.size(),
+        );
+        queue.submit([enc.finish()]);
+        buf.slice(..).map_async(wgpu::MapMode::Read, |r| r.unwrap());
+        wait(device);
+        buf.slice(..).get_mapped_range().to_vec()
+    }
+
+    /// An sRGB-encoded byte back to linear.
+    fn srgb_to_linear(b: u8) -> f32 {
+        let s = f32::from(b) / 255.0;
+        if s <= 0.040_45 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// C3b Murmur: the XR app's world-mode sequence end to end, headless, as
+    /// `flux_xr_world_steps_and_renders` runs it. `interaction_3d` builds the
+    /// 3D hash through the scene renderer, the flock steps, and one frame
+    /// renders through `render_world`'s alpha pipeline without validation
+    /// errors. A box obstacle filling x < 0, fed through the aux block as the
+    /// XR app does, must keep every bird in the right half of a view from
+    /// behind the roost; every bird drawn is dark, and the room stays visible.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_world_steps_and_renders() {
+        use crate::audio::AudioFrame;
+        use crate::audio::analyzer::{SPECTROGRAM_MELS, SPECTRUM_BINS};
+        use crate::audio::hop::HopOutput;
+        use crate::gpu::particle::types::ParticleAux;
+        use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+        use crate::headless::scene_renderer::SceneRenderer;
+
+        const DIM: u32 = 256;
+        const FPS: u32 = 60;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        // As the scene-renderer probes do: `assets_dir()` is CWD-relative.
+        if !std::path::Path::new("assets/effects").is_dir() {
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            std::env::set_current_dir(&repo).unwrap();
+        }
+        let dir = std::env::temp_dir().join("fosfora_murmur_xr_world");
+        write_world_scene(&dir, "Murmur XR World");
+
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut sr = SceneRenderer::new(
+            (*device).clone(),
+            (*queue).clone(),
+            64,
+            64,
+            crate::settings::ParticleQuality::High,
+            dir.clone(),
+        )
+        .expect("renderer");
+        // The desktop library does not scan assets/xr/; the APK stages the
+        // preset among the effects. Scaled down for a software rasterizer.
+        let mut pfx = xr_murmur_preset();
+        let pd = pfx.particles.as_mut().unwrap();
+        pd.max_count = COUNT;
+        pd.emit_rate = 60_000.0;
+        sr.effect_loader.effects.push(pfx);
+        sr.install_scene(crate::headless::load::load_scene_dir(&dir).expect("scene loads"));
+        sr.start();
+        assert!(sr.warnings.is_empty(), "warnings: {:?}", sr.warnings);
+        assert_eq!(sr.layer_stack.layers.len(), 1);
+        sr.layer_stack.layers[0].enabled = false;
+        fn particles(sr: &mut SceneRenderer) -> &mut crate::gpu::particle::ParticleSystem {
+            sr.layer_stack.layers[0]
+                .as_effect_mut()
+                .and_then(|e| e.pass_executor.particle_system.as_mut())
+                .expect("particle system")
+        }
+        let (_, grid_d) = particles(&mut sr)
+            .spatial_hash_dims()
+            .expect("interaction_3d builds a spatial hash");
+        assert!(grid_d > 1, "3D grid edge {grid_d}");
+
+        // Eye 1.2 m behind the roost (0.5 m above the anchor), looking at it,
+        // with the world default 0.15 m near fade; one box filling x < 0.
+        let eye = Vec3::new(0.0, 0.5, 1.2);
+        let mut aux = vec![ParticleAux { home: [0.0; 4] }; 163];
+        aux[0].home = [eye.x, eye.y, eye.z, 0.15];
+        aux[1].home = [f32::from_bits(0), f32::from_bits(1), 0.4, 0.005];
+        aux[2].home = [0.0, 0.4, 0.0, 0.0];
+        aux[67].home = [-2.0, 0.0, 0.0, 0.0];
+        aux[99].home = [0.0, 0.0, 0.0, 1.0];
+        aux[131].home = [2.0, 3.0, 3.0, 0.0];
+
+        let anchor = Vec3::new(0.0, 1.0, 0.0);
+        let camera = WorldCamera {
+            view: Mat4::look_at_rh(anchor + eye, anchor + Vec3::new(0.0, 0.5, 0.0), Vec3::Y),
+            proj: Mat4::perspective_rh(90f32.to_radians(), 1.0, 0.05, 100.0),
+            anchor,
+        };
+        let (color, depth) = eye_targets(&device, DIM);
+        let (color_view, depth_view) = (
+            color.create_view(&Default::default()),
+            depth.create_view(&Default::default()),
+        );
+
+        let frames = 60u32;
+        for frame in 0..frames {
+            let ts = f64::from(frame) / f64::from(FPS);
+            let mut f = crate::headless::loop_driver::synth_features(frame, FPS, 120.0);
+            (f.rms, f.bass, f.mid, f.onset) = (0.6, 0.7, 0.5, 0.4);
+            let hop = HopOutput {
+                frame: AudioFrame {
+                    features: f,
+                    spectrum: vec![0.3; SPECTRUM_BINS].into(),
+                    mel: vec![0.3; SPECTROGRAM_MELS].into(),
+                    dmfcc: [0.0; 13],
+                    timestamp: ts,
+                    phase_frozen: false,
+                    bar_duration: 2.0,
+                    beat_time: None,
+                    section_boundary: None,
+                },
+                beat_fired: f.beat > 0.5,
+                downbeat_fired: false,
+                drop_fired: false,
+                pre_norm: f,
+            };
+            let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
+            particles(&mut sr).update_aux_in_place(&queue, &aux);
+            sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
+
+            let ps = particles(&mut sr);
+            let mut enc = device.create_command_encoder(&Default::default());
+            ps.poll_counter_readback();
+            ps.dispatch(&mut enc, &queue);
+            if frame + 1 == frames {
+                clear_eye(&mut enc, &color_view, &depth_view);
+                ps.render_world(
+                    &device,
+                    &mut enc,
+                    &queue,
+                    WorldTarget {
+                        color: &color_view,
+                        color_format: TextureFormat::Rgba8UnormSrgb,
+                        depth: Some(&depth_view),
+                        depth_format: TextureFormat::Depth32Float,
+                    },
+                    &camera,
+                    wgpu::LoadOp::Load,
+                );
+            }
+            queue.submit([enc.finish()]);
+        }
+        wait(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+
+        let ps = particles(&mut sr);
+        ps.request_counter_readback();
+        wait(&device);
+        ps.poll_counter_readback();
+        assert!(
+            (1..=COUNT).contains(&ps.alive_count),
+            "alive count {}",
+            ps.alive_count
+        );
+
+        let rgba = read_rgba(&device, &queue, &color, DIM);
+        let (mut left, mut right, mut opaque) = (0usize, 0usize, 0usize);
+        let mut brightest = 0.0f32;
+        for (i, px) in rgba.chunks_exact(4).enumerate() {
+            let x = i as u32 % DIM;
+            if px[3] > 0 {
+                // A bird pushed onto the box face (x = margin) spans up to
+                // ~10 px either side of the center column at the nearest
+                // distance the near fade leaves visible.
+                if x < DIM / 2 - 12 {
+                    left += 1;
+                } else if x >= DIM / 2 {
+                    right += 1;
+                }
+                brightest = px[..3]
+                    .iter()
+                    .map(|&b| srgb_to_linear(b))
+                    .fold(brightest, f32::max);
+            }
+            opaque += usize::from(px[3] == 255);
+        }
+        assert!(right > 200, "the flock drew almost nothing: {right} px");
+        assert_eq!(left, 0, "{left} px inside the x < 0 obstacle");
+        // The palette tops out at 0.10 and the rim adds a few hundredths.
+        assert!(brightest < 0.15, "a bird reads bright: {brightest}");
+        assert!(
+            opaque < rgba.len() / 4 / 2,
+            "{opaque} opaque px: the birds should leave the room visible"
+        );
+    }
+
+    /// Stands one bird 0.6 m ahead of the eye (see
+    /// `murmur_xr_bird_in_front_lands_dark`): flying away at 0.2 m/s, 5 s into
+    /// a 15 s life, born 10 s ago (spawn fade done), colorless until the real
+    /// sim's first frame computes its look. Every other slot stays dead.
+    const PLACE_ONE_BIRD: &str = "
+@compute @workgroup_size(256)
+fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
+    let idx = gid.x;
+    if idx >= u.max_particles {
+        return;
+    }
+    var p = read_particle(idx);
+    if idx == 0u {
+        p.pos_life = vec4f(0.0, 0.5, -0.6, 1.0);
+        p.vel_size = vec4f(0.0, 0.0, -0.2, 0.012);
+        p.color = vec4f(0.0);
+        p.flags = vec4f(5.0, 15.0, 0.012, u.time - 10.0);
+        mark_alive(idx);
+    }
+    write_particle(idx, p);
+}";
+
+    /// One bird in front of the camera, one frame of the real sim, drawn by
+    /// `render_world`'s alpha pipeline over a target cleared to alpha 0: it
+    /// lands as a dark silhouette (linear rgb < 0.1, as stored: what it adds
+    /// over passthrough) that mostly hides what is behind it (alpha > 0.5).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_bird_in_front_lands_dark() {
+        use crate::gpu::particle::ParticleSystem;
+        use crate::gpu::particle::types::ParticleAux;
+        use crate::gpu::test_gpu::{gpu_guard, test_gpu};
+
+        const DIM: u32 = 256;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+
+        let mut def = xr_murmur_preset().particles.expect("particles");
+        def.max_count = 256;
+        def.emit_rate = 0.0;
+        def.burst_on_beat = 0;
+        let preamble = compute_preamble();
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            TextureFormat::Rgba8UnormSrgb,
+            &def,
+            &format!("{preamble}\n{PLACE_ONE_BIRD}"),
+            def.interaction,
+        );
+        assert!(
+            ps.spatial_hash_dims().is_some_and(|(_, d)| d > 1),
+            "interaction_3d builds the 3D hash"
+        );
+        let dt = 1.0 / 60.0;
+        ps.update_uniforms(dt, 0.0, [DIM as f32; 2], 0.0);
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        queue.submit([enc.finish()]);
+        ps.flip();
+
+        // The real sim from here. Head at the eye with the world near fade;
+        // no obstacles.
+        ps.set_compute_shader(&device, &format!("{preamble}\n{XR_MURMUR_SIM}"));
+        let eye = Vec3::new(0.0, 0.5, 0.0);
+        let mut aux = vec![ParticleAux { home: [0.0; 4] }; 163];
+        aux[0].home = [eye.x, eye.y, eye.z, 0.15];
+        ps.update_aux_in_place(&queue, &aux);
+        ps.update_uniforms(dt, dt, [DIM as f32; 2], 0.0);
+
+        let anchor = Vec3::new(0.0, 1.0, 0.0);
+        let camera = WorldCamera {
+            view: Mat4::from_translation(-(anchor + eye)),
+            proj: Mat4::perspective_rh(60f32.to_radians(), 1.0, 0.05, 100.0),
+            anchor,
+        };
+        let (color, depth) = eye_targets(&device, DIM);
+        let (color_view, depth_view) = (
+            color.create_view(&Default::default()),
+            depth.create_view(&Default::default()),
+        );
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        clear_eye(&mut enc, &color_view, &depth_view);
+        ps.render_world(
+            &device,
+            &mut enc,
+            &queue,
+            WorldTarget {
+                color: &color_view,
+                color_format: TextureFormat::Rgba8UnormSrgb,
+                depth: Some(&depth_view),
+                depth_format: TextureFormat::Depth32Float,
+            },
+            &camera,
+            wgpu::LoadOp::Load,
+        );
+        queue.submit([enc.finish()]);
+        wait(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+
+        let rgba = read_rgba(&device, &queue, &color, DIM);
+        let (i, px) = rgba
+            .chunks_exact(4)
+            .enumerate()
+            .max_by_key(|(_, px)| px[3])
+            .unwrap();
+        let (x, y) = (i as u32 % DIM, i as u32 / DIM);
+        assert!(
+            x.abs_diff(DIM / 2) <= 3 && y.abs_diff(DIM / 2) <= 3,
+            "the bird drew at ({x}, {y}), not ahead of the eye"
+        );
+        let alpha = f32::from(px[3]) / 255.0;
+        let rgb = [0, 1, 2].map(|c| srgb_to_linear(px[c]));
+        assert!(
+            alpha > 0.5,
+            "alpha {alpha}: the bird does not hide the room"
+        );
+        assert!(
+            rgb.iter().all(|&c| c < 0.1),
+            "rgb {rgb:?}: the bird is not a dark silhouette"
+        );
+    }
+
     #[test]
     fn uniforms_carry_camera_columns_and_anchor() {
         let camera = WorldCamera {
