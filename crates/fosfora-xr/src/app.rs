@@ -61,6 +61,14 @@ const MR_RESTITUTION: f32 = 0.4;
 /// user stands inside the cube; near sprites are pure fill-rate cost).
 const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
+/// World-effect defaults (Flux XR World, board #3276): its 2-5 mm sprites
+/// are smaller and dimmer than the S5 test sim's, so the near fade starts
+/// closer (the cloud stays dense at hand distance), the hand pad is wider
+/// (a channel that reads) and the kick stronger. The settle drift is the
+/// `mr` gravity.
+const WORLD_NEAR_FADE_M: f32 = 0.15;
+const WORLD_HAND_PAD_M: f32 = 0.10;
+const WORLD_HAND_KICK: f32 = 0.4;
 /// Where the depth-writing primer quad sits in `mr` (below the floor,
 /// behind the user; 1 mm wide, so never visible).
 const PRIMER_POS: [f32; 3] = [0.0, -1.0, 4.0];
@@ -144,7 +152,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
-    //   adb shell setprop debug.fosfora.gravity 0.3              (downward drift m/s; default 0.3 in mr, 0 otherwise)
+    //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s; default 0.5 in mr and world, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
     //   adb shell setprop debug.fosfora.handocc 0.0              (m added to each joint's depth-occluder cube beyond the joint radius)
     //   adb shell setprop debug.fosfora.handkick 0.3             (outward speed, m/s, a hand gives the particles it touches)
@@ -161,7 +169,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.mode world               (C3b: Flux XR World through render_world, over the mr setup;
     //       count = particles (default: the preset's 300K), size = sprite radius multiplier, sim 0 = freeze after warmup,
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
-    //       nearcull = near-fade radius around the head; tri/pull do not apply)
+    //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
+    //       gravity = settle drift; tri/pull do not apply)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -171,8 +180,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     };
     // World mode runs over the whole mixed-reality setup: passthrough, hands,
     // room, floor, occluders, primer and the wearer-centered anchor all take
-    // their `mr` defaults.
+    // their `mr` defaults, except where the world effect's smaller, dimmer
+    // sprites need more (`WORLD_*` below).
     let mixed = matches!(mode, Mode::Mixed | Mode::World);
+    let world = mode == Mode::World;
     let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
         Some("0") => false,
         Some("1") => true,
@@ -190,7 +201,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .unwrap_or(if mixed { MR_GRAVITY } else { 0.0 });
     let near_cull = debug_prop("debug.fosfora.nearcull")
         .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(if mixed { MR_NEAR_CULL_M } else { 0.0 });
+        .unwrap_or(if world {
+            WORLD_NEAR_FADE_M
+        } else if mixed {
+            MR_NEAR_CULL_M
+        } else {
+            0.0
+        });
     let cube_knob = debug_prop("debug.fosfora.cube").and_then(|v| {
         let n: Vec<f32> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
         (n.len() == 4).then(|| ([n[0], n[1], n[2]], n[3]))
@@ -203,12 +220,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let occluders = toggle("debug.fosfora.occluders", mixed);
     let hand_pad = debug_prop("debug.fosfora.handpad")
         .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(MR_HAND_PAD_M);
+        .unwrap_or(if world {
+            WORLD_HAND_PAD_M
+        } else {
+            MR_HAND_PAD_M
+        });
     // The occluder cube hugs the joint itself (a cube already reads larger
     // than the finger inside it; +2 cm looked like a 1-inch force field).
     let hand_kick = debug_prop("debug.fosfora.handkick")
         .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(MR_HAND_KICK);
+        .unwrap_or(if world { WORLD_HAND_KICK } else { MR_HAND_KICK });
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -569,7 +590,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
-                    s.set_world_inputs(queue, input.head, near_cull, &set);
+                    s.set_world_inputs(queue, input.head, near_cull, gravity, &set);
                 }
                 if let Some(offset) = hand_mesh_test {
                     let mut skins = input.hands.skins;

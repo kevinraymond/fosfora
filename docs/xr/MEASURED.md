@@ -571,9 +571,27 @@ and the draw ~5.8 ms. **Flux in world space: 300K at 72 Hz with 4.7 ms
 of headroom (unworn, no room anchors in this run).** The brief planned
 Flux for ~300K.
 
-**Next:** the wearer gate for the look (the unworn screencap shows the
-ember cloud through the room); the sim trim (one flow sample, cheaper
-drift) if 500K is wanted; the same hook serves the Murmur and Tide ports.
+**Tuning so hands and the room read** (`xr-flux-tune`, board #3276).
+Worn, the merged port looked good but showed no reaction to hands or
+furniture, although the log had 52 hand spheres and 16 room boxes reaching
+the sim every frame: Flux had no drift, so nothing settled on a table; its
+near fade (0.3–0.45 m) thinned the cloud exactly at hand distance; and its
+volume ended at the floor, where a settled particle respawns. Changes: a
+settle drift at integration (the `mr` gravity, 0.5 m/s, through the aux
+block), a 3 m volume so the floor and tables are inside it, and world-mode
+defaults of a 0.15 m near fade, a 10 cm hand pad and a 0.4 m/s kick.
+Preset raised to 400K to keep the cloud dense in the larger volume.
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 300K | 7.6 / 8.2 | 72.0 | 0 of 1959 | 0 | Yes |
+| 400K | 9.3 / 9.8 | 72.0 | 0 of 2028 | 0 | Yes |
+
+Cheaper than before at the same count: the sprites spread over 3.4× the
+volume overlap less. Worn gate for the settling and the hand channel open.
+
+**Next:** the same hook serves the Murmur and Tide ports; the sim trim
+(one flow sample) only if 500K in the small volume is wanted.
 
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 

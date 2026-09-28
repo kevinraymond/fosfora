@@ -20,6 +20,15 @@
 // inside it; one that leaves it respawns at a new random point inside (the 2D
 // sim wraps at the screen edge instead), and opacity fades out over the outer
 // 30 % of the half extent so the bounds never read as a hard edge in a room.
+// The preset's 1.5 m half extent puts the floor (1 m below the anchor, which
+// sits at 1 m) inside the volume, so particles can settle on it and on
+// tables instead of respawning at the boundary.
+//
+// Settle drift: a steady downward speed added at integration, not to the
+// velocity, so the flow keeps its swirl and the collide step (which reflects
+// the velocity) lets a particle rest on a table or the floor and slide with
+// the flow's tangential part. The S7 test sim settled the same way; an
+// acceleration did not read, the flow blend damped it.
 //
 // Per-frame XR inputs ride the aux buffer, which Flux does not otherwise use.
 // The XR app writes them with ParticleSystem::update_aux_in_place, all in
@@ -28,7 +37,8 @@
 //   aux[0]          head position xyz; w = near-fade radius (0 = off)
 //   aux[1]          sphere count (u32 bits), box count (u32 bits),
 //                   restitution, margin
-//   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s)
+//   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s),
+//                   z = settle drift (m/s, downward; 0 = none)
 //   aux[3..67]      spheres: xyz center, w radius (hand joints)
 //   aux[67..99]     box centers (xyz)
 //   aux[99..131]    box rotations, quaternion box -> world (x, y, z, w)
@@ -268,8 +278,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Drag.
     vel *= 1.0 - (1.0 - u.drag) * dt * 60.0;
 
-    // Integrate, then push out of hands, furniture and the floor.
-    pos += vel * dt;
+    // Integrate with the settle drift, then push out of hands, furniture and
+    // the floor.
+    let settle = aux[XR_AUX_HEADER + 1u].home.z;
+    pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
     xr_collide(&pos, &vel);
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
