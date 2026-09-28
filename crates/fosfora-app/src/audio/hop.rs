@@ -91,7 +91,7 @@ impl HopAnalyzer {
             downbeat_tracker: DownbeatTracker::new(),
             structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
-            stereo_analyzer: StereoAnalyzer::new(),
+            stereo_analyzer: StereoAnalyzer::with_sample_rate(sample_rate),
             hpss_analyzer: HpssAnalyzer::new(),
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
             dmfcc_analyzer: DeltaMfccAnalyzer::new(),
