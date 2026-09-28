@@ -911,3 +911,38 @@ hand predator, for an A/B in the headset.
   and turns it. Parting works; scooping needs a hold behavior (an
   attractor or containment), which is the pose design: fist = predator,
   open hand = push only, palm to the ceiling or two hands closing = hold.
+
+## Pose-driven hands (board #3314)
+
+The hand's pose picks what it does to Murmur's flock: a fist is the
+predator, an open hand only pushes, and a palm turned to the ceiling or two
+palms facing each other close together hold part of the flock and carry it.
+Poses are read on the real hand; the behavior acts at the seated-reach far
+hand. Knobs: `debug.fosfora.poses`, `openpad`, `openkick`, `holdradius`.
+
+- **Worn gate (Sep 28, seated, both hands, no controllers): pass.** Kevin:
+  "It looks great. Everything working." Fist scatters, open hand parts,
+  palm-up and two-hand holds carry a group, the hand menu still opens with
+  the left palm toward the face. 176 s at 72.0 fps, 8 long frames of 12747.
+- **Holds, worn:** 8 in the session, 6 palm up and 2 with both hands,
+  lasting 3.9 to 15.0 s and carrying their center 1.5 to 10.7 m (the far
+  hand's path). Two-hand holds opened at radius 0.13-0.14 m (half the real
+  palms' distance).
+- **Pose readings, worn:** an open hand's curl (mean fingertip-to-palm
+  distance) sits at 0.126-0.147 m, a fist's reaches 0.033-0.037 m, so the
+  fist thresholds (on under 0.055 m, off over 0.070 m) have wide margins on
+  both sides.
+- **The hold latches (GPU test, 20K birds):** a hold that let every bird in
+  and none out was a trap that cohesion kept filling: at the roost it took
+  70-80 % of the flock in a second. Latching only the birds inside its
+  radius in its first 0.15 s holds about a fifth (3.9-4.6K). Moved 0.8 m at
+  2 m/s it arrives with 3.7-4.4K inside its radius, against 1-340 on the
+  spring alone (no carry velocity) and 1-207 with no hold.
+- **Open-hand pad and kick (GPU sweep, a flat 25-joint hand):** at far-hand
+  speeds (1.5 and 3 m/s) a pad of 0.05 m or more leaves an empty wake
+  (0 birds against 484-922 with no hand) and 0.00-0.02 m slips between the
+  joints; nothing is displaced more than 0.5 m. At 0.5 m/s the kick is what
+  plows: 447 birds displaced with kick 0.4 against 8 with none. Open-hand
+  defaults: pad 0.05 m, kick 0.1 m/s; the fist keeps 0.10 m and 0.4 m/s.
+- **Cost:** unworn 40K, 10.03 / 10.40 ms GPU median / max at 72 fps
+  (before: 9.7 / 12.7).
