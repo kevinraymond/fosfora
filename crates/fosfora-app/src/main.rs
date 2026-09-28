@@ -1876,19 +1876,6 @@ impl ApplicationHandler for FosforaApp {
                         app.ndi.config.alpha_from_luma = val;
                         app.ndi.config.save();
                     }
-
-                    let ndi_restart: Option<bool> = app
-                        .egui_overlay
-                        .context()
-                        .data_mut(|d| d.remove_temp(egui::Id::new("ndi_restart")));
-                    if ndi_restart.is_some() {
-                        app.ndi.restart(
-                            &app.gpu.device,
-                            app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
-                        );
-                    }
                 }
 
                 // Handle v4l2 signals from UI
@@ -3539,6 +3526,10 @@ impl ApplicationHandler for FosforaApp {
                                     }
                                     Err(e) => {
                                         log::error!("Failed to start webcam: {e}");
+                                        app.status_error = Some((
+                                            format!("Webcam failed: {e}"),
+                                            std::time::Instant::now(),
+                                        ));
                                     }
                                 }
                             }

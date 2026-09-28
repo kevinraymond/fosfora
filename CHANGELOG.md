@@ -47,6 +47,8 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 - **A fader moved while an effect loaded could stick partway** over OSC, MIDI or the web
   remote: once the input queue filled, the newest messages were the ones dropped. The oldest
   are dropped now, so the last value sent always arrives.
+- **Webcam as a particle source** had no button and could only come back from a preset. It is
+  on the particle source row again.
 
 ## v2.0.0 — 2026-09-27
 
