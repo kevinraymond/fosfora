@@ -9,8 +9,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 
 ### Added
 - **A photosensitivity flash limiter, on by default.** Large-area flashing is held to at most
-  three flashes a second, the WCAG and broadcast threshold, on screen and in every output and
-  recording; bright hits beyond that are dimmed. Set it under Setup ▸ General: Strict allows
+  three flashes a second, the WCAG and broadcast threshold, on screen and in every live output
+  and recording; bright hits beyond that are dimmed. Offline loop and scene renders are not
+  limited. Set it under Setup ▸ General: Strict allows
   one a second, and Auto goes Strict when the system asks for reduced motion, which also
   stops interface animation. Strobe-heavy looks are throttled; Off restores them.
 
