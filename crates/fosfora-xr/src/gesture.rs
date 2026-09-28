@@ -153,6 +153,21 @@ impl Gestures {
         }
     }
 
+    /// A short description of the gesture in progress, for the debug panel.
+    pub fn label(&self) -> String {
+        let side = |h: usize| if h == 0 { "L" } else { "R" };
+        match self.state {
+            State::Idle => "idle".to_owned(),
+            State::Pressed { hand, held_s, .. } => format!(
+                "pinch {} (hold {:.0}%)",
+                side(hand),
+                (held_s / HOLD_S * 100.0).min(100.0)
+            ),
+            State::Dragging { hand, .. } => format!("drag {}", side(hand)),
+            State::Held { hand } => format!("held {}", side(hand)),
+        }
+    }
+
     /// The hand dragging, if any.
     pub fn dragging(&self) -> Option<usize> {
         match self.state {

@@ -1733,6 +1733,8 @@ dependencies = [
  "ash",
  "bytemuck",
  "cpal",
+ "egui",
+ "egui-wgpu",
  "fosfora-app",
  "glam",
  "libc",

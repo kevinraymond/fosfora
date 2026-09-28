@@ -12,6 +12,7 @@ use log::{error, info};
 use crate::audio::LiveAudio;
 use crate::gesture::{Gesture, Gestures, PinchInput};
 use crate::gfx::Gfx;
+use crate::hud::{Action, Controls, FrameWindow, Hud, View};
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::scene::{WorldOptions, XrScene};
@@ -179,6 +180,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
+    //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel above the left palm; default on with hands)
+    //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -193,6 +196,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // their `mr` defaults, except where the world effect's smaller, dimmer
     // sprites need more (`WORLD_*` below).
     let mixed = matches!(mode, Mode::Mixed | Mode::World);
+    let mode_name = match mode {
+        Mode::Quad => "quad",
+        Mode::Particles => "particles",
+        Mode::Mixed => "mr",
+        Mode::World => "world",
+    };
     let world = mode == Mode::World;
     let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
         Some("0") => false,
@@ -501,6 +510,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             particles = Some(p);
         }
     }
+    // The debug panel: turn the left palm toward you, poke it with the
+    // right index finger. Its sliders drive these values from now on.
+    let hud_test = toggle("debug.fosfora.hudtest", false);
+    let mut hud = (hud_test || toggle("debug.fosfora.hud", mr.hands) && session.has_hands())
+        .then(|| Hud::new(&mut gfx));
+    let mut controls = Controls {
+        gravity,
+        near_fade: near_cull,
+        hand_pad,
+        hand_kick,
+    };
+    let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
     let floor_box = floor.then_some(ObstacleBox {
         center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
         rot: [0.0, 0.0, 0.0, 1.0],
@@ -603,6 +624,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             background_color(t)
         };
         let scene_mut = scene.as_mut();
+        let frames_window = stats.last;
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // S7: hands and room as obstacles. I5: pinch gestures.
             for (h, d) in input.hands.tip_distance.iter().enumerate() {
@@ -658,6 +680,62 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                 }
             }
+            if let Some(h) = hud.as_mut() {
+                h.record(&input.perf);
+                let shown = if hud_test {
+                    h.place_parked(&gfx, input.head, input.head_rot);
+                    true
+                } else {
+                    h.place(
+                        &gfx,
+                        input.hands.palm[0],
+                        input.hands.index_tip[1],
+                        input.head,
+                    )
+                };
+                if shown {
+                    let view = View {
+                        mode: mode_name,
+                        effect: world.then(|| {
+                            (
+                                world_effects[world_index].as_str(),
+                                world_index,
+                                world_effects.len(),
+                            )
+                        }),
+                        alive: scene.as_deref().map(XrScene::alive_count),
+                        frames: frames_window,
+                        perf: input.perf,
+                        tracked: input.hands.tracked,
+                        tip_mm: input.hands.tip_distance.map(|d| d.map(|d| d * 1000.0)),
+                        pinching: input.hands.pinching,
+                        gesture: gestures.label(),
+                        anchor,
+                        room_boxes: input.room_boxes.len(),
+                        rms: last_rms,
+                        bass: last_bass,
+                        beat: beat_env,
+                        audio: &audio_source,
+                    };
+                    for action in h.render(&gfx, &view, &mut controls) {
+                        info!("debug panel: {action:?}");
+                        let n = world_effects.len();
+                        match action {
+                            Action::NextEffect if world && n > 1 => {
+                                switch_to = Some((world_index + 1) % n);
+                            }
+                            Action::PrevEffect if world && n > 1 => {
+                                switch_to = Some((world_index + n - 1) % n);
+                            }
+                            Action::Recenter => {
+                                anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
+                                moved = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
                     recentered = true;
@@ -683,11 +761,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
-                    (hand_pad - hand_occ).max(0.0),
-                    hand_kick,
+                    (controls.hand_pad - hand_occ).max(0.0),
+                    controls.hand_kick,
                 );
                 for s in &input.hands.spheres {
-                    set.push_sphere([s[0], s[1], s[2], s[3] + hand_pad]);
+                    set.push_sphere([s[0], s[1], s[2], s[3] + controls.hand_pad]);
                 }
                 for b in &input.room_boxes {
                     set.push_box(b);
@@ -697,7 +775,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
-                    s.set_world_inputs(queue, input.head, near_cull, gravity, &set);
+                    s.set_world_inputs(
+                        queue,
+                        input.head,
+                        controls.near_fade,
+                        controls.gravity,
+                        &set,
+                    );
                 }
                 if let Some(offset) = hand_mesh_test {
                     let mut skins = input.hands.skins;
@@ -729,6 +813,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 None => synth_hop_for(frame_index, t),
             };
             let f = hop.frame.features;
+            (last_rms, last_bass) = (f.rms, f.bass);
             if hop.beat_fired {
                 beat_env = 1.0;
                 if flash {
@@ -770,6 +855,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        if hud_test
+            && frame_index == 720
+            && let Some(h) = &hud
+            && let Err(e) = h.dump(&gfx, &dirs.config.join("hud.rgba"))
+        {
+            log::warn!("debug panel dump: {e:#}");
+        }
         if let Some(every) = cycle_test_s
             && world
             && t - last_switch_t > every
@@ -847,6 +939,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
 
     drop(session);
+    drop(hud);
     drop(scene);
     drop(parked);
     drop(playback);
@@ -959,6 +1052,8 @@ pub struct FrameStats {
     cpu_n: u32,
     total_long: u32,
     total_frames: u32,
+    /// The last completed one-second window, for the debug panel.
+    pub last: FrameWindow,
 }
 
 impl FrameStats {
@@ -1001,6 +1096,13 @@ impl FrameStats {
                 self.total_frames,
                 self.skipped_render,
             );
+            self.last = FrameWindow {
+                fps: (f64::from(self.frames) / elapsed.as_secs_f64()) as f32,
+                display_hz: hz as f32,
+                max_interval_ms: (self.max_interval.as_secs_f64() * 1e3) as f32,
+                cpu_avg_ms: cpu_avg as f32,
+                long_frames: self.long_frames,
+            };
             self.window_start = Some(now);
             self.frames = 0;
             self.skipped_render = 0;

@@ -38,6 +38,12 @@ pub struct HandsFrame {
     pub pinch_point: [Option<[f32; 3]>; 2],
     /// Thumb tip to index tip distance (meters), where both were located.
     pub tip_distance: [Option<f32>; 2],
+    /// Palm joint pose: position and (x, y, z, w) orientation. Its -Y axis
+    /// is the palm normal (`XR_EXT_hand_tracking`: +Y points out of the
+    /// back of the hand).
+    pub palm: [Option<([f32; 3], [f32; 4])>; 2],
+    /// Index fingertip: xyz and the joint radius (the debug panel's poke).
+    pub index_tip: [Option<[f32; 4]>; 2],
     /// Skinning matrices for the hand meshes, valid where `mesh_ready`.
     pub skins: HandSkins,
     /// The hand has a mesh and every joint was located this frame.
@@ -189,6 +195,19 @@ impl Hands {
                         );
                     }
                 }
+            }
+
+            let posed =
+                xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID;
+            let palm = &joints[xr::HandJoint::PALM.into_raw() as usize];
+            if palm.location_flags.contains(posed) {
+                let (p, q) = (palm.pose.position, palm.pose.orientation);
+                frame.palm[h] = Some(([p.x, p.y, p.z], [q.x, q.y, q.z, q.w]));
+            }
+            let tip = &joints[xr::HandJoint::INDEX_TIP.into_raw() as usize];
+            if valid(tip) {
+                let p = tip.pose.position;
+                frame.index_tip[h] = Some([p.x, p.y, p.z, tip.radius]);
             }
 
             let thumb = &joints[xr::HandJoint::THUMB_TIP.into_raw() as usize];

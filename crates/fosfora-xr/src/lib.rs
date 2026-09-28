@@ -20,10 +20,15 @@ pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;
 #[cfg(target_os = "android")]
+mod hud;
+#[cfg(target_os = "android")]
 mod input;
 pub mod math;
+pub mod palm_panel;
 #[cfg(target_os = "android")]
 mod particles3d;
+#[cfg(target_os = "android")]
+mod perf;
 #[cfg(target_os = "android")]
 mod playback;
 #[cfg(target_os = "android")]

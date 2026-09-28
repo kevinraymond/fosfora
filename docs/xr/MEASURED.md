@@ -752,3 +752,22 @@ the measurements.
   interval, the first switch), 72 fps otherwise. A parked effect resumes
   where it stopped. Memory: 424 MB PSS with both effects built against
   392 MB with one.
+
+### Debug panel (Sep 28, unworn with `debug.fosfora.hudtest 1`, Flux XR World 400K)
+
+An egui panel above the left palm (shown while the palm faces the wearer,
+poked with the right index finger): fps, long frames, the runtime's app
+GPU time and utilization (`XR_META_performance_metrics`: 17 counters on
+v207, no app CPU counter, so the frame loop's own CPU time stands in), a
+two-second GPU-time graph against the 13.9 ms budget, particles, hands,
+gesture, anchor with Recenter, audio levels, Prev/Next effect, and four
+live sliders (settle, near fade, hand pad, hand kick). 640 x 960 texture
+on a 20 x 30 cm quad, drawn after the sprites and depth-tested against the
+hand occluders.
+
+- **Cost while shown:** frame-loop CPU 2.23 ms against 1.50 ms hidden
+  (+0.7 ms, the egui pass); GPU 9.61 ms median against 9.73 ms hidden (no
+  measurable difference); 72 fps, 0 stale either way (25 s each).
+- **Check without a wearer:** `hudtest` parks the panel ahead of the view
+  and dumps its texture to `files/config/hud.rgba` at frame 720; the dump
+  read back pixel-exact (layout, values and graph as intended).

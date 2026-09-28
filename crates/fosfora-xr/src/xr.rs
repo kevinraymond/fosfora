@@ -14,6 +14,7 @@ use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
 use crate::particles3d::{HandMeshData, ObstacleBox, Particles3d};
+use crate::perf::{PerfMetrics, PerfSample};
 use crate::room::{Passthrough, Room};
 use crate::scene::XrScene;
 
@@ -58,6 +59,8 @@ pub struct FrameInput {
     /// Scene anchors as oriented boxes in the reference space (empty until
     /// the query returns, or when the room is off).
     pub room_boxes: Vec<ObstacleBox>,
+    /// The runtime's frame timing (`XR_META_performance_metrics`), latest.
+    pub perf: PerfSample,
 }
 
 impl XrContext {
@@ -95,6 +98,8 @@ impl XrContext {
         enabled.khr_android_create_instance = true;
         // Optional: lets us read (and later request) the display refresh rate.
         enabled.fb_display_refresh_rate = available.fb_display_refresh_rate;
+        // The debug panel's frame timing (public extension, no NDA).
+        enabled.meta_performance_metrics = available.meta_performance_metrics;
         // S7: passthrough, hands, scene. Each behind a runtime check; the
         // scene trio is enabled only when all three are offered (the query
         // needs them together).
@@ -254,6 +259,7 @@ pub struct XrSession {
     passthrough: Option<Passthrough>,
     hands: Option<Hands>,
     room: Option<Room>,
+    perf: Option<PerfMetrics>,
     eyes: Vec<Eye>,
     space: xr::Space,
     stream: xr::FrameStream<xr::Vulkan>,
@@ -406,10 +412,19 @@ impl XrSession {
             None
         };
 
+        let perf = match PerfMetrics::new(&session) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("performance metrics unavailable: {e:#}");
+                None
+            }
+        };
+
         Ok(Self {
             passthrough,
             hands,
             room,
+            perf,
             eyes,
             space,
             stream,
@@ -628,9 +643,13 @@ impl XrSession {
             let q = views[0].pose.orientation;
             [q.x, q.y, q.z, q.w]
         };
+        if let Some(perf) = self.perf.as_mut() {
+            perf.poll();
+        }
         let input = FrameInput {
             head,
             head_rot,
+            perf: self.perf.as_ref().map(|p| p.latest).unwrap_or_default(),
             hands: self
                 .hands
                 .as_mut()
