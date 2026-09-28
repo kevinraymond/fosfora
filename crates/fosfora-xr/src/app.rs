@@ -12,7 +12,7 @@ use log::{error, info};
 use crate::audio::LiveAudio;
 use crate::gfx::Gfx;
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
-use crate::playback::{Clip, Playback};
+use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::scene::{WorldOptions, XrScene};
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
@@ -135,6 +135,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       default: the bundled CC0 track under assets/audio/)
     //   adb shell setprop debug.fosfora.flash 1        (whole view white for 2 frames on each beat: the
     //       audio-to-photon measurement, filmed with a phone)
+    //   adb shell setprop debug.fosfora.playperf lowlatency|none   (AAudio performance mode of the playback
+    //       output; default lowlatency: 36 ms to the speaker on the Quest 3 against 140-215 ms for none)
+    //   adb shell setprop debug.fosfora.playbuf <ms>   (playback output buffer; default 84 ms in lowlatency so the
+    //       speaker sits behind the analysis + display chain and the tap delay lines them up; 0 = AAudio's default)
+    //   adb shell setprop debug.fosfora.tapdelay <ms>  (fixed delay of the analysis tap behind the frames
+    //       handed to AAudio; default: estimated from the stream's DAC timestamps, minus the detection time,
+    //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -288,6 +295,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
 
     let mut live_audio = None;
     let mut playback = None;
+    let playback_options = PlaybackOptions {
+        low_latency: debug_prop("debug.fosfora.playperf").as_deref() != Some("none"),
+        tap_delay_ms: debug_prop("debug.fosfora.tapdelay").and_then(|v| v.parse::<f32>().ok()),
+        buffer_ms: debug_prop("debug.fosfora.playbuf").and_then(|v| v.parse::<f32>().ok()),
+    };
     match audio_source.as_str() {
         "mic" => live_audio = Some(LiveAudio::mic()),
         "micxr" => {
@@ -318,7 +330,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let clip = Clip::decode(&dirs.assets.join("audio").join("ember_glow_excerpt.ogg"))?;
                 let unused_tap =
                     std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-                playback = Some(Playback::start(clip, unused_tap).context("starting playback")?);
+                playback = Some(
+                    Playback::start(clip, unused_tap, playback_options)
+                        .context("starting playback")?,
+                );
             }
         }
         "file" => {
@@ -337,7 +352,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Clip::decode(&path)?
             };
             let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(clip, tap.clone()).context("starting playback")?;
+            let p = Playback::start(clip, tap.clone(), playback_options)
+                .context("starting playback")?;
             live_audio = Some(LiveAudio::from_ring(
                 tap,
                 p.output_rate(),
@@ -630,7 +646,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if let Some(p) = &playback {
                     // Beat timing evidence (S6): where in the clip the
                     // beat fired, against the track's known 140 BPM grid.
-                    info!("beat at clip {:.4} s", p.position_secs());
+                    info!(
+                        "beat at clip {:.4} s · out latency {:.0} ms · tap delay {:.0} ms",
+                        p.position_secs(),
+                        p.latency_ms(),
+                        p.tap_delay_ms()
+                    );
                 }
             }
             beat_env *= (-dt * 6.0).exp();
@@ -681,10 +702,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             if let Some(p) = &playback {
                 info!(
-                    "playback: {:.1} s into the clip · {} frames played at {} Hz",
+                    "playback: {:.1} s into the clip · {} frames played at {} Hz · out latency {:.0} ms · tap delay {:.0} ms · xruns {}",
                     p.position_secs(),
                     p.frames_played(),
-                    p.output_rate()
+                    p.output_rate(),
+                    p.latency_ms(),
+                    p.tap_delay_ms(),
+                    p.xruns()
                 );
             }
         }
