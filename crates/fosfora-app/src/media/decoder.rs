@@ -411,7 +411,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod gif_tests {
     use super::*;
 
     #[test]
