@@ -33,11 +33,15 @@ as we investigate and, if a fix is warranted, coordinate a release.
 
 Fosfora is a **local, live-performance tool**, not a hardened network service.
 By design it opens several local interfaces that you should keep on trusted
-networks. Reports about the following are in scope:
+networks. OSC input and the web touch surface listen on this computer only
+(127.0.0.1) until **Other devices** is switched on for each under
+Setup ▸ Control; with it on, anyone on the same network can control the app.
+Reports about the following are in scope:
 
 - **OSC in/out** — UDP control surface (default port 9000)
 - **Web touch surface** — the built-in HTTP/WebSocket server used to control the
-  app from a phone or tablet on the local network
+  app from a phone or tablet on the local network. WebSocket connections from
+  a web page other than the one it serves are refused
 - **NDI®** — video output over the local network
 - **AI shader assistant** — the API key stored in the OS keyring and requests
   made to the user-configured LLM endpoint

@@ -99,7 +99,9 @@ python bridges/smart_lfo.py
 
 ## Running on a Separate Machine
 
-Bridges can run on a different computer on the same network:
+Bridges can run on a different computer on the same network. Fosfora's web remote
+accepts connections from this computer only until you switch on **Other devices**
+under Setup ▸ Control ▸ Web remote; do that first.
 
 ```bash
 python bridges/mediapipe_hands.py --host 192.168.1.100
@@ -142,6 +144,9 @@ docker compose -f bridges/docker-compose.yml --profile gpu up yolo-gpu hands lfo
 # Point at Fosfora on another machine
 FOSFORA_HOST=192.168.1.100 docker compose -f bridges/docker-compose.yml up hands lfo
 ```
+
+Containers reach Fosfora as `host.docker.internal`, not `localhost`, so switch on
+**Other devices** for the web remote (Setup ▸ Control) before starting them.
 
 ### Building images
 

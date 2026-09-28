@@ -97,6 +97,11 @@ pub struct WebConfig {
     pub enabled: bool,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Accept connections from other devices (a phone, a bridge in Docker on
+    /// Linux). Off: the server listens on 127.0.0.1 only, so nothing on the
+    /// venue network can drive the show.
+    #[serde(default)]
+    pub lan: bool,
 }
 
 fn default_true() -> bool {
@@ -111,6 +116,7 @@ impl Default for WebConfig {
         Self {
             enabled: true,
             port: 9002,
+            lan: false,
         }
     }
 }
@@ -202,11 +208,22 @@ mod tests {
         let c = WebConfig {
             enabled: false,
             port: 8080,
+            lan: true,
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: WebConfig = serde_json::from_str(&json).unwrap();
         assert!(!c2.enabled);
         assert_eq!(c2.port, 8080);
+        assert!(c2.lan);
+    }
+
+    /// A web.json saved before LAN access was a setting has no `lan` key; it
+    /// loads as loopback-only (#43).
+    #[test]
+    fn web_config_without_lan_is_loopback_only() {
+        let c: WebConfig = serde_json::from_str(r#"{"enabled":true,"port":9002}"#).unwrap();
+        assert!(!c.lan);
+        assert!(!WebConfig::default().lan);
     }
 
     #[test]

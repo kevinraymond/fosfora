@@ -13,12 +13,12 @@ use crate::midi::types::TriggerAction;
 /// Spawn a UDP receiver thread that decodes OSC and sends parsed messages.
 pub fn spawn_receiver(
     port: u16,
+    lan: bool,
     tx: Sender<OscInMessage>,
 ) -> anyhow::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
-    let addr = format!("0.0.0.0:{port}");
-    let socket = UdpSocket::bind(&addr)?;
+    let socket = bind_socket(port, lan)?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
-    log::info!("OSC receiver listening on {addr}");
+    log::info!("OSC receiver listening on {}", socket.local_addr()?);
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_flag = shutdown.clone();
@@ -53,6 +53,11 @@ pub fn spawn_receiver(
         })?;
 
     Ok((shutdown, handle))
+}
+
+/// Loopback only unless LAN access is on (#45).
+fn bind_socket(port: u16, lan: bool) -> std::io::Result<UdpSocket> {
+    UdpSocket::bind((if lan { "0.0.0.0" } else { "127.0.0.1" }, port))
 }
 
 fn process_packet(packet: &OscPacket, tx: &Sender<OscInMessage>) {
@@ -319,6 +324,14 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
 mod tests {
     use super::*;
     use rosc::OscType;
+
+    #[test]
+    fn receiver_binds_loopback_unless_lan_is_on() {
+        let local = bind_socket(0, false).unwrap().local_addr().unwrap();
+        assert!(local.ip().is_loopback(), "{local}");
+        let lan = bind_socket(0, true).unwrap().local_addr().unwrap();
+        assert!(lan.ip().is_unspecified(), "{lan}");
+    }
 
     #[test]
     fn first_float_from_float() {

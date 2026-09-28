@@ -33,6 +33,17 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
             web.restart_server();
         }
     });
+    let mut lan = web.config.lan;
+    if ui
+        .checkbox(
+            &mut lan,
+            RichText::new("Allow other devices").size(SMALL_SIZE),
+        )
+        .on_hover_text("Off: only this computer can connect; on: a phone or tablet can too")
+        .changed()
+    {
+        web.set_lan(lan);
+    }
 
     // URL display
     if web.is_running() {
@@ -58,7 +69,7 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
         });
 
         // Try to find LAN IP
-        if let Some(ip) = get_lan_ip() {
+        if let Some(ip) = get_lan_ip().filter(|_| web.config.lan) {
             let lan_url = format!("http://{ip}:{port}");
             ui.horizontal(|ui| {
                 ui.label(

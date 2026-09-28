@@ -29,6 +29,17 @@ pub fn draw_osc_panel(ui: &mut Ui, osc: &mut OscSystem) {
         osc.config.save();
         osc.restart_receiver();
     }
+    let mut lan = osc.config.rx_lan;
+    if ui
+        .checkbox(
+            &mut lan,
+            RichText::new("Allow other devices").size(SMALL_SIZE),
+        )
+        .on_hover_text("Off: only apps on this computer can send OSC")
+        .changed()
+    {
+        osc.set_rx_lan(lan);
+    }
 
     ui.add_space(4.0);
 

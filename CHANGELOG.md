@@ -7,6 +7,11 @@
 
 Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
 
+### Changed
+- **OSC input and the web remote now listen on this computer only.** A phone, a controller
+  on another machine or a bridge in Docker needs **Other devices** switched on for each
+  under Setup ▸ Control. Web pages other than the remote's own can no longer connect to it.
+
 ### Fixed
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
   Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on

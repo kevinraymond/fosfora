@@ -84,6 +84,7 @@ impl WebSystem {
 
         match server::spawn_accept_loop(
             self.config.port,
+            self.config.lan,
             tx.clone(),
             clients.clone(),
             self.latest_state.clone(),
@@ -138,6 +139,13 @@ impl WebSystem {
             self.stop_server();
         }
         self.config.save();
+    }
+
+    /// Allow or refuse connections from other devices; restarts the server.
+    pub fn set_lan(&mut self, lan: bool) {
+        self.config.lan = lan;
+        self.config.save();
+        self.restart_server();
     }
 
     /// Whether the server is running.

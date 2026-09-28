@@ -5,6 +5,9 @@
 #   docker compose up hands lfo          # start specific bridges
 #   docker compose --profile depth up    # include depth camera bridges
 #   docker compose --profile gpu up      # use GPU-accelerated variants
+#
+# The containers reach Fosfora as host.docker.internal, not localhost: switch on
+# Other devices for the web remote (Setup > Control) first, or they are refused.
 
 services:
 

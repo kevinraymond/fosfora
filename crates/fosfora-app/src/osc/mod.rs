@@ -129,7 +129,7 @@ impl OscSystem {
     pub fn start_receiver(&mut self) {
         self.stop_receiver();
         let (tx, rx) = crossbeam_channel::bounded(64);
-        match receiver::spawn_receiver(self.config.rx_port, tx) {
+        match receiver::spawn_receiver(self.config.rx_port, self.config.rx_lan, tx) {
             Ok((shutdown, handle)) => {
                 self.receiver = Some(rx);
                 self.shutdown = Some(shutdown);
@@ -155,6 +155,13 @@ impl OscSystem {
         self.receiver = None;
         self.shutdown = None;
         self.last_address = None;
+    }
+
+    /// Receive from other devices or from this computer only; restarts the listener.
+    pub fn set_rx_lan(&mut self, lan: bool) {
+        self.config.rx_lan = lan;
+        self.config.save();
+        self.restart_receiver();
     }
 
     /// Restart receiver (e.g., after port change).

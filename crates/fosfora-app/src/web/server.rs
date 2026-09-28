@@ -26,17 +26,17 @@ fn get_html_content() -> String {
 /// Spawn the accept loop thread. Returns (shutdown_flag, thread_handle).
 pub fn spawn_accept_loop(
     port: u16,
+    lan: bool,
     inbound_tx: Sender<WsInMessage>,
     clients: Arc<Mutex<Vec<Sender<String>>>>,
     latest_state: Arc<Mutex<String>>,
     shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<JoinHandle<()>> {
-    let addr = format!("0.0.0.0:{port}");
-    let listener = TcpListener::bind(&addr)?;
-    listener.set_nonblocking(false)?;
-    // Short accept timeout so we can check shutdown flag
-    let _ = listener.set_nonblocking(false);
-    log::info!("Web control server listening on http://0.0.0.0:{port}");
+    let listener = bind_listener(port, lan)?;
+    log::info!(
+        "Web control server listening on http://{}",
+        listener.local_addr()?
+    );
 
     let client_counter = Arc::new(AtomicUsize::new(0));
 
@@ -53,6 +53,7 @@ pub fn spawn_accept_loop(
                         let _ = stream.set_nonblocking(false);
                         handle_connection(
                             stream,
+                            lan,
                             &inbound_tx,
                             &clients,
                             &latest_state,
@@ -78,8 +79,14 @@ pub fn spawn_accept_loop(
     Ok(handle)
 }
 
+/// Loopback only unless LAN access is on (#43).
+fn bind_listener(port: u16, lan: bool) -> std::io::Result<TcpListener> {
+    TcpListener::bind((if lan { "0.0.0.0" } else { "127.0.0.1" }, port))
+}
+
 fn handle_connection(
     mut stream: TcpStream,
+    lan: bool,
     inbound_tx: &Sender<WsInMessage>,
     clients: &Arc<Mutex<Vec<Sender<String>>>>,
     latest_state: &Arc<Mutex<String>>,
@@ -98,6 +105,13 @@ fn handle_connection(
     let request = String::from_utf8_lossy(&buf[..n]);
 
     if is_websocket_upgrade(&request) {
+        if let Err(why) = upgrade_allowed(&request, lan) {
+            log::warn!("Refused WebSocket connection: {why}");
+            let _ = stream.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        }
         // Set read timeout for interleaved read/write in client handler
         let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
         // Replay already-read bytes then continue from the stream
@@ -137,6 +151,57 @@ fn handle_connection(
     } else {
         // Plain HTTP — serve the control surface HTML
         serve_http(&mut stream, &request);
+    }
+}
+
+/// Value of the first `name:` header in a raw request, trimmed; case-insensitive.
+fn header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+    request.lines().skip(1).find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(name).then(|| v.trim())
+    })
+}
+
+/// Hostname of a `Host` header value (`localhost:9002`, `[::1]:9002`), port dropped.
+fn host_name(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    host.rsplit_once(':').map_or(host, |(h, _)| h)
+}
+
+/// Whether a WebSocket upgrade may proceed.
+///
+/// - A browser always sends `Origin`, so any web page the operator has open
+///   could otherwise open `ws://127.0.0.1:9002` and drive the show. Only the
+///   control page this server serves itself is let in: its `Origin` names the
+///   same host:port as the request's `Host`. `Origin: null` (a file:// page,
+///   a sandboxed frame) is refused. Bridges and other non-browser clients send
+///   no `Origin` and are unaffected.
+/// - With LAN access off the `Host` must be a loopback name, which stops a DNS
+///   rebinding page from reaching the loopback-only server under its own name.
+fn upgrade_allowed(request: &str, lan: bool) -> Result<(), String> {
+    let host = header(request, "host");
+    if !lan
+        && let Some(h) = host
+        && !matches!(
+            host_name(h).to_ascii_lowercase().as_str(),
+            "localhost" | "127.0.0.1" | "::1"
+        )
+    {
+        return Err(format!("Host {h} is not this computer (LAN access is off)"));
+    }
+    match header(request, "origin") {
+        None => Ok(()),
+        Some(origin) => {
+            let origin_host = origin
+                .split_once("://")
+                .map(|(_, rest)| rest.trim_end_matches('/'));
+            match (origin_host, host) {
+                (Some(o), Some(h)) if o.eq_ignore_ascii_case(h) => Ok(()),
+                _ => Err(format!("page origin {origin} is not this server")),
+            }
+        }
     }
 }
 
@@ -226,5 +291,103 @@ impl Write for ReplayStream {
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.stream.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upgrade(headers: &[&str]) -> String {
+        let mut r = String::from("GET / HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n");
+        for h in headers {
+            r.push_str(h);
+            r.push_str("\r\n");
+        }
+        r + "\r\n"
+    }
+
+    #[test]
+    fn the_served_control_page_and_bridges_are_let_in() {
+        // The control page, loaded from this server.
+        let page = upgrade(&["Host: localhost:9002", "Origin: http://localhost:9002"]);
+        assert!(upgrade_allowed(&page, false).is_ok());
+        // A bridge: no Origin.
+        assert!(upgrade_allowed(&upgrade(&["Host: 127.0.0.1:9002"]), false).is_ok());
+        // A phone on the LAN loading the page by IP, with LAN access on.
+        let phone = upgrade(&["Host: 192.168.1.5:9002", "Origin: http://192.168.1.5:9002"]);
+        assert!(upgrade_allowed(&phone, true).is_ok());
+    }
+
+    #[test]
+    fn a_foreign_web_page_is_refused() {
+        let evil = upgrade(&["Host: 127.0.0.1:9002", "Origin: https://evil.example"]);
+        assert!(upgrade_allowed(&evil, false).is_err());
+        assert!(upgrade_allowed(&evil, true).is_err());
+        let file = upgrade(&["Host: localhost:9002", "Origin: null"]);
+        assert!(upgrade_allowed(&file, false).is_err());
+        // Same host, different port: another local web app.
+        let other = upgrade(&["Host: localhost:9002", "Origin: http://localhost:3000"]);
+        assert!(upgrade_allowed(&other, false).is_err());
+    }
+
+    #[test]
+    fn loopback_only_refuses_foreign_host_names() {
+        // DNS rebinding: the attacker's name resolves to 127.0.0.1, same origin.
+        let rebind = upgrade(&[
+            "Host: evil.example:9002",
+            "Origin: http://evil.example:9002",
+        ]);
+        assert!(upgrade_allowed(&rebind, false).is_err());
+        assert!(upgrade_allowed(&upgrade(&["Host: [::1]:9002"]), false).is_ok());
+        assert!(upgrade_allowed(&upgrade(&["host: LOCALHOST:9002"]), false).is_ok());
+    }
+
+    #[test]
+    fn server_binds_loopback_unless_lan_is_on() {
+        let local = bind_listener(0, false).unwrap().local_addr().unwrap();
+        assert!(local.ip().is_loopback(), "{local}");
+        let lan = bind_listener(0, true).unwrap().local_addr().unwrap();
+        assert!(lan.ip().is_unspecified(), "{lan}");
+    }
+
+    /// Through the real accept loop: a bridge (no Origin) completes the
+    /// handshake, a foreign page's Origin gets a 403.
+    #[test]
+    fn accept_loop_refuses_a_foreign_origin() {
+        use tungstenite::client::IntoClientRequest;
+
+        let port = bind_listener(0, false)
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (tx, _rx) = crossbeam_channel::bounded(1);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let handle = spawn_accept_loop(
+            port,
+            false,
+            tx,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(String::new())),
+            shutdown.clone(),
+        )
+        .unwrap();
+        let url = format!("ws://127.0.0.1:{port}/");
+
+        let bridge = tungstenite::connect(url.as_str());
+        assert!(bridge.is_ok(), "bridge refused: {:?}", bridge.err());
+
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut()
+            .insert("Origin", "https://evil.example".parse().unwrap());
+        match tungstenite::connect(req) {
+            Err(tungstenite::Error::Http(resp)) => assert_eq!(resp.status(), 403),
+            other => panic!("expected a 403, got {:?}", other.map(|_| ())),
+        }
+
+        drop(bridge);
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 }

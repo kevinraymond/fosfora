@@ -1105,7 +1105,9 @@ Open Sound Control (OSC) enables communication with other software: DAWs, lighti
 
 ### Receiving OSC (RX)
 
-Default: **port 9000** on all interfaces (0.0.0.0)
+Default: **port 9000**, from this computer only (127.0.0.1). To take OSC from a phone or
+another machine, switch on **Other devices** under Setup ▸ Control; it then listens on all
+interfaces (0.0.0.0), and anything on the network can send.
 
 **Address patterns:**
 
