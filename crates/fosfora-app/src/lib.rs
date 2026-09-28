@@ -30,6 +30,8 @@ pub mod download;
 pub mod effect;
 pub mod gpu;
 pub mod headless;
+#[cfg(feature = "desktop")]
+mod inbound;
 #[cfg(feature = "link")]
 pub mod link;
 pub mod media;

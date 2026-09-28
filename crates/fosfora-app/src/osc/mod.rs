@@ -128,7 +128,7 @@ impl OscSystem {
     /// Start the OSC receiver thread.
     pub fn start_receiver(&mut self) {
         self.stop_receiver();
-        let (tx, rx) = crossbeam_channel::bounded(64);
+        let (tx, rx) = crate::inbound::bounded(64);
         match receiver::spawn_receiver(self.config.rx_port, self.config.rx_lan, tx) {
             Ok((shutdown, handle)) => {
                 self.receiver = Some(rx);

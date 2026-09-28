@@ -65,7 +65,7 @@ impl MidiPort {
             })
             .ok_or_else(|| anyhow::anyhow!("MIDI port '{}' not found", port_name))?;
 
-        let (tx, rx): (Sender<MidiMessage>, Receiver<MidiMessage>) = crossbeam_channel::bounded(64);
+        let (tx, rx) = crate::inbound::bounded::<MidiMessage>(64);
         let (clock_tx, clock_rx): (Sender<u8>, Receiver<u8>) = crossbeam_channel::bounded(256);
 
         // midir manages its own callback thread internally
@@ -80,7 +80,7 @@ impl MidiPort {
                         return;
                     }
                     if let Some(msg) = parse_midi_bytes(data) {
-                        let _ = tx.try_send(msg); // drop if full
+                        tx.send(msg);
                     }
                 },
                 (),

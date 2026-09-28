@@ -9,6 +9,7 @@ use crossbeam_channel::Sender;
 
 use super::client;
 use super::types::WsInMessage;
+use crate::inbound::DropOldestSender;
 
 /// Embedded HTML control surface.
 /// In debug mode, try to read from filesystem for hot-reload; fall back to embedded.
@@ -24,10 +25,10 @@ fn get_html_content() -> String {
 }
 
 /// Spawn the accept loop thread. Returns (shutdown_flag, thread_handle).
-pub fn spawn_accept_loop(
+pub(crate) fn spawn_accept_loop(
     port: u16,
     lan: bool,
-    inbound_tx: Sender<WsInMessage>,
+    inbound_tx: DropOldestSender<WsInMessage>,
     clients: Arc<Mutex<Vec<Sender<String>>>>,
     latest_state: Arc<Mutex<String>>,
     shutdown: Arc<AtomicBool>,
@@ -87,7 +88,7 @@ fn bind_listener(port: u16, lan: bool) -> std::io::Result<TcpListener> {
 fn handle_connection(
     mut stream: TcpStream,
     lan: bool,
-    inbound_tx: &Sender<WsInMessage>,
+    inbound_tx: &DropOldestSender<WsInMessage>,
     clients: &Arc<Mutex<Vec<Sender<String>>>>,
     latest_state: &Arc<Mutex<String>>,
     shutdown: &Arc<AtomicBool>,
@@ -362,7 +363,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let (tx, _rx) = crossbeam_channel::bounded(1);
+        let (tx, _rx) = crate::inbound::bounded(1);
         let shutdown = Arc::new(AtomicBool::new(false));
         let handle = spawn_accept_loop(
             port,

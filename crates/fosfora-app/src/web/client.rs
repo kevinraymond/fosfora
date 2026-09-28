@@ -2,18 +2,19 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Receiver;
 use tungstenite::WebSocket;
 use tungstenite::protocol::Message;
 
 use super::types::{SourceFieldInfo, WsInMessage};
+use crate::inbound::DropOldestSender;
 use crate::midi::types::TriggerAction;
 
 /// Run the per-client read/write loop.
 /// Reads JSON from the client, sends outbound messages from the broadcast channel.
-pub fn run_client<S: Read + Write>(
+pub(crate) fn run_client<S: Read + Write>(
     mut ws: WebSocket<S>,
-    inbound_tx: Sender<WsInMessage>,
+    inbound_tx: DropOldestSender<WsInMessage>,
     outbound_rx: Receiver<String>,
     initial_state: String,
     shutdown: Arc<AtomicBool>,
@@ -41,7 +42,7 @@ pub fn run_client<S: Read + Write>(
         match ws.read() {
             Ok(Message::Text(text)) => {
                 if let Some(msg) = parse_client_message(text.as_ref()) {
-                    let _ = inbound_tx.try_send(msg);
+                    inbound_tx.send(msg);
                 }
             }
             Ok(Message::Close(_)) => {
@@ -53,7 +54,7 @@ pub fn run_client<S: Read + Write>(
             }
             Ok(Message::Binary(data)) => {
                 if let Some(msg) = parse_binary_preview(&data) {
-                    let _ = inbound_tx.try_send(msg);
+                    inbound_tx.send(msg);
                 }
             }
             Ok(_) => {} // Pong, etc.

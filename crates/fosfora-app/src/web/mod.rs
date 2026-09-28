@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use self::types::{WebConfig, WebFrameResult, WsInMessage};
 use crate::audio::features::AudioFeatures;
+use crate::inbound::DropOldestSender;
 use std::collections::HashMap;
 
 use crate::params::{ParamDef, ParamValue};
@@ -20,7 +21,7 @@ use crate::params::{ParamDef, ParamValue};
 /// Central WebSocket system: owns accept thread, client channels, config.
 pub struct WebSystem {
     inbound_rx: Option<Receiver<WsInMessage>>,
-    inbound_tx: Sender<WsInMessage>,
+    inbound_tx: DropOldestSender<WsInMessage>,
     clients: Arc<Mutex<Vec<Sender<String>>>>,
     shutdown: Option<Arc<AtomicBool>>,
     accept_handle: Option<JoinHandle<()>>,
@@ -39,7 +40,7 @@ pub struct WebSystem {
 impl WebSystem {
     /// The system with `config` and nothing opened: no server started.
     fn unconnected(config: WebConfig) -> Self {
-        let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(64);
+        let (inbound_tx, inbound_rx) = crate::inbound::bounded(64);
 
         Self {
             inbound_rx: Some(inbound_rx),
@@ -80,7 +81,7 @@ impl WebSystem {
         self.stop_server();
         let shutdown = Arc::new(AtomicBool::new(false));
         let clients = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = crossbeam_channel::bounded(64);
+        let (tx, rx) = crate::inbound::bounded(64);
 
         match server::spawn_accept_loop(
             self.config.port,

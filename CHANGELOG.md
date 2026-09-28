@@ -44,6 +44,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 - **Soft edges darkened wherever a layer used Normal blend over another**, costing antialiased
   fringes and glows up to a quarter of their brightness. Normal is now a true premultiplied
   over, so stacked layers' coverage also adds up instead of taking the larger of the two.
+- **A fader moved while an effect loaded could stick partway** over OSC, MIDI or the web
+  remote: once the input queue filled, the newest messages were the ones dropped. The oldest
+  are dropped now, so the last value sent always arrives.
 
 ## v2.0.0 — 2026-09-27
 

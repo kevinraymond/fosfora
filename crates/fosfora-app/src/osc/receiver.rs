@@ -4,17 +4,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::Sender;
+use crate::inbound::DropOldestSender;
 use rosc::{OscMessage, OscPacket, OscType};
 
 use super::types::OscInMessage;
 use crate::midi::types::TriggerAction;
 
 /// Spawn a UDP receiver thread that decodes OSC and sends parsed messages.
-pub fn spawn_receiver(
+pub(crate) fn spawn_receiver(
     port: u16,
     lan: bool,
-    tx: Sender<OscInMessage>,
+    tx: DropOldestSender<OscInMessage>,
 ) -> anyhow::Result<(Arc<AtomicBool>, JoinHandle<()>)> {
     let socket = bind_socket(port, lan)?;
     socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -60,11 +60,11 @@ fn bind_socket(port: u16, lan: bool) -> std::io::Result<UdpSocket> {
     UdpSocket::bind((if lan { "0.0.0.0" } else { "127.0.0.1" }, port))
 }
 
-fn process_packet(packet: &OscPacket, tx: &Sender<OscInMessage>) {
+fn process_packet(packet: &OscPacket, tx: &DropOldestSender<OscInMessage>) {
     match packet {
         OscPacket::Message(msg) => {
             if let Some(parsed) = parse_osc_message(msg) {
-                let _ = tx.try_send(parsed);
+                tx.send(parsed);
             }
         }
         OscPacket::Bundle(bundle) => {
