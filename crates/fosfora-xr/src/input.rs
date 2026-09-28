@@ -34,6 +34,19 @@ pub struct HandsFrame {
     pub pinch_began: [bool; 2],
     /// Pinch currently held on each hand.
     pub pinching: [bool; 2],
+    /// Midpoint of the thumb and index tips, where both were located.
+    pub pinch_point: [Option<[f32; 3]>; 2],
+    /// Thumb tip to index tip distance (meters), where both were located.
+    pub tip_distance: [Option<f32>; 2],
+    /// Palm joint pose: position and (x, y, z, w) orientation. Its -Y axis
+    /// is the palm normal (`XR_EXT_hand_tracking`: +Y points out of the
+    /// back of the hand).
+    pub palm: [Option<([f32; 3], [f32; 4])>; 2],
+    /// Index fingertip: xyz and the joint radius (the debug panel's poke).
+    pub index_tip: [Option<[f32; 4]>; 2],
+    /// Index knuckle (proximal joint): the debug panel's ray passes
+    /// through it.
+    pub index_knuckle: [Option<[f32; 3]>; 2],
     /// Skinning matrices for the hand meshes, valid where `mesh_ready`.
     pub skins: HandSkins,
     /// The hand has a mesh and every joint was located this frame.
@@ -42,7 +55,7 @@ pub struct HandsFrame {
 
 /// Thumb tip to index tip distance thresholds (meters), with hysteresis so
 /// a held pinch does not flicker at the boundary.
-const PINCH_ON_M: f32 = 0.015;
+pub const PINCH_ON_M: f32 = 0.015;
 const PINCH_OFF_M: f32 = 0.030;
 /// Log the estimated hand scale when it moves this much from the last log.
 const SCALE_LOG_STEP: f32 = 0.02;
@@ -187,12 +200,33 @@ impl Hands {
                 }
             }
 
+            let posed =
+                xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID;
+            let palm = &joints[xr::HandJoint::PALM.into_raw() as usize];
+            if palm.location_flags.contains(posed) {
+                let (p, q) = (palm.pose.position, palm.pose.orientation);
+                frame.palm[h] = Some(([p.x, p.y, p.z], [q.x, q.y, q.z, q.w]));
+            }
+            let knuckle = &joints[xr::HandJoint::INDEX_PROXIMAL.into_raw() as usize];
+            if valid(knuckle) {
+                let p = knuckle.pose.position;
+                frame.index_knuckle[h] = Some([p.x, p.y, p.z]);
+            }
+            let tip = &joints[xr::HandJoint::INDEX_TIP.into_raw() as usize];
+            if valid(tip) {
+                let p = tip.pose.position;
+                frame.index_tip[h] = Some([p.x, p.y, p.z, tip.radius]);
+            }
+
             let thumb = &joints[xr::HandJoint::THUMB_TIP.into_raw() as usize];
             let index = &joints[xr::HandJoint::INDEX_TIP.into_raw() as usize];
             if any && valid(thumb) && valid(index) {
                 let a = thumb.pose.position;
                 let b = index.pose.position;
                 let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+                frame.pinch_point[h] =
+                    Some([0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z)]);
+                frame.tip_distance[h] = Some(d);
                 if !self.pinching[h] && d < PINCH_ON_M {
                     self.pinching[h] = true;
                     frame.pinch_began[h] = true;

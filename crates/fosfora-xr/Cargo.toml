@@ -35,6 +35,9 @@ fosfora-app = { path = "../fosfora-app", default-features = false, features = ["
 # interop surface. glam matches core.
 wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl", "parking_lot"] }
 bytemuck = { version = "1", features = ["derive"] }
+# The debug panel (hud.rs): the same egui the core already builds for XR.
+egui = "0.33"
+egui-wgpu = "0.33"
 # Same cpal as core; its AAudio host does capture (core) and playback (S6).
 cpal = "0.17.3"
 # Raw AAudio for the microphone path: cpal cannot set the input preset, and
