@@ -535,6 +535,8 @@ fn sh_cell_index(gx: i32, gy: i32) -> u32 {
 
 // Get the start index and count for a grid cell.
 // Returns vec2u(offset, count). If cell is out of bounds, returns (0, 0).
+// sh_cell_offsets holds the exclusive prefix sum of the counts: the scatter
+// pass claims its slots through a separate cursor copy, so the starts survive.
 fn sh_cell_range(gx: i32, gy: i32) -> vec2u {
     if gx < 0 || gx >= i32(SH_GRID_W) || gy < 0 || gy >= i32(SH_GRID_H) {
         return vec2u(0u, 0u);
@@ -568,10 +570,7 @@ fn sh_cell_range_3d(c: vec3i) -> vec2u {
         return vec2u(0u, 0u);
     }
     let cell = (u32(c.z) * SH_GRID_D + u32(c.y)) * SH_GRID_D + u32(c.x);
-    let count = sh_cell_counts[cell];
-    // The scatter pass bumps each cell's offset once per particle it places, so
-    // by the time the sim runs sh_cell_offsets holds the cell's END.
-    return vec2u(sh_cell_offsets[cell] - count, count);
+    return vec2u(sh_cell_offsets[cell], sh_cell_counts[cell]);
 }
 
 // --- Hash / random utilities ---

@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
+
 ## v2.0.0 — 2026-09-27
 
 Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,

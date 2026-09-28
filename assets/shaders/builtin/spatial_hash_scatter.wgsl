@@ -1,6 +1,7 @@
 // Spatial hash pass 3: Scatter particles into sorted order.
-// Each alive particle writes its index to sorted_indices[cell_offsets[cell] + local_offset].
-// cell_offsets is used as an atomic counter (incremented per particle in each cell).
+// Each alive particle writes its index to sorted_indices[cursor[cell]++]. Binding 1 is
+// the cell cursor: a copy of cell_offsets made after the prefix sum and consumed here as
+// an atomic counter, so cell_offsets itself still holds every cell's start for the sim.
 
 struct Uniforms {
     delta_time: f32,

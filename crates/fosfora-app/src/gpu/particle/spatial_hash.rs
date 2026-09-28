@@ -70,11 +70,21 @@ const _: () = assert!(std::mem::offset_of!(super::types::ParticleUniforms, emitt
 /// 3-pass compute pipeline: count → prefix sum → scatter.
 /// After execution, `sorted_indices` contains particle indices sorted by grid cell,
 /// and `cell_offsets` contains the start index for each cell in `sorted_indices`.
+///
+/// The scatter pass claims slots with an atomic counter per cell. That counter
+/// used to be `cell_offsets` itself, so by the time the sim ran every entry held
+/// the cell's END and `sh_cell_range` handed the next cell's run to every
+/// shipped interaction effect (board #3291). The counter is now a copy,
+/// `cell_cursor`, taken after the prefix sum; `cell_offsets` keeps the starts.
 pub struct SpatialHashGrid {
     /// Per-cell atomic count buffer (num_cells * 4 bytes)
     cell_counts_buffer: wgpu::Buffer,
-    /// Per-cell prefix sum result (num_cells * 4 bytes)
+    /// Per-cell prefix sum result (num_cells * 4 bytes): where each cell's run
+    /// starts in `sorted_indices`, untouched after the prefix sum.
     cell_offsets_buffer: wgpu::Buffer,
+    /// The scatter pass's per-cell claim counter: a copy of `cell_offsets`
+    /// made each dispatch, consumed by `atomicAdd` (num_cells * 4 bytes).
+    cell_cursor_buffer: wgpu::Buffer,
     /// Sorted particle indices (max_particles * 4 bytes)
     #[allow(dead_code)]
     sorted_indices_buffer: wgpu::Buffer,
@@ -92,11 +102,8 @@ pub struct SpatialHashGrid {
     scatter_bind_groups: [BindGroup; 2],
 
     pub max_particles: u32,
-    #[allow(dead_code)]
     grid_w: u32,
-    #[allow(dead_code)]
     grid_h: u32,
-    #[allow(dead_code)]
     num_cells: u32,
     /// Edge of the 3D grid, patched into the sim's `SH_GRID_D`; 1 in `Planar` mode.
     grid_d: u32,
@@ -147,7 +154,17 @@ impl SpatialHashGrid {
         let cell_offsets_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("spatial-hash-cell-offsets"),
             size: (num_cells * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | PROBE_USAGE,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC
+                | PROBE_USAGE,
+            mapped_at_creation: false,
+        });
+
+        let cell_cursor_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("spatial-hash-cell-cursor"),
+            size: (num_cells * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -238,7 +255,7 @@ impl SpatialHashGrid {
             entries: &[
                 // binding 0: pos_life (read)
                 bgl_storage_entry(0, true),
-                // binding 1: cell_offsets (read_write atomic — scatter uses atomicAdd for local offset)
+                // binding 1: cell_cursor (read_write atomic — scatter claims slots with atomicAdd)
                 bgl_storage_entry(1, false),
                 // binding 2: sorted_indices (write)
                 bgl_storage_entry(2, false),
@@ -263,7 +280,7 @@ impl SpatialHashGrid {
                 device,
                 &scatter_bgl,
                 &pos_life_buffers[0],
-                &cell_offsets_buffer,
+                &cell_cursor_buffer,
                 &sorted_indices_buffer,
                 uniform_buffer,
             ),
@@ -271,7 +288,7 @@ impl SpatialHashGrid {
                 device,
                 &scatter_bgl,
                 &pos_life_buffers[1],
-                &cell_offsets_buffer,
+                &cell_cursor_buffer,
                 &sorted_indices_buffer,
                 uniform_buffer,
             ),
@@ -312,6 +329,7 @@ impl SpatialHashGrid {
         Self {
             cell_counts_buffer,
             cell_offsets_buffer,
+            cell_cursor_buffer,
             sorted_indices_buffer,
             count_pipeline,
             count_bind_groups,
@@ -339,6 +357,12 @@ impl SpatialHashGrid {
     /// `Planar` mode.
     pub fn grid_d(&self) -> u32 {
         self.grid_d
+    }
+
+    /// The grid's width and height, the values the sim's `SH_GRID_W` and
+    /// `SH_GRID_H` must carry (both the edge in `Volume` mode).
+    pub fn grid_wh(&self) -> (u32, u32) {
+        (self.grid_w, self.grid_h)
     }
 
     /// Run the 3-pass spatial hash build before particle sim.
@@ -373,6 +397,16 @@ impl SpatialHashGrid {
             pass.set_bind_group(0, &self.prefix_sum_bind_group, &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
+
+        // The scatter pass claims slots by bumping a per-cell counter; give it
+        // a copy so `cell_offsets` still holds the starts when the sim reads it.
+        encoder.copy_buffer_to_buffer(
+            &self.cell_offsets_buffer,
+            0,
+            &self.cell_cursor_buffer,
+            0,
+            u64::from(self.num_cells) * 4,
+        );
 
         // Pass 3: Scatter particles into sorted order
         {
@@ -500,23 +534,40 @@ fn patch_grid_d(source: &str, grid_d: u32) -> String {
     )
 }
 
-/// Set a sim source's `SH_GRID_D` to `grid_d`, whatever value it carries.
+/// Set one `const SH_GRID_<axis>: u32 = ...;` declaration in a sim source to
+/// `value`, whatever it carries. A source without the declaration comes back
+/// unchanged.
+fn patch_sim_const(source: &str, name: &str, value: u32) -> String {
+    let decl = format!("const {name}: u32 = ");
+    let Some(start) = source.find(&decl) else {
+        return source.to_string();
+    };
+    let at = start + decl.len();
+    let Some(len) = source[at..].find(';') else {
+        return source.to_string();
+    };
+    format!("{}{value}u{}", &source[..at], &source[at + len..])
+}
+
+/// Set a sim source's `SH_GRID_W`, `SH_GRID_H` and `SH_GRID_D` to the grid
+/// that was actually built.
 ///
-/// The loader patches it from the effect's unscaled `max_count`, but the grid
-/// is sized from the count `ParticleSystem` actually allocates (after quality
-/// scaling and device clamps), and the initial-effect path in `app.rs` never
-/// sets it. The grid owns the buffers, so its edge is the one the sim must use.
-/// A source without the declaration comes back unchanged.
+/// The loader patches them from the effect's unscaled `max_count`, but the
+/// grid is sized from the count `ParticleSystem` allocates (after quality
+/// scaling and device clamps): at any quality but 1.0 a 2D sim indexed a grid
+/// of a different size than its buffers (board #3292). The grid owns the
+/// buffers, so its dimensions are the ones the sim must carry.
+pub(super) fn patch_sim_grid_constants(source: &str, grid: &SpatialHashGrid) -> String {
+    let (w, h) = grid.grid_wh();
+    let s = patch_sim_const(source, "SH_GRID_W", w);
+    let s = patch_sim_const(&s, "SH_GRID_H", h);
+    patch_sim_const(&s, "SH_GRID_D", grid.grid_d())
+}
+
+/// Set a sim source's `SH_GRID_D` alone (tests of the declaration rewrite).
+#[cfg(test)]
 pub(super) fn patch_sim_grid_d(source: &str, grid_d: u32) -> String {
-    const DECL: &str = "const SH_GRID_D: u32 = ";
-    let Some(start) = source.find(DECL) else {
-        return source.to_string();
-    };
-    let value = start + DECL.len();
-    let Some(len) = source[value..].find(';') else {
-        return source.to_string();
-    };
-    format!("{}{grid_d}u{}", &source[..value], &source[value + len..])
+    patch_sim_const(source, "SH_GRID_D", grid_d)
 }
 
 fn create_scatter_bind_group(
