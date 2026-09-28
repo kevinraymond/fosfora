@@ -72,6 +72,9 @@ pub struct App {
     pub preset_loader: PresetLoader,
     // Settings
     pub settings: SettingsConfig,
+    /// The OS asks for reduced motion (#109), read once at startup. Auto flash
+    /// limiting goes Strict and interface animations are switched off.
+    pub reduce_motion: bool,
     /// Theme files from the themes folder (#3125), read at startup and on
     /// Reload in Appearance.
     pub custom_themes: Vec<crate::ui::theme::custom::CustomTheme>,
@@ -486,6 +489,13 @@ impl App {
             settings.ui_scale,
         );
         crate::ui::theme::custom::publish(&egui_overlay.context(), &custom_themes);
+        let reduce_motion =
+            crate::ui::accessibility::motion::ReducedMotion::detect().should_reduce();
+        if reduce_motion {
+            log::info!("System asks for reduced motion: strict flash limit, no UI animation");
+            // configure() clones the current style, so this survives theme changes.
+            egui_overlay.context().style_mut(|s| s.animation_time = 0.0);
+        }
         #[cfg(feature = "ndi")]
         let ndi = crate::ndi::NdiSystem::new(
             &gpu.device,
@@ -569,6 +579,7 @@ impl App {
             morph_from: None,
             morph_to: None,
             settings,
+            reduce_motion,
             custom_themes,
             egui_overlay,
             effect_loader,
@@ -3740,6 +3751,10 @@ impl App {
             log::error!("GPU device lost — cannot render");
             return Err(wgpu::SurfaceError::Lost);
         }
+        self.post_process.flash_budget = self
+            .settings
+            .flash_limit
+            .flashes_per_second(self.reduce_motion);
 
         let output = self.gpu.surface.get_current_texture()?;
         let surface_view = output

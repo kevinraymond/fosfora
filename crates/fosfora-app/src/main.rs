@@ -1680,6 +1680,16 @@ impl ApplicationHandler for FosforaApp {
                     }
                 }
 
+                // Photosensitivity flash limiter (#108)
+                let set_flash_limit: Option<fosfora_app::settings::FlashLimit> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_flash_limit")));
+                if let Some(limit) = set_flash_limit {
+                    app.settings.flash_limit = limit;
+                    app.settings.save();
+                }
+
                 // Classic / workspace layout switch (#3122)
                 let set_classic_layout: Option<bool> = app
                     .egui_overlay

@@ -7,6 +7,13 @@
 
 Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
 
+### Added
+- **A photosensitivity flash limiter, on by default.** Large-area flashing is held to at most
+  three flashes a second, the WCAG and broadcast threshold, on screen and in every output and
+  recording; bright hits beyond that are dimmed. Set it under Setup ▸ General: Strict allows
+  one a second, and Auto goes Strict when the system asks for reduced motion, which also
+  stops interface animation. Strobe-heavy looks are throttled; Off restores them.
+
 ### Changed
 - **OSC input and the web remote now listen on this computer only.** A phone, a controller
   on another machine or a bridge in Docker needs **Other devices** switched on for each

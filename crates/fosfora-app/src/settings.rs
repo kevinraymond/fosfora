@@ -104,6 +104,51 @@ impl AlphaOutputMode {
     }
 }
 
+/// Photosensitivity flash limiter (#108): how many flashes a second the output
+/// may carry, on screen and into every output and recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FlashLimit {
+    /// Standard, or Strict when the operating system asks for reduced motion (#109).
+    #[default]
+    Auto,
+    /// At most three a second: the WCAG 2.x / ITU-R BT.1702 general-flash threshold.
+    Standard,
+    /// At most one a second.
+    Strict,
+    /// No limit, for a venue that has decided against one.
+    Off,
+}
+
+impl FlashLimit {
+    pub const ALL: [FlashLimit; 4] = [
+        FlashLimit::Auto,
+        FlashLimit::Standard,
+        FlashLimit::Strict,
+        FlashLimit::Off,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            FlashLimit::Auto => "Auto",
+            FlashLimit::Standard => "Standard (3 a second)",
+            FlashLimit::Strict => "Strict (1 a second)",
+            FlashLimit::Off => "Off",
+        }
+    }
+
+    /// Flashes allowed per second, 0 = no limit. `reduce_motion` is the OS
+    /// accessibility setting; only Auto follows it.
+    pub fn flashes_per_second(self, reduce_motion: bool) -> f32 {
+        use crate::gpu::postprocess::{FLASH_BUDGET_STANDARD, FLASH_BUDGET_STRICT};
+        match self {
+            FlashLimit::Auto if reduce_motion => FLASH_BUDGET_STRICT,
+            FlashLimit::Auto | FlashLimit::Standard => FLASH_BUDGET_STANDARD,
+            FlashLimit::Strict => FLASH_BUDGET_STRICT,
+            FlashLimit::Off => 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsConfig {
     pub version: u32,
@@ -163,6 +208,10 @@ pub struct SettingsConfig {
     /// starts by itself until its key is here.
     #[serde(default)]
     pub tours_done: Vec<String>,
+    /// Photosensitivity flash limiter (#108). A settings file from before it
+    /// existed loads as Auto, so the limit is on for upgrading installs too.
+    #[serde(default)]
+    pub flash_limit: FlashLimit,
 }
 
 /// Serde default for [`SettingsConfig::ui_scale`]: `f32`'s `Default` is 0.
@@ -194,6 +243,7 @@ impl Default for SettingsConfig {
             output_display: None,
             ui_scale: 1.0,
             tours_done: Vec::new(),
+            flash_limit: FlashLimit::Auto,
         }
     }
 }
@@ -250,6 +300,21 @@ mod tests {
     }
 
     // ---- Additional tests ----
+
+    #[test]
+    fn flash_limit_is_on_for_old_settings_files() {
+        let c: SettingsConfig = serde_json::from_str(r#"{"version":1,"theme":"Gray"}"#).unwrap();
+        assert_eq!(c.flash_limit, FlashLimit::Auto);
+        assert_eq!(c.flash_limit.flashes_per_second(false), 3.0);
+    }
+
+    #[test]
+    fn only_auto_follows_reduced_motion() {
+        assert_eq!(FlashLimit::Auto.flashes_per_second(true), 1.0);
+        assert_eq!(FlashLimit::Standard.flashes_per_second(true), 3.0);
+        assert_eq!(FlashLimit::Strict.flashes_per_second(false), 1.0);
+        assert_eq!(FlashLimit::Off.flashes_per_second(true), 0.0);
+    }
 
     #[test]
     fn particle_quality_serde_roundtrip() {
