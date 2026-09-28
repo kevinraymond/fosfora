@@ -65,7 +65,7 @@ the device; wgpu's own validation reported nothing over the run.
 | S7 | `031956b` | mixed reality: passthrough layer + hand joints + scene anchors + floor as obstacles, 100K unoccluded sprites, near cull, no quad | 72 | Yes: 30 s, 2029 frames, 0 long, 16 stale | 0.77 avg | 5.4 median / 6.6 max | `sweep.sh --mode mr` |
 | S7 | `031956b` | same, 250K | 72 | No: 61.5 frames/s, 167 long, 431 stale | 1.32 avg | 13.5 median / 18.4 max | same |
 | S7 | `031956b` | same, 250K, passthrough off | 72 | Yes: 30 s, 2026 frames, 2 long, 9 stale | 0.62 avg | 9.4 median / 10.1 max | same |
-| C3b | not yet run | `Flux XR World` (`mode world`): Flux's sim in a 2 m volume around the wearer, drawn through `render_world`, over the `mr` setup (passthrough, hands, room, floor, occluders, primer); 250K and 500K alive | 72 | device run needed | — | — | `sweep.sh --mode world --counts "250000 500000" --hz 72` |
+| C3b | `8e20998` | `Flux XR World` (`mode world`): Flux's sim in a 2 m volume around the wearer, drawn through `render_world`, over the `mr` setup (passthrough, hands, room, floor, occluders, primer); unworn, no room anchors in this run | 72 | 250K: No (63.2 frames/s, 63 long, 277 stale) · 300K: No (53.6 frames/s, 127 long) · 500K: No (32.4 frames/s) | 2.2 avg | 250K 12.8 / 16.0 · 300K 15.6 / 18.7 · 500K 24.7 / 32.2 | `sweep.sh --mode world --counts "250000 300000 500000" --hz 72`; the split below |
 
 ### S4 notes (commit `fad08e4`, Quest 3 v207)
 
@@ -506,6 +506,59 @@ hands in view: 72.0 frames/s, 0 long frames per window once donned (the
 logged 1.07–1.09 for the left hand and stayed within ±2 % of 1.0 for the
 right, so it is pose-noisy at the few-percent level; the mesh looked right
 either way.
+
+### C3b: Flux in world space (`mode world`, 72 Hz, Sep 27 late)
+
+**Indirect draw empty on the Adreno.** The first device run of the C3b
+port drew nothing: the frame was bare passthrough at every count, with 4×
+sprites, with every depth writer off, and with the sim forced to opaque
+white 3 cm sprites. The world path's indirect arguments read back correctly
+every frame (`[899994, 1, 0, 0]` at 300K), yet `vkCmdDrawIndirect` produced
+no fragments: raw, through wgpu's `VALIDATION_INDIRECT_CALL` copy, and
+through a 16-byte transfer copy alike. The same count as a direct draw
+rendered the ember cloud at once. Root cause (driver or wgpu-hal) unknown;
+no earlier step had exercised an indirect draw on the device (S4 Flux ran
+the compute raster, the S5 sim draws directly). `render_world` now draws
+`3 × max_particles` directly and the vertex shader drops sprites past the
+alive count (`8e20998`; a core test reproduces the stale-alive-list case).
+
+**Cost with the cloud visible** (unworn, floor + primer on, no room anchors
+returned in this run, hands untracked):
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 250K | 12.8 / 16.0 | 63.2 | 63 of 1785 | 277 | No |
+| 300K | 15.6 / 18.7 | 53.6 | 127 of 1567 | 506 | No |
+| 500K | 24.7 / 32.2 | 32.4 | 741 of 1052 | 976 | No |
+
+Against the S5 test sim at 500K in 8.6 ms with the room, hands and
+passthrough all on, Flux is about 3× the cost per particle. Before the
+fix the same runs, drawing no fragments, cost 7.1 ms (250K) and 7.3 ms
+(300K): sim plus core's per-dispatch passes plus the empty draw.
+
+**The split, 300K:**
+
+| Run | GPU ms (med / max) | frames/s | Long |
+|---|---|---|---|
+| sim on, passthrough on | 15.6 / 18.7 | 53.6 | 127 |
+| sim frozen after warmup (`sim 0`) | 9.2 / 14.7 | 72.0 | 19 |
+| passthrough off, sim on | 10.3 / 11.2 | 72.0 | 1 |
+
+- **Sim: ~6 ms at 300K.** Two `sample_flow_field_3d` reads, two `noise2`,
+  the collide loop, respawn, plus whatever core's `dispatch` runs beside
+  the sim. The S5 sim's compute at 500K was a fraction of that.
+- **Draw: passthrough costs ~5 ms here** against ~1.5 ms in S7, where the
+  sprite draw shared a pass with a depth-writing draw. `render_world`
+  records its own pass with no depth-writing draw in it (the S7 "primer"
+  finding, up to 3×), and the eye pass now stores its depth for the world
+  pass to reload (2 × 1680×1760 D32 per frame). The PR named this risk.
+
+**Next (decision):** a core hook that lets the caller draw the world
+sprites inside its own pass (prepare the pipeline and camera before the
+pass, then draw into `&mut RenderPass`), so the sprites sit next to the
+primer and occluders and the depth round trip disappears; then trim the
+sim (one flow sample, cheaper drift). Until then Flux holds 72 Hz only
+below ~200K in this mode.
 
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 
