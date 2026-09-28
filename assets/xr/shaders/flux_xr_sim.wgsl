@@ -42,7 +42,9 @@
 //   aux[1]          sphere count (u32 bits), box count (u32 bits),
 //                   restitution, margin
 //   aux[2]          x = occluder shrink (unused here), y = hand kick (m/s),
-//                   z = settle drift (m/s, downward; 0 = none)
+//                   z = settle drift (m/s, downward; 0 = none),
+//                   w = hand calm, 0..1: 1 - Murmur's hand scare, so an
+//                   unwritten 0 keeps the full scare (unused here)
 //   aux[3..67]      spheres: xyz center, w radius (hand joints)
 //   aux[67..99]     box centers (xyz)
 //   aux[99..131]    box rotations, quaternion box -> world (x, y, z, w)

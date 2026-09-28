@@ -886,3 +886,28 @@ and the toggle sits the same distance above it in both (64 px against 63
 px in the texture dumps), so the toggle stays under the pointer. The
 runtime's performance counters run only while debug is on, following the
 toggle during the session.
+
+## Why the hands never scoop the flock (board #3311)
+
+Worn report (Sep 28): the flock always scatters from a hand at once; the
+"push lets you scoop and part the flock" expectation (#3309) never shows.
+A hand-scare lane (aux[2].w, stored as calm so an unwritten 0 keeps the
+full scare; debug panel row, `debug.fosfora.handscare`) scales Murmur's
+hand predator, for an A/B in the headset.
+
+- **The lane works (GPU test, 20K birds, five 2 cm joint spheres at the
+  roost, no pad, no kick):** birds within 0.25 m of the palm: 1238 with no
+  hand, 1838 with the hand calmed (scare 0), 0 with the calm factor
+  removed from the shader (the break-it check).
+- **Worn, scare 0 alone:** "pretty much the same" as scare 1. The hand
+  still carries its collide: 52 joint spheres padded by 0.10 m (a
+  hand-sized ~0.3 m blob) that throw a touched bird out at 0.4 m/s, swept by
+  the seated-reach far hand at several times the real hand's speed.
+- **Worn, scare 0 with kick ~0.1 and pad 0-0.02:** the far hand passes
+  behind and through the flock without disturbing it. The log does not
+  separate pad from kick (both were lowered within seconds).
+- **Nothing ever carries a bird:** each frame a bird's velocity is rebuilt
+  from its own heading at cruise speed, so a contact only pushes it out
+  and turns it. Parting works; scooping needs a hold behavior (an
+  attractor or containment), which is the pose design: fist = predator,
+  open hand = push only, palm to the ceiling or two hands closing = hold.

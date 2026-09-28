@@ -28,12 +28,12 @@ use crate::gfx::{Beam, Gfx, PanelPose};
 use crate::palm_panel::{PalmPanel, Touch};
 use crate::perf::PerfSample;
 
-/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 40 cm
+/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 46 cm
 /// panel, about the display's density at arm's length. The width keeps a
 /// row at a multiple of 256 bytes, which a texture-to-buffer copy (`dump`)
 /// requires.
 const TEX_W: u32 = 640;
-const TEX_H: u32 = 1376;
+const TEX_H: u32 = 1472;
 const _: () = assert!((TEX_W * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
 const PIXELS_PER_POINT: f32 = 1.6;
 /// Frame-time history for the graph: two seconds at 72 Hz.
@@ -55,13 +55,14 @@ const END_BOX_W: f32 = 64.0;
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 6] = [
+const STEPPERS: [(&str, f32, f32, f32); 7] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
     ("hand kick m/s", 0.0, 1.5, 0.1),
     ("reach 1:1 within m", 0.2, 0.8, 0.05),
     ("reach gain", 0.0, 60.0, 2.0),
+    ("hand scare", 0.0, 1.0, 0.25),
 ];
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -73,6 +74,8 @@ pub struct Controls {
     pub hand_kick: f32,
     pub reach_threshold: f32,
     pub reach_gain: f32,
+    /// Murmur's hand predator strength, 0..1.
+    pub hand_scare: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -94,7 +97,8 @@ impl Controls {
             2 => &mut self.hand_pad,
             3 => &mut self.hand_kick,
             4 => &mut self.reach_threshold,
-            _ => &mut self.reach_gain,
+            5 => &mut self.reach_gain,
+            _ => &mut self.hand_scare,
         }
     }
 }

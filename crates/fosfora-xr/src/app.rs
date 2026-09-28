@@ -191,6 +191,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
     //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
+    //   adb shell setprop debug.fosfora.handscare 1              (Murmur: hand predator strength 0..1; 0 = hands only push)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -267,6 +268,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let reach_gain = debug_prop("debug.fosfora.reachgain")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(crate::reach::GAIN);
+    // Board #3311: how much the hands scare Murmur's flock (1 = a hawk,
+    // 0 = the hands only push), for the scoop A/B and later per pose.
+    let hand_scare = debug_prop("debug.fosfora.handscare")
+        .and_then(|v| v.parse::<f32>().ok())
+        .map_or(1.0, |v| v.clamp(0.0, 1.0));
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -579,6 +585,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         hand_kick,
         reach_threshold,
         reach_gain,
+        hand_scare,
     };
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
     // This frame's reach per hand, and the furthest (real, virtual) since
@@ -904,6 +911,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head,
                         controls.near_fade,
                         controls.gravity,
+                        controls.hand_scare,
                         &set,
                     );
                 }
