@@ -31,12 +31,14 @@ The app is stationary: every interaction has to work from a chair, and a
 seated arm reaches about 0.7 m. The 40K Murmur flock passed its worn gate
 (out of the face, splits around a hand) only after standing and stepping a
 meter toward it. So reach is a product feature, not an effect's: **Go-Go
-arm extension** (board #3308). Within a comfortable reach from the
-shoulder the virtual hand is the real hand; beyond ~0.45 m it travels
-quadratically, so a full stretch reaches ~2 m. The extended joint set feeds
-the sim's spheres (both scaring and pushing), occlusion stays on the real
-hand, and a ghost hand with a wrist beam shows where the hand acts. Subtle
-gain for the first pass. Every candidate below assumes it.
+arm extension** (board #3308, PR #189, worn pass). Within a comfortable
+reach from the shoulder the virtual hand is the real hand; beyond ~0.30 m
+it travels quadratically, so Kevin's full stretch reaches ~2.5 m. The
+extended joint set feeds the sim's spheres (both scaring and pushing),
+occlusion stays on the real hand, and a ghost hand with a wrist beam
+shows where the hand acts. Poses read on the real hand pick the behavior
+at the far hand (board #3314: fist scares, open hand parts, palm up or
+two closing hands hold a group). Every candidate below assumes both.
 
 ## Four candidates
 
@@ -106,20 +108,81 @@ occludes and collides for furniture the anchors miss.
 - Risk: the highest of the four. An unfetched extension path, a new
   obstacle representation, and a look that depends on the scan quality.
 
-## How they combine
+## The design (Kevin, Sep 28, board #3315)
 
-1 and 2 are one system: surfaces that light up and emit. 3 sits on top of
-either. 4 is a later layer. A first pass that ships 2 (cheapest, most
-measured) with one surface from 1 (the floor) gives a room that answers
-the music from below, and the hands already carve it.
+In one sentence: you sit in your room with music playing and the room
+answers it. Surfaces light up and shed particles, a few things live in
+the air, and your hands, long when you stretch, play all of it.
 
-## Decisions for Kevin
+### Three layers, not one effect
 
-- Which two for the first pass. Recommendation: 2 (surfaces as emitters,
-  desk and floor) and the floor ripple from 1.
-- The look direction: the ember palette from Flux, or something built for
-  a lit room (paler, thinner, more light than particle).
-- Whether Murmur ships small as a room inhabitant (30–50K birds fleeing the
-  hands) or is parked.
-- Whether the global mesh is worth fetching now for occlusion alone, before
-  any effect uses it; the passthrough-has-no-depth problem argues for it.
+The desktop unit is an effect. The room's unit is a **room preset**: a set
+of behaviors assigned to the room's parts, switched with the pinch-hold
+that today cycles effects. The desktop effect list is not exposed on the
+Quest.
+
+1. **Surfaces.** The anchors give five tables, the floor, walls, a door
+   and a window. Two behaviors: *canvas* (a lit quad on the surface,
+   driven by audio) and *emitter* (particles born on the surface). The
+   floor ripples on the kick from under the chair. The desk sheds embers
+   on the beat that slide off its edge and pool on the floor, which the
+   settle drift already does. The wall the wearer faces carries the
+   spectrum climbing it. The window frame pulses on the downbeat.
+2. **Inhabitants.** Things in the air: the Flux ember cloud and the 40K
+   Murmur flock. They react to surfaces and hands as they do now.
+3. **Hands.** With Go-Go and the poses: a pinch-release throws a burst
+   that lands where it hits the wall; an open palm held still lifts
+   embers off the nearest surface toward it; a drag moves a cloud's home,
+   which the anchor drag already is; fist, open hand and palm-up act on
+   the flock per #3314.
+
+### Look: three materials, one per layer
+
+Over passthrough, additive glow reads as light falling on real surfaces
+and alpha silhouettes read as objects in the room. So: **light on
+surfaces, embers in the air, dark birds.** The air keeps Flux's ember
+palette with the key-tinted accent, for continuity with desktop. Surfaces
+are paler and thinner than the particles, more light than material, so
+the real room stays the subject. This is an eye call, taken on the
+recommendation and revisited once Kevin wears it.
+
+### Budget shapes the presets
+
+The MR base (passthrough, anchors, hands, occluder) costs 3–4 ms; 300K
+sprites 6 ms; the 40K flock 6 ms; surfaces well under 1 ms. A preset can
+therefore carry embers or the flock at full size, not both: an *embers*
+room and a *flock* room, with the hands in every one.
+
+### The first pass
+
+Surfaces as emitters (the desk and the floor) plus the floor ripple.
+
+- Emitters: shader-only on the Flux world sim. The box block already
+  holds every table's center, rotation and half extents in the aux rows,
+  so `emit_particle` samples the chosen anchor's top face instead of the
+  volume, with per-surface rates driven by audio bands. No app work, no
+  new plumbing; it inherits the settle drift, the hand channel and the
+  beat timing.
+- The floor ripple: one quad on the floor plane inside the eye pass, the
+  smallest new draw and the one that makes the room itself light. Its
+  origin is **under the chair**: the head position projected onto the
+  floor plane and smoothed, so it needs no anchor and stays right when
+  the wearer turns.
+- Audio: the **playback tap**, timed to the speaker (#3253). The Quest's
+  microphones cancel the headset's own output and beamform toward the
+  mouth, so room music barely registers (#3247, #3248); the mic is
+  ambience only.
+
+### Sequencing
+
+1. Emitters (desk, floor) and the floor ripple: one session each.
+2. The wall spectrum and the hand instruments, on Go-Go and the poses.
+3. The global mesh last, and as an occluder first: passthrough has no
+   depth, so a lit wall draws over a real chair without it.
+
+### Still open
+
+- Which anchor the "wall the wearer faces" is when the room has four,
+  and whether it follows the head or is picked once per preset.
+- Whether Murmur's small-flock preset (40K, #3307) needs its own surface
+  behaviors or shares the embers room's.
