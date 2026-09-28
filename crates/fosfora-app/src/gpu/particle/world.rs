@@ -775,9 +775,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert_eq!(rp.max_count, wp.max_count);
         assert_eq!(rp.emitter.radius, wp.emitter.radius);
         assert_eq!(
-            (rp.initial_size, rp.size_end, rp.emit_rate, rp.burst_on_beat),
-            (wp.initial_size, wp.size_end, wp.emit_rate, wp.burst_on_beat)
+            (rp.initial_size, rp.size_end, rp.burst_on_beat),
+            (wp.initial_size, wp.size_end, wp.burst_on_beat)
         );
+        // The room claims slots its gates then decline, so it needs a
+        // higher rate than the volume to reach a comparable density.
+        assert!(rp.emit_rate >= wp.emit_rate);
     }
 
     /// The room tests' table: a 1.0 x 0.7 m plane 0.5 m below, 0.4 m ahead

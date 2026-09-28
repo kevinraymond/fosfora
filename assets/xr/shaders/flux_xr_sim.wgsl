@@ -80,6 +80,8 @@ const XR_SURFACE_LIFT: f32 = 0.01;
 const XR_EMBER_SPEED: f32 = 0.03;
 const XR_KIND_TABLE: u32 = 1u;
 const XR_KIND_FLOOR: u32 = 2u;
+// Beat envelope decay per unit of beat phase for the table gate.
+const XR_BEAT_DECAY: f32 = 6.0;
 
 // Fraction of the half extent over which opacity fades out toward the bounds.
 const XR_EDGE_FADE: f32 = 0.3;
@@ -245,7 +247,10 @@ fn emit_particle(idx: u32, half: f32) -> Particle {
 // embers on the beat, floors spark with the bass.
 fn xr_kind_gate(kind: u32) -> f32 {
     if kind == XR_KIND_TABLE {
-        return 0.15 + 0.85 * u.beat;
+        // u.beat is a one-frame pulse; the envelope over beat_phase (a 0..1
+        // sawtooth at the tempo) keeps the desk shedding for about a sixth
+        // of a beat after each one, so the burst reads.
+        return 0.15 + 0.85 * max(u.beat, exp(-XR_BEAT_DECAY * u.beat_phase));
     }
     if kind == XR_KIND_FLOOR {
         return 0.1 + 0.9 * u.bass;
