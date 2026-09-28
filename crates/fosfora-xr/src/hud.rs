@@ -349,7 +349,10 @@ impl Hud {
             .touch
             .pointer
             .map(|[u, v]| Pos2::new(u * size.x, v * size.y));
-        let pressed = self.touch.pressed && cursor.is_some();
+        // The press is the pinch alone: a cursor that leaves the panel for a
+        // frame (ray jitter past the margin, a poke sliding off) must not
+        // count as a release, or the return fires the target a second time.
+        let pressed = self.touch.pressed;
         let press_began = pressed && !self.was_pressed;
         self.was_pressed = pressed;
         if !pressed {
@@ -408,7 +411,10 @@ impl Hud {
             && pressed
             && now >= self.repeat_at
         {
-            self.repeat_at += REPEAT_EVERY_S;
+            // From now, not from the schedule: after a stall (an effect
+            // switch, a hand-mesh upload) a scheduled repeat fired once per
+            // frame until it caught up and jumped the value to its clamp.
+            self.repeat_at = now + REPEAT_EVERY_S;
             Some(t)
         } else {
             None

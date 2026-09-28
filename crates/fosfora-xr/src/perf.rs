@@ -59,6 +59,23 @@ pub struct PerfMetrics {
 }
 
 impl PerfMetrics {
+    /// Turn the runtime's counters off again (nothing reads them when the
+    /// debug panel is off; the bookkeeping is not free).
+    pub fn disable(self) {
+        let state = sys::PerformanceMetricsStateMETA {
+            ty: sys::PerformanceMetricsStateMETA::TYPE,
+            next: std::ptr::null(),
+            enabled: sys::FALSE,
+        };
+        // SAFETY: `state` is a fully initialized input struct that outlives
+        // the call; the session handle is live (the XrSession that owns
+        // this value has not been dropped).
+        let res = unsafe { (self.fp.set_performance_metrics_state)(self.session, &state) };
+        if let Err(e) = check(res) {
+            log::warn!("xrSetPerformanceMetricsStateMETA(off): {e:#}");
+        }
+    }
+
     /// Enable the counters on `session`. `Ok(None)` when the extension is
     /// not enabled on the instance.
     pub fn new(session: &xr::Session<xr::Vulkan>) -> Result<Option<Self>> {
@@ -123,8 +140,12 @@ impl PerfMetrics {
     }
 
     /// Read every counter into `latest`. A failed or not-yet-valid read
-    /// keeps the previous value.
+    /// leaves that counter absent for the frame.
     pub fn poll(&mut self) {
+        // Every counter starts absent: a query the runtime fails or marks
+        // invalid (session unfocused, an overlay in front) must read as a
+        // gap in the graph, not as last frame's value repeated.
+        self.latest = PerfSample::default();
         for &(path, which) in &self.counters {
             let mut c = sys::PerformanceMetricsCounterMETA {
                 ty: sys::PerformanceMetricsCounterMETA::TYPE,
@@ -154,13 +175,11 @@ impl PerfMetrics {
             let value = float.or(uint.map(|u| u as f32));
             let l = &mut self.latest;
             match which {
-                Counter::AppGpuMs => l.app_gpu_ms = value.or(l.app_gpu_ms),
-                Counter::Dropped => {
-                    l.dropped_frames = uint.or(float.map(|f| f as u32)).or(l.dropped_frames);
-                }
-                Counter::GpuUtil => l.gpu_util_pct = value.or(l.gpu_util_pct),
-                Counter::CpuUtil => l.cpu_util_pct = value.or(l.cpu_util_pct),
-                Counter::Latency => l.latency_ms = value.or(l.latency_ms),
+                Counter::AppGpuMs => l.app_gpu_ms = value,
+                Counter::Dropped => l.dropped_frames = uint.or(float.map(|f| f as u32)),
+                Counter::GpuUtil => l.gpu_util_pct = value,
+                Counter::CpuUtil => l.cpu_util_pct = value,
+                Counter::Latency => l.latency_ms = value,
             }
         }
     }

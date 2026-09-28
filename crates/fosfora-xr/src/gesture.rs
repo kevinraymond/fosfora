@@ -77,9 +77,13 @@ impl Gestures {
     /// right). Returns at most two gestures (`DragStart` + its first `Drag`).
     pub fn step(&mut self, hands: [PinchInput; 2], dt: f32) -> Vec<Gesture> {
         let mut out = Vec::new();
-        // A hand whose pinch point is lost counts as open: a drag must not
-        // stick to a hand that left the tracking volume.
+        // A hand whose pinch point is lost counts as open for a drag (it must
+        // not stick to a hand that left the tracking volume), but a press or
+        // a hold rides out the gap: a tip that drops tracking for a frame
+        // while the fingers stay pinched used to fire a Tap and restart the
+        // hold timer, so one long pinch could Hold twice.
         let closed = |h: usize| hands[h].pinching && hands[h].point.is_some();
+        let gap = |h: usize| hands[h].pinching && hands[h].point.is_none();
         let point = |h: usize| hands[h].point.map_or(Vec3::ZERO, Vec3::from);
         self.state = match self.state {
             State::Idle => {
@@ -98,7 +102,13 @@ impl Gestures {
                 start,
                 held_s,
             } => {
-                if !closed(hand) {
+                if gap(hand) {
+                    State::Pressed {
+                        hand,
+                        start,
+                        held_s: held_s + dt,
+                    }
+                } else if !closed(hand) {
                     out.push(Gesture::Tap { hand });
                     State::Idle
                 } else if point(hand).distance(start) > DRAG_START_M {
@@ -134,7 +144,7 @@ impl Gestures {
                 }
             }
             State::Held { hand } => {
-                if closed(hand) {
+                if closed(hand) || gap(hand) {
                     State::Held { hand }
                 } else {
                     State::Idle

@@ -569,6 +569,14 @@ impl XrSession {
         self.hands.is_some()
     }
 
+    /// Keep the runtime's performance counters only while something reads
+    /// them (the debug panel); otherwise turn them off and stop polling.
+    pub fn set_perf_metrics(&mut self, on: bool) {
+        if !on && let Some(p) = self.perf.take() {
+            p.disable();
+        }
+    }
+
     pub fn has_room(&self) -> bool {
         self.room.is_some()
     }

@@ -765,7 +765,7 @@ GPU time and utilization (`XR_META_performance_metrics`: 17 counters on
 v207, no app CPU counter, so the frame loop's own CPU time stands in), a
 two-second GPU-time graph against the 13.9 ms budget, particles, hands,
 gesture, anchor with Recenter, audio levels, Prev/Next effect, and four
-live sliders (settle, near fade, hand pad, hand kick). 640 x 960 texture
+live sliders (settle, near fade, hand pad, hand kick). 640 x 1024 texture
 on a 20 x 30 cm quad, drawn after the sprites and depth-tested against the
 hand occluders.
 

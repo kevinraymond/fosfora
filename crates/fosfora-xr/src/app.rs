@@ -378,7 +378,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The world effects a pinch-hold cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
     // starting at `debug.fosfora.effect` (added if it is not one of them).
-    let mut world_effects = discover_world_effects(&dirs.assets.join("effects"));
+    let mut world_effects = if mode == Mode::World {
+        discover_world_effects(&dirs.assets.join("effects"))
+    } else {
+        Vec::new()
+    };
     let start_effect =
         debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
     let mut world_index = world_effects
@@ -461,7 +465,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // instead of stalling the frame loop for a rebuild.
                 for (i, effect) in world_effects.iter().enumerate() {
                     let started = Instant::now();
-                    let s = new_world_scene(
+                    let built = new_world_scene(
                         &gfx,
                         &dirs.config,
                         effect,
@@ -471,7 +475,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             sim_enabled,
                             anchor: cube_center,
                         },
-                    )?;
+                    );
+                    // The chosen effect must build; another that fails (a
+                    // shader the device rejects, a preset mid-edit) is left
+                    // out of the cycle instead of taking the app down.
+                    let s = match built {
+                        Ok(s) => s,
+                        Err(e) if i != world_index => {
+                            log::warn!("world effect '{effect}' left out of the cycle: {e:#}");
+                            parked.push(None);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     info!(
                         "world effect '{effect}' built in {:.0} ms",
                         started.elapsed().as_secs_f64() * 1e3
@@ -518,6 +534,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let hud_test = toggle("debug.fosfora.hudtest", false);
     let mut hud = (hud_test || toggle("debug.fosfora.hud", false) && session.has_hands())
         .then(|| Hud::new(&mut gfx));
+    // The runtime's performance counters feed only the panel.
+    session.set_perf_metrics(hud.is_some());
     let mut controls = Controls {
         gravity,
         near_fade: near_cull,
@@ -531,8 +549,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
     });
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
-    // the hand, a tap toggles the S5 sprite size, a hold is logged (effect
-    // cycling comes next).
+    // the hand, a tap toggles the S5 sprite size, a hold cycles the world
+    // effects.
     let mut gestures = Gestures::default();
     let (mut anchor, mut anchor_half) = (cube_center, cube_half);
     let mut drag_total = glam::Vec3::ZERO;
@@ -691,7 +709,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Gesture::Hold { hand } => {
                         info!("gesture: hold {}", hand_name(hand));
                         if world && world_effects.len() > 1 {
-                            switch_to = Some((world_index + 1) % world_effects.len());
+                            switch_to = cycle_index(&parked, world_index, 1);
                         }
                     }
                 }
@@ -726,10 +744,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         let n = world_effects.len();
                         match action {
                             Action::NextEffect if world && n > 1 => {
-                                switch_to = Some((world_index + 1) % n);
+                                switch_to = cycle_index(&parked, world_index, 1);
                             }
                             Action::PrevEffect if world && n > 1 => {
-                                switch_to = Some((world_index + n - 1) % n);
+                                switch_to = cycle_index(&parked, world_index, -1);
                             }
                             Action::Recenter => {
                                 anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
@@ -870,7 +888,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             && world
             && t - last_switch_t > every
         {
-            switch_to = Some((world_index + 1) % world_effects.len());
+            switch_to = cycle_index(&parked, world_index, 1);
         }
         if let Some(next) = switch_to.take()
             && let Some(mut s) = parked[next].take()
@@ -1130,6 +1148,19 @@ fn hand_name(h: usize) -> &'static str {
 }
 
 /// An Android system property, for spike-time knobs. Empty means unset.
+/// The next world effect to switch to from `from`, `step` = 1 forward or
+/// -1 back, skipping slots with nothing parked (the effect showing now, and
+/// any that failed to build at launch). `None` when nothing else is parked.
+fn cycle_index(parked: &[Option<XrScene>], from: usize, step: isize) -> Option<usize> {
+    let n = parked.len();
+    (1..n)
+        .map(|k| {
+            let offset = (k as isize * step).rem_euclid(n as isize) as usize;
+            (from + offset) % n
+        })
+        .find(|&i| parked[i].is_some())
+}
+
 fn debug_prop(name: &str) -> Option<String> {
     let out = std::process::Command::new("getprop")
         .arg(name)
