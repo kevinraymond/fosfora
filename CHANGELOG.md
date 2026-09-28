@@ -41,6 +41,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 - **Fast animation stuttered in shows running for hours**: shader time lost precision as
   uptime grew, to ~16 ms steps after a day and a half. `u.time` now wraps to 0 every hour, so
   it stays smooth; anything periodic in it makes one jump per hour, like reloading the effect.
+- **Soft edges darkened wherever a layer used Normal blend over another**, costing antialiased
+  fringes and glows up to a quarter of their brightness. Normal is now a true premultiplied
+  over, so stacked layers' coverage also adds up instead of taking the larger of the two.
 
 ## v2.0.0 — 2026-09-27
 

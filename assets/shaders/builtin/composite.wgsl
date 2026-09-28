@@ -31,10 +31,6 @@ fn hdr_excess(bg: vec3f, fg: vec3f) -> vec3f {
     return max(bg - vec3f(1.0), vec3f(0.0)) + max(fg - vec3f(1.0), vec3f(0.0));
 }
 
-fn blend_normal(bg: vec3f, fg: vec3f) -> vec3f {
-    return fg;
-}
-
 fn blend_add(bg: vec3f, fg: vec3f) -> vec3f {
     return bg + fg;
 }
@@ -226,6 +222,15 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
         return vec4f(mix(bg.rgb, warped, comp.opacity * fg.a), bg.a);
     }
 
+    // Normal (0u): the premultiplied over operator (INV-A, docs/alpha.md). Layer
+    // RGB is already scaled by its coverage, so mixing it by fg.a again darkened
+    // every soft edge (#94). Coverage is clamped: additive particle passes can
+    // accumulate alpha past 1, which would push bg's weight negative.
+    if comp.blend_mode == 0u {
+        let a = clamp(fg.a, 0.0, 1.0) * comp.opacity;
+        return vec4f(fg.rgb * comp.opacity + bg.rgb * (1.0 - a), a + bg.a * (1.0 - a));
+    }
+
     var blended: vec3f;
     switch comp.blend_mode {
         case 1u: { blended = blend_add(bg.rgb, fg.rgb); }
@@ -237,7 +242,7 @@ fn fs_main(@location(0) uv: vec2f) -> @location(0) vec4f {
         case 7u: { blended = blend_difference(bg.rgb, fg.rgb); }
         case 8u: { blended = blend_exclusion(bg.rgb, fg.rgb); }
         case 9u: { blended = blend_subtract(bg.rgb, fg.rgb); }
-        default: { blended = blend_normal(bg.rgb, fg.rgb); }
+        default: { blended = fg.rgb; }
     }
 
     // Mix with opacity: lerp between background and blended result

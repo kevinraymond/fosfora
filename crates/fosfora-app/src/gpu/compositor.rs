@@ -795,6 +795,90 @@ mod tests {
         }
     }
 
+    /// Composite uniform RGBA `bg` and `fg` (Rgba16Float in, Rgba32Float out) at
+    /// `opacity` and return the centre pixel.
+    fn blend_rgba(
+        device: &Device,
+        queue: &Queue,
+        mode: u32,
+        bg: [f32; 4],
+        fg: [f32; 4],
+        opacity: f32,
+    ) -> [f32; 4] {
+        let dim = 64;
+        let fill = |v: [f32; 4]| -> Vec<u8> {
+            let bytes: Vec<u8> = v.iter().flat_map(|&c| f16_bits(c).to_le_bytes()).collect();
+            bytes.repeat((dim * dim) as usize)
+        };
+        let out = probe_composite_as(
+            device,
+            queue,
+            dim,
+            (TextureFormat::Rgba16Float, 8),
+            (TextureFormat::Rgba32Float, 16),
+            &fill(bg),
+            &fill(fg),
+            CompositeUniforms {
+                blend_mode: mode,
+                opacity,
+                displace_amount: 0.0,
+                _pad1: 0.0,
+            },
+        );
+        let i = ((dim / 2 * dim + dim / 2) * 16) as usize;
+        let f: &[f32] = bytemuck::cast_slice(&out[i..i + 16]);
+        [f[0], f[1], f[2], f[3]]
+    }
+
+    /// Normal is the premultiplied over: a half-covered premultiplied pixel over
+    /// white used to come out 0.5·0.5 + 0.5 = 0.75 with the fg mixed by its alpha
+    /// a second time; over gives 0.5 + 1·0.5 = 1.0 (#94). Opaque content is the
+    /// plain opacity mix it always was, and an alpha past 1 cannot push the
+    /// background's weight negative.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored normal_blend_is_premultiplied_over
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn normal_blend_is_premultiplied_over() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        let normal = BlendMode::Normal.as_u32();
+        let white = [1.0, 1.0, 1.0, 1.0];
+
+        // (bg, fg, opacity, expected)
+        let cases = [
+            // Half-covered white fringe over white: stays white, no dark halo.
+            (white, [0.5, 0.5, 0.5, 0.5], 1.0, white),
+            // Half-covered black over white: half as bright, alpha stays opaque.
+            (white, [0.0, 0.0, 0.0, 0.5], 1.0, [0.5, 0.5, 0.5, 1.0]),
+            // Opaque fg at half opacity: the plain mix.
+            (
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 0.5, 0.25, 1.0],
+                0.5,
+                [0.5, 0.25, 0.125, 1.0],
+            ),
+            // Over transparent: coverage accumulates rather than max-unions.
+            (
+                [0.25, 0.25, 0.25, 0.5],
+                [0.5, 0.5, 0.5, 0.5],
+                1.0,
+                [0.625, 0.625, 0.625, 0.75],
+            ),
+            // Additive particle alpha above 1 is clamped, not extrapolated.
+            (white, [0.5, 0.5, 0.5, 2.0], 1.0, [0.5, 0.5, 0.5, 1.0]),
+        ];
+        for (bg, fg, opacity, want) in cases {
+            let got = blend_rgba(&device, &queue, normal, bg, fg, opacity);
+            for (g, w) in got.iter().zip(want) {
+                assert!(
+                    (g - w).abs() < 1e-3,
+                    "bg {bg:?} fg {fg:?} opacity {opacity}: got {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
+
     /// Background: a horizontal red ramp, so a pixel's red channel encodes the
     /// x it was sampled from. Any horizontal warp shows up as a red shift.
     fn ramp_background(dim: u32) -> Vec<u8> {
