@@ -96,6 +96,12 @@ pub fn run_client<S: Read + Write>(
     log::info!("WebSocket client {} disconnected", client_id);
 }
 
+/// A JSON number as a finite f32. JSON has no NaN, but a number past f32 range (`1e39`)
+/// casts to Inf, which slips through `clamp` and turns into NaN in range transforms (#46).
+fn finite_f32(v: &serde_json::Value) -> Option<f32> {
+    v.as_f64().map(|f| f as f32).filter(|f| f.is_finite())
+}
+
 /// Parse a JSON message from the client into a WsInMessage.
 fn parse_client_message(text: &str) -> Option<WsInMessage> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
@@ -104,13 +110,13 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
     match msg_type {
         "set_param" => {
             let name = v.get("name")?.as_str()?.to_string();
-            let value = v.get("value")?.as_f64()? as f32;
+            let value = finite_f32(v.get("value")?)?;
             Some(WsInMessage::SetParam { name, value })
         }
         "set_layer_param" => {
             let layer = v.get("layer")?.as_u64()? as usize;
             let name = v.get("name")?.as_str()?.to_string();
-            let value = v.get("value")?.as_f64()? as f32;
+            let value = finite_f32(v.get("value")?)?;
             Some(WsInMessage::SetLayerParam { layer, name, value })
         }
         "load_effect" => {
@@ -123,7 +129,7 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
         }
         "set_layer_opacity" => {
             let layer = v.get("layer")?.as_u64()? as usize;
-            let value = v.get("value")?.as_f64()? as f32;
+            let value = finite_f32(v.get("value")?)?;
             Some(WsInMessage::SetLayerOpacity {
                 layer,
                 value: value.clamp(0.0, 1.0),
@@ -179,7 +185,7 @@ fn parse_client_message(text: &str) -> Option<WsInMessage> {
             let fields_obj = v.get("fields")?.as_object()?;
             let fields: Vec<(String, f32)> = fields_obj
                 .iter()
-                .filter_map(|(k, v)| Some((k.clone(), v.as_f64()? as f32)))
+                .filter_map(|(k, v)| Some((k.clone(), finite_f32(v)?)))
                 .collect();
             Some(WsInMessage::BindData { source, fields })
         }
@@ -221,6 +227,21 @@ fn parse_binary_preview(data: &[u8]) -> Option<WsInMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn out_of_range_numbers_are_rejected() {
+        assert!(parse_client_message(r#"{"type":"set_param","name":"x","value":1e39}"#).is_none());
+        assert!(
+            parse_client_message(r#"{"type":"set_layer_opacity","layer":0,"value":-1e39}"#)
+                .is_none()
+        );
+        match parse_client_message(r#"{"type":"data","source":"s","fields":{"a":1e39,"b":0.5}}"#) {
+            Some(WsInMessage::BindData { fields, .. }) => {
+                assert_eq!(fields, vec![("b".to_string(), 0.5)]);
+            }
+            other => panic!("expected BindData, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_set_param() {

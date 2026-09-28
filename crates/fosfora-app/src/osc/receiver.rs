@@ -72,14 +72,29 @@ fn process_packet(packet: &OscPacket, tx: &Sender<OscInMessage>) {
 
 /// Extract the first float-ish value from OSC args.
 fn first_float(args: &[OscType]) -> Option<f32> {
-    args.first().and_then(|a| match a {
-        OscType::Float(f) => Some(*f),
-        OscType::Double(d) => Some(*d as f32),
-        OscType::Int(i) => Some(*i as f32),
-        OscType::Long(l) => Some(*l as f32),
-        OscType::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-        _ => None,
-    })
+    args.first()
+        .and_then(|a| match a {
+            OscType::Float(f) => Some(*f),
+            OscType::Double(d) => Some(*d as f32),
+            OscType::Int(i) => Some(*i as f32),
+            OscType::Long(l) => Some(*l as f32),
+            OscType::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            _ => None,
+        })
+        // NaN slips through every `clamp` downstream and Inf turns into NaN in range
+        // transforms; a double beyond f32 range arrives here as Inf (#46).
+        .filter(|v| v.is_finite())
+}
+
+/// Value for a trigger-style message: its first number, or 1.0 when it carries none
+/// (a bare `/fosfora/.../next`). A non-finite number drops the message rather than
+/// firing it as 1.0.
+fn raw_value(args: &[OscType]) -> Option<f32> {
+    match args.first() {
+        Some(OscType::Float(f)) if !f.is_finite() => None,
+        Some(OscType::Double(d)) if !(*d as f32).is_finite() => None,
+        _ => Some(first_float(args).unwrap_or(1.0)),
+    }
 }
 
 /// Extract the first string value from OSC args.
@@ -99,7 +114,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
     // accepted forever so existing rigs and saved controller patches keep working.
     if parts.len() < 3 || (parts[1] != "fosfora" && parts[1] != "phosphor") {
         // Not our namespace — capture as Raw for learn mode
-        let value = first_float(&msg.args).unwrap_or(1.0);
+        let value = raw_value(&msg.args)?;
         return Some(OscInMessage::Raw {
             address: addr.clone(),
             value,
@@ -181,7 +196,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                         })
                     }
                     _ => {
-                        let value = first_float(&msg.args).unwrap_or(1.0);
+                        let value = raw_value(&msg.args)?;
                         Some(OscInMessage::Raw {
                             address: addr.clone(),
                             value,
@@ -189,7 +204,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                     }
                 },
                 _ => {
-                    let value = first_float(&msg.args).unwrap_or(1.0);
+                    let value = raw_value(&msg.args)?;
                     Some(OscInMessage::Raw {
                         address: addr.clone(),
                         value,
@@ -216,7 +231,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                 "tempo_double" => TriggerAction::TempoDouble,
                 "tempo_tap" => TriggerAction::TempoTap,
                 _ => {
-                    let value = first_float(&msg.args).unwrap_or(1.0);
+                    let value = raw_value(&msg.args)?;
                     return Some(OscInMessage::Raw {
                         address: addr.clone(),
                         value,
@@ -280,7 +295,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
                     Some(OscInMessage::SceneAdvanceMode(value))
                 }
                 _ => {
-                    let value = first_float(&msg.args).unwrap_or(1.0);
+                    let value = raw_value(&msg.args)?;
                     Some(OscInMessage::Raw {
                         address: addr.clone(),
                         value,
@@ -291,7 +306,7 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
 
         // Unknown /fosfora/... address — capture as Raw
         _ => {
-            let value = first_float(&msg.args).unwrap_or(1.0);
+            let value = raw_value(&msg.args)?;
             Some(OscInMessage::Raw {
                 address: addr.clone(),
                 value,
@@ -330,6 +345,39 @@ mod tests {
     #[test]
     fn first_float_from_long() {
         assert_eq!(first_float(&[OscType::Long(100)]), Some(100.0));
+    }
+
+    #[test]
+    fn first_float_rejects_non_finite() {
+        assert_eq!(first_float(&[OscType::Float(f32::NAN)]), None);
+        assert_eq!(first_float(&[OscType::Float(f32::INFINITY)]), None);
+        assert_eq!(first_float(&[OscType::Double(1e39)]), None);
+    }
+
+    #[test]
+    fn non_finite_opacity_is_dropped() {
+        let msg = OscMessage {
+            addr: "/fosfora/layer/0/opacity".into(),
+            args: vec![OscType::Float(f32::NAN)],
+        };
+        assert!(parse_osc_message(&msg).is_none());
+    }
+
+    #[test]
+    fn non_finite_raw_is_dropped_but_bare_trigger_fires() {
+        let nan = OscMessage {
+            addr: "/fosfora/some/custom".into(),
+            args: vec![OscType::Float(f32::NAN)],
+        };
+        assert!(parse_osc_message(&nan).is_none());
+        let bare = OscMessage {
+            addr: "/fosfora/some/custom".into(),
+            args: vec![],
+        };
+        match parse_osc_message(&bare) {
+            Some(OscInMessage::Raw { value, .. }) => assert_eq!(value, 1.0),
+            other => panic!("expected Raw, got {other:?}"),
+        }
     }
 
     #[test]
