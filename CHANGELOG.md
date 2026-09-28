@@ -7,6 +7,25 @@
 
 Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
 
+### Fixed
+- **Screen turned bloomed highlights black** where two bright layers overlapped, and
+  Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
+  HDR values and blend exactly as before everywhere else.
+- **A NaN or out-of-range number over OSC or the web remote** could blank a layer's opacity or
+  a parameter, and a preset saved afterwards vanished from the list. Such values are now
+  ignored, and a preset that would not load back is refused with an error.
+- **One corrupt sample from a loopback device** left loudness and the normalized audio
+  features stuck until the device was reopened. Bad samples are now silenced on capture.
+- **Per-band pan read the wrong frequency ranges on 48 kHz devices**; the band edges now
+  follow the device's sample rate.
+- **Loading an effect by an out-of-range index** over OSC or the web remote deleted the
+  layer's preset bindings and loaded nothing. It is now ignored.
+- **Accented or other non-ASCII characters crashed the app** when a preset name, a text
+  particle source or a webcam name was shortened for display.
+- **A GIF with a huge or corrupt header crashed the app.** GIFs over 8192 px per side, or
+  whose frames would take more than 2 GiB decoded, are now refused with an error; convert
+  those to video.
+
 ## v2.0.0 — 2026-09-27
 
 Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,
