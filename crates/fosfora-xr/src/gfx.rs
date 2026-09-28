@@ -125,6 +125,9 @@ pub struct PanelPose {
     pub center: [f32; 3],
     pub right: [f32; 3],
     pub up: [f32; 3],
+    /// How much of the texture's height the panel shows, from the top
+    /// (0..1): the hand menu uses only its top strip.
+    pub v_max: f32,
 }
 
 struct EyeUniform {
@@ -505,7 +508,7 @@ impl Gfx {
         };
         let (c, r, u) = (pose.center, pose.right, pose.up);
         let data: [f32; 12] = [
-            c[0], c[1], c[2], 0.0, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
+            c[0], c[1], c[2], pose.v_max, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
         ];
         self.queue
             .write_buffer(&panel.uniform, 0, bytemuck::bytes_of(&data));
@@ -942,6 +945,7 @@ fn build_quad_pipeline(
 
 const PANEL_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
+// center.w: the fraction of the texture's height shown, from the top.
 struct Panel { center: vec4<f32>, right: vec4<f32>, up: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
 @group(1) @binding(0) var<uniform> panel: Panel;
@@ -963,7 +967,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     let world = panel.center.xyz + corner.x * panel.right.xyz + corner.y * panel.up.xyz;
     var out: VsOut;
     out.pos = eye.view_proj * vec4<f32>(world, 1.0);
-    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, (0.5 - corner.y * 0.5) * panel.center.w);
     return out;
 }
 

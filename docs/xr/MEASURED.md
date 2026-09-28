@@ -873,3 +873,16 @@ the real wrist.
   from the chair; control of the far hand is "excellent"; near and far
   interactions both work; the wrist beam is "a little bit bright" (alpha
   0.25 -> 0.15 in the same change).
+
+### Hand menu (Sep 28)
+
+Turning the left palm up always shows a hand menu, for now one row: the
+debug panel's on/off toggle, saved in the app's config (`hand_menu.json`)
+until turned off again; `debug.fosfora.hud 0|1`, when set, overrides at
+launch and is saved too. With debug on the same quad grows upward into the
+debug panel (20 x 43 cm), the toggle its bottom row; with it off the quad
+is the 20 x 6 cm menu strip. The quad keeps its bottom edge on a resize
+and the toggle sits the same distance above it in both (64 px against 63
+px in the texture dumps), so the toggle stays under the pointer. The
+runtime's performance counters run only while debug is on, following the
+toggle during the session.

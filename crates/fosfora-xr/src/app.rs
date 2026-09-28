@@ -186,7 +186,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
-    //   adb shell setprop debug.fosfora.hud 1                    (opt in to the debug panel above the left palm; needs hands; default off)
+    //   adb shell setprop debug.fosfora.hud 0|1                  (the debug panel on the hand menu, set and saved; unset = the menu's saved toggle)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
     //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
     //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
@@ -544,16 +544,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             particles = Some(p);
         }
     }
-    // The debug panel, for development only and off unless asked for (an
-    // app setting may replace the knob later): turn the left palm toward
-    // you, point the right hand at it and pinch, or poke it. Its -/+ rows
-    // drive these values from then on. Without it, the values stay the
-    // knobs' and pinches always drive the cloud gestures.
+    // The hand menu: turn the left palm toward you, point the right hand at
+    // it and pinch, or poke it. For now it holds one toggle, the debug panel
+    // (for development; off until turned on), saved across launches until
+    // turned off again. The knob, when set, overrides and is saved too. The
+    // debug panel's -/+ rows drive these values from then on; with it off
+    // they stay the knobs'. While the menu is up its pinches are its own.
     let hud_test = toggle("debug.fosfora.hudtest", false);
-    let mut hud = (hud_test || toggle("debug.fosfora.hud", false) && session.has_hands())
-        .then(|| Hud::new(&mut gfx));
-    // The runtime's performance counters feed only the panel.
-    session.set_perf_metrics(hud.is_some());
+    let menu_file = dirs.config.join(HAND_MENU_FILE);
+    let debug_on = match debug_prop("debug.fosfora.hud").as_deref() {
+        Some("1") => {
+            save_hand_menu(&menu_file, true);
+            true
+        }
+        Some("0") => {
+            save_hand_menu(&menu_file, false);
+            false
+        }
+        _ => load_hand_menu(&menu_file),
+    };
+    info!(
+        "hand menu: debug panel {}",
+        if debug_on { "on" } else { "off" }
+    );
+    let mut hud =
+        (hud_test || mr.hands && session.has_hands()).then(|| Hud::new(&mut gfx, debug_on));
+    // The runtime's performance counters feed only the debug panel.
+    let mut perf_on = hud.as_ref().is_some_and(Hud::debug);
+    session.set_perf_metrics(perf_on);
     let mut controls = Controls {
         gravity,
         near_fade: near_cull,
@@ -779,6 +797,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
                                 moved = true;
                             }
+                            Action::SetDebug(on) => save_hand_menu(&menu_file, on),
                             _ => {}
                         }
                     }
@@ -960,6 +979,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        if let Some(h) = &hud
+            && h.debug() != perf_on
+        {
+            perf_on = h.debug();
+            session.set_perf_metrics(perf_on);
+        }
         if hud_test
             && frame_index == 720
             && let Some(h) = &hud
@@ -1265,6 +1290,31 @@ fn debug_prop(name: &str) -> Option<String> {
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!v.is_empty()).then_some(v)
+}
+
+/// The hand menu's saved state under the config dir.
+const HAND_MENU_FILE: &str = "hand_menu.json";
+
+/// Whether the saved hand menu has the debug panel on (off when there is
+/// no file or it does not parse).
+fn load_hand_menu(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("debug")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// Save the hand menu's debug toggle; a failure is logged, not fatal.
+fn save_hand_menu(path: &std::path::Path, debug: bool) {
+    let json = serde_json::json!({ "debug": debug }).to_string();
+    match std::fs::write(path, json) {
+        Ok(()) => info!(
+            "hand menu: debug panel {} (saved)",
+            if debug { "on" } else { "off" }
+        ),
+        Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
+    }
 }
 
 /// The world-layout effect `effect`, simulated around `options.anchor`.

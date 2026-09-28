@@ -570,9 +570,20 @@ impl XrSession {
     }
 
     /// Keep the runtime's performance counters only while something reads
-    /// them (the debug panel); otherwise turn them off and stop polling.
+    /// them (the debug panel): turn them on, or off and stop polling. The
+    /// hand menu's toggle can flip this during the session.
     pub fn set_perf_metrics(&mut self, on: bool) {
-        if !on && let Some(p) = self.perf.take() {
+        if on {
+            if self.perf.is_none() {
+                self.perf = match PerfMetrics::new(&self.session) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("performance metrics unavailable: {e:#}");
+                        None
+                    }
+                };
+            }
+        } else if let Some(p) = self.perf.take() {
             p.disable();
         }
     }
