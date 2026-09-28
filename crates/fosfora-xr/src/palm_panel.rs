@@ -3,7 +3,10 @@
 //!
 //! The panel belongs to the left hand: it appears while the left palm faces
 //! the wearer, floats just above the hand turned toward the eyes, and hides
-//! when the palm turns away.
+//! when the palm turns away. A palm that faces the ceiling more than the
+//! head is a hold (`pose.rs`, Murmur's hand behaviors), not the menu: held
+//! low in front of the chest, a palm turned up faces both, so the panel
+//! shows only while the palm faces the head more than it faces up.
 //!
 //! Two ways to operate it with the right hand. The primary one needs no
 //! depth judgment (it must work without stereo depth perception): a ray
@@ -25,6 +28,10 @@ pub const PANEL_H_M: f32 = 0.40;
 /// direction to the head. Show above `SHOW`, hide below `HIDE`.
 const SHOW: f32 = 0.6;
 const HIDE: f32 = 0.3;
+/// The panel also hides once the palm faces the ceiling (world up) this
+/// much more than it faces the head (cosines), and shows only while it
+/// faces the head at least as much as up.
+const CEILING_MARGIN: f32 = 0.1;
 /// Panel placement relative to the palm: toward the head, and its bottom
 /// edge this far up (the panel grows upward from there).
 const TOWARD_HEAD_M: f32 = 0.06;
@@ -178,11 +185,12 @@ impl PalmPanel {
         };
         let normal = rot * Vec3::NEG_Y;
         let facing = normal.dot((head - pos).normalize_or_zero());
+        let up = normal.y;
         if self.shown {
-            if facing < HIDE && !self.touch.near {
+            if (facing < HIDE || up > facing + CEILING_MARGIN) && !self.touch.near {
                 self.shown = false;
             }
-        } else if facing > SHOW {
+        } else if facing > SHOW && facing >= up {
             self.shown = true;
             // Appear where the hand is, not sliding in from the last spot.
             self.placement = None;
@@ -527,6 +535,31 @@ mod tests {
         assert!(panel.place(Some(palm(0.0)), HEAD).is_none());
         assert!(panel.place(Some(middle), HEAD).is_none());
         assert!(panel.place(None, HEAD).is_none());
+    }
+
+    #[test]
+    fn a_palm_facing_the_ceiling_more_than_the_head_is_not_the_menu() {
+        // A palm low in front of the chest: the head is up and back from
+        // it, so a palm turned flat to the ceiling faces the head too.
+        let pos = Vec3::new(-0.1, 1.1, -0.3);
+        let to_head = (HEAD - pos).normalize();
+        let flat = Quat::from_rotation_arc(Vec3::NEG_Y, Vec3::Y);
+        assert!(Vec3::Y.dot(to_head) > SHOW, "{to_head}");
+        let mut panel = PalmPanel::default();
+        assert!(panel.place(Some((pos, flat)), HEAD).is_none());
+        // Turned toward the face, the same palm opens the menu...
+        let toward = Quat::from_rotation_arc(Vec3::NEG_Y, to_head);
+        assert!(panel.place(Some((pos, toward)), HEAD).is_some());
+        // ...a small tilt back toward the ceiling keeps it (hysteresis)...
+        let n = Quat::IDENTITY.slerp(Quat::from_rotation_arc(to_head, Vec3::Y), 0.6) * to_head;
+        let between = Quat::from_rotation_arc(Vec3::NEG_Y, n);
+        assert!(
+            n.y > n.dot(to_head) && n.y < n.dot(to_head) + CEILING_MARGIN,
+            "{n}"
+        );
+        assert!(panel.place(Some((pos, between)), HEAD).is_some());
+        // ...and flat up again hides it.
+        assert!(panel.place(Some((pos, flat)), HEAD).is_none());
     }
 
     #[test]

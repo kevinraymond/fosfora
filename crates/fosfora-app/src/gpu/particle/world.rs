@@ -782,6 +782,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
+    /// Murmur's per-hand behavior lanes (board #3314) start where the obstacle
+    /// block ends, one shared row and three per hand, and the XR app's
+    /// upload ends with them (`crates/fosfora-xr/src/scene.rs` asserts 170
+    /// rows on its side).
+    #[test]
+    fn murmur_xr_hand_lanes_follow_the_obstacle_block() {
+        let get = |name: &str| sim_u32_const(XR_MURMUR_SIM, name);
+        assert_eq!(
+            get("XR_AUX_HANDS"),
+            get("XR_AUX_BOX_HALF") + get("XR_MAX_BOXES")
+        );
+        assert_eq!(get("XR_AUX_HANDS"), 163);
+        assert_eq!(get("XR_AUX_HAND_ROWS"), 3);
+        assert_eq!(
+            get("XR_AUX_END"),
+            get("XR_AUX_HANDS") + 1 + 2 * get("XR_AUX_HAND_ROWS")
+        );
+        assert_eq!(get("XR_AUX_END"), MURMUR_AUX_ROWS as u32);
+        let pd = xr_murmur_preset().particles.expect("particles");
+        assert!(pd.max_count as usize >= MURMUR_AUX_ROWS);
+    }
+
     /// The preset is a hidden world variant of desktop Murmur: the loader
     /// resolves its sim, it asks for the 3D hash over the 3 m cube and the
     /// alpha pipeline, it keeps desktop's inputs and audio mappings, and it
@@ -1082,12 +1104,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
     }
 
+    /// Rows of the XR inputs Murmur reads: the head, the obstacle block and
+    /// the per-hand lanes (`XR_AUX_END`).
+    const MURMUR_AUX_ROWS: usize = 170;
+
     /// The Murmur tests' aux block: the wearer's head at `eye` with the
     /// world default 0.15 m near fade, the obstacle header (no spheres, one
     /// box, restitution 0.4, margin 5 mm, kick 0.4), the box filling x < 0.
+    /// The per-hand lanes are all zero: the behavior from before they
+    /// existed.
     fn murmur_aux(eye: Vec3) -> Vec<crate::gpu::particle::types::ParticleAux> {
         use crate::gpu::particle::types::ParticleAux;
-        let mut aux = vec![ParticleAux { home: [0.0; 4] }; 163];
+        let mut aux = vec![ParticleAux { home: [0.0; 4] }; MURMUR_AUX_ROWS];
         aux[0].home = [eye.x, eye.y, eye.z, 0.15];
         aux[1].home = [f32::from_bits(0), f32::from_bits(1), 0.4, 0.005];
         aux[2].home = [0.0, 0.4, 0.0, 0.0];
@@ -1213,26 +1241,61 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         frames: u32,
         aux: &[crate::gpu::particle::types::ParticleAux],
     ) -> Vec<Vec3> {
+        alive(
+            &murmur_run(count, frames, |_| aux.to_vec(), &[frames])
+                .pop()
+                .expect("one capture"),
+        )
+    }
+
+    /// The alive birds of a capture.
+    fn alive(slots: &[Option<Vec3>]) -> Vec<Vec3> {
+        slots.iter().flatten().copied().collect()
+    }
+
+    /// `frames` frames of the sim at 60 fps with frame `f`'s aux block from
+    /// `aux_at(f)`, and every slot's position (`None` when dead) after each
+    /// frame count in `capture` (ascending).
+    fn murmur_run(
+        count: u32,
+        frames: u32,
+        aux_at: impl Fn(u32) -> Vec<crate::gpu::particle::types::ParticleAux>,
+        capture: &[u32],
+    ) -> Vec<Vec<Option<Vec3>>> {
         use crate::gpu::test_gpu::test_gpu;
         const FPS: u32 = 60;
         let (device, queue) = test_gpu();
         let mut sr = murmur_renderer(&device, &queue, count, 60_000.0);
+        let mut out = Vec::new();
         for frame in 0..frames {
             let ts = f64::from(frame) / f64::from(FPS);
             let hop = murmur_hop(frame, FPS);
             let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
-            particles(&mut sr).update_aux_in_place(&queue, aux);
+            particles(&mut sr).update_aux_in_place(&queue, &aux_at(frame));
             sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
             let ps = particles(&mut sr);
             let mut enc = device.create_command_encoder(&Default::default());
             ps.poll_counter_readback();
             ps.dispatch(&mut enc, &queue);
             queue.submit([enc.finish()]);
+            if capture.contains(&(frame + 1)) {
+                out.push(read_slots(&device, &queue, particles(&mut sr), count));
+            }
         }
         wait(&device);
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
-        let ps = particles(&mut sr);
+        out
+    }
+
+    /// Every slot's position in the buffer the last dispatch wrote, `None`
+    /// for a dead one.
+    fn read_slots(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        ps: &crate::gpu::particle::ParticleSystem,
+        count: u32,
+    ) -> Vec<Option<Vec3>> {
         let bytes = u64::from(count) * 16;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("murmur-positions"),
@@ -1246,12 +1309,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         staging
             .slice(..)
             .map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        wait(&device);
-        let out: Vec<Vec3> =
+        wait(device);
+        let out: Vec<Option<Vec3>> =
             bytemuck::cast_slice::<u8, [f32; 4]>(&staging.slice(..).get_mapped_range())
                 .iter()
-                .filter(|p| p[3] > 0.0)
-                .map(|p| Vec3::new(p[0], p[1], p[2]))
+                .map(|p| (p[3] > 0.0).then(|| Vec3::new(p[0], p[1], p[2])))
                 .collect();
         staging.unmap();
         out
@@ -1347,6 +1409,236 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             n1 * 2 > n0,
             "a calm hand should leave most of the roost: {n1} birds within 0.25 m against {n0} without it"
         );
+    }
+
+    /// The Murmur tests' hand: a palm and four fingertips (2 cm spheres)
+    /// around `palm`, as the left hand's spheres when `left`.
+    fn murmur_hand(aux: &mut [crate::gpu::particle::types::ParticleAux], palm: Vec3, left: bool) {
+        aux[1].home[0] = f32::from_bits(5);
+        aux[163].home[0] = f32::from_bits(if left { 5 } else { 0 });
+        for (k, offset) in [
+            Vec3::ZERO,
+            Vec3::new(0.08, 0.0, 0.0),
+            Vec3::new(-0.08, 0.0, 0.0),
+            Vec3::new(0.0, 0.08, 0.0),
+            Vec3::new(0.0, -0.08, 0.0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let c = palm + *offset;
+            aux[3 + k].home = [c.x, c.y, c.z, 0.02];
+        }
+    }
+
+    /// Hand `h`'s lane rows: behavior, hold center and radius, hold
+    /// velocity.
+    fn murmur_lanes(h: usize) -> [usize; 3] {
+        let base = 164 + 3 * h;
+        [base, base + 1, base + 2]
+    }
+
+    /// Board #3314: the per-hand calm lane calms only the hand its spheres
+    /// belong to. The flee test's hand, as the left hand's spheres: calmed
+    /// through the left lane it leaves the roost; the right lane calmed
+    /// instead, the left hand is still a hawk and clears it.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_hand_lanes_calm_only_their_own_hand() {
+        use crate::gpu::test_gpu::gpu_guard;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let eye = ROOST + Vec3::new(0.0, 0.1, 1.2);
+        let palm = ROOST;
+        let near = |pts: &[Vec3]| pts.iter().filter(|p| p.distance(palm) < 0.25).count();
+        let calmed = |h: usize| {
+            let mut aux = murmur_aux(eye);
+            murmur_hand(&mut aux, palm, true);
+            aux[murmur_lanes(h)[0]].home[0] = 1.0;
+            near(&murmur_positions(COUNT, 120, &aux))
+        };
+        let without = near(&murmur_positions(COUNT, 120, &murmur_aux(eye)));
+        let (left, right) = (calmed(0), calmed(1));
+        eprintln!(
+            "birds within 0.25 m of a left hand: {without} without it, {left} left calmed, {right} right calmed"
+        );
+        assert!(
+            left * 2 > without,
+            "the calmed left hand should leave the roost: {left} against {without}"
+        );
+        assert!(
+            right * 5 < without,
+            "the right lane must not calm the left hand: {right} against {without}"
+        );
+    }
+
+    /// Board #3314, the piece #3311 found missing: a hold carries birds. A
+    /// calm hold (radius 0.25 m) opens at the roost after a second, latches
+    /// the birds inside it, holds still a quarter second, moves 0.8 m to the
+    /// side in 0.4 s (2 m/s, a far hand's speed) with its velocity in the
+    /// lane, and stays there half a second. The birds within its radius at
+    /// the end are the group it brought: against the few there with the
+    /// lanes zero (today's hands, no hold), and against the birds it latched
+    /// (a part of the flock, not the flock). Without its velocity the group
+    /// trails the moving hand on the spring alone: fewer are inside the
+    /// radius on arrival. Also reports the hold released on arrival (its
+    /// birds fly on at cruise speed and drift home slowly).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn murmur_xr_hold_carries_a_group() {
+        use crate::gpu::test_gpu::gpu_guard;
+        const COUNT: u32 = 20_000;
+        const RADIUS: f32 = 0.25;
+        let _guard = gpu_guard();
+        let eye = ROOST + Vec3::new(0.0, 0.1, 1.2);
+        let travel = Vec3::new(0.8, 0.0, 0.0);
+        let end = ROOST + travel;
+        // Frames at 60 fps: flock 0..60, hold opens at 60, still to 75,
+        // moves 75..99, stays 99..129.
+        let (open, go, arrive, frames) = (60u32, 75u32, 99u32, 129u32);
+        let center =
+            |f: u32| ROOST + travel * (f.saturating_sub(go) as f32 / (arrive - go) as f32).min(1.0);
+        let run = |strength: f32, carry: bool, release_at: u32| {
+            let aux_at = |f: u32| {
+                let mut aux = murmur_aux(eye);
+                let [lanes, hold, vel] = murmur_lanes(1);
+                if (open..release_at).contains(&f) {
+                    aux[lanes].home = [1.0, 1.0, 0.0, strength];
+                    let c = center(f);
+                    aux[hold].home = [c.x, c.y, c.z, RADIUS];
+                    let v = if carry && (go..arrive).contains(&f) {
+                        travel * 60.0 / (arrive - go) as f32
+                    } else {
+                        Vec3::ZERO
+                    };
+                    aux[vel].home = [v.x, v.y, v.z, (f - open) as f32 / 60.0];
+                }
+                aux
+            };
+            let caps = murmur_run(COUNT, frames, aux_at, &[go, arrive, frames]);
+            let caps: Vec<Vec<Vec3>> = caps.iter().map(|c| alive(c)).collect();
+            let near =
+                |pts: &[Vec3], at: Vec3| pts.iter().filter(|p| p.distance(at) < RADIUS).count();
+            (
+                near(&caps[0], ROOST),
+                near(&caps[1], end),
+                near(&caps[2], end),
+                caps[2].len(),
+            )
+        };
+        let (_, _, none, alive_none) = run(0.0, true, u32::MAX);
+        let (latched, arrived, held, alive_held) = run(1.0, true, u32::MAX);
+        let (_, spring_arrived, spring_held, _) = run(1.0, false, u32::MAX);
+        let (_, _, released, _) = run(1.0, true, arrive);
+        eprintln!(
+            "hold: {latched} birds within {RADIUS} m a quarter second after it opened; on arrival {arrived} (spring alone {spring_arrived}); half a second later {held} (spring alone {spring_held}, released on arrival {released}, no hold {none}); {alive_held} / {alive_none} alive"
+        );
+        assert!(
+            held > 5 * none.max(20),
+            "the hold should bring a group: {held} birds at the end point against {none} without it"
+        );
+        assert!(
+            held * 2 > latched,
+            "the hold should keep most of what it latched: {held} of {latched}"
+        );
+        assert!(
+            (held as u32) * 3 < COUNT,
+            "a hold takes part of the flock, not the flock: {held} of {COUNT}"
+        );
+        assert!(
+            spring_arrived * 2 < arrived,
+            "the group should move with the hand, not trail it: {arrived} inside on arrival, {spring_arrived} on the spring alone"
+        );
+        assert!(
+            alive_held * 10 > alive_none * 9,
+            "a hold must not kill birds: {alive_held} against {alive_none}"
+        );
+    }
+
+    /// Board #3314 step 4, a measurement: an open hand (calm, push only) is
+    /// meant to part the flock without flinging it, and the worn A/B could
+    /// not split the pad from the kick. A flat hand (5 x 5 joint spheres of
+    /// 1 cm over 16 cm, facing its motion) sweeps 1.6 m along -Z through the
+    /// flock (which lives at x > 0: the test box fills x < 0) at `SPEED`, a
+    /// far hand's speed. For each pad and kick: parting, the birds in the
+    /// hand's wake (within 8 cm of its path, the 30 cm behind it) once it is
+    /// 0.3 m past the roost; flinging, the birds displaced more than 0.5 m
+    /// while the hand travels from 0.4 m before the roost to 0.4 m past it.
+    /// Both against the flock with no hand.
+    #[test]
+    #[ignore = "requires a GPU/software adapter; a measurement, prints a table"]
+    fn murmur_xr_open_hand_pad_kick_sweep() {
+        use crate::gpu::test_gpu::gpu_guard;
+        const COUNT: u32 = 20_000;
+        let _guard = gpu_guard();
+        let speed: f32 = std::env::var("MURMUR_SWEEP_SPEED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1.5);
+        let eye = ROOST + Vec3::new(0.0, 0.1, 1.2);
+        // The path: z from 0.8 m behind the roost to 0.8 m ahead of it, 15 cm
+        // into the flock's side of the box.
+        let line = ROOST + Vec3::new(0.15, 0.0, 0.0);
+        // Frames at 60 fps: settle 0..60, then the sweep.
+        let start = 60u32;
+        let at = |m: f32| start + (m / speed * 60.0).round() as u32;
+        let sweep = at(1.6) - start;
+        let palm = |f: u32| {
+            let t = (f.saturating_sub(start)).min(sweep) as f32 / 60.0;
+            line + Vec3::new(0.0, 0.0, 0.8 - speed * t)
+        };
+        let (before, wake_at, after) = (at(0.4), at(1.1), at(1.2));
+        let run = |hand: Option<(f32, f32)>| {
+            let aux_at = |f: u32| {
+                let mut aux = murmur_aux(eye);
+                let Some((pad, kick)) = hand else {
+                    return aux;
+                };
+                let p = palm(f);
+                let mut n = 0u32;
+                for i in 0..5 {
+                    for j in 0..5 {
+                        let c =
+                            p + Vec3::new((i as f32 - 2.0) * 0.04, (j as f32 - 2.0) * 0.04, 0.0);
+                        aux[3 + n as usize].home = [c.x, c.y, c.z, 0.01 + pad];
+                        n += 1;
+                    }
+                }
+                aux[1].home[0] = f32::from_bits(n);
+                // The header kick is 0.4; the hand's kick calm scales it.
+                let [lanes, ..] = murmur_lanes(1);
+                aux[lanes].home = [1.0, 0.0, 1.0 - kick / 0.4, 0.0];
+                aux
+            };
+            let caps = murmur_run(COUNT, after, aux_at, &[before, wake_at, after]);
+            let wake = caps[1]
+                .iter()
+                .flatten()
+                .filter(|b| {
+                    let d = **b - line;
+                    (-0.3..0.0).contains(&d.z) && (d.x * d.x + d.y * d.y).sqrt() < 0.08
+                })
+                .count();
+            let flung = caps[0]
+                .iter()
+                .zip(&caps[2])
+                .filter(|(a, b)| matches!((a, b), (Some(a), Some(b)) if a.distance(*b) > 0.5))
+                .count();
+            (wake, flung)
+        };
+        let (wake0, flung0) = run(None);
+        eprintln!(
+            "open hand sweep at {speed} m/s: {} frames across the roost",
+            after - before
+        );
+        eprintln!("pad m  kick m/s  wake birds  displaced > 0.5 m");
+        eprintln!("no hand           {wake0:10}  {flung0:16}");
+        for pad in [0.0, 0.02, 0.05, 0.10] {
+            for kick in [0.0, 0.1, 0.2, 0.4] {
+                let (wake, flung) = run(Some((pad, kick)));
+                eprintln!("{pad:5.2}  {kick:8.1}  {wake:10}  {flung:16}");
+            }
+        }
     }
 
     /// Stands one bird 0.6 m ahead of the eye (see

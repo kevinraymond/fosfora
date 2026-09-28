@@ -31,6 +31,7 @@ mod particles3d;
 mod perf;
 #[cfg(target_os = "android")]
 mod playback;
+pub mod pose;
 pub mod reach;
 #[cfg(target_os = "android")]
 mod room;

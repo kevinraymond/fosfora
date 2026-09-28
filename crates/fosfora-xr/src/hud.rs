@@ -2,7 +2,8 @@
 //! that `Gfx` draws on a quad above the left palm (`palm_panel.rs` places
 //! it and turns the right hand's ray or fingertip into a pointer).
 //!
-//! Turning the left palm up always shows the hand menu: for now a single
+//! Turning the left palm toward the face always shows the hand menu (a palm
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): for now a single
 //! row, the debug panel's on/off toggle. With debug on the same quad grows
 //! upward into the debug panel (frame timing, the effect, hands, reach,
 //! anchor and audio, and controls for what can change without a restart),
@@ -143,6 +144,9 @@ pub struct View<'a> {
     pub audio: &'a str,
     /// Seated reach per hand: (real, virtual) shoulder-to-palm meters.
     pub reach: [Option<(f32, f32)>; 2],
+    /// Each hand's pose and hold (Murmur), shown in place of "open" while
+    /// the hand is not pinching.
+    pub pose: &'a [String; 2],
 }
 
 pub struct Hud {
@@ -733,7 +737,11 @@ fn panel_ui(
             return format!("{side} lost");
         }
         let tip = view.tip_mm[h].map_or("-".into(), |d| format!("{d:.0} mm"));
-        let pinch = if view.pinching[h] { "PINCH" } else { "open" };
+        let pinch = if view.pinching[h] {
+            "PINCH"
+        } else {
+            view.pose[h].as_str()
+        };
         format!("{side} {pinch} {tip}")
     };
     ui.label(format!("{}    {}", hand(0), hand(1)));

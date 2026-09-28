@@ -52,11 +52,17 @@ pub struct XrScene {
     world: Option<World>,
 }
 
-/// Rows of the world-mode aux block: the head, then the obstacle block. The
-/// sim's layout (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`) ends at
-/// row 163; a core test pins that side.
-const WORLD_AUX_ROWS: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
-const _: () = assert!(WORLD_AUX_ROWS == 163, "flux_xr_sim.wgsl reads 163 aux rows");
+/// Rows of the world-mode aux block: the head, the obstacle block, then
+/// Murmur's per-hand lanes. The obstacle block ends at row 163 (`XR_AUX_*`
+/// in `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170
+/// (`XR_AUX_END` in `murmur_xr_sim.wgsl`); core tests pin the sims' side.
+const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
+const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
+const WORLD_AUX_ROWS: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
+const _: () = assert!(
+    WORLD_AUX_ROWS == 170,
+    "murmur_xr_sim.wgsl reads 170 aux rows"
+);
 
 /// World-mode state (see the module docs).
 struct World {
@@ -234,8 +240,14 @@ impl XrScene {
 
     /// Upload this frame's world-mode sim inputs: the wearer's head (for the
     /// near fade within `near_fade_m`; 0 = off), the settle drift
-    /// (`drift_m_s` downward; 0 = none) and the obstacles, the positions
-    /// moved into the anchor's frame. Call before [`Self::dispatch_world`].
+    /// (`drift_m_s` downward; 0 = none), the obstacles and Murmur's
+    /// per-hand lanes (`pose::lane_rows`, already in the anchor's frame),
+    /// the positions moved into the anchor's frame. Call before
+    /// [`Self::dispatch_world`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one call per frame, each argument a separate input"
+    )]
     pub fn set_world_inputs(
         &mut self,
         queue: &wgpu::Queue,
@@ -244,6 +256,7 @@ impl XrScene {
         drift_m_s: f32,
         hand_scare: f32,
         obstacles: &ObstacleSet,
+        hand_lanes: &[[f32; 4]; crate::pose::HAND_LANE_ROWS],
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -268,6 +281,10 @@ impl XrScene {
         // scare, so a writer that never sets it keeps the full scare. Flux
         // ignores it.
         world.aux[2].home[3] = 1.0 - hand_scare.clamp(0.0, 1.0);
+        world
+            .aux
+            .extend(hand_lanes.iter().map(|&home| ParticleAux { home }));
+        debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);
         }
