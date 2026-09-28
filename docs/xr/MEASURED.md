@@ -468,6 +468,35 @@ now write depth, so sprites behind real surfaces are rejected, and the
 slower flow keeps more of the cloud settled on surfaces. **MR budget with
 everything on: 500K sprites at 72 Hz (8.6 ms).**
 
+### Hand mesh occluder (72 Hz, `mr` defaults, Sep 27 evening)
+
+`XR_FB_hand_tracking_mesh` on v207 (with `USE_ANCHOR_API` declared, the
+97-extension list): `xrGetHandMeshFB` returns **1360 vertices, 2314
+triangles, 26 joints per hand**, wrist at the mesh origin, the hand 19 cm
+long along +X (left) / −X (right). Drawn skinned, depth-only, in place of
+the joint spheres.
+
+Unworn, so no hand is tracked: the draw path was exercised with
+`debug.fosfora.handmeshtest "0,0,-0.5"` (the left mesh in bind pose parked
+0.5 m ahead of the eyes). The screencap shows a hand-shaped void with spread
+fingers carved out of the cloud, passthrough showing through it.
+
+Cost of one mesh in both eyes, `scripts/xr/sweep.sh --mode mr` (headset
+face-up on the desk, floor + primer on, the room query returned no anchors
+in this session, so the baseline is lower than the "final numbers" above):
+
+| Particles | GPU ms med / max, no mesh | with one mesh | frames/s | Long | Stale |
+|---|---|---|---|---|---|
+| 250K | 2.65 / 3.09 | 2.92 / 3.27 | 72.0 | 0 | 0 |
+| 500K | 5.53 / 6.14 | 5.55 / 6.12 | 72.0 | 0 | 0 |
+
+Two hands are two such draws: **under 0.3 ms per hand, in the noise at
+500K.**
+
+**Worn gate (open):** whether the skinned mesh follows the real hand
+(fingers, gaps between fingers, palm), and the bone-length hand-scale
+estimate logged as `hand mesh <side>: scale estimate`.
+
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 
 - **Passthrough:** the real room shows behind the particles (confirmed by

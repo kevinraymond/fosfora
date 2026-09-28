@@ -127,6 +127,40 @@ impl ObstacleSet {
     }
 }
 
+/// Joints per hand, `XR_HAND_JOINT_COUNT_EXT`; matches `HAND_JOINTS` in the
+/// occluder WGSL.
+pub const HAND_JOINTS: usize = 26;
+
+/// One vertex of a runtime hand mesh (`XR_FB_hand_tracking_mesh`) in bind
+/// pose: position in meters, up to four joint weights and the joints they
+/// weight. Matches `struct HandVertex` and the vertex buffer layout below.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct HandMeshVertex {
+    pub pos: [f32; 3],
+    pub weights: [f32; 4],
+    pub joints: [u8; 4],
+}
+
+/// A hand mesh ready to upload: `indices` are triangle-list u16.
+#[derive(Debug, Clone, Default)]
+pub struct HandMeshData {
+    pub vertices: Vec<HandMeshVertex>,
+    pub indices: Vec<u16>,
+}
+
+/// This frame's skinning matrices, column-major, `HAND_JOINTS` per hand
+/// (left, right), matching `struct HandSkins` in the WGSL.
+pub type HandSkins = [[[f32; 16]; HAND_JOINTS]; 2];
+
+/// A hand mesh on the GPU.
+struct HandMeshGpu {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+    vertex_count: u32,
+}
+
 /// Per-eye camera block, matching `struct Eye` in the WGSL.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -170,6 +204,9 @@ pub struct Particles3d {
     pub sim_enabled: bool,
     /// Draw the obstacles as depth-only occluders (S7 mixed reality).
     pub occluders: bool,
+    /// Occlude with the runtime's skinned hand meshes when they are loaded
+    /// (`set_hand_meshes`); off, or without meshes, the joint spheres do it.
+    pub hand_mesh: bool,
     frames: Cell<u32>,
     /// Cube placement, changeable per frame (`set_cube`): mixed reality
     /// centers it on the wearer once tracking is valid.
@@ -190,9 +227,16 @@ pub struct Particles3d {
     /// sphere impostors.
     occluder_pipeline: wgpu::RenderPipeline,
     sphere_pipeline: wgpu::RenderPipeline,
+    hand_mesh_pipeline: wgpu::RenderPipeline,
     occluder_bind_group: wgpu::BindGroup,
     /// (boxes, spheres) of the last `set_obstacles`.
     occluder_counts: Cell<(u32, u32)>,
+    /// Skinning matrices for both hand meshes, uploaded by `set_hand_skins`.
+    hand_skins: wgpu::Buffer,
+    /// The runtime's hand meshes (left, right), once `set_hand_meshes` ran.
+    hand_meshes: [Option<HandMeshGpu>; 2],
+    /// Which hands have valid skins this frame (tracked, mesh loaded).
+    hand_mesh_ready: Cell<[bool; 2]>,
 }
 
 impl Particles3d {
@@ -369,34 +413,50 @@ impl Particles3d {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        // Occluders: the obstacle block alone in the vertex stage, plus the
-        // eye camera.
+        // Occluders: the obstacle block and the hand skinning matrices in
+        // the vertex stage, plus the eye camera.
         let occluder_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("xr-particles3d-occluder"),
             source: wgpu::ShaderSource::Wgsl(include_str!("particles3d_occluder.wgsl").into()),
         });
+        // Zeroed: identity is not needed, a hand is drawn only once its
+        // skins were uploaded.
+        let hand_skins = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-particles3d-hand-skins"),
+            size: std::mem::size_of::<HandSkins>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniform_entry = |binding: u32, size: usize| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(size as u64),
+            },
+            count: None,
+        };
         let occluder_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("xr-particles3d-occluder"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(
-                        std::mem::size_of::<ObstacleSet>() as u64
-                    ),
-                },
-                count: None,
-            }],
+            entries: &[
+                uniform_entry(0, std::mem::size_of::<ObstacleSet>()),
+                uniform_entry(1, std::mem::size_of::<HandSkins>()),
+            ],
         });
         let occluder_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("xr-particles3d-occluder"),
             layout: &occluder_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: obstacles.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: obstacles.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: hand_skins.as_entire_binding(),
+                },
+            ],
         });
         let occluder_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -478,6 +538,50 @@ impl Particles3d {
             cache: None,
         });
 
+        // The hand mesh: real vertex buffers (the runtime's bind-pose mesh),
+        // skinned in the vertex stage, depth only like the boxes. No
+        // culling: the mesh's winding is the runtime's, and both sides of a
+        // thin finger must write depth for the wearer looking along it.
+        let hand_mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xr-particles3d-occluder-hand-mesh"),
+            layout: Some(&occluder_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &occluder_shader,
+                entry_point: Some("vs_hand_mesh"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<HandMeshVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Uint8x4],
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &occluder_shader,
+                entry_point: Some("fs_occluder"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: SWAPCHAIN_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::empty(),
+                })],
+            }),
+            multiview: None,
+            cache: None,
+        });
+
         let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("xr-particles3d-draw"),
             bind_group_layouts: &[&read_layout, &eye_layout],
@@ -548,6 +652,7 @@ impl Particles3d {
         Self {
             sim_enabled: true,
             occluders: false,
+            hand_mesh: true,
             frames: Cell::new(0),
             cube: Cell::new((params.cube_center, params.cube_half)),
             count,
@@ -564,9 +669,69 @@ impl Particles3d {
             draw_pipeline,
             occluder_pipeline,
             sphere_pipeline,
+            hand_mesh_pipeline,
             occluder_bind_group,
             occluder_counts: Cell::new((0, 0)),
+            hand_skins,
+            hand_meshes: [None, None],
+            hand_mesh_ready: Cell::new([false; 2]),
         }
+    }
+
+    /// Upload the runtime's hand meshes (left, right), once. A hand without
+    /// a mesh keeps its sphere occluders.
+    pub fn set_hand_meshes(&mut self, device: &wgpu::Device, meshes: [Option<&HandMeshData>; 2]) {
+        use wgpu::util::DeviceExt as _;
+        for (h, mesh) in meshes.into_iter().enumerate() {
+            self.hand_meshes[h] = mesh
+                .filter(|m| !m.vertices.is_empty() && !m.indices.is_empty())
+                .map(|m| HandMeshGpu {
+                    vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("xr-hand-mesh-vertices"),
+                        contents: bytemuck::cast_slice(&m.vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("xr-hand-mesh-indices"),
+                        contents: bytemuck::cast_slice(&m.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    }),
+                    index_count: m.indices.len() as u32,
+                    vertex_count: m.vertices.len() as u32,
+                });
+        }
+        let describe = |m: &Option<HandMeshGpu>| match m {
+            Some(m) => format!(
+                "{} vertices, {} triangles",
+                m.vertex_count,
+                m.index_count / 3
+            ),
+            None => "none".to_owned(),
+        };
+        info!(
+            "hand meshes on the GPU: left {} · right {}",
+            describe(&self.hand_meshes[0]),
+            describe(&self.hand_meshes[1])
+        );
+    }
+
+    /// Whether both hand meshes are loaded and in use, so the sphere
+    /// occluders are skipped for the hands.
+    fn hand_meshes_active(&self) -> bool {
+        self.hand_mesh && self.hand_meshes.iter().all(Option::is_some)
+    }
+
+    /// Upload this frame's skinning matrices; `ready` says which hands were
+    /// tracked (an untracked hand is not drawn).
+    pub fn set_hand_skins(&self, queue: &wgpu::Queue, skins: &HandSkins, ready: [bool; 2]) {
+        if !self.hand_meshes_active() {
+            self.hand_mesh_ready.set([false; 2]);
+            return;
+        }
+        if ready.iter().any(|&r| r) {
+            queue.write_buffer(&self.hand_skins, 0, bytemuck::bytes_of(skins));
+        }
+        self.hand_mesh_ready.set(ready);
     }
 
     /// Upload this frame's sim inputs. `speed` and `size` are the audio
@@ -608,7 +773,10 @@ impl Particles3d {
     /// before `draw`, so real furniture and hands hide sprites behind them.
     pub fn draw_occluders(&self, pass: &mut wgpu::RenderPass<'_>, eye: usize) {
         let (boxes, spheres) = self.occluder_counts.get();
-        if !self.occluders || boxes + spheres == 0 {
+        let ready = self.hand_mesh_ready.get();
+        let meshes = self.hand_meshes_active();
+        let hands = ready.iter().filter(|&&r| r).count() as u32;
+        if !self.occluders || boxes + spheres + hands == 0 {
             return;
         }
         pass.set_bind_group(0, &self.occluder_bind_group, &[]);
@@ -617,7 +785,22 @@ impl Particles3d {
             pass.set_pipeline(&self.occluder_pipeline);
             pass.draw(0..36, 0..boxes);
         }
-        if spheres > 0 {
+        if meshes {
+            // The hand meshes replace the joint spheres; the instance index
+            // picks the hand's skinning block in the shader.
+            if hands > 0 {
+                pass.set_pipeline(&self.hand_mesh_pipeline);
+                for (h, mesh) in self.hand_meshes.iter().enumerate() {
+                    let (Some(mesh), true) = (mesh, ready[h]) else {
+                        continue;
+                    };
+                    let h = h as u32;
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+                    pass.draw_indexed(0..mesh.index_count, 0, h..h + 1);
+                }
+            }
+        } else if spheres > 0 {
             pass.set_pipeline(&self.sphere_pipeline);
             pass.draw(0..6, 0..spheres);
         }

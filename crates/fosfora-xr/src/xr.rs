@@ -13,7 +13,7 @@ use crate::app::FrameStats;
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
-use crate::particles3d::{ObstacleBox, Particles3d};
+use crate::particles3d::{HandMeshData, ObstacleBox, Particles3d};
 use crate::room::{Passthrough, Room};
 
 pub const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
@@ -51,6 +51,8 @@ pub struct MrOptions {
 pub struct FrameInput {
     /// Midpoint of the two eyes in the reference space this frame.
     pub head: [f32; 3],
+    /// Orientation of the first view (x, y, z, w) in the reference space.
+    pub head_rot: [f32; 4],
     pub hands: HandsFrame,
     /// Scene anchors as oriented boxes in the reference space (empty until
     /// the query returns, or when the room is off).
@@ -97,6 +99,10 @@ impl XrContext {
         // needs them together).
         enabled.fb_passthrough = available.fb_passthrough;
         enabled.ext_hand_tracking = available.ext_hand_tracking;
+        // The runtime's skinned hand mesh as the depth occluder (needs the
+        // hand tracker it is queried through).
+        enabled.fb_hand_tracking_mesh =
+            available.ext_hand_tracking && available.fb_hand_tracking_mesh;
         let has_scene =
             available.fb_scene && available.fb_spatial_entity && available.fb_spatial_entity_query;
         enabled.fb_scene = has_scene;
@@ -107,9 +113,10 @@ impl XrContext {
         enabled.fb_spatial_entity_storage = has_scene && available.fb_spatial_entity_storage;
         enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
         info!(
-            "S7 extensions: passthrough {} · hand tracking {} · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {}",
+            "S7 extensions: passthrough {} · hand tracking {} (mesh {}) · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {}",
             available.fb_passthrough,
             available.ext_hand_tracking,
+            available.fb_hand_tracking_mesh,
             has_scene,
             available.fb_scene,
             available.fb_spatial_entity,
@@ -550,6 +557,12 @@ impl XrSession {
         self.room.is_some()
     }
 
+    /// The runtime's hand meshes (left, right), when hands are on and
+    /// `XR_FB_hand_tracking_mesh` delivered them.
+    pub fn hand_meshes(&self) -> [Option<&HandMeshData>; 2] {
+        self.hands.as_ref().map_or([None, None], Hands::meshes)
+    }
+
     /// Labels of the room anchors found so far, for the once-a-second log.
     pub fn room_summary(&self) -> Option<String> {
         self.room.as_ref().map(Room::anchor_summary)
@@ -608,8 +621,13 @@ impl XrSession {
             let (a, b) = (p(0), p(views.len() - 1));
             [(a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5]
         };
+        let head_rot = {
+            let q = views[0].pose.orientation;
+            [q.x, q.y, q.z, q.w]
+        };
         let input = FrameInput {
             head,
+            head_rot,
             hands: self
                 .hands
                 .as_mut()

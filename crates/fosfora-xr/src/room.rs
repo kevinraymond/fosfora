@@ -609,7 +609,9 @@ fn destroy_space(instance: &xr::Instance, space: sys::Space) {
     }
 }
 
-fn check(result: sys::Result) -> Result<()> {
+/// An `XrResult` as a `Result`: success codes (including qualified ones
+/// such as `SESSION_LOSS_PENDING`) pass, error codes carry their name.
+pub(crate) fn check(result: sys::Result) -> Result<()> {
     if result.into_raw() >= 0 {
         Ok(())
     } else {
