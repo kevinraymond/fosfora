@@ -28,6 +28,11 @@ pub struct HandsFrame {
     /// One sphere per tracked joint: xyz center in the reference space, w
     /// radius (the runtime's per-joint radius).
     pub spheres: Vec<[f32; 4]>,
+    /// How many of `spheres` each hand contributed: the left hand's come
+    /// first, then the right's.
+    pub sphere_count: [usize; 2],
+    /// Wrist joint position, where located (the reach beam starts there).
+    pub wrist: [Option<[f32; 3]>; 2],
     /// Whether each hand (left, right) delivered valid joints this frame.
     pub tracked: [bool; 2],
     /// A pinch began on this hand this frame (rising edge only).
@@ -182,7 +187,13 @@ impl Hands {
                     any = true;
                     let p = j.pose.position;
                     frame.spheres.push([p.x, p.y, p.z, j.radius]);
+                    frame.sphere_count[h] += 1;
                 }
+            }
+            let wrist = &joints[xr::HandJoint::WRIST.into_raw() as usize];
+            if valid(wrist) {
+                let p = wrist.pose.position;
+                frame.wrist[h] = Some([p.x, p.y, p.z]);
             }
             frame.tracked[h] = any;
             note_tracked(&mut self.was_tracked, h, any);

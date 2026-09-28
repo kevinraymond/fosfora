@@ -69,10 +69,15 @@ pub struct Gfx {
     panel_visible: std::cell::Cell<bool>,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
-    /// The debug panel's aiming beam (`set_beam`).
+    /// Beams (`set_beam`): the debug panel's pointer and one per hand for
+    /// the reach extension.
     beam: QuadBinding,
-    beam_visible: std::cell::Cell<bool>,
+    beam_visible: std::cell::Cell<[bool; BEAM_SLOTS]>,
     beam_pipeline: wgpu::RenderPipeline,
+    /// Small sprites marking the virtual (reach-extended) hand joints.
+    ghost: QuadBinding,
+    ghost_count: std::cell::Cell<u32>,
+    ghost_pipeline: wgpu::RenderPipeline,
     eyes: Vec<EyeUniform>,
     /// Per-eye depth attachment at the swapchain size (`set_eye_extent`).
     depth: Vec<wgpu::TextureView>,
@@ -91,8 +96,18 @@ struct QuadBinding {
     bind_group: wgpu::BindGroup,
 }
 
-/// The debug panel's aiming beam this frame: a thin strip from `start` to
-/// `end` turned to face `eye`, `width_m` wide, drawn at `alpha`.
+/// Beam slots: the debug panel's pointer, and each hand's reach beam.
+pub const BEAM_SLOTS: usize = 3;
+pub const BEAM_PANEL: usize = 0;
+pub const BEAM_REACH: [usize; 2] = [1, 2];
+/// Bytes per beam in the uniform: four corners and a color.
+const BEAM_BYTES: u64 = 80;
+/// Ghost sprites the uniform holds (both hands' 26 joints fit).
+pub const GHOST_MAX: usize = 64;
+const GHOST_BYTES: u64 = 32 + 16 * GHOST_MAX as u64;
+
+/// A beam this frame: a thin strip from `start` to `end` turned to face
+/// `eye`, `width_m` wide, drawn at `alpha`.
 #[derive(Debug, Clone, Copy)]
 pub struct Beam {
     pub start: [f32; 3],
@@ -110,6 +125,9 @@ pub struct PanelPose {
     pub center: [f32; 3],
     pub right: [f32; 3],
     pub up: [f32; 3],
+    /// How much of the texture's height the panel shows, from the top
+    /// (0..1): the hand menu uses only its top strip.
+    pub v_max: f32,
 }
 
 struct EyeUniform {
@@ -355,6 +373,7 @@ impl Gfx {
         let (pipeline, eyes, quad_layout, eye_layout) = build_quad_pipeline(&device);
         let (panel_pipeline, panel_layout) = build_panel_pipeline(&device, &eye_layout);
         let (beam_pipeline, beam) = build_beam_pipeline(&device, &eye_layout);
+        let (ghost_pipeline, ghost) = build_ghost_pipeline(&device, &eye_layout);
         info!("wgpu device ready");
 
         Ok(Self {
@@ -365,8 +384,11 @@ impl Gfx {
             panel_pipeline,
             panel_layout,
             beam,
-            beam_visible: std::cell::Cell::new(false),
+            beam_visible: std::cell::Cell::new([false; BEAM_SLOTS]),
             beam_pipeline,
+            ghost,
+            ghost_count: std::cell::Cell::new(0),
+            ghost_pipeline,
             eyes,
             depth: Vec::new(),
             pipeline,
@@ -486,40 +508,60 @@ impl Gfx {
         };
         let (c, r, u) = (pose.center, pose.right, pose.up);
         let data: [f32; 12] = [
-            c[0], c[1], c[2], 0.0, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
+            c[0], c[1], c[2], pose.v_max, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
         ];
         self.queue
             .write_buffer(&panel.uniform, 0, bytemuck::bytes_of(&data));
         self.panel_visible.set(true);
     }
 
-    /// Place the aiming beam for this frame, or hide it with `None`.
-    pub fn set_beam(&self, beam: Option<Beam>) {
-        let Some(b) = beam else {
-            self.beam_visible.set(false);
-            return;
-        };
-        let (a, e) = (glam::Vec3::from(b.start), glam::Vec3::from(b.end));
-        // Across the beam, facing the eye.
-        let side = (e - a)
-            .cross(glam::Vec3::from(b.eye) - a)
-            .normalize_or_zero()
-            * (b.width_m * 0.5);
-        if side == glam::Vec3::ZERO {
-            self.beam_visible.set(false);
-            return;
+    /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`) for this frame,
+    /// or hide it with `None`.
+    pub fn set_beam(&self, slot: usize, beam: Option<Beam>) {
+        let mut visible = self.beam_visible.get();
+        // A hidden slot is a zero-area strip: it draws no fragments.
+        let mut data = [[0.0f32; 4]; 5];
+        visible[slot] = false;
+        if let Some(b) = beam {
+            let (a, e) = (glam::Vec3::from(b.start), glam::Vec3::from(b.end));
+            // Across the beam, facing the eye.
+            let side = (e - a)
+                .cross(glam::Vec3::from(b.eye) - a)
+                .normalize_or_zero()
+                * (b.width_m * 0.5);
+            if side != glam::Vec3::ZERO {
+                let corner = |p: glam::Vec3, across: f32| [p.x, p.y, p.z, across];
+                data = [
+                    corner(a - side, -1.0),
+                    corner(a + side, 1.0),
+                    corner(e + side, 1.0),
+                    corner(e - side, -1.0),
+                    [1.0, 1.0, 1.0, b.alpha],
+                ];
+                visible[slot] = true;
+            }
         }
-        let corner = |p: glam::Vec3, across: f32| [p.x, p.y, p.z, across];
-        let data: [[f32; 4]; 5] = [
-            corner(a - side, -1.0),
-            corner(a + side, 1.0),
-            corner(e + side, 1.0),
-            corner(e - side, -1.0),
-            [1.0, 1.0, 1.0, b.alpha],
-        ];
-        self.queue
-            .write_buffer(&self.beam.uniform, 0, bytemuck::cast_slice(&data));
-        self.beam_visible.set(true);
+        self.queue.write_buffer(
+            &self.beam.uniform,
+            slot as u64 * BEAM_BYTES,
+            bytemuck::cast_slice(&data),
+        );
+        self.beam_visible.set(visible);
+    }
+
+    /// The ghost sprites for this frame: xyz and radius per point (at most
+    /// `GHOST_MAX`), turned to face `eye`, at `alpha`. Empty hides them.
+    pub fn set_ghost(&self, points: &[[f32; 4]], eye: [f32; 3], alpha: f32) {
+        let n = points.len().min(GHOST_MAX);
+        if n > 0 {
+            let mut data = vec![[0.0f32; 4]; 2 + n];
+            data[0] = [eye[0], eye[1], eye[2], 0.0];
+            data[1] = [1.0, 1.0, 1.0, alpha];
+            data[2..].copy_from_slice(&points[..n]);
+            self.queue
+                .write_buffer(&self.ghost.uniform, 0, bytemuck::cast_slice(&data));
+        }
+        self.ghost_count.set(n as u32);
     }
 
     /// Size the eye's depth attachment to its swapchain. Call once per eye,
@@ -686,11 +728,18 @@ impl Gfx {
             if let (Some(s), Some(draw)) = (scene.as_deref_mut(), world_draw) {
                 s.draw_world(&mut pass, draw);
             }
-            if self.beam_visible.get() {
+            let ghosts = self.ghost_count.get();
+            if ghosts > 0 {
+                pass.set_pipeline(&self.ghost_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.ghost.bind_group, &[]);
+                pass.draw(0..6 * ghosts, 0..1);
+            }
+            if self.beam_visible.get().iter().any(|&v| v) {
                 pass.set_pipeline(&self.beam_pipeline);
                 pass.set_bind_group(0, &eye.bind_group, &[]);
                 pass.set_bind_group(1, &self.beam.bind_group, &[]);
-                pass.draw(0..6, 0..1);
+                pass.draw(0..6 * BEAM_SLOTS as u32, 0..1);
             }
             // Last, over the sprites (which write no depth), so the panel
             // reads cleanly through the cloud; depth-tested against the
@@ -896,6 +945,7 @@ fn build_quad_pipeline(
 
 const PANEL_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
+// center.w: the fraction of the texture's height shown, from the top.
 struct Panel { center: vec4<f32>, right: vec4<f32>, up: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
 @group(1) @binding(0) var<uniform> panel: Panel;
@@ -917,7 +967,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     let world = panel.center.xyz + corner.x * panel.right.xyz + corner.y * panel.up.xyz;
     var out: VsOut;
     out.pos = eye.view_proj * vec4<f32>(world, 1.0);
-    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, (0.5 - corner.y * 0.5) * panel.center.w);
     return out;
 }
 
@@ -932,31 +982,35 @@ const BEAM_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
 struct Beam { corners: array<vec4<f32>, 4>, color: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
-@group(1) @binding(0) var<uniform> beam: Beam;
+@group(1) @binding(0) var<uniform> beams: array<Beam, 3>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) across: f32,
     @location(1) along: f32,
+    @location(2) @interpolate(flat) color: vec4<f32>,
 }
 
+// Six vertices per beam slot; a hidden slot is all zeros (no area).
 @vertex
 fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     var order = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
-    let k = order[i];
+    let beam = beams[i / 6u];
+    let k = order[i % 6u];
     let c = beam.corners[k];
     var out: VsOut;
     out.pos = eye.view_proj * vec4<f32>(c.xyz, 1.0);
     out.across = c.w;
     out.along = select(0.0, 1.0, k >= 2u);
+    out.color = beam.color;
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // Soft across the width, fading in from the hand toward the panel.
-    let a = beam.color.a * (1.0 - in.across * in.across) * (0.35 + 0.65 * in.along);
-    return vec4<f32>(beam.color.rgb * a, a);
+    // Soft across the width, fading in from the start toward the end.
+    let a = in.color.a * (1.0 - in.across * in.across) * (0.35 + 0.65 * in.along);
+    return vec4<f32>(in.color.rgb * a, a);
 }
 ";
 
@@ -979,14 +1033,14 @@ fn build_beam_pipeline(
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(80),
+                min_binding_size: wgpu::BufferSize::new(BEAM_BYTES * BEAM_SLOTS as u64),
             },
             count: None,
         }],
     });
     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("xr-beam-uniform"),
-        size: 80,
+        size: BEAM_BYTES * BEAM_SLOTS as u64,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -1005,6 +1059,134 @@ fn build_beam_pipeline(
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("xr-beam"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SWAPCHAIN_FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (
+        pipeline,
+        QuadBinding {
+            uniform,
+            bind_group,
+        },
+    )
+}
+
+const GHOST_WGSL: &str = r"
+struct Eye { view_proj: mat4x4<f32> }
+struct Ghost { eye: vec4<f32>, color: vec4<f32>, points: array<vec4<f32>, 64> }
+@group(0) @binding(0) var<uniform> eye: Eye;
+@group(1) @binding(0) var<uniform> ghost: Ghost;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+}
+
+// Six vertices per sprite: a quad facing the eye, `points[i].w` in radius.
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
+    var c = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let p = ghost.points[i / 6u];
+    let corner = c[i % 6u];
+    let to_eye = normalize(ghost.eye.xyz - p.xyz);
+    let right = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), to_eye));
+    let up = cross(to_eye, right);
+    let world = p.xyz + (corner.x * right + corner.y * up) * p.w;
+    var out: VsOut;
+    out.pos = eye.view_proj * vec4<f32>(world, 1.0);
+    out.corner = corner;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let r = length(in.corner);
+    if (r > 1.0) {
+        discard;
+    }
+    let a = ghost.color.a * (1.0 - smoothstep(0.5, 1.0, r));
+    return vec4<f32>(ghost.color.rgb * a, a);
+}
+";
+
+/// The ghost sprites' pipeline and uniform: soft camera-facing discs,
+/// premultiplied alpha, depth-tested (real objects hide them), no depth
+/// write.
+fn build_ghost_pipeline(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::RenderPipeline, QuadBinding) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("xr-ghost"),
+        source: wgpu::ShaderSource::Wgsl(GHOST_WGSL.into()),
+    });
+    let ghost_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-ghost"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(GHOST_BYTES),
+            },
+            count: None,
+        }],
+    });
+    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xr-ghost-uniform"),
+        size: GHOST_BYTES,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xr-ghost"),
+        layout: &ghost_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("xr-ghost"),
+        bind_group_layouts: &[eye_layout, &ghost_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xr-ghost"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,

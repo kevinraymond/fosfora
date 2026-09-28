@@ -1,8 +1,13 @@
-//! The in-headset debug panel: an egui UI rendered into a texture that
-//! `Gfx` draws on a quad above the left palm (`palm_panel.rs` places it and
-//! turns the right hand's ray or fingertip into a pointer). It shows the
-//! frame timing, the effect, hands, anchor and audio, and has controls for
-//! what can change without a restart.
+//! The hand menu and the debug panel: an egui UI rendered into a texture
+//! that `Gfx` draws on a quad above the left palm (`palm_panel.rs` places
+//! it and turns the right hand's ray or fingertip into a pointer).
+//!
+//! Turning the left palm up always shows the hand menu: for now a single
+//! row, the debug panel's on/off toggle. With debug on the same quad grows
+//! upward into the debug panel (frame timing, the effect, hands, reach,
+//! anchor and audio, and controls for what can change without a restart),
+//! the toggle still its bottom row. The quad keeps its bottom edge when it
+//! resizes, so the toggle stays under the pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
 //! depth perception, and a ray jitters): each is a full-width
@@ -23,12 +28,12 @@ use crate::gfx::{Beam, Gfx, PanelPose};
 use crate::palm_panel::{PalmPanel, Touch};
 use crate::perf::PerfSample;
 
-/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 30 cm
+/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 40 cm
 /// panel, about the display's density at arm's length. The width keeps a
 /// row at a multiple of 256 bytes, which a texture-to-buffer copy (`dump`)
 /// requires.
 const TEX_W: u32 = 640;
-const TEX_H: u32 = 1024;
+const TEX_H: u32 = 1376;
 const _: () = assert!((TEX_W * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
 const PIXELS_PER_POINT: f32 = 1.6;
 /// Frame-time history for the graph: two seconds at 72 Hz.
@@ -37,6 +42,10 @@ const HISTORY: usize = 144;
 const BUDGET_MS: f32 = 1000.0 / 72.0;
 const GRAPH_MAX_MS: f32 = 20.0;
 
+/// The hand menu's height (points): the part of the texture it shows. The
+/// toggle row sits as far above the bottom edge as it does in the full
+/// debug panel, so toggling leaves it exactly under the pointer.
+const MENU_H_PT: f32 = 124.0;
 /// Control rows: height and gap (points; 1 point = 0.5 mm on the panel).
 const ROW_H: f32 = 50.0;
 const ROW_GAP: f32 = 6.0;
@@ -46,11 +55,13 @@ const END_BOX_W: f32 = 64.0;
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 4] = [
+const STEPPERS: [(&str, f32, f32, f32); 6] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
     ("hand kick m/s", 0.0, 1.5, 0.1),
+    ("reach 1:1 within m", 0.2, 0.8, 0.05),
+    ("reach gain", 0.0, 60.0, 2.0),
 ];
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -60,6 +71,8 @@ pub struct Controls {
     pub near_fade: f32,
     pub hand_pad: f32,
     pub hand_kick: f32,
+    pub reach_threshold: f32,
+    pub reach_gain: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -69,6 +82,8 @@ pub enum Action {
     NextEffect,
     /// Put the anchor back around the wearer.
     Recenter,
+    /// The hand menu's debug toggle changed; the app saves it.
+    SetDebug(bool),
 }
 
 impl Controls {
@@ -77,7 +92,9 @@ impl Controls {
             0 => &mut self.gravity,
             1 => &mut self.near_fade,
             2 => &mut self.hand_pad,
-            _ => &mut self.hand_kick,
+            3 => &mut self.hand_kick,
+            4 => &mut self.reach_threshold,
+            _ => &mut self.reach_gain,
         }
     }
 }
@@ -88,6 +105,7 @@ enum Target {
     Prev,
     Next,
     Recenter,
+    ToggleDebug,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -119,9 +137,13 @@ pub struct View<'a> {
     pub bass: f32,
     pub beat: f32,
     pub audio: &'a str,
+    /// Seated reach per hand: (real, virtual) shoulder-to-palm meters.
+    pub reach: [Option<(f32, f32)>; 2],
 }
 
 pub struct Hud {
+    /// The debug panel is on (else the hand menu shows only its toggle).
+    debug: bool,
     placement: PalmPanel,
     touch: Touch,
     was_pressed: bool,
@@ -141,8 +163,9 @@ pub struct Hud {
 }
 
 impl Hud {
-    /// Build the panel and hand its texture to `gfx`.
-    pub fn new(gfx: &mut Gfx) -> Self {
+    /// Build the hand menu, with the debug panel on or off, and hand its
+    /// texture to `gfx`.
+    pub fn new(gfx: &mut Gfx, debug: bool) -> Self {
         let texture = gfx.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("xr-hud"),
             size: wgpu::Extent3d {
@@ -174,6 +197,7 @@ impl Hud {
             s.spacing.item_spacing = Vec2::new(8.0, 5.0);
         });
         Self {
+            debug,
             placement: PalmPanel::default(),
             touch: Touch::default(),
             was_pressed: false,
@@ -203,6 +227,7 @@ impl Hud {
     ) -> Touch {
         let head = Vec3::from(head);
         let palm = hands.palm[0].map(|(p, q)| (Vec3::from(p), Quat::from_array(q)));
+        self.placement.set_height(self.height_m());
         let placement = self.placement.place(palm, head);
         let ray = hands.index_knuckle[1].map(|k| {
             crate::palm_panel::hand_ray(Vec3::from(k), head, Quat::from_array(head_rot), 1.0)
@@ -212,30 +237,35 @@ impl Hud {
             ray,
             hands.pinching[1],
         );
+        let v_max = self.visible_pts() * PIXELS_PER_POINT / TEX_H as f32;
         gfx.set_panel_pose(placement.map(|p| {
             let (right, up) = p.half_vectors();
             PanelPose {
                 center: p.center.to_array(),
                 right: right.to_array(),
                 up: up.to_array(),
+                v_max,
             }
         }));
         let shown = placement.is_some();
-        gfx.set_beam(self.touch.beam.filter(|_| shown).map(|(start, end)| Beam {
-            start: start.to_array(),
-            end: end.to_array(),
-            eye: head.to_array(),
-            width_m: if self.touch.pressed { 0.006 } else { 0.003 },
-            alpha: if self.touch.pressed { 0.9 } else { 0.55 },
-        }));
+        gfx.set_beam(
+            crate::gfx::BEAM_PANEL,
+            self.touch.beam.filter(|_| shown).map(|(start, end)| Beam {
+                start: start.to_array(),
+                end: end.to_array(),
+                eye: head.to_array(),
+                width_m: if self.touch.pressed { 0.006 } else { 0.003 },
+                alpha: if self.touch.pressed { 0.9 } else { 0.55 },
+            }),
+        );
         if shown != self.shown_logged {
             self.shown_logged = shown;
-            log::info!("debug panel {}", if shown { "shown" } else { "hidden" });
+            log::info!("hand menu {}", if shown { "shown" } else { "hidden" });
         }
         if self.touch.pressed != self.logged_pressed {
             self.logged_pressed = self.touch.pressed;
             log::info!(
-                "debug panel {} ({})",
+                "hand menu {} ({})",
                 if self.touch.pressed {
                     "press"
                 } else {
@@ -256,20 +286,45 @@ impl Hud {
         self.shown_logged
     }
 
+    /// Whether the debug panel is on.
+    pub fn debug(&self) -> bool {
+        self.debug
+    }
+
+    /// The texture height the quad shows (points): the menu strip, or all.
+    fn visible_pts(&self) -> f32 {
+        if self.debug {
+            TEX_H as f32 / PIXELS_PER_POINT
+        } else {
+            MENU_H_PT
+        }
+    }
+
+    /// The quad's height (meters) for what it shows, at the texture's
+    /// density across the panel's width.
+    fn height_m(&self) -> f32 {
+        self.visible_pts() * PIXELS_PER_POINT / TEX_W as f32 * crate::palm_panel::PANEL_W_M
+    }
+
     /// Diagnostic (`debug.fosfora.hudtest`): the panel parked 45 cm ahead
     /// of the view and a little below, untracked, for a screencap.
     pub fn place_parked(&mut self, gfx: &Gfx, head: [f32; 3], head_rot: [f32; 4]) {
         let head = Vec3::from(head);
         let ahead = Quat::from_array(head_rot) * Vec3::NEG_Z;
-        let p = crate::palm_panel::Placement::facing(head + ahead * 0.45 - Vec3::Y * 0.05, head);
+        let p = crate::palm_panel::Placement::facing(
+            head + ahead * 0.45 - Vec3::Y * 0.05,
+            head,
+            self.height_m(),
+        );
         let (right, up) = p.half_vectors();
         gfx.set_panel_pose(Some(PanelPose {
             center: p.center.to_array(),
             right: right.to_array(),
             up: up.to_array(),
+            v_max: self.visible_pts() * PIXELS_PER_POINT / TEX_H as f32,
         }));
         self.touch = Touch::default();
-        gfx.set_beam(None);
+        gfx.set_beam(crate::gfx::BEAM_PANEL, None);
     }
 
     /// Diagnostic: copy the panel texture to `path` as raw RGBA8 rows
@@ -345,10 +400,12 @@ impl Hud {
             .or_default()
             .native_pixels_per_point = Some(PIXELS_PER_POINT);
         let now = self.started.elapsed().as_secs_f64();
+        // The pointer is relative to the part of the texture the quad shows.
+        let visible = self.visible_pts();
         let cursor = self
             .touch
             .pointer
-            .map(|[u, v]| Pos2::new(u * size.x, v * size.y));
+            .map(|[u, v]| Pos2::new(u * size.x, v * visible));
         // The press is the pinch alone: a cursor that leaves the panel for a
         // frame (ray jitter past the margin, a poke sliding off) must not
         // count as a release, or the return fires the target a second time.
@@ -364,6 +421,7 @@ impl Hud {
         let touch = self.touch;
         let locked = self.locked.filter(|_| pressed);
         let mut hovered = None;
+        let debug = self.debug;
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default()
                 .frame(
@@ -378,7 +436,11 @@ impl Hud {
                         locked,
                         hovered: &mut hovered,
                     };
-                    panel_ui(ui, view, &history, controls, rows);
+                    if debug {
+                        panel_ui(ui, view, &history, controls, rows);
+                    } else {
+                        menu_ui(ui, rows);
+                    }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
                     // in (a distance cue that needs no stereo).
@@ -423,6 +485,10 @@ impl Hud {
             Some(Target::Prev) => actions.push(Action::PrevEffect),
             Some(Target::Next) => actions.push(Action::NextEffect),
             Some(Target::Recenter) => actions.push(Action::Recenter),
+            Some(Target::ToggleDebug) => {
+                self.debug = !self.debug;
+                actions.push(Action::SetDebug(self.debug));
+            }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 let v = controls.field(i);
@@ -667,6 +733,13 @@ fn panel_ui(
         format!("{side} {pinch} {tip}")
     };
     ui.label(format!("{}    {}", hand(0), hand(1)));
+    let reach = |h: usize| {
+        view.reach[h].map_or_else(
+            || "-".to_owned(),
+            |(real, virt)| format!("{real:.2} -> {virt:.2} m"),
+        )
+    };
+    ui.label(format!("reach  L {}   R {}", reach(0), reach(1)));
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("gesture: {}", view.gesture)).strong());
         ui.label(
@@ -711,6 +784,27 @@ fn panel_ui(
             &format!("{name}  {value:.2}"),
         );
     }
+    toggle_row(&mut rows, ui, true);
+}
+
+/// The hand menu with the debug panel off: a title and the toggle.
+fn menu_ui(ui: &mut egui::Ui, mut rows: Rows<'_>) {
+    ui.label(RichText::new("Fosfora").strong().size(17.0));
+    toggle_row(&mut rows, ui, false);
+}
+
+/// The debug toggle, the bottom row in both layouts. Its state is in the
+/// words, not a color.
+fn toggle_row(rows: &mut Rows<'_>, ui: &mut egui::Ui, on: bool) {
+    rows.single(
+        ui,
+        Target::ToggleDebug,
+        if on {
+            "Debug panel: on"
+        } else {
+            "Debug panel: off"
+        },
+    );
 }
 
 /// GPU frame time over the last two seconds, with the 72 Hz budget line.

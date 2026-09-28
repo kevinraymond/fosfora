@@ -842,3 +842,47 @@ guesswork. Three rounds, from the log:
   up. **57 of 57 presses fired a target** (12 ray, 45 poke): 10 Next,
   2 Recenter, 212 steps including repeats; 0 cloud gestures started while
   the panel was up (17 outside it). Wearer: "much better".
+
+## Seated reach: Go-Go arm extension (board #3308)
+
+### Worn gate (Sep 28, seated, both hands, no controllers, Murmur XR World 40K and Flux)
+
+The shoulder is estimated from the head (0.15 m out to the hand's side,
+0.20 m down, the head's yaw only, low-passed at 0.15 s). Within a
+threshold of it the hand is 1:1; beyond it the whole joint set moves along
+the shoulder-to-palm line to `d + gain * (d - threshold)^2` (capped at
+3 m, low-passed at 0.05 s). The far joints feed the sim's spheres (Murmur's
+predator and every effect's collide); the skinned-mesh occluder, pinch
+gestures and the debug panel stay on the real hand. Past 3 cm of extension
+the far hand shows as small sprites on its joints with a faint beam from
+the real wrist.
+
+- **The wearer's arm, from the log:** a stretched palm sits 0.52 m (p90)
+  to 0.62 m (max) from the estimated shoulder, short of the 0.70 m the
+  first pass was designed for. With threshold 0.45 m and gain 20.8 the far
+  hand reached 0.89 m (p90) and 1.01 m (max): not far enough for the
+  flock.
+- **Tuned worn from the debug panel to threshold 0.30 m, gain 40**, now
+  the defaults: the far hand reached 2.48 m (p90) and the 3 m cap (57 s at
+  these settings).
+- **Frame time, worn with reach on (GPU `App=` median / max, fps median /
+  min):** Murmur 40K 10.0 / 12.5 ms, 72 / 55 fps (314 s); Flux Coarse
+  8.8 / 15.1 ms, 72 / 60 (212 s); Flux 10.4 ms median over 29 s, its
+  47 ms max at an effect switch.
+- **Verdict (wearer):** "pretty great". The flock 1 m ahead is reachable
+  from the chair; control of the far hand is "excellent"; near and far
+  interactions both work; the wrist beam is "a little bit bright" (alpha
+  0.25 -> 0.15 in the same change).
+
+### Hand menu (Sep 28)
+
+Turning the left palm up always shows a hand menu, for now one row: the
+debug panel's on/off toggle, saved in the app's config (`hand_menu.json`)
+until turned off again; `debug.fosfora.hud 0|1`, when set, overrides at
+launch and is saved too. With debug on the same quad grows upward into the
+debug panel (20 x 43 cm), the toggle its bottom row; with it off the quad
+is the 20 x 6 cm menu strip. The quad keeps its bottom edge on a resize
+and the toggle sits the same distance above it in both (64 px against 63
+px in the texture dumps), so the toggle stays under the pointer. The
+runtime's performance counters run only while debug is on, following the
+toggle during the session.

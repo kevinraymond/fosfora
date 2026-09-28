@@ -17,16 +17,18 @@
 
 use glam::{Quat, Vec3};
 
-/// Panel size (meters).
+/// Panel width and default height (meters). The height changes with what
+/// the panel shows (`PalmPanel::set_height`); the bottom edge stays put.
 pub const PANEL_W_M: f32 = 0.20;
-pub const PANEL_H_M: f32 = 0.30;
+pub const PANEL_H_M: f32 = 0.40;
 /// Palm-facing thresholds: the cosine between the palm normal and the
 /// direction to the head. Show above `SHOW`, hide below `HIDE`.
 const SHOW: f32 = 0.6;
 const HIDE: f32 = 0.3;
-/// Panel center relative to the palm: toward the head and up.
+/// Panel placement relative to the palm: toward the head, and its bottom
+/// edge this far up (the panel grows upward from there).
 const TOWARD_HEAD_M: f32 = 0.06;
-const ABOVE_PALM_M: f32 = 0.16;
+const BOTTOM_ABOVE_PALM_M: f32 = 0.0;
 /// Per-frame blend toward the target pose (hand-tracking jitter filter).
 const FOLLOW: f32 = 0.35;
 /// Fingertip-surface distance (meters, positive in front) that presses the
@@ -62,12 +64,15 @@ pub struct Placement {
     pub right: Vec3,
     pub up: Vec3,
     pub normal: Vec3,
+    /// Half the width and height (meters).
+    pub half_w: f32,
+    pub half_h: f32,
 }
 
 impl Placement {
-    /// Facing the point `eye` from `center`, with its up as close to world
-    /// up as the facing allows.
-    pub fn facing(center: Vec3, eye: Vec3) -> Self {
+    /// A `height`-tall panel at `center` facing the point `eye`, with its
+    /// up as close to world up as the facing allows.
+    pub fn facing(center: Vec3, eye: Vec3, height: f32) -> Self {
         let normal = (eye - center).normalize_or(Vec3::Z);
         let right = Vec3::Y.cross(normal).normalize_or(Vec3::X);
         let up = normal.cross(right);
@@ -76,13 +81,15 @@ impl Placement {
             right,
             up,
             normal,
+            half_w: PANEL_W_M * 0.5,
+            half_h: height * 0.5,
         }
     }
 
     /// Half-extent vectors for the renderer (center to right edge, center
     /// to top edge).
     pub fn half_vectors(&self) -> (Vec3, Vec3) {
-        (self.right * (PANEL_W_M * 0.5), self.up * (PANEL_H_M * 0.5))
+        (self.right * self.half_w, self.up * self.half_h)
     }
 }
 
@@ -138,9 +145,26 @@ pub struct PalmPanel {
     /// Last frame's touch, whose `near` pins the panel.
     touch: Touch,
     ray: Ray,
+    /// Panel height (meters); `None` is `PANEL_H_M`.
+    height: Option<f32>,
 }
 
 impl PalmPanel {
+    fn height(&self) -> f32 {
+        self.height.unwrap_or(PANEL_H_M)
+    }
+
+    /// Change the panel's height (what it shows changed). A placed panel
+    /// keeps its bottom edge where it is and grows or shrinks upward, so a
+    /// control at the bottom stays under the pointer.
+    pub fn set_height(&mut self, height: f32) {
+        if let Some(p) = self.placement.as_mut() {
+            p.center += p.up * (height * 0.5 - p.half_h);
+            p.half_h = height * 0.5;
+        }
+        self.height = Some(height);
+    }
+
     /// Update the panel for this frame's left palm (position and rotation)
     /// and head position. Returns where to draw it, or `None` when hidden.
     pub fn place(&mut self, palm: Option<(Vec3, Quat)>, head: Vec3) -> Option<Placement> {
@@ -170,10 +194,14 @@ impl PalmPanel {
             return self.visible();
         }
         let to_head = (head - pos).normalize_or(Vec3::Z);
-        let target =
-            Placement::facing(pos + to_head * TOWARD_HEAD_M + Vec3::Y * ABOVE_PALM_M, head);
+        let h = self.height();
+        let target = Placement::facing(
+            pos + to_head * TOWARD_HEAD_M + Vec3::Y * (BOTTOM_ABOVE_PALM_M + h * 0.5),
+            head,
+            h,
+        );
         let next = match self.placement {
-            Some(p) => Placement::facing(p.center.lerp(target.center, FOLLOW), head),
+            Some(p) => Placement::facing(p.center.lerp(target.center, FOLLOW), head, h),
             None => target,
         };
         self.placement = Some(next);
@@ -238,7 +266,7 @@ impl PalmPanel {
                 let d = origin + dir * t - p.center;
                 (d.dot(p.right), d.dot(p.up))
             });
-        let (hw, hh) = (PANEL_W_M * 0.5, PANEL_H_M * 0.5);
+        let (hw, hh) = (p.half_w, p.half_h);
         let inside =
             |(x, y): (f32, f32), margin: f32| x.abs() <= hw * margin && y.abs() <= hh * margin;
         let hover = hit.is_some_and(|h| inside(h, RAY_MARGIN));
@@ -289,8 +317,8 @@ impl PalmPanel {
             return Touch::default();
         };
         let d = tip - p.center;
-        let x = d.dot(p.right) / (PANEL_W_M * 0.5);
-        let y = d.dot(p.up) / (PANEL_H_M * 0.5);
+        let x = d.dot(p.right) / p.half_w;
+        let y = d.dot(p.up) / p.half_h;
         // Distance from the fingertip's surface to the panel, positive on
         // the wearer's side.
         let depth = d.dot(p.normal) - radius;
@@ -457,6 +485,23 @@ mod tests {
         // The beam ends on the panel where the ray hits.
         let (_, end) = t.beam.expect("beam");
         assert!(end.distance(p.center) < 1e-4, "{end}");
+    }
+
+    #[test]
+    fn a_resize_keeps_the_bottom_edge_under_the_pointer() {
+        let (mut panel, p) = shown_panel();
+        let bottom = p.center - p.up * p.half_h;
+        // Point near the bottom edge, so the panel is pinned by the ray.
+        let near_bottom = -p.half_h + 0.02;
+        aim(&mut panel, ray_at(&p, 0.0, near_bottom), false);
+        panel.set_height(0.05);
+        let small = panel.place(Some(palm(1.0)), HEAD).expect("shown");
+        assert!((small.center - small.up * small.half_h - bottom).length() < 1e-4);
+        assert!((small.half_h - 0.025).abs() < 1e-6);
+        // The same ray still lands 2 cm above the bottom edge.
+        let t = aim(&mut panel, ray_at(&p, 0.0, near_bottom), false);
+        let [_, v] = t.pointer.expect("on the small panel");
+        assert!((v - (1.0 - 0.02 / 0.05)).abs() < 0.01, "{v}");
     }
 
     #[test]
