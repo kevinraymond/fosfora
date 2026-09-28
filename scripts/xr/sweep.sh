@@ -7,9 +7,9 @@
 #   scripts/xr/sweep.sh [--counts "100000 250000 ..."] [--hz "72 90"]
 #                       [--eyescale "1.0"] [--seconds 30] [--sim 1|0]
 #                       [--size 1.0] [--tri 1|0] [--pull 1|0] [--out FILE]
-#                       [--mode particles|mr] [--set "name=value;name=value"]
+#                       [--mode particles|mr|world] [--set "name=value;name=value"]
 #
-# --mode picks the debug.fosfora.mode the app starts in (S7 uses mr) and
+# --mode picks the debug.fosfora.mode the app starts in (S7 uses mr, C3b world) and
 # --set applies extra debug.fosfora.<name> knobs to every run (e.g.
 # "passthrough=1;hands=0;room=0" for the S7 matrix); they are cleared afterwards.
 #

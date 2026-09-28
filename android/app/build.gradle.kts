@@ -71,6 +71,12 @@ val stageXrAssets by tasks.registering(Sync::class) {
     from(rootProject.file("../assets/xr/effects")) {
         into("effects")
     }
+    // XR-only sims keep their repo path, so a preset's
+    // "compute_shader": "../xr/shaders/<name>.wgsl" (resolved under shaders/)
+    // finds them in the APK and in a desktop checkout alike.
+    from(rootProject.file("../assets/xr/shaders")) {
+        into("xr/shaders")
+    }
     // The S6 test track (CC0; assets/xr/audio/LICENSE.md).
     from(rootProject.file("../assets/xr/audio")) {
         include("*.ogg")

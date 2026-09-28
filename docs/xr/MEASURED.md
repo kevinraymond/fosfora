@@ -65,6 +65,7 @@ the device; wgpu's own validation reported nothing over the run.
 | S7 | `031956b` | mixed reality: passthrough layer + hand joints + scene anchors + floor as obstacles, 100K unoccluded sprites, near cull, no quad | 72 | Yes: 30 s, 2029 frames, 0 long, 16 stale | 0.77 avg | 5.4 median / 6.6 max | `sweep.sh --mode mr` |
 | S7 | `031956b` | same, 250K | 72 | No: 61.5 frames/s, 167 long, 431 stale | 1.32 avg | 13.5 median / 18.4 max | same |
 | S7 | `031956b` | same, 250K, passthrough off | 72 | Yes: 30 s, 2026 frames, 2 long, 9 stale | 0.62 avg | 9.4 median / 10.1 max | same |
+| C3b | not yet run | `Flux XR World` (`mode world`): Flux's sim in a 2 m volume around the wearer, drawn through `render_world`, over the `mr` setup (passthrough, hands, room, floor, occluders, primer); 250K and 500K alive | 72 | device run needed | — | — | `sweep.sh --mode world --counts "250000 500000" --hz 72` |
 
 ### S4 notes (commit `fad08e4`, Quest 3 v207)
 

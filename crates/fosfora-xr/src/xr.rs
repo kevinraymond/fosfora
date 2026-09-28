@@ -15,6 +15,7 @@ use crate::input::{Hands, HandsFrame};
 use crate::math;
 use crate::particles3d::{ObstacleBox, Particles3d};
 use crate::room::{Passthrough, Room};
+use crate::scene::XrScene;
 
 pub const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 pub const EYE_COUNT: usize = 2;
@@ -557,16 +558,18 @@ impl XrSession {
 
     /// One frame: wait, begin, locate hands and room anchors at the
     /// predicted display time, run `before_render` (the effect step) with
-    /// them, locate views, render both eyes through wgpu, submit the
-    /// passthrough layer (if any) under a projection layer. Must only be
-    /// called while the session is running.
+    /// them and `scene`, locate views, render both eyes through wgpu (a
+    /// world-mode `scene` draws into them too), submit the passthrough layer
+    /// (if any) under a projection layer. Must only be called while the
+    /// session is running.
     pub fn frame(
         &mut self,
         gfx: &Gfx,
         clear: [f32; 4],
         stats: &mut FrameStats,
         particles: Option<&Particles3d>,
-        before_render: impl FnOnce(&FrameInput),
+        mut scene: Option<&mut XrScene>,
+        before_render: impl FnOnce(&FrameInput, Option<&mut XrScene>),
     ) -> Result<()> {
         let frame_state = self.waiter.wait().context("xrWaitFrame")?;
         self.stream.begin().context("xrBeginFrame")?;
@@ -623,7 +626,7 @@ impl XrSession {
                 None => Vec::new(),
             },
         };
-        before_render(&input);
+        before_render(&input, scene.as_deref_mut());
 
         let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
         log_stereo(view_flags, &views, &cameras);
@@ -645,7 +648,15 @@ impl XrSession {
             .zip(image_indices.iter())
             .map(|(eye, &index)| &eye.images[index as usize].1)
             .collect();
-        gfx.render(&targets, &cameras, clear, particles);
+        // Only a world-mode scene draws into the eyes; a quad scene reaches
+        // them through the quad texture.
+        gfx.render(
+            &targets,
+            &cameras,
+            clear,
+            particles,
+            scene.filter(|s| s.is_world()),
+        );
 
         for eye in &mut self.eyes {
             eye.swapchain
