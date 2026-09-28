@@ -6,12 +6,18 @@
 // pos_life.xyz = position in meters relative to the effect anchor, w = life;
 // vel_size.w = sprite radius in meters; color = rgba.
 //
-// Vertex pulling: one non-instanced draw of 3 * alive vertices (args written
-// by particle_prepare_indirect_world.wgsl); the vertex index picks the
-// particle and the corner. Each sprite is a single triangle circumscribing the
-// unit disc, which is all the soft disc below needs. On a tiler (Quest 3's
-// Adreno 740) this is ~1.5x cheaper than one instance per sprite, and three
-// vertices instead of six another 1.25-1.6x.
+// Vertex pulling: one non-instanced draw of 3 * max_particles vertices; the
+// vertex index picks the particle and the corner, and a sprite past the alive
+// count (counters[0]) leaves as a clipped degenerate triangle. A direct draw
+// of the full capacity, rather than an indirect draw of 3 * alive: on the
+// Quest 3 (Adreno 740, v207, wgpu 27) vkCmdDrawIndirect drew nothing from
+// GPU-written args that read back correctly, whether raw, through wgpu's
+// indirect validation copy or through a transfer copy, while the same count
+// as a direct draw rendered (docs/xr/MEASURED.md, C3b). The guard costs one
+// compare per vertex; the spare vertices never reach the rasterizer. Each
+// sprite is a single triangle circumscribing the unit disc, which is all the
+// soft disc below needs. On a tiler this is ~1.5x cheaper than one instance
+// per sprite, and three vertices instead of six another 1.25-1.6x.
 //
 // Mode 0 (the soft circle) only: sprite atlases, trails and spin are not
 // supported on this path.
@@ -34,6 +40,8 @@ struct WorldCamera {
 @group(0) @binding(5) var<storage, read> alive_indices: array<u32>;
 
 @group(1) @binding(0) var<uniform> cam: WorldCamera;
+// counters[0] is the alive count the sim's mark_alive built this frame.
+@group(1) @binding(1) var<storage, read> counters: array<u32, 4>;
 
 struct VertexOutput {
     @builtin(position) position: vec4f,
@@ -43,7 +51,17 @@ struct VertexOutput {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    let particle_idx = alive_indices[vertex_index / 3u];
+    let sprite = vertex_index / 3u;
+    if sprite >= counters[0] {
+        // Past the alive list: alive_indices holds stale entries there, so
+        // emit nothing (all three corners land on one clipped point).
+        var gone: VertexOutput;
+        gone.position = vec4f(2.0, 2.0, 2.0, 1.0);
+        gone.color = vec4f(0.0);
+        gone.quad_uv = vec2f(0.0);
+        return gone;
+    }
+    let particle_idx = alive_indices[sprite];
     let pl = pos_life[particle_idx];
     let radius = vel_size[particle_idx].w;
 

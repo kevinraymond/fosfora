@@ -18,7 +18,7 @@ use super::types::{
     ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
-use super::world::{WorldCamera, WorldCameraUniforms, WorldRender, WorldTarget};
+use super::world::{WorldCamera, WorldCameraUniforms, WorldDraw, WorldRender, WorldTarget};
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
@@ -2124,10 +2124,6 @@ impl ParticleSystem {
             pass.set_bind_group(0, &self.prepare_indirect_bind_groups[self.current], &[]);
             pass.dispatch_workgroups(1, 1, 1);
         }
-        // 2b. The world path's [3 * alive, 1, 0, 0], once that path exists.
-        if let Some(ref world) = self.world {
-            world.record_prepare(encoder);
-        }
         self.last_output.set(1 - self.current);
 
         // 3. Prepare trail indirect draw args (if trails active)
@@ -2493,11 +2489,13 @@ impl ParticleSystem {
     /// or after it (e.g. after `SceneRenderer::step` returned). Before any
     /// dispatch it draws nothing.
     ///
-    /// The first call builds the world path's shaders, camera ring and indirect
-    /// buffer, and from then on `dispatch` also writes the world draw's
-    /// arguments; each new `(color_format, depth format, blend)` builds its
-    /// pipeline on first use. Up to 16 calls between two queue submissions get
-    /// distinct camera slots.
+    /// Records its own render pass over `target`. The Quest build does not use
+    /// this form: on its Adreno a sprite draw in a pass without a depth-writing
+    /// draw costs up to 3x, and the passthrough compositing several
+    /// milliseconds more (`docs/xr/MEASURED.md`, S7 and C3b), so it prepares
+    /// with [`prepare_world`](Self::prepare_world) and draws with
+    /// [`draw_world`](Self::draw_world) inside its eye pass, next to the
+    /// occluders. This form stays for headless use and the tests.
     pub fn render_world(
         &mut self,
         device: &Device,
@@ -2507,33 +2505,13 @@ impl ParticleSystem {
         camera: &WorldCamera,
         load: wgpu::LoadOp<wgpu::Color>,
     ) {
-        let world = match self.world {
-            Some(ref mut world) => world,
-            None => {
-                let world = self.world.insert(WorldRender::new(
-                    device,
-                    &self.render_bgl,
-                    &self.counter_buffer,
-                ));
-                // The dispatch that preceded this first call ran before the
-                // world path existed; fill its arguments now so this frame draws.
-                world.record_prepare(encoder);
-                world
-            }
-        };
-
-        let depth_format = target.depth.map(|_| target.depth_format);
-        let key = (
-            target.color_format,
-            depth_format,
-            self.blend_mode == "alpha",
-        );
-        world.ensure_pipeline(device, key);
-        let offset = world.write_camera(
+        let draw = self.prepare_world(
+            device,
             queue,
-            &WorldCameraUniforms::new(camera, self.render_uniforms.composite_gain),
+            target.color_format,
+            target.depth.map(|_| target.depth_format),
+            camera,
         );
-
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particle-render-world"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2558,10 +2536,65 @@ impl ParticleSystem {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(world.pipeline(key));
+        self.draw_world(&mut pass, draw);
+    }
+
+    /// Prepare one world-space draw for a render pass the caller records:
+    /// the pipeline for that pass's color format and depth format (`None`
+    /// = the pass has no depth attachment, so no depth test) and this
+    /// call's camera slot. Call before `begin_render_pass`, then
+    /// [`draw_world`](Self::draw_world) inside the pass. Blend follows the
+    /// effect's `blend` as in [`render`](Self::render): `"alpha"` is alpha,
+    /// anything else additive; rgb is scaled by the same `composite_gain`.
+    ///
+    /// The first call builds the world path's shader and camera ring; each
+    /// new `(color_format, depth format, blend)` builds its pipeline on first
+    /// use. Up to 16 calls between two queue submissions get distinct camera
+    /// slots.
+    pub fn prepare_world(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        color_format: TextureFormat,
+        depth_format: Option<TextureFormat>,
+        camera: &WorldCamera,
+    ) -> WorldDraw {
+        let world = self.world.get_or_insert_with(|| {
+            WorldRender::new(device, &self.render_bgl, &self.counter_buffer)
+        });
+        let key = (color_format, depth_format, self.blend_mode == "alpha");
+        world.ensure_pipeline(device, key);
+        let camera_offset = world.write_camera(
+            queue,
+            &WorldCameraUniforms::new(camera, self.render_uniforms.composite_gain),
+        );
+        WorldDraw { key, camera_offset }
+    }
+
+    /// Draw the world-space sprites into `pass`, whose attachments must match
+    /// what `draw` was prepared for. Depth is tested (`Less`) against what the
+    /// pass drew before, never written: additive sprites have no order.
+    ///
+    /// One direct draw of `3 * max_particles` vertices: the vertex shader
+    /// reads the alive count from the counters and drops every sprite past
+    /// it, so the draw covers exactly the alive list. An indirect draw of
+    /// `3 * alive` (arguments prepared on the GPU) rendered nothing on the
+    /// Quest 3's Adreno 740 (v207, wgpu 27) although the arguments read back
+    /// correctly, raw, through wgpu's indirect validation copy and through a
+    /// transfer copy alike; the same count as a direct draw rendered
+    /// (`docs/xr/MEASURED.md`, C3b). The spare vertices cost one compare
+    /// each and never reach the rasterizer; the XR sims run near capacity,
+    /// so an indirect draw would skip almost nothing anyway. A desktop sim
+    /// with a large capacity and few alive particles would be the case for
+    /// bringing indirect back, on a device where it works.
+    pub fn draw_world(&self, pass: &mut wgpu::RenderPass<'_>, draw: WorldDraw) {
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        pass.set_pipeline(world.pipeline(draw.key));
         pass.set_bind_group(0, &self.render_bind_groups[self.last_output.get()], &[]);
-        pass.set_bind_group(1, world.camera_bind_group(), &[offset]);
-        pass.draw_indirect(&world.indirect_buffer, 0);
+        pass.set_bind_group(1, world.camera_bind_group(), &[draw.camera_offset]);
+        pass.draw(0..3 * self.max_particles, 0..1);
     }
 
     /// Load a sprite atlas and update the sprite bind group.
@@ -6006,25 +6039,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {{
         })
     }
 
-    fn read_buffer(device: &Device, queue: &Queue, src: &wgpu::Buffer, size: u64) -> Vec<u8> {
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("world-probe-staging"),
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut enc = device.create_command_encoder(&Default::default());
-        enc.copy_buffer_to_buffer(src, 0, &staging, 0, size);
-        queue.submit([enc.finish()]);
-        staging
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, |r| r.unwrap());
-        poll(device);
-        let data = staging.slice(..).get_mapped_range().to_vec();
-        staging.unmap();
-        data
-    }
-
     /// Red channel of an `Rgba8Unorm` texture, row-major.
     fn read_red(device: &Device, queue: &Queue, tex: &wgpu::Texture) -> Vec<u8> {
         let bpr = DIM * 4;
@@ -6337,18 +6351,137 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
         }
     }
 
-    /// After a dispatch with the world path live, its indirect buffer holds
-    /// `[3 * alive, 1, 0, 0]`. The world path is built before any dispatch
-    /// (drawing nothing), so the value can only come from `dispatch`.
+    /// `prepare_world` + `draw_world` inside a pass the caller records draws
+    /// the same pixels as `render_world`'s own pass (the Quest build uses
+    /// the former inside its eye pass).
     #[test]
     #[ignore = "requires a GPU/software adapter"]
-    fn world_indirect_args_follow_alive_count() {
+    fn callers_pass_matches_own_pass() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let particles: Vec<Vec4> = (0..5)
+            .map(|i| Vec4::new(i as f32 * 0.4 - 0.8, (i % 2) as f32 * 0.3, -2.0, RADIUS))
+            .collect();
+        let (own, _) = draw(&device, &queue, &particles, None);
+
+        let mut ps = system(&device, &queue, &particles);
+        let color = texture(&device, TextureFormat::Rgba8Unorm, "world-probe-color");
+        let color_view = color.create_view(&Default::default());
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        let prepared =
+            ps.prepare_world(&device, &queue, TextureFormat::Rgba8Unorm, None, &camera());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("callers-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ps.draw_world(&mut pass, prepared);
+        }
+        queue.submit([enc.finish()]);
+        poll(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "caller's-pass draw must validate: {err:?}");
+        let theirs = read_red(&device, &queue, &color);
+        assert!(own.iter().any(|&r| r > 0), "own pass drew nothing");
+        assert_eq!(own, theirs, "caller's pass differs from own pass");
+    }
+
+    /// A sim whose first dispatch spawns every particle and whose later
+    /// dispatches keep only the first `keep` alive (the rest stay in the
+    /// buffers, dead), so after three dispatches the ping-pong alive list in
+    /// use holds stale entries past the alive count: exactly what the vertex
+    /// shader's alive-count guard must ignore.
+    fn sim_src_shrinking(particles: &[Vec4], keep: usize) -> String {
+        let n = particles.len();
+        let list = particles
+            .iter()
+            .map(|p| format!("vec4f({:?}, {:?}, {:?}, {:?})", p.x, p.y, p.z, p.w))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let noise = include_str!("../../../../../assets/shaders/lib/noise.wgsl");
+        let palette = include_str!("../../../../../assets/shaders/lib/palette.wgsl");
+        let plib = include_str!("../../../../../assets/shaders/lib/particle_lib.wgsl");
+        format!(
+            "{noise}\n{palette}\n{plib}\n
+var<private> PARTICLES: array<vec4f, {n}> = array<vec4f, {n}>({list});
+@compute @workgroup_size(256)
+fn cs_main(@builtin(global_invocation_id) gid: vec3u) {{
+    let idx = gid.x;
+    if idx >= {n}u {{ return; }}
+    var p = read_particle(idx);
+    if p.pos_life.w <= 0.0 && p.color.a == 0.0 {{
+        // First dispatch: spawn all.
+        p.pos_life = vec4f(PARTICLES[idx].xyz, 1.0);
+        p.vel_size = vec4f(0.0, 0.0, 0.0, PARTICLES[idx].w);
+        p.color = vec4f(1.0);
+        p.flags = vec4f(0.0);
+        write_particle(idx, p);
+        mark_alive(idx);
+        return;
+    }}
+    // Later dispatches: the tail dies but keeps its position and color.
+    p.pos_life.w = select(0.0, 1.0, idx < {keep}u);
+    write_particle(idx, p);
+    if idx < {keep}u {{
+        mark_alive(idx);
+    }}
+}}
+"
+        )
+    }
+
+    /// The draw is bounded by this frame's alive count, not by the length of
+    /// the alive list: after the count shrinks, the stale entries at the tail
+    /// of the reused ping-pong list must not draw. Seven sprites in the right
+    /// half of the view, then only the first three stay alive; the four dead
+    /// ones sit in the left half and must leave it dark.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn world_draw_stops_at_alive_count() {
         let _guard = gpu_guard();
         let (device, queue) = test_gpu();
         let particles: Vec<Vec4> = (0..7)
-            .map(|i| Vec4::new(i as f32 * 0.1, 0.0, -2.0, RADIUS))
+            .map(|i| {
+                let x = if i < 3 {
+                    0.6 + i as f32 * 0.3
+                } else {
+                    -0.6 - (i - 3) as f32 * 0.3
+                };
+                Vec4::new(x, 0.0, -2.0, RADIUS)
+            })
             .collect();
-        let mut ps = system(&device, &queue, &particles);
+        let def: ParticleDef = serde_json::from_str(r#"{"max_count": 256}"#).unwrap();
+        let mut ps = ParticleSystem::new(
+            &device,
+            &queue,
+            TextureFormat::Rgba16Float,
+            &def,
+            &sim_src_shrinking(&particles, 3),
+            false,
+        );
+        // Dispatch 1 fills list A with 0..7; dispatch 2 writes list B with
+        // 0..3; dispatch 3 reuses list A, overwriting 0..3 and leaving the
+        // stale 3..7 behind the alive count of 3.
+        for _ in 0..3 {
+            let mut enc = device.create_command_encoder(&Default::default());
+            ps.dispatch(&mut enc, &queue);
+            queue.submit([enc.finish()]);
+            poll(&device);
+            ps.flip();
+        }
         let color = texture(&device, TextureFormat::Rgba8Unorm, "world-probe-color");
         let color_view = color.create_view(&Default::default());
         let mut enc = device.create_command_encoder(&Default::default());
@@ -6367,16 +6500,18 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
         );
         queue.submit([enc.finish()]);
         poll(&device);
-        let world = ps.world.as_ref().expect("world path built by render_world");
-        let args = read_buffer(&device, &queue, &world.indirect_buffer, 16);
-        assert_eq!(bytemuck::cast_slice::<u8, u32>(&args), &[0, 1, 0, 0]);
-
-        let mut enc = device.create_command_encoder(&Default::default());
-        ps.dispatch(&mut enc, &queue);
-        queue.submit([enc.finish()]);
-        poll(&device);
-        let world = ps.world.as_ref().expect("world path built by render_world");
-        let args = read_buffer(&device, &queue, &world.indirect_buffer, 16);
-        assert_eq!(bytemuck::cast_slice::<u8, u32>(&args), &[21, 1, 0, 0]);
+        let red = read_red(&device, &queue, &color);
+        let (mut left, mut right) = (0usize, 0usize);
+        for (i, &r) in red.iter().enumerate() {
+            if r > 0 {
+                if (i as u32 % DIM) < DIM / 2 {
+                    left += 1;
+                } else {
+                    right += 1;
+                }
+            }
+        }
+        assert!(right > 50, "the three alive sprites drew {right} px");
+        assert_eq!(left, 0, "{left} px from dead sprites past the alive count");
     }
 }

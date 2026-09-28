@@ -13,7 +13,7 @@ use crate::audio::LiveAudio;
 use crate::gfx::Gfx;
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback};
-use crate::scene::XrScene;
+use crate::scene::{WorldOptions, XrScene};
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
@@ -27,6 +27,9 @@ const SCENE_HEIGHT: u32 = 720;
 const QUAD_WIDTH_M: f32 = 1.2;
 pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
 const DEFAULT_EFFECT: &str = "Flux";
+/// C3b: the world-layout effect `mode world` runs unless
+/// `debug.fosfora.effect` names another.
+const DEFAULT_WORLD_EFFECT: &str = "Flux XR World";
 const NOMINAL_FPS: u32 = 72;
 /// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
 /// the particles sit in front of it and half behind (the depth gate).
@@ -75,6 +78,9 @@ enum Mode {
     /// S7: world-space particles over passthrough, hands and room as
     /// obstacles, no quad.
     Mixed,
+    /// C3b: a core effect's world-layout variant (Flux XR World) instead of
+    /// the S5 test sim, over the same mixed-reality setup as `Mixed`.
+    World,
 }
 
 pub fn run(app: &AndroidApp) {
@@ -152,13 +158,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.quadpos "0,1.5,-1.5"     (where the static quad sits; diagnostic for the S7 quad finding)
     //   adb shell setprop debug.fosfora.depthtest 0              (sprites drawn with depth compare Always; diagnostic)
     //   adb shell setprop debug.fosfora.primer 0|1               (mr without the quad: keep a 1 mm depth-writing quad in the pass; default on)
+    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux XR World through render_world, over the mr setup;
+    //       count = particles (default: the preset's 300K), size = sprite radius multiplier, sim 0 = freeze after warmup,
+    //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
+    //       nearcull = near-fade radius around the head; tri/pull do not apply)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
         Some("mr" | "mixed") => Mode::Mixed,
+        Some("world") => Mode::World,
         _ => Mode::Particles,
     };
-    let mixed = mode == Mode::Mixed;
+    // World mode runs over the whole mixed-reality setup: passthrough, hands,
+    // room, floor, occluders, primer and the wearer-centered anchor all take
+    // their `mr` defaults.
+    let mixed = matches!(mode, Mode::Mixed | Mode::World);
     let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
         Some("0") => false,
         Some("1") => true,
@@ -224,10 +238,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             Some((w.parse().ok()?, h.parse().ok()?))
         })
         .unwrap_or((SCENE_WIDTH, SCENE_HEIGHT));
-    let count = debug_prop("debug.fosfora.count")
+    let count_knob = debug_prop("debug.fosfora.count")
         .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(DEFAULT_COUNT)
-        .max(1);
+        .map(|c| c.max(1));
+    let count = count_knob.unwrap_or(DEFAULT_COUNT);
     let sim_enabled = debug_prop("debug.fosfora.sim").as_deref() != Some("0");
     let size_scale = debug_prop("debug.fosfora.size")
         .and_then(|v| v.parse::<f32>().ok())
@@ -336,15 +350,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             {
                 s.set_emit_rate(rate);
             }
-            gfx.set_quad(
-                &s.quad_view,
-                QUAD_WIDTH_M,
-                scene_w as f32 / scene_h as f32,
-                QUAD_CENTER,
-            );
+            if let Some((_, view)) = &s.quad {
+                gfx.set_quad(
+                    view,
+                    QUAD_WIDTH_M,
+                    scene_w as f32 / scene_h as f32,
+                    QUAD_CENTER,
+                );
+            }
             scene = Some(s);
         }
-        Mode::Particles | Mode::Mixed => {
+        Mode::Particles | Mode::Mixed | Mode::World => {
             // S5: a static, opaque quad at the S4 placement, the depth
             // reference the particles are judged against. It costs nothing
             // to render, so the sweep numbers are the particles'. In mixed
@@ -372,9 +388,32 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 gfx.set_quad(&view, 0.001, 1.0, PRIMER_POS);
                 static_quad = Some(tex);
             }
+            if mode == Mode::World {
+                let effect = debug_prop("debug.fosfora.effect")
+                    .unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
+                let scene_dir = write_single_effect_scene(&dirs.config, &effect)
+                    .context("writing the scene")?;
+                let s = XrScene::new_world(
+                    &gfx.device,
+                    &gfx.queue,
+                    &scene_dir,
+                    &effect,
+                    NOMINAL_FPS,
+                    WorldOptions {
+                        count: count_knob,
+                        size_scale,
+                        sim_enabled,
+                        anchor: cube_center,
+                    },
+                )
+                .context("creating the world scene")?;
+                scene = Some(s);
+            }
+            // In world mode the effect is the particles: the test sim keeps
+            // only its obstacle block and occluders (count 0).
             let mut p = Particles3d::new(
                 &gfx.device,
-                count,
+                if mode == Mode::World { 0 } else { count },
                 crate::xr::EYE_COUNT,
                 Params {
                     triangles,
@@ -484,7 +523,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         } else {
             background_color(t)
         };
-        session.frame(&gfx, clear, &mut stats, particles.as_ref(), |input| {
+        let scene_mut = scene.as_mut();
+        session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // S7: hands and room as obstacles, pinch as the toggle.
             if input.hands.pinch_began.iter().any(|&b| b) {
                 size_boost = !size_boost;
@@ -499,8 +539,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     recentered = true;
                     let center = [input.head[0], MR_CUBE_Y, input.head[2]];
                     p.set_cube(center, MR_CUBE_HALF_WEARER_M);
+                    if let Some(s) = scene.as_deref_mut() {
+                        s.set_anchor(center);
+                    }
                     info!(
-                        "cube re-centered on the wearer: ({:.2}, {:.2}, {:.2}) half {MR_CUBE_HALF_WEARER_M} (head at ({:.2}, {:.2}, {:.2}))",
+                        "cube (and world anchor) re-centered on the wearer: ({:.2}, {:.2}, {:.2}) half {MR_CUBE_HALF_WEARER_M} (head at ({:.2}, {:.2}, {:.2}))",
                         center[0],
                         center[1],
                         center[2],
@@ -525,6 +568,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     set.push_box(f);
                 }
                 p.set_obstacles(queue, &set);
+                if let Some(s) = scene.as_deref_mut() {
+                    s.set_world_inputs(queue, input.head, near_cull, &set);
+                }
                 if let Some(offset) = hand_mesh_test {
                     let mut skins = input.hands.skins;
                     let rot = glam::Quat::from_array(input.head_rot);
@@ -567,7 +613,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
-            if let Some(scene) = scene.as_mut() {
+            if let Some(scene) = scene {
                 match live_audio.as_mut() {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
                     None => {

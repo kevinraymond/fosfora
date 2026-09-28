@@ -1,37 +1,94 @@
-//! One Fosfora effect rendered through the core's offline scene renderer into
-//! an offscreen texture, driven by synthetic audio features (S4).
+//! One Fosfora effect run through the core's offline scene renderer, driven
+//! by live or synthetic audio features, in one of two outputs:
 //!
-//! `SceneRenderer` is the app's render loop minus the window and devices; it
-//! post-processes into its own capture texture, which has no sampling usage,
-//! so each frame ends with a copy into `quad_texture`, the texture the
-//! world-locked quad samples.
+//! - **Quad** (S4): `SceneRenderer` is the app's render loop minus the window
+//!   and devices; it post-processes into its own capture texture, which has
+//!   no sampling usage, so each frame ends with a copy into `quad`, the
+//!   texture the world-locked quad samples.
+//! - **World** (C3b, `mode world`): a world-layout effect (a hidden
+//!   `assets/xr/effects/*_xr_world.pfx`) whose sim writes meters around an
+//!   anchor. The scene renderer still owns the per-frame state (uniforms,
+//!   audio, bindings, timeline, counter readbacks, the ping-pong flip), but
+//!   the effect's layer is disabled so none of its 2D frame runs (fragment
+//!   passes, the instanced 2D particle draw, compositing: on the Adreno 740
+//!   an instanced draw of a few hundred thousand sprites costs milliseconds,
+//!   and nothing of that frame is ever shown). The sim is dispatched here
+//!   instead, and `ParticleSystem::render_world` draws it once per eye into
+//!   the eye targets.
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use fosfora_app::audio::AudioFrame;
 use fosfora_app::audio::analyzer::{SPECTROGRAM_MELS, SPECTRUM_BINS};
 use fosfora_app::audio::hop::HopOutput;
 use fosfora_app::gpu::audio_textures::WAVEFORM_PEEK;
+use fosfora_app::gpu::layer::Layer;
+use fosfora_app::gpu::particle::types::ParticleAux;
+use fosfora_app::gpu::particle::{ParticleSystem, WorldCamera, WorldDraw};
 use fosfora_app::headless::scene_renderer::{CAPTURE_FORMAT, SceneRenderer};
 use fosfora_app::settings::ParticleQuality;
 use log::info;
 
+use crate::gfx::{EyeCamera, SWAPCHAIN_FORMAT};
+use crate::particles3d::{DEPTH_FORMAT, ObstacleSet, WARMUP_FRAMES};
+
 /// Simulated tempo for the synthetic features.
 const BPM: f64 = 120.0;
+/// Offscreen size in world mode. Nothing renders into it (the layer is
+/// disabled), but the renderer allocates its compositor and capture at this
+/// size, so keep it small.
+const WORLD_SCENE_SIZE: u32 = 64;
 
 pub struct XrScene {
     renderer: SceneRenderer,
-    pub quad_texture: wgpu::Texture,
-    pub quad_view: wgpu::TextureView,
+    /// The texture the S4 quad samples; `None` in world mode.
+    pub quad: Option<(wgpu::Texture, wgpu::TextureView)>,
     pub width: u32,
     pub height: u32,
     frame: u32,
     fps: u32,
     waveform: Vec<f32>,
+    world: Option<World>,
+}
+
+/// Rows of the world-mode aux block: the head, then the obstacle block. The
+/// sim's layout (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`) ends at
+/// row 163; a core test pins that side.
+const WORLD_AUX_ROWS: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
+const _: () = assert!(WORLD_AUX_ROWS == 163, "flux_xr_sim.wgsl reads 163 aux rows");
+
+/// World-mode state (see the module docs).
+struct World {
+    /// Effect anchor in the reference space: the sim's origin.
+    anchor: [f32; 3],
+    /// False freezes the sim after `warmup` dispatches, so a sweep can
+    /// isolate the draw (`debug.fosfora.sim 0`).
+    sim_enabled: bool,
+    /// Dispatches before a frozen sim stops: long enough for the emitter to
+    /// fill the particle count, and never shorter than the S5 test sim's.
+    warmup: u32,
+    dispatches: u32,
+    /// Per-frame inputs for the sim, uploaded into the head of the effect's
+    /// aux buffer (layout in `assets/xr/shaders/flux_xr_sim.wgsl`).
+    aux: Vec<ParticleAux>,
+}
+
+/// How a world-mode effect is set up for this run.
+#[derive(Debug, Clone, Copy)]
+pub struct WorldOptions {
+    /// Particle count (`max_count`); `None` keeps the preset's.
+    pub count: Option<u32>,
+    /// Sprite radius multiplier (initial and end size).
+    pub size_scale: f32,
+    /// See `World::sim_enabled`.
+    pub sim_enabled: bool,
+    /// Initial anchor in the reference space.
+    pub anchor: [f32; 3],
 }
 
 impl XrScene {
+    /// S4: `width` x `height` offscreen, copied each frame into `quad`.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -41,40 +98,8 @@ impl XrScene {
         scene_dir: &Path,
         fps: u32,
     ) -> Result<Self> {
-        let mut renderer = SceneRenderer::new(
-            device.clone(),
-            queue.clone(),
-            width,
-            height,
-            quality,
-            scene_dir.to_path_buf(),
-        )
-        .context("SceneRenderer::new")?;
-        info!(
-            "effects loaded: {} ({})",
-            renderer.effect_loader.effects.len(),
-            renderer
-                .effect_loader
-                .effects
-                .iter()
-                .map(|e| e.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        let loaded = fosfora_app::headless::load::load_scene_dir(scene_dir)
-            .with_context(|| format!("loading scene {}", scene_dir.display()))?;
-        info!(
-            "scene '{}': {} presets, {} cues",
-            loaded.scene.name,
-            loaded.presets.len(),
-            loaded.scene.cues.len()
-        );
-        renderer.install_scene(loaded);
-        renderer.start();
-        for w in &renderer.warnings {
-            log::warn!("scene renderer: {w}");
-        }
-
+        let renderer =
+            start_renderer(device, queue, width, height, quality, scene_dir, |_| Ok(()))?;
         let quad_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("xr-quad-source"),
             size: wgpu::Extent3d {
@@ -93,14 +118,205 @@ impl XrScene {
 
         Ok(Self {
             renderer,
-            quad_texture,
-            quad_view,
+            quad: Some((quad_texture, quad_view)),
             width,
             height,
             frame: 0,
             fps,
             waveform: vec![0.0; WAVEFORM_PEEK],
+            world: None,
         })
+    }
+
+    /// C3b: the world-layout effect `effect` (a hidden XR preset), simulated
+    /// around `options.anchor` and drawn by [`Self::render_world`].
+    pub fn new_world(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene_dir: &Path,
+        effect: &str,
+        fps: u32,
+        options: WorldOptions,
+    ) -> Result<Self> {
+        let mut warmup = WARMUP_FRAMES;
+        // `count` is the particle count itself, so no quality scaling.
+        let mut renderer = start_renderer(
+            device,
+            queue,
+            WORLD_SCENE_SIZE,
+            WORLD_SCENE_SIZE,
+            ParticleQuality::High,
+            scene_dir,
+            |renderer| {
+                let Some(pfx) = renderer
+                    .effect_loader
+                    .effects
+                    .iter_mut()
+                    .find(|e| e.name == effect)
+                else {
+                    bail!("effect '{effect}' not found");
+                };
+                let Some(particles) = pfx.particles.as_mut() else {
+                    bail!("effect '{effect}' has no particle system");
+                };
+                if let Some(count) = options.count {
+                    // The aux buffer holds one row per particle and the XR
+                    // inputs need `WORLD_AUX_ROWS` of it (`update_aux_in_place`
+                    // drops the upload otherwise, silently losing the
+                    // obstacles), so the count never goes below that.
+                    let count = count.max(WORLD_AUX_ROWS as u32);
+                    // Keep the preset's fill: emission scales with the count.
+                    particles.emit_rate *= count as f32 / particles.max_count.max(1) as f32;
+                    particles.max_count = count;
+                    particles.max_scaled_count = 0;
+                }
+                particles.initial_size *= options.size_scale;
+                particles.size_end *= options.size_scale;
+                // Fill time at the emission rate, plus a quarter for the
+                // particles that die and respawn meanwhile.
+                let fill_s = particles.max_count as f32 / particles.emit_rate.max(1.0);
+                warmup = warmup.max((fill_s * 1.25 * fps as f32).ceil() as u32);
+                info!(
+                    "world effect '{effect}': {} particles, emit {}/s, sprite radius {} -> {} m",
+                    particles.max_count,
+                    particles.emit_rate,
+                    particles.initial_size,
+                    particles.size_end
+                );
+                Ok(())
+            },
+        )?;
+        // The layer stays loaded (its particle system is ours to drive) but
+        // disabled, so `SceneRenderer::step` renders nothing of it.
+        let mut found = false;
+        for layer in &mut renderer.layer_stack.layers {
+            if layer
+                .as_effect()
+                .is_some_and(|e| e.pass_executor.particle_system.is_some())
+            {
+                layer.enabled = false;
+                found = true;
+            }
+        }
+        if !found {
+            bail!("effect '{effect}' built no particle system");
+        }
+        Ok(Self {
+            renderer,
+            quad: None,
+            width: WORLD_SCENE_SIZE,
+            height: WORLD_SCENE_SIZE,
+            frame: 0,
+            fps,
+            waveform: vec![0.0; WAVEFORM_PEEK],
+            world: Some(World {
+                anchor: options.anchor,
+                sim_enabled: options.sim_enabled,
+                warmup,
+                dispatches: 0,
+                aux: Vec::new(),
+            }),
+        })
+    }
+
+    /// Whether this scene draws through [`Self::render_world`] (else the quad).
+    pub fn is_world(&self) -> bool {
+        self.world.is_some()
+    }
+
+    /// Move the effect's anchor (reference space, meters). The sim's
+    /// positions are relative to it, so the whole cloud moves with it.
+    pub fn set_anchor(&mut self, anchor: [f32; 3]) {
+        if let Some(world) = self.world.as_mut() {
+            world.anchor = anchor;
+        }
+    }
+
+    /// Upload this frame's world-mode sim inputs: the wearer's head (for the
+    /// near fade within `near_fade_m`; 0 = off) and the obstacles, both
+    /// moved into the anchor's frame. Call before [`Self::dispatch_world`].
+    pub fn set_world_inputs(
+        &mut self,
+        queue: &wgpu::Queue,
+        head: [f32; 3],
+        near_fade_m: f32,
+        obstacles: &ObstacleSet,
+    ) {
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        let a = world.anchor;
+        world.aux.clear();
+        world.aux.reserve(WORLD_AUX_ROWS);
+        world.aux.push(ParticleAux {
+            home: [head[0] - a[0], head[1] - a[1], head[2] - a[2], near_fade_m],
+        });
+        world.aux.extend(
+            obstacles
+                .relative_to(a)
+                .as_vec4s()
+                .iter()
+                .map(|&home| ParticleAux { home }),
+        );
+        if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
+            ps.update_aux_in_place(queue, &world.aux);
+        }
+    }
+
+    /// World mode: record this frame's sim dispatch (after [`Self::step`],
+    /// before the eye passes). Draws nothing by itself.
+    pub fn dispatch_world(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        if !world.sim_enabled && world.dispatches >= world.warmup {
+            return;
+        }
+        world.dispatches = world.dispatches.saturating_add(1);
+        let queue = &self.renderer.queue;
+        if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
+            // `step` requested the counter map before this dispatch exists;
+            // collecting it now (it is usually complete by the renderer's
+            // poll) lets the dispatch copy this frame's count, so the alive
+            // count in the log keeps moving. Nothing reads it but the log.
+            ps.poll_counter_readback();
+            ps.dispatch(encoder, queue);
+        }
+    }
+
+    /// World mode, before an eye pass: the pipeline and camera for drawing
+    /// the effect into that eye with [`Self::draw_world`]. `None` outside
+    /// world mode.
+    pub fn prepare_world(
+        &mut self,
+        device: &wgpu::Device,
+        camera: &EyeCamera,
+    ) -> Option<WorldDraw> {
+        let anchor = self.world.as_ref().map(|w| w.anchor)?;
+        let queue = &self.renderer.queue;
+        let ps = particle_system(&mut self.renderer.layer_stack.layers)?;
+        Some(ps.prepare_world(
+            device,
+            queue,
+            SWAPCHAIN_FORMAT,
+            Some(DEPTH_FORMAT),
+            &WorldCamera {
+                view: camera.view,
+                proj: camera.proj,
+                anchor: anchor.into(),
+            },
+        ))
+    }
+
+    /// World mode, inside the eye pass after the occluders and the primer:
+    /// draw the effect (depth tested against them, never written). The
+    /// sprites share the pass with the depth-writing draws on purpose: on
+    /// the Adreno a sprite pass without one costs up to 3x, and passthrough
+    /// several milliseconds more (`docs/xr/MEASURED.md`, S7 and C3b).
+    pub fn draw_world(&mut self, pass: &mut wgpu::RenderPass<'_>, draw: WorldDraw) {
+        if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
+            ps.draw_world(pass, draw);
+        }
     }
 
     /// Override every particle system's emission rate (particles per second).
@@ -148,9 +364,15 @@ impl XrScene {
         &self.waveform
     }
 
-    /// Advance the effect by one frame on `hop` and refresh `quad_texture`.
-    /// Submits its own command buffers; call before recording the eye passes.
+    /// Advance the effect by one frame on `hop`: in quad mode render it and
+    /// refresh the quad texture; in world mode update its per-frame state
+    /// only (the sim runs in [`Self::dispatch_world`]). Submits its own
+    /// command buffers; call before recording the eye passes.
     pub fn step(&mut self, ts: f64, dt: f32, hop: &HopOutput, waveform: &[f32]) {
+        let Some((quad_texture, _)) = &self.quad else {
+            self.renderer.step(ts, dt, hop, waveform, false);
+            return;
+        };
         self.renderer.step(ts, dt, hop, waveform, true);
 
         let mut encoder =
@@ -161,7 +383,7 @@ impl XrScene {
                 });
         encoder.copy_texture_to_texture(
             self.renderer.capture.texture.as_image_copy(),
-            self.quad_texture.as_image_copy(),
+            quad_texture.as_image_copy(),
             wgpu::Extent3d {
                 width: self.width,
                 height: self.height,
@@ -170,6 +392,63 @@ impl XrScene {
         );
         self.renderer.queue.submit([encoder.finish()]);
     }
+}
+
+/// Build the scene renderer for `scene_dir`, let `tweak` adjust the loaded
+/// effect definitions (before any layer is built from them), then install
+/// and start the scene.
+fn start_renderer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    quality: ParticleQuality,
+    scene_dir: &Path,
+    tweak: impl FnOnce(&mut SceneRenderer) -> Result<()>,
+) -> Result<SceneRenderer> {
+    let mut renderer = SceneRenderer::new(
+        device.clone(),
+        queue.clone(),
+        width,
+        height,
+        quality,
+        scene_dir.to_path_buf(),
+    )
+    .context("SceneRenderer::new")?;
+    info!(
+        "effects loaded: {} ({})",
+        renderer.effect_loader.effects.len(),
+        renderer
+            .effect_loader
+            .effects
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    tweak(&mut renderer)?;
+    let loaded = fosfora_app::headless::load::load_scene_dir(scene_dir)
+        .with_context(|| format!("loading scene {}", scene_dir.display()))?;
+    info!(
+        "scene '{}': {} presets, {} cues",
+        loaded.scene.name,
+        loaded.presets.len(),
+        loaded.scene.cues.len()
+    );
+    renderer.install_scene(loaded);
+    renderer.start();
+    for w in &renderer.warnings {
+        log::warn!("scene renderer: {w}");
+    }
+    Ok(renderer)
+}
+
+/// The first effect layer's particle system.
+fn particle_system(layers: &mut [Layer]) -> Option<&mut ParticleSystem> {
+    layers
+        .iter_mut()
+        .filter_map(|l| l.as_effect_mut())
+        .find_map(|e| e.pass_executor.particle_system.as_mut())
 }
 
 /// A steady 120 BPM groove: the core's synthetic beat grid plus band energies

@@ -3,8 +3,13 @@
 //! A small curl-noise test sim in a cube ahead of the user, every slot always
 //! alive, drawn once per eye as camera-facing quads through that eye's view
 //! and projection. It exists to answer the S5 gate (stereo depth, particle
-//! ceiling per display rate), not to be a product effect; existing core sims
-//! stay screen-space until the layout decision in `docs/xr/MEASURED.md`.
+//! ceiling per display rate), not to be a product effect.
+//!
+//! It also owns the S7 obstacle block (hands, room, floor) and its depth-only
+//! occluders. `mode world` runs a core effect instead of the test sim and
+//! keeps only that part: a `Particles3d` with a count of 0 simulates and
+//! draws nothing, and the effect reads the same obstacles through
+//! [`ObstacleSet::relative_to`].
 
 use std::cell::Cell;
 
@@ -19,7 +24,7 @@ const PARTICLE_BYTES: u64 = 32;
 /// With the sim disabled it still runs this many frames so the particles
 /// spread through the cube before freezing (otherwise they all sit at the
 /// origin and get clipped, and the draw measures nothing).
-const WARMUP_FRAMES: u32 = 144;
+pub const WARMUP_FRAMES: u32 = 144;
 const WORKGROUP: u32 = 256;
 /// Depth attachment the eye passes share (quad writes, particles test).
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -124,6 +129,31 @@ impl ObstacleSet {
 
     pub fn box_count(&self) -> u32 {
         self.box_count
+    }
+
+    /// This set with every sphere and box center moved into coordinates
+    /// relative to `anchor` (a world-layout effect's frame; rotations and
+    /// sizes are unchanged).
+    pub fn relative_to(&self, anchor: [f32; 3]) -> Self {
+        let mut out = *self;
+        let shift = |c: &mut [f32; 4]| {
+            for (v, a) in c.iter_mut().zip(anchor) {
+                *v -= a;
+            }
+        };
+        out.spheres[..self.sphere_count as usize]
+            .iter_mut()
+            .for_each(shift);
+        out.box_center[..self.box_count as usize]
+            .iter_mut()
+            .for_each(shift);
+        out
+    }
+
+    /// The block as the `vec4`s it is made of, in WGSL order: the two header
+    /// rows, then spheres, box centers, rotations and half extents.
+    pub fn as_vec4s(&self) -> &[[f32; 4]] {
+        bytemuck::cast_slice(bytemuck::bytes_of(self))
     }
 }
 
@@ -240,6 +270,8 @@ pub struct Particles3d {
 }
 
 impl Particles3d {
+    /// `count` 0 keeps only the obstacle block and the occluders (`mode
+    /// world`): `step` and `draw` then do nothing.
     pub fn new(device: &wgpu::Device, count: u32, eyes: usize, params: Params) -> Self {
         // Shared declarations plus one body per module. The draw module
         // declares the particle buffer read-only, matching its bind group
@@ -284,7 +316,8 @@ impl Particles3d {
         // Zeroed: life 0 makes every slot spawn on the first step.
         let particles = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("xr-particles3d-buffer"),
-            size: u64::from(count) * PARTICLE_BYTES,
+            // One slot at least, so the bindings stay valid at count 0.
+            size: u64::from(count.max(1)) * PARTICLE_BYTES,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -820,7 +853,7 @@ impl Particles3d {
     pub fn step(&self, encoder: &mut wgpu::CommandEncoder) {
         let frame = self.frames.get();
         self.frames.set(frame.saturating_add(1));
-        if !self.sim_enabled && frame >= WARMUP_FRAMES {
+        if self.count == 0 || (!self.sim_enabled && frame >= WARMUP_FRAMES) {
             return;
         }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -838,6 +871,9 @@ impl Particles3d {
 
     /// Draw every particle into the current eye pass.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, eye: usize) {
+        if self.count == 0 {
+            return;
+        }
         pass.set_pipeline(&self.draw_pipeline);
         pass.set_bind_group(0, &self.read_bind_group, &[]);
         pass.set_bind_group(1, &self.eye_bind_groups[eye], &[]);

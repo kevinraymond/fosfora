@@ -19,6 +19,7 @@ use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
+use crate::scene::XrScene;
 use crate::xr::XrContext;
 
 /// Top of the range the Quest runtime reports (1.0 .. 1.2). Everything the
@@ -473,9 +474,12 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render both eyes and submit once: the quad (depth-writing) and then
-    /// the S5 particles (depth-tested, additive) into each eye. The render
-    /// pass is the last use of each swapchain image this frame, so it ends in
+    /// Render both eyes and submit once: the quad (depth-writing), the S7
+    /// occluders and then the S5 particles (depth-tested, additive) into each
+    /// eye. With a world-mode `scene` (C3b), its sim is dispatched first and
+    /// its sprites are drawn last in the same eye pass, tested against the
+    /// depth the occluders and the primer wrote. The render pass is the last
+    /// use of each swapchain image this frame, so it ends in
     /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
     pub fn render(
         &self,
@@ -483,6 +487,7 @@ impl Gfx {
         cameras: &[EyeCamera],
         clear: [f32; 4],
         particles: Option<&Particles3d>,
+        mut scene: Option<&mut XrScene>,
     ) {
         for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
             self.queue.write_buffer(
@@ -502,8 +507,15 @@ impl Gfx {
         if let Some(p) = particles {
             p.step(&mut encoder);
         }
-        for (i, (eye, target)) in self.eyes.iter().zip(targets).enumerate() {
+        if let Some(s) = scene.as_deref_mut() {
+            s.dispatch_world(&mut encoder);
+        }
+        for (i, ((eye, target), cam)) in self.eyes.iter().zip(targets).zip(cameras).enumerate() {
             let depth = self.depth.get(i);
+            // Pipeline and camera slot before the pass; the draw goes inside it.
+            let world_draw = scene
+                .as_deref_mut()
+                .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr-eye"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -542,6 +554,9 @@ impl Gfx {
             if let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
                 p.draw(&mut pass, i);
+            }
+            if let (Some(s), Some(draw)) = (scene.as_deref_mut(), world_draw) {
+                s.draw_world(&mut pass, draw);
             }
         }
         self.queue.submit([encoder.finish()]);
