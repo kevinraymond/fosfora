@@ -77,6 +77,12 @@ const PRIMER_POS: [f32; 3] = [0.0, -1.0, 4.0];
 /// The floor obstacle: the STAGE space's y=0 plane, from Space Setup.
 const FLOOR_HALF_M: f32 = 10.0;
 const FLOOR_HALF_THICKNESS_M: f32 = 0.05;
+/// Seated reach: past this extension (m) the far hand shows as ghost
+/// sprites of this radius and a wrist beam, at these peak alphas.
+const REACH_GHOST_M: f32 = 0.03;
+const REACH_GHOST_RADIUS_M: f32 = 0.008;
+const REACH_GHOST_ALPHA: f32 = 0.5;
+const REACH_BEAM_ALPHA: f32 = 0.15;
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +188,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       gravity = settle drift; tri/pull do not apply)
     //   adb shell setprop debug.fosfora.hud 1                    (opt in to the debug panel above the left palm; needs hands; default off)
     //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
+    //   adb shell setprop debug.fosfora.reach 0|1                (seated reach: hands' sim spheres extend Go-Go style past a comfortable reach; default on in mr/world)
+    //   adb shell setprop debug.fosfora.reachat 0.30             (reach: shoulder-to-palm distance, m, within which the hand is 1:1)
+    //   adb shell setprop debug.fosfora.reachgain 40             (reach: quadratic gain, 1/m; 40 puts a 0.52 m palm at 2.5 m, capped at 3 m)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -249,6 +258,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let hand_kick = debug_prop("debug.fosfora.handkick")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(if world { WORLD_HAND_KICK } else { MR_HAND_KICK });
+    // Seated reach (board #3308): Go-Go arm extension of the hands' sim
+    // spheres, on by default wherever hands are obstacles.
+    let reach_on = toggle("debug.fosfora.reach", mixed);
+    let reach_threshold = debug_prop("debug.fosfora.reachat")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(crate::reach::THRESHOLD_M);
+    let reach_gain = debug_prop("debug.fosfora.reachgain")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(crate::reach::GAIN);
     let hand_occ = debug_prop("debug.fosfora.handocc")
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(0.0);
@@ -541,7 +559,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         near_fade: near_cull,
         hand_pad,
         hand_kick,
+        reach_threshold,
+        reach_gain,
     };
+    let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
+    // This frame's reach per hand, and the furthest (real, virtual) since
+    // the last log line.
+    let mut reach_now: [Option<crate::reach::HandReach>; 2] = [None; 2];
+    let mut reach_max = [(0.0f32, 0.0f32); 2];
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
     let floor_box = floor.then_some(ObstacleBox {
         center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
@@ -738,6 +763,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         bass: last_bass,
                         beat: beat_env,
                         audio: &audio_source,
+                        reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -780,14 +806,71 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         s.set_anchor(anchor);
                     }
                 }
+                // Seated reach: each hand's joint set moves out along the
+                // arm past a comfortable reach. Only the sim sees the far
+                // hand; occlusion (the skinned mesh), pinch gestures and the
+                // panel stay on the real one. (Without the mesh the sphere
+                // occluders come from this set and would follow the far
+                // hand; the mesh is on by default and always offered on
+                // the Quest 3.)
+                let mut offsets = [glam::Vec3::ZERO; 2];
+                reach.threshold = controls.reach_threshold;
+                reach.gain = controls.reach_gain;
+                for h in 0..2 {
+                    reach_now[h] = reach_on
+                        .then(|| {
+                            reach.update(
+                                h,
+                                input.hands.palm[h].map(|(p, _)| glam::Vec3::from(p)),
+                                glam::Vec3::from(input.head),
+                                glam::Quat::from_array(input.head_rot),
+                                dt,
+                            )
+                        })
+                        .flatten();
+                    if let Some(r) = reach_now[h] {
+                        offsets[h] = r.offset;
+                        reach_max[h].0 = reach_max[h].0.max(r.real_m);
+                        reach_max[h].1 = reach_max[h].1.max(r.virtual_m);
+                    }
+                }
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
                     (controls.hand_pad - hand_occ).max(0.0),
                     controls.hand_kick,
                 );
-                for s in &input.hands.spheres {
-                    set.push_sphere([s[0], s[1], s[2], s[3] + controls.hand_pad]);
+                let mut ghost = Vec::new();
+                for (i, s) in input.hands.spheres.iter().enumerate() {
+                    let h = usize::from(i >= input.hands.sphere_count[0]);
+                    let c = glam::Vec3::new(s[0], s[1], s[2]) + offsets[h];
+                    set.push_sphere([c.x, c.y, c.z, s[3] + controls.hand_pad]);
+                    if offsets[h].length() > REACH_GHOST_M {
+                        ghost.push([c.x, c.y, c.z, REACH_GHOST_RADIUS_M]);
+                    }
+                }
+                // The far hand: small sprites on its joints and a faint beam
+                // from the real wrist to the virtual one.
+                let extension = offsets[0].length().max(offsets[1].length());
+                gfx.set_ghost(
+                    &ghost,
+                    input.head,
+                    (extension / 0.3).min(1.0) * REACH_GHOST_ALPHA,
+                );
+                for h in 0..2 {
+                    let beam = input.hands.wrist[h]
+                        .filter(|_| offsets[h].length() > REACH_GHOST_M)
+                        .map(|w| {
+                            let w = glam::Vec3::from(w);
+                            crate::gfx::Beam {
+                                start: w.to_array(),
+                                end: (w + offsets[h]).to_array(),
+                                eye: input.head,
+                                width_m: 0.004,
+                                alpha: REACH_BEAM_ALPHA,
+                            }
+                        });
+                    gfx.set_beam(crate::gfx::BEAM_REACH[h], beam);
                 }
                 for b in &input.room_boxes {
                     set.push_box(b);
@@ -925,6 +1008,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.room_summary().unwrap_or_default(),
                     size_boost
                 );
+                // Seated reach: each hand's furthest real and virtual
+                // shoulder-to-palm distance this second.
+                if reach_on && reach_max.iter().any(|m| m.0 > 0.0) {
+                    info!(
+                        "reach: L {:.2} -> {:.2} m · R {:.2} -> {:.2} m (1:1 within {:.2}, gain {:.1})",
+                        reach_max[0].0,
+                        reach_max[0].1,
+                        reach_max[1].0,
+                        reach_max[1].1,
+                        controls.reach_threshold,
+                        controls.reach_gain
+                    );
+                }
+                reach_max = [(0.0, 0.0); 2];
                 let mm = |d: f32| {
                     if d == f32::MAX {
                         "-".to_owned()

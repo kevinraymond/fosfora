@@ -23,12 +23,12 @@ use crate::gfx::{Beam, Gfx, PanelPose};
 use crate::palm_panel::{PalmPanel, Touch};
 use crate::perf::PerfSample;
 
-/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 30 cm
+/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 40 cm
 /// panel, about the display's density at arm's length. The width keeps a
 /// row at a multiple of 256 bytes, which a texture-to-buffer copy (`dump`)
 /// requires.
 const TEX_W: u32 = 640;
-const TEX_H: u32 = 1024;
+const TEX_H: u32 = 1280;
 const _: () = assert!((TEX_W * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
 const PIXELS_PER_POINT: f32 = 1.6;
 /// Frame-time history for the graph: two seconds at 72 Hz.
@@ -46,11 +46,13 @@ const END_BOX_W: f32 = 64.0;
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 4] = [
+const STEPPERS: [(&str, f32, f32, f32); 6] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
     ("hand kick m/s", 0.0, 1.5, 0.1),
+    ("reach 1:1 within m", 0.2, 0.8, 0.05),
+    ("reach gain", 0.0, 60.0, 2.0),
 ];
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -60,6 +62,8 @@ pub struct Controls {
     pub near_fade: f32,
     pub hand_pad: f32,
     pub hand_kick: f32,
+    pub reach_threshold: f32,
+    pub reach_gain: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -77,7 +81,9 @@ impl Controls {
             0 => &mut self.gravity,
             1 => &mut self.near_fade,
             2 => &mut self.hand_pad,
-            _ => &mut self.hand_kick,
+            3 => &mut self.hand_kick,
+            4 => &mut self.reach_threshold,
+            _ => &mut self.reach_gain,
         }
     }
 }
@@ -119,6 +125,8 @@ pub struct View<'a> {
     pub bass: f32,
     pub beat: f32,
     pub audio: &'a str,
+    /// Seated reach per hand: (real, virtual) shoulder-to-palm meters.
+    pub reach: [Option<(f32, f32)>; 2],
 }
 
 pub struct Hud {
@@ -221,13 +229,16 @@ impl Hud {
             }
         }));
         let shown = placement.is_some();
-        gfx.set_beam(self.touch.beam.filter(|_| shown).map(|(start, end)| Beam {
-            start: start.to_array(),
-            end: end.to_array(),
-            eye: head.to_array(),
-            width_m: if self.touch.pressed { 0.006 } else { 0.003 },
-            alpha: if self.touch.pressed { 0.9 } else { 0.55 },
-        }));
+        gfx.set_beam(
+            crate::gfx::BEAM_PANEL,
+            self.touch.beam.filter(|_| shown).map(|(start, end)| Beam {
+                start: start.to_array(),
+                end: end.to_array(),
+                eye: head.to_array(),
+                width_m: if self.touch.pressed { 0.006 } else { 0.003 },
+                alpha: if self.touch.pressed { 0.9 } else { 0.55 },
+            }),
+        );
         if shown != self.shown_logged {
             self.shown_logged = shown;
             log::info!("debug panel {}", if shown { "shown" } else { "hidden" });
@@ -269,7 +280,7 @@ impl Hud {
             up: up.to_array(),
         }));
         self.touch = Touch::default();
-        gfx.set_beam(None);
+        gfx.set_beam(crate::gfx::BEAM_PANEL, None);
     }
 
     /// Diagnostic: copy the panel texture to `path` as raw RGBA8 rows
@@ -667,6 +678,13 @@ fn panel_ui(
         format!("{side} {pinch} {tip}")
     };
     ui.label(format!("{}    {}", hand(0), hand(1)));
+    let reach = |h: usize| {
+        view.reach[h].map_or_else(
+            || "-".to_owned(),
+            |(real, virt)| format!("{real:.2} -> {virt:.2} m"),
+        )
+    };
+    ui.label(format!("reach  L {}   R {}", reach(0), reach(1)));
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("gesture: {}", view.gesture)).strong());
         ui.label(

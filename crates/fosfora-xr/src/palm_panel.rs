@@ -19,14 +19,14 @@ use glam::{Quat, Vec3};
 
 /// Panel size (meters).
 pub const PANEL_W_M: f32 = 0.20;
-pub const PANEL_H_M: f32 = 0.30;
+pub const PANEL_H_M: f32 = 0.40;
 /// Palm-facing thresholds: the cosine between the palm normal and the
 /// direction to the head. Show above `SHOW`, hide below `HIDE`.
 const SHOW: f32 = 0.6;
 const HIDE: f32 = 0.3;
 /// Panel center relative to the palm: toward the head and up.
 const TOWARD_HEAD_M: f32 = 0.06;
-const ABOVE_PALM_M: f32 = 0.16;
+const ABOVE_PALM_M: f32 = 0.20;
 /// Per-frame blend toward the target pose (hand-tracking jitter filter).
 const FOLLOW: f32 = 0.35;
 /// Fingertip-surface distance (meters, positive in front) that presses the
