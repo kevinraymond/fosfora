@@ -31,4 +31,4 @@ pub use source_loader::{
 pub use splat_source::{SplatLoadResult, SplatSceneLoader};
 pub use system::ParticleSystem;
 pub use types::{ObstacleFit, ObstacleMode, SourceTransition};
-pub use world::{WorldCamera, WorldTarget};
+pub use world::{WorldCamera, WorldDraw, WorldTarget};

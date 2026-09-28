@@ -477,9 +477,9 @@ impl Gfx {
     /// Render both eyes and submit once: the quad (depth-writing), the S7
     /// occluders and then the S5 particles (depth-tested, additive) into each
     /// eye. With a world-mode `scene` (C3b), its sim is dispatched first and
-    /// each eye gets a second pass after the first, `XrScene::render_world`,
-    /// which tests against the depth the first pass stored. The last render
-    /// pass is the last use of each swapchain image this frame, so it ends in
+    /// its sprites are drawn last in the same eye pass, tested against the
+    /// depth the occluders and the primer wrote. The render pass is the last
+    /// use of each swapchain image this frame, so it ends in
     /// `COLOR_ATTACHMENT_OPTIMAL` as `xrReleaseSwapchainImage` requires.
     pub fn render(
         &self,
@@ -510,14 +510,12 @@ impl Gfx {
         if let Some(s) = scene.as_deref_mut() {
             s.dispatch_world(&mut encoder);
         }
-        // The world pass reads this depth, so it must survive the eye pass.
-        let depth_store = if scene.is_some() {
-            wgpu::StoreOp::Store
-        } else {
-            wgpu::StoreOp::Discard
-        };
         for (i, ((eye, target), cam)) in self.eyes.iter().zip(targets).zip(cameras).enumerate() {
             let depth = self.depth.get(i);
+            // Pipeline and camera slot before the pass; the draw goes inside it.
+            let world_draw = scene
+                .as_deref_mut()
+                .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr-eye"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -539,7 +537,7 @@ impl Gfx {
                         view,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
-                            store: depth_store,
+                            store: wgpu::StoreOp::Discard,
                         }),
                         stencil_ops: None,
                     }
@@ -557,9 +555,8 @@ impl Gfx {
                 p.draw_occluders(&mut pass, i);
                 p.draw(&mut pass, i);
             }
-            drop(pass);
-            if let Some(s) = scene.as_deref_mut() {
-                s.render_world(&self.device, &mut encoder, target, depth, cam);
+            if let (Some(s), Some(draw)) = (scene.as_deref_mut(), world_draw) {
+                s.draw_world(&mut pass, draw);
             }
         }
         self.queue.submit([encoder.finish()]);

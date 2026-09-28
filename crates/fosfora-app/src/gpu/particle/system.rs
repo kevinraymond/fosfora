@@ -18,7 +18,7 @@ use super::types::{
     ImageSampleDef, ModelSampleDef, ParticleAux, ParticleDef, ParticleRenderUniforms,
     ParticleUniforms, RDUniforms, SourceTransition, TrailFieldUniforms,
 };
-use super::world::{WorldCamera, WorldCameraUniforms, WorldRender, WorldTarget};
+use super::world::{WorldCamera, WorldCameraUniforms, WorldDraw, WorldRender, WorldTarget};
 use crate::gpu::helix::{HelixHistory, HelixParams, HelixSim};
 use crate::gpu::lattice::{LatticeParams, LatticeSim, LatticeUniforms, lattice_step_budget};
 use crate::gpu::volumetric::{VolumetricParams, VolumetricRenderer, VolumetricUniforms};
@@ -2489,23 +2489,13 @@ impl ParticleSystem {
     /// or after it (e.g. after `SceneRenderer::step` returned). Before any
     /// dispatch it draws nothing.
     ///
-    /// One direct draw of `3 * max_particles` vertices: the vertex shader
-    /// reads the alive count from the counters and drops every sprite past
-    /// it, so the draw covers exactly the alive list. An indirect draw of
-    /// `3 * alive` (arguments prepared on the GPU) rendered nothing on the
-    /// Quest 3's Adreno 740 (v207, wgpu 27) although the arguments read back
-    /// correctly, raw, through wgpu's indirect validation copy and through a
-    /// transfer copy alike; the same count as a direct draw rendered
-    /// (`docs/xr/MEASURED.md`, C3b). The spare vertices cost one compare
-    /// each and never reach the rasterizer; the XR sims run near capacity,
-    /// so an indirect draw would skip almost nothing anyway. A desktop sim
-    /// with a large capacity and few alive particles would be the case for
-    /// bringing indirect back, on a device where it works.
-    ///
-    /// The first call builds the world path's shader and camera ring; each
-    /// new `(color_format, depth format, blend)` builds its pipeline on first
-    /// use. Up to 16 calls between two queue submissions get distinct camera
-    /// slots.
+    /// Records its own render pass over `target`. The Quest build does not use
+    /// this form: on its Adreno a sprite draw in a pass without a depth-writing
+    /// draw costs up to 3x, and the passthrough compositing several
+    /// milliseconds more (`docs/xr/MEASURED.md`, S7 and C3b), so it prepares
+    /// with [`prepare_world`](Self::prepare_world) and draws with
+    /// [`draw_world`](Self::draw_world) inside its eye pass, next to the
+    /// occluders. This form stays for headless use and the tests.
     pub fn render_world(
         &mut self,
         device: &Device,
@@ -2515,22 +2505,13 @@ impl ParticleSystem {
         camera: &WorldCamera,
         load: wgpu::LoadOp<wgpu::Color>,
     ) {
-        let world = self.world.get_or_insert_with(|| {
-            WorldRender::new(device, &self.render_bgl, &self.counter_buffer)
-        });
-
-        let depth_format = target.depth.map(|_| target.depth_format);
-        let key = (
-            target.color_format,
-            depth_format,
-            self.blend_mode == "alpha",
-        );
-        world.ensure_pipeline(device, key);
-        let offset = world.write_camera(
+        let draw = self.prepare_world(
+            device,
             queue,
-            &WorldCameraUniforms::new(camera, self.render_uniforms.composite_gain),
+            target.color_format,
+            target.depth.map(|_| target.depth_format),
+            camera,
         );
-
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("particle-render-world"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2555,9 +2536,64 @@ impl ParticleSystem {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(world.pipeline(key));
+        self.draw_world(&mut pass, draw);
+    }
+
+    /// Prepare one world-space draw for a render pass the caller records:
+    /// the pipeline for that pass's color format and depth format (`None`
+    /// = the pass has no depth attachment, so no depth test) and this
+    /// call's camera slot. Call before `begin_render_pass`, then
+    /// [`draw_world`](Self::draw_world) inside the pass. Blend follows the
+    /// effect's `blend` as in [`render`](Self::render): `"alpha"` is alpha,
+    /// anything else additive; rgb is scaled by the same `composite_gain`.
+    ///
+    /// The first call builds the world path's shader and camera ring; each
+    /// new `(color_format, depth format, blend)` builds its pipeline on first
+    /// use. Up to 16 calls between two queue submissions get distinct camera
+    /// slots.
+    pub fn prepare_world(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        color_format: TextureFormat,
+        depth_format: Option<TextureFormat>,
+        camera: &WorldCamera,
+    ) -> WorldDraw {
+        let world = self.world.get_or_insert_with(|| {
+            WorldRender::new(device, &self.render_bgl, &self.counter_buffer)
+        });
+        let key = (color_format, depth_format, self.blend_mode == "alpha");
+        world.ensure_pipeline(device, key);
+        let camera_offset = world.write_camera(
+            queue,
+            &WorldCameraUniforms::new(camera, self.render_uniforms.composite_gain),
+        );
+        WorldDraw { key, camera_offset }
+    }
+
+    /// Draw the world-space sprites into `pass`, whose attachments must match
+    /// what `draw` was prepared for. Depth is tested (`Less`) against what the
+    /// pass drew before, never written: additive sprites have no order.
+    ///
+    /// One direct draw of `3 * max_particles` vertices: the vertex shader
+    /// reads the alive count from the counters and drops every sprite past
+    /// it, so the draw covers exactly the alive list. An indirect draw of
+    /// `3 * alive` (arguments prepared on the GPU) rendered nothing on the
+    /// Quest 3's Adreno 740 (v207, wgpu 27) although the arguments read back
+    /// correctly, raw, through wgpu's indirect validation copy and through a
+    /// transfer copy alike; the same count as a direct draw rendered
+    /// (`docs/xr/MEASURED.md`, C3b). The spare vertices cost one compare
+    /// each and never reach the rasterizer; the XR sims run near capacity,
+    /// so an indirect draw would skip almost nothing anyway. A desktop sim
+    /// with a large capacity and few alive particles would be the case for
+    /// bringing indirect back, on a device where it works.
+    pub fn draw_world(&self, pass: &mut wgpu::RenderPass<'_>, draw: WorldDraw) {
+        let Some(world) = self.world.as_ref() else {
+            return;
+        };
+        pass.set_pipeline(world.pipeline(draw.key));
         pass.set_bind_group(0, &self.render_bind_groups[self.last_output.get()], &[]);
-        pass.set_bind_group(1, world.camera_bind_group(), &[offset]);
+        pass.set_bind_group(1, world.camera_bind_group(), &[draw.camera_offset]);
         pass.draw(0..3 * self.max_particles, 0..1);
     }
 
@@ -6313,6 +6349,54 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
             );
             assert_eq!(stray_pixels(&red, &[(x, y)], 12.0), 0);
         }
+    }
+
+    /// `prepare_world` + `draw_world` inside a pass the caller records draws
+    /// the same pixels as `render_world`'s own pass (the Quest build uses
+    /// the former inside its eye pass).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn callers_pass_matches_own_pass() {
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let particles: Vec<Vec4> = (0..5)
+            .map(|i| Vec4::new(i as f32 * 0.4 - 0.8, (i % 2) as f32 * 0.3, -2.0, RADIUS))
+            .collect();
+        let (own, _) = draw(&device, &queue, &particles, None);
+
+        let mut ps = system(&device, &queue, &particles);
+        let color = texture(&device, TextureFormat::Rgba8Unorm, "world-probe-color");
+        let color_view = color.create_view(&Default::default());
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut enc = device.create_command_encoder(&Default::default());
+        ps.dispatch(&mut enc, &queue);
+        let prepared =
+            ps.prepare_world(&device, &queue, TextureFormat::Rgba8Unorm, None, &camera());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("callers-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ps.draw_world(&mut pass, prepared);
+        }
+        queue.submit([enc.finish()]);
+        poll(&device);
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "caller's-pass draw must validate: {err:?}");
+        let theirs = read_red(&device, &queue, &color);
+        assert!(own.iter().any(|&r| r > 0), "own pass drew nothing");
+        assert_eq!(own, theirs, "caller's pass differs from own pass");
     }
 
     /// A sim whose first dispatch spawns every particle and whose later

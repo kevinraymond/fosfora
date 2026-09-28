@@ -25,7 +25,7 @@ use fosfora_app::audio::hop::HopOutput;
 use fosfora_app::gpu::audio_textures::WAVEFORM_PEEK;
 use fosfora_app::gpu::layer::Layer;
 use fosfora_app::gpu::particle::types::ParticleAux;
-use fosfora_app::gpu::particle::{ParticleSystem, WorldCamera, WorldTarget};
+use fosfora_app::gpu::particle::{ParticleSystem, WorldCamera, WorldDraw};
 use fosfora_app::headless::scene_renderer::{CAPTURE_FORMAT, SceneRenderer};
 use fosfora_app::settings::ParticleQuality;
 use log::info;
@@ -284,39 +284,38 @@ impl XrScene {
         }
     }
 
-    /// World mode: draw the effect into one eye (color loaded, depth tested
-    /// against what the eye pass wrote, never written). Once per eye, after
-    /// [`Self::dispatch_world`] in the same encoder.
-    pub fn render_world(
+    /// World mode, before an eye pass: the pipeline and camera for drawing
+    /// the effect into that eye with [`Self::draw_world`]. `None` outside
+    /// world mode.
+    pub fn prepare_world(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        depth: Option<&wgpu::TextureView>,
         camera: &EyeCamera,
-    ) {
-        let Some(anchor) = self.world.as_ref().map(|w| w.anchor) else {
-            return;
-        };
+    ) -> Option<WorldDraw> {
+        let anchor = self.world.as_ref().map(|w| w.anchor)?;
         let queue = &self.renderer.queue;
+        let ps = particle_system(&mut self.renderer.layer_stack.layers)?;
+        Some(ps.prepare_world(
+            device,
+            queue,
+            SWAPCHAIN_FORMAT,
+            Some(DEPTH_FORMAT),
+            &WorldCamera {
+                view: camera.view,
+                proj: camera.proj,
+                anchor: anchor.into(),
+            },
+        ))
+    }
+
+    /// World mode, inside the eye pass after the occluders and the primer:
+    /// draw the effect (depth tested against them, never written). The
+    /// sprites share the pass with the depth-writing draws on purpose: on
+    /// the Adreno a sprite pass without one costs up to 3x, and passthrough
+    /// several milliseconds more (`docs/xr/MEASURED.md`, S7 and C3b).
+    pub fn draw_world(&mut self, pass: &mut wgpu::RenderPass<'_>, draw: WorldDraw) {
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
-            ps.render_world(
-                device,
-                encoder,
-                queue,
-                WorldTarget {
-                    color,
-                    color_format: SWAPCHAIN_FORMAT,
-                    depth,
-                    depth_format: DEPTH_FORMAT,
-                },
-                &WorldCamera {
-                    view: camera.view,
-                    proj: camera.proj,
-                    anchor: anchor.into(),
-                },
-                wgpu::LoadOp::Load,
-            );
+            ps.draw_world(pass, draw);
         }
     }
 

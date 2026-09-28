@@ -79,7 +79,19 @@ const CAMERA_SLOTS: u64 = 16;
 
 /// Render pipeline cache key: color format, depth format (`None` = no depth
 /// test), alpha blend (else additive).
-type PipelineKey = (TextureFormat, Option<TextureFormat>, bool);
+pub(super) type PipelineKey = (TextureFormat, Option<TextureFormat>, bool);
+
+/// One world draw, prepared by [`ParticleSystem::prepare_world`] before a
+/// render pass and issued by [`ParticleSystem::draw_world`] inside it: the
+/// pipeline the pass's attachments need and this call's camera slot.
+///
+/// [`ParticleSystem::prepare_world`]: super::ParticleSystem::prepare_world
+/// [`ParticleSystem::draw_world`]: super::ParticleSystem::draw_world
+#[derive(Clone, Copy, Debug)]
+pub struct WorldDraw {
+    pub(super) key: PipelineKey,
+    pub(super) camera_offset: u32,
+}
 
 /// Lazily built state of the world-space path.
 pub(super) struct WorldRender {

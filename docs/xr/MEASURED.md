@@ -65,7 +65,7 @@ the device; wgpu's own validation reported nothing over the run.
 | S7 | `031956b` | mixed reality: passthrough layer + hand joints + scene anchors + floor as obstacles, 100K unoccluded sprites, near cull, no quad | 72 | Yes: 30 s, 2029 frames, 0 long, 16 stale | 0.77 avg | 5.4 median / 6.6 max | `sweep.sh --mode mr` |
 | S7 | `031956b` | same, 250K | 72 | No: 61.5 frames/s, 167 long, 431 stale | 1.32 avg | 13.5 median / 18.4 max | same |
 | S7 | `031956b` | same, 250K, passthrough off | 72 | Yes: 30 s, 2026 frames, 2 long, 9 stale | 0.62 avg | 9.4 median / 10.1 max | same |
-| C3b | `8e20998` | `Flux XR World` (`mode world`): Flux's sim in a 2 m volume around the wearer, drawn through `render_world`, over the `mr` setup (passthrough, hands, room, floor, occluders, primer); unworn, no room anchors in this run | 72 | 250K: No (63.2 frames/s, 63 long, 277 stale) · 300K: No (53.6 frames/s, 127 long) · 500K: No (32.4 frames/s) | 2.2 avg | 250K 12.8 / 16.0 · 300K 15.6 / 18.7 · 500K 24.7 / 32.2 | `sweep.sh --mode world --counts "250000 300000 500000" --hz 72`; the split below |
+| C3b | `8e20998` + eye-pass hook | `Flux XR World` (`mode world`): Flux's sim in a 2 m volume around the wearer, drawn through `prepare_world` / `draw_world` inside the eye pass, over the `mr` setup (passthrough, hands, room, floor, occluders, primer); unworn, no room anchors in this run | 72 | 250K: Yes (2032 frames, 0 long, 0 stale) · 300K: Yes (1961 frames, 0 long, 0 stale) · 500K: No (69.4 frames/s, 9 long, 104 stale) | 1.5 avg | 250K 8.4 / 9.4 · 300K 9.2 / 9.7 · 500K 11.7 / 13.3 | `sweep.sh --mode world --counts "250000 300000 500000" --hz 72`; the split below |
 
 ### S4 notes (commit `fad08e4`, Quest 3 v207)
 
@@ -553,12 +553,27 @@ fix the same runs, drawing no fragments, cost 7.1 ms (250K) and 7.3 ms
   finding, up to 3×), and the eye pass now stores its depth for the world
   pass to reload (2 × 1680×1760 D32 per frame). The PR named this risk.
 
-**Next (decision):** a core hook that lets the caller draw the world
-sprites inside its own pass (prepare the pipeline and camera before the
-pass, then draw into `&mut RenderPass`), so the sprites sit next to the
-primer and occluders and the depth round trip disappears; then trim the
-sim (one flow sample, cheaper drift). Until then Flux holds 72 Hz only
-below ~200K in this mode.
+**The eye-pass hook.** `ParticleSystem::prepare_world` (pipeline for the
+pass's formats, camera slot; before the pass) and `draw_world` (inside
+the caller's pass) replace the separate pass in the Quest build: the
+sprites now draw last in the eye pass, after the primer and the
+occluders, and the eye pass discards its depth again. Same runs:
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 250K | 8.4 / 9.4 | 72.0 | 0 of 2032 | 0 | Yes |
+| 300K | 9.2 / 9.7 | 72.0 | 0 of 1961 | 0 | Yes |
+| 500K | 11.7 / 13.3 | 69.4 | 9 of 1952 | 104 | No |
+
+The split at 300K after the hook: passthrough off 9.8 ms (no penalty
+left, as in S7 with the primer), sim frozen 5.8 ms, so the sim is ~3.3 ms
+and the draw ~5.8 ms. **Flux in world space: 300K at 72 Hz with 4.7 ms
+of headroom (unworn, no room anchors in this run).** The brief planned
+Flux for ~300K.
+
+**Next:** the wearer gate for the look (the unworn screencap shows the
+ember cloud through the room); the sim trim (one flow sample, cheaper
+drift) if 500K is wanted; the same hook serves the Murmur and Tide ports.
 
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 
