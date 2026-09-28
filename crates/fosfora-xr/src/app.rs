@@ -10,7 +10,9 @@ use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
 use crate::audio::LiveAudio;
+use crate::gesture::{Gesture, Gestures, PinchInput};
 use crate::gfx::Gfx;
+use crate::hud::{Action, Controls, FrameWindow, Hud, View};
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::scene::{WorldOptions, XrScene};
@@ -178,6 +180,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
     //       gravity = settle drift; tri/pull do not apply)
+    //   adb shell setprop debug.fosfora.hud 1                    (opt in to the debug panel above the left palm; needs hands; default off)
+    //   adb shell setprop debug.fosfora.hudtest 1                (diagnostic: the debug panel parked ahead of the view, untracked, for a screencap)
+    //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
+    //       as a pinch-hold does; for measuring the switch unworn)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -190,6 +196,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // their `mr` defaults, except where the world effect's smaller, dimmer
     // sprites need more (`WORLD_*` below).
     let mixed = matches!(mode, Mode::Mixed | Mode::World);
+    let mode_name = match mode {
+        Mode::Quad => "quad",
+        Mode::Particles => "particles",
+        Mode::Mixed => "mr",
+        Mode::World => "world",
+    };
     let world = mode == Mode::World;
     let toggle = |name: &str, default: bool| match debug_prop(name).as_deref() {
         Some("0") => false,
@@ -363,7 +375,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         _ => {}
     }
+    // The world effects a pinch-hold cycles through: every
+    // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
+    // starting at `debug.fosfora.effect` (added if it is not one of them).
+    let mut world_effects = if mode == Mode::World {
+        discover_world_effects(&dirs.assets.join("effects"))
+    } else {
+        Vec::new()
+    };
+    let start_effect =
+        debug_prop("debug.fosfora.effect").unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
+    let mut world_index = world_effects
+        .iter()
+        .position(|e| *e == start_effect)
+        .unwrap_or_else(|| {
+            world_effects.insert(0, start_effect.clone());
+            0
+        });
+    if mode == Mode::World {
+        info!("world effects (pinch-hold cycles): {world_effects:?}");
+    }
     let mut scene = None;
+    // World mode: the effects not showing, by index in `world_effects`.
+    let mut parked: Vec<Option<XrScene>> = Vec::new();
     let mut particles = None;
     let mut static_quad = None;
     match mode {
@@ -426,25 +460,43 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 static_quad = Some(tex);
             }
             if mode == Mode::World {
-                let effect = debug_prop("debug.fosfora.effect")
-                    .unwrap_or_else(|| DEFAULT_WORLD_EFFECT.to_owned());
-                let scene_dir = write_single_effect_scene(&dirs.config, &effect)
-                    .context("writing the scene")?;
-                let s = XrScene::new_world(
-                    &gfx.device,
-                    &gfx.queue,
-                    &scene_dir,
-                    &effect,
-                    NOMINAL_FPS,
-                    WorldOptions {
-                        count: count_knob,
-                        size_scale,
-                        sim_enabled,
-                        anchor: cube_center,
-                    },
-                )
-                .context("creating the world scene")?;
-                scene = Some(s);
+                // Every world effect is built up front (~0.5 s each on the
+                // Quest 3) and parked, so a pinch-hold swaps in an instant
+                // instead of stalling the frame loop for a rebuild.
+                for (i, effect) in world_effects.iter().enumerate() {
+                    let started = Instant::now();
+                    let built = new_world_scene(
+                        &gfx,
+                        &dirs.config,
+                        effect,
+                        WorldOptions {
+                            count: count_knob,
+                            size_scale,
+                            sim_enabled,
+                            anchor: cube_center,
+                        },
+                    );
+                    // The chosen effect must build; another that fails (a
+                    // shader the device rejects, a preset mid-edit) is left
+                    // out of the cycle instead of taking the app down.
+                    let s = match built {
+                        Ok(s) => s,
+                        Err(e) if i != world_index => {
+                            log::warn!("world effect '{effect}' left out of the cycle: {e:#}");
+                            parked.push(None);
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    info!(
+                        "world effect '{effect}' built in {:.0} ms",
+                        started.elapsed().as_secs_f64() * 1e3
+                    );
+                    parked.push(Some(s));
+                    if i == world_index {
+                        scene = parked[i].take();
+                    }
+                }
             }
             // In world mode the effect is the particles: the test sim keeps
             // only its obstacle block and occluders (count 0).
@@ -474,14 +526,46 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             particles = Some(p);
         }
     }
+    // The debug panel, for development only and off unless asked for (an
+    // app setting may replace the knob later): turn the left palm toward
+    // you, point the right hand at it and pinch, or poke it. Its -/+ rows
+    // drive these values from then on. Without it, the values stay the
+    // knobs' and pinches always drive the cloud gestures.
+    let hud_test = toggle("debug.fosfora.hudtest", false);
+    let mut hud = (hud_test || toggle("debug.fosfora.hud", false) && session.has_hands())
+        .then(|| Hud::new(&mut gfx));
+    // The runtime's performance counters feed only the panel.
+    session.set_perf_metrics(hud.is_some());
+    let mut controls = Controls {
+        gravity,
+        near_fade: near_cull,
+        hand_pad,
+        hand_kick,
+    };
+    let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
     let floor_box = floor.then_some(ObstacleBox {
         center: [0.0, -FLOOR_HALF_THICKNESS_M, 0.0],
         rot: [0.0, 0.0, 0.0, 1.0],
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
     });
-    // Pinch toggles a visible parameter (the sprite size); either hand.
+    // I5 gestures: a pinch-drag moves the cube and the world anchor with
+    // the hand, a tap toggles the S5 sprite size, a hold cycles the world
+    // effects.
+    let mut gestures = Gestures::default();
+    let (mut anchor, mut anchor_half) = (cube_center, cube_half);
+    let mut drag_total = glam::Vec3::ZERO;
+    // Closest thumb-index approach per hand since the last log (meters):
+    // shows near-miss pinches that never crossed the threshold.
+    let mut tip_min = [f32::MAX; 2];
     let mut size_boost = false;
     let mut recentered = false;
+    // A world effect to switch to after this frame (the scene is borrowed
+    // by the frame while the gesture fires).
+    let mut switch_to: Option<usize> = None;
+    let cycle_test_s = debug_prop("debug.fosfora.cycletest")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| *s > 0.0);
+    let mut last_switch_t = 0.0f32;
     let mut obstacle_log = (0u32, 0u32, [false; 2], [false; 2]);
 
     let started = Instant::now();
@@ -561,24 +645,125 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             background_color(t)
         };
         let scene_mut = scene.as_mut();
+        let frames_window = stats.last;
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
-            // S7: hands and room as obstacles, pinch as the toggle.
-            if input.hands.pinch_began.iter().any(|&b| b) {
-                size_boost = !size_boost;
-                info!(
-                    "pinch toggle: sprite size x{} {}",
-                    PINCH_SIZE_BOOST,
-                    if size_boost { "on" } else { "off" }
-                );
+            // S7: hands and room as obstacles. I5: pinch gestures.
+            for (h, d) in input.hands.tip_distance.iter().enumerate() {
+                if let Some(d) = d {
+                    tip_min[h] = tip_min[h].min(*d);
+                }
+            }
+            // The panel first. While it is up its pinches are its own: no
+            // cloud gestures from either hand (a pinch that just missed a
+            // row moved the cloud), except one already in progress.
+            let panel_up = hud.as_mut().is_some_and(|h| {
+                h.record(&input.perf);
+                if hud_test {
+                    h.place_parked(&gfx, input.head, input.head_rot);
+                    false
+                } else {
+                    h.place(&gfx, &input.hands, input.head, input.head_rot);
+                    h.shown()
+                }
+            });
+            let pinches = [0, 1].map(|h| PinchInput {
+                pinching: input.hands.pinching[h] && !(panel_up && gestures.owner() != Some(h)),
+                point: input.hands.pinch_point[h],
+            });
+            let mut moved = false;
+            for g in gestures.step(pinches, dt) {
+                match g {
+                    Gesture::Tap { hand } => {
+                        size_boost = !size_boost;
+                        info!(
+                            "gesture: tap {} · sprite size x{} {}",
+                            hand_name(hand),
+                            PINCH_SIZE_BOOST,
+                            if size_boost { "on" } else { "off" }
+                        );
+                    }
+                    Gesture::DragStart { hand } => {
+                        drag_total = glam::Vec3::ZERO;
+                        info!(
+                            "gesture: drag {} began · anchor ({:.2}, {:.2}, {:.2})",
+                            hand_name(hand),
+                            anchor[0],
+                            anchor[1],
+                            anchor[2]
+                        );
+                    }
+                    Gesture::Drag { delta, .. } => {
+                        let d = glam::Vec3::from(delta);
+                        drag_total += d;
+                        anchor = (glam::Vec3::from(anchor) + d).to_array();
+                        moved = true;
+                    }
+                    Gesture::DragEnd { hand } => info!(
+                        "gesture: drag {} ended · moved {:.2} m · anchor ({:.2}, {:.2}, {:.2})",
+                        hand_name(hand),
+                        drag_total.length(),
+                        anchor[0],
+                        anchor[1],
+                        anchor[2]
+                    ),
+                    Gesture::Hold { hand } => {
+                        info!("gesture: hold {}", hand_name(hand));
+                        if world && world_effects.len() > 1 {
+                            switch_to = cycle_index(&parked, world_index, 1);
+                        }
+                    }
+                }
+            }
+            if let Some(h) = hud.as_mut() {
+                if hud_test || h.shown() {
+                    let view = View {
+                        mode: mode_name,
+                        effect: world.then(|| {
+                            (
+                                world_effects[world_index].as_str(),
+                                world_index,
+                                world_effects.len(),
+                            )
+                        }),
+                        alive: scene.as_deref().map(XrScene::alive_count),
+                        frames: frames_window,
+                        perf: input.perf,
+                        tracked: input.hands.tracked,
+                        tip_mm: input.hands.tip_distance.map(|d| d.map(|d| d * 1000.0)),
+                        pinching: input.hands.pinching,
+                        gesture: gestures.label(),
+                        anchor,
+                        room_boxes: input.room_boxes.len(),
+                        rms: last_rms,
+                        bass: last_bass,
+                        beat: beat_env,
+                        audio: &audio_source,
+                    };
+                    for action in h.render(&gfx, &view, &mut controls) {
+                        info!("debug panel: {action:?}");
+                        let n = world_effects.len();
+                        match action {
+                            Action::NextEffect if world && n > 1 => {
+                                switch_to = cycle_index(&parked, world_index, 1);
+                            }
+                            Action::PrevEffect if world && n > 1 => {
+                                switch_to = cycle_index(&parked, world_index, -1);
+                            }
+                            Action::Recenter => {
+                                anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
+                                moved = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
                     recentered = true;
                     let center = [input.head[0], MR_CUBE_Y, input.head[2]];
-                    p.set_cube(center, MR_CUBE_HALF_WEARER_M);
-                    if let Some(s) = scene.as_deref_mut() {
-                        s.set_anchor(center);
-                    }
+                    (anchor, anchor_half) = (center, MR_CUBE_HALF_WEARER_M);
+                    moved = true;
                     info!(
                         "cube (and world anchor) re-centered on the wearer: ({:.2}, {:.2}, {:.2}) half {MR_CUBE_HALF_WEARER_M} (head at ({:.2}, {:.2}, {:.2}))",
                         center[0],
@@ -589,14 +774,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head[2]
                     );
                 }
+                if moved {
+                    p.set_cube(anchor, anchor_half);
+                    if let Some(s) = scene.as_deref_mut() {
+                        s.set_anchor(anchor);
+                    }
+                }
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
                     SPRITE_RADIUS_M * size_scale,
-                    (hand_pad - hand_occ).max(0.0),
-                    hand_kick,
+                    (controls.hand_pad - hand_occ).max(0.0),
+                    controls.hand_kick,
                 );
                 for s in &input.hands.spheres {
-                    set.push_sphere([s[0], s[1], s[2], s[3] + hand_pad]);
+                    set.push_sphere([s[0], s[1], s[2], s[3] + controls.hand_pad]);
                 }
                 for b in &input.room_boxes {
                     set.push_box(b);
@@ -606,7 +797,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
-                    s.set_world_inputs(queue, input.head, near_cull, gravity, &set);
+                    s.set_world_inputs(
+                        queue,
+                        input.head,
+                        controls.near_fade,
+                        controls.gravity,
+                        &set,
+                    );
                 }
                 if let Some(offset) = hand_mesh_test {
                     let mut skins = input.hands.skins;
@@ -638,6 +835,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 None => synth_hop_for(frame_index, t),
             };
             let f = hop.frame.features;
+            (last_rms, last_bass) = (f.rms, f.bass);
             if hop.beat_fired {
                 beat_env = 1.0;
                 if flash {
@@ -679,6 +877,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        if hud_test
+            && frame_index == 720
+            && let Some(h) = &hud
+            && let Err(e) = h.dump(&gfx, &dirs.config.join("hud.rgba"))
+        {
+            log::warn!("debug panel dump: {e:#}");
+        }
+        if let Some(every) = cycle_test_s
+            && world
+            && t - last_switch_t > every
+        {
+            switch_to = cycle_index(&parked, world_index, 1);
+        }
+        if let Some(next) = switch_to.take()
+            && let Some(mut s) = parked[next].take()
+        {
+            // The parked effect resumes where it stopped, at today's anchor.
+            last_switch_t = t;
+            s.set_anchor(anchor);
+            parked[world_index] = scene.replace(s);
+            world_index = next;
+            info!(
+                "world effect switched to '{}' ({}/{})",
+                world_effects[next],
+                next + 1,
+                world_effects.len()
+            );
+        }
         if frame_index.is_multiple_of(72) {
             if let Some(scene) = &scene {
                 info!("particles alive {}", scene.alive_count());
@@ -699,6 +925,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.room_summary().unwrap_or_default(),
                     size_boost
                 );
+                let mm = |d: f32| {
+                    if d == f32::MAX {
+                        "-".to_owned()
+                    } else {
+                        format!("{:.0}", d * 1000.0)
+                    }
+                };
+                // Only seconds where a pinch was attempted (tips within 5 cm).
+                if tip_min.iter().any(|&d| d < 0.05) {
+                    info!(
+                        "pinch: closest tips L {} R {} mm (on under {:.0}) · anchor ({:.2}, {:.2}, {:.2})",
+                        mm(tip_min[0]),
+                        mm(tip_min[1]),
+                        crate::input::PINCH_ON_M * 1000.0,
+                        anchor[0],
+                        anchor[1],
+                        anchor[2]
+                    );
+                }
+                tip_min = [f32::MAX; 2];
             }
             if let Some(p) = &playback {
                 info!(
@@ -715,7 +961,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
 
     drop(session);
+    drop(hud);
     drop(scene);
+    drop(parked);
     drop(playback);
     drop(live_audio);
     drop(particles);
@@ -826,6 +1074,8 @@ pub struct FrameStats {
     cpu_n: u32,
     total_long: u32,
     total_frames: u32,
+    /// The last completed one-second window, for the debug panel.
+    pub last: FrameWindow,
 }
 
 impl FrameStats {
@@ -868,6 +1118,13 @@ impl FrameStats {
                 self.total_frames,
                 self.skipped_render,
             );
+            self.last = FrameWindow {
+                fps: (f64::from(self.frames) / elapsed.as_secs_f64()) as f32,
+                display_hz: hz as f32,
+                max_interval_ms: (self.max_interval.as_secs_f64() * 1e3) as f32,
+                cpu_avg_ms: cpu_avg as f32,
+                long_frames: self.long_frames,
+            };
             self.window_start = Some(now);
             self.frames = 0;
             self.skipped_render = 0;
@@ -886,7 +1143,24 @@ impl FrameStats {
     }
 }
 
+fn hand_name(h: usize) -> &'static str {
+    if h == 0 { "left" } else { "right" }
+}
+
 /// An Android system property, for spike-time knobs. Empty means unset.
+/// The next world effect to switch to from `from`, `step` = 1 forward or
+/// -1 back, skipping slots with nothing parked (the effect showing now, and
+/// any that failed to build at launch). `None` when nothing else is parked.
+fn cycle_index(parked: &[Option<XrScene>], from: usize, step: isize) -> Option<usize> {
+    let n = parked.len();
+    (1..n)
+        .map(|k| {
+            let offset = (k as isize * step).rem_euclid(n as isize) as usize;
+            (from + offset) % n
+        })
+        .find(|&i| parked[i].is_some())
+}
+
 fn debug_prop(name: &str) -> Option<String> {
     let out = std::process::Command::new("getprop")
         .arg(name)
@@ -894,6 +1168,51 @@ fn debug_prop(name: &str) -> Option<String> {
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (!v.is_empty()).then_some(v)
+}
+
+/// The world-layout effect `effect`, simulated around `options.anchor`.
+fn new_world_scene(
+    gfx: &Gfx,
+    config: &std::path::Path,
+    effect: &str,
+    options: WorldOptions,
+) -> Result<XrScene> {
+    let scene_dir = write_single_effect_scene(config, effect).context("writing the scene")?;
+    XrScene::new_world(
+        &gfx.device,
+        &gfx.queue,
+        &scene_dir,
+        effect,
+        NOMINAL_FPS,
+        options,
+    )
+    .with_context(|| format!("creating the world scene for '{effect}'"))
+}
+
+/// Names of the world-layout presets in `effects_dir` (files named
+/// `*_xr_world*.pfx`), in file-name order.
+fn discover_world_effects(effects_dir: &std::path::Path) -> Vec<String> {
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(effects_dir)
+        .map(|dir| {
+            dir.filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.extension().is_some_and(|x| x == "pfx")
+                        && p.file_stem()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(|s| s.contains("_xr_world"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|p| {
+            let json: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
+            Some(json.get("name")?.as_str()?.to_owned())
+        })
+        .collect()
 }
 
 /// A one-cue scene showing `effect` with its default parameters, written

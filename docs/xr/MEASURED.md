@@ -118,7 +118,8 @@ capture → copy → quad sampling is correct in both eyes. Convergence log
   (centroid 62% across the left-eye image, 39% across the right-eye image),
   consistent with an object 1.5 m ahead.
 - World-locking: verified by Kevin wearing the headset (Sep 27): the triangle
-  stays put while moving and turning. (Monocular check; Kevin sees with one eye.)
+  stays put while moving and turning. (A monocular check; stereo
+  convergence is verified numerically below.)
 - Convergence, numeric (commit `eefdc33`, tracked, flags 7): runtime
   IPD 65.0 mm, triangle center 1.52 m from the eye midpoint → expected
   disparity 2.44°; from our per-eye matrices the center sits at +0.62° in the
@@ -704,12 +705,140 @@ worst. **Worn gate closed (Kevin, Sep 28): fine for now.** PR #183 merged.
 - **Not done:** the Meta XR Simulator glasses-input check (macOS only; this
   session is Linux). Logged, no effect on the decision.
 
-### C3b: Murmur in world space (`mode world`, `effect "Murmur XR World"`, 72 Hz)
+### C3b: Murmur in world space (`mode world`, `effect "Murmur XR World"`, 72 Hz, Sep 28)
 
-Pending the device run (`scripts/xr/sweep.sh --mode world --counts "100000 150000 200000 300000"`,
-`K` 7, `MAX_PER_CELL` 16):
+The port as delivered (PR #187: K=7 topological neighbors from the 3D hash,
+27 cells x `MAX_PER_CELL` 16 candidates per bird, hands as predators), 30 s
+runs, unworn, 52 hand spheres and 17 boxes reaching the sim:
 
 | Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
 |---|---|---|---|---|---|
-| 100K–300K | — | — | — | — | — |
+| 100K | 25.1 / 34.7 | 33.3 | 748 of 1058 | 892 | No |
+| 150K | 47.5 / 68.7 | 17.3 | 400 of 617 | 1369 | No |
+| 200K | 80.5 / 108.5 | 10.9 | 257 of 422 | 1474 | No |
+| 300K | 123.8 / 134.4 | 7.1 | 192 of 315 | 1665 | No |
 
+About 0.25 ms per thousand birds, 5-10x over the frame at the brief's
+200K. A stripped scan (K=5, `MAX_PER_CELL` 2: 54 candidates, 8x fewer)
+is only about twice cheaper, so the per-bird fixed cost rules: 27 cell
+range lookups, two passes over the sphere block (predator, then collide),
+the neighbor positions re-read after the sort.
+
+| Particles, K=5 / 2 per cell | GPU ms (med / max) | frames/s | Long | Held? |
+|---|---|---|---|---|
+| 100K | 13.7 / 19.1 | 63.0 | 78 of 1703 | No |
+| 150K | 23.3 / 36.0 | 36.1 | 782 of 1086 | No |
+| 200K | 31.7 / 48.9 | 24.0 | 567 of 795 | No |
+
+Flux XR World at the same counts, for scale: 100K 3.4 ms, 150K 4.6, 200K
+5.9, 300K 8.7 (whole frame, 72 Hz throughout).
+
+**Decision (Kevin, Sep 28):** the port is not going to budget, and the
+product pivots to room-native effects (`ROOM_DESIGN.md`). Murmur ships
+small, as a flock that lives in the room and flees the hands, if it reads
+worn; the full scan stays (K=7, 16 per cell), with the roost 1 m ahead
+of the anchor and the head as a hawk (review fixes, `f898f07`):
+
+| Particles | GPU ms (med / max) | frames/s | Long | Stale | Held? |
+|---|---|---|---|---|---|
+| 30K | 9.2 / 9.9 | 72.0 | 0 of 2031 | 0 | Yes |
+| **40K (preset)** | **9.7 / 12.7** | **72.0** | **2 of 2024** | **17** | **Yes** |
+| 50K | 11.5 / 15.2 | 70.0 | 25 of 1956 | 126 | No |
+
+Worn gate: the flock keeps out of the face, splits around a hand and
+wheels around the desk.
+
+## Hands-first interaction (I5)
+
+### Pinch gestures, worn gate (Kevin, Sep 28, `mode world`, Flux XR World 400K, 72 Hz)
+
+Worn, both hands, no controllers. One pinch at a time is a tap, a drag
+or a hold (`crates/fosfora-xr/src/gesture.rs`): past 2.5 cm of pinch-point
+travel it is a drag, which moves the cloud anchor 1:1 with the hand; held
+within 2.5 cm for 0.7 s it is a hold; released before either it is a tap.
+
+- **Pinch detection:** every attempt registered, on either hand: 28
+  pinches engaged, at 3.9–14.9 mm tip distance (median 9.8 mm), released
+  at 30–89 mm. The tips close to 1–8 mm in a held pinch. No near-misses:
+  in every one-second window without a pinch the closest approach was
+  28 mm or more. So the 15 mm threshold is not the problem. The earlier
+  "pinch does nothing" in `mode world` was the consumer: its only effect
+  was the S5 test sim's sprite size, and world mode runs that sim at
+  count 0.
+- **Gestures:** the 28 pinches became 16 taps, 7 drags and 2 holds; the
+  other 3 were the second hand pinching while the first owned a gesture.
+- **Drag:** 7 drags, left and right, 0.09–0.53 m net each; the anchor
+  followed the hand (it ended at (0.19, 1.29, −0.27) from (0, 1, 0)). A
+  drag whose hand lost tracking mid-motion ended cleanly, and the next
+  pinch started a new drag. The second hand's pinch was ignored while the
+  first hand dragged.
+- **Hold:** 2 of 2 fired, once each, at 0.7 s.
+- **Frame time, worn (41 s, hands in view):** GPU (`App=`) 11.4 ms median,
+  14.6 ms max; 70 fps median, 53 min; 220 stale frames. **Unworn right
+  after:** 8.6 ms, 72 fps. The gestures do not cause it: the first drag
+  ran at 72 fps and 10.3 ms, and the drops start in the tap-only stretch
+  before any drag. Flux XR World at 400K was measured unworn only
+  (9.3 ms, C3b above); worn, with the wearer inside the cloud and hands in
+  view, it runs over the 13.9 ms budget in bursts. Open.
+
+### Pinch-hold cycles the world effects (Sep 28, unworn, proximity faked)
+
+A pinch-hold switches to the next world-layout preset (every
+`*_xr_world*.pfx`, in file-name order): today Flux XR World (400K) and
+Flux XR World Coarse (150K larger embers in a 2 m volume, a test variant
+until Murmur lands). `debug.fosfora.cycletest 8` switched every 8 s for
+the measurements.
+
+- **Rebuilding on each switch:** 495–507 ms per switch (6 switches), one
+  frozen frame of ~0.5 s each time. Rejected.
+- **Built once at startup, swapped:** each effect builds in 507–530 ms at
+  launch; a switch then costs 0–2 long frames (worst window 29.8 ms max
+  interval, the first switch), 72 fps otherwise. A parked effect resumes
+  where it stopped. Memory: 424 MB PSS with both effects built against
+  392 MB with one.
+
+### Debug panel (Sep 28, unworn with `debug.fosfora.hudtest 1`, Flux XR World 400K)
+
+Development only and opt-in: `adb shell setprop debug.fosfora.hud 1`
+before launch (off by default; an app setting may replace the knob).
+
+An egui panel above the left palm (shown while the palm faces the wearer,
+poked with the right index finger): fps, long frames, the runtime's app
+GPU time and utilization (`XR_META_performance_metrics`: 17 counters on
+v207, no app CPU counter, so the frame loop's own CPU time stands in), a
+two-second GPU-time graph against the 13.9 ms budget, particles, hands,
+gesture, anchor with Recenter, audio levels, Prev/Next effect, and four
+live sliders (settle, near fade, hand pad, hand kick). 640 x 1024 texture
+on a 20 x 30 cm quad, drawn after the sprites and depth-tested against the
+hand occluders.
+
+- **Cost while shown:** frame-loop CPU 2.23 ms against 1.50 ms hidden
+  (+0.7 ms, the egui pass); GPU 9.61 ms median against 9.73 ms hidden (no
+  measurable difference); 72 fps, 0 stale either way (25 s each).
+- **Check without a wearer:** `hudtest` parks the panel ahead of the view
+  and dumps its texture to `files/config/hud.rgba` at frame 720; the dump
+  read back pixel-exact (layout, values and graph as intended).
+
+### Operating the panel without depth judgment (Sep 28, worn)
+
+Requirement: the panel has to work without stereo depth perception, and
+without it judging a fingertip's distance to a floating panel is
+guesswork. Three rounds, from the log:
+
+- **egui widgets, poke only:** "hard to use"; presses registered, clicks
+  were luck (a poke drifts past egui's click tolerance between press and
+  release).
+- **plus a hand ray (shoulder through index knuckle) with pinch, still
+  egui widgets:** ~45 presses, all classified as pokes, 0 button actions
+  fired. Pointing at a panel held over the other hand brings the fingertip
+  within the 10 cm poke band, so the poke took the pointer from the ray
+  every time; and egui's click-on-release failed for the same drift. No
+  ray was visible.
+- **big rows, fire on press, visible beam:** full-width rows 2.5 cm tall
+  picked by the pointer's height alone, left/right halves for Prev/Next and
+  -/+, the target under the pointer fires when the press starts and stays
+  locked until release, held -/+ repeats; poke only within 3 cm; a beam
+  from the knuckle to the hit point; no cloud gestures while the panel is
+  up. **57 of 57 presses fired a target** (12 ray, 45 poke): 10 Next,
+  2 Recenter, 212 steps including repeats; 0 cloud gestures started while
+  the panel was up (17 outside it). Wearer: "much better".

@@ -64,6 +64,15 @@ pub struct Gfx {
     // device, the device before the adapter and instance.
     quad: Option<QuadBinding>,
     quad_layout: wgpu::BindGroupLayout,
+    /// The debug panel: a posed, textured quad (`set_panel`, `set_panel_pose`).
+    panel: Option<QuadBinding>,
+    panel_visible: std::cell::Cell<bool>,
+    panel_pipeline: wgpu::RenderPipeline,
+    panel_layout: wgpu::BindGroupLayout,
+    /// The debug panel's aiming beam (`set_beam`).
+    beam: QuadBinding,
+    beam_visible: std::cell::Cell<bool>,
+    beam_pipeline: wgpu::RenderPipeline,
     eyes: Vec<EyeUniform>,
     /// Per-eye depth attachment at the swapchain size (`set_eye_extent`).
     depth: Vec<wgpu::TextureView>,
@@ -78,8 +87,29 @@ pub struct Gfx {
 
 /// The world-locked quad: its placement uniform plus the texture it shows.
 struct QuadBinding {
-    _uniform: wgpu::Buffer,
+    uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+}
+
+/// The debug panel's aiming beam this frame: a thin strip from `start` to
+/// `end` turned to face `eye`, `width_m` wide, drawn at `alpha`.
+#[derive(Debug, Clone, Copy)]
+pub struct Beam {
+    pub start: [f32; 3],
+    pub end: [f32; 3],
+    pub eye: [f32; 3],
+    pub width_m: f32,
+    pub alpha: f32,
+}
+
+/// Where the debug panel sits this frame: its center and the vectors from
+/// the center to its right and top edges (reference space, meters). The
+/// texture's top-left corner is at `center - right + up`.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelPose {
+    pub center: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
 }
 
 struct EyeUniform {
@@ -312,16 +342,31 @@ impl Gfx {
             )
         }
         .context("wgpu create_device_from_hal")?;
-        device.on_uncaptured_error(std::sync::Arc::new(|e| error!("wgpu error: {e}")));
+        // The error's Display is only its kind ("Validation Error"); the
+        // description carries what failed.
+        device.on_uncaptured_error(std::sync::Arc::new(|e| match &e {
+            wgpu::Error::Validation { description, .. }
+            | wgpu::Error::Internal { description, .. } => error!("wgpu error: {description}"),
+            _ => error!("wgpu error: {e}"),
+        }));
         device
             .set_device_lost_callback(|reason, msg| error!("wgpu device lost ({reason:?}): {msg}"));
 
-        let (pipeline, eyes, quad_layout) = build_quad_pipeline(&device);
+        let (pipeline, eyes, quad_layout, eye_layout) = build_quad_pipeline(&device);
+        let (panel_pipeline, panel_layout) = build_panel_pipeline(&device, &eye_layout);
+        let (beam_pipeline, beam) = build_beam_pipeline(&device, &eye_layout);
         info!("wgpu device ready");
 
         Ok(Self {
             quad: None,
             quad_layout,
+            panel: None,
+            panel_visible: std::cell::Cell::new(false),
+            panel_pipeline,
+            panel_layout,
+            beam,
+            beam_visible: std::cell::Cell::new(false),
+            beam_pipeline,
             eyes,
             depth: Vec::new(),
             pipeline,
@@ -381,7 +426,7 @@ impl Gfx {
             ],
         });
         self.quad = Some(QuadBinding {
-            _uniform: uniform,
+            uniform,
             bind_group,
         });
         info!(
@@ -392,6 +437,89 @@ impl Gfx {
             center[1],
             center[2]
         );
+    }
+
+    /// The texture the debug panel shows (premultiplied alpha). Hidden until
+    /// [`Self::set_panel_pose`] places it.
+    pub fn set_panel(&mut self, view: &wgpu::TextureView) {
+        let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-panel-uniform"),
+            size: 48,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xr-panel-sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xr-panel"),
+            layout: &self.panel_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.panel = Some(QuadBinding {
+            uniform,
+            bind_group,
+        });
+    }
+
+    /// Place the debug panel for this frame, or hide it with `None`.
+    pub fn set_panel_pose(&self, pose: Option<PanelPose>) {
+        let (Some(panel), Some(pose)) = (&self.panel, pose) else {
+            self.panel_visible.set(false);
+            return;
+        };
+        let (c, r, u) = (pose.center, pose.right, pose.up);
+        let data: [f32; 12] = [
+            c[0], c[1], c[2], 0.0, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
+        ];
+        self.queue
+            .write_buffer(&panel.uniform, 0, bytemuck::bytes_of(&data));
+        self.panel_visible.set(true);
+    }
+
+    /// Place the aiming beam for this frame, or hide it with `None`.
+    pub fn set_beam(&self, beam: Option<Beam>) {
+        let Some(b) = beam else {
+            self.beam_visible.set(false);
+            return;
+        };
+        let (a, e) = (glam::Vec3::from(b.start), glam::Vec3::from(b.end));
+        // Across the beam, facing the eye.
+        let side = (e - a)
+            .cross(glam::Vec3::from(b.eye) - a)
+            .normalize_or_zero()
+            * (b.width_m * 0.5);
+        if side == glam::Vec3::ZERO {
+            self.beam_visible.set(false);
+            return;
+        }
+        let corner = |p: glam::Vec3, across: f32| [p.x, p.y, p.z, across];
+        let data: [[f32; 4]; 5] = [
+            corner(a - side, -1.0),
+            corner(a + side, 1.0),
+            corner(e + side, 1.0),
+            corner(e - side, -1.0),
+            [1.0, 1.0, 1.0, b.alpha],
+        ];
+        self.queue
+            .write_buffer(&self.beam.uniform, 0, bytemuck::cast_slice(&data));
+        self.beam_visible.set(true);
     }
 
     /// Size the eye's depth attachment to its swapchain. Call once per eye,
@@ -558,6 +686,21 @@ impl Gfx {
             if let (Some(s), Some(draw)) = (scene.as_deref_mut(), world_draw) {
                 s.draw_world(&mut pass, draw);
             }
+            if self.beam_visible.get() {
+                pass.set_pipeline(&self.beam_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.beam.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+            // Last, over the sprites (which write no depth), so the panel
+            // reads cleanly through the cloud; depth-tested against the
+            // hand occluders, so a finger poking it shows in front.
+            if let Some(panel) = self.panel.as_ref().filter(|_| self.panel_visible.get()) {
+                pass.set_pipeline(&self.panel_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &panel.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
         }
         self.queue.submit([encoder.finish()]);
     }
@@ -634,7 +777,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
 fn build_quad_pipeline(
     device: &wgpu::Device,
-) -> (wgpu::RenderPipeline, Vec<EyeUniform>, wgpu::BindGroupLayout) {
+) -> (
+    wgpu::RenderPipeline,
+    Vec<EyeUniform>,
+    wgpu::BindGroupLayout,
+    wgpu::BindGroupLayout,
+) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("xr-quad"),
         source: wgpu::ShaderSource::Wgsl(QUAD_WGSL.into()),
@@ -743,5 +891,242 @@ fn build_quad_pipeline(
             EyeUniform { buffer, bind_group }
         })
         .collect();
-    (pipeline, eyes, quad_layout)
+    (pipeline, eyes, quad_layout, eye_layout)
+}
+
+const PANEL_WGSL: &str = r"
+struct Eye { view_proj: mat4x4<f32> }
+struct Panel { center: vec4<f32>, right: vec4<f32>, up: vec4<f32> }
+@group(0) @binding(0) var<uniform> eye: Eye;
+@group(1) @binding(0) var<uniform> panel: Panel;
+@group(1) @binding(1) var panel_tex: texture_2d<f32>;
+@group(1) @binding(2) var panel_samp: sampler;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
+    var c = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0),
+    );
+    let corner = c[i];
+    let world = panel.center.xyz + corner.x * panel.right.xyz + corner.y * panel.up.xyz;
+    var out: VsOut;
+    out.pos = eye.view_proj * vec4<f32>(world, 1.0);
+    out.uv = vec2<f32>(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // egui renders premultiplied alpha; the eye pass blends it over.
+    return textureSample(panel_tex, panel_samp, in.uv);
+}
+";
+
+const BEAM_WGSL: &str = r"
+struct Eye { view_proj: mat4x4<f32> }
+struct Beam { corners: array<vec4<f32>, 4>, color: vec4<f32> }
+@group(0) @binding(0) var<uniform> eye: Eye;
+@group(1) @binding(0) var<uniform> beam: Beam;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) across: f32,
+    @location(1) along: f32,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
+    var order = array<u32, 6>(0u, 1u, 2u, 0u, 2u, 3u);
+    let k = order[i];
+    let c = beam.corners[k];
+    var out: VsOut;
+    out.pos = eye.view_proj * vec4<f32>(c.xyz, 1.0);
+    out.across = c.w;
+    out.along = select(0.0, 1.0, k >= 2u);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // Soft across the width, fading in from the hand toward the panel.
+    let a = beam.color.a * (1.0 - in.across * in.across) * (0.35 + 0.65 * in.along);
+    return vec4<f32>(beam.color.rgb * a, a);
+}
+";
+
+/// The aiming beam's pipeline and its uniform: a camera-facing strip,
+/// premultiplied alpha, depth-tested (a hand or the panel hides it), no
+/// depth write.
+fn build_beam_pipeline(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::RenderPipeline, QuadBinding) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("xr-beam"),
+        source: wgpu::ShaderSource::Wgsl(BEAM_WGSL.into()),
+    });
+    let beam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-beam"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(80),
+            },
+            count: None,
+        }],
+    });
+    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("xr-beam-uniform"),
+        size: 80,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("xr-beam"),
+        layout: &beam_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        }],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("xr-beam"),
+        bind_group_layouts: &[eye_layout, &beam_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xr-beam"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SWAPCHAIN_FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (
+        pipeline,
+        QuadBinding {
+            uniform,
+            bind_group,
+        },
+    )
+}
+
+/// The debug panel's pipeline: a posed quad, premultiplied alpha over the
+/// eye target, depth-tested and depth-writing.
+fn build_panel_pipeline(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("xr-panel"),
+        source: wgpu::ShaderSource::Wgsl(PANEL_WGSL.into()),
+    });
+    let panel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("xr-panel"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(48),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("xr-panel"),
+        bind_group_layouts: &[eye_layout, &panel_layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xr-panel"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: SWAPCHAIN_FORMAT,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None,
+        cache: None,
+    });
+    (pipeline, panel_layout)
 }
