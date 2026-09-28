@@ -493,9 +493,18 @@ in this session, so the baseline is lower than the "final numbers" above):
 Two hands are two such draws: **under 0.3 ms per hand, in the noise at
 500K.**
 
-**Worn gate (open):** whether the skinned mesh follows the real hand
-(fingers, gaps between fingers, palm), and the bone-length hand-scale
-estimate logged as `hand mesh <side>: scale estimate`.
+**Worn gate (Kevin, Sep 27, 500K, room loaded with 16 anchors, passthrough,
+both hands):** the screencap shows both real hands cut out of the cloud
+with individual fingers, the gaps between them and the palm, in both eyes;
+the mesh outline runs a few mm past the real fingertips in places (dark
+slivers where the occluder hides sprites but the passthrough shows
+background). Pinch still works through the same joints. Frame stats with
+hands in view: 72.0 frames/s, 0 long frames per window once donned (the
+101 long frames of the first 836 are the donning and Space Setup query),
+7.3–8.0 ms GPU (`App=`), CPU 0.8 ms avg. The bone-length scale estimate
+logged 1.07–1.09 for the left hand and stayed within ±2 % of 1.0 for the
+right, so it is pose-noisy at the few-percent level; the mesh looked right
+either way.
 
 ### Functional gate (wearer, Kevin, Sep 27, ~11 worn runs)
 
