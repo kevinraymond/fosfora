@@ -40,6 +40,9 @@ cpal = "0.17.3"
 # Raw AAudio for the microphone path: cpal cannot set the input preset, and
 # the Quest processes the default (voice recognition) preset for speech.
 ndk = { version = "0.9", default-features = false, features = ["audio", "api-level-28"] }
+# CLOCK_MONOTONIC for the playback tap's latency estimate (already in the
+# tree through ndk; MIT OR Apache-2.0).
+libc = "0.2"
 
 [lints]
 workspace = true
