@@ -14,9 +14,8 @@ use std::collections::HashMap;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use wgpu::{
-    BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState,
-    CommandEncoder, ComputePipeline, Device, PipelineLayout, Queue, RenderPipeline, ShaderModule,
-    TextureFormat,
+    BindGroup, BindGroupLayout, BlendComponent, BlendFactor, BlendOperation, BlendState, Device,
+    PipelineLayout, Queue, RenderPipeline, ShaderModule, TextureFormat,
 };
 
 /// One eye's camera for [`ParticleSystem::render_world`].
@@ -91,15 +90,13 @@ pub(super) struct WorldRender {
     camera_bind_group: BindGroup,
     camera_stride: u64,
     camera_cursor: u64,
-    /// `[3 * alive, 1, 0, 0]`, written on the GPU by `record_prepare`.
-    pub(super) indirect_buffer: wgpu::Buffer,
-    prepare_pipeline: ComputePipeline,
-    prepare_bind_group: BindGroup,
 }
 
 impl WorldRender {
     /// `render_bgl` is the 2D renderer's group-0 layout (SoA buffers, render
-    /// uniforms, alive indices), reused unchanged as group 0 here.
+    /// uniforms, alive indices), reused unchanged as group 0 here. Group 1
+    /// is the camera ring plus `counter_buffer`, whose alive count bounds
+    /// the direct draw in the vertex shader.
     pub(super) fn new(
         device: &Device,
         render_bgl: &BindGroupLayout,
@@ -111,16 +108,28 @@ impl WorldRender {
 
         let camera_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("particle-world-camera-bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(size),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(size),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(16),
+                    },
+                    count: None,
+                },
+            ],
         });
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("particle-world-camera"),
@@ -131,14 +140,20 @@ impl WorldRender {
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("particle-world-camera-bg"),
             layout: &camera_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &camera_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(size),
-                }),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &camera_buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: counter_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -154,18 +169,6 @@ impl WorldRender {
             push_constant_ranges: &[],
         });
 
-        let indirect_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("particle-world-indirect-args"),
-            size: 16,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::INDIRECT
-                | wgpu::BufferUsages::COPY_SRC,
-            // Zeroed: draws nothing until the first prepare.
-            mapped_at_creation: false,
-        });
-        let (prepare_pipeline, prepare_bind_group) =
-            create_prepare_pipeline(device, counter_buffer, &indirect_buffer);
-
         Self {
             shader,
             layout,
@@ -174,21 +177,7 @@ impl WorldRender {
             camera_bind_group,
             camera_stride,
             camera_cursor: 0,
-            indirect_buffer,
-            prepare_pipeline,
-            prepare_bind_group,
         }
-    }
-
-    /// Record the pass that turns `counters[0]` into `[3 * alive, 1, 0, 0]`.
-    pub(super) fn record_prepare(&self, encoder: &mut CommandEncoder) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("particle-world-prepare-indirect"),
-            timestamp_writes: None,
-        });
-        pass.set_pipeline(&self.prepare_pipeline);
-        pass.set_bind_group(0, &self.prepare_bind_group, &[]);
-        pass.dispatch_workgroups(1, 1, 1);
     }
 
     /// Write `uniforms` into the next ring slot; returns its dynamic offset.
@@ -289,64 +278,6 @@ fn create_render_pipeline(
     })
 }
 
-fn create_prepare_pipeline(
-    device: &Device,
-    counter_buffer: &wgpu::Buffer,
-    indirect_buffer: &wgpu::Buffer,
-) -> (ComputePipeline, BindGroup) {
-    let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    };
-    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("particle-world-prepare-indirect-bgl"),
-        entries: &[storage(0, true), storage(1, false)],
-    });
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("particle-world-prepare-indirect"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!(
-                "../../../../../assets/shaders/builtin/particle_prepare_indirect_world.wgsl"
-            )
-            .into(),
-        ),
-    });
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("particle-world-prepare-indirect-layout"),
-        bind_group_layouts: &[&bgl],
-        push_constant_ranges: &[],
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("particle-world-prepare-indirect"),
-        layout: Some(&layout),
-        module: &shader,
-        entry_point: Some("cs_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("particle-world-prepare-indirect-bg"),
-        layout: &bgl,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: counter_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: indirect_buffer.as_entire_binding(),
-            },
-        ],
-    });
-    (pipeline, bind_group)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,12 +301,28 @@ mod tests {
         assert_eq!(std::mem::size_of::<WorldCameraUniforms>(), 160);
     }
 
+    /// The draw is bounded by the alive count in the vertex shader, so the
+    /// counters buffer must be bound where `WorldRender::new` puts it.
     #[test]
-    fn prepare_shader_validates() {
-        crate::trama::effect::validate_wgsl(include_str!(
-            "../../../../../assets/shaders/builtin/particle_prepare_indirect_world.wgsl"
-        ))
-        .expect("world prepare-indirect shader validates");
+    fn world_shader_reads_counters_at_group_1_binding_1() {
+        let src = include_str!("../../../../../assets/shaders/builtin/particle_render_world.wgsl");
+        let module = naga::front::wgsl::parse_str(src).unwrap();
+        let (_, counters) = module
+            .global_variables
+            .iter()
+            .find(|(_, v)| v.name.as_deref() == Some("counters"))
+            .expect("counters binding");
+        let binding = counters
+            .binding
+            .as_ref()
+            .expect("counters is a resource binding");
+        assert_eq!((binding.group, binding.binding), (1, 1));
+        assert_eq!(
+            counters.space,
+            naga::AddressSpace::Storage {
+                access: naga::StorageAccess::LOAD
+            }
+        );
     }
 
     /// `sample_flow_field_3d` compiles as part of the particle library at
