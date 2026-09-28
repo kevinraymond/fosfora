@@ -1811,6 +1811,13 @@ impl App {
     /// delete the bindings `load_preset` had just finished loading.
     pub fn load_effect(&mut self, index: usize) {
         let layer_idx = self.layer_stack.active_layer;
+        // Same guards `load_effect_on_layer` returns on, checked first: an
+        // out-of-range index (OSC, web, a stale index after the effect list
+        // reloads) would otherwise drop the bindings and load nothing.
+        if index >= self.effect_loader.effects.len() || layer_idx >= self.layer_stack.layers.len() {
+            log::warn!("load_effect: no effect {index} or layer {layer_idx}; ignored");
+            return;
+        }
         let dropped = self.binding_bus.clear_preset_bindings_for_layer(layer_idx);
         if dropped > 0 {
             log::info!("Dropped {dropped} preset binding(s) targeting layer {layer_idx}");
