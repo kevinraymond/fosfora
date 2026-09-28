@@ -118,7 +118,8 @@ capture → copy → quad sampling is correct in both eyes. Convergence log
   (centroid 62% across the left-eye image, 39% across the right-eye image),
   consistent with an object 1.5 m ahead.
 - World-locking: verified by Kevin wearing the headset (Sep 27): the triangle
-  stays put while moving and turning. (Monocular check; Kevin sees with one eye.)
+  stays put while moving and turning. (A monocular check; stereo
+  convergence is verified numerically below.)
 - Convergence, numeric (commit `eefdc33`, tracked, flags 7): runtime
   IPD 65.0 mm, triangle center 1.52 m from the eye midpoint → expected
   disparity 2.44°; from our per-eye matrices the center sits at +0.62° in the
