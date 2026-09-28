@@ -16,6 +16,7 @@ mod app;
 mod assets;
 #[cfg(target_os = "android")]
 mod audio;
+pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;
 #[cfg(target_os = "android")]

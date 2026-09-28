@@ -34,6 +34,10 @@ pub struct HandsFrame {
     pub pinch_began: [bool; 2],
     /// Pinch currently held on each hand.
     pub pinching: [bool; 2],
+    /// Midpoint of the thumb and index tips, where both were located.
+    pub pinch_point: [Option<[f32; 3]>; 2],
+    /// Thumb tip to index tip distance (meters), where both were located.
+    pub tip_distance: [Option<f32>; 2],
     /// Skinning matrices for the hand meshes, valid where `mesh_ready`.
     pub skins: HandSkins,
     /// The hand has a mesh and every joint was located this frame.
@@ -42,7 +46,7 @@ pub struct HandsFrame {
 
 /// Thumb tip to index tip distance thresholds (meters), with hysteresis so
 /// a held pinch does not flicker at the boundary.
-const PINCH_ON_M: f32 = 0.015;
+pub const PINCH_ON_M: f32 = 0.015;
 const PINCH_OFF_M: f32 = 0.030;
 /// Log the estimated hand scale when it moves this much from the last log.
 const SCALE_LOG_STEP: f32 = 0.02;
@@ -193,6 +197,9 @@ impl Hands {
                 let a = thumb.pose.position;
                 let b = index.pose.position;
                 let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
+                frame.pinch_point[h] =
+                    Some([0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z)]);
+                frame.tip_distance[h] = Some(d);
                 if !self.pinching[h] && d < PINCH_ON_M {
                     self.pinching[h] = true;
                     frame.pinch_began[h] = true;

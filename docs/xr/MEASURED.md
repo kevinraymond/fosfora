@@ -703,3 +703,36 @@ worst. **Worn gate closed (Kevin, Sep 28): fine for now.** PR #183 merged.
   are behind the object.
 - **Not done:** the Meta XR Simulator glasses-input check (macOS only; this
   session is Linux). Logged, no effect on the decision.
+
+## Hands-first interaction (I5)
+
+### Pinch gestures, worn gate (Kevin, Sep 28, `mode world`, Flux XR World 400K, 72 Hz)
+
+Worn, both hands, no controllers. One pinch at a time is a tap, a drag
+or a hold (`crates/fosfora-xr/src/gesture.rs`): past 2.5 cm of pinch-point
+travel it is a drag, which moves the cloud anchor 1:1 with the hand; held
+within 2.5 cm for 0.7 s it is a hold; released before either it is a tap.
+
+- **Pinch detection:** every attempt registered, on either hand: 28
+  pinches engaged, at 3.9–14.9 mm tip distance (median 9.8 mm), released
+  at 30–89 mm. The tips close to 1–8 mm in a held pinch. No near-misses:
+  in every one-second window without a pinch the closest approach was
+  28 mm or more. So the 15 mm threshold is not the problem. The earlier
+  "pinch does nothing" in `mode world` was the consumer: its only effect
+  was the S5 test sim's sprite size, and world mode runs that sim at
+  count 0.
+- **Gestures:** the 28 pinches became 16 taps, 7 drags and 2 holds; the
+  other 3 were the second hand pinching while the first owned a gesture.
+- **Drag:** 7 drags, left and right, 0.09–0.53 m net each; the anchor
+  followed the hand (it ended at (0.19, 1.29, −0.27) from (0, 1, 0)). A
+  drag whose hand lost tracking mid-motion ended cleanly, and the next
+  pinch started a new drag. The second hand's pinch was ignored while the
+  first hand dragged.
+- **Hold:** 2 of 2 fired, once each, at 0.7 s.
+- **Frame time, worn (41 s, hands in view):** GPU (`App=`) 11.4 ms median,
+  14.6 ms max; 70 fps median, 53 min; 220 stale frames. **Unworn right
+  after:** 8.6 ms, 72 fps. The gestures do not cause it: the first drag
+  ran at 72 fps and 10.3 ms, and the drops start in the tap-only stretch
+  before any drag. Flux XR World at 400K was measured unworn only
+  (9.3 ms, C3b above); worn, with the wearer inside the cloud and hands in
+  view, it runs over the 13.9 ms budget in bursts. Open.

@@ -10,6 +10,7 @@ use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
 use crate::audio::LiveAudio;
+use crate::gesture::{Gesture, Gestures, PinchInput};
 use crate::gfx::Gfx;
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
 use crate::playback::{Clip, Playback, PlaybackOptions};
@@ -479,7 +480,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         rot: [0.0, 0.0, 0.0, 1.0],
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
     });
-    // Pinch toggles a visible parameter (the sprite size); either hand.
+    // I5 gestures: a pinch-drag moves the cube and the world anchor with
+    // the hand, a tap toggles the S5 sprite size, a hold is logged (effect
+    // cycling comes next).
+    let mut gestures = Gestures::default();
+    let (mut anchor, mut anchor_half) = (cube_center, cube_half);
+    let mut drag_total = glam::Vec3::ZERO;
+    // Closest thumb-index approach per hand since the last log (meters):
+    // shows near-miss pinches that never crossed the threshold.
+    let mut tip_min = [f32::MAX; 2];
     let mut size_boost = false;
     let mut recentered = false;
     let mut obstacle_log = (0u32, 0u32, [false; 2], [false; 2]);
@@ -562,23 +571,63 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         };
         let scene_mut = scene.as_mut();
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
-            // S7: hands and room as obstacles, pinch as the toggle.
-            if input.hands.pinch_began.iter().any(|&b| b) {
-                size_boost = !size_boost;
-                info!(
-                    "pinch toggle: sprite size x{} {}",
-                    PINCH_SIZE_BOOST,
-                    if size_boost { "on" } else { "off" }
-                );
+            // S7: hands and room as obstacles. I5: pinch gestures.
+            for (h, d) in input.hands.tip_distance.iter().enumerate() {
+                if let Some(d) = d {
+                    tip_min[h] = tip_min[h].min(*d);
+                }
+            }
+            let pinches = [0, 1].map(|h| PinchInput {
+                pinching: input.hands.pinching[h],
+                point: input.hands.pinch_point[h],
+            });
+            let mut moved = false;
+            for g in gestures.step(pinches, dt) {
+                match g {
+                    Gesture::Tap { hand } => {
+                        size_boost = !size_boost;
+                        info!(
+                            "gesture: tap {} · sprite size x{} {}",
+                            hand_name(hand),
+                            PINCH_SIZE_BOOST,
+                            if size_boost { "on" } else { "off" }
+                        );
+                    }
+                    Gesture::DragStart { hand } => {
+                        drag_total = glam::Vec3::ZERO;
+                        info!(
+                            "gesture: drag {} began · anchor ({:.2}, {:.2}, {:.2})",
+                            hand_name(hand),
+                            anchor[0],
+                            anchor[1],
+                            anchor[2]
+                        );
+                    }
+                    Gesture::Drag { delta, .. } => {
+                        let d = glam::Vec3::from(delta);
+                        drag_total += d;
+                        anchor = (glam::Vec3::from(anchor) + d).to_array();
+                        moved = true;
+                    }
+                    Gesture::DragEnd { hand } => info!(
+                        "gesture: drag {} ended · moved {:.2} m · anchor ({:.2}, {:.2}, {:.2})",
+                        hand_name(hand),
+                        drag_total.length(),
+                        anchor[0],
+                        anchor[1],
+                        anchor[2]
+                    ),
+                    Gesture::Hold { hand } => {
+                        info!("gesture: hold {}", hand_name(hand));
+                    }
+                }
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
                     recentered = true;
                     let center = [input.head[0], MR_CUBE_Y, input.head[2]];
-                    p.set_cube(center, MR_CUBE_HALF_WEARER_M);
-                    if let Some(s) = scene.as_deref_mut() {
-                        s.set_anchor(center);
-                    }
+                    (anchor, anchor_half) = (center, MR_CUBE_HALF_WEARER_M);
+                    moved = true;
                     info!(
                         "cube (and world anchor) re-centered on the wearer: ({:.2}, {:.2}, {:.2}) half {MR_CUBE_HALF_WEARER_M} (head at ({:.2}, {:.2}, {:.2}))",
                         center[0],
@@ -588,6 +637,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         input.head[1],
                         input.head[2]
                     );
+                }
+                if moved {
+                    p.set_cube(anchor, anchor_half);
+                    if let Some(s) = scene.as_deref_mut() {
+                        s.set_anchor(anchor);
+                    }
                 }
                 let mut set = ObstacleSet::new(
                     MR_RESTITUTION,
@@ -699,6 +754,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.room_summary().unwrap_or_default(),
                     size_boost
                 );
+                let mm = |d: f32| {
+                    if d == f32::MAX {
+                        "-".to_owned()
+                    } else {
+                        format!("{:.0}", d * 1000.0)
+                    }
+                };
+                // Only seconds where a pinch was attempted (tips within 5 cm).
+                if tip_min.iter().any(|&d| d < 0.05) {
+                    info!(
+                        "pinch: closest tips L {} R {} mm (on under {:.0}) · anchor ({:.2}, {:.2}, {:.2})",
+                        mm(tip_min[0]),
+                        mm(tip_min[1]),
+                        crate::input::PINCH_ON_M * 1000.0,
+                        anchor[0],
+                        anchor[1],
+                        anchor[2]
+                    );
+                }
+                tip_min = [f32::MAX; 2];
             }
             if let Some(p) = &playback {
                 info!(
@@ -884,6 +959,10 @@ impl FrameStats {
         self.cpu_max = self.cpu_max.max(cpu);
         self.cpu_n += 1;
     }
+}
+
+fn hand_name(h: usize) -> &'static str {
+    if h == 0 { "left" } else { "right" }
 }
 
 /// An Android system property, for spike-time knobs. Empty means unset.
