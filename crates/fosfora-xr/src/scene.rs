@@ -103,10 +103,16 @@ struct World {
     /// Per-frame inputs for the sim, uploaded into the head of the effect's
     /// aux buffer (layout in `assets/xr/shaders/flux_xr_sim.wgsl`).
     aux: Vec<ParticleAux>,
-    /// Half edge of the sim's volume around the anchor (the preset's
-    /// `emitter.radius`, floored as the sim floors it): a surface whose top
-    /// face does not reach into it gets emitter weight 0.
+    /// Half edge of the sim's volume around the anchor (the emitter radius
+    /// it runs at, floored as the sim floors it): a surface whose top face
+    /// does not reach into it gets emitter weight 0.
     emitter_half: f32,
+    /// The preset's `emitter.radius` (meters).
+    preset_radius: f32,
+    /// The space size asked for ([`XrScene::set_space_half`]), 0 = the
+    /// preset's: re-applied should the particle system's def lose it
+    /// (board #3325).
+    space_half: f32,
     /// This frame's summed emitter weight (for the log).
     emitter_weight: f32,
     /// The particle count (`max_count`): with the alive count, how many
@@ -187,7 +193,7 @@ impl XrScene {
         options: WorldOptions,
     ) -> Result<Self> {
         let mut warmup = WARMUP_FRAMES;
-        let mut emitter_half = 0.0;
+        let mut preset_radius = 0.0;
         let mut max_count = 0;
         let mut base_emit_rate = 0.0;
         // `count` is the particle count itself, so no quality scaling.
@@ -221,8 +227,7 @@ impl XrScene {
                     particles.max_count = count;
                     particles.max_scaled_count = 0;
                 }
-                // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
-                emitter_half = particles.emitter.radius.max(0.05);
+                preset_radius = particles.emitter.radius;
                 max_count = particles.max_count;
                 base_emit_rate = particles.emit_rate;
                 particles.initial_size *= options.size_scale;
@@ -270,7 +275,10 @@ impl XrScene {
                 warmup,
                 dispatches: 0,
                 aux: Vec::new(),
-                emitter_half,
+                // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
+                emitter_half: crate::space::emitter_half(preset_radius),
+                preset_radius,
+                space_half: 0.0,
                 emitter_weight: 0.0,
                 max_count,
                 base_emit_rate,
@@ -331,6 +339,18 @@ impl XrScene {
         let Some(world) = self.world.as_mut() else {
             return;
         };
+        // The space size asked for, back on the def should a rebuild of the
+        // particle system have reset it to the preset's.
+        if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers)
+            && let Some(radius) =
+                crate::space::reapply(ps.def.emitter.radius, world.preset_radius, world.space_half)
+        {
+            info!(
+                "space half {:.2} -> {radius:.2} m (re-applied)",
+                ps.def.emitter.radius
+            );
+            ps.def.emitter.radius = radius;
+        }
         let a = world.anchor;
         world.aux.clear();
         world.aux.reserve(WORLD_AUX_ROWS);
@@ -476,6 +496,32 @@ impl XrScene {
                 }
             }
         }
+    }
+
+    /// World mode: the space size (board #3325), the half extent of the
+    /// cube around the anchor the particles live in and respawn out of,
+    /// `half_m` meters, or the preset's own for 0 or below. Sets the
+    /// particle system's emitter radius, which the sim reads every
+    /// update, and the half the surface weights are taken against; the
+    /// cloud is not reset (a particle outside a smaller cube respawns
+    /// inside on its next step).
+    pub fn set_space_half(&mut self, half_m: f32) {
+        let Some(world) = self.world.as_mut() else {
+            return;
+        };
+        world.space_half = if half_m > 0.0 { half_m } else { 0.0 };
+        let radius = crate::space::space_radius(world.preset_radius, world.space_half);
+        world.emitter_half = crate::space::emitter_half(radius);
+        if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
+            info!("space half {:.2} -> {radius:.2} m", ps.def.emitter.radius);
+            ps.def.emitter.radius = radius;
+        }
+    }
+
+    /// World mode: the space size last asked for (0 = the preset's) and
+    /// the preset's emitter radius (meters).
+    pub fn space(&self) -> Option<(f32, f32)> {
+        self.world.as_ref().map(|w| (w.space_half, w.preset_radius))
     }
 
     /// World mode: the emission rate [`Self::new_world`] set (particles

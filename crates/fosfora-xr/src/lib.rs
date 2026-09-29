@@ -48,6 +48,7 @@ pub mod ripple;
 mod room;
 #[cfg(target_os = "android")]
 mod scene;
+pub mod space;
 pub mod surfaces;
 #[cfg(target_os = "android")]
 mod xr;
