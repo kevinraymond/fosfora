@@ -19,7 +19,6 @@ impl NdiSink {
 impl FrameSink for NdiSink {
     fn write_frame(&mut self, frame: &OutputFrame) -> Result<(), String> {
         self.sender
-            .send_video(&frame.data, frame.width, frame.height, frame.layout);
-        Ok(())
+            .send_video(&frame.data, frame.width, frame.height, frame.layout)
     }
 }

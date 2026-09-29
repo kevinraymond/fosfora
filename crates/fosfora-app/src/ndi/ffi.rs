@@ -165,12 +165,21 @@ impl NdiSender {
     }
 
     /// Send a 32-bit video frame; `layout` selects the FourCC tag.
-    pub fn send_video(&self, data: &[u8], width: u32, height: u32, layout: FrameLayout) {
+    ///
+    /// The SDK reads `height` rows of `width * 4` bytes from `data`, so a frame
+    /// whose buffer is shorter than that is refused rather than read past.
+    pub fn send_video(
+        &self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        layout: FrameLayout,
+    ) -> Result<(), String> {
+        let stride = checked_stride(data.len(), width, height)?;
         let four_cc = match layout {
             FrameLayout::Bgra8 => FOURCC_BGRA,
             FrameLayout::Rgba8 => FOURCC_RGBA,
         };
-        let stride = (width * 4) as c_int;
         let frame = NdiVideoFrame {
             xres: width as c_int,
             yres: height as c_int,
@@ -187,9 +196,30 @@ impl NdiSender {
         };
         // SAFETY: instance is a valid NDI sender (checked non-null at creation).
         // frame is a repr(C) struct with valid data pointer and correct dimensions.
-        // data.as_ptr() is valid for width * height * 4 bytes (BGRA).
+        // checked_stride verified data holds at least width * height * 4 bytes and
+        // that width, height and the stride fit in c_int.
         unsafe { (self.lib.fn_send_video)(self.instance, &frame) };
+        Ok(())
     }
+}
+
+/// Row stride for a `width` x `height` 32-bit frame, if `data_len` bytes cover it
+/// and every dimension fits the SDK's `c_int` fields.
+fn checked_stride(data_len: usize, width: u32, height: u32) -> Result<c_int, String> {
+    let stride = width
+        .checked_mul(4)
+        .and_then(|s| c_int::try_from(s).ok())
+        .filter(|_| c_int::try_from(height).is_ok())
+        .ok_or_else(|| format!("NDI frame {width}x{height} is too large"))?;
+    let needed = (stride as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| format!("NDI frame {width}x{height} is too large"))?;
+    if data_len < needed {
+        return Err(format!(
+            "NDI frame buffer is {data_len} bytes for {width}x{height} (needs {needed})"
+        ));
+    }
+    Ok(stride)
 }
 
 impl Drop for NdiSender {
@@ -378,5 +408,20 @@ fn platform_lib_names() -> &'static [&'static str] {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         &[]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_stride;
+
+    #[test]
+    fn short_or_oversized_frames_are_refused() {
+        assert_eq!(checked_stride(16 * 9 * 4, 16, 9), Ok(64));
+        assert_eq!(checked_stride(16 * 9 * 4 + 8, 16, 9), Ok(64));
+        assert!(checked_stride(16 * 9 * 4 - 1, 16, 9).is_err());
+        assert!(checked_stride(0, 1920, 1080).is_err());
+        assert!(checked_stride(usize::MAX, u32::MAX, 1).is_err());
+        assert!(checked_stride(usize::MAX, 16, u32::MAX).is_err());
     }
 }
