@@ -49,6 +49,17 @@ impl Passthrough {
     }
 }
 
+/// What `debug.fosfora.rescan` asks for once the room is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rescan {
+    #[default]
+    Off,
+    /// Space Setup, then the query (the hand menu's action).
+    Capture,
+    /// The query alone.
+    Query,
+}
+
 /// Half thickness given to a 2D scene plane so fast particles cannot tunnel
 /// through it in one step (meters).
 const PLANE_HALF_THICKNESS_M: f32 = 0.02;
@@ -104,6 +115,10 @@ pub struct Room {
     retry_at: Option<Instant>,
     /// Launch Space Setup when the query returns no anchors.
     allow_capture: bool,
+    /// `debug.fosfora.rescan`: once the first query has returned anchors,
+    /// run [`Self::rescan`] (`1`) or only [`Self::requery`] (`query`), so
+    /// the replace path can be exercised over adb.
+    rescan_at_start: Rescan,
     started: bool,
     anchors: Vec<Anchor>,
     last_locate: Option<Instant>,
@@ -121,10 +136,13 @@ impl Room {
     /// `com.oculus.permission.USE_SCENE` runtime permission granted. With
     /// `allow_capture`, an empty result launches Space Setup
     /// (`XR_FB_scene_capture`) and the query reruns when it completes.
+    /// With `rescan_at_start`, the first query that returns anchors is
+    /// followed by a [`Self::rescan`] or a [`Self::requery`].
     pub fn new(
         session: &xr::Session<xr::Vulkan>,
         base: &xr::Space,
         allow_capture: bool,
+        rescan_at_start: Rescan,
     ) -> Result<Self> {
         let instance = session.instance().clone();
         let exts = instance.exts();
@@ -150,6 +168,7 @@ impl Room {
             empty_results: 0,
             retry_at: None,
             allow_capture,
+            rescan_at_start,
             started: false,
             anchors: Vec::new(),
             last_locate: None,
@@ -269,6 +288,7 @@ impl Room {
             } else {
                 self.empty_results = 0;
             }
+            let rescan_now = (self.returned > 0).then_some(self.rescan_at_start);
             info!(
                 "scene: query complete ({result:?}), {} anchors ({} planes, {} volumes)",
                 self.anchors.len(),
@@ -282,7 +302,50 @@ impl Room {
                     .count()
             );
             self.request = None;
+            match rescan_now {
+                Some(Rescan::Capture) => {
+                    self.rescan_at_start = Rescan::Off;
+                    info!("scene: debug.fosfora.rescan: rescanning the room now");
+                    self.rescan();
+                }
+                Some(Rescan::Query) => {
+                    self.rescan_at_start = Rescan::Off;
+                    info!("scene: debug.fosfora.rescan query: querying the room again");
+                    self.requery();
+                }
+                Some(Rescan::Off) | None => {}
+            }
         }
+    }
+
+    /// Query the anchors again without Space Setup (the anchors returned
+    /// replace the current ones). Ignored while a query is in flight.
+    pub fn requery(&mut self) {
+        if self.request.is_some() {
+            info!("scene: requery: a query is in flight, try again");
+            return;
+        }
+        self.retry_at = None;
+        self.query_any();
+    }
+
+    /// Relaunch Space Setup and requery the anchors (the hand menu's
+    /// "Rescan the room"), so a changed room takes without a reinstall.
+    /// The anchors the new query returns replace the old ones
+    /// ([`Self::retrieve`]); an empty result keeps them. Ignored while
+    /// Space Setup or a query is already in flight.
+    pub fn rescan(&mut self) {
+        if self.capture.is_some() {
+            info!("scene: rescan: Space Setup is already running");
+            return;
+        }
+        if self.request.is_some() {
+            info!("scene: rescan: a query is in flight, try again");
+            return;
+        }
+        self.retry_at = None;
+        self.capture_used = true;
+        self.request_capture();
     }
 
     /// `XR_TYPE_EVENT_DATA_SPACE_SET_STATUS_COMPLETE_FB` arrived for one
@@ -332,7 +395,7 @@ impl Room {
         match check(res) {
             Ok(()) => {
                 info!(
-                    "scene: no anchors, Space Setup requested (request {})",
+                    "scene: Space Setup requested (request {})",
                     request.into_raw()
                 );
                 self.capture = Some(request);
@@ -391,6 +454,40 @@ impl Room {
         buffer.truncate(results.result_count_output as usize);
         info!("scene: {} anchors returned", buffer.len());
         self.returned = buffer.len();
+        // A new room replaces the old one; an empty answer (the runtime
+        // not yet relocalized) keeps it and the retry below runs. The
+        // runtime hands back the same XrSpace for an anchor it returned
+        // before (a requery on v207, Sep 29), so the old anchors are
+        // reconciled by handle: one the new results still carry is rebuilt
+        // from them with its pose kept, one they no longer carry is
+        // destroyed. Destroying them all first made the new results'
+        // handles invalid and emptied the room.
+        let old = if buffer.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.anchors)
+        };
+        if !old.is_empty() {
+            let kept = old
+                .iter()
+                .filter(|a| buffer.iter().any(|r| r.space == a.space))
+                .count();
+            info!(
+                "scene: replacing {} anchors with {} results ({kept} kept, {} dropped)",
+                old.len(),
+                buffer.len(),
+                old.len() - kept
+            );
+            self.boxes.clear();
+            self.mesh_triangles = None;
+        }
+        let dropped: Vec<sys::Space> = old
+            .iter()
+            .filter(|a| !buffer.iter().any(|r| r.space == a.space))
+            .map(|a| a.space)
+            .collect();
+        let old_pose =
+            |space: sys::Space| old.iter().find(|a| a.space == space).and_then(|a| a.pose);
 
         for r in buffer {
             let space = r.space;
@@ -509,9 +606,12 @@ impl Room {
                 space,
                 label,
                 shape,
-                pose: None,
+                pose: old_pose(space),
                 locatable,
             });
+        }
+        for space in dropped {
+            destroy_space(&self.instance, space);
         }
         // Locate right away so the first frame after the query has boxes.
         self.last_locate = None;
@@ -591,9 +691,14 @@ impl Room {
 
 impl Drop for Room {
     fn drop(&mut self) {
-        for anchor in self.anchors.drain(..) {
-            destroy_space(&self.instance, anchor.space);
-        }
+        destroy_anchors(&self.instance, &mut self.anchors);
+    }
+}
+
+/// Drop every anchor, its space destroyed.
+fn destroy_anchors(instance: &xr::Instance, anchors: &mut Vec<Anchor>) {
+    for anchor in anchors.drain(..) {
+        destroy_space(instance, anchor.space);
     }
 }
 
