@@ -230,6 +230,28 @@ fn band_contrast(band: &[f32], scratch: &mut Vec<f32>) -> f32 {
     ((peak_db - valley_db) / 60.0).clamp(0.0, 1.0)
 }
 
+/// A4 (#1455): spectral flatness as **Wiener entropy over the 26 mel bands** — the
+/// ratio of their geometric to arithmetic mean, already in 0..1 (FixedRange). Computing
+/// it over mel bands (every band counted, with a tiny floor) removes the tiny-bin
+/// skipping bias and the raw-FFT HF dominance of the old version, so it cleanly
+/// separates tonal pads (low) from noise sweeps (high).
+fn spectral_flatness(mel: &[f32; N_MELS]) -> f32 {
+    let mut log_sum = 0.0f64;
+    let mut linear_sum = 0.0f64;
+    for &e in mel {
+        let e = e as f64 + 1e-12;
+        log_sum += e.ln();
+        linear_sum += e;
+    }
+    let n = N_MELS as f64;
+    let arithmetic_mean = linear_sum / n;
+    if arithmetic_mean < 1e-12 {
+        return 0.0;
+    }
+    let geometric_mean = (log_sum / n).exp();
+    (geometric_mean / arithmetic_mean).clamp(0.0, 1.0) as f32
+}
+
 /// Multi-resolution FFT analyzer with 7 frequency bands and spectral features.
 pub struct FftAnalyzer {
     large: FftResolution,  // 4096-pt for bass
@@ -261,6 +283,12 @@ pub struct FftAnalyzer {
     key_chroma: [f32; N_CHROMA],
     // #2079: this hop's accepted bass root observation, for the key sidecar.
     key_bass: Option<super::chroma::BassObs>,
+
+    // log2 of each large-spectrum bin's frequency, for the log centroid (DC holds 0 and
+    // is never read). Precomputed so a hop doesn't take ~2k logs (#76).
+    log2_bin_hz: Vec<f32>,
+    // Reused sort scratch for `spectral_contrast` (#75).
+    contrast_scratch: Vec<f32>,
 }
 
 impl FftAnalyzer {
@@ -311,6 +339,16 @@ impl FftAnalyzer {
         // A11 (#1462): CQT-lite constant-Q chroma over the large (4096-pt) spectrum.
         let cqt = CqtChroma::new(large.num_bins, large.bin_hz);
 
+        let log2_bin_hz = (0..large.num_bins)
+            .map(|i| {
+                if i == 0 {
+                    0.0
+                } else {
+                    (i as f32 * large.bin_hz).log2()
+                }
+            })
+            .collect();
+
         Self {
             large,
             medium,
@@ -326,6 +364,8 @@ impl FftAnalyzer {
             cqt,
             key_chroma: [0.0; N_CHROMA],
             key_bass: None,
+            log2_bin_hz,
+            contrast_scratch: Vec::new(),
         }
     }
 
@@ -602,6 +642,9 @@ impl FftAnalyzer {
             brilliance,
         ] = self.bands();
 
+        // Shared by flatness and the MFCCs (#76).
+        let mel = self.mel_energies();
+
         let mut out = AudioFeatures {
             // 7-band energy extraction (A1 #1452: scaling per `band_scale`).
             sub_bass,
@@ -615,7 +658,7 @@ impl FftAnalyzer {
             kick: 0.0, // A3 (#1454): filled by `kick_envelope` after the silence gate
             centroid: self.spectral_centroid_01(),
             flux: self.spectral_flux(),
-            flatness: self.spectral_flatness(),
+            flatness: spectral_flatness(&mel),
             rolloff: self.spectral_rolloff() / (self.sample_rate * 0.5),
             bandwidth: (self.spectral_bandwidth(centroid_hz) / (self.sample_rate * 0.5)).min(1.0),
             zcr: self.zero_crossing_rate(),
@@ -623,7 +666,7 @@ impl FftAnalyzer {
         };
 
         // MFCC extraction (from large FFT magnitude)
-        self.compute_mfccs(&mut out);
+        self.compute_mfccs(&mel, &mut out);
 
         // A11 (#1462): CQT-lite constant-Q chroma (also advances tuning estimation).
         // The visual form fills the feature frame; the pure-fold energy form is held
@@ -649,7 +692,8 @@ impl FftAnalyzer {
     }
 
     /// The 26 mel-band **power** energies from the large magnitude spectrum. Shared by the
-    /// MFCC path and A4's mel-band flatness (#1455), so both see the same filterbank.
+    /// MFCC path and A4's mel-band flatness (#1455), so both see the same filterbank;
+    /// `extract_features` computes it once per hop and hands it to both (#76).
     fn mel_energies(&self) -> [f32; N_MELS] {
         let mag = &self.large.magnitude;
         let mut mel = [0.0f32; N_MELS];
@@ -663,14 +707,10 @@ impl FftAnalyzer {
         mel
     }
 
-    /// Compute 13 MFCCs from the large FFT magnitude spectrum.
-    fn compute_mfccs(&self, out: &mut AudioFeatures) {
-        let mut mel_energies = self.mel_energies();
-
+    /// Compute 13 MFCCs from this hop's mel-band power energies.
+    fn compute_mfccs(&self, mel: &[f32; N_MELS], out: &mut AudioFeatures) {
         // Log compression
-        for e in &mut mel_energies {
-            *e = (*e + 1e-10).ln();
-        }
+        let mel_energies = mel.map(|e| (e + 1e-10).ln());
 
         // DCT-II → 13 MFCCs
         for i in 0..N_MFCC {
@@ -708,12 +748,11 @@ impl FftAnalyzer {
     /// fader; the FixedRange policy (A2) holds it steady below the silence gate.
     fn spectral_centroid_01(&self) -> f32 {
         let mag = &self.large.magnitude;
-        let bin_hz = self.large.bin_hz;
         let mut weighted_log2 = 0.0f32;
         let mut power_sum = 0.0f32;
-        for (i, &m) in mag.iter().enumerate().skip(1) {
+        for (&m, &log2_hz) in mag.iter().zip(&self.log2_bin_hz).skip(1) {
             let p = m * m;
-            weighted_log2 += (i as f32 * bin_hz).log2() * p;
+            weighted_log2 += log2_hz * p;
             power_sum += p;
         }
         if power_sum <= 1e-12 {
@@ -746,29 +785,6 @@ impl FftAnalyzer {
         flux / (n - 1) as f32
     }
 
-    /// A4 (#1455): spectral flatness as **Wiener entropy over the 26 mel bands** — the
-    /// ratio of their geometric to arithmetic mean, already in 0..1 (FixedRange). Computing
-    /// it over mel bands (every band counted, with a tiny floor) removes the tiny-bin
-    /// skipping bias and the raw-FFT HF dominance of the old version, so it cleanly
-    /// separates tonal pads (low) from noise sweeps (high).
-    fn spectral_flatness(&self) -> f32 {
-        let mel = self.mel_energies();
-        let mut log_sum = 0.0f64;
-        let mut linear_sum = 0.0f64;
-        for &e in &mel {
-            let e = e as f64 + 1e-12;
-            log_sum += e.ln();
-            linear_sum += e;
-        }
-        let n = N_MELS as f64;
-        let arithmetic_mean = linear_sum / n;
-        if arithmetic_mean < 1e-12 {
-            return 0.0;
-        }
-        let geometric_mean = (log_sum / n).exp();
-        (geometric_mean / arithmetic_mean).clamp(0.0, 1.0) as f32
-    }
-
     /// A16 (#1467): spectral contrast — per-octave peak-vs-valley tonality (Jiang 2002 /
     /// librosa). For each of six octave bands (200-400, 400-800, … 6400-Nyquist Hz) on the large
     /// (4096-pt) magnitude, `contrast = dB(mean top 2%) − dB(mean bottom 2%)`, mapped 0-60 dB →
@@ -782,19 +798,18 @@ impl FftAnalyzer {
     /// `loud_silent` (A10) returns all-zero: the fields are Passthrough — the normalizer won't gate
     /// them, so the producer must, since the noise floor has its own spurious peak/valley structure
     /// (mirrors A13/A14 self-gating).
-    pub fn spectral_contrast(&self, loud_silent: bool) -> [f32; 7] {
+    pub fn spectral_contrast(&mut self, loud_silent: bool) -> [f32; 7] {
         if loud_silent {
             return [0.0; 7];
         }
         const LO_HZ: [f32; 6] = [200.0, 400.0, 800.0, 1600.0, 3200.0, 6400.0];
         let nyquist = self.sample_rate * 0.5;
         let mut out = [0.0f32; 7];
-        let mut scratch: Vec<f32> = Vec::new(); // sorted per band; reused across the six bands
         let mut sum = 0.0f32;
         for b in 0..6 {
             let hi_hz = if b < 5 { LO_HZ[b + 1] } else { nyquist };
             let (lo, hi) = self.large.bin_range(LO_HZ[b], hi_hz);
-            let c = band_contrast(&self.large.magnitude[lo..hi], &mut scratch);
+            let c = band_contrast(&self.large.magnitude[lo..hi], &mut self.contrast_scratch);
             out[b] = c;
             sum += c;
         }

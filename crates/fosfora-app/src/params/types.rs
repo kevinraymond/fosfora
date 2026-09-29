@@ -65,6 +65,16 @@ pub enum ParamValue {
 }
 
 impl ParamValue {
+    /// Whether every float component is finite.
+    pub fn is_finite(&self) -> bool {
+        match self {
+            ParamValue::Float(v) => v.is_finite(),
+            ParamValue::Color(c) => c.iter().all(|v| v.is_finite()),
+            ParamValue::Bool(_) => true,
+            ParamValue::Point2D(p) => p.iter().all(|v| v.is_finite()),
+        }
+    }
+
     /// Number of f32 slots this value occupies in the uniform buffer.
     pub fn float_count(&self) -> usize {
         match self {

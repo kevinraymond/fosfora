@@ -374,6 +374,7 @@ fn rank_by_energy(sections: &mut [Section]) {
         // Ties share a rank (mid-rank), so two equally loud sections cannot be ordered by
         // float noise.
         let below = energies.iter().filter(|&&e| e < s.energy).count() as f32;
+        #[expect(clippy::float_cmp, reason = "ties are exact duplicates, see above")]
         let equal = energies.iter().filter(|&&e| e == s.energy).count() as f32;
         s.energy_rank = (below + (equal - 1.0) * 0.5) / (n - 1) as f32;
     }

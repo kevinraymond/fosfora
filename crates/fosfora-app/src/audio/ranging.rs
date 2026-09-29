@@ -14,7 +14,7 @@ pub struct PercentileWindow {
     cap: usize,
     head: usize,
     len: usize,
-    /// Reused sort scratch so a query allocates nothing.
+    /// Reused selection scratch so a query allocates nothing.
     scratch: Vec<f32>,
 }
 
@@ -46,38 +46,65 @@ impl PercentileWindow {
         self.range(q, q).0
     }
 
-    /// Both the `p_lo` and `p_hi` quantiles from a single sort — the hot path for
-    /// adaptive ranging, which needs P5 and P95 together. Returns `(0.0, 0.0)` if empty.
+    /// Both the `p_lo` and `p_hi` quantiles — the hot path for adaptive ranging, which
+    /// needs P5 and P95 together every hop. Returns `(0.0, 0.0)` if empty.
+    ///
+    /// Selection rather than a sort (#74): the higher quantile is found with one O(n)
+    /// partition, which leaves every smaller value in the prefix, so the lower one only
+    /// partitions that prefix. Results match a full sort exactly.
     pub fn range(&mut self, p_lo: f32, p_hi: f32) -> (f32, f32) {
-        if self.len == 0 {
-            return (0.0, 0.0);
+        let n = self.len;
+        match n {
+            0 => return (0.0, 0.0),
+            1 => return (self.buf[0], self.buf[0]),
+            _ => {}
         }
         self.scratch.clear();
-        self.scratch.extend_from_slice(&self.buf[..self.len]);
-        self.scratch
-            .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        (
-            quantile_of_sorted(&self.scratch, p_lo),
-            quantile_of_sorted(&self.scratch, p_hi),
-        )
+        self.scratch.extend_from_slice(&self.buf[..n]);
+
+        let (q_small, q_big) = if p_lo <= p_hi {
+            (p_lo, p_hi)
+        } else {
+            (p_hi, p_lo)
+        };
+        let (big_i, big_frac) = quantile_index(n, q_big);
+        let (a, b) = select_pair(&mut self.scratch, big_i);
+        let big = lerp(a, b, big_frac);
+        let (small_i, small_frac) = quantile_index(n, q_small);
+        let small = if small_i == big_i {
+            lerp(a, b, small_frac)
+        } else {
+            let (c, d) = select_pair(&mut self.scratch[..=big_i], small_i);
+            lerp(c, d, small_frac)
+        };
+
+        if p_lo <= p_hi {
+            (small, big)
+        } else {
+            (big, small)
+        }
     }
 }
 
-/// Linear-interpolated quantile of an already-sorted slice.
-fn quantile_of_sorted(sorted: &[f32], q: f32) -> f32 {
-    let n = sorted.len();
-    if n == 0 {
-        return 0.0;
-    }
-    if n == 1 {
-        return sorted[0];
-    }
-    let q = q.clamp(0.0, 1.0);
-    let idx = q * (n - 1) as f32;
-    let lo = idx.floor() as usize;
-    let hi = (lo + 1).min(n - 1);
-    let frac = idx - lo as f32;
-    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
+/// Where the linear-interpolated `q`-quantile of `n` sorted values falls: the lower
+/// index and the fraction of the way to the next one.
+fn quantile_index(n: usize, q: f32) -> (usize, f32) {
+    let idx = q.clamp(0.0, 1.0) * (n - 1) as f32;
+    let lo = (idx.floor() as usize).min(n - 1);
+    (lo, idx - lo as f32)
+}
+
+/// The values that would sit at sorted positions `i` and `i + 1` (or `i` twice at the
+/// end). Partitions `v` so everything before `i` is no larger than `v[i]`.
+fn select_pair(v: &mut [f32], i: usize) -> (f32, f32) {
+    let (_, at, above) = v.select_nth_unstable_by(i, f32::total_cmp);
+    let at = *at;
+    let next = above.iter().copied().min_by(f32::total_cmp).unwrap_or(at);
+    (at, next)
+}
+
+fn lerp(a: f32, b: f32, frac: f32) -> f32 {
+    a * (1.0 - frac) + b * frac
 }
 
 #[cfg(test)]
@@ -113,6 +140,51 @@ mod tests {
         let (lo, hi) = w.range(0.0, 1.0);
         assert_eq!(lo, 10.0);
         assert_eq!(hi, 13.0);
+    }
+
+    /// Selection must give exactly what the old full sort gave, for any window contents
+    /// and quantile pair — including duplicates, a partly filled window and q outside 0..1.
+    #[test]
+    fn selection_matches_a_full_sort() {
+        fn sorted_quantile(sorted: &[f32], q: f32) -> f32 {
+            let (lo, frac) = quantile_index(sorted.len(), q);
+            let hi = (lo + 1).min(sorted.len() - 1);
+            lerp(sorted[lo], sorted[hi], frac)
+        }
+
+        let mut seed = 0x2545_f491_u32;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let pairs = [
+            (0.05, 0.95),
+            (0.95, 0.05),
+            (0.5, 0.5),
+            (0.0, 1.0),
+            (-0.2, 1.3),
+            (0.33, 0.34),
+            (0.95, 0.95),
+        ];
+        for cap in [1usize, 2, 3, 7, 64, 344] {
+            let mut w = PercentileWindow::new(cap);
+            for step in 0..(cap * 3) {
+                // Coarse values so duplicates are common.
+                w.push((rand() % 23) as f32 * 0.5 - 3.0);
+                let mut sorted = w.buf[..w.len].to_vec();
+                sorted.sort_by(f32::total_cmp);
+                for &(lo, hi) in &pairs {
+                    let want = (sorted_quantile(&sorted, lo), sorted_quantile(&sorted, hi));
+                    assert_eq!(
+                        w.range(lo, hi),
+                        want,
+                        "cap {cap} step {step} q ({lo}, {hi})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

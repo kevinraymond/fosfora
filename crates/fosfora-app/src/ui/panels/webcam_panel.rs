@@ -103,9 +103,18 @@ pub fn draw_webcam_panel(ui: &mut Ui, info: &WebcamInfo) {
 }
 
 fn truncate_name(name: &str, max: usize) -> String {
-    if name.len() <= max {
-        name.to_string()
-    } else {
-        format!("{}…", &name[..max - 1])
+    crate::ui::widgets::truncate_chars(name, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_name;
+
+    /// OS device names are often multibyte ("Caméra FaceTime HD"); byte slicing panicked (#104).
+    #[test]
+    fn truncate_name_is_char_safe() {
+        assert_eq!(truncate_name("Caméra FaceTime HD", 4), "Cam…");
+        assert_eq!(truncate_name("Caméra FaceTime HD", 5), "Camé…");
+        assert_eq!(truncate_name("Cam", 5), "Cam");
     }
 }

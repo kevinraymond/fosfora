@@ -252,6 +252,10 @@ pub fn draw_param_panel(
                     }
                 });
 
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "change detection: any edit, however small, is stored"
+                )]
                 if val != current {
                     store.set(name, ParamValue::Float(val));
                 }
@@ -271,6 +275,10 @@ pub fn draw_param_panel(
                     }
                 });
 
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "change detection: any edit, however small, is stored"
+                )]
                 if color != current {
                     store.set(name, ParamValue::Color(color));
                 }
@@ -325,6 +333,10 @@ pub fn draw_param_panel(
                     ui.add(egui::Slider::new(&mut val[1], min[1]..=max[1]).show_value(false));
                 });
 
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "change detection: any edit, however small, is stored"
+                )]
                 if val != current {
                     store.set(name, ParamValue::Point2D(val));
                 }

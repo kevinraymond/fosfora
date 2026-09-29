@@ -3,7 +3,7 @@
 use egui::{Context, RichText, Ui};
 
 use super::kit::{self, Status};
-use crate::settings::ParticleQuality;
+use crate::settings::{FlashLimit, ParticleQuality};
 use crate::ui::shell::ShellState;
 use crate::ui::widgets::Mark;
 
@@ -109,6 +109,7 @@ fn link_block(ui: &mut Ui, i: &crate::ui::panels::link_panel::LinkInfo) {
             );
             kit::row(ui, "Bar length", |ui| {
                 const Q: [f64; 7] = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0];
+                #[expect(clippy::float_cmp, reason = "q is one of Q, all whole numbers")]
                 let beats = |q: f64| {
                     if q == 1.0 {
                         "1 beat".to_string()
@@ -117,6 +118,7 @@ fn link_block(ui: &mut Ui, i: &crate::ui::panels::link_panel::LinkInfo) {
                     }
                 };
                 let names: Vec<String> = Q.iter().map(|q| beats(*q)).collect();
+                #[expect(clippy::float_cmp, reason = "only an exact match selects a menu entry")]
                 let at = Q.iter().position(|q| *q == i.quantum);
                 if let Some(k) = kit::pick(ui, "v2_link_q", 140.0, &beats(i.quantum), &names, at) {
                     kit::send(ui, "link_set_quantum", Q[k]);
@@ -227,6 +229,34 @@ pub fn general_page(ui: &mut Ui, s: &mut ShellState<'_>) {
                 ui,
                 "How many particles the particle effects run, against each effect's own \
                  count. Lower it if the frame rate drops.",
+            );
+        },
+    );
+    kit::block(
+        ui,
+        "Safety",
+        None,
+        |_| {},
+        |ui| {
+            kit::row(ui, "Flash limiter", |ui| {
+                let cur = s.settings.flash_limit;
+                let names: Vec<String> = FlashLimit::ALL
+                    .iter()
+                    .map(|l| l.display_name().to_string())
+                    .collect();
+                let at = FlashLimit::ALL.iter().position(|l| *l == cur);
+                if let Some(i) =
+                    kit::pick(ui, "v2_flash_limit", 200.0, cur.display_name(), &names, at)
+                {
+                    kit::send(ui, "set_flash_limit", FlashLimit::ALL[i]);
+                }
+            });
+            kit::row_help(
+                ui,
+                "Holds flashing to a rate that is safer for people with photosensitive \
+                 epilepsy, on screen and in every output and recording: bright hits \
+                 beyond it are dimmed. Auto is Standard, or Strict when the system asks \
+                 for reduced motion. Switch it off only if your venue has decided to.",
             );
         },
     );

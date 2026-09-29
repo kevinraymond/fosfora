@@ -101,10 +101,8 @@ pub struct StereoAnalyzer {
 }
 
 impl StereoAnalyzer {
-    pub fn new() -> Self {
-        Self::with_sample_rate(44_100.0)
-    }
-
+    /// `sample_rate` must be the capture device's: the per-band split turns [`BAND_EDGES`] into
+    /// FFT bins with it, so a wrong rate shifts every `band_pan` edge (8.8 % at 48 kHz vs 44.1).
     pub fn with_sample_rate(sample_rate: f32) -> Self {
         let fft = FftPlanner::new().plan_fft_forward(FFT_SIZE);
         let bin_hz = sample_rate / FFT_SIZE as f32;
@@ -261,12 +259,6 @@ impl StereoAnalyzer {
     }
 }
 
-impl Default for StereoAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,7 +276,7 @@ mod tests {
 
     /// Feed exactly one full window in a single hop.
     fn run(l: &[f32], r: &[f32]) -> StereoFeatures {
-        StereoAnalyzer::new().process(&interleave(l, r))
+        StereoAnalyzer::with_sample_rate(44_100.0).process(&interleave(l, r))
     }
 
     #[test]
@@ -344,7 +336,7 @@ mod tests {
 
     #[test]
     fn empty_input_is_neutral() {
-        let f = StereoAnalyzer::new().process(&[]);
+        let f = StereoAnalyzer::with_sample_rate(44_100.0).process(&[]);
         assert_eq!(f.pan, 0.5);
         assert_eq!(f.stereo_width, 0.0);
         assert_eq!(f.stereo_corr, 0.5);
@@ -353,7 +345,7 @@ mod tests {
     #[test]
     fn odd_trailing_sample_ignored() {
         // 3 floats = 1 full L/R frame + 1 dangling; must not panic.
-        let f = StereoAnalyzer::new().process(&[0.5, 0.5, 0.9]);
+        let f = StereoAnalyzer::with_sample_rate(44_100.0).process(&[0.5, 0.5, 0.9]);
         assert!((f.pan - 0.5).abs() < 1e-6);
     }
 
@@ -361,7 +353,7 @@ mod tests {
 
     /// Feed one full FFT window so the per-band path is live.
     fn run_bands(l: &[f32], r: &[f32]) -> StereoFeatures {
-        StereoAnalyzer::new().process(&interleave(l, r))
+        StereoAnalyzer::with_sample_rate(44_100.0).process(&interleave(l, r))
     }
 
     fn mix(a: &[f32], b: &[f32]) -> Vec<f32> {
@@ -434,10 +426,35 @@ mod tests {
         assert!(f.band_pan[6] < 0.05, "brilliance {}", f.band_pan[6]);
     }
 
+    /// Band edges follow the device rate (#52). At 48 kHz a 6.2 kHz tone is brilliance; an
+    /// analyzer assuming 44.1 kHz puts the 6 kHz edge at ~6.5 kHz and files it under presence.
+    #[test]
+    fn band_edges_follow_the_sample_rate() {
+        let sr = 48_000.0;
+        let tone: Vec<f32> = (0..FFT_SIZE)
+            .map(|i| (TAU * 6200.0 * i as f32 / sr).sin())
+            .collect();
+        let silent = vec![0.0; FFT_SIZE];
+        let f = StereoAnalyzer::with_sample_rate(sr).process(&interleave(&tone, &silent));
+        assert!(f.band_pan[6] < 0.05, "brilliance {}", f.band_pan[6]);
+        assert!(
+            f.band_pan[5] == 0.5 || f.band_pan[5] < 0.05,
+            "presence {}",
+            f.band_pan[5]
+        );
+
+        let wrong = StereoAnalyzer::with_sample_rate(44_100.0).process(&interleave(&tone, &silent));
+        assert_eq!(
+            wrong.band_pan[6], 0.5,
+            "a 44.1 kHz analyzer misfiles the tone"
+        );
+    }
+
     #[test]
     fn per_band_pan_is_neutral_before_the_window_fills() {
         // One short hop: not enough for a transform, so it must admit that rather than guess.
-        let f = StereoAnalyzer::new().process(&interleave(&sine(8000.0, 512), &vec![0.0; 512]));
+        let f = StereoAnalyzer::with_sample_rate(44_100.0)
+            .process(&interleave(&sine(8000.0, 512), &vec![0.0; 512]));
         assert_eq!(f.band_pan, [0.5; NUM_BANDS]);
     }
 

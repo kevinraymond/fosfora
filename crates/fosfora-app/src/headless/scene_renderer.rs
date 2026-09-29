@@ -103,8 +103,13 @@ impl SceneRenderer {
         let placeholder = PlaceholderTexture::new(&device, &queue, hdr_format);
         let audio_textures = AudioTextures::new(&device, &queue);
         let compositor = Compositor::new(&device, hdr_format, width, height);
-        let post_process =
+        let mut post_process =
             PostProcessChain::new(&device, CAPTURE_FORMAT, hdr_format, width, height);
+        // No flash limiter offline (#108). It is stateful, and a headless render
+        // must be a pure function of its frame: loops are rendered out of order
+        // and must close bit-identically (loop_driver's golden gate). A render
+        // shown live through Fosfora is limited on the way out like any frame.
+        post_process.flash_budget = 0.0;
         let capture = FrameCapture::new(&device, width, height, CAPTURE_FORMAT, "headless-capture");
 
         Ok(Self {
@@ -679,7 +684,7 @@ impl SceneRenderer {
         let features = out.frame.features;
 
         // Clock + globals, from the sample clock — no Instant anywhere.
-        self.uniforms.time = ts as f32;
+        self.uniforms.time = crate::gpu::uniforms::shader_time(ts);
         self.uniforms.delta_time = dt;
         self.uniforms.resolution = [self.width as f32, self.height as f32];
         self.uniforms.feedback_decay = 0.88;

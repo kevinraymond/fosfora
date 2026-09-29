@@ -160,6 +160,16 @@ fn osc_block(ui: &mut Ui, osc: &mut OscSystem) {
                 }
                 kit::help(ui, "UDP. Changing it restarts the listener.");
             });
+            let lan = osc.config.rx_lan;
+            kit::row(ui, "Other devices", |ui| {
+                if kit::switch(ui, lan, "Receive OSC from other devices").clicked() {
+                    osc.set_rx_lan(!lan);
+                }
+            });
+            kit::row_help(
+                ui,
+                &network_help(lan, "a controller on a phone or another computer"),
+            );
             if let Some(t) = &osc.learn_target {
                 let what = match t {
                     OscLearnTarget::Param(name) => format!("Send an OSC message for {name}"),
@@ -274,18 +284,70 @@ fn web_block(ui: &mut Ui, web: &mut WebSystem) {
                 }
                 kit::help(ui, "Changing it restarts the server.");
             });
+            let lan = web.config.lan;
+            kit::row(ui, "Other devices", |ui| {
+                if kit::switch(ui, lan, "Web remote from other devices").clicked() {
+                    web.set_lan(!lan);
+                }
+            });
+            if lan {
+                kit::row_help(
+                    ui,
+                    "Other devices on the same network can connect with the access key, which the \
+                     network link below includes. Use it on a network you trust.",
+                );
+            } else {
+                kit::row_help(
+                    ui,
+                    &network_help(lan, "a phone, a tablet or a bridge in Docker"),
+                );
+            }
             if web.is_running() {
                 let port = web.config.port;
                 address_row(ui, "On this computer", &format!("http://localhost:{port}"));
-                if let Some(ip) = lan_ip(ui.ctx()) {
-                    address_row(ui, "On your network", &format!("http://{ip}:{port}"));
-                    kit::row_help(ui, "For a phone or tablet on the same network.");
+                if lan {
+                    let key = web.config.access_key.clone();
+                    if let Some(ip) = lan_ip(ui.ctx()) {
+                        let link = format!("http://{ip}:{port}/?key={key}");
+                        address_row(ui, "On your network", &link);
+                        kit::tall_row(ui, "", |ui| {
+                            if let Some(qr) = crate::ui::widgets::qr::qr_code(ui, &link, 160.0) {
+                                qr.on_hover_text(SCAN_HINT);
+                            }
+                        });
+                    }
+                    kit::row(ui, "Access key", |ui| {
+                        ui.label(RichText::new(&key).monospace().size(kit::LABEL_SIZE));
+                        if ui.button("Copy").clicked() {
+                            ui.ctx().copy_text(key.clone());
+                        }
+                        if ui
+                            .button("New key")
+                            .on_hover_text("Disconnects every device using the current key")
+                            .clicked()
+                        {
+                            web.replace_access_key();
+                        }
+                    });
+                    kit::row_help(ui, "Bridges take it as --key or FOSFORA_KEY.");
                 }
             }
         },
     );
     if flip {
         web.set_enabled(!on);
+    }
+}
+
+const SCAN_HINT: &str = "Scan with a phone's camera to open the remote, key included";
+
+/// What the Other devices switch means, in its current position.
+fn network_help(lan: bool, for_what: &str) -> String {
+    if lan {
+        "Anything on the same network can control Fosfora. Use it on a network you trust."
+            .to_string()
+    } else {
+        format!("Only this computer can connect. Switch on for {for_what}.")
     }
 }
 

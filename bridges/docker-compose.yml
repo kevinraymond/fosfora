@@ -5,6 +5,11 @@
 #   docker compose up hands lfo          # start specific bridges
 #   docker compose --profile depth up    # include depth camera bridges
 #   docker compose --profile gpu up      # use GPU-accelerated variants
+#
+# The containers reach Fosfora as host.docker.internal, not localhost: switch on
+# Other devices for the web remote (Setup > Control) first, or they are refused.
+# They also need its access key, shown in the same place:
+#   FOSFORA_KEY=<key> docker compose up
 
 services:
 
@@ -19,6 +24,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
     restart: unless-stopped
 
   gamepad:
@@ -33,6 +39,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
     restart: unless-stopped
 
   # ── Webcam bridges ──────────────────────────────────────────────
@@ -49,6 +56,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
       FOSFORA_FPS: ${FOSFORA_FPS:-30}
     restart: unless-stopped
 
@@ -61,6 +69,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
       FOSFORA_FPS: ${FOSFORA_FPS:-30}
     restart: unless-stopped
 
@@ -73,6 +82,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
       FOSFORA_FPS: ${FOSFORA_FPS:-30}
     restart: unless-stopped
 
@@ -85,6 +95,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
       FOSFORA_FPS: ${FOSFORA_FPS:-15}
     restart: unless-stopped
 
@@ -103,6 +114,7 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
     restart: unless-stopped
 
   # ── GPU-accelerated variants (opt-in via --profile gpu) ─────────
@@ -127,4 +139,5 @@ services:
     environment:
       FOSFORA_HOST: ${FOSFORA_HOST:-host.docker.internal}
       FOSFORA_PORT: ${FOSFORA_PORT:-9002}
+      FOSFORA_KEY: ${FOSFORA_KEY:-}
     restart: unless-stopped

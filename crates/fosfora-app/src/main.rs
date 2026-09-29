@@ -494,11 +494,7 @@ impl ApplicationHandler for FosforaApp {
                                                 } else if let Some(text) =
                                                     t.source.strip_prefix("text:")
                                                 {
-                                                    if text.len() > 8 {
-                                                        format!("{}...", &text[..8])
-                                                    } else {
-                                                        text.to_string()
-                                                    }
+                                                    ui::widgets::truncate_chars(text, 9)
                                                 } else if let Some(rest) =
                                                     t.source.strip_prefix("video:")
                                                 {
@@ -1663,9 +1659,17 @@ impl ApplicationHandler for FosforaApp {
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new(SET_UI_SCALE)));
                     let zoom = ctx.zoom_factor();
                     let want = clamp_scale(asked.unwrap_or(zoom));
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if want != zoom {
                         ctx.set_zoom_factor(want);
                     }
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if want != app.settings.ui_scale {
                         app.settings.ui_scale = want;
                         app.settings.save();
@@ -1682,6 +1686,16 @@ impl ApplicationHandler for FosforaApp {
                         app.settings.tours_done.push(key.to_string());
                         app.settings.save();
                     }
+                }
+
+                // Photosensitivity flash limiter (#108)
+                let set_flash_limit: Option<fosfora_app::settings::FlashLimit> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_flash_limit")));
+                if let Some(limit) = set_flash_limit {
+                    app.settings.flash_limit = limit;
+                    app.settings.save();
                 }
 
                 // Classic / workspace layout switch (#3122)
@@ -1869,19 +1883,6 @@ impl ApplicationHandler for FosforaApp {
                     if let Some(val) = ndi_alpha_luma {
                         app.ndi.config.alpha_from_luma = val;
                         app.ndi.config.save();
-                    }
-
-                    let ndi_restart: Option<bool> = app
-                        .egui_overlay
-                        .context()
-                        .data_mut(|d| d.remove_temp(egui::Id::new("ndi_restart")));
-                    if ndi_restart.is_some() {
-                        app.ndi.restart(
-                            &app.gpu.device,
-                            app.gpu.format,
-                            app.gpu.surface_config.width,
-                            app.gpu.surface_config.height,
-                        );
                     }
                 }
 
@@ -3533,6 +3534,10 @@ impl ApplicationHandler for FosforaApp {
                                     }
                                     Err(e) => {
                                         log::error!("Failed to start webcam: {e}");
+                                        app.status_error = Some((
+                                            format!("Webcam failed: {e}"),
+                                            std::time::Instant::now(),
+                                        ));
                                     }
                                 }
                             }

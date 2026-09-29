@@ -115,7 +115,7 @@ def main():
                         help="Slow rate drift amount")
     args = parser.parse_args()
 
-    bridge = FosforaBridge("smart-lfo", args.host, args.port)
+    bridge = FosforaBridge("smart-lfo", args.host, args.port, args.key)
     bridge.declare_fields(build_schema(args.lfo_count))
 
     if not bridge.connect():

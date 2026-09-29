@@ -312,7 +312,7 @@ fn draw_header_row(ui: &mut Ui, uniforms: &ShaderUniforms) {
                 .color(tc.text_primary),
         );
         ui.label(
-            RichText::new("45 features")
+            RichText::new(format!("{} features", crate::audio::features::NUM_FEATURES))
                 .size(SMALL_SIZE)
                 .color(tc.text_secondary),
         );

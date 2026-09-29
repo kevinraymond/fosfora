@@ -7,6 +7,70 @@
 
 Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
 
+### Added
+- **A photosensitivity flash limiter, on by default.** Large-area flashing is held to at most
+  three flashes a second, the WCAG and broadcast threshold, on screen and in every live output
+  and recording; bright hits beyond that are dimmed. Offline loop and scene renders are not
+  limited. Set it under Setup ▸ General: Strict allows
+  one a second, and Auto goes Strict when the system asks for reduced motion, which also
+  stops interface animation. Strobe-heavy looks are throttled; Off restores them.
+
+### Changed
+- **OSC input and the web remote now listen on this computer only.** A phone, a controller
+  on another machine or a bridge in Docker needs **Other devices** switched on for each
+  under Setup ▸ Control. Web pages other than the remote's own can no longer connect to it,
+  and other devices also need the web remote's access key: scan the QR code shown there or
+  open the link beside it, and give bridges `--key` or `FOSFORA_KEY`. **New key** disconnects
+  every old holder.
+
+### Fixed
+- **Screen turned bloomed highlights black** where two bright layers overlapped, and
+  Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
+  HDR values and blend exactly as before everywhere else.
+- **A NaN or out-of-range number over OSC or the web remote** could blank a layer's opacity or
+  a parameter, and a preset saved afterwards vanished from the list. Such values are now
+  ignored, and a preset that would not load back is refused with an error.
+- **One corrupt sample from a loopback device** left loudness and the normalized audio
+  features stuck until the device was reopened. Bad samples are now silenced on capture.
+- **Per-band pan read the wrong frequency ranges on 48 kHz devices**; the band edges now
+  follow the device's sample rate.
+- **Loading an effect by an out-of-range index** over OSC or the web remote deleted the
+  layer's preset bindings and loaded nothing. It is now ignored.
+- **Accented or other non-ASCII characters crashed the app** when a preset name, a text
+  particle source or a webcam name was shortened for display.
+- **A GIF with a huge or corrupt header crashed the app.** GIFs over 8192 px per side, or
+  whose frames would take more than 2 GiB decoded, are now refused with an error; convert
+  those to video.
+- **Fast animation stuttered in shows running for hours**: shader time lost precision as
+  uptime grew, to ~16 ms steps after a day and a half. `u.time` now wraps to 0 every hour, so
+  it stays smooth; anything periodic in it makes one jump per hour, like reloading the effect.
+- **Soft edges darkened wherever a layer used Normal blend over another**, costing antialiased
+  fringes and glows up to a quarter of their brightness. Normal is now a true premultiplied
+  over, so stacked layers' coverage also adds up instead of taking the larger of the two.
+- **A fader moved while an effect loaded could stick partway** over OSC, MIDI or the web
+  remote: once the input queue filled, the newest messages were the ones dropped. The oldest
+  are dropped now, so the last value sent always arrives.
+- **Webcam as a particle source** had no button and could only come back from a preset. It is
+  on the particle source row again.
+- **The depth download always failed on macOS**, so depth obstacles could not be set up
+  there. On every platform, an interrupted download could leave a broken ONNX Runtime that
+  was reused on every run. The runtime, depth model and Splat demo are now checked against
+  pinned checksums, and a broken copy is fetched again when you press Download.
+- **One idle connection to the web remote stalled every other client** for five seconds.
+  Beyond 32 open connections new ones are refused, and a burst of effect or preset loads from
+  the remote now loads only the last.
+- **Morph effects above about 2 million particles failed to load on Windows (DX12)**; they
+  are now capped to what the GPU can bind.
+- **The web remote could load hidden effects by number**, including the 10-million-particle
+  Stress benchmark. It now loads only effects in its list.
+- **Right after a stall such as an effect loading, audio-reactive visuals replayed audio from
+  before it**: the newest analysis frames were the ones dropped. The oldest are dropped now.
+- **Tracks tuned close to a quarter tone off** could have their tuning estimate swing through
+  standard pitch, smearing chroma and key across two notes for seconds. The estimate now
+  wraps the short way round and holds.
+- **Downbeats weighed each beat's loudness rise after auto-gain**, which flattens the accents
+  that mark the "one"; they now read the true level.
+
 ## v2.0.0 — 2026-09-27
 
 Fosfora has a new interface. It opens in three workspaces, Perform, Build and Setup,

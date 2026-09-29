@@ -77,6 +77,8 @@ Every bridge accepts:
 
     --host HOST    Fosfora host (default: localhost)
     --port PORT    Websocket port (default: 9002)
+    --key KEY      Fosfora's access key (default: $FOSFORA_KEY); needed from
+                   another machine or Docker, not from localhost
     --fps FPS      Target frame rate (default: 30)
 
 Most vision bridges also accept:
@@ -99,10 +101,12 @@ python bridges/smart_lfo.py
 
 ## Running on a Separate Machine
 
-Bridges can run on a different computer on the same network:
+Bridges can run on a different computer on the same network. Fosfora's web remote
+accepts connections from this computer only until you switch on **Other devices**
+under Setup ▸ Control ▸ Web remote; do that first, and copy the **Access key** shown there.
 
 ```bash
-python bridges/mediapipe_hands.py --host 192.168.1.100
+python bridges/mediapipe_hands.py --host 192.168.1.100 --key <access key>
 ```
 
 This is useful for offloading ML inference to a dedicated GPU machine.
@@ -142,6 +146,10 @@ docker compose -f bridges/docker-compose.yml --profile gpu up yolo-gpu hands lfo
 # Point at Fosfora on another machine
 FOSFORA_HOST=192.168.1.100 docker compose -f bridges/docker-compose.yml up hands lfo
 ```
+
+Containers reach Fosfora as `host.docker.internal`, not `localhost`, so switch on
+**Other devices** for the web remote (Setup ▸ Control) before starting them, and pass
+the **Access key** shown there: `FOSFORA_KEY=<access key> docker compose ... up`.
 
 ### Building images
 

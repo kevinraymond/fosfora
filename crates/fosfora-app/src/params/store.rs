@@ -62,7 +62,13 @@ impl ParamStore {
         (&self.defs, &mut self.values, &mut self.changed)
     }
 
+    /// Store a value. A NaN/Inf component is ignored (logged): it would reach the
+    /// shader and a saved preset, where it serializes to `null` (#46).
     pub fn set(&mut self, name: &str, value: ParamValue) {
+        if !value.is_finite() {
+            log::warn!("Ignoring non-finite value for param '{name}': {value:?}");
+            return;
+        }
         self.values.insert(name.to_string(), value);
         self.changed = true;
     }
@@ -150,6 +156,17 @@ mod tests {
                 default: [1.0, 0.0, 0.0, 1.0],
             },
         ]
+    }
+
+    #[test]
+    fn set_ignores_non_finite_values() {
+        let mut store = ParamStore::new();
+        store.set("x", ParamValue::Float(0.5));
+        store.set("x", ParamValue::Float(f32::NAN));
+        store.set("x", ParamValue::Float(f32::INFINITY));
+        store.set("c", ParamValue::Color([0.0, f32::NAN, 0.0, 1.0]));
+        assert!(matches!(store.get("x"), Some(ParamValue::Float(v)) if *v == 0.5));
+        assert!(store.get("c").is_none());
     }
 
     #[test]

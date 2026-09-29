@@ -108,6 +108,7 @@ body { display: flex; flex-direction: column; }
 
 /* Empty state */
 .empty-msg { text-align: center; color: var(--text2); padding: 32px 16px; font-size: 14px; }
+.key-hint { display: none; padding: 10px 14px; font-size: 13px; color: var(--text2); background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -120,6 +121,7 @@ body { display: flex; flex-direction: column; }
     <div class="status-dot" id="beatDot"></div>
   </div>
 </div>
+<div class="key-hint" id="keyHint">Can't connect. Other devices need the access key: open the LAN link from Fosfora's Web panel, which includes it.</div>
 
 <div class="audio-section">
   <div class="audio-bars" id="audioBars">
@@ -189,6 +191,11 @@ body { display: flex; flex-direction: column; }
   let beatTimeout = null;
 
   const statusDot = document.getElementById('statusDot');
+  const keyHint = document.getElementById('keyHint');
+  // Another device must present the access key; the LAN link in the Web panel
+  // carries it as ?key=. This computer's own browser needs none.
+  const accessKey = new URLSearchParams(location.search).get('key');
+  const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const beatDot = document.getElementById('beatDot');
   const bpmDisplay = document.getElementById('bpmDisplay');
   const effectsGrid = document.getElementById('effectsGrid');
@@ -243,15 +250,18 @@ body { display: flex; flex-direction: column; }
     }
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host + '/ws');
+    const query = accessKey ? '?key=' + encodeURIComponent(accessKey) : '';
+    ws = new WebSocket(proto + '//' + location.host + '/ws' + query);
 
     ws.onopen = () => {
       statusDot.classList.add('connected');
+      keyHint.style.display = 'none';
       reconnectDelay = 1000;
     };
 
     ws.onclose = () => {
       statusDot.classList.remove('connected');
+      if (!accessKey && !isLocal) keyHint.style.display = 'block';
       ws = null;
       reconnectTimer = setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 8000);

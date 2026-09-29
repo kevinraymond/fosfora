@@ -18,7 +18,7 @@ env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   fmt:
@@ -99,6 +99,28 @@ jobs:
       # features that clash only in combination) would first fail at release time.
       - name: Clippy (release bundle)
         run: cargo clippy --all-targets --features release -- -D warnings
+      # Nothing else compiles the profiling feature's cfg-gated timer scopes.
+      - name: Clippy (profiling feature)
+        run: cargo clippy --all-targets --features profiling -- -D warnings
+
+  xr-lib:
+    name: XR lib (aarch64-linux-android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The lib without `desktop` is what the XR frontend links, and `decode`
+      # is the only feature it adds. No other job builds either, so a desktop
+      # type leaking into a shared module would first break on the XR branch.
+      # Clippy only type-checks, so no NDK or linker is needed.
+      - name: Clippy (no default features)
+        run: cargo clippy -p fosfora-app --lib --no-default-features --target aarch64-linux-android -- -D warnings
+      - name: Clippy (decode feature)
+        run: cargo clippy -p fosfora-app --lib --no-default-features --features decode --target aarch64-linux-android -- -D warnings
 
   test:
     name: Test

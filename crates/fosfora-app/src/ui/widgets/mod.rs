@@ -1,3 +1,4 @@
+pub mod qr;
 pub mod rows;
 
 use egui::{
@@ -10,9 +11,9 @@ use super::theme::tokens::*;
 
 /// Format a float value compactly: no trailing zeros, max 2 decimal places.
 pub fn fmt_val(v: f64) -> String {
-    if v == v.round() {
+    if v.fract() == 0.0 {
         format!("{v:.0}")
-    } else if (v * 10.0).round() == v * 10.0 {
+    } else if (v * 10.0).fract() == 0.0 {
         format!("{v:.1}")
     } else {
         format!("{v:.2}")

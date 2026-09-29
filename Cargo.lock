@@ -1683,6 +1683,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "fontdue",
+ "getrandom 0.3.4",
  "gif 0.13.3",
  "glam",
  "gltf",
@@ -1701,6 +1702,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "ort",
  "pollster",
+ "qrcodegen",
  "rfd",
  "rosc",
  "rustc-hash 2.1.1",
@@ -1708,6 +1710,7 @@ dependencies = [
  "rusty_link",
  "serde",
  "serde_json",
+ "sha2",
  "spout2-rs",
  "symphonia",
  "tar",
@@ -3759,6 +3762,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4245,6 +4254,17 @@ name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
+dependencies = [
+ "cfg-if 1.0.4",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if 1.0.4",
  "cpufeatures",

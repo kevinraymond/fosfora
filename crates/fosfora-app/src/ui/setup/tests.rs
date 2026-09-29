@@ -104,7 +104,10 @@ fn every_setting_has_a_page() {
             &["If it goes quiet", "Band scale", "Device"][..],
         ),
         (Page::Outputs, &["Black becomes", "Second window"][..]),
-        (Page::General, &["Particle quality", "Classic layout"][..]),
+        (
+            Page::General,
+            &["Particle quality", "Flash limiter", "Classic layout"][..],
+        ),
         (
             Page::Control,
             &["Listen on port", "Addresses start", "Port"][..],

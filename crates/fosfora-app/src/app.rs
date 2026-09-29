@@ -72,6 +72,9 @@ pub struct App {
     pub preset_loader: PresetLoader,
     // Settings
     pub settings: SettingsConfig,
+    /// The OS asks for reduced motion (#109), read once at startup. Auto flash
+    /// limiting goes Strict and interface animations are switched off.
+    pub reduce_motion: bool,
     /// Theme files from the themes folder (#3125), read at startup and on
     /// Reload in Appearance.
     pub custom_themes: Vec<crate::ui::theme::custom::CustomTheme>,
@@ -486,6 +489,13 @@ impl App {
             settings.ui_scale,
         );
         crate::ui::theme::custom::publish(&egui_overlay.context(), &custom_themes);
+        let reduce_motion =
+            crate::ui::accessibility::motion::ReducedMotion::detect().should_reduce();
+        if reduce_motion {
+            log::info!("System asks for reduced motion: strict flash limit, no UI animation");
+            // configure() clones the current style, so this survives theme changes.
+            egui_overlay.context().style_mut(|s| s.animation_time = 0.0);
+        }
         #[cfg(feature = "ndi")]
         let ndi = crate::ndi::NdiSystem::new(
             &gpu.device,
@@ -569,6 +579,7 @@ impl App {
             morph_from: None,
             morph_to: None,
             settings,
+            reduce_motion,
             custom_themes,
             egui_overlay,
             effect_loader,
@@ -735,7 +746,8 @@ impl App {
         }
 
         // Update global time uniforms
-        self.uniforms.time = now.duration_since(self.start_time).as_secs_f32();
+        self.uniforms.time =
+            crate::gpu::uniforms::shader_time(now.duration_since(self.start_time).as_secs_f64());
         self.uniforms.delta_time = dt;
         self.uniforms.resolution = [
             self.gpu.surface_config.width as f32,
@@ -1023,10 +1035,14 @@ impl App {
                 self.master_postprocess.enabled = pp_enabled;
             }
 
-            // Handle effect loads from web
-            for effect_idx in web_result.effect_loads {
+            // Handle effect load from web (coalesced to the last one this frame)
+            if let Some(effect_idx) = web_result.effect_load {
                 let active_locked = self.layer_stack.active().map_or(false, |l| l.locked);
-                if !active_locked {
+                if !crate::web::state::remote_loadable(&self.effect_loader.effects, effect_idx) {
+                    log::warn!(
+                        "Web remote asked for effect {effect_idx}, which it does not list; ignored"
+                    );
+                } else if !active_locked {
                     self.load_effect(effect_idx);
                 }
             }
@@ -1041,9 +1057,9 @@ impl App {
                 }
             }
 
-            // Handle preset loads from web
-            let had_preset_loads = !web_result.preset_loads.is_empty();
-            for preset_idx in web_result.preset_loads {
+            // Handle preset load from web (coalesced to the last one this frame)
+            let had_preset_loads = web_result.preset_load.is_some();
+            if let Some(preset_idx) = web_result.preset_load {
                 self.load_preset(preset_idx);
             }
 
@@ -1811,6 +1827,13 @@ impl App {
     /// delete the bindings `load_preset` had just finished loading.
     pub fn load_effect(&mut self, index: usize) {
         let layer_idx = self.layer_stack.active_layer;
+        // Same guards `load_effect_on_layer` returns on, checked first: an
+        // out-of-range index (OSC, web, a stale index after the effect list
+        // reloads) would otherwise drop the bindings and load nothing.
+        if index >= self.effect_loader.effects.len() || layer_idx >= self.layer_stack.layers.len() {
+            log::warn!("load_effect: no effect {index} or layer {layer_idx}; ignored");
+            return;
+        }
         let dropped = self.binding_bus.clear_preset_bindings_for_layer(layer_idx);
         if dropped > 0 {
             log::info!("Dropped {dropped} preset binding(s) targeting layer {layer_idx}");
@@ -3733,6 +3756,10 @@ impl App {
             log::error!("GPU device lost — cannot render");
             return Err(wgpu::SurfaceError::Lost);
         }
+        self.post_process.flash_budget = self
+            .settings
+            .flash_limit
+            .flashes_per_second(self.reduce_motion);
 
         let output = self.gpu.surface.get_current_texture()?;
         let surface_view = output

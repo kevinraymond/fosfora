@@ -50,7 +50,7 @@ pub struct HopOutput {
     /// `section_novelty`, `buildup`, `drop` (58..=60).
     /// Read those from `frame.features`, which is complete.
     ///
-    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 324-byte
+    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 332-byte
     /// `Copy` per hop either way).
     #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub pre_norm: AudioFeatures,
@@ -91,7 +91,7 @@ impl HopAnalyzer {
             downbeat_tracker: DownbeatTracker::new(),
             structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
-            stereo_analyzer: StereoAnalyzer::new(),
+            stereo_analyzer: StereoAnalyzer::with_sample_rate(sample_rate),
             hpss_analyzer: HpssAnalyzer::new(),
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
             dmfcc_analyzer: DeltaMfccAnalyzer::new(),
@@ -264,11 +264,13 @@ impl HopAnalyzer {
         raw.beat_strength = beat_result.beat_strength;
 
         // A12 (#1463): bar/downbeat/meter tracking. Runs every frame (advances bar_phase
-        // on the audio clock, integrates flux); heavy scoring gates on a fired beat.
+        // on the audio clock, integrates flux); heavy scoring gates on a fired beat. RMS is
+        // the pre-normalization level (#60): the adaptive normalizer re-ranges `raw.rms`
+        // per hop, which would distort the beat-to-beat loudness rise the tracker scores.
         let db = self.downbeat_tracker.process(
             &beat_result,
             band_flux,
-            raw.rms,
+            pre_norm.rms,
             &pre_norm_chroma,
             timestamp,
             loud_silent,

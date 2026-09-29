@@ -69,9 +69,12 @@ pub struct WebFrameResult {
     pub layer_blend: Vec<(usize, u32)>,
     pub layer_enabled: Vec<(usize, bool)>,
     pub postprocess_enabled: Option<bool>,
-    pub effect_loads: Vec<usize>,
+    /// Last effect load this frame. Loads are coalesced: each one compiles
+    /// shaders synchronously, and only the last would stay on screen.
+    pub effect_load: Option<usize>,
     pub select_layer: Option<usize>,
-    pub preset_loads: Vec<usize>,
+    /// Last preset load this frame (coalesced like `effect_load`).
+    pub preset_load: Option<usize>,
 }
 
 impl WebFrameResult {
@@ -83,9 +86,9 @@ impl WebFrameResult {
             layer_blend: Vec::new(),
             layer_enabled: Vec::new(),
             postprocess_enabled: None,
-            effect_loads: Vec::new(),
+            effect_load: None,
             select_layer: None,
-            preset_loads: Vec::new(),
+            preset_load: None,
         }
     }
 }
@@ -97,6 +100,19 @@ pub struct WebConfig {
     pub enabled: bool,
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Accept connections from other devices (a phone, a bridge in Docker on
+    /// Linux). Off: the server listens on 127.0.0.1 only, so nothing on the
+    /// venue network can drive the show.
+    #[serde(default)]
+    pub lan: bool,
+    /// What another device must present to connect: `?key=` on the network
+    /// link (the page passes it on to its WebSocket), `--key` / `FOSFORA_KEY`
+    /// for a bridge. This computer's own connections need none. Created on
+    /// first start and kept across restarts, so a bookmarked link or a Docker
+    /// env var keeps working; replacing it disconnects every holder of the old
+    /// one. Empty refuses every other device.
+    #[serde(default)]
+    pub access_key: String,
 }
 
 fn default_true() -> bool {
@@ -111,6 +127,32 @@ impl Default for WebConfig {
         Self {
             enabled: true,
             port: 9002,
+            lan: false,
+            access_key: String::new(),
+        }
+    }
+}
+
+/// Access-key symbols: lowercase letters and digits minus the lookalikes
+/// 0/o and 1/l, so a key read off the screen types back correctly.
+const KEY_ALPHABET: &[u8; 32] = b"abcdefghijkmnpqrstuvwxyz23456789";
+/// 20 symbols × 5 bits = 100 random bits: far beyond guessing over a network,
+/// short enough to type into a bridge's `--key`.
+const KEY_LEN: usize = 20;
+
+/// A fresh access key, or empty (which refuses every other device) if the OS
+/// has no randomness to give.
+pub fn new_access_key() -> String {
+    let mut bytes = [0u8; KEY_LEN];
+    match getrandom::fill(&mut bytes) {
+        // 256 is a multiple of 32, so the low five bits of each byte are uniform.
+        Ok(()) => bytes
+            .iter()
+            .map(|b| char::from(KEY_ALPHABET[usize::from(b & 31)]))
+            .collect(),
+        Err(e) => {
+            log::error!("No access key for the web remote (other devices are refused): {e}");
+            String::new()
         }
     }
 }
@@ -190,9 +232,9 @@ mod tests {
         assert!(r.layer_blend.is_empty());
         assert!(r.layer_enabled.is_empty());
         assert!(r.postprocess_enabled.is_none());
-        assert!(r.effect_loads.is_empty());
+        assert!(r.effect_load.is_none());
         assert!(r.select_layer.is_none());
-        assert!(r.preset_loads.is_empty());
+        assert!(r.preset_load.is_none());
     }
 
     // ---- Additional tests ----
@@ -202,11 +244,41 @@ mod tests {
         let c = WebConfig {
             enabled: false,
             port: 8080,
+            lan: true,
+            access_key: "k".into(),
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: WebConfig = serde_json::from_str(&json).unwrap();
         assert!(!c2.enabled);
         assert_eq!(c2.port, 8080);
+        assert!(c2.lan);
+        assert_eq!(c2.access_key, "k");
+    }
+
+    #[test]
+    fn access_keys_are_short_and_unambiguous() {
+        let (a, b) = (new_access_key(), new_access_key());
+        assert_eq!(a.len(), KEY_LEN);
+        assert!(a.bytes().all(|c| KEY_ALPHABET.contains(&c)), "{a}");
+        assert!(!a.contains(['0', 'o', '1', 'l']), "{a}");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn the_key_alphabet_has_32_distinct_symbols() {
+        let mut symbols = KEY_ALPHABET.to_vec();
+        symbols.sort_unstable();
+        symbols.dedup();
+        assert_eq!(symbols.len(), 32);
+    }
+
+    /// A web.json saved before LAN access was a setting has no `lan` key; it
+    /// loads as loopback-only (#43).
+    #[test]
+    fn web_config_without_lan_is_loopback_only() {
+        let c: WebConfig = serde_json::from_str(r#"{"enabled":true,"port":9002}"#).unwrap();
+        assert!(!c.lan);
+        assert!(!WebConfig::default().lan);
     }
 
     #[test]

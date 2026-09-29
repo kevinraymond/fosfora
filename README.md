@@ -165,7 +165,8 @@ slider, layer opacity, a particle setting) and it moves with the music or with y
 
 **MIDI** — click the **M** next to any parameter, move a knob, done. Auto-connects and hot-plugs.
 
-**OSC** — receives on port 9000, transmits on 9001. Click **O** next to a parameter and send any
+**OSC** — receives on port 9000 (from this computer until you switch on **Other devices**),
+transmits on 9001. Click **O** next to a parameter and send any
 message to bind it, or address things directly:
 `oscsend localhost 9000 /fosfora/param/warp_intensity f 0.8`.
 [Full address list →](docs/QUICK-REFERENCE.md)
@@ -174,8 +175,10 @@ message to bind it, or address things directly:
 key, phrase position and drop prediction over OSC with no window at all — Fosfora as the
 analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md)
 
-**Your phone** — enable the web surface and open `http://<this-machine>:9002` on any phone or
-tablet on the same network. Multiple people can connect at once.
+**Your phone** — enable the web surface, switch on **Other devices** under Setup ▸ Control, and
+scan the QR code it shows (or open the network address beside it) on any phone or tablet on the
+same network. The link carries the access key other devices need; **New key** disconnects everyone
+holding the old one. Multiple people can connect at once.
 
 ## Documentation
 

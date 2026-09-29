@@ -117,7 +117,7 @@ def main():
     print(f"[yolo-detect] Camera {args.device}: {w}x{h}")
 
     # Init bridge (no schema yet — will be sent on first detection)
-    bridge = FosforaBridge("yolo-detect", args.host, args.port)
+    bridge = FosforaBridge("yolo-detect", args.host, args.port, args.key)
 
     if not bridge.connect():
         return

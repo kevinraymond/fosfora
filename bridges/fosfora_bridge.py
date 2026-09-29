@@ -21,6 +21,7 @@ Protocol and options: see bridges/README.md
 """
 
 import json
+import os
 import time
 import signal
 import sys
@@ -38,7 +39,7 @@ except ImportError:
 
 class FosforaBridge:
 
-    def __init__(self, source_name, host="localhost", port=9002):
+    def __init__(self, source_name, host="localhost", port=9002, key=None):
         """
         Args:
             source_name: Identifier for this source. Appears in Fosfora's
@@ -46,11 +47,18 @@ class FosforaBridge:
                          Use lowercase-hyphenated names.
             host: Fosfora websocket host.
             port: Fosfora websocket port.
+            key: Fosfora's access key (Web panel), needed when the bridge
+                 runs on another device or in Docker. Defaults to the
+                 FOSFORA_KEY environment variable.
         """
         self.source_name = source_name
         self.host = host
         self.port = port
-        self.url = f"ws://{host}:{port}/bind"
+        if key is None:
+            key = os.environ.get("FOSFORA_KEY") or None
+        # Printed in status lines; `url` carries the key and is never printed.
+        self.display_url = f"ws://{host}:{port}/bind"
+        self.url = self.display_url + (f"?key={key}" if key else "")
         self.fields = {}
         self.ws = None
         self._connected = False
@@ -121,7 +129,7 @@ class FosforaBridge:
 
                 _fields_str = (f"{len(self.fields)} fields"
                                if self.fields else "no schema")
-                print(f"[{self.source_name}] Connected to {self.url}")
+                print(f"[{self.source_name}] Connected to {self.display_url}")
 
                 if self.fields:
                     self.send_schema()
@@ -137,7 +145,7 @@ class FosforaBridge:
                     return False
 
                 print(f"[{self.source_name}] "
-                      f"Waiting for Fosfora at {self.url} ... "
+                      f"Waiting for Fosfora at {self.display_url} ... "
                       f"({e.__class__.__name__})")
                 time.sleep(retry_interval)
 
@@ -298,7 +306,7 @@ class FosforaBridge:
         Create an ArgumentParser with standard bridge options.
 
         Returns:
-            argparse.ArgumentParser with --host, --port, --fps defined.
+            argparse.ArgumentParser with --host, --port, --key, --fps defined.
         """
         parser = argparse.ArgumentParser(
             description=description,
@@ -310,6 +318,10 @@ class FosforaBridge:
         parser.add_argument(
             "--port", type=int, default=9002,
             help="Fosfora websocket port")
+        parser.add_argument(
+            "--key", default=os.environ.get("FOSFORA_KEY"),
+            help="Fosfora access key (Web panel); needed from another device "
+                 "or Docker. Defaults to $FOSFORA_KEY")
         parser.add_argument(
             "--fps", type=int, default=30,
             help="Target push frame rate")

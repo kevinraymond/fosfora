@@ -376,12 +376,34 @@ impl PresetStore {
                 }
             })
             .collect();
-        let trimmed = sanitized.trim();
-        if trimmed.len() > 64 {
-            trimmed[..64].to_string()
-        } else {
-            trimmed.to_string()
+        // By characters: a byte slice panicked on a multibyte name (#104).
+        sanitized
+            .trim()
+            .chars()
+            .take(64)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// Serialize a preset, refusing one that would not load back. serde_json writes a
+    /// NaN/Inf float as `null`, which `scan` then fails to parse, so the preset would
+    /// silently vanish from the list on the next scan (#46).
+    fn to_json_checked(preset: &Preset) -> Result<String> {
+        let json = serde_json::to_string_pretty(preset)?;
+        if let Err(e) = serde_json::from_str::<Preset>(&json) {
+            anyhow::bail!("Preset has a value that cannot be saved (NaN or infinity?): {e}");
         }
+        Ok(json)
+    }
+
+    /// Index of the preset `name` after a rescan. Missing means the file just written
+    /// did not load back; say so rather than pointing `current_preset` at preset 0.
+    fn index_of(&self, name: &str) -> Result<usize> {
+        self.presets
+            .iter()
+            .position(|(n, _)| n == name)
+            .ok_or_else(|| anyhow::anyhow!("Saved preset '{name}' did not load back"))
     }
 
     pub fn save(
@@ -416,17 +438,13 @@ impl PresetStore {
         };
 
         let path = dir.join(format!("{name}.json"));
-        let json = serde_json::to_string_pretty(&preset)?;
+        let json = Self::to_json_checked(&preset)?;
         crate::paths::write_atomic(&path, &json)?;
         log::info!("Saved preset '{}' to {}", name, path.display());
 
         self.scan();
 
-        let idx = self
-            .presets
-            .iter()
-            .position(|(n, _)| n == &name)
-            .unwrap_or(0);
+        let idx = self.index_of(&name)?;
         self.current_preset = Some(idx);
         self.dirty = false;
         Ok(idx)
@@ -482,17 +500,13 @@ impl PresetStore {
         std::fs::create_dir_all(&dir)?;
 
         let path = dir.join(format!("{new_name}.json"));
-        let json = serde_json::to_string_pretty(&preset)?;
+        let json = Self::to_json_checked(&preset)?;
         crate::paths::write_atomic(&path, &json)?;
         log::info!("Copied preset to '{}'", new_name);
 
         self.scan();
 
-        let idx = self
-            .presets
-            .iter()
-            .position(|(n, _)| n == &new_name)
-            .unwrap_or(0);
+        let idx = self.index_of(&new_name)?;
         self.current_preset = Some(idx);
         self.dirty = false;
         Ok(idx)
@@ -502,6 +516,20 @@ impl PresetStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preset_with_a_non_finite_value_is_refused() {
+        let mut preset = Preset {
+            layers: Vec::new(),
+            active_layer: 0,
+            postprocess: PostProcessDef::default(),
+            volumetric: None,
+            master_chain: None,
+        };
+        assert!(PresetStore::to_json_checked(&preset).is_ok());
+        preset.postprocess.bloom_intensity = f32::NAN;
+        assert!(PresetStore::to_json_checked(&preset).is_err());
+    }
 
     #[test]
     fn sanitize_name_strips_slashes() {
@@ -522,6 +550,15 @@ mod tests {
     fn sanitize_name_max_64_chars() {
         let long = "a".repeat(100);
         assert_eq!(PresetStore::sanitize_name(&long).len(), 64);
+    }
+
+    /// A user-typed multibyte name must truncate by character, not panic (#104).
+    #[test]
+    fn sanitize_name_truncates_multibyte_by_char() {
+        let long = format!("a{}", "é".repeat(100));
+        let got = PresetStore::sanitize_name(&long);
+        assert_eq!(got.chars().count(), 64);
+        assert!(got.starts_with("aé"));
     }
 
     #[test]

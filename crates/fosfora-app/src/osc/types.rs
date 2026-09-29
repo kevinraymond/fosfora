@@ -82,6 +82,11 @@ pub struct OscConfig {
     pub enabled: bool,
     #[serde(default = "default_rx_port")]
     pub rx_port: u16,
+    /// Receive from other devices (a controller app on a phone, Max on another
+    /// machine). Off: the listener binds 127.0.0.1, so nothing on the venue
+    /// network can drive the show (#45).
+    #[serde(default)]
+    pub rx_lan: bool,
     #[serde(default = "default_tx_port")]
     pub tx_port: u16,
     #[serde(default = "default_tx_host")]
@@ -128,6 +133,7 @@ impl Default for OscConfig {
             version: 1,
             enabled: true,
             rx_port: 9000,
+            rx_lan: false,
             tx_port: 9001,
             tx_host: "127.0.0.1".to_string(),
             tx_enabled: false,
@@ -222,6 +228,14 @@ mod tests {
 
     /// A pre-rename osc.json has no `tx_prefix` field; it must default to the new
     /// namespace, not fail or come up empty.
+    /// An osc.json saved before LAN access was a setting receives on loopback only (#45).
+    #[test]
+    fn osc_config_without_rx_lan_is_loopback_only() {
+        let c: OscConfig = serde_json::from_str(r#"{"version":1,"rx_port":9000}"#).unwrap();
+        assert!(!c.rx_lan);
+        assert!(!OscConfig::default().rx_lan);
+    }
+
     #[test]
     fn osc_config_without_tx_prefix_defaults_to_fosfora() {
         let c: OscConfig = serde_json::from_str(r#"{"version":1,"rx_port":9000}"#).unwrap();

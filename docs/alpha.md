@@ -71,12 +71,11 @@ passthrough enabled, whatever alpha the composite writes is what every sink gets
 
 ## Known limitations
 
-- **Internal multi-layer compositing is straight-alpha.** The layer "Normal" blend is
-  `mix(bg.rgb, fg.rgb, opacity · fg.a)` with `max`-union alpha — layering an overlay
-  over another layer *inside* Fosfora slightly darkens antialiased fringes versus a
-  true premultiplied over, and stacked coverage is a union, not accumulation. The
-  solo-overlay fast path (one enabled layer) and external compositing are exact.
-  A dedicated premultiplied-over blend mode is the planned follow-up.
+- **Only the layer "Normal" blend is a premultiplied over.** Normal computes
+  `fg.rgb · opacity + bg.rgb · (1 − a)` and `a + bg.a · (1 − a)` with
+  `a = clamp(fg.a, 0, 1) · opacity`, so stacked coverage accumulates and soft edges
+  keep their brightness. The other colour blends (Add, Screen, Multiply, …) still mix
+  their result in by `opacity · fg.a` with `max`-union alpha.
 - **Compositor displacement modes** keep the background's alpha only.
 - The **on-screen window is always opaque** (the swapchain is pinned to
   `CompositeAlphaMode::Opaque`); passthrough shows as premultiplied-over-black,

@@ -71,7 +71,7 @@ impl Page {
                 "Guided tours that light one part of the window at a time. Esc or Skip tour \
                  ends one."
             }
-            Page::General => "Performance, cameras and layout.",
+            Page::General => "Performance, flash safety, cameras and layout.",
         }
     }
 }

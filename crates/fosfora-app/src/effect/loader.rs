@@ -2382,6 +2382,131 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         );
     }
 
+    /// Every shipped `.pfx`, parsed, in file order; a file that fails to parse is
+    /// reported as a failure rather than skipped.
+    fn shipped_pfx_or_failures(failures: &mut Vec<String>) -> Vec<PfxEffect> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effects");
+        let mut paths: Vec<_> = std::fs::read_dir(&dir)
+            .expect("effects dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pfx"))
+            .collect();
+        paths.sort();
+        paths
+            .iter()
+            .filter_map(|path| {
+                let json = std::fs::read_to_string(path).expect("read .pfx");
+                serde_json::from_str(&json)
+                    .map_err(|e| failures.push(format!("{}: bad JSON: {e}", path.display())))
+                    .ok()
+            })
+            .collect()
+    }
+
+    // CPU twin of the ignored GPU sweep `all_effect_pass_shaders_compile` (#162):
+    // every pass of every shipped .pfx, assembled exactly as the app compiles it
+    // (library + input bindings + fullscreen vertex shader), through naga's WGSL
+    // front end and validator. Runs in CI with no adapter, so a library change
+    // that breaks a pass shader fails here rather than at launch.
+    #[test]
+    fn all_effect_pass_shaders_validate_on_cpu() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let loader = EffectLoader::for_test(&probe_libs());
+        let mut failures = Vec::new();
+        let mut checked = 0usize;
+        for effect in shipped_pfx_or_failures(&mut failures) {
+            for pass in effect.normalized_passes() {
+                let src_path = root.join("shaders").join(&pass.shader);
+                let Ok(src) = std::fs::read_to_string(&src_path) else {
+                    failures.push(format!(
+                        "{} pass '{}': missing {}",
+                        effect.name,
+                        pass.name,
+                        src_path.display()
+                    ));
+                    continue;
+                };
+                let full = format!(
+                    "{}\n{}",
+                    crate::gpu::fullscreen_quad::FULLSCREEN_TRIANGLE_VS,
+                    loader.prepend_library_with_inputs(&src, pass.input_count())
+                );
+                if let Err(e) = crate::trama::effect::validate_wgsl(&full) {
+                    failures.push(format!(
+                        "{} pass '{}' ({}): {e}",
+                        effect.name, pass.name, pass.shader
+                    ));
+                }
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 40,
+            "suspiciously few pass shaders found ({checked})"
+        );
+        assert!(
+            failures.is_empty(),
+            "{} of {checked} pass shaders failed naga validation:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// naga validation for a particle sim. `trama::effect::validate_wgsl` uses the
+    /// strictest baseline capabilities, which lack SHADER_FLOAT16_IN_FLOAT32 —
+    /// the capability behind core WGSL's `unpack2x16float` (splat_sim's packed SH
+    /// coefficients). wgpu grants it on every Vulkan/Metal/DX12 device, so it is
+    /// added here rather than failing a shader that runs everywhere we ship.
+    fn validate_sim_wgsl(src: &str) -> Result<(), String> {
+        let module = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default()
+                | naga::valid::Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+        )
+        .validate(&module)
+        .map(|_| ())
+        .map_err(|e| e.emit_to_string(src))
+    }
+
+    // CPU twin of `all_particle_sim_shaders_compile` (#162): every particle sim a
+    // shipped .pfx names, concatenated as that GPU probe does, through naga.
+    #[test]
+    fn all_particle_sim_shaders_validate_on_cpu() {
+        let plib = include_str!("../../../../assets/shaders/lib/particle_lib.wgsl");
+        let libs = format!("{}\n{plib}", probe_libs());
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let mut failures = Vec::new();
+        let seen: std::collections::BTreeSet<String> = shipped_pfx_or_failures(&mut failures)
+            .into_iter()
+            .filter_map(|e| e.particles.map(|p| p.compute_shader))
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(
+            seen.len() > 15,
+            "suspiciously few particle sims found ({})",
+            seen.len()
+        );
+        for rel in &seen {
+            let src_path = root.join("shaders").join(rel);
+            let Ok(src) = std::fs::read_to_string(&src_path) else {
+                failures.push(format!("missing sim {}", src_path.display()));
+                continue;
+            };
+            if let Err(e) = validate_sim_wgsl(&format!("{libs}\n{src}")) {
+                failures.push(format!("{rel}: {e}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} of {} particle sims failed naga validation:\n{}",
+            failures.len(),
+            seen.len(),
+            failures.join("\n")
+        );
+    }
+
     // Compile probe for the Tide sim + bg shaders through the production
     // concatenation (lib_source = noise + palette, then particle_lib for
     // compute). Catches WGSL errors without launching the app.

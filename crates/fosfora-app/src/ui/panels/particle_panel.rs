@@ -344,6 +344,23 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                     .data_mut(|d| d.insert_temp(egui::Id::new("particle_load_video"), true));
             }
 
+            // Live camera source. main.rs has handled `particle_webcam` all along, and
+            // presets restore it, but nothing sent it, so a webcam source could only
+            // come from a preset file (#105).
+            #[cfg(feature = "webcam")]
+            if ui
+                .add_enabled(
+                    !info.source_loading,
+                    egui::Button::new(RichText::new("Webcam").size(SMALL_SIZE))
+                        .min_size(egui::vec2(0.0, 24.0)),
+                )
+                .on_hover_text("Use the live camera as the source")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(egui::Id::new("particle_webcam"), true));
+            }
+
             // 3D model source (#1993). Rendered to a frame and sampled like an
             // image, so it works in every effect on this panel.
             if ui

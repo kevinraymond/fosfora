@@ -33,6 +33,17 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
             web.restart_server();
         }
     });
+    let mut lan = web.config.lan;
+    if ui
+        .checkbox(
+            &mut lan,
+            RichText::new("Allow other devices").size(SMALL_SIZE),
+        )
+        .on_hover_text("Off: only this computer can connect; on: a phone or tablet can too")
+        .changed()
+    {
+        web.set_lan(lan);
+    }
 
     // URL display
     if web.is_running() {
@@ -57,20 +68,48 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
             }
         });
 
-        // Try to find LAN IP
-        if let Some(ip) = get_lan_ip() {
-            let lan_url = format!("http://{ip}:{port}");
+        // Other devices: the LAN link carries the access key they need.
+        if web.config.lan {
+            let key = web.config.access_key.clone();
+            if let Some(ip) = get_lan_ip() {
+                let lan_url = format!("http://{ip}:{port}/?key={key}");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("LAN")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
+                    if ui
+                        .link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE))
+                        .on_hover_text("Click to copy. Includes the access key.")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(lan_url.clone());
+                    }
+                });
+                if let Some(qr) = crate::ui::widgets::qr::qr_code(ui, &lan_url, 120.0) {
+                    qr.on_hover_text("Scan with a phone's camera to open the remote, key included");
+                }
+            }
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("LAN")
+                    RichText::new("Key")
                         .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
                 if ui
-                    .link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE))
+                    .link(RichText::new(&key).size(SMALL_SIZE).monospace())
+                    .on_hover_text("Click to copy. Bridges take it as --key or FOSFORA_KEY.")
                     .clicked()
                 {
-                    ui.ctx().copy_text(lan_url.clone());
+                    ui.ctx().copy_text(key.clone());
+                }
+                if ui
+                    .small_button("New")
+                    .on_hover_text("Disconnects every device using the current key")
+                    .clicked()
+                {
+                    web.replace_access_key();
                 }
             });
         }

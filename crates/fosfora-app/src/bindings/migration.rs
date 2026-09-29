@@ -44,6 +44,10 @@ pub fn migrate_legacy_if_needed() {
         if mapping.invert {
             transforms.push(TransformDef::Invert);
         }
+        #[expect(
+            clippy::float_cmp,
+            reason = "0..1 is the untouched default; any other range was set by hand"
+        )]
         if mapping.min_val != 0.0 || mapping.max_val != 1.0 {
             transforms.push(TransformDef::Remap {
                 in_lo: 0.0,

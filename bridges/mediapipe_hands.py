@@ -160,7 +160,7 @@ def main():
     print(f"[mediapipe-hands] Camera {args.device}: {w}x{h}")
 
     # Bridge
-    bridge = FosforaBridge("mediapipe-hands", args.host, args.port)
+    bridge = FosforaBridge("mediapipe-hands", args.host, args.port, args.key)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[mediapipe-hands] Fields: {len(schema)}")

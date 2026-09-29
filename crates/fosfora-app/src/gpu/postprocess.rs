@@ -18,6 +18,23 @@ const BLOOM_BLUR_FS: &str = include_str!("../../../../assets/shaders/builtin/blo
 const POST_COMPOSITE_FS: &str =
     include_str!("../../../../assets/shaders/builtin/post_composite.wgsl");
 const BLIT_FS: &str = include_str!("../../../../assets/shaders/builtin/blit.wgsl");
+const FLASH_LIMIT_CS: &str = include_str!("../../../../assets/shaders/builtin/flash_limit.wgsl");
+
+/// Size of `FlashState` in flash_limit.wgsl: a 16-byte header (gain, last time,
+/// budget, pad) and 32 tracks of two vec4f.
+const FLASH_STATE_SIZE: u64 = 16 + 32 * 32;
+
+/// `FlashState` as it must start: gain 1, every track unset. The shader resets
+/// on a budget change too, but a zeroed buffer would hold four rises at t = 0
+/// and block the first second after launch.
+fn flash_state_init() -> Vec<f32> {
+    let mut v = vec![1.0, -1.0, -1.0, 0.0];
+    for _ in 0..32 {
+        v.extend_from_slice(&[0.0, 1e9, 0.0, 0.0]);
+        v.extend_from_slice(&[-1e9; 4]);
+    }
+    v
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -73,11 +90,15 @@ struct PostParams {
     alpha_mode: f32,
     tonemap_mode: f32, // 0 = ACES (house look), 1 = linear passthrough (SuperSplat-faithful)
     grain_rate: f32,   // grain updates per second; <= 0 = every frame (see #1983)
-    _pad: [f32; 3],
+    flash_budget: f32, // flash limiter: flashes allowed per second; 0 = off (#108)
+    _pad: [f32; 2],
 }
 
 pub struct PostProcessChain {
     pub enabled: bool,
+    /// Photosensitivity flash limiter (#108): flashes allowed in any one second,
+    /// 0 = off. Applies whether or not post-processing is on.
+    pub flash_budget: f32,
     // Quarter-res targets for bloom
     bloom_extract_target: RenderTarget,
     bloom_blur_h_target: RenderTarget,
@@ -97,6 +118,12 @@ pub struct PostProcessChain {
     blur_h_params_buffer: wgpu::Buffer,
     blur_v_params_buffer: wgpu::Buffer,
     post_params_buffer: wgpu::Buffer,
+    // Flash limiter: its compute pass, persistent state, and the gain the
+    // composite reads (a copy of the state's first 16 bytes).
+    flash_pipeline: wgpu::ComputePipeline,
+    flash_state_bg: BindGroup,
+    flash_state_buffer: wgpu::Buffer,
+    flash_gain_buffer: wgpu::Buffer,
     // Stored for potential resize rebuilds
     #[allow(dead_code)]
     surface_format: TextureFormat,
@@ -150,16 +177,7 @@ impl PostProcessChain {
             create_fs_pipeline(device, "bloom-blur", &blur_bgl, BLOOM_BLUR_FS, hdr_format);
 
         // --- Composite pipeline (scene + bloom → surface) ---
-        let composite_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("post-composite-bgl"),
-            entries: &[
-                tex_entry(0),     // scene
-                sampler_entry(1), // scene sampler
-                tex_entry(2),     // bloom
-                sampler_entry(3), // bloom sampler
-                uniform_entry(4, std::mem::size_of::<PostParams>()),
-            ],
-        });
+        let composite_bgl = composite_bgl(device);
         let composite_pipeline = create_fs_pipeline(
             device,
             "post-composite",
@@ -186,8 +204,44 @@ impl PostProcessChain {
         let post_params_buffer =
             create_uniform_buffer(device, "post-params", std::mem::size_of::<PostParams>());
 
+        // --- Flash limiter (#108) ---
+        let flash_state_bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("flash-state-bgl"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: std::num::NonZeroU64::new(FLASH_STATE_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let flash_state_buffer = wgpu::util::DeviceExt::create_buffer_init(
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("flash-state"),
+                contents: bytemuck::cast_slice(&flash_state_init()),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+            },
+        );
+        let flash_gain_buffer = create_uniform_buffer(device, "flash-gain", 16);
+        let flash_state_bg = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("flash-state-bg"),
+            layout: &flash_state_bgl,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: flash_state_buffer.as_entire_binding(),
+            }],
+        });
+        let flash_pipeline = create_flash_pipeline(device, &composite_bgl, &flash_state_bgl);
+
         Self {
             enabled: true,
+            flash_budget: FLASH_BUDGET_STANDARD,
             bloom_extract_target,
             bloom_blur_h_target,
             bloom_blur_v_target,
@@ -203,6 +257,10 @@ impl PostProcessChain {
             blur_h_params_buffer,
             blur_v_params_buffer,
             post_params_buffer,
+            flash_pipeline,
+            flash_state_bg,
+            flash_state_buffer,
+            flash_gain_buffer,
             surface_format,
             hdr_format,
         }
@@ -230,6 +288,14 @@ impl PostProcessChain {
         overrides: &PostProcessDef,
         alpha_mode: AlphaMode,
     ) {
+        let limit = self.flash_budget > 0.0;
+        if !self.enabled && limit {
+            // Post off, limiter on: the composite with every effect neutral is
+            // the blit below, plus the limiter's gain.
+            self.write_post_params(queue, &neutral_post_params(time, self.flash_budget));
+            self.limit_and_composite(device, queue, encoder, source, surface_view);
+            return;
+        }
         if !self.enabled {
             // Simple blit fallback
             let bg = device.create_bind_group(&BindGroupDescriptor {
@@ -321,13 +387,10 @@ impl PostProcessChain {
             } else {
                 0.0
             },
-            _pad: [0.0; 3],
+            flash_budget: self.flash_budget,
+            _pad: [0.0; 2],
         };
-        queue.write_buffer(
-            &self.post_params_buffer,
-            0,
-            bytemuck::bytes_of(&post_params),
-        );
+        self.write_post_params(queue, &post_params);
 
         // --- Bloom passes (skip all 3 when bloom disabled) ---
         if bloom_active {
@@ -419,42 +482,93 @@ impl PostProcessChain {
             }
         }
 
-        // --- Composite pass (scene + blurred bloom → surface) ---
-        {
-            let bg = device.create_bind_group(&BindGroupDescriptor {
-                label: Some("post-composite-bg"),
-                layout: &self.composite_bgl,
-                entries: &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(&source.view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(&source.sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: BindingResource::TextureView(&self.bloom_blur_v_target.view),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        resource: BindingResource::Sampler(&self.bloom_blur_v_target.sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 4,
-                        resource: self.post_params_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-            run_fullscreen_pass(
-                encoder,
-                "post-composite",
-                &self.composite_pipeline,
-                &bg,
-                surface_view,
+        // --- Flash limiter, then composite (scene + blurred bloom → surface) ---
+        self.limit_and_composite(device, queue, encoder, source, surface_view);
+    }
+
+    fn write_post_params(&self, queue: &Queue, params: &PostParams) {
+        queue.write_buffer(&self.post_params_buffer, 0, bytemuck::bytes_of(params));
+    }
+
+    /// The composite's bind group: scene, bloom, params, and the limiter's gain.
+    fn composite_bind_group(&self, device: &Device, source: &RenderTarget) -> BindGroup {
+        device.create_bind_group(&BindGroupDescriptor {
+            label: Some("post-composite-bg"),
+            layout: &self.composite_bgl,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&source.view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&source.sampler),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: BindingResource::TextureView(&self.bloom_blur_v_target.view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(&self.bloom_blur_v_target.sampler),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: self.post_params_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: self.flash_gain_buffer.as_entire_binding(),
+                },
+            ],
+        })
+    }
+
+    /// Measure the frame and set the limiter's gain (or gain 1 when it is off),
+    /// then run the composite into `target`. Once per frame: the limiter's
+    /// state advances on every call. Captures reuse the gain through
+    /// [`Self::render_composite_to`].
+    fn limit_and_composite(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        source: &RenderTarget,
+        target: &TextureView,
+    ) {
+        let bg = self.composite_bind_group(device, source);
+        if self.flash_budget > 0.0 {
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("flash-limit"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.flash_pipeline);
+                pass.set_bind_group(0, &bg, &[]);
+                pass.set_bind_group(1, &self.flash_state_bg, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(
+                &self.flash_state_buffer,
+                0,
+                &self.flash_gain_buffer,
+                0,
+                16,
+            );
+        } else {
+            queue.write_buffer(
+                &self.flash_gain_buffer,
+                0,
+                bytemuck::cast_slice(&[1.0f32, 0.0, 0.0, 0.0]),
             );
         }
+        run_fullscreen_pass(
+            encoder,
+            "post-composite",
+            &self.composite_pipeline,
+            &bg,
+            target,
+        );
     }
 
     /// Copy an already-composited target to another view, untouched.
@@ -554,7 +668,9 @@ impl PostProcessChain {
         source: &RenderTarget,
         capture_view: &TextureView,
     ) {
-        if !self.enabled {
+        // With the flash limiter on, even a post-off frame goes through the
+        // (neutral) composite, so captures carry the same gain as the display.
+        if !self.enabled && self.flash_budget <= 0.0 {
             let bg = device.create_bind_group(&BindGroupDescriptor {
                 label: Some("output-blit-bg"),
                 layout: &self.blit_bgl,
@@ -579,32 +695,7 @@ impl PostProcessChain {
             return;
         }
 
-        let bg = device.create_bind_group(&BindGroupDescriptor {
-            label: Some("output-composite-bg"),
-            layout: &self.composite_bgl,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::TextureView(&source.view),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Sampler(&source.sampler),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::TextureView(&self.bloom_blur_v_target.view),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Sampler(&self.bloom_blur_v_target.sampler),
-                },
-                BindGroupEntry {
-                    binding: 4,
-                    resource: self.post_params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bg = self.composite_bind_group(device, source);
         run_fullscreen_pass(
             encoder,
             "output-composite",
@@ -616,6 +707,75 @@ impl PostProcessChain {
 }
 
 // --- Helper functions ---
+
+/// Flashes allowed per second by the Standard limiter: the WCAG 2.x /
+/// ITU-R BT.1702 general-flash threshold is "no more than three".
+pub const FLASH_BUDGET_STANDARD: f32 = 3.0;
+/// The Strict limiter (and Auto under the OS reduced-motion setting, #109).
+pub const FLASH_BUDGET_STRICT: f32 = 1.0;
+
+/// PostParams with every effect neutral: the composite then equals the blit
+/// (linear tone map is a clamp, alpha passes through) — used when
+/// post-processing is off but the flash limiter is on.
+fn neutral_post_params(time: f32, flash_budget: f32) -> PostParams {
+    PostParams {
+        bloom_intensity: 0.0,
+        ca_intensity: 0.0,
+        vignette_strength: 0.0,
+        grain_intensity: 0.0,
+        time,
+        rms: 0.0,
+        alpha_mode: AlphaMode::Passthrough.as_f32(),
+        tonemap_mode: 1.0,
+        grain_rate: 0.0,
+        flash_budget,
+        _pad: [0.0; 2],
+    }
+}
+
+/// The composite's layout. Visible to compute as well: the flash limiter runs
+/// `post_color()` over the same bindings.
+fn composite_bgl(device: &Device) -> BindGroupLayout {
+    let both = |mut e: BindGroupLayoutEntry| {
+        e.visibility = ShaderStages::FRAGMENT | ShaderStages::COMPUTE;
+        e
+    };
+    device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+        label: Some("post-composite-bgl"),
+        entries: &[
+            both(tex_entry(0)),     // scene
+            both(sampler_entry(1)), // scene sampler
+            both(tex_entry(2)),     // bloom
+            both(sampler_entry(3)), // bloom sampler
+            both(uniform_entry(4, std::mem::size_of::<PostParams>())),
+            uniform_entry(5, 16), // flash limiter gain
+        ],
+    })
+}
+
+fn create_flash_pipeline(
+    device: &Device,
+    composite_bgl: &BindGroupLayout,
+    state_bgl: &BindGroupLayout,
+) -> wgpu::ComputePipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("flash-limit"),
+        source: wgpu::ShaderSource::Wgsl(format!("{POST_COMPOSITE_FS}\n{FLASH_LIMIT_CS}").into()),
+    });
+    let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+        label: Some("flash-limit-layout"),
+        bind_group_layouts: &[composite_bgl, state_bgl],
+        push_constant_ranges: &[],
+    });
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("flash-limit-pipeline"),
+        layout: Some(&layout),
+        module: &module,
+        entry_point: Some("cs_flash"),
+        compilation_options: PipelineCompilationOptions::default(),
+        cache: None,
+    })
+}
 
 fn tex_entry(binding: u32) -> BindGroupLayoutEntry {
     BindGroupLayoutEntry {
@@ -797,6 +957,28 @@ mod tests {
     /// The WGSL mirror of `PostParams` is maintained by hand and uniform structs
     /// need a 16-byte multiple. `grain_rate` took the struct from 32 to 48 with
     /// three pad words; if that stops being true the shader's copy must follow.
+    /// Both builtin post shaders through naga on CPU: the composite as the
+    /// render pipeline builds it, and the limiter's compute module (the
+    /// composite source plus flash_limit.wgsl). The GPU probes are ignored in CI.
+    #[test]
+    fn post_shaders_validate_on_cpu() {
+        crate::trama::effect::validate_wgsl(&format!(
+            "{FULLSCREEN_TRIANGLE_VS_WITH_UV}\n{POST_COMPOSITE_FS}"
+        ))
+        .unwrap();
+        crate::trama::effect::validate_wgsl(&format!("{POST_COMPOSITE_FS}\n{FLASH_LIMIT_CS}"))
+            .unwrap();
+    }
+
+    #[test]
+    fn flash_state_init_matches_the_shader_struct() {
+        assert_eq!(
+            (flash_state_init().len() * 4) as u64,
+            FLASH_STATE_SIZE,
+            "FlashState in flash_limit.wgsl is 16 + 32 * 32 bytes"
+        );
+    }
+
     #[test]
     fn post_params_stay_forty_eight_bytes() {
         assert_eq!(std::mem::size_of::<PostParams>(), 48);
@@ -893,21 +1075,14 @@ mod tests {
         });
         let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let bgl = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-            label: Some("probe-post-bgl"),
-            entries: &[
-                tex_entry(0),
-                sampler_entry(1),
-                tex_entry(2),
-                sampler_entry(3),
-                uniform_entry(4, std::mem::size_of::<PostParams>()),
-            ],
-        });
+        let bgl = composite_bgl(device);
         let pipeline = create_fs_pipeline(device, "probe-post", &bgl, POST_COMPOSITE_FS, format);
 
         let ubo =
             create_uniform_buffer(device, "probe-post-ubo", std::mem::size_of::<PostParams>());
         queue.write_buffer(&ubo, 0, bytemuck::bytes_of(&params));
+        let gain = create_uniform_buffer(device, "probe-flash-gain", 16);
+        queue.write_buffer(&gain, 0, bytemuck::cast_slice(&[1.0f32, 0.0, 0.0, 0.0]));
 
         let bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("probe-post-bg"),
@@ -932,6 +1107,10 @@ mod tests {
                 BindGroupEntry {
                     binding: 4,
                     resource: ubo.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: gain.as_entire_binding(),
                 },
             ],
         });
@@ -1023,7 +1202,8 @@ mod tests {
             alpha_mode: 2.0, // passthrough
             tonemap_mode: 1.0,
             grain_rate: 0.0,
-            _pad: [0.0; 3],
+            flash_budget: 0.0,
+            _pad: [0.0; 2],
         };
         let out = probe_composite_scene(&device, &queue, params, &scene);
         for (i, (&got, &want)) in out.iter().zip(scene.iter()).enumerate() {
@@ -1046,7 +1226,8 @@ mod tests {
             alpha_mode: 0.0,
             tonemap_mode: 1.0,
             grain_rate,
-            _pad: [0.0; 3],
+            flash_budget: 0.0,
+            _pad: [0.0; 2],
         }
     }
 
@@ -1100,5 +1281,249 @@ mod tests {
         let a = probe_composite(&device, &queue, grain_only(1.000, 0.0));
         let b = probe_composite(&device, &queue, grain_only(1.030, 0.0));
         assert_ne!(a, b, "grain_rate = 0 should still update every frame");
+    }
+
+    // ---- Flash limiter (#108) ----
+
+    /// Every post effect off, linear tone map: the output is the scene, so a
+    /// test controls the displayed luminance directly.
+    fn plain_post() -> PostProcessDef {
+        PostProcessDef {
+            bloom_enabled: false,
+            ca_enabled: false,
+            vignette_enabled: false,
+            grain_enabled: false,
+            tonemap: "linear".into(),
+            ..PostProcessDef::default()
+        }
+    }
+
+    /// Run a real chain for `levels.len()` frames at 60 fps over a uniform grey
+    /// scene of `levels[i]`, returning each output frame's mean luminance.
+    fn run_flash_chain(budget: f32, post_enabled: bool, levels: &[f32]) -> Vec<f32> {
+        run_flash_chain_from(0.0, budget, post_enabled, levels)
+    }
+
+    /// [`run_flash_chain`] on a 60 fps clock that starts `start` seconds in,
+    /// passed through the wrap the live `time` uniform gets.
+    fn run_flash_chain_from(
+        start: f64,
+        budget: f32,
+        post_enabled: bool,
+        levels: &[f32],
+    ) -> Vec<f32> {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        // 64 px: one row is exactly the 256-byte copy alignment.
+        let dim = 64u32;
+        let out_format = TextureFormat::Rgba8Unorm;
+        let hdr = TextureFormat::Rgba16Float;
+        let mut chain = PostProcessChain::new(&device, out_format, hdr, dim, dim);
+        chain.flash_budget = budget;
+        chain.enabled = post_enabled;
+        let source = RenderTarget::new(&device, dim, dim, hdr, 1.0, "flash-probe-src");
+        let out = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("flash-probe-out"),
+            size: wgpu::Extent3d {
+                width: dim,
+                height: dim,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: out_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("flash-probe-readback"),
+            size: u64::from(dim * dim * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let post = plain_post();
+
+        let mut lum = Vec::with_capacity(levels.len());
+        for (i, &level) in levels.iter().enumerate() {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let v = f64::from(level);
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("flash-probe-clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &source.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: v,
+                                g: v,
+                                b: v,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+            }
+            chain.render(
+                &device,
+                &queue,
+                &mut encoder,
+                &source,
+                &out_view,
+                crate::gpu::uniforms::shader_time(start + i as f64 / 60.0),
+                0.0,
+                0.0,
+                0.0,
+                &post,
+                AlphaMode::Opaque,
+            );
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &out,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(dim * 4),
+                        rows_per_image: Some(dim),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: dim,
+                    height: dim,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit(std::iter::once(encoder.finish()));
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .expect("poll");
+            let px = slice.get_mapped_range().to_vec();
+            readback.unmap();
+            let sum: f64 = px
+                .chunks_exact(4)
+                .map(|p| {
+                    0.2126 * f64::from(p[0]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[2])
+                })
+                .sum();
+            lum.push((sum / 255.0 / f64::from(dim * dim)) as f32);
+        }
+        lum
+    }
+
+    /// Independent CPU count of general flashes by the WCAG rule: rises of
+    /// 0.1 relative luminance from a darker state below 0.8, each ending a
+    /// fall of 0.1. Returns the most rises in any one-second window.
+    fn max_flashes_per_second(lum: &[f32]) -> usize {
+        let mut rises = Vec::new();
+        let (mut rising, mut extreme) = (false, lum[0]);
+        for (i, &l) in lum.iter().enumerate() {
+            if rising {
+                extreme = extreme.max(l);
+                if extreme - l >= 0.1 {
+                    rising = false;
+                    extreme = l;
+                }
+            } else {
+                extreme = extreme.min(l);
+                if l - extreme >= 0.1 && extreme < 0.8 {
+                    rises.push(i);
+                    rising = true;
+                    extreme = l;
+                }
+            }
+        }
+        rises
+            .iter()
+            .map(|&start| {
+                rises
+                    .iter()
+                    .filter(|&&r| r >= start && r < start + 60)
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// A 10 Hz full-frame black/white strobe, three seconds at 60 fps.
+    fn strobe_10hz() -> Vec<f32> {
+        (0..180)
+            .map(|i| if (i / 3) % 2 == 0 { 0.0 } else { 1.0 })
+            .collect()
+    }
+
+    /// The shader clock wraps hourly (#95). A strobe running across the wrap
+    /// keeps its spent budget rather than getting a fresh one when time jumps
+    /// back to 0.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored flash_limiter
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flash_limiter_holds_the_budget_across_the_clock_wrap() {
+        let start = crate::gpu::uniforms::SHADER_TIME_PERIOD_S - 1.5;
+        let out = run_flash_chain_from(start, 3.0, true, &strobe_10hz());
+        let got = max_flashes_per_second(&out);
+        assert_eq!(got, 3, "{got} flashes in one second across the wrap");
+    }
+
+    /// The limiter throttles a 10 Hz strobe to the budget, on screen and with
+    /// post-processing off, and lets through as many flashes as it allows.
+    ///
+    /// Run: cargo test -p fosfora-app -- --ignored flash_limiter
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flash_limiter_caps_a_strobe_at_the_budget() {
+        let strobe = strobe_10hz();
+        let unlimited = max_flashes_per_second(&run_flash_chain(0.0, true, &strobe));
+        assert!(
+            unlimited >= 9,
+            "sanity: the raw strobe is ~10/s, got {unlimited}"
+        );
+
+        for (budget, post_on) in [(3.0, true), (1.0, true), (3.0, false)] {
+            let out = run_flash_chain(budget, post_on, &strobe);
+            let got = max_flashes_per_second(&out);
+            assert_eq!(
+                got, budget as usize,
+                "budget {budget} (post {post_on}): {got} flashes in one second"
+            );
+        }
+    }
+
+    /// Content that never flashes passes through untouched: a single cut to
+    /// white that holds, and a 1 Hz pulse (one flash a second, under budget).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flash_limiter_leaves_non_flashing_content_alone() {
+        let cut: Vec<f32> = (0..120).map(|i| if i < 30 { 0.0 } else { 1.0 }).collect();
+        let pulse: Vec<f32> = (0..180)
+            .map(|i| if i % 60 < 30 { 0.1 } else { 0.9 })
+            .collect();
+        for levels in [cut, pulse] {
+            let limited = run_flash_chain(FLASH_BUDGET_STANDARD, true, &levels);
+            let off = run_flash_chain(0.0, true, &levels);
+            for (i, (a, b)) in limited.iter().zip(&off).enumerate() {
+                assert!(
+                    (a - b).abs() < 1.5 / 255.0,
+                    "frame {i}: limited {a}, off {b}"
+                );
+            }
+        }
     }
 }

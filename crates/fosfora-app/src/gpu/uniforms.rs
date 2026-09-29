@@ -234,6 +234,21 @@ impl UniformBuffer {
     }
 }
 
+/// Period of the `time` uniform, in seconds.
+///
+/// `u.time` is seconds since launch modulo this, not raw uptime. f32 uptime
+/// loses precision as it grows (a ~2 ms step at 4.5 h, ~16 ms at 36 h), so a
+/// fast `sin(u.time * k)` stutters in a long installation. Wrapped, the step
+/// never exceeds ~0.25 ms; the cost is one jump back to 0 per hour, the same
+/// discontinuity an effect load already causes.
+pub const SHADER_TIME_PERIOD_S: f64 = 3600.0;
+
+/// The `time` uniform for `secs` seconds of elapsed clock. Wraps in f64, so the
+/// result is exact however long the clock has run.
+pub fn shader_time(secs: f64) -> f32 {
+    secs.rem_euclid(SHADER_TIME_PERIOD_S) as f32
+}
+
 /// Mirror every [`AudioFeatures`] field into its shader-uniform slot.
 ///
 /// Extracted verbatim from `App::update`'s drain block so the headless scene
@@ -320,6 +335,19 @@ mod tests {
         // array<vec4f> members and match the WGSL PhosphorUniforms struct byte-for-byte
         // (declared twice: effect/loader.rs UNIFORM_BLOCK and assets/shaders/default.wgsl).
         assert_eq!(std::mem::size_of::<ShaderUniforms>(), 448);
+    }
+
+    #[test]
+    fn shader_time_wraps_and_keeps_its_resolution() {
+        assert_eq!(shader_time(0.0), 0.0);
+        assert_eq!(shader_time(12.5), 12.5);
+        assert_eq!(shader_time(SHADER_TIME_PERIOD_S), 0.0);
+        // A day and a half in: unwrapped f32 steps by ~15.6 ms here, so a
+        // 60 fps frame (16.7 ms) could round to no motion at all.
+        let t0 = 36.0 * 3600.0 + 1234.0;
+        let step = shader_time(t0 + 1.0 / 60.0) - shader_time(t0);
+        assert!((step - 1.0 / 60.0).abs() < 1e-3, "step {step}");
+        assert!((0.0..SHADER_TIME_PERIOD_S as f32).contains(&shader_time(t0)));
     }
 
     #[test]

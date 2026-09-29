@@ -10,6 +10,21 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::particle::ParticleSystem;
 use crate::settings::ParticleQuality;
 
+/// Largest particle count whose biggest per-particle storage binding fits in
+/// `max_binding` bytes. That is the compute rasterizer's sorted_particles
+/// (9 × 4 bytes: 3×3 tile coverage in the scatter pass), or for a morph effect
+/// the aux buffer, which holds one 16-byte home per morph target (64 bytes).
+fn max_particles_for_binding(max_binding: u64, morph: bool) -> u32 {
+    let sorted = 9 * 4;
+    let aux_targets = if morph {
+        crate::gpu::particle::morph::MORPH_MAX_TARGETS as u64
+    } else {
+        1
+    };
+    let aux = std::mem::size_of::<crate::gpu::particle::types::ParticleAux>() as u64 * aux_targets;
+    (max_binding / sorted.max(aux)).min(u64::from(u32::MAX)) as u32
+}
+
 pub(crate) fn build_particle_system(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -31,10 +46,8 @@ pub(crate) fn build_particle_system(
     }
 
     // Cap particle count to device storage buffer binding limit.
-    // The largest buffer is sorted_particles_buffer = max_particles × 9 × 4 bytes
-    // (3×3 tile coverage in compute rasterizer scatter pass).
     let max_binding = device.limits().max_storage_buffer_binding_size as u64;
-    let max_from_binding = (max_binding / (9 * 4)) as u32;
+    let max_from_binding = max_particles_for_binding(max_binding, particles.morph);
     if particles.max_count > max_from_binding {
         log::warn!(
             "Capping particles from {} to {} (storage buffer binding limit {}MB)",
@@ -287,4 +300,22 @@ pub(crate) fn build_particle_system(
     }
 
     Some(ps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_particles_for_binding;
+
+    /// DX12's 128 MiB binding limit: the morph aux buffer (64 B per particle)
+    /// set the real limit, not sorted_particles (36 B), and a morph effect over
+    /// ~524K particles failed bind-group validation (#97).
+    #[test]
+    fn morph_aux_buffer_bounds_the_cap() {
+        let dx12 = 128 * 1024 * 1024;
+        assert_eq!(max_particles_for_binding(dx12, false), 3_728_270);
+        let morph = max_particles_for_binding(dx12, true);
+        assert_eq!(morph, 2_097_152);
+        assert!(u64::from(morph) * 64 <= dx12);
+        assert!(u64::from(morph + 1) * 64 > dx12);
+    }
 }

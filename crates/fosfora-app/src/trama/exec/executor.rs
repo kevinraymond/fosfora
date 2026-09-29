@@ -176,7 +176,6 @@ impl<'a> ChainInputSource<'a> {
 
     /// A source whose target identity never alternates with parity — a media
     /// layer, or the composited frame the master chain reads.
-    #[allow(dead_code)] // used by the frame-graph integration in stage C
     pub fn stable(
         view: &'a wgpu::TextureView,
         sampler: &'a wgpu::Sampler,

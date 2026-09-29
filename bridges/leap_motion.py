@@ -93,7 +93,7 @@ def main():
         print("  Install the Leap SDK from ultraleap.com for live data.")
         print("=" * 60)
 
-    bridge = FosforaBridge("leap-motion", args.host, args.port)
+    bridge = FosforaBridge("leap-motion", args.host, args.port, args.key)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[leap-motion] Fields: {len(schema)}")

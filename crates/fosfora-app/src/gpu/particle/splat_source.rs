@@ -114,6 +114,9 @@ pub struct DemoScene {
     /// release asset on the non-version `demo-assets` tag; `ureq` follows the
     /// 302 to the CDN. Empty disables the Download button (shows a hint).
     pub url: &'static str,
+    /// SHA-256 of the file at `url`; the download is refused unless it matches,
+    /// since the `demo-assets` release asset can be replaced.
+    pub sha256: &'static str,
     /// Approximate size shown in the confirm dialog.
     pub size_mb: u32,
 }
@@ -122,6 +125,7 @@ pub const DEMO_SCENES: &[DemoScene] = &[DemoScene {
     name: "default",
     file: "phosphor_demo.ply",
     url: "https://github.com/kevinraymond/fosfora/releases/download/demo-assets/trooper.ply",
+    sha256: "a8e9861674fae80422bc923f94b1fb1ba26371fc47526c4bb8949dc1ce768e11",
     size_mb: 42,
 }];
 
@@ -135,15 +139,15 @@ pub fn demo_scene_cached(name: &str) -> bool {
 }
 
 /// Download the named demo scene on a background thread (mirrors
-/// `depth::model::download_model`): .tmp → rename, cancellable, progress
+/// `depth::model::download_model`): .tmp → SHA-256 check → rename, cancellable, progress
 /// 0–100 / 101 complete / 102 error.
 #[cfg(feature = "desktop")]
 pub fn download_demo_scene(name: &str) -> Arc<crate::download::DownloadProgress> {
     let progress = crate::download::DownloadProgress::new();
     let progress_clone = Arc::clone(&progress);
     let demo = demo_scene(name);
-    let (url, file) = match demo {
-        Some(d) if !d.url.is_empty() => (d.url.to_string(), d.file.to_string()),
+    let (url, file, sha256) = match demo {
+        Some(d) if !d.url.is_empty() => (d.url.to_string(), d.file.to_string(), d.sha256),
         _ => {
             if let Ok(mut msg) = progress.error_message.lock() {
                 *msg = Some(format!("demo scene '{name}' has no published URL yet"));
@@ -161,7 +165,13 @@ pub fn download_demo_scene(name: &str) -> Arc<crate::download::DownloadProgress>
             let run = || -> anyhow::Result<()> {
                 let dir = splat_dir();
                 std::fs::create_dir_all(&dir)?;
-                crate::download::download_file(&url, &dir.join(&file), &file, &progress_clone)?;
+                crate::download::download_file(
+                    &url,
+                    &dir.join(&file),
+                    &file,
+                    sha256,
+                    &progress_clone,
+                )?;
                 Ok(())
             };
             match run() {

@@ -23,9 +23,6 @@ pub struct NodeId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ChainId {
     /// Post-processes layer `n`'s rendered target, before compositing.
-    // Constructed by the frame-graph integration (stage C); until then only
-    // the tests build one.
-    #[allow(dead_code)]
     Layer(u8),
     /// Post-processes the composited frame, upstream of `PostProcessDef`.
     Master,

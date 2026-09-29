@@ -1,7 +1,6 @@
 use super::types::{AdvanceMode, SceneCue, TransitionType};
 
 /// Runtime playback state of the timeline.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum PlaybackState {
     /// No playback — waiting for user action.
@@ -19,7 +18,6 @@ pub enum PlaybackState {
 }
 
 /// Events emitted by the timeline each tick.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum TimelineEvent {
     /// Nothing happened.

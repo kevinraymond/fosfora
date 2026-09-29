@@ -77,7 +77,6 @@ impl PreviewSet {
 
     /// Drop every entry belonging to `chain` — the chain itself is gone (its
     /// layer was deleted).
-    #[allow(dead_code)] // wired up by layer add/remove in stage C
     pub fn drop_chain(&mut self, chain: ChainId) {
         self.prune(chain, |_| false);
     }

@@ -72,6 +72,10 @@ ctrlc = { version = "3", optional = true }
 dirs = "6"
 # WebSocket server
 tungstenite = { version = "0.28", optional = true }
+# The web remote's access key (already in the tree via tungstenite)
+getrandom = { version = "0.3", optional = true }
+# QR code of the web remote's network link (MIT, no dependencies)
+qrcodegen = { version = "1.8", optional = true }
 # Image loading (particle sprites, media layers)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # WebP animation decoding (image crate only decodes first frame)
@@ -98,6 +102,8 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 # worse than the ~100s-KB size cost. Off only for non-desktop (XR) lib builds, where
 # native-tls does not build.
 ureq = { version = "3", features = ["native-tls"], optional = true }
+# Every download is checked against a pinned SHA-256 before it is used.
+sha2 = { version = "0.10", optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
@@ -191,8 +197,11 @@ desktop = [
     "dep:midir",
     "dep:ctrlc",
     "dep:tungstenite",
+    "dep:getrandom",
+    "dep:qrcodegen",
     "dep:rfd",
     "dep:ureq",
+    "dep:sha2",
 ]
 # Exactly what the release downloads ship: release.yml builds with this, so
 # `cargo build --release --features release` reproduces a download. The

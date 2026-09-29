@@ -13,6 +13,7 @@ use crossbeam_channel::{Receiver, Sender};
 
 use self::types::{WebConfig, WebFrameResult, WsInMessage};
 use crate::audio::features::AudioFeatures;
+use crate::inbound::DropOldestSender;
 use std::collections::HashMap;
 
 use crate::params::{ParamDef, ParamValue};
@@ -20,7 +21,7 @@ use crate::params::{ParamDef, ParamValue};
 /// Central WebSocket system: owns accept thread, client channels, config.
 pub struct WebSystem {
     inbound_rx: Option<Receiver<WsInMessage>>,
-    inbound_tx: Sender<WsInMessage>,
+    inbound_tx: DropOldestSender<WsInMessage>,
     clients: Arc<Mutex<Vec<Sender<String>>>>,
     shutdown: Option<Arc<AtomicBool>>,
     accept_handle: Option<JoinHandle<()>>,
@@ -39,7 +40,7 @@ pub struct WebSystem {
 impl WebSystem {
     /// The system with `config` and nothing opened: no server started.
     fn unconnected(config: WebConfig) -> Self {
-        let (inbound_tx, inbound_rx) = crossbeam_channel::bounded(64);
+        let (inbound_tx, inbound_rx) = crate::inbound::bounded(64);
 
         Self {
             inbound_rx: Some(inbound_rx),
@@ -67,6 +68,10 @@ impl WebSystem {
 
     pub fn new() -> Self {
         let mut sys = Self::unconnected(WebConfig::load());
+        if sys.config.access_key.is_empty() {
+            sys.config.access_key = types::new_access_key();
+            sys.config.save();
+        }
 
         if sys.config.enabled {
             sys.start_server();
@@ -80,10 +85,12 @@ impl WebSystem {
         self.stop_server();
         let shutdown = Arc::new(AtomicBool::new(false));
         let clients = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = crossbeam_channel::bounded(64);
+        let (tx, rx) = crate::inbound::bounded(64);
 
         match server::spawn_accept_loop(
             self.config.port,
+            self.config.lan,
+            self.config.access_key.clone(),
             tx.clone(),
             clients.clone(),
             self.latest_state.clone(),
@@ -140,6 +147,21 @@ impl WebSystem {
         self.config.save();
     }
 
+    /// Allow or refuse connections from other devices; restarts the server.
+    pub fn set_lan(&mut self, lan: bool) {
+        self.config.lan = lan;
+        self.config.save();
+        self.restart_server();
+    }
+
+    /// Replace the access key. Restarts the server, so every connection drops
+    /// and only devices given the new key get back in.
+    pub fn replace_access_key(&mut self) {
+        self.config.access_key = types::new_access_key();
+        self.config.save();
+        self.restart_server();
+    }
+
     /// Whether the server is running.
     pub fn is_running(&self) -> bool {
         self.shutdown
@@ -179,7 +201,7 @@ impl WebSystem {
                     result.layer_params.push((layer, name, value));
                 }
                 WsInMessage::LoadEffect { index } => {
-                    result.effect_loads.push(index);
+                    result.effect_load = Some(index);
                 }
                 WsInMessage::SelectLayer { index } => {
                     result.select_layer = Some(index);
@@ -197,7 +219,7 @@ impl WebSystem {
                     result.triggers.push(action);
                 }
                 WsInMessage::LoadPreset { index } => {
-                    result.preset_loads.push(index);
+                    result.preset_load = Some(index);
                 }
                 WsInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
@@ -257,13 +279,13 @@ impl WebSystem {
                     result.postprocess_enabled = Some(enabled);
                 }
                 WsInMessage::LoadEffect { index } => {
-                    result.effect_loads.push(index);
+                    result.effect_load = Some(index);
                 }
                 WsInMessage::SelectLayer { index } => {
                     result.select_layer = Some(index);
                 }
                 WsInMessage::LoadPreset { index } => {
-                    result.preset_loads.push(index);
+                    result.preset_load = Some(index);
                 }
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
@@ -352,5 +374,31 @@ fn apply_param(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A burst of loads compiles only the last effect and preset (#44).
+    #[test]
+    fn loads_in_one_frame_coalesce_to_the_last() {
+        let mut web = WebSystem::offline();
+        for index in [1, 2, 3] {
+            web.inbound_tx.send(WsInMessage::LoadEffect { index });
+        }
+        for index in [4, 5] {
+            web.inbound_tx.send(WsInMessage::LoadPreset { index });
+        }
+        let mut changed = false;
+        let r = web.update(&mut HashMap::new(), &mut changed, &[]);
+        assert_eq!(r.effect_load, Some(3));
+        assert_eq!(r.preset_load, Some(5));
+
+        web.inbound_tx.send(WsInMessage::LoadEffect { index: 7 });
+        web.inbound_tx.send(WsInMessage::LoadEffect { index: 8 });
+        let r = web.update_triggers_only();
+        assert_eq!(r.effect_load, Some(8));
     }
 }

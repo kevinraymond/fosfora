@@ -101,13 +101,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Receiver;
 
 pub use self::beat::{TempoCommand, TempoConfig, TempoControl, TempoPreset};
 use self::capture::{AudioCapture, RingBuffer};
 use self::hop::HopAnalyzer;
 use self::interp::FeatureInterpolator;
 pub use self::structure::StructureConfig;
+use crate::inbound::DropOldestSender;
 use crate::settings::BandScale;
 
 /// Holds the capture backend, keeping it alive while the audio processing thread runs.
@@ -461,7 +462,10 @@ impl AudioSystem {
         tempo: Arc<Mutex<TempoControl>>,
         recording_ring: Arc<RingBuffer>,
     ) -> Self {
-        let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::bounded(4);
+        // A full queue evicts its oldest frame (#59): when the render side stalls, the
+        // newest analysis is what it should see on catching up, not frames from before the
+        // stall.
+        let (tx, rx) = crate::inbound::bounded::<AudioFrame>(4);
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let beat_counter = Arc::new(AtomicU32::new(0));
@@ -1258,7 +1262,7 @@ const TAP_MIN_TAPS: usize = 3;
 fn audio_thread(
     ring: Arc<RingBuffer>,
     sample_rate: f32,
-    tx: Sender<AudioFrame>,
+    tx: DropOldestSender<AudioFrame>,
     shutdown: Arc<AtomicBool>,
     recording_ring: Arc<RingBuffer>,
     beat_counter: Arc<AtomicU32>,
@@ -1305,6 +1309,14 @@ fn audio_thread(
         let read = ring.read(&mut read_buf[..to_read]);
         if read == 0 {
             continue;
+        }
+        // A loopback device carries whatever an upstream app's DSP produced, NaN/Inf included,
+        // and one such sample permanently poisons every running sum and EMA downstream
+        // (loudness, the z-score normalizer). Silence it here, before anything reads it (#51).
+        for s in &mut read_buf[..read] {
+            if !s.is_finite() {
+                *s = 0.0;
+            }
         }
         // Interleaved L,R off the capture ring — always even-length (ring L/R parity invariant).
         let stereo = &read_buf[..read];
@@ -1362,8 +1374,8 @@ fn audio_thread(
                 drop_counter.fetch_add(1, Ordering::Relaxed);
             }
 
-            // Non-blocking send; drop if main thread is behind
-            let _ = tx.try_send(out.frame);
+            // Non-blocking; if the main thread is behind, the oldest queued frame goes.
+            tx.send(out.frame);
         }
 
         // Drop the samples we consumed; keep the sub-hop remainder for next time.
@@ -1413,9 +1425,9 @@ pub(crate) mod tests {
 
     /// Run `audio_thread` over a fixed signal via its real interface and return every frame's
     /// feature vector. Feeds the ring in chunks small enough that the 65536-sample ring never
-    /// overruns, and uses an *unbounded* channel so no frame is dropped — the per-hop values
-    /// are independent of read chunking (the FFT window is a shift register and the timestamp
-    /// comes from a pure sample counter), so the result is deterministic.
+    /// overruns, and sizes the frame queue to hold every hop so no frame is dropped — the
+    /// per-hop values are independent of read chunking (the FFT window is a shift register and
+    /// the timestamp comes from a pure sample counter), so the result is deterministic.
     fn run_audio_thread_over(signal: &[f32], sample_rate: f32) -> Vec<AudioFeatures> {
         run_audio_thread_collecting(signal, sample_rate)
             .0
@@ -1432,7 +1444,7 @@ pub(crate) mod tests {
     ) -> (Vec<AudioFrame>, PulseCounts) {
         let ring = Arc::new(RingBuffer::new());
         let rec_ring = Arc::new(RingBuffer::new());
-        let (tx, rx): (Sender<AudioFrame>, Receiver<AudioFrame>) = crossbeam_channel::unbounded();
+        let (tx, rx) = crate::inbound::bounded::<AudioFrame>(signal.len() / ANALYSIS_HOP + 8);
         let shutdown = Arc::new(AtomicBool::new(false));
         let beat_counter = Arc::new(AtomicU32::new(0));
         let downbeat_counter = Arc::new(AtomicU32::new(0));
@@ -1516,6 +1528,32 @@ pub(crate) mod tests {
                     approx_eq(g, e, 1e-5),
                     "hop {hop} feature {i} ({}): got {g}, expected {e}",
                     schema::FEATURES[i].name,
+                );
+            }
+        }
+    }
+
+    /// A burst of NaN/Inf from the capture device must not leave any feature non-finite, then
+    /// or afterwards: running sums (loudness) and EMAs (normalizer) never recover from one (#51).
+    #[test]
+    fn non_finite_samples_never_reach_the_features() {
+        const SR: f32 = 44100.0;
+        let mut signal = golden_signal(SR, 2.0);
+        for (i, s) in signal[40_000..40_064].iter_mut().enumerate() {
+            *s = match i % 3 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                _ => f32::NEG_INFINITY,
+            };
+        }
+        let frames = run_audio_thread_over(&signal, SR);
+        assert!(!frames.is_empty());
+        for (hop, f) in frames.iter().enumerate() {
+            for (i, v) in f.as_slice().iter().enumerate() {
+                assert!(
+                    v.is_finite(),
+                    "hop {hop} feature {i} ({}) is {v}",
+                    schema::FEATURES[i].name
                 );
             }
         }

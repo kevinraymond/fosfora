@@ -303,6 +303,9 @@ impl BindingBus {
 
         // Update values and per-field timestamps
         for (key, &value) in incoming {
+            if !value.is_finite() {
+                continue;
+            }
             self.ws_bind_values.insert(key.clone(), value);
             self.ws_field_last_seen.insert(key.clone(), now);
         }
@@ -421,6 +424,11 @@ impl BindingBus {
             let Some((value, raw)) = snapshot.get(&binding.source) else {
                 continue;
             };
+            // A NaN/Inf source (a raw OSC value, a web field) is treated like a missing
+            // one: it would poison `smooth_state` for good and reach the target (#46).
+            if !value.is_finite() {
+                continue;
+            }
 
             let runtime = match self.runtimes.get_mut(binding.id.as_str()) {
                 Some(r) => r,
@@ -1089,6 +1097,39 @@ mod tests {
         let out = bus.evaluate_snapshot(snap("audio.kick", 1.0));
         assert!(!out[0].rising);
         assert!(out[0].value < 0.5);
+    }
+
+    /// One NaN from a source must not poison a smoothed binding for good (#46).
+    #[test]
+    fn a_non_finite_source_is_skipped_and_smoothing_survives() {
+        let mut bus = empty_bus();
+        let id = bus.add_binding(
+            "osc.x".into(),
+            "layer.0.opacity".into(),
+            BindingScope::Global,
+        );
+        bus.get_binding_mut(&id)
+            .unwrap()
+            .transforms
+            .push(TransformDef::Smooth { factor: 0.5 });
+
+        bus.evaluate_snapshot(snap("osc.x", 1.0));
+        assert!(bus.evaluate_snapshot(snap("osc.x", f32::NAN)).is_empty());
+        assert!(
+            bus.evaluate_snapshot(snap("osc.x", f32::INFINITY))
+                .is_empty()
+        );
+        let out = bus.evaluate_snapshot(snap("osc.x", 1.0));
+        assert!(
+            out[0].value.is_finite(),
+            "smoothing poisoned: {}",
+            out[0].value
+        );
+
+        let mut ws = HashMap::new();
+        ws.insert("f".to_string(), f32::INFINITY);
+        bus.ingest_ws_values(&ws);
+        assert!(!bus.ws_bind_values.contains_key("f"));
     }
 
     #[test]
