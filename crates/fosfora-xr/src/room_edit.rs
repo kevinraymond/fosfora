@@ -23,8 +23,9 @@
 //!
 //! **The gestures** act on the hit as it shows: a tap cycles its behavior
 //! ([`EditAction::Cycle`]), a hold applies its behavior to every surface
-//! of its kind ([`EditAction::AssignKind`]); either without a hit does
-//! nothing and says so ([`EditFrame::unaimed`]). The highlight pulses
+//! of its kind ([`EditAction::AssignKind`]); either without a hit, or
+//! without a ray (the hand lost, the panel up) while a hit is still held,
+//! does nothing and says so ([`EditFrame::unaimed`]). The highlight pulses
 //! once ([`PULSE_S`]) for a cycle, twice for a class assignment.
 
 use glam::Vec3;
@@ -195,7 +196,7 @@ impl RoomEditor {
         };
         let (mut action, mut unaimed) = (None, None);
         if let Some((name, make, pulses)) = gesture {
-            match self.hit {
+            match self.hit.filter(|_| input.ray.is_some()) {
                 Some(h) => {
                     action = Some(make(h.index));
                     self.pulse = Some((0.0, pulses));
@@ -405,6 +406,16 @@ mod tests {
             tap: true,
             ..input(&b, WALL)
         });
+        assert_eq!((f.action, f.unaimed), (None, Some("tap")));
+        // Without a ray (the panel up, the hand lost) a held hit is not
+        // acted on.
+        point(&mut e, &b, WALL, frames(CONFIRM_S));
+        let f = e.step(&EditInput {
+            ray: None,
+            tap: true,
+            ..input(&b, WALL)
+        });
+        assert!(f.hit.is_some());
         assert_eq!((f.action, f.unaimed), (None, Some("tap")));
         // With the mode off, nothing at all.
         point(&mut e, &b, WALL, frames(CONFIRM_S));

@@ -205,7 +205,7 @@ fn room_label(room: Option<u64>) -> String {
 
 /// A box for the log: its label (`stage floor` for the stage floor) and
 /// the first 8 hex digits of its UUID.
-fn box_label(b: &LaneBox<'_>) -> (String, String) {
+pub fn box_label(b: &LaneBox<'_>) -> (String, String) {
     let label = if b.uuid == STAGE_FLOOR_UUID {
         "stage floor".to_owned()
     } else {

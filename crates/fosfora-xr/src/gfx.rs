@@ -70,8 +70,8 @@ pub struct Gfx {
     panel_visible: std::cell::Cell<bool>,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
-    /// Beams (`set_beam`): the debug panel's pointer and one per hand for
-    /// the reach extension.
+    /// Beams (`set_beam`): the debug panel's pointer, one per hand for
+    /// the reach extension and the room editor's pick.
     beam: QuadBinding,
     beam_visible: std::cell::Cell<[bool; BEAM_SLOTS]>,
     beam_pipeline: wgpu::RenderPipeline,
@@ -85,6 +85,11 @@ pub struct Gfx {
     canvas: QuadBinding,
     canvas_visible: std::cell::Cell<bool>,
     canvas_pipeline: wgpu::RenderPipeline,
+    /// The room editor's highlight (`set_highlight`, `highlight.rs`): one
+    /// lit quad on the face the pick hit.
+    highlight: QuadBinding,
+    highlight_visible: std::cell::Cell<bool>,
+    highlight_pipeline: wgpu::RenderPipeline,
     /// Small sprites marking the virtual (reach-extended) hand joints.
     ghost: QuadBinding,
     ghost_count: std::cell::Cell<u32>,
@@ -107,10 +112,13 @@ struct QuadBinding {
     bind_group: wgpu::BindGroup,
 }
 
-/// Beam slots: the debug panel's pointer, and each hand's reach beam.
-pub const BEAM_SLOTS: usize = 3;
+/// Beam slots: the debug panel's pointer, each hand's reach beam and the
+/// room editor's pick (board #3326). `BEAM_WGSL`'s array takes its length
+/// from this, as the uniform does.
+pub const BEAM_SLOTS: usize = 4;
 pub const BEAM_PANEL: usize = 0;
 pub const BEAM_REACH: [usize; 2] = [1, 2];
+pub const BEAM_PICK: usize = 3;
 /// Bytes per beam in the uniform: four corners and a color.
 const BEAM_BYTES: u64 = 80;
 /// Ghost sprites the uniform holds (both hands' 26 joints fit).
@@ -399,6 +407,13 @@ impl Gfx {
             "xr-canvas",
             crate::canvas::UNIFORM_ROWS,
         );
+        let (highlight_pipeline, highlight) = build_surface_pipeline(
+            &device,
+            &eye_layout,
+            crate::highlight::HIGHLIGHT_WGSL,
+            "xr-highlight",
+            crate::highlight::UNIFORM_ROWS,
+        );
         info!("wgpu device ready");
 
         Ok(Self {
@@ -417,6 +432,9 @@ impl Gfx {
             canvas,
             canvas_visible: std::cell::Cell::new(false),
             canvas_pipeline,
+            highlight,
+            highlight_visible: std::cell::Cell::new(false),
+            highlight_pipeline,
             ghost,
             ghost_count: std::cell::Cell::new(0),
             ghost_pipeline,
@@ -546,8 +564,8 @@ impl Gfx {
         self.panel_visible.set(true);
     }
 
-    /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`) for this frame,
-    /// or hide it with `None`.
+    /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`, `BEAM_PICK`) for
+    /// this frame, or hide it with `None`.
     pub fn set_beam(&self, slot: usize, beam: Option<Beam>) {
         let mut visible = self.beam_visible.get();
         // A hidden slot is a zero-area strip: it draws no fragments.
@@ -598,6 +616,16 @@ impl Gfx {
                 .write_buffer(&self.canvas.uniform, 0, bytemuck::cast_slice(rows));
         }
         self.canvas_visible.set(rows.is_some());
+    }
+
+    /// The room editor's highlight for this frame (`highlight::uniform`'s
+    /// rows), or hidden with `None`.
+    pub fn set_highlight(&self, rows: Option<&[[f32; 4]; crate::highlight::UNIFORM_ROWS]>) {
+        if let Some(rows) = rows {
+            self.queue
+                .write_buffer(&self.highlight.uniform, 0, bytemuck::cast_slice(rows));
+        }
+        self.highlight_visible.set(rows.is_some());
     }
 
     /// The ghost sprites for this frame: xyz and radius per point (at most
@@ -894,6 +922,13 @@ impl Gfx {
                 pass.set_bind_group(1, &self.canvas.bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
+            // The room editor's highlight on the same terms, after both.
+            if self.highlight_visible.get() {
+                pass.set_pipeline(&self.highlight_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.highlight.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);
             }
@@ -1151,11 +1186,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
+/// The beams' shader. `BEAM_SLOTS` in it is replaced by the constant's
+/// value when the pipeline is built, so the array and the uniform buffer
+/// are the same size.
 const BEAM_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
 struct Beam { corners: array<vec4<f32>, 4>, color: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
-@group(1) @binding(0) var<uniform> beams: array<Beam, 3>;
+@group(1) @binding(0) var<uniform> beams: array<Beam, BEAM_SLOTS>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -1196,7 +1234,11 @@ fn build_beam_pipeline(
 ) -> (wgpu::RenderPipeline, QuadBinding) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("xr-beam"),
-        source: wgpu::ShaderSource::Wgsl(BEAM_WGSL.into()),
+        source: wgpu::ShaderSource::Wgsl(
+            BEAM_WGSL
+                .replace("BEAM_SLOTS", &BEAM_SLOTS.to_string())
+                .into(),
+        ),
     });
     let beam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("xr-beam"),
@@ -1275,12 +1317,13 @@ fn build_beam_pipeline(
 }
 
 /// A lit surface quad's pipeline and its uniform of `rows` vec4s: the
-/// floor ripple (`ripple.rs`) and the wall spectrum (`canvas.rs`). The
-/// beam's setup (premultiplied alpha, depth-tested, no depth write, no
-/// culling) plus a depth bias toward the camera. The surface's occluder
-/// writes depth at its face; the quad sits `LIFT_M` off it, and the bias
-/// keeps it in front at grazing angles, where the lift is worth little
-/// depth, the usual decal setup. `wgsl` has `vs_main` / `fs_main` with the
+/// floor ripple (`ripple.rs`), the wall spectrum (`canvas.rs`) and the
+/// room editor's highlight (`highlight.rs`). The beam's setup
+/// (premultiplied alpha, depth-tested, no depth write, no culling) plus a
+/// depth bias toward the camera. The surface's occluder writes depth at
+/// its face; the quad sits `LIFT_M` off it, and the bias keeps it in
+/// front at grazing angles, where the lift is worth little depth, the
+/// usual decal setup. `wgsl` has `vs_main` / `fs_main` with the
 /// eye camera at group 0 and the uniform at group 1.
 fn build_surface_pipeline(
     device: &wgpu::Device,

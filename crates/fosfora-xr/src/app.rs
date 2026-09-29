@@ -90,6 +90,14 @@ const REACH_GHOST_M: f32 = 0.03;
 const REACH_GHOST_RADIUS_M: f32 = 0.008;
 const REACH_GHOST_ALPHA: f32 = 0.5;
 const REACH_BEAM_ALPHA: f32 = 0.15;
+/// The room editor's pick beam (board #3326): as wide as the reach beam,
+/// brighter, since it is the thing aimed with.
+const PICK_BEAM_WIDTH_M: f32 = 0.004;
+const PICK_BEAM_ALPHA: f32 = 0.35;
+/// `debug.fosfora.picktest`: the ray's tilt below the view.
+const PICK_TEST_TILT_DEG: f32 = 20.0;
+/// The room editor's status while it is off.
+const EDIT_OFF: &str = "edit room off";
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +235,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
     //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
+    //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
+    //       the right far hand's beam picks a room surface, a pinch cycles its behavior (none, embers, sparks, spectrum, ripple), a pinch-hold
+    //       applies it to every surface of its kind, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
+    //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
     //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact)
     //   adb shell setprop debug.fosfora.lift 0|1                 (Flux world effects: an open far palm held still, facing down, lifts embers; default on)
@@ -871,6 +884,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             ""
         }
     );
+    // Board #3326: the room editor (`room_edit.rs`), off at launch unless a
+    // knob turns it on; the hand menu's "Edit room" toggles it. Its status
+    // for the panel, and whether it ran last frame (to clear its beam and
+    // highlight once when it goes off).
+    let pick_test_s = debug_prop("debug.fosfora.picktest")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| *s > 0.0);
+    controls.edit_room = pick_test_s.is_some() || toggle("debug.fosfora.editroom", false);
+    let mut editor = crate::room_edit::RoomEditor::default();
+    let mut edit_was_on = false;
+    let mut edit_status = String::from(EDIT_OFF);
+    let mut last_pick_test = 0.0f32;
+    info!(
+        "edit room {}{}",
+        if controls.edit_room { "on" } else { "off" },
+        if pick_test_s.is_some() {
+            " · test: picking ahead of the view"
+        } else {
+            ""
+        }
+    );
     // A tap this frame not taken by the hand menu (the throw needs the far
     // hand, computed below), and each hand's lift as last logged.
     let mut tapped: Option<usize> = None;
@@ -1051,8 +1085,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 point: input.hands.pinch_point[h],
             });
             let mut moved = false;
+            // Board #3326: with Edit room on, the right hand's gestures are
+            // the editor's (no throw, no size toggle, no anchor drag, no
+            // effect cycle); the left hand's are unchanged.
+            let edit_on = controls.edit_room;
+            let (mut edit_tap, mut edit_hold) = (false, false);
             for g in gestures.step(pinches, dt) {
                 match g {
+                    Gesture::Tap { hand: 1 } if edit_on => {
+                        edit_tap = true;
+                        info!("gesture: tap right · edit room");
+                    }
+                    Gesture::Hold { hand: 1 } if edit_on => {
+                        edit_hold = true;
+                        info!("gesture: hold right · edit room");
+                    }
+                    Gesture::DragStart { hand: 1 } if edit_on => {
+                        info!("gesture: drag right began · edit room: the anchor stays");
+                    }
+                    Gesture::Drag { hand: 1, .. } if edit_on => {}
+                    Gesture::DragEnd { hand: 1 } if edit_on => {
+                        info!("gesture: drag right ended · edit room");
+                    }
                     Gesture::Tap { hand } => {
                         // While the menu is up its pinches are its own.
                         if !panel_up {
@@ -1125,7 +1179,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         audio: &audio_source,
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
-                        edit_status: "edit room off",
+                        edit_status: &edit_status,
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -1143,6 +1197,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             Action::RescanRoom => rescan = true,
                             Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                            Action::SetEditRoom(on) => info!(
+                                "edit room {}",
+                                if on {
+                                    "on: the right hand's pinches pick room surfaces"
+                                } else {
+                                    "off"
+                                }
+                            ),
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
                                 if on { "on" } else { "off" },
@@ -1356,6 +1418,115 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         });
                     gfx.set_beam(crate::gfx::BEAM_REACH[h], beam);
                 }
+                // Board #3326: the room editor, on the throw's ray from the
+                // right far pinch point. Off, it runs once more to clear.
+                if edit_on || edit_was_on {
+                    let head = glam::Vec3::from(input.head);
+                    let pick_boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
+                    let mut tap = edit_tap && !panel_up;
+                    let ray = match pick_test_s {
+                        Some(every) if edit_on => {
+                            if t - last_pick_test >= every {
+                                last_pick_test = t;
+                                tap = true;
+                            }
+                            let rot = glam::Quat::from_array(input.head_rot)
+                                * glam::Quat::from_rotation_x(-PICK_TEST_TILT_DEG.to_radians());
+                            crate::room_edit::Ray::through(head, head + rot * glam::Vec3::NEG_Z * 0.5)
+                        }
+                        _ if panel_up || !input.hands.tracked[1] => None,
+                        _ => input.hands.pinch_point[1].and_then(|p| {
+                            crate::room_edit::Ray::through(head, glam::Vec3::from(p) + offsets[1])
+                        }),
+                    };
+                    let frame = editor.step(&crate::room_edit::EditInput {
+                        on: edit_on,
+                        ray,
+                        boxes: &pick_boxes,
+                        tap,
+                        hold: edit_hold && !panel_up,
+                        dt,
+                    });
+                    // The pointed box as the log names it.
+                    let named = |k: usize| {
+                        let (label, uuid8) = lane_boxes
+                            .get(k)
+                            .map_or_else(|| ("?".to_owned(), "?".to_owned()), crate::lanes::box_label);
+                        format!("{} ({label} {uuid8})", crate::surfaces::friendly_name(k, &lane_boxes))
+                    };
+                    if frame.changed && edit_on {
+                        match frame.hit {
+                            Some(h) => info!(
+                                "edit room: pointing at {} at ({:.2}, {:.2}, {:.2})",
+                                named(h.index),
+                                h.point.x,
+                                h.point.y,
+                                h.point.z
+                            ),
+                            None => info!("edit room: no surface"),
+                        }
+                    }
+                    if let Some(g) = frame.unaimed {
+                        info!("edit room: {g} with no surface under the beam, nothing changed");
+                    }
+                    let effective = |k: usize| surface_lanes.effective(k, &lane_boxes);
+                    match frame.action {
+                        Some(crate::room_edit::EditAction::Cycle(k)) => {
+                            if let Some((b, _)) = effective(k) {
+                                info!("edit room: {} -> {}", named(k), b.next().name());
+                            }
+                            if let Err(e) = surface_lanes.cycle(k, &lane_boxes) {
+                                log::warn!("edit room: {e}; nothing changed");
+                            }
+                        }
+                        Some(crate::room_edit::EditAction::AssignKind(k)) => {
+                            if let Some((b, _)) = effective(k) {
+                                info!(
+                                    "edit room: every {} like {} -> {}",
+                                    crate::surfaces::kind_name(lane_boxes[k].kind),
+                                    named(k),
+                                    b.name()
+                                );
+                            }
+                            if let Err(e) = surface_lanes.assign_kind_of(k, &lane_boxes) {
+                                log::warn!("edit room: {e}; nothing changed");
+                            }
+                        }
+                        None => {}
+                    }
+                    edit_status = if !edit_on {
+                        EDIT_OFF.to_owned()
+                    } else if let Some(h) = frame.hit {
+                        let behavior = surface_lanes
+                            .effective(h.index, &lane_boxes)
+                            .map_or("?", |(b, _)| b.name());
+                        format!(
+                            "{}: {behavior}",
+                            crate::surfaces::friendly_name(h.index, &lane_boxes)
+                        )
+                    } else {
+                        "no surface".to_owned()
+                    };
+                    gfx.set_beam(
+                        crate::gfx::BEAM_PICK,
+                        frame.beam.map(|(start, end)| crate::gfx::Beam {
+                            start: start.to_array(),
+                            end: end.to_array(),
+                            eye: input.head,
+                            width_m: PICK_BEAM_WIDTH_M,
+                            alpha: PICK_BEAM_ALPHA,
+                        }),
+                    );
+                    let rows = frame.hit.map(|h| {
+                        let b = pick_boxes[h.index];
+                        crate::highlight::uniform(
+                            &crate::surfaces::Face::across(b.center, b.rot, b.half, h.normal),
+                            frame.pulse,
+                        )
+                    });
+                    gfx.set_highlight(rows.as_ref());
+                    edit_was_on = edit_on;
+                }
                 for b in &input.room_boxes {
                     set.push_box(b);
                 }
@@ -1389,23 +1560,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         throw = Some((1, Some(head + ahead * 0.5)));
                     }
                     if let Some((hand, pinch)) = throw {
-                        let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
-                            center: glam::Vec3::from(b.center),
-                            rot: glam::Quat::from_array(b.rot),
-                            half: glam::Vec3::from(b.half),
-                            kind: b.kind,
-                        };
-                        // The stage floor only while the room has no floor.
-                        let mut boxes: Vec<_> = input.room_boxes.iter().map(ray_box).collect();
-                        let room_n = boxes.len();
-                        if !input
-                            .room_boxes
-                            .iter()
-                            .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
-                            && let Some(f) = &floor_box
-                        {
-                            boxes.push(ray_box(f));
-                        }
+                        let boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
+                        let room_n = input.room_boxes.len();
                         let flight =
                             pinch.and_then(|p| crate::instruments::Flight::aim(head, p, &boxes));
                         match flight {
@@ -2140,6 +2296,25 @@ impl FrameStats {
         self.cpu_max = self.cpu_max.max(cpu);
         self.cpu_n += 1;
     }
+}
+
+/// The boxes a ray from a hand is cast against (the throw's and the room
+/// editor's): the room's, then the stage floor while the room has no
+/// floor, in the lanes' order.
+fn ray_boxes(room: &[ObstacleBox], floor: Option<&ObstacleBox>) -> Vec<crate::instruments::RayBox> {
+    let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
+        center: glam::Vec3::from(b.center),
+        rot: glam::Quat::from_array(b.rot),
+        half: glam::Vec3::from(b.half),
+        kind: b.kind,
+    };
+    let mut boxes: Vec<_> = room.iter().map(ray_box).collect();
+    if !room.iter().any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+        && let Some(f) = floor
+    {
+        boxes.push(ray_box(f));
+    }
+    boxes
 }
 
 /// A pose for the log and the panel: `lost` for an untracked hand.
