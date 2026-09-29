@@ -210,3 +210,136 @@ The first pass passed worn ("a good v1"). Asked for next, on the board:
 - The room preset editor: point at a surface and attach a behavior to it,
   or assign a behavior to a class (all vertical, all horizontal surfaces).
 
+
+## The room preset editor (board #3326): options
+
+Kevin's target (Sep 28): point at a surface with the Go-Go far hand or the
+beam and attach a behavior to it ("effect A on this vertical surface"), or
+assign a behavior to a class ("effect B on all horizontal surfaces"), and
+keep the assignment per room. This section lays out what exists, three
+ways to build it, and a recommendation. Nothing here is implemented.
+
+### What exists (verified in the code, Sep 29)
+
+- **Surfaces.** The room's anchors reach the sim as up to 32 oriented boxes
+  in the aux block, with a semantic kind (`box_center.w`: table, floor,
+  wall, ceiling, frame, other) and an emitter weight (`box_half.w`, 0..1)
+  in the two spare lanes (#3319). The world sims read them; Flux XR Room
+  emits from the weighted top faces (#3317). No lane is free for a
+  per-surface behavior today.
+- **Identity.** `xrRetrieveSpaceQueryResultsFB` returns each anchor's UUID
+  next to its `XrSpace`; `Room` keeps the space and drops the UUID. Space
+  Setup keeps the same UUIDs across sessions and a rescan returns the
+  same handles for unchanged anchors (#3335), so a UUID is a stable key
+  for "this desk" and "this wall".
+- **Pointing.** `instruments::cast` intersects a ray with the boxes and
+  returns the box index, the hit point and the face normal (the throw's
+  aim). The reach extension puts a far hand and a beam where the wearer
+  points (#3308), and the pinch is the click (#3296).
+- **Behaviors that already bind to a surface.** Flux XR Room's surface
+  emitters (tables and floor, by kind and weight); the wall spectrum
+  (`canvas.rs`, on the wall the wearer faces, picked with hysteresis); the
+  floor ripple (the scene floor); the lift and the throw (the hands, any
+  surface). Each picks its surface by a fixed rule.
+- **Persistence.** The hand menu saves a JSON in the app's config dir
+  (`hand_menu.json`); the same place can hold a room file.
+- **The panel.** Two-column egui rows on the palm, pointer hit-testing per
+  cell, toggles and steppers (#3402); an "Edit room" toggle and a picker
+  fit the existing pattern.
+
+### The three options
+
+**A. Assign from the panel, no pointing.** An "Edit room" page on the
+panel lists the room's surfaces (kind and size, e.g. "table 1.2 x 0.6")
+with a behavior picker per row and one per kind.
+- Needs: a per-surface behavior lane, the panel page, the room file.
+- Cost: nothing at runtime beyond the lane.
+- Risk: the list does not say which table is which; with 5 tables and 4
+  walls the wearer guesses. Hands-first holds. Effort: one session.
+- Verdict: a fallback, not the ask.
+
+**B. Point and assign (the ask).** "Edit room" on the panel. While on, the
+beam from the right far hand casts against the boxes; the hit surface is
+highlighted (its face tinted through the occluder like the ripple decal);
+a pinch cycles that surface's behavior through the catalogue (or opens a
+short picker row on the panel); a panel toggle "apply to all <kind>"
+writes the same behavior to every box of the hit's kind. The assignment
+is saved per room on change and restored when the room's anchors come
+back (by UUID), with the kind defaults for anchors the file does not
+know.
+- Needs: the behavior lane (32 rows after the pour row, one `vec4` per
+  box: behavior id, strength, two parameters), the sim gates by lane
+  instead of by kind (a shader change in the XR assets, the kind gate
+  kept as the default), the highlight decal (one quad on the face,
+  the ripple's pipeline), the UUID kept per anchor, the room file, the
+  panel page, and pins for the spectrum ("this wall") and the ripple
+  ("this floor") through the same lane.
+- Cost: the highlight is one quad; the lane adds 32 aux rows and one
+  read per spawn. Under 0.1 ms.
+- Risk: the pick on thin walls from an angle (the 4 cm slab; the throw's
+  cast handles it), and a rescan renumbering boxes (the file is by UUID,
+  the lane is rebuilt from the file every locate, so renumbering is
+  safe). Effort: two sessions (lane + sim + file; then the interaction).
+- Verdict: the recommendation.
+
+**C. B plus room presets and parameters.** On top of B: named presets per
+room (a "dinner" room, a "show" room), cycled by the pinch-hold instead
+of the effect list (#3315 wanted the pinch-hold to cycle ROOM PRESETS),
+and per-surface parameters (rate, tint, audio band) as steppers when a
+surface is selected.
+- Needs: everything in B, a preset list in the room file, the pinch-hold
+  rebound, a parameter block per surface (the lane's two spare lanes, or
+  a second block).
+- Cost: as B.
+- Risk: scope; the parameter UI on the palm gets deep. Effort: B plus
+  one or two sessions.
+- Verdict: the second pass, once B is worn and the behavior catalogue has
+  settled.
+
+### The behavior catalogue (the lane's values)
+
+0 none · 1 embers off the top face (Flux, today's table behavior) ·
+2 sparks up from the face with the bass (Flux, today's floor behavior) ·
+3 the spectrum canvas (walls) · 4 the ripple (floors) · 5 drips down the
+face gathering at its bottom edge (walls, new) · 6 dust lifting off the
+face on the beat (any, new) · 7 a pool that embers settle into and glow
+(tables, new). The first pass ships 0 to 4, which exist as code, and
+proves the plumbing; 5 to 7 come with C.
+
+### The data model
+
+- Aux: `XR_AUX_SURFACE` block of 32 rows after the pour row (`WORLD_AUX_ROWS`
+  181 to 213): x behavior id, y strength 0..1, z and w parameters (band,
+  rate scale). Built every locate from the room file and the kind defaults.
+- Room file: `rooms/<room-id>.json` in the config dir, where the room id
+  is the sorted list of anchor UUIDs hashed; entries `{uuid, kind,
+  behavior, strength, params}` plus `{kind_defaults}`; written on every
+  change, read when the anchors are located.
+
+### The interaction, hands-first
+
+Edit room on (panel toggle) → the right hand's beam is on and the hit
+surface is tinted → pinch: the tint pulses and the surface's behavior
+advances one step through the catalogue, the panel's status row names it
+("desk: embers") → hold the pinch: apply to all of that kind → Edit room
+off: the beam goes, the file is saved. The left hand keeps the panel;
+the reach extension keeps far walls reachable from the chair.
+
+### Recommendation and first-pass gate
+
+B, in two steps: (1) the lane, the sim gate, the UUID, the room file and
+kind defaults, verified unworn by a knob that assigns a behavior to a
+UUID from adb and a GPU test that a lane value moves the emission to the
+right box; (2) the beam pick, the highlight and the panel page, gated
+worn: point at the desk and turn its embers off and on, put the spectrum
+on the side wall, relaunch and find the room as left.
+
+### Open questions for Kevin
+
+1. Cycle behaviors with pinches on the surface, or pick from a panel row?
+   (Default taken: pinch cycles; the panel row shows the name.)
+2. Is a room identified by its anchor set, or does one file per headset
+   suffice for now? (Default: by anchor set, since Space Setup keeps one
+   room per space.)
+3. Does the pinch-hold keep cycling effects, or switch to room presets in
+   C? (Deferred to C.)
