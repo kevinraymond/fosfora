@@ -243,9 +243,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.envdepthhands 0|1        (ask the runtime to remove the hands from the depth map; default 1, the
     //       skinned hand mesh stays the hand occluder; live: polled once a second and applied when it changes, the log line says what
     //       was asked and what the runtime answered)
-    //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 1, the default, edge-aware bilinear over the 2x2 texels
-    //       around the ray, interpolated when they are within 0.25 m of each other, else the nearest; 0 the texel under the ray, as
-    //       before; 2 bilinear across silhouettes too, a diagnostic)
+    //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 2, the default, bilinear over the 2x2 texels around the
+    //       ray, across silhouettes too, for softer object edges (board #3402); 1 edge-aware, interpolated when the four are within
+    //       0.25 m of each other, else the nearest, which cut silhouettes on the texel grid ("very chonky" worn); 0 the texel under the ray)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -312,7 +312,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             check: env_check,
             filter_edge_m: match debug_prop("debug.fosfora.envdepthfilter").as_deref() {
                 Some("0") => 0.0,
-                Some("2") => crate::env_depth::FILTER_SOFT_M,
+                Some("1") => crate::env_depth::FILTER_EDGE_M,
                 _ => d.filter_edge_m,
             },
             collide: env_collide,

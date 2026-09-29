@@ -818,6 +818,9 @@ hand occluders.
 - **Check without a wearer:** `hudtest` parks the panel ahead of the view
   and dumps its texture to `files/config/hud.rgba` at frame 720; the dump
   read back pixel-exact (layout, values and graph as intended).
+- **Since then:** the texture grew to 640 x 1472 (20 x 46 cm) for the
+  steppers and rows added later, and board #3402 put the controls in two
+  columns with smaller text; see "Particle pitcher and the panel" below.
 
 ### Operating the panel without depth judgment (Sep 28, worn)
 
@@ -1288,7 +1291,8 @@ interpolated when their distances are within 0.25 m of each other, else
 the nearest of those with data is taken. Within a surface the depth steps
 go; a silhouette is still cut on the texel grid (moved half a texel out),
 so `envdepthfilter 2`, bilinear across silhouettes too, is there as the
-comparison. `envdepthhands` is now live: polled once a second, applied
+comparison. (Board #3402 made 2 the default after Kevin found the object
+edges "very chonky" worn; see the next section.) `envdepthhands` is now live: polled once a second, applied
 with `xrSetEnvironmentDepthHandRemovalMETA` on a change, and the log line
 (`environment depth: hand removal asked on: the runtime answered
 SUCCESS`) says what was asked and what the runtime answered.
@@ -1299,7 +1303,7 @@ adb shell setprop debug.fosfora.depthcollideres 160|320   # atlas texels per lay
 adb shell setprop debug.fosfora.depthcollidethick 0.15    # the thickness band behind a surface, m
 adb shell setprop debug.fosfora.depthcollideevery 2       # test each particle every N frames, 1..8 (default 2), up to N-1 frames late
 adb shell setprop debug.fosfora.depthcollideupload 0|1    # diagnostic: 0 runs the atlas pass but skips its copy into the texture (nothing collides), default 1
-adb shell setprop debug.fosfora.envdepthfilter 0|1|2      # occluder lookup: nearest texel | edge-aware (default) | bilinear everywhere
+adb shell setprop debug.fosfora.envdepthfilter 0|1|2      # occluder lookup: nearest texel | edge-aware | bilinear everywhere (default since board #3402)
 adb shell setprop debug.fosfora.envdepthhands 0|1         # live: polled once a second
 ```
 
@@ -1431,3 +1435,109 @@ are needed.
 an unscanned chair; they slide off a shoulder; none trapped inside
 people; occluder edges with `envdepthfilter` 1 against 2; hand removal
 with `envdepthhands` 0 against 1 (live).
+
+## Particle pitcher and the panel (board #3402)
+
+Kevin's worn verdict on the depth collide: "overall the interactions were
+working well", but from inside a 400K cloud he could hardly judge them,
+and the occluder's object edges were "very chonky". So: a stream he can
+aim, a way to thin the cloud while he does, a denser panel, and softer
+edges.
+
+**The pitcher** (`instruments.rs`, `Pitcher`). Turned on from the hand
+menu's Pitcher toggle (not saved across launches), the right far palm
+(Go-Go reach applied; the left holds the menu) pours `rate x dt`
+particles a frame, the fraction carried over (4000/s at 72 Hz: 55 or 56
+a frame), born within 2 cm of the palm and flying along the palm normal
+at the pitcher's speed, within a 6 degree cone. He aims by turning the
+palm; no pose or pinch. A pour particle has the burst look (twice the
+sprite, opacity 0.35, half way to warm white, so the stream reads
+through the cloud) and the full lifetime (a throw's live half), is free
+of the volume like a burst, and collides with the room's boxes and the
+live depth map like any particle: under the presets' drag (0.98 a 60 Hz
+frame) a 1.5 m/s stream poured level carries at most about 1.2 m before
+the settle drift (0.5 m/s) takes it down; it lands, slides and rests. The debug panel's "pitcher /s" stepper sets the
+rate; the pour is not scaled by the cloud density.
+
+**The rows.** The pour rides the burst rows (row 170 x the count, row 171
+the far palm and the 2 cm nozzle, row 172 w brightness 1) plus a row of
+its own after the depth rows: row 180 = the pour's direction (unit, the
+palm normal) and w its speed (`XR_AUX_POUR`; `WORLD_AUX_ROWS` 181). With
+its w > 0 `xr_burst` gives the newborn the pour's velocity, uniform over
+the cone's cap (`XR_POUR_SPREAD`, a shader constant: the burst rows have
+no free lane), and the full lifetime; with w = 0 a burst is a throw's,
+unchanged. A throw's burst wins the rows: the pour drops that frame's
+particles and counts it.
+
+**The cloud density** (the debug panel's "cloud density" stepper, 0.05
+to 1 by 0.05): the showing world effect's emission rate is set to the
+rate `new_world` gave it (the preset's, scaled with the count) times the
+density, when it changes and when a pinch-hold swaps in an effect last
+set for another value. The cloud thins or refills over a lifetime (12 s).
+
+**The panel** (`panel_grid.rs`, `hud.rs`; texture unchanged, 640 x 1472
+at 1.6 px per point on the 20 x 46 cm quad). The controls are a block at
+the bottom of what the quad shows: rows 34 pt (1.7 cm) tall, 6 pt apart
+(before: 50 pt, the width of the panel each). From the top: Prev/Next
+(full width); the nine steppers two to a row, each cell half the width
+with its own -/+ boxes (40 pt, before 64) and its label (12 pt) over its
+value (16 pt); Recenter and Rescan; Pitcher and Debug, the bottom row of
+both the debug panel and the hand menu. The pointer picks a row by its
+height (each row owns half the gap on either side, so the rows tile the
+block), a column by the side of the panel's center, then a half of the
+cell; press, lock, repeat and the show/hide hysteresis are unchanged.
+The bottom row sits 10 pt above the visible bottom edge in the 84 pt
+menu strip (4.2 cm, before 6.2) and in the full panel alike, so it stays
+under the pointer when debug toggles (before, matched by eye: 64 against
+63 px). Nothing is under 12 pt: the title is 15 (was 17), the graph's
+labels 12 (were 11), the header lines egui's body text (12.5, the audio
+bars' names monospace 12). Widths with egui
+0.33's font: the widest label, "reach 1:1 within m", 97 pt at 12 pt in a
+107 pt middle; "Recenter the cloud" 135 pt at 16 in a 187 pt cell. The
+header (about 250 pt) ends well above the controls' top (593 pt with all
+eight rows); if it ever runs into them the app logs it once.
+
+**Soft occluder edges.** `envdepthfilter` now defaults to 2: bilinear
+over the 2x2 texels across silhouettes too, so an object's edge is
+blended instead of cut on the 320 x 320 map's grid. 1 (edge-aware) stays
+for the A/B.
+
+```
+adb shell setprop debug.fosfora.pitcher 0|1          # the pitcher at launch (default 0); the hand menu's Pitcher toggle after
+adb shell setprop debug.fosfora.pitcherrate 4000     # particles per second, 500..20000 (the panel's "pitcher /s")
+adb shell setprop debug.fosfora.pitcherspeed 1.5     # the stream's speed, m/s
+adb shell setprop debug.fosfora.pitchertest 1        # diagnostic: pitcher on, pouring from 0.5 m ahead of the view, 30 degrees down, untracked
+adb shell setprop debug.fosfora.density 1.0          # the cloud density, 0.05..1 (the panel's "cloud density")
+adb shell setprop debug.fosfora.envdepthfilter 0|1|2 # occluder lookup: nearest | edge-aware | bilinear everywhere (default)
+```
+
+Logcat: the instruments line gains `pitcher on|off (4000/s at 1.5 m/s)`;
+`pitcher on|off` on the toggle; every 10 s while on `pitcher on at
+4000/s, 1.5 m/s: N frames pouring, N particles asked, N frames skipped
+for a throw (10 s)`; `cloud density 0.50: 'Flux XR World' emits 26666/s
+(preset 53333/s)` on a change.
+
+**Tests (desktop).** Unit (`instruments.rs`): the pitcher pours its
+rate to the particle at 72 and 90 Hz in frames of the whole part of
+rate x dt, a 500/s pitcher on some frames only; off or untracked nothing
+and nothing carried; a throw's frames are dropped and counted; the rows
+it packs. `panel_grid.rs`: the rows tile the block bottom up, the bottom
+row sits as far above the edge in the menu and the panel, a pair row's
+cells, halves and end boxes, no font under 12 pt, the header's room.
+GPU (`tests/depth_collide_gpu.rs`, ignored): 200 a frame for 30 frames
+from the anchor straight down onto a floor box 1 m below, with the
+presets' drag and lifetime and the settle drift: the newborns fly at
+1.5 m/s within 6 degrees and live 12 s; each lands no wider than the
+nozzle plus 1 m x tan 6 degrees; 2.5 s in all 6000 rest the margin above
+the box, none below; the same rows with row 180 zero give the throw's
+outward ball at half the lifetime. The core's throw and lift tests pass
+unchanged.
+
+**Cost: pending** (the pour at 4000/s and 20000/s, `pitchertest 1`,
+against the pitcher off, Flux XR Room 400K, `mode world`, 72 Hz).
+
+**Worn gate: pending.** The stream pours from the right palm where it
+points; it lands on a chair, a person and the left hand and slides off;
+the cloud thins with the density stepper; the panel's two columns are
+legible and every stepper still steps (-/+ and the held repeat); object
+edges with `envdepthfilter` 2 against 1, the stream at a chair's edge.
