@@ -24,7 +24,35 @@ fn get_html_content() -> String {
     include_str!("../../../../assets/web/control.html").to_string()
 }
 
+/// Most connections served at once: WebSocket clients plus HTTP requests and
+/// handshakes in flight. Each holds one thread; beyond this a connection gets a
+/// 503 and is closed, so a flood of sockets cannot exhaust threads.
+const MAX_CONNECTIONS: usize = 32;
+
+/// One slot of [`MAX_CONNECTIONS`], released when the connection's thread ends.
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl ConnectionSlot {
+    fn acquire(open: &Arc<AtomicUsize>) -> Option<Self> {
+        open.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < MAX_CONNECTIONS).then_some(n + 1)
+        })
+        .ok()
+        .map(|_| Self(Arc::clone(open)))
+    }
+}
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Spawn the accept loop thread. Returns (shutdown_flag, thread_handle).
+///
+/// The accept thread only accepts: each connection's first read, handshake and
+/// client loop run on that connection's own thread, so an idle socket that never
+/// sends a request cannot hold up anyone else.
 pub(crate) fn spawn_accept_loop(
     port: u16,
     lan: bool,
@@ -40,6 +68,7 @@ pub(crate) fn spawn_accept_loop(
     );
 
     let client_counter = Arc::new(AtomicUsize::new(0));
+    let open_connections = Arc::new(AtomicUsize::new(0));
 
     let handle = thread::Builder::new()
         .name("fosfora-web-accept".into())
@@ -49,18 +78,41 @@ pub(crate) fn spawn_accept_loop(
 
             while !shutdown.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, addr)) => {
+                    Ok((mut stream, addr)) => {
                         log::debug!("Web connection from {addr}");
                         let _ = stream.set_nonblocking(false);
-                        handle_connection(
-                            stream,
-                            lan,
-                            &inbound_tx,
-                            &clients,
-                            &latest_state,
-                            &shutdown,
-                            &client_counter,
-                        );
+                        let Some(slot) = ConnectionSlot::acquire(&open_connections) else {
+                            log::warn!(
+                                "Refused web connection from {addr}: {MAX_CONNECTIONS} already open"
+                            );
+                            let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            );
+                            continue;
+                        };
+                        let inbound_tx = inbound_tx.clone();
+                        let clients = Arc::clone(&clients);
+                        let latest_state = Arc::clone(&latest_state);
+                        let shutdown = Arc::clone(&shutdown);
+                        let client_counter = Arc::clone(&client_counter);
+                        let spawned = thread::Builder::new()
+                            .name("fosfora-web-conn".into())
+                            .spawn(move || {
+                                let _slot = slot;
+                                handle_connection(
+                                    stream,
+                                    lan,
+                                    &inbound_tx,
+                                    &clients,
+                                    &latest_state,
+                                    &shutdown,
+                                    &client_counter,
+                                );
+                            });
+                        if let Err(e) = spawned {
+                            log::warn!("Web connection thread failed to start: {e}");
+                        }
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         // No pending connection — sleep briefly before retrying
@@ -135,15 +187,15 @@ fn handle_connection(
                     .unwrap_or_else(|e| e.into_inner())
                     .push(outbound_tx);
 
-                let tx = inbound_tx.clone();
-                let flag = shutdown.clone();
-
-                thread::Builder::new()
-                    .name(format!("fosfora-web-client-{client_id}"))
-                    .spawn(move || {
-                        client::run_client(ws, tx, outbound_rx, state, flag, client_id);
-                    })
-                    .ok();
+                // Already on this connection's own thread (it holds the slot).
+                client::run_client(
+                    ws,
+                    inbound_tx.clone(),
+                    outbound_rx,
+                    state,
+                    shutdown.clone(),
+                    client_id,
+                );
             }
             Err(e) => {
                 log::debug!("WebSocket handshake failed: {e}");
@@ -350,6 +402,78 @@ mod tests {
         assert!(local.ip().is_loopback(), "{local}");
         let lan = bind_listener(0, true).unwrap().local_addr().unwrap();
         assert!(lan.ip().is_unspecified(), "{lan}");
+    }
+
+    /// A running loopback server on a free port, plus its shutdown flag.
+    fn running_server() -> (u16, Arc<AtomicBool>, JoinHandle<()>) {
+        let port = bind_listener(0, false)
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (tx, _rx) = crate::inbound::bounded(1);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let handle = spawn_accept_loop(
+            port,
+            false,
+            tx,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(Mutex::new(String::new())),
+            shutdown.clone(),
+        )
+        .unwrap();
+        (port, shutdown, handle)
+    }
+
+    /// Response head of one plain HTTP request.
+    fn http_get(port: u16, path: &str) -> String {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        write!(s, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").unwrap();
+        let mut buf = [0u8; 256];
+        let n = s.read(&mut buf).unwrap_or(0);
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    }
+
+    /// An idle socket used to hold the accept thread for its 5 s read timeout,
+    /// stalling every other client (#44).
+    #[test]
+    fn an_idle_connection_does_not_stall_others() {
+        let (port, shutdown, handle) = running_server();
+        let _idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let start = std::time::Instant::now();
+        let resp = http_get(port, "/health");
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn connections_beyond_the_cap_get_a_503() {
+        let (port, shutdown, handle) = running_server();
+        let idle: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        std::thread::sleep(Duration::from_millis(300));
+        let resp = http_get(port, "/health");
+        assert!(resp.starts_with("HTTP/1.1 503"), "{resp}");
+
+        // Closing them frees the slots.
+        drop(idle);
+        std::thread::sleep(Duration::from_millis(300));
+        let resp = http_get(port, "/health");
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+
+        shutdown.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 
     /// Through the real accept loop: a bridge (no Origin) completes the

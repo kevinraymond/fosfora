@@ -188,7 +188,7 @@ impl WebSystem {
                     result.layer_params.push((layer, name, value));
                 }
                 WsInMessage::LoadEffect { index } => {
-                    result.effect_loads.push(index);
+                    result.effect_load = Some(index);
                 }
                 WsInMessage::SelectLayer { index } => {
                     result.select_layer = Some(index);
@@ -206,7 +206,7 @@ impl WebSystem {
                     result.triggers.push(action);
                 }
                 WsInMessage::LoadPreset { index } => {
-                    result.preset_loads.push(index);
+                    result.preset_load = Some(index);
                 }
                 WsInMessage::PostProcessEnabled(enabled) => {
                     result.postprocess_enabled = Some(enabled);
@@ -266,13 +266,13 @@ impl WebSystem {
                     result.postprocess_enabled = Some(enabled);
                 }
                 WsInMessage::LoadEffect { index } => {
-                    result.effect_loads.push(index);
+                    result.effect_load = Some(index);
                 }
                 WsInMessage::SelectLayer { index } => {
                     result.select_layer = Some(index);
                 }
                 WsInMessage::LoadPreset { index } => {
-                    result.preset_loads.push(index);
+                    result.preset_load = Some(index);
                 }
                 WsInMessage::BindPreview { source, jpeg_data } => {
                     self.preview_images.insert(source, jpeg_data);
@@ -361,5 +361,31 @@ fn apply_param(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A burst of loads compiles only the last effect and preset (#44).
+    #[test]
+    fn loads_in_one_frame_coalesce_to_the_last() {
+        let mut web = WebSystem::offline();
+        for index in [1, 2, 3] {
+            web.inbound_tx.send(WsInMessage::LoadEffect { index });
+        }
+        for index in [4, 5] {
+            web.inbound_tx.send(WsInMessage::LoadPreset { index });
+        }
+        let mut changed = false;
+        let r = web.update(&mut HashMap::new(), &mut changed, &[]);
+        assert_eq!(r.effect_load, Some(3));
+        assert_eq!(r.preset_load, Some(5));
+
+        web.inbound_tx.send(WsInMessage::LoadEffect { index: 7 });
+        web.inbound_tx.send(WsInMessage::LoadEffect { index: 8 });
+        let r = web.update_triggers_only();
+        assert_eq!(r.effect_load, Some(8));
     }
 }

@@ -69,9 +69,12 @@ pub struct WebFrameResult {
     pub layer_blend: Vec<(usize, u32)>,
     pub layer_enabled: Vec<(usize, bool)>,
     pub postprocess_enabled: Option<bool>,
-    pub effect_loads: Vec<usize>,
+    /// Last effect load this frame. Loads are coalesced: each one compiles
+    /// shaders synchronously, and only the last would stay on screen.
+    pub effect_load: Option<usize>,
     pub select_layer: Option<usize>,
-    pub preset_loads: Vec<usize>,
+    /// Last preset load this frame (coalesced like `effect_load`).
+    pub preset_load: Option<usize>,
 }
 
 impl WebFrameResult {
@@ -83,9 +86,9 @@ impl WebFrameResult {
             layer_blend: Vec::new(),
             layer_enabled: Vec::new(),
             postprocess_enabled: None,
-            effect_loads: Vec::new(),
+            effect_load: None,
             select_layer: None,
-            preset_loads: Vec::new(),
+            preset_load: None,
         }
     }
 }
@@ -196,9 +199,9 @@ mod tests {
         assert!(r.layer_blend.is_empty());
         assert!(r.layer_enabled.is_empty());
         assert!(r.postprocess_enabled.is_none());
-        assert!(r.effect_loads.is_empty());
+        assert!(r.effect_load.is_none());
         assert!(r.select_layer.is_none());
-        assert!(r.preset_loads.is_empty());
+        assert!(r.preset_load.is_none());
     }
 
     // ---- Additional tests ----
