@@ -18,7 +18,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 ### Changed
 - **OSC input and the web remote now listen on this computer only.** A phone, a controller
   on another machine or a bridge in Docker needs **Other devices** switched on for each
-  under Setup ▸ Control. Web pages other than the remote's own can no longer connect to it.
+  under Setup ▸ Control. Web pages other than the remote's own can no longer connect to it,
+  and other devices also need the web remote's access key: open the network link shown
+  there, and give bridges `--key` or `FOSFORA_KEY`. **New key** disconnects every old holder.
 
 ### Fixed
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
