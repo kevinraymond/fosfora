@@ -1085,3 +1085,66 @@ wearing the headset.
   nobody wearing the headset, so `SceneCaptureComplete` never arrives.
   The full loop (Space Setup, then the query, a changed room's anchors
   replacing the old) is the worn gate. Worn gate pending.
+
+## Live environment depth as an occluder (board #3324)
+
+Phase 1: `XR_META_environment_depth` as a depth occluder, so things the
+scan does not know (an unscanned chair, a person, the wearer's own body,
+a moved object) hide the sprites. Phase 2, the depth map as a collision
+source for the sim, is not in this pass.
+
+**Setup** (`crates/fosfora-xr/src/env_depth.rs`). With `envdepth` or
+`envdepthshow` on, the session creates a depth provider and its
+swapchain (a two-layer `D16_UNORM` array per image, left eye then right,
+wrapped as wgpu textures), sets hand removal when the system supports it
+and starts the provider. Each frame, after the views are located, the
+frame loop acquires the depth image for the predicted display time in
+the stage space. The eye pass then draws one full-screen triangle first,
+right after the clear (depth compare Always, depth write on, color off):
+each fragment takes the point 2 m along its eye ray, looks the map up
+where that point lands in the depth camera (layer = eye), decodes the
+OpenGL-convention depth to meters, scales the depth camera's ray to that
+distance and writes its depth in the eye as `frag_depth`. The primer, the
+room boxes and the hand mesh follow as before. Texels with no data
+(`d >= 1`), distances under `envdepthnear` and points outside the depth
+fov are discarded; a frame with no depth image (`NOT_AVAILABLE`, just
+after start) skips the draw. The knobs are read at startup:
+
+```
+adb shell setprop debug.fosfora.envdepth 1        # the occluder (default off until measured)
+adb shell setprop debug.fosfora.envdepthshow 1    # the diagnostic: the same pass drawn as gray
+adb shell setprop debug.fosfora.envdepthhands 0   # keep the hands in the depth map (default 1: removed)
+adb shell setprop debug.fosfora.envdepthnear 0.2  # discard distance, m
+adb shell setprop debug.fosfora.envdepthflipv 0   # read texture row 0 as the bottom (default 1: the top)
+```
+
+With `envdepth` and `envdepthshow` both 0 no provider is created: the
+baseline is the app without it.
+
+**Reading the diagnostic.** `envdepthshow 1` writes the decoded distance
+as opaque gray over the view (the sprites still draw over it): 0 m black
+to 4 m white, linear in the stored bytes, so a screencap's gray level /
+255 x 4 is the distance in meters. Upright and aligned means the gray
+edges of the desk, the door frame and a hand held out sit on the
+passthrough edges in both eyes; a map upside down (the floor bright at
+the top) means `envdepthflipv 0`. Logcat's `environment depth:` lines give
+the swapchain length and size, whether hand removal was applied, the
+first frame (after how many not-available frames and ms), its near/far
+and fov, any near/far change, and a count every 720 frames.
+
+| Effect, 72 Hz | Config | GPU ms med / p90 / max | fps | Long frames |
+|---|---|---|---|---|
+| Flux XR Room 400K | baseline | pending | pending | pending |
+| Flux XR Room 400K | envdepth on | pending | pending | pending |
+| Flux XR Room 400K | diagnostic | pending | pending | pending |
+| Murmur XR World 40K | baseline | pending | pending | pending |
+| Murmur XR World 40K | envdepth on | pending | pending | pending |
+| Murmur XR World 40K | diagnostic | pending | pending | pending |
+
+| Depth map | Value |
+|---|---|
+| Size (per layer) | pending |
+| Swapchain length | pending |
+| Near / far (m) | pending |
+| Frames until the first depth frame | pending |
+| Hand removal supported / applied | pending |

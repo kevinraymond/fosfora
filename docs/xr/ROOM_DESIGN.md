@@ -107,6 +107,9 @@ occludes and collides for furniture the anchors miss.
 - Cost: 87K triangles per eye is cheap to draw; an SDF build is a one-off.
 - Risk: the highest of the four. An unfetched extension path, a new
   obstacle representation, and a look that depends on the scan quality.
+- Since board #3324 the live depth map (`XR_META_environment_depth`) covers
+  the "occluder first" role for what the scan misses (unscanned furniture,
+  people, the wearer's body, moved objects). Collision from it is phase 2.
 
 ## The design (Kevin, Sep 28, board #3315)
 
