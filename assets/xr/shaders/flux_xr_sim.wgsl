@@ -89,9 +89,13 @@
 // DepthCollide::rows): the runtime's environment depth map as a collision
 // source, for what the scan does not know (a person, an unscanned chair, a
 // hand-held object). Layer k is 0 (left) or 1 (right):
-//   aux[173]        x = 1 when the obstacle texture holds a depth atlas
-//                   (0: no depth collide), y = thickness band (m), z = the
-//                   atlas range (m), w = atlas texels per layer side
+//   aux[173]        x = u32 bits: low 16 the stride N (0: no atlas in the
+//                   obstacle texture, no depth collide), high 16 this
+//                   frame's phase (a frame counter mod N); particle idx is
+//                   tested only when (idx + phase) % N == 0, so each is
+//                   tested every N frames (N = 1: every frame). y =
+//                   thickness band (m), z = the atlas range (m), w = atlas
+//                   texels per layer side (the texture is w x 2w)
 //   aux[174 + 3k]   layer k's depth camera position xyz (anchor-relative),
 //                   w = its near plane (m)
 //   aux[175 + 3k]   its orientation, quaternion camera -> world (x, y, z, w)
@@ -102,8 +106,8 @@
 // runtime's GL row order). The distance along the camera's -Z over the range
 // is a 16-bit fraction, high byte in R and low byte in B; G = 1 where the
 // texel holds data (the nearest of its block of the map). A
-// particle is looked up in layer 0, else layer 1; the first layer that sees
-// it with data decides. It collides when it lies between margin in front of
+// particle is looked up in layer 0, else (outside layer 0's view) layer 1;
+// the first layer whose view holds it decides, with data or without. It collides when it lies between margin in front of
 // the surface and the thickness band behind it (deeper is left alone: the
 // occluder hides it): pushed out along the surface normal to the plane
 // through the point margin in front of the surface on its ray, the inward
@@ -206,7 +210,7 @@ fn xr_side(x: f32) -> f32 {
 // particle deep inside a box (spawned there) exits through the nearest face.
 // Returns true when the particle was pushed out through an upward face: it
 // is resting on a table or the floor.
-fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
+fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) -> bool {
     var rested = false;
     let header = aux[XR_AUX_HEADER].home;
     let sphere_count = min(bitcast<u32>(header.x), XR_MAX_SPHERES);
@@ -261,7 +265,7 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
             rested = rested || n.y > 0.7;
         }
     }
-    let on_depth = xr_depth_collide(pos, vel);
+    let on_depth = xr_depth_collide(pos, vel, idx);
     return rested || on_depth;
 }
 
@@ -283,48 +287,52 @@ fn xr_depth_point(t: vec2i, d: f32, tan: vec4f, side: f32) -> vec3f {
     return vec3f(mix(tan.x, tan.y, uv.x), mix(tan.w, tan.z, uv.y), -1.0) * d;
 }
 
-// The collide with the live depth map (the depth rows above). Returns true
-// when the particle was pushed out through a surface facing up: it rests.
-fn xr_depth_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
+// The collide with the live depth map (the depth rows above) for particle
+// idx. Returns true when the particle was pushed out through a surface
+// facing up: it rests.
+fn xr_depth_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) -> bool {
     let head = aux[XR_AUX_DEPTH].home;
-    if head.x < 0.5 {
+    let stride = bitcast<u32>(head.x);
+    let every = stride & 0xffffu;
+    // No atlas, or not this particle's frame: one particle in `every` is
+    // tested per frame, each on its own phase.
+    if every == 0u || (idx + (stride >> 16u)) % every != 0u {
         return false;
     }
+    // The side comes from the rows, never textureDimensions: the rows only
+    // claim an atlas once one of that side is in the texture (before, the
+    // core's 1x1 placeholder is all zeros, which reads as no data).
     let side = i32(head.w + 0.5);
-    // Until the first atlas lands the texture is the core's 1x1 placeholder.
-    let dims = vec2i(textureDimensions(obstacle_tex));
-    if side < 2 || dims.x != side || dims.y != 2 * side {
+    if side < 2 {
         return false;
     }
-    let header = aux[XR_AUX_HEADER].home;
-    let restitution = header.z;
-    let margin = header.w;
-    let thickness = head.y;
     let range = head.z;
     for (var k = 0u; k < 2u; k++) {
         let row = XR_AUX_DEPTH + 1u + 3u * k;
         let origin = aux[row].home.xyz;
         let q = aux[row + 1u].home;
-        let tan = aux[row + 2u].home;
         let pc = xr_quat_rotate(xr_quat_conj(q), *pos - origin);
         if pc.z > -1e-3 {
             continue;
         }
+        let tan = aux[row + 2u].home;
         let depth = -pc.z;
         let t = pc.xy / depth;
         let uv = vec2f((t.x - tan.x) / (tan.y - tan.x), (t.y - tan.w) / (tan.z - tan.w));
         if any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0)) {
             continue;
         }
+        // The first layer whose view holds the particle decides, with data
+        // or without: the other eye's layer, 6 cm over, has its holes in
+        // the same places.
         let texel = min(vec2i(uv * f32(side)), vec2i(side - 1));
         let surface = xr_depth_at(texel, k, side, range);
-        if surface < 0.0 {
-            continue;
-        }
-        // This layer sees the particle: it decides.
-        if depth <= surface - margin || depth >= surface + thickness {
+        let header = aux[XR_AUX_HEADER].home;
+        let margin = header.w;
+        if surface < 0.0 || depth <= surface - margin || depth >= surface + head.y {
             return false;
         }
+        let restitution = header.z;
         // The surface normal from the depth gradient (central differences
         // over the texel's four neighbors, clamped at the atlas's edges),
         // facing the camera; at a silhouette, the ray toward the camera.
@@ -696,7 +704,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // the floor.
     let settle = aux[XR_AUX_HEADER + 1u].home.z;
     pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
-    let rested = xr_collide(&pos, &vel) && !lifted;
+    let rested = xr_collide(&pos, &vel, idx) && !lifted;
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
     // Still alive, so the alive count and the density stay steady. In

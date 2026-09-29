@@ -109,6 +109,8 @@ struct World {
     /// The depth atlas last put in this effect's obstacle texture: the
     /// poses it was built from and when it arrived (board #3352).
     depth: Option<(crate::env_depth::DepthCollide, Instant)>,
+    /// Frames of inputs written, for the depth collide's phase.
+    depth_frame: u32,
 }
 
 /// How a world-mode effect is set up for this run.
@@ -261,6 +263,7 @@ impl XrScene {
                 emitter_weight: 0.0,
                 max_count,
                 depth: None,
+                depth_frame: 0,
             }),
         })
     }
@@ -347,12 +350,15 @@ impl XrScene {
             .aux
             .extend(instruments.iter().map(|&home| ParticleAux { home }));
         let depth = match world.depth {
-            Some((c, at)) if at.elapsed() < ATLAS_MAX_AGE => c.rows(glam::Vec3::from(a)),
+            Some((c, at)) if at.elapsed() < ATLAS_MAX_AGE => {
+                c.rows(glam::Vec3::from(a), world.depth_frame)
+            }
             _ => [[0.0; 4]; crate::env_depth::COLLIDE_ROWS],
         };
         world
             .aux
             .extend(depth.iter().map(|&home| ParticleAux { home }));
+        world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);

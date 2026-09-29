@@ -94,6 +94,9 @@ pub struct EnvDepthOptions {
     pub collide_res: u32,
     /// The collide's thickness band (m, `debug.fosfora.depthcollidethick`).
     pub collide_thickness_m: f32,
+    /// Each particle is tested every this many frames
+    /// (`debug.fosfora.depthcollideevery`).
+    pub collide_every: u32,
 }
 
 impl Default for EnvDepthOptions {
@@ -109,6 +112,7 @@ impl Default for EnvDepthOptions {
             collide: false,
             collide_res: COLLIDE_RES,
             collide_thickness_m: COLLIDE_THICKNESS_M,
+            collide_every: COLLIDE_EVERY,
         }
     }
 }
@@ -850,7 +854,19 @@ pub struct DepthCollide {
     /// How far behind a surface a particle still collides with it (m);
     /// deeper is left alone (the occluder hides it).
     pub thickness_m: f32,
+    /// Each particle is tested every this many frames
+    /// (`debug.fosfora.depthcollideevery`, 1..=[`COLLIDE_EVERY_MAX`]).
+    pub every: u32,
 }
+
+/// The default of `debug.fosfora.depthcollideevery`: each particle is
+/// tested every other frame, half the collide's per-frame cost, a
+/// collision caught at most one frame (under 1 cm at the settle drift)
+/// late.
+pub const COLLIDE_EVERY: u32 = 2;
+/// The largest stride (it rides in 16 bits; past a few frames a particle
+/// sinks visibly into a surface before it is caught).
+pub const COLLIDE_EVERY_MAX: u32 = 8;
 
 /// Rows of the world aux block the depth collide takes, right after the
 /// instrument rows (`XR_AUX_DEPTH` and `XR_AUX_DEPTH_ROWS` in
@@ -866,16 +882,27 @@ impl DepthCollide {
     /// The aux rows for this atlas, positions relative to the effect's
     /// `anchor` (the sim's origin):
     ///
-    /// - 0: x 1 (an atlas is in the obstacle texture), y the thickness
-    ///   band (m), z the atlas range (m), w texels per layer side
+    /// - 0: x the stride as `u32` bits, low 16 bits `every` (0 would be
+    ///   off), high 16 bits `frame % every`: the sim tests particle `i`
+    ///   when `(i + phase) % every == 0`; y the thickness band (m), z the
+    ///   atlas range (m), w texels per layer side
     /// - 1 + 3k: layer k's depth camera position xyz, w its near plane (m)
     /// - 2 + 3k: its orientation, quaternion camera to world (x, y, z, w)
     /// - 3 + 3k: the tangents of its fov: left, right, up, down
     ///
     /// All zero (the rows when no atlas is valid) turns the collide off.
-    pub fn rows(&self, anchor: Vec3) -> [[f32; 4]; COLLIDE_ROWS] {
+    /// `frame` counts the sim's frames (any counter that steps once per
+    /// dispatch).
+    pub fn rows(&self, anchor: Vec3, frame: u32) -> [[f32; 4]; COLLIDE_ROWS] {
         let mut rows = [[0.0; 4]; COLLIDE_ROWS];
-        rows[0] = [1.0, self.thickness_m, DEPTH_ATLAS_RANGE_M, self.res as f32];
+        let every = self.every.clamp(1, COLLIDE_EVERY_MAX);
+        let stride = every | (frame % every) << 16;
+        rows[0] = [
+            f32::from_bits(stride),
+            self.thickness_m,
+            DEPTH_ATLAS_RANGE_M,
+            self.res as f32,
+        ];
         for (k, v) in self.views.iter().enumerate() {
             let p = Vec3::from(v.position) - anchor;
             let f = v.fov;
@@ -1347,9 +1374,10 @@ mod runtime {
                 opts.check,
                 if opts.collide {
                     format!(
-                        "on ({res}x{} atlas, thickness {} m)",
+                        "on ({res}x{} atlas, thickness {} m, every {} frames)",
                         2 * opts.collide_res,
                         opts.collide_thickness_m,
+                        opts.collide_every,
                         res = opts.collide_res
                     )
                 } else {
@@ -1823,6 +1851,7 @@ mod runtime {
                                     near: frame.near,
                                     res,
                                     thickness_m: self.opts.collide_thickness_m,
+                                    every: self.opts.collide_every,
                                 },
                             });
                         }
@@ -2874,10 +2903,23 @@ mod tests {
             near: 0.1,
             res: 160,
             thickness_m: 0.15,
+            every: 1,
         };
-        let rows = c.rows(Vec3::new(0.0, 1.0, -0.5));
+        let rows = c.rows(Vec3::new(0.0, 1.0, -0.5), 7);
         assert_eq!(rows.len(), COLLIDE_ROWS);
-        assert_eq!(rows[0], [1.0, 0.15, DEPTH_ATLAS_RANGE_M, 160.0]);
+        // Every frame: stride 1, phase 0 whatever the frame.
+        assert_eq!(rows[0][0].to_bits(), 1);
+        assert_eq!(c.rows(Vec3::ZERO, 12_345)[0][0].to_bits(), 1);
+        assert_eq!(rows[0][1..], [0.15, DEPTH_ATLAS_RANGE_M, 160.0]);
+        // Every 3rd frame: the phase walks with the frame.
+        let c3 = DepthCollide { every: 3, ..c };
+        let phases: Vec<u32> = (0..4)
+            .map(|f| c3.rows(Vec3::ZERO, f)[0][0].to_bits())
+            .collect();
+        assert_eq!(phases, [3, 3 | 1 << 16, 3 | 2 << 16, 3]);
+        // Out of range clamps; 0 would read as off.
+        let c0 = DepthCollide { every: 0, ..c };
+        assert_eq!(c0.rows(Vec3::ZERO, 5)[0][0].to_bits(), 1);
         let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
         assert!(near(rows[1], [-0.03, 0.2, 0.9, 0.1]), "{:?}", rows[1]);
         assert_eq!(rows[2], [0.0, 0.0, 0.0, 1.0]);

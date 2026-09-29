@@ -366,6 +366,10 @@ struct SimSetup {
     aux: Vec<[f32; 4]>,
     /// The atlas and its side, or `None` for the core's 1x1 placeholder.
     atlas: Option<(Vec<u32>, u32)>,
+    /// Test each particle every this many frames: the depth header's
+    /// stride is rewritten each frame with the phase, as the XR app does
+    /// (`DepthCollide::rows`). 1 leaves the rows as given.
+    every: u32,
 }
 
 /// Every particle's position and velocity after each frame in `capture`.
@@ -509,7 +513,7 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
     let counters = storage("sim-test-counters", &[0u8; 16]);
     let mut aux = setup.aux.clone();
     aux.resize(WORLD_AUX_ROWS, [0.0; 4]);
-    let aux = storage("sim-test-aux", bytemuck::cast_slice(&aux));
+    let aux_buf = storage("sim-test-aux", bytemuck::cast_slice(&aux));
     let dead = storage("sim-test-dead", &vec![0u8; count as usize * 4]);
     let alive = storage("sim-test-alive", &vec![0u8; count as usize * 4]);
 
@@ -574,7 +578,7 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
             resource: b.as_entire_binding(),
         });
     }
-    for (binding, b) in [(9, &counters), (10, &aux), (11, &dead), (12, &alive)] {
+    for (binding, b) in [(9, &counters), (10, &aux_buf), (11, &dead), (12, &alive)] {
         entries0.push(wgpu::BindGroupEntry {
             binding,
             resource: b.as_entire_binding(),
@@ -629,6 +633,11 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
         u.f32("time", frame as f32 / FPS);
         queue.write_buffer(&uniforms, 0, &u.bytes);
         queue.write_buffer(&counters, 0, &[0u8; 16]);
+        if setup.every > 1 && bytemuck::cast::<f32, u32>(aux[173][0]) != 0 {
+            let every = setup.every;
+            aux[173][0] = f32::from_bits(every | (frame % every) << 16);
+            queue.write_buffer(&aux_buf, 173 * 16, bytemuck::cast_slice(&aux[173..174]));
+        }
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
@@ -670,8 +679,13 @@ const WALL_M: f32 = 1.0;
 
 /// The aux block: the header rows, zeros, and the depth rows for a depth
 /// camera at the anchor looking down -Z with a 90 degree fov in both
-/// layers (`on` false: the rows with x = 0).
+/// layers (`on` false: the rows with x = 0), every particle every frame.
 fn aux_rows(on: bool, res: u32) -> Vec<[f32; 4]> {
+    aux_rows_turned(on, res, [[0.0, 0.0, 0.0, 1.0]; 2])
+}
+
+/// `aux_rows` with each layer's camera turned by its own quaternion.
+fn aux_rows_turned(on: bool, res: u32, turn: [[f32; 4]; 2]) -> Vec<[f32; 4]> {
     let mut aux = vec![[0.0; 4]; WORLD_AUX_ROWS];
     aux[1] = [0.0, 0.0, RESTITUTION, MARGIN];
     let fov = Fov {
@@ -680,21 +694,22 @@ fn aux_rows(on: bool, res: u32) -> Vec<[f32; 4]> {
         up: std::f32::consts::FRAC_PI_4,
         down: -std::f32::consts::FRAC_PI_4,
     };
-    let view = DepthView {
-        orientation: [0.0, 0.0, 0.0, 1.0],
+    let view = |orientation| DepthView {
+        orientation,
         position: [0.0, 0.0, 0.0],
         fov,
     };
     let rows = DepthCollide {
-        views: [view, view],
+        views: turn.map(view),
         near: NEAR,
         res,
         thickness_m: THICKNESS,
+        every: 1,
     }
-    .rows(Vec3::ZERO);
+    .rows(Vec3::ZERO, 0);
     let mut rows = rows.to_vec();
     if !on {
-        rows[0][0] = 0.0;
+        rows[0][0] = f32::from_bits(0);
     }
     aux[173..180].copy_from_slice(&rows);
     aux
@@ -764,6 +779,7 @@ fn particles_bounce_off_a_wall_in_the_depth_map() {
             particles: particles.clone(),
             aux: aux_rows(true, atlas.1),
             atlas: Some(atlas.clone()),
+            every: 1,
         },
         &[6, 40],
     );
@@ -804,6 +820,7 @@ fn particles_bounce_off_a_wall_in_the_depth_map() {
             particles,
             aux: aux_rows(false, atlas.1),
             atlas: Some(atlas),
+            every: 1,
         },
         &[40],
     );
@@ -813,30 +830,86 @@ fn particles_bounce_off_a_wall_in_the_depth_map() {
     );
 }
 
-/// Layer 0 without data anywhere, layer 1 holding the wall over the whole
-/// view: the particles fall through to the right eye's layer (the lower
-/// half of the atlas) and every one bounces.
+/// Layer 0 turned away (looking down +Z), layer 1 holding the wall over
+/// the whole view: the particles, outside layer 0's view, fall through to
+/// the right eye's layer (the lower half of the atlas) and every one
+/// bounces. Layer 0 facing them over a texel without data decides alone:
+/// they fly through (the other eye's layer, 6 cm over, has its holes in
+/// the same places, so it is not asked).
 #[test]
 #[ignore = "requires a GPU/software adapter"]
-fn the_right_layer_answers_where_the_left_has_no_data() {
+fn the_right_layer_answers_outside_the_left_view() {
     let atlas = atlas_of(|layer, _, _| (layer == 1).then_some(WALL_M));
-    let later = run_sim(
-        &SimSetup {
-            particles: particles_at_the_wall(),
-            aux: aux_rows(true, atlas.1),
-            atlas: Some(atlas),
-        },
-        &[40],
-    )
-    .pop()
-    .expect("one capture");
-    for (p, v) in later {
+    let away = glam::Quat::from_rotation_y(std::f32::consts::PI).to_array();
+    let identity = [0.0, 0.0, 0.0, 1.0];
+    let run = |turn| {
+        run_sim(
+            &SimSetup {
+                particles: particles_at_the_wall(),
+                aux: aux_rows_turned(true, atlas.1, turn),
+                atlas: Some(atlas.clone()),
+                every: 1,
+            },
+            &[40],
+        )
+        .pop()
+        .expect("one capture")
+    };
+    for (p, v) in run([away, identity]) {
         assert!(-p.z <= WALL_M && v.z > 0.0, "at {p}: {v}");
+    }
+    for (p, _) in run([identity, identity]) {
+        assert!(-p.z > WALL_M + THICKNESS, "at {p}: stopped by layer 1");
     }
 }
 
-/// Until the first atlas lands the obstacle texture is the core's 1x1
-/// placeholder: rows that claim an atlas collide with nothing.
+/// `depthcollideevery 2`: each particle is tested every other frame, on
+/// its own phase. The wall still stops every one in the lower half, at
+/// most a frame late (1.7 cm at 1 m/s, inside the thickness band): on the
+/// frame the wall is reached about half have bounced, two frames later all
+/// have and none is behind the wall; forty in all
+/// fly away from it, and the upper half still flies through.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn every_other_frame_still_stops_every_particle() {
+    let atlas = atlas_of(|_, row, _| (row < MAP / 2).then_some(WALL_M));
+    let particles = particles_at_the_wall();
+    let caps = run_sim(
+        &SimSetup {
+            particles: particles.clone(),
+            aux: aux_rows(true, atlas.1),
+            atlas: Some(atlas),
+            every: 2,
+        },
+        &[6, 8, 40],
+    );
+    // Six frames in (the wall reached), only the particles whose turn it
+    // was have bounced: about half.
+    let lower = particles.iter().filter(|(p, _)| p.y < 0.0).count();
+    let bounced = caps[0]
+        .iter()
+        .zip(&particles)
+        .filter(|((_, v), (p, _))| p.y < 0.0 && v.z > 0.0)
+        .count();
+    assert!(
+        bounced * 10 > lower * 4 && bounced * 10 < lower * 6,
+        "{bounced} of {lower} bounced on the first frame at the wall"
+    );
+    for (cap, frame) in caps[1..].iter().zip([8, 40]) {
+        for (&(p, v), (start, _)) in cap.iter().zip(&particles) {
+            if start.y < 0.0 {
+                assert!(-p.z <= WALL_M && v.z > 0.0, "frame {frame} at {p}: {v}");
+            } else if frame == 40 {
+                assert!(-p.z > WALL_M + THICKNESS, "at {p}: stopped without data");
+            }
+        }
+    }
+}
+
+/// Rows that claim an atlas over the core's 1x1 placeholder (which the
+/// XR app never writes: the rows come with an upload) still collide with
+/// nothing: the sim takes the side from the rows, not the texture, and
+/// the placeholder's zeros, however the load is bounded, read as no data.
 #[test]
 #[ignore = "requires a GPU/software adapter"]
 fn the_placeholder_texture_collides_with_nothing() {
@@ -845,6 +918,7 @@ fn the_placeholder_texture_collides_with_nothing() {
             particles: particles_at_the_wall(),
             aux: aux_rows(true, 160),
             atlas: None,
+            every: 1,
         },
         &[40],
     )
@@ -887,6 +961,7 @@ fn particles_bounce_up_off_a_horizontal_surface() {
             particles,
             aux: aux_rows(true, atlas.1),
             atlas: Some(atlas),
+            every: 1,
         },
         &[8, 40],
     );

@@ -1248,15 +1248,18 @@ one texture for this (group 1 binding 2, RGBA8, declared by
    effect is built replaces the 1x1 placeholder and rebinds it), with the
    poses of the frame it was built from.
 3. **The aux rows** (`WORLD_AUX_ROWS` 173 -> 180, `DepthCollide::rows`):
-   `aux[173]` = (1 when an atlas is in the texture, thickness band m,
-   range m, texels per side); per layer k, `aux[174 + 3k]` = camera
+   `aux[173]` = (the stride as `u32` bits: low 16 `depthcollideevery`
+   N, 0 when no atlas is in the texture, high 16 the frame's phase, frame
+   mod N; thickness band m; range m; texels per side); per layer k, `aux[174 + 3k]` = camera
    position relative to the anchor and the near plane, `aux[175 + 3k]` =
    orientation quaternion, `aux[176 + 3k]` = fov tangents (left, right,
    up, down). An atlas older than 100 ms, or none yet in this effect (a
    parked effect just swapped in), zeroes them.
 4. **The collide** (`flux_xr_sim.wgsl`, `xr_depth_collide`, after the box
-   collide). Layer 0, else layer 1: the first layer that sees the particle
-   in its fov over a texel with data decides. It collides when it lies
+   collide). Particle `i` is tested only when `(i + phase) % N == 0`, so
+   each is tested every N frames (N = 1: every frame). Layer 0, else
+   (outside layer 0's view) layer 1: the first layer whose view holds the
+   particle decides, with data or without. It collides when it lies
    between `margin` in front of the surface and `thickness` behind it
    (deeper is left alone: the occluder hides it). The normal is the depth
    gradient (central differences over the texel's four neighbors,
@@ -1268,9 +1271,9 @@ one texture for this (group 1 binding 2, RGBA8, declared by
    0.9; an upward normal counts as resting (ages faster, like a table).
    `textureLoad`, not a filtered sample: interpolating across a
    silhouette would invent a surface between a person and the wall
-   behind. The atlas side is checked against the texture's, so the 1x1
-   placeholder before the first upload collides with nothing. Murmur
-   ignores the rows.
+   behind. The atlas side comes from the rows, not `textureDimensions`
+   (the rows only claim an atlas after an upload; the 1x1 placeholder's
+   zeros read as no data anyway). Murmur ignores the rows.
 
 Also in this pass, for the occluder: the lookup is edge-aware bilinear by
 default (`envdepthfilter 1`): the 2x2 texels around the ray are
@@ -1287,6 +1290,7 @@ SUCCESS`) says what was asked and what the runtime answered.
 adb shell setprop debug.fosfora.depthcollide 0|1          # world mode only; default 1 wherever the depth map is on; 1 implies the provider
 adb shell setprop debug.fosfora.depthcollideres 160|320   # atlas texels per layer side (default 160)
 adb shell setprop debug.fosfora.depthcollidethick 0.15    # the thickness band behind a surface, m
+adb shell setprop debug.fosfora.depthcollideevery 2       # test each particle every N frames, 1..8 (default 2): GPU cost / N, up to N-1 frames late
 adb shell setprop debug.fosfora.envdepthfilter 0|1|2      # occluder lookup: nearest texel | edge-aware (default) | bilinear everywhere
 adb shell setprop debug.fosfora.envdepthhands 0|1         # live: polled once a second
 ```
@@ -1308,28 +1312,48 @@ headless behind the loader's preamble with the core's bindings: a wall
 1 m/s (six frames in, at the margin bouncing back at the
 restitution; forty frames in none behind it, all flying away) while the
 upper half, without data, flies through; with the switch row off
-everything flies through; layer 0 without data falls through to layer
-1; the 1x1 placeholder collides with nothing; particles falling onto a
+everything flies through; with `every 2` about half bounce on the frame
+the wall is reached and all of them two frames later; outside layer 0's
+view layer 1 answers, and layer 0 in view over no data decides alone; the 1x1 placeholder collides with nothing; particles falling onto a
 horizontal seat bounce up within 3 degrees of vertical and none falls
 through (a few cm early along the ray where the seat is seen at a
 grazing angle, the texel's nearest depth). The core's Flux and Murmur
 world probes still pass.
 
-**Cost** (Quest 3, `mode world`, Flux XR Room 400K, 72 Hz, unworn, the
-room located, 60 s runs; App GPU ms): pending.
+**Cost** (Quest 3, `aa8fb45`, `mode world`, Flux XR Room 400K, 72 Hz,
+unworn, the room's 17 anchors located, 60 s runs; App GPU ms; each
+particle tested every frame, before `depthcollideevery`):
 
 ```
 adb shell "setprop debug.fosfora.effect 'Flux XR Room'"
 scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=0"
-scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160"
-scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=320"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideevery=1"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=320;depthcollideevery=1"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideevery=2"
 ```
 
-| Config | App GPU med / p90 / max | CPU avg ms | fps (med) | Long | Stale | Atlas lag (mean / max frames) |
-|---|---|---|---|---|---|---|
-| collide off (occluder on) | pending | pending | pending | pending | pending | n/a |
-| collide on, 160 | pending | pending | pending | pending | pending | pending |
-| collide on, 320 | pending | pending | pending | pending | pending | pending |
+| Config | Battery | App GPU med / p90 / max | CPU avg / max ms | fps (min) | Long | Stale | Atlas lag |
+|---|---|---|---|---|---|---|---|
+| collide off (occluder on) | 43 C | 10.28 / 10.98 / 11.95 | 1.59 / 2.5 | | 2 | 4 | n/a |
+| collide on, 160 (same pair) | 43 C | 10.84 / 12.15 / 12.91 | 2.02 / 4.0 | 64 | 29 | 134 | 1 frame |
+| collide on, 160 (earlier, cooler) | | 10.44 / 11.54 / 12.21 | | | | 35 | 1 frame |
+| collide on, 320 (earlier, cooler) | | 10.59 / 11.66 / 13.49 | | | | 61 | 1 frame |
+| collide on, 160, every 2 | | pending | pending | pending | pending | pending | pending |
+
+The atlas path works on the device: 709 uploads per 10 s, lag exactly 1
+frame, 0 failed, 0 skipped. Hand removal: the creation line read
+"supported true, asked false" with `envdepthhands 0`. **The collide
+costs about 0.6 ms of App GPU at the median, 1.2 ms at p90, and 0.4 ms
+of frame-loop CPU** (likely the atlas's 200 KB read back, copied again by the
+core's alpha check and uploaded); on a hot device that is enough for 134
+stale frames a minute, which judders worn. Heat moves the baseline by a
+millisecond: collide off read 9.25 ms at 35 C this morning (the phase 1
+table) and 10.28 at 43 C for this pair, so compare only back-to-back
+pairs. Hence `depthcollideevery` (default 2) and the per-particle
+trims: the side from the rows instead of `textureDimensions`, no layer 1
+attempt once layer 0's view holds the particle, the stride test before
+any other work and the fov rows and collide header read only when they
+are needed.
 
 **Worn gate: pending.** Embers land on a hand-held object, a person and
 an unscanned chair; they slide off a shoulder; no particles trapped

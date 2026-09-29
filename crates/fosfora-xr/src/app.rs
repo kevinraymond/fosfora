@@ -250,6 +250,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.depthcollideres 160|320  (atlas texels per layer side; 160, the default, keeps the nearest of each 2x2 block)
     //   adb shell setprop debug.fosfora.depthcollidethick 0.15   (how far behind a surface a particle still collides with it, m; deeper it is left
     //       alone, the occluder hides it)
+    //   adb shell setprop debug.fosfora.depthcollideevery 2      (each particle is tested against the depth map every N frames, 1..8, each on its
+    //       own phase: the collide's GPU cost divided by N, a collision caught up to N-1 frames late; default 2)
     //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -311,6 +313,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             collide_thickness_m: debug_prop("debug.fosfora.depthcollidethick")
                 .and_then(|v| v.parse::<f32>().ok())
                 .map_or(d.collide_thickness_m, |v| v.clamp(0.01, 1.0)),
+            collide_every: debug_prop("debug.fosfora.depthcollideevery")
+                .and_then(|v| v.parse::<u32>().ok())
+                .map_or(d.collide_every, |v| {
+                    v.clamp(1, crate::env_depth::COLLIDE_EVERY_MAX)
+                }),
         }
     });
     // `envdepthhands` is live: polled once a second (below) and applied
