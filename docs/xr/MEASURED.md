@@ -1116,10 +1116,13 @@ adb shell setprop debug.fosfora.envdepthshow 1    # the diagnostic: the same pas
 adb shell setprop debug.fosfora.envdepthhands 0   # keep the hands in the depth map (default 1: removed)
 adb shell setprop debug.fosfora.envdepthnear 0.2  # discard distance, m
 adb shell setprop debug.fosfora.envdepthflipv 0   # read texture row 0 as the bottom (default 1: the top)
+adb shell setprop debug.fosfora.envdepthcheck 1   # the numeric self-check (below); draws nothing by itself
 ```
 
-With `envdepth` and `envdepthshow` both 0 no provider is created: the
-baseline is the app without it.
+With `envdepth`, `envdepthshow` and `envdepthcheck` all 0 no provider is
+created: the baseline is the app without it. A failed provider creation
+is retried every 5 s from the frame loop, up to 12 times, each attempt
+logged.
 
 **Reading the diagnostic.** `envdepthshow 1` writes the decoded distance
 as opaque gray over the view (the sprites still draw over it): 0 m black
@@ -1132,6 +1135,36 @@ the swapchain length and size, whether hand removal was applied, the
 first frame (after how many not-available frames and ms), its near/far
 and fov, any near/far change, and a count every 720 frames.
 
+**The numeric self-check** (`envdepthcheck 1`), because a screencap never
+shows passthrough: once a second, with the room's boxes located, a
+compute pass copies a 40 x 40 grid of each layer (every 8th texel of
+320) into a buffer that is mapped a few frames later, without stalling
+the loop. Each texel's ray, from the acquired pose and fov of its layer,
+is cast against the room's boxes (hidden walls left out) and the stage
+floor (y = 0); texels with no depth data or no hit are skipped. Per
+layer, one `envdepth check` line gives the texels with depth data and,
+for three readings of the texture (row 0 at the top, as the shader reads
+it with `envdepthflipv 1`; row 0 at the bottom; columns mirrored), the
+texels compared, the fraction within 10 cm and 25 cm and the median of
+map minus room depth. The reading with the high agreement is the right
+one.
+
+**Runtime facts (Quest 3, v207, Sep 29).**
+
+- The first three launches failed at `xrCreateEnvironmentDepthProviderMETA`
+  with `ERROR_RUNTIME_FAILURE`. The runtime's mixed reality service
+  (`mrsystemservice`, up 42 h) logged, for every client including the OS
+  shell's own provider: "MUSTFIX: MIXEDREALITY.Framebuffer: Failed to
+  create swapchain. Requested format 33189, 320x320, length 4, arraySize
+  2". A headset reboot fixed it (hence the creation retry above).
+- After the reboot: "swapchain 4 images, 320x320 D16 x 2 layers, hand
+  removal on (supported true)"; the first depth frame 3138 ms after
+  creation, with 0 not-available frames; near 0.1 m, far inf (an
+  infinite projection); layer 0 fov [-54.0 40.0 44.0 -55.0] degrees
+  (left, right, up, down); 720 acquires per 10 s, 0 errors.
+- The diagnostic gray renders in both eyes with plausible near/far
+  structure; orientation is for the self-check to settle.
+
 | Effect, 72 Hz | Config | GPU ms med / p90 / max | fps | Long frames |
 |---|---|---|---|---|
 | Flux XR Room 400K | baseline | pending | pending | pending |
@@ -1143,8 +1176,9 @@ and fov, any near/far change, and a count every 720 frames.
 
 | Depth map | Value |
 |---|---|
-| Size (per layer) | pending |
-| Swapchain length | pending |
-| Near / far (m) | pending |
-| Frames until the first depth frame | pending |
-| Hand removal supported / applied | pending |
+| Size (per layer) | 320 x 320 |
+| Swapchain length | 4 |
+| Near / far (m) | 0.1 / inf (infinite projection) |
+| First depth frame | 3138 ms after creation, 0 not-available frames |
+| Hand removal supported / applied | yes / yes |
+| Layer 0 fov (deg, l r u d) | -54.0 40.0 44.0 -55.0 |
