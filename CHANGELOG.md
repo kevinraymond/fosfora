@@ -49,6 +49,17 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   are dropped now, so the last value sent always arrives.
 - **Webcam as a particle source** had no button and could only come back from a preset. It is
   on the particle source row again.
+- **The depth download always failed on macOS**, so depth obstacles could not be set up
+  there. On every platform, an interrupted download could leave a broken ONNX Runtime that
+  was reused on every run. The runtime, depth model and Splat demo are now checked against
+  pinned checksums, and a broken copy is fetched again when you press Download.
+- **One idle connection to the web remote stalled every other client** for five seconds.
+  Beyond 32 open connections new ones are refused, and a burst of effect or preset loads from
+  the remote now loads only the last.
+- **Morph effects above about 2 million particles failed to load on Windows (DX12)**; they
+  are now capped to what the GPU can bind.
+- **The web remote could load hidden effects by number**, including the 10-million-particle
+  Stress benchmark. It now loads only effects in its list.
 
 ## v2.0.0 — 2026-09-27
 
