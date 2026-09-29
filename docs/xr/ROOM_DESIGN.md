@@ -369,3 +369,44 @@ on the side wall, relaunch and find the room as left.
    room per space.)
 3. Does the pinch-hold keep cycling effects, or switch to room presets in
    C? (Deferred to C.)
+
+**Implemented, step 2 (Sep 29).** Kevin chose the pinch on the surface
+(question 1) and the pinch-hold as the class assignment on a surface,
+the effect cycle elsewhere (question 3, for the editor). "Edit room"
+is a second hand menu row under the pitcher and debug toggles, in both
+layouts, beside a status cell; it is off at launch and not saved. While
+it is on the right hand's gestures are the editor's (`room_edit.rs`):
+the ray is the throw's, from the head through the right far pinch point
+(the seated reach applies), cast up to 8 m against the room's boxes and
+the stage floor while the room has none; a tap cycles the pointed
+surface's behavior one step (none, embers, sparks, spectrum, ripple,
+none, from its effective behavior, so an unassigned table goes to
+sparks, its strength kept), a hold (0.7 s) writes its behavior and
+strength to every surface of its kind and the kind default. The right
+tap no longer throws or toggles the sprite size, the right hold no
+longer cycles the effect, the right drag no longer moves the anchor;
+the left hand, the lift and the pitcher are unchanged. While the panel
+is up its pinches are its own and the editor has no ray; a gesture
+without a ray or a hit changes nothing and is logged. The hit has
+hysteresis: another box counts after 0.15 s under the ray, the hit
+clears after 0.3 s off it, and the gestures act on the hit as shown.
+The assignments go through step 1's lanes, file and log unchanged. The
+look: a beam (4 mm, alpha 0.35) from the far pinch point to the hit,
+or at the held hit's distance through a short miss, else 3 m out; the
+hit face (`Face::across`, the box face across the hit normal) lifted
+1 cm and tinted in the ripple's warm white, a fill at alpha 0.10 under
+a 2.5 cm border at 0.30 (the border is what reads with one eye), drawn
+after the ripple and the canvas, behind hands and furniture, under the
+embers; a cycle pulses it once and a class assignment twice (+0.25,
+0.3 s each). The status cell names the surface in words, with the box
+index when two share a name ("table 3: embers", "wall 12: spectrum"),
+"no surface" or "edit room off". Knobs: `debug.fosfora.editroom 0|1`
+(the mode at launch) and `debug.fosfora.picktest <s>` (the ray from
+0.5 m ahead of the head along the view tilted 20 degrees down,
+untracked, a synthetic tap every `<s>` seconds; implies the mode).
+Logs: "edit room: pointing at wall 12 (WALL_FACE 8f7ada5c) at (x, y,
+z)", "edit room: no surface", "edit room: table 0 (TABLE dc83ba94) ->
+sparks" followed by the lanes' line, "edit room: every wall like ..."
+for a class, and the mode's changes. Worn gate (Kevin): point at the
+desk and turn its embers off and on, put the spectrum on the side wall,
+relaunch and find the room as left.
