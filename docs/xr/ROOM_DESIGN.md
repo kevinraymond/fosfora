@@ -110,6 +110,9 @@ occludes and collides for furniture the anchors miss.
 - Since board #3324 the live depth map (`XR_META_environment_depth`) covers
   the "occluder first" role for what the scan misses (unscanned furniture,
   people, the wearer's body, moved objects). Collision from it is phase 2.
+- Phase 2 is in (board #3352): the Flux world sims collide with the live
+  depth map too, so embers land on a person or an unscanned chair and
+  slide off; see MEASURED.md, "Live depth as a collision source".
 
 ## The design (Kevin, Sep 28, board #3315)
 

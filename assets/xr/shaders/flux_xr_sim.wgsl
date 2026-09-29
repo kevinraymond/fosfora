@@ -52,8 +52,9 @@
 //   aux[163..170]   Murmur's per-hand behavior lanes (murmur_xr_sim.wgsl;
 //                   unused here)
 //   aux[170..173]   the instrument rows (below; Murmur ignores them)
+//   aux[173..180]   the live depth rows (below; Murmur ignores them)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
-// near fade and no instruments.
+// near fade, no instruments and no depth collide.
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -84,6 +85,38 @@
 // rim), damps their lateral speed so they gather under the palm, and
 // keeps them from resting (no XR_REST_AGING); above the palm, nothing.
 //
+// Live depth rows (board #3352; crates/fosfora-xr/src/env_depth.rs,
+// DepthCollide::rows): the runtime's environment depth map as a collision
+// source, for what the scan does not know (a person, an unscanned chair, a
+// hand-held object). Layer k is 0 (left) or 1 (right):
+//   aux[173]        x = u32 bits: low 16 the stride N (0: no atlas in the
+//                   obstacle texture, no depth collide), high 16 this
+//                   frame's phase (a frame counter mod N); particle idx is
+//                   tested only when (idx + phase) % N == 0, so each is
+//                   tested every N frames (N = 1: every frame). y =
+//                   thickness band (m), z = the atlas range (m), w = atlas
+//                   texels per layer side (the texture is w x 2w)
+//   aux[174 + 3k]   layer k's depth camera position xyz (anchor-relative),
+//                   w = its near plane (m)
+//   aux[175 + 3k]   its orientation, quaternion camera -> world (x, y, z, w)
+//   aux[176 + 3k]   the tangents of its fov: left, right, up, down
+// The atlas is the obstacle texture (obstacle_tex, particle_lib.wgsl group 1
+// binding 2), side x 2 side RGBA8: layer 0 in rows 0..side, layer 1 below,
+// and within a layer row 0 is the BOTTOM of the depth camera's view (the
+// runtime's GL row order). The distance along the camera's -Z over the range
+// is a 16-bit fraction, high byte in R and low byte in B; G = 1 where the
+// texel holds data (the nearest of its block of the map). A
+// particle is looked up in layer 0, else (outside layer 0's view) layer 1;
+// the first layer whose view holds it decides, with data or without. It collides when it lies between margin in front of
+// the surface and the thickness band behind it (deeper is left alone: the
+// occluder hides it): pushed out along the surface normal to the plane
+// through the point margin in front of the surface on its ray, the inward
+// normal speed reflected with restitution as for a box, the tangential
+// speed damped by XR_DEPTH_COLLIDE_FRICTION. The normal comes from the
+// depth gradient (the texel's four neighbors unprojected, central
+// differences); at a silhouette (a neighbor without data or more than
+// XR_DEPTH_SILHOUETTE_M away) it is the ray toward the camera.
+//
 // Surface lanes (board #3317; crates/fosfora-xr/src/surfaces.rs): the kind
 // is 0 none, 1 table (DESK or TABLE), 2 floor, 3 wall, 4 ceiling, 5 door or
 // window frame, 6 other, as a float; the weight is 0 for a box that emits
@@ -105,6 +138,14 @@ const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
 // After Murmur's per-hand lanes (163..170, XR_AUX_END in murmur_xr_sim.wgsl).
 const XR_AUX_INSTRUMENTS: u32 = 170u;
 const XR_AUX_INSTRUMENT_ROWS: u32 = 3u;
+// After the instrument rows (board #3352); the XR app uploads 180 rows.
+const XR_AUX_DEPTH: u32 = 173u;
+const XR_AUX_DEPTH_ROWS: u32 = 7u;
+
+// The depth collide's tangential damping per colliding frame, and the
+// depth jump between neighboring texels (m) that reads as a silhouette.
+const XR_DEPTH_COLLIDE_FRICTION: f32 = 0.9;
+const XR_DEPTH_SILHOUETTE_M: f32 = 0.5;
 
 // Bursts: the radius the 0.3..1.2 m/s speeds are for, the lifetime
 // fraction, the sprite size and base opacity against the cloud's and how
@@ -169,7 +210,7 @@ fn xr_side(x: f32) -> f32 {
 // particle deep inside a box (spawned there) exits through the nearest face.
 // Returns true when the particle was pushed out through an upward face: it
 // is resting on a table or the floor.
-fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
+fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) -> bool {
     var rested = false;
     let header = aux[XR_AUX_HEADER].home;
     let sphere_count = min(bitcast<u32>(header.x), XR_MAX_SPHERES);
@@ -224,7 +265,116 @@ fn xr_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>) -> bool {
             rested = rested || n.y > 0.7;
         }
     }
-    return rested;
+    let on_depth = xr_depth_collide(pos, vel, idx);
+    return rested || on_depth;
+}
+
+// ---- the live depth map (the depth rows above) ----------------------------------
+
+// The distance (m) atlas texel t of layer k holds, or -1 without data: a
+// 16-bit fraction of the range, high byte in R, low byte in B.
+fn xr_depth_at(t: vec2i, k: u32, side: i32, range: f32) -> f32 {
+    let c = clamp(t, vec2i(0), vec2i(side - 1));
+    let s = textureLoad(obstacle_tex, vec2i(c.x, c.y + i32(k) * side), 0);
+    let v = round(s.r * 255.0) * 256.0 + round(s.b * 255.0);
+    return select(-1.0, v / 65535.0 * range, s.g > 0.5);
+}
+
+// The point at distance d (along -Z) on the ray through the middle of
+// texel t, in the depth camera's frame. `tan` is the fov's tangents.
+fn xr_depth_point(t: vec2i, d: f32, tan: vec4f, side: f32) -> vec3f {
+    let uv = (vec2f(t) + 0.5) / side;
+    return vec3f(mix(tan.x, tan.y, uv.x), mix(tan.w, tan.z, uv.y), -1.0) * d;
+}
+
+// The collide with the live depth map (the depth rows above) for particle
+// idx. Returns true when the particle was pushed out through a surface
+// facing up: it rests.
+fn xr_depth_collide(pos: ptr<function, vec3f>, vel: ptr<function, vec3f>, idx: u32) -> bool {
+    let head = aux[XR_AUX_DEPTH].home;
+    let stride = bitcast<u32>(head.x);
+    let every = stride & 0xffffu;
+    // No atlas, or not this particle's frame: one particle in `every` is
+    // tested per frame, each on its own phase.
+    if every == 0u || (idx + (stride >> 16u)) % every != 0u {
+        return false;
+    }
+    // The side comes from the rows, never textureDimensions: the rows only
+    // claim an atlas once one of that side is in the texture (before, the
+    // core's 1x1 placeholder is all zeros, which reads as no data).
+    let side = i32(head.w + 0.5);
+    if side < 2 {
+        return false;
+    }
+    let range = head.z;
+    for (var k = 0u; k < 2u; k++) {
+        let row = XR_AUX_DEPTH + 1u + 3u * k;
+        let origin = aux[row].home.xyz;
+        let q = aux[row + 1u].home;
+        let pc = xr_quat_rotate(xr_quat_conj(q), *pos - origin);
+        if pc.z > -1e-3 {
+            continue;
+        }
+        let tan = aux[row + 2u].home;
+        let depth = -pc.z;
+        let t = pc.xy / depth;
+        let uv = vec2f((t.x - tan.x) / (tan.y - tan.x), (t.y - tan.w) / (tan.z - tan.w));
+        if any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0)) {
+            continue;
+        }
+        // The first layer whose view holds the particle decides, with data
+        // or without: the other eye's layer, 6 cm over, has its holes in
+        // the same places.
+        let texel = min(vec2i(uv * f32(side)), vec2i(side - 1));
+        let surface = xr_depth_at(texel, k, side, range);
+        let header = aux[XR_AUX_HEADER].home;
+        let margin = header.w;
+        if surface < 0.0 || depth <= surface - margin || depth >= surface + head.y {
+            return false;
+        }
+        let restitution = header.z;
+        // The surface normal from the depth gradient (central differences
+        // over the texel's four neighbors, clamped at the atlas's edges),
+        // facing the camera; at a silhouette, the ray toward the camera.
+        var n_cam = -pc / length(pc);
+        let last = vec2i(side - 1);
+        let xp = min(texel + vec2i(1, 0), last);
+        let xm = max(texel - vec2i(1, 0), vec2i(0));
+        let yp = min(texel + vec2i(0, 1), last);
+        let ym = max(texel - vec2i(0, 1), vec2i(0));
+        let d = vec4f(
+            xr_depth_at(xp, k, side, range),
+            xr_depth_at(xm, k, side, range),
+            xr_depth_at(yp, k, side, range),
+            xr_depth_at(ym, k, side, range)
+        );
+        if all(d >= vec4f(0.0)) && all(abs(d - surface) <= vec4f(XR_DEPTH_SILHOUETTE_M)) {
+            let fs = f32(side);
+            let m = cross(
+                xr_depth_point(xp, d.x, tan, fs) - xr_depth_point(xm, d.y, tan, fs),
+                xr_depth_point(yp, d.z, tan, fs) - xr_depth_point(ym, d.w, tan, fs)
+            );
+            let len = length(m);
+            if len > 1e-10 {
+                n_cam = m / len;
+                if dot(n_cam, pc) > 0.0 {
+                    n_cam = -n_cam;
+                }
+            }
+        }
+        // Out along the normal, onto the plane through the point margin in
+        // front of the surface on the particle's ray.
+        let aim = pc * ((surface - margin) / depth);
+        let out_cam = pc + n_cam * max(dot(aim - pc, n_cam), 0.0);
+        *pos = origin + xr_quat_rotate(q, out_cam);
+        let n = xr_quat_rotate(q, n_cam);
+        let vn = dot(*vel, n);
+        let tangential = *vel - vn * n;
+        *vel = select(vn, -restitution * vn, vn < 0.0) * n
+            + tangential * XR_DEPTH_COLLIDE_FRICTION;
+        return n.y > 0.7;
+    }
+    return false;
 }
 
 // ---- flow ---------------------------------------------------------------------
@@ -554,7 +704,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // the floor.
     let settle = aux[XR_AUX_HEADER + 1u].home.z;
     pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
-    let rested = xr_collide(&pos, &vel) && !lifted;
+    let rested = xr_collide(&pos, &vel, idx) && !lifted;
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
     // Still alive, so the alive count and the density stay steady. In

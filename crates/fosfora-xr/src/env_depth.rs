@@ -1,4 +1,6 @@
-//! The live environment depth as a depth occluder (board #3324, phase 1).
+//! The live environment depth as a depth occluder (board #3324, phase 1)
+//! and as a collision source for the world sim (board #3352, phase 2: the
+//! depth atlas, below).
 //!
 //! `XR_META_environment_depth` hands the app a depth map from the
 //! passthrough cameras every frame: a two-layer `D16_UNORM` array (layer 0
@@ -19,6 +21,12 @@
 //! negligible for a surface near the lookup distance and small elsewhere
 //! (the tests below bound it). Texels with no data (`d >= 1`) and distances
 //! under [`NEAR_CUT_M`] (the depth API is unreliable there) are discarded.
+//! The lookup is edge-aware bilinear by default ([`filtered_distance`]):
+//! interpolated within a surface, the nearest of the four texels across a
+//! silhouette. The nearest texel alone (`envdepthfilter 0`) read as blocky
+//! edges worn; a silhouette is still cut on the texel grid (half a texel
+//! out), which `envdepthfilter 2`, bilinear across it too, is there to
+//! compare against.
 //!
 //! Plain numbers in, so the math and the shader build and test on the
 //! desktop; [`EyeReprojection::frag_depth`] is the CPU mirror of
@@ -39,6 +47,18 @@ pub const SHOW_FAR_M: f32 = 4.0;
 /// Rows of [`EyeReprojection::uniform`], `struct EnvEye` in
 /// [`ENV_DEPTH_WGSL`].
 pub const UNIFORM_ROWS: usize = 21;
+/// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`, the
+/// default): the 2x2 texels around a lookup are interpolated when their
+/// distances are within this of each other (m), else the nearest is
+/// taken.
+pub const FILTER_EDGE_M: f32 = 0.25;
+/// `envdepthfilter 2`: an edge threshold no depth jump reaches, so the
+/// four are always interpolated, across silhouettes too (a diagnostic).
+pub const FILTER_SOFT_M: f32 = 1.0e6;
+/// How far behind the surface the depth map shows a particle still
+/// collides with it (m, `debug.fosfora.depthcollidethick`): deeper, it is
+/// behind the surface and the occluder hides it.
+pub const COLLIDE_THICKNESS_M: f32 = 0.15;
 
 /// What the knobs ask of the environment depth.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,6 +83,25 @@ pub struct EnvDepthOptions {
     /// Once a second, read a grid of the depth map back and compare it
     /// with the room's boxes and the floor (`debug.fosfora.envdepthcheck`).
     pub check: bool,
+    /// The occluder's lookup (`debug.fosfora.envdepthfilter`): 0 the texel
+    /// under the ray (nearest), otherwise the edge threshold (m) of the
+    /// edge-aware filter ([`filtered_distance`]).
+    pub filter_edge_m: f32,
+    /// Build the depth atlas every frame for the world sim's collide
+    /// (`debug.fosfora.depthcollide`, board #3352).
+    pub collide: bool,
+    /// Atlas texels per layer side (`debug.fosfora.depthcollideres`).
+    pub collide_res: u32,
+    /// The collide's thickness band (m, `debug.fosfora.depthcollidethick`).
+    pub collide_thickness_m: f32,
+    /// Each particle is tested every this many frames
+    /// (`debug.fosfora.depthcollideevery`).
+    pub collide_every: u32,
+    /// Copy the atlas into the obstacle texture
+    /// (`debug.fosfora.depthcollideupload`, a diagnostic: 0 runs the
+    /// atlas pass, the rows and the sim's test but skips the copy, so
+    /// nothing collides; it splits the pass's cost from the copy's).
+    pub collide_upload: bool,
 }
 
 impl Default for EnvDepthOptions {
@@ -74,6 +113,12 @@ impl Default for EnvDepthOptions {
             near_cut_m: NEAR_CUT_M,
             flip_v: false,
             check: false,
+            filter_edge_m: FILTER_EDGE_M,
+            collide: false,
+            collide_res: COLLIDE_RES,
+            collide_thickness_m: COLLIDE_THICKNESS_M,
+            collide_every: COLLIDE_EVERY,
+            collide_upload: true,
         }
     }
 }
@@ -135,6 +180,10 @@ pub struct EyeReprojection {
     pub layer: u32,
     pub near_cut_m: f32,
     pub flip_v: bool,
+    /// See [`EnvDepthOptions::filter_edge_m`]. The CPU mirror below
+    /// ([`Self::reproject`]) takes its sample through a closure; the
+    /// filter's own mirror is [`filtered_distance`].
+    pub filter_edge_m: f32,
 }
 
 impl EyeReprojection {
@@ -173,7 +222,7 @@ impl EyeReprojection {
             self.layer as f32,
             if self.flip_v { 1.0 } else { 0.0 },
             SHOW_FAR_M,
-            0.0,
+            self.filter_edge_m.max(0.0),
         ];
         rows
     }
@@ -237,6 +286,53 @@ impl EyeReprojection {
     }
 }
 
+/// The distance the occluder writes at depth map coordinates `uv` (0..1
+/// each, as [`EyeReprojection::depth_uv`] gives them) of a `size` map,
+/// with `texel` the decoded distance of a texel (`None`: no data, or under
+/// the discard distance): the CPU mirror of `map_distance` in
+/// [`ENV_DEPTH_WGSL`]. With `edge_m` 0, the texel under `uv`. Otherwise
+/// edge-aware bilinear over the 2x2 texels around `uv`: interpolated when
+/// all four have data within `edge_m` of each other, else the nearest of
+/// those with data, so a silhouette never blends a person into the wall
+/// behind. `None` where the occluder discards.
+pub fn filtered_distance(
+    uv: Vec2,
+    size: [u32; 2],
+    edge_m: f32,
+    texel: impl Fn([u32; 2]) -> Option<f32>,
+) -> Option<f32> {
+    let s = Vec2::new(size[0] as f32, size[1] as f32);
+    let last = [size[0].saturating_sub(1), size[1].saturating_sub(1)];
+    let at = |x: f32, y: f32| {
+        texel([
+            (x.max(0.0) as u32).min(last[0]),
+            (y.max(0.0) as u32).min(last[1]),
+        ])
+    };
+    if edge_m <= 0.0 {
+        let t = (uv * s).floor();
+        return at(t.x, t.y);
+    }
+    let p = uv * s - 0.5;
+    let base = p.floor();
+    let f = p - base;
+    let d = [
+        at(base.x, base.y),
+        at(base.x + 1.0, base.y),
+        at(base.x, base.y + 1.0),
+        at(base.x + 1.0, base.y + 1.0),
+    ];
+    let nearest = d.iter().flatten().copied().reduce(f32::min)?;
+    if let [Some(a), Some(b), Some(c), Some(e)] = d {
+        let far = a.max(b).max(c).max(e);
+        if far - nearest <= edge_m {
+            let lerp = |x: f32, y: f32, t: f32| x + (y - x) * t;
+            return Some(lerp(lerp(a, b, f.x), lerp(c, e, f.x), f.y));
+        }
+    }
+    Some(nearest)
+}
+
 /// The occluder's shader. Group 0: binding 0 the eye's `EnvEye` rows
 /// ([`EyeReprojection::uniform`]), binding 1 the depth map. The vertex
 /// stage is one full-screen triangle; the fragment stage mirrors
@@ -258,7 +354,8 @@ struct EnvEye {
     // depth map width, height, eye target width, height
     sizes: vec4<f32>,
     // x layer (0 left, 1 right), y 1 = texture row 0 is the top,
-    // z distance shown as white (m)
+    // z distance shown as white (m), w the filter's edge threshold (m; 0 =
+    // the texel under the ray)
     misc: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
@@ -281,6 +378,51 @@ fn decode(d: f32) -> f32 {
     }
     let f = env.depth_range.y;
     return 2.0 * n * f / (f + n - (2.0 * d - 1.0) * (f - n));
+}
+
+// The decoded distance of texel t, or -1: no data, or nearer than the
+// discard distance.
+fn texel_distance(t: vec2<i32>) -> f32 {
+    let d = textureLoad(depth_map, t, i32(env.misc.x), 0);
+    // 1 is no data (or infinity): nothing to occlude with.
+    if d >= 1.0 {
+        return -1.0;
+    }
+    let dist = decode(d);
+    return select(-1.0, dist, dist >= env.depth_range.w);
+}
+
+// The distance to write at depth map coordinates uv, or -1 to discard
+// (filtered_distance in env_depth.rs is the CPU mirror). misc.w 0: the
+// texel under uv. Otherwise edge-aware bilinear over the 2x2 texels around
+// uv: interpolated when all four have data within misc.w of each other,
+// else the nearest of those with data.
+fn map_distance(uv: vec2<f32>) -> f32 {
+    let last = vec2<i32>(env.sizes.xy) - vec2<i32>(1);
+    if env.misc.w <= 0.0 {
+        return texel_distance(min(vec2<i32>(floor(uv * env.sizes.xy)), last));
+    }
+    let p = uv * env.sizes.xy - 0.5;
+    let base = floor(p);
+    let f = p - base;
+    let b = vec2<i32>(base);
+    let d = vec4<f32>(
+        texel_distance(clamp(b, vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(1, 0), vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(0, 1), vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(1, 1), vec2<i32>(0), last))
+    );
+    let valid = d >= vec4<f32>(0.0);
+    if !any(valid) {
+        return -1.0;
+    }
+    let with_data = select(vec4<f32>(1e30), d, valid);
+    let nearest = min(min(with_data.x, with_data.y), min(with_data.z, with_data.w));
+    let far = max(max(d.x, d.y), max(d.z, d.w));
+    if all(valid) && far - nearest <= env.misc.w {
+        return mix(mix(d.x, d.y, f.x), mix(d.z, d.w, f.x), f.y);
+    }
+    return nearest;
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -316,15 +458,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> FragOut {
     if u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0 {
         discard;
     }
-    let size = vec2<i32>(env.sizes.xy);
-    let texel = min(vec2<i32>(floor(vec2<f32>(u, v) * env.sizes.xy)), size - vec2<i32>(1));
-    let d = textureLoad(depth_map, texel, i32(env.misc.x), 0);
-    // 1 is no data (or infinity): nothing to occlude with.
-    if d >= 1.0 {
-        discard;
-    }
-    let dist = decode(d);
-    if dist < env.depth_range.w {
+    let dist = map_distance(vec2<f32>(u, v));
+    if dist < 0.0 {
         discard;
     }
     let q = pd * (dist / -pd.z);
@@ -517,8 +652,291 @@ pub fn check_layer(
     }
 }
 
+// ---- The depth atlas: the live map as a collision source (board #3352) --
+//
+// The particle sim cannot sample the runtime's depth image (it lives in the
+// core's compute pipeline, whose one texture slot for this is the RGBA8
+// obstacle texture), so a compute pass condenses both layers of each
+// acquired image into a small RGBA8 atlas in a storage buffer, and the same
+// command encoder copies it into the world scene's obstacle texture
+// (`ParticleSystem::obstacle_texture`, sized once per effect through
+// `update_obstacle_webcam`) before the sim's dispatch: no CPU round trip,
+// no lag. `flux_xr_sim.wgsl` reads it with the same frame's poses (aux
+// rows 173..180). The first version read the atlas back and uploaded it:
+// ~0.5 ms GPU and 0.2 ms CPU for the upload alone on the Quest 3, landing
+// one to two frames late.
+
+/// The distance the atlas's 16 bits span (m): 0.08 mm steps, 2 cm in the
+/// high byte alone. A texel at or past it holds no data (no phantom wall
+/// at the range).
+pub const DEPTH_ATLAS_RANGE_M: f32 = 5.0;
+/// Atlas texels per layer side (`debug.fosfora.depthcollideres`): 160,
+/// each the nearest valid distance of a 2x2 block of the 320 map
+/// (conservative: surfaces grow, never shrink), or 320.
+pub const COLLIDE_RES: u32 = 160;
+/// Rows of [`ATLAS_WGSL`]'s `AtlasParams`.
+pub const ATLAS_PARAM_ROWS: usize = 2;
+
+/// Texels per row of the atlas's storage buffer for `res` texels per layer
+/// side: rows are padded to the 256-byte `bytes_per_row` alignment a
+/// buffer-to-texture copy requires (160 texels are 640 bytes, padded to
+/// 768 = 192 texels; 320 are 1280 bytes, already aligned).
+pub fn atlas_row_texels(res: u32) -> u32 {
+    (res * 4).next_multiple_of(256) / 4
+}
+
+/// The distance the map's stored value `d` gives, or `None` where the
+/// atlas holds no data: no depth (`d >= 1`), nearer than `near_cut` or at
+/// or past [`DEPTH_ATLAS_RANGE_M`].
+pub fn atlas_distance(d: f32, near: f32, far: f32, near_cut: f32) -> Option<f32> {
+    if d.is_nan() || d >= 1.0 {
+        return None;
+    }
+    let dist = decode_distance(d, near, far);
+    (dist >= near_cut && dist < DEPTH_ATLAS_RANGE_M).then_some(dist)
+}
+
+/// One atlas texel as the RGBA8 bytes of a little-endian `u32`: the
+/// distance over [`DEPTH_ATLAS_RANGE_M`] as a rounded 16-bit fraction, its
+/// high byte in R (2 cm steps on its own) and its low byte in B; G 255 for
+/// data; A 0. Alpha 0 everywhere keeps the core's luminance-to-alpha pass
+/// (`ObstacleTexture::update`) off the bytes. Eight bits alone tilted the
+/// sim's gradient normals on a seat 1 m out by up to 28 degrees (2 cm
+/// steps against ~2 cm of depth between neighboring texels), which the
+/// settle drift turns into a slide toward the camera.
+pub fn atlas_texel(dist: Option<f32>) -> u32 {
+    dist.map_or(0, |d| {
+        let v = ((d / DEPTH_ATLAS_RANGE_M).clamp(0.0, 1.0) * 65535.0 + 0.5).floor() as u32;
+        let v = v.min(65535);
+        (v >> 8) | (255 << 8) | ((v & 255) << 16)
+    })
+}
+
+/// The distance (m) an atlas texel reads as, `None` without data: the
+/// sim's `xr_depth_at` on the CPU.
+pub fn atlas_read(px: u32) -> Option<f32> {
+    let [r, g, b, _] = px.to_le_bytes();
+    (g == 255).then(|| f32::from(u16::from(r) << 8 | u16::from(b)) / 65535.0 * DEPTH_ATLAS_RANGE_M)
+}
+
+/// The map texels `[lo, hi)` atlas texel `i` of `res` covers along a side
+/// of `dim` (every map texel in exactly one span, at least one per span).
+pub fn atlas_span(i: u32, res: u32, dim: u32) -> (u32, u32) {
+    let lo = i * dim / res;
+    (lo, ((i + 1) * dim / res).max(lo + 1).min(dim))
+}
+
+/// The CPU twin of [`ATLAS_WGSL`]. `map` is both layers of the depth image
+/// as stored, layer-major then row-major (`map[(layer * h + row) * w + x]`,
+/// texture row 0 first); the atlas is `res` x `2 res`, layer 0 in rows
+/// `0..res` and layer 1 below, each layer's row 0 the bottom of the view
+/// (the map's own order by default; `flip_v` reads the map with row 0 at
+/// the top, `debug.fosfora.envdepthflipv`). Each texel is the nearest
+/// [`atlas_distance`] of its block.
+pub fn encode_atlas(
+    map: &[f32],
+    size: [u32; 2],
+    res: u32,
+    near: f32,
+    far: f32,
+    near_cut: f32,
+    flip_v: bool,
+) -> Vec<u32> {
+    let [w, h] = size;
+    let mut out = vec![0; (2 * res * res) as usize];
+    for layer in 0..2 {
+        for y in 0..res {
+            let (y0, y1) = atlas_span(y, res, h);
+            for x in 0..res {
+                let (x0, x1) = atlas_span(x, res, w);
+                let mut best: Option<f32> = None;
+                for ry in y0..y1 {
+                    let row = if flip_v { h - 1 - ry } else { ry };
+                    for rx in x0..x1 {
+                        let d = map
+                            .get(((layer * h + row) * w + rx) as usize)
+                            .copied()
+                            .unwrap_or(1.0);
+                        if let Some(dist) = atlas_distance(d, near, far, near_cut) {
+                            best = Some(best.map_or(dist, |b| b.min(dist)));
+                        }
+                    }
+                }
+                out[((layer * res + y) * res + x) as usize] = atlas_texel(best);
+            }
+        }
+    }
+    out
+}
+
+/// The rows of `struct AtlasParams` in [`ATLAS_WGSL`].
+pub fn atlas_params(
+    near: f32,
+    far: f32,
+    near_cut: f32,
+    res: u32,
+    flip_v: bool,
+) -> [[f32; 4]; ATLAS_PARAM_ROWS] {
+    let infinite = is_infinite(near, far);
+    [
+        [
+            near,
+            if infinite { 0.0 } else { far },
+            if infinite { 1.0 } else { 0.0 },
+            near_cut,
+        ],
+        [
+            DEPTH_ATLAS_RANGE_M,
+            res as f32,
+            if flip_v { 1.0 } else { 0.0 },
+            atlas_row_texels(res) as f32,
+        ],
+    ]
+}
+
+/// Condenses both layers of the depth image into the atlas (see
+/// [`encode_atlas`], its CPU twin), one invocation per atlas texel, rows
+/// [`atlas_row_texels`] apart in the buffer (the padding is never
+/// written, the copy into the texture skips it). Only
+/// samples the image, like the self-check, so it stays in the layout the
+/// occluder uses.
+pub const ATLAS_WGSL: &str = r"
+struct AtlasParams {
+    // near, far (0 when infinite), 1 when infinite, discard distance (m)
+    depth_range: vec4<f32>,
+    // x the atlas range (m), y texels per layer side, z 1 = map row 0 is
+    // the top of the view, w texels per buffer row (padded to 256 bytes)
+    atlas: vec4<f32>,
+}
+@group(0) @binding(0) var depth_map: texture_depth_2d_array;
+@group(0) @binding(1) var<storage, read_write> atlas: array<u32>;
+@group(0) @binding(2) var<uniform> p: AtlasParams;
+
+fn decode(d: f32) -> f32 {
+    let n = p.depth_range.x;
+    if p.depth_range.z > 0.5 {
+        return n / (1.0 - d);
+    }
+    let f = p.depth_range.y;
+    return 2.0 * n * f / (f + n - (2.0 * d - 1.0) * (f - n));
+}
+
+// The map texels [x, y) atlas texel i of res covers along a side of dim.
+fn span(i: u32, res: u32, dim: u32) -> vec2<u32> {
+    let lo = i * dim / res;
+    return vec2<u32>(lo, min(max((i + 1u) * dim / res, lo + 1u), dim));
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let res = u32(p.atlas.y);
+    if id.x >= res || id.y >= res || id.z >= 2u {
+        return;
+    }
+    let dim = textureDimensions(depth_map);
+    let sx = span(id.x, res, dim.x);
+    let sy = span(id.y, res, dim.y);
+    // The nearest distance with data in the block; -1 for none.
+    var best = -1.0;
+    for (var y = sy.x; y < sy.y; y++) {
+        let row = select(y, dim.y - 1u - y, p.atlas.z > 0.5);
+        for (var x = sx.x; x < sx.y; x++) {
+            let d = textureLoad(depth_map, vec2<i32>(i32(x), i32(row)), i32(id.z), 0);
+            if d < 1.0 {
+                let dist = decode(d);
+                if dist >= p.depth_range.w && dist < p.atlas.x && (best < 0.0 || dist < best) {
+                    best = dist;
+                }
+            }
+        }
+    }
+    // A 16-bit fraction of the range: high byte in R, low byte in B.
+    var px = 0u;
+    if best >= 0.0 {
+        let v = min(u32(floor(clamp(best / p.atlas.x, 0.0, 1.0) * 65535.0 + 0.5)), 65535u);
+        px = (v >> 8u) | (255u << 8u) | ((v & 255u) << 16u);
+    }
+    atlas[(id.z * res + id.y) * u32(p.atlas.w) + id.x] = px;
+}
+";
+
+/// What the sim needs besides the atlas: the poses and fov of the
+/// acquired frame the atlas was built from (the same frame: the atlas is
+/// written into the obstacle texture in that frame's submit), its near
+/// plane, the atlas side, the collide's thickness band and stride.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthCollide {
+    pub views: [DepthView; 2],
+    pub near: f32,
+    /// Texels per layer side.
+    pub res: u32,
+    /// How far behind a surface a particle still collides with it (m);
+    /// deeper is left alone (the occluder hides it).
+    pub thickness_m: f32,
+    /// Each particle is tested every this many frames
+    /// (`debug.fosfora.depthcollideevery`, 1..=[`COLLIDE_EVERY_MAX`]).
+    pub every: u32,
+}
+
+/// The default of `debug.fosfora.depthcollideevery`: each particle is
+/// tested every other frame, half the collide's per-frame cost, a
+/// collision caught at most one frame (under 1 cm at the settle drift)
+/// late.
+pub const COLLIDE_EVERY: u32 = 2;
+/// The largest stride (it rides in 16 bits; past a few frames a particle
+/// sinks visibly into a surface before it is caught).
+pub const COLLIDE_EVERY_MAX: u32 = 8;
+
+/// Rows of the world aux block the depth collide takes, right after the
+/// instrument rows (`XR_AUX_DEPTH` and `XR_AUX_DEPTH_ROWS` in
+/// `flux_xr_sim.wgsl`, rows 173..180): the header, then three per layer.
+pub const COLLIDE_ROWS: usize = 7;
+/// An atlas older than this (ms) is no longer collided with: the depth
+/// stopped (the provider paused, the headset off the head), so the sim
+/// stops trusting a picture of the room that may have moved. At 72 Hz one
+/// arrives every 14 ms.
+pub const ATLAS_MAX_AGE_MS: u64 = 100;
+
+impl DepthCollide {
+    /// The aux rows for this atlas, positions relative to the effect's
+    /// `anchor` (the sim's origin):
+    ///
+    /// - 0: x the stride as `u32` bits, low 16 bits `every` (0 would be
+    ///   off), high 16 bits `frame % every`: the sim tests particle `i`
+    ///   when `(i + phase) % every == 0`; y the thickness band (m), z the
+    ///   atlas range (m), w texels per layer side
+    /// - 1 + 3k: layer k's depth camera position xyz, w its near plane (m)
+    /// - 2 + 3k: its orientation, quaternion camera to world (x, y, z, w)
+    /// - 3 + 3k: the tangents of its fov: left, right, up, down
+    ///
+    /// All zero (the rows when no atlas is valid) turns the collide off.
+    /// `frame` counts the sim's frames (any counter that steps once per
+    /// dispatch).
+    pub fn rows(&self, anchor: Vec3, frame: u32) -> [[f32; 4]; COLLIDE_ROWS] {
+        let mut rows = [[0.0; 4]; COLLIDE_ROWS];
+        let every = self.every.clamp(1, COLLIDE_EVERY_MAX);
+        let stride = every | (frame % every) << 16;
+        rows[0] = [
+            f32::from_bits(stride),
+            self.thickness_m,
+            DEPTH_ATLAS_RANGE_M,
+            self.res as f32,
+        ];
+        for (k, v) in self.views.iter().enumerate() {
+            let p = Vec3::from(v.position) - anchor;
+            let f = v.fov;
+            rows[1 + 3 * k] = [p.x, p.y, p.z, self.near];
+            rows[2 + 3 * k] = v.orientation;
+            rows[3 + 3 * k] = [f.left.tan(), f.right.tan(), f.up.tan(), f.down.tan()];
+        }
+        rows
+    }
+}
+
 #[cfg(target_os = "android")]
-pub use runtime::{EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthSlot};
+pub use runtime::{
+    AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
+};
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
 /// occluder pipeline. The `openxr` crate binds the extension's function
@@ -539,8 +957,9 @@ mod runtime {
     use xr::sys::Handle as _;
 
     use super::{
-        CHECK_GRID, CHECK_WGSL, CheckStats, DepthView, ENV_DEPTH_WGSL, EnvDepthOptions,
-        EyeReprojection, Obb, Reading, UNIFORM_ROWS, check_layer,
+        ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthCollide, DepthView,
+        ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS, atlas_params,
+        atlas_row_texels, check_layer,
     };
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::math::Fov;
@@ -556,6 +975,8 @@ mod runtime {
     const CREATE_RETRY_EVERY: Duration = Duration::from_secs(5);
     /// Time between two self-check read-backs.
     const CHECK_EVERY: Duration = Duration::from_secs(1);
+    /// Time between the depth atlas's running-count log lines.
+    const ATLAS_LOG_EVERY: Duration = Duration::from_secs(10);
 
     /// The environment depth, or its creation waiting for a retry. On the
     /// Quest 3 (v207, Sep 29) `xrCreateEnvironmentDepthProviderMETA`
@@ -643,6 +1064,26 @@ mod runtime {
                 _ => None,
             }
         }
+
+        /// Ask for the hands in or out of the depth map
+        /// (`debug.fosfora.envdepthhands`, polled while running): applied
+        /// now to a live provider, kept for a creation still being retried.
+        pub fn set_hand_removal(&mut self, on: bool) {
+            match self {
+                Self::Ready(d) => d.set_hand_removal(on),
+                Self::Retry { opts, .. } => {
+                    opts.hand_removal = on;
+                    info!(
+                        "environment depth: hand removal asked {}: kept for the provider's creation, still being retried",
+                        if on { "on" } else { "off" }
+                    );
+                }
+                Self::GaveUp => info!(
+                    "environment depth: hand removal asked {}: no provider (creation gave up)",
+                    if on { "on" } else { "off" }
+                ),
+            }
+        }
     }
 
     /// One acquired depth image: which swapchain image, its projection's
@@ -728,6 +1169,9 @@ mod runtime {
         // the swapchain in `provider` owns (fields drop in order).
         /// The self-check (`debug.fosfora.envdepthcheck`), when asked for.
         check: Option<Check>,
+        /// The depth atlas for the sim's collide
+        /// (`debug.fosfora.depthcollide`), when asked for.
+        atlas: Option<Atlas>,
         /// Per swapchain image, per eye: the eye's uniform and the image.
         bind_groups: Vec<[wgpu::BindGroup; 2]>,
         _images: Vec<(wgpu::Texture, wgpu::TextureView)>,
@@ -736,6 +1180,9 @@ mod runtime {
         provider: Provider,
         size: [u32; 2],
         opts: EnvDepthOptions,
+        /// Whether the system can remove the hands from the map
+        /// (`supports_hand_removal`).
+        hand_removal_supported: bool,
         created: Instant,
         acquired: u64,
         not_available: u64,
@@ -875,6 +1322,9 @@ mod runtime {
 
             let (pipeline, layout) = build_pipeline(&gfx.device, opts.show);
             let check = opts.check.then(|| build_check(&gfx.device, &images));
+            let atlas = opts
+                .collide
+                .then(|| build_atlas(&gfx.device, &images, opts.collide_res));
             let uniforms = [0, 1].map(|eye| {
                 gfx.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some(if eye == 0 {
@@ -909,7 +1359,7 @@ mod runtime {
                 })
                 .collect();
             info!(
-                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · discard under {} m · v flip {} · self-check {}",
+                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
                 images.len(),
                 if hand_removal { "on" } else { "off" },
                 opts.hand_removal,
@@ -920,12 +1370,36 @@ mod runtime {
                 } else {
                     "no draw"
                 },
+                if opts.filter_edge_m <= 0.0 {
+                    "nearest texel".to_owned()
+                } else if opts.filter_edge_m >= super::FILTER_SOFT_M {
+                    "bilinear everywhere".to_owned()
+                } else {
+                    format!("edge-aware ({} m)", opts.filter_edge_m)
+                },
                 opts.near_cut_m,
                 opts.flip_v,
                 opts.check,
+                if opts.collide {
+                    format!(
+                        "on ({res}x{} atlas, thickness {} m, every {} frames{})",
+                        2 * opts.collide_res,
+                        opts.collide_thickness_m,
+                        opts.collide_every,
+                        if opts.collide_upload {
+                            ""
+                        } else {
+                            ", copy into the texture off (diagnostic)"
+                        },
+                        res = opts.collide_res
+                    )
+                } else {
+                    "off".to_owned()
+                },
             );
             Ok(Some(Self {
                 check,
+                atlas,
                 bind_groups,
                 _images: images,
                 uniforms,
@@ -933,6 +1407,7 @@ mod runtime {
                 provider,
                 size: [width, height],
                 opts,
+                hand_removal_supported,
                 created: Instant::now(),
                 acquired: 0,
                 not_available: 0,
@@ -947,6 +1422,10 @@ mod runtime {
         /// (`ENVIRONMENT_DEPTH_NOT_AVAILABLE_META`, counted) or on an
         /// error (logged, rate-limited).
         pub fn acquire(&mut self, space: &xr::Space, time: xr::Time) -> Option<EnvDepthFrame> {
+            // The atlas pass follows this acquire's image, or none.
+            if let Some(a) = self.atlas.as_mut() {
+                a.image = None;
+            }
             if !self.provider.running {
                 self.start_retry_in = self.start_retry_in.saturating_sub(1);
                 if self.start_retry_in > 0 {
@@ -1103,6 +1582,7 @@ mod runtime {
                     layer: eye as u32,
                     near_cut_m: self.opts.near_cut_m,
                     flip_v: self.opts.flip_v,
+                    filter_edge_m: self.opts.filter_edge_m,
                 };
                 queue.write_buffer(&self.uniforms[eye], 0, bytemuck::cast_slice(&r.uniform()));
             }
@@ -1237,6 +1717,353 @@ mod runtime {
                     p.frames,
                 );
             }
+        }
+    }
+
+    impl EnvDepth {
+        /// Ask the runtime to remove the hands from the depth map, or keep
+        /// them (`xrSetEnvironmentDepthHandRemovalMETA`), and log what was
+        /// asked and what the runtime answered. On a system without hand
+        /// removal nothing is sent (the call is only valid with support).
+        pub fn set_hand_removal(&mut self, on: bool) {
+            let asked = if on { "on" } else { "off" };
+            if !self.hand_removal_supported {
+                info!(
+                    "environment depth: hand removal asked {asked}: the system does not support it, not sent"
+                );
+                return;
+            }
+            let set = sys::EnvironmentDepthHandRemovalSetInfoMETA {
+                ty: sys::EnvironmentDepthHandRemovalSetInfoMETA::TYPE,
+                next: ptr::null(),
+                enabled: on.into(),
+            };
+            // SAFETY: `set` is a fully initialized input struct that
+            // outlives the call; the provider is live (destroyed only when
+            // `self` drops).
+            let res = unsafe {
+                (self.provider.fp.set_environment_depth_hand_removal)(self.provider.handle, &set)
+            };
+            info!(
+                "environment depth: hand removal asked {asked}: the runtime answered {res:?}{}",
+                if res == sys::Result::SUCCESS {
+                    ""
+                } else {
+                    " (the previous setting stays)"
+                }
+            );
+            if res == sys::Result::SUCCESS {
+                self.opts.hand_removal = on;
+            }
+        }
+
+        /// The depth atlas for the sim's collide, before the frame is
+        /// recorded: write the pass's params for `frame` and keep its image
+        /// for [`Self::atlas_pass`]. Returns what the sim's rows need: the
+        /// same frame's poses, since the pass writes the obstacle texture
+        /// in this frame's submit, ahead of the sim. `None` without the
+        /// collide. Called after each acquire.
+        pub fn prepare_atlas(
+            &mut self,
+            queue: &wgpu::Queue,
+            frame: &EnvDepthFrame,
+        ) -> Option<DepthCollide> {
+            let a = self.atlas.as_mut()?;
+            a.bind_groups.get(frame.index as usize)?;
+            let params = atlas_params(
+                frame.near,
+                frame.far,
+                self.opts.near_cut_m,
+                a.res,
+                self.opts.flip_v,
+            );
+            queue.write_buffer(&a.params, 0, bytemuck::cast_slice(&params));
+            a.image = Some(frame.index);
+            Some(DepthCollide {
+                views: frame.views,
+                near: frame.near,
+                res: a.res,
+                thickness_m: self.opts.collide_thickness_m,
+                every: self.opts.collide_every,
+            })
+        }
+
+        /// This frame's atlas pass (prepared by [`Self::prepare_atlas`]),
+        /// for `Gfx::render` to record; `None` without one.
+        pub fn atlas_pass(&self) -> Option<AtlasPass<'_>> {
+            let a = self.atlas.as_ref()?;
+            Some(AtlasPass {
+                pipeline: &a.pipeline,
+                bind_group: a.bind_groups.get(a.image? as usize)?,
+                storage: &a.storage,
+                res: a.res,
+                copy: self.opts.collide_upload,
+            })
+        }
+
+        /// After the frame's submit: count what the atlas pass did
+        /// (`None`: no depth frame this frame) and log the counts every
+        /// 10 s.
+        pub fn note_atlas(&mut self, outcome: Option<AtlasOutcome>) {
+            let Some(a) = self.atlas.as_mut() else {
+                return;
+            };
+            a.image = None;
+            let w = &mut a.window;
+            match outcome {
+                Some(AtlasOutcome::Copied { sized }) => {
+                    w.copied += 1;
+                    w.sized += u64::from(sized);
+                }
+                Some(AtlasOutcome::NoTarget) => w.no_target += 1,
+                Some(AtlasOutcome::NotCopied) => w.not_copied += 1,
+                None => w.without += 1,
+            }
+            if w.since.elapsed() >= ATLAS_LOG_EVERY {
+                info!(
+                    "depth atlas: {} copied into the obstacle texture ({} after sizing it), {} frames without a texture to copy into, {} not copied (depthcollideupload 0), {} frames without a depth frame · {}x{}",
+                    w.copied,
+                    w.sized,
+                    w.no_target,
+                    w.not_copied,
+                    w.without,
+                    a.res,
+                    2 * a.res
+                );
+                a.window = AtlasWindow::new();
+            }
+        }
+    }
+
+    /// What this frame's atlas pass did (`AtlasPass::record`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AtlasOutcome {
+        /// Copied into the world effect's obstacle texture; `sized` when
+        /// the texture was (re)allocated at the atlas's size first (the
+        /// effect's first atlas, or an effect just built).
+        Copied { sized: bool },
+        /// No world effect's texture to copy into.
+        NoTarget,
+        /// `depthcollideupload 0`: the pass ran, the copy did not.
+        NotCopied,
+    }
+
+    /// This frame's depth atlas pass, recorded by `Gfx::render` into the
+    /// frame's command encoder before the sims' dispatch.
+    pub struct AtlasPass<'a> {
+        pipeline: &'a wgpu::ComputePipeline,
+        bind_group: &'a wgpu::BindGroup,
+        storage: &'a wgpu::Buffer,
+        res: u32,
+        copy: bool,
+    }
+
+    impl AtlasPass<'_> {
+        /// The obstacle texture's size the copy needs: `res` x `2 res`.
+        pub fn size(&self) -> (u32, u32) {
+            (self.res, 2 * self.res)
+        }
+
+        /// Whether the atlas is copied into the obstacle texture
+        /// (`depthcollideupload`); without, no texture is needed.
+        pub fn copies(&self) -> bool {
+            self.copy
+        }
+
+        /// The compute pass into the storage buffer, then (unless the
+        /// diagnostic turns it off) the copy into `target`, the world
+        /// effect's obstacle texture at [`Self::size`]; `sized` says it
+        /// was just (re)allocated, for the log.
+        pub fn record(
+            &self,
+            encoder: &mut wgpu::CommandEncoder,
+            target: Option<(&wgpu::Texture, bool)>,
+        ) -> AtlasOutcome {
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("xr-env-depth-atlas"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(self.pipeline);
+                pass.set_bind_group(0, self.bind_group, &[]);
+                pass.dispatch_workgroups(self.res.div_ceil(8), self.res.div_ceil(8), 2);
+            }
+            if !self.copy {
+                return AtlasOutcome::NotCopied;
+            }
+            let Some((texture, sized)) = target else {
+                return AtlasOutcome::NoTarget;
+            };
+            let (width, height) = self.size();
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: self.storage,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(atlas_row_texels(self.res) * 4),
+                        rows_per_image: Some(height),
+                    },
+                },
+                texture.as_image_copy(),
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            AtlasOutcome::Copied { sized }
+        }
+    }
+
+    /// What `Gfx::render` records for the environment depth this frame:
+    /// the occluder draw and the atlas pass, each when there is one.
+    #[derive(Default)]
+    pub struct EnvDepthPasses<'a> {
+        pub occluder: Option<EnvDepthDraw<'a>>,
+        pub atlas: Option<AtlasPass<'a>>,
+    }
+
+    /// The depth atlas's GPU side.
+    struct Atlas {
+        pipeline: wgpu::ComputePipeline,
+        /// Per swapchain image: the image, the storage buffer, the params.
+        bind_groups: Vec<wgpu::BindGroup>,
+        params: wgpu::Buffer,
+        /// The atlas, rows padded to [`atlas_row_texels`]; copied into the
+        /// obstacle texture.
+        storage: wgpu::Buffer,
+        /// Texels per layer side.
+        res: u32,
+        /// This frame's swapchain image, from `prepare_atlas` until
+        /// `note_atlas` (cleared by every acquire).
+        image: Option<u32>,
+        window: AtlasWindow,
+    }
+
+    /// The counts of one log window.
+    struct AtlasWindow {
+        since: Instant,
+        copied: u64,
+        sized: u64,
+        no_target: u64,
+        not_copied: u64,
+        without: u64,
+    }
+
+    impl AtlasWindow {
+        fn new() -> Self {
+            Self {
+                since: Instant::now(),
+                copied: 0,
+                sized: 0,
+                no_target: 0,
+                not_copied: 0,
+                without: 0,
+            }
+        }
+    }
+
+    fn build_atlas(
+        device: &wgpu::Device,
+        images: &[(wgpu::Texture, wgpu::TextureView)],
+        res: u32,
+    ) -> Atlas {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr-env-depth-atlas"),
+            source: wgpu::ShaderSource::Wgsl(ATLAS_WGSL.into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr-env-depth-atlas"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new((ATLAS_PARAM_ROWS * 16) as u64),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xr-env-depth-atlas"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("xr-env-depth-atlas"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let bytes = u64::from(2 * res * atlas_row_texels(res)) * 4;
+        let storage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-atlas"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-atlas-params"),
+            size: (ATLAS_PARAM_ROWS * 16) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_groups = images
+            .iter()
+            .map(|(_, view)| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("xr-env-depth-atlas"),
+                    layout: &layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: storage.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: params.as_entire_binding(),
+                        },
+                    ],
+                })
+            })
+            .collect();
+        Atlas {
+            pipeline,
+            bind_groups,
+            params,
+            storage,
+            res,
+            image: None,
+            window: AtlasWindow::new(),
         }
     }
 
@@ -1549,6 +2376,7 @@ mod tests {
             layer: 0,
             near_cut_m: NEAR_CUT_M,
             flip_v: EnvDepthOptions::default().flip_v,
+            filter_edge_m: 0.0,
         }
     }
 
@@ -1834,6 +2662,311 @@ mod tests {
         assert_eq!(span as usize, UNIFORM_ROWS * 16);
     }
 
+    /// A 2x2 map (texels (0,0), (1,0), (0,1), (1,1) in `d`) looked up at
+    /// its middle and around it.
+    fn filter_2x2(d: [Option<f32>; 4], uv: Vec2, edge_m: f32) -> Option<f32> {
+        filtered_distance(uv, [2, 2], edge_m, |[x, y]| d[(y * 2 + x) as usize])
+    }
+
+    #[test]
+    fn the_filter_interpolates_a_surface_and_keeps_a_silhouette_sharp() {
+        let mid = Vec2::splat(0.5);
+        // A flat (slanted) surface: bilinear. At the middle, the mean.
+        let flat = [Some(1.0), Some(1.05), Some(1.1), Some(1.15)];
+        let got = filter_2x2(flat, mid, FILTER_EDGE_M).unwrap();
+        assert!((got - 1.075).abs() < 1e-6, "{got}");
+        // A quarter of the way from texel (0,0)'s center to (1,0)'s.
+        let got = filter_2x2(flat, Vec2::new(0.375, 0.25), FILTER_EDGE_M).unwrap();
+        assert!((got - 1.0125).abs() < 1e-6, "{got}");
+        // Spread past the threshold (0.3 m over the four): the nearest.
+        let steep = [Some(1.0), Some(1.1), Some(1.2), Some(1.3)];
+        assert_eq!(filter_2x2(steep, mid, FILTER_EDGE_M), Some(1.0));
+        // A silhouette (a person at 1 m before a wall at 3 m): the nearest,
+        // never a point between them.
+        let edge = [Some(3.0), Some(1.0), Some(3.0), Some(3.0)];
+        assert_eq!(filter_2x2(edge, mid, FILTER_EDGE_M), Some(1.0));
+        // `envdepthfilter 2` blends across it.
+        let soft = filter_2x2(edge, mid, FILTER_SOFT_M).unwrap();
+        assert!((soft - 2.5).abs() < 1e-6, "{soft}");
+        // A texel without data: the nearest of the others; none: discard.
+        let hole = [Some(2.0), None, Some(1.5), Some(2.1)];
+        assert_eq!(filter_2x2(hole, mid, FILTER_EDGE_M), Some(1.5));
+        assert_eq!(filter_2x2([None; 4], mid, FILTER_EDGE_M), None);
+        // Off (0): the texel under the lookup, as before.
+        assert_eq!(filter_2x2(flat, Vec2::new(0.9, 0.1), 0.0), Some(1.05));
+        assert_eq!(filter_2x2(hole, Vec2::new(0.9, 0.1), 0.0), None);
+        // At the map's edge the neighbors clamp: flat stays flat.
+        let got = filter_2x2(flat, Vec2::new(0.01, 0.01), FILTER_EDGE_M).unwrap();
+        assert!((got - 1.0).abs() < 1e-6, "{got}");
+    }
+
+    /// The distance an atlas texel reads as, or `None` without data.
+    fn atlas_reads(px: u32) -> Option<f32> {
+        assert_eq!(px.to_le_bytes()[3], 0, "A stays 0");
+        atlas_read(px)
+    }
+
+    /// Both layers of a 320 map, stored as the runtime would (texture row 0
+    /// first), from a distance per (layer, row, column); `None` is no data.
+    fn synthetic_map(dist: impl Fn(u32, u32, u32) -> Option<f32>) -> Vec<f32> {
+        let (n, f) = (0.1, f32::INFINITY);
+        let mut map = Vec::with_capacity(2 * 320 * 320);
+        for layer in 0..2 {
+            for row in 0..320 {
+                for x in 0..320 {
+                    // D16: the stored value is quantized to 1/65535.
+                    let d = dist(layer, row, x)
+                        .map_or(1.0, |m| (encode(m, n, f) * 65535.0).round() / 65535.0);
+                    map.push(d);
+                }
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn an_atlas_texel_packs_distance_and_validity() {
+        assert_eq!(atlas_texel(None), 0);
+        // 1 m is 13107 / 65535 of 5 m: high byte 51 (R, the 2 cm reading),
+        // low byte 51 (B).
+        let px = atlas_texel(Some(1.0));
+        assert_eq!(px.to_le_bytes(), [51, 255, 51, 0]);
+        assert_eq!(atlas_reads(px), Some(1.0));
+        // 16-bit steps, rounded; the range clamps.
+        for d in [0.0, 0.2, 0.537, 1.2345, 3.3, 4.99] {
+            let back = atlas_reads(atlas_texel(Some(d))).unwrap();
+            assert!(
+                (back - d).abs() <= 0.5 * DEPTH_ATLAS_RANGE_M / 65535.0 + 1e-6,
+                "{d} -> {back}"
+            );
+        }
+        assert_eq!(atlas_texel(Some(9.0)).to_le_bytes(), [255, 255, 255, 0]);
+        // No data, too near, at or past the range: nothing.
+        let (n, f) = (0.1, f32::INFINITY);
+        assert!(atlas_distance(1.0, n, f, NEAR_CUT_M).is_none());
+        assert!(atlas_distance(encode(0.15, n, f), n, f, NEAR_CUT_M).is_none());
+        assert!(atlas_distance(encode(5.5, n, f), n, f, NEAR_CUT_M).is_none());
+        let d = atlas_distance(encode(2.0, n, f), n, f, NEAR_CUT_M).unwrap();
+        assert!((d - 2.0).abs() < 1e-3, "{d}");
+    }
+
+    #[test]
+    fn atlas_spans_cover_every_map_texel_once() {
+        for (res, dim) in [(160, 320), (320, 320), (160, 300), (320, 256)] {
+            let mut next = 0;
+            for i in 0..res {
+                let (lo, hi) = atlas_span(i, res, dim);
+                assert!(
+                    lo < hi && hi <= dim,
+                    "res {res} dim {dim} i {i}: {lo}..{hi}"
+                );
+                // Upsampling repeats a texel; otherwise the spans tile.
+                assert!(
+                    lo == next || (res > dim && lo + 1 == next),
+                    "{res} {dim} {i}"
+                );
+                next = hi;
+            }
+            assert_eq!(next, dim);
+        }
+        assert_eq!(atlas_span(0, 160, 320), (0, 2));
+        assert_eq!(atlas_span(159, 160, 320), (318, 320));
+    }
+
+    /// Layer 0 in the atlas's top half, layer 1 below, each in the map's
+    /// row order (row 0 the bottom of the view), at 320 one texel each.
+    #[test]
+    fn the_atlas_keeps_each_layer_in_its_half_in_row_order() {
+        // Layer 0: distance grows with the row; layer 1: with the column,
+        // and no data in its first ten rows.
+        let map = synthetic_map(|layer, row, x| match layer {
+            0 => Some(0.4 + row as f32 * 0.01),
+            _ => (row >= 10).then_some(0.5 + x as f32 * 0.005),
+        });
+        let res = 320;
+        let atlas = encode_atlas(&map, [320, 320], res, 0.1, f32::INFINITY, NEAR_CUT_M, false);
+        assert_eq!(atlas.len(), (2 * res * res) as usize);
+        let at =
+            |layer: u32, y: u32, x: u32| atlas_reads(atlas[((layer * res + y) * res + x) as usize]);
+        let close = |got: Option<f32>, want: f32| {
+            let got = got.expect("data");
+            assert!((got - want).abs() <= 1e-3, "{got} vs {want}");
+        };
+        for y in [0, 1, 100, 319] {
+            for x in [0, 160, 319] {
+                close(at(0, y, x), 0.4 + y as f32 * 0.01);
+            }
+        }
+        for y in [10, 200, 319] {
+            for x in [0, 161, 319] {
+                close(at(1, y, x), 0.5 + x as f32 * 0.005);
+            }
+        }
+        assert!(at(1, 0, 50).is_none() && at(1, 9, 50).is_none());
+        // `envdepthflipv 1` reads the map upside down: the atlas's row 0
+        // is still the bottom of the view, now the map's last row.
+        let flipped = encode_atlas(&map, [320, 320], res, 0.1, f32::INFINITY, NEAR_CUT_M, true);
+        assert_eq!(
+            flipped[..(res * res) as usize]
+                .chunks(res as usize)
+                .rev()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+            atlas[..(res * res) as usize]
+        );
+        assert!(atlas_reads(flipped[((res + 319) * res) as usize]).is_none());
+    }
+
+    /// At 160 each texel is the nearest of its 2x2 block, texels without
+    /// data, too near or out of range left out.
+    #[test]
+    fn at_160_a_texel_is_the_nearest_of_its_block() {
+        let map = synthetic_map(|layer, row, x| {
+            let (bx, by) = (x / 2, row / 2);
+            let corner = (x % 2, row % 2);
+            match (layer, bx % 4) {
+                // One texel of the block at 1 m, the rest at 3 m.
+                (0, 0) => Some(if corner == (1, 1) { 1.0 } else { 3.0 }),
+                // No data at all.
+                (0, 1) => None,
+                // One too near (discarded), the rest at 3 m.
+                (0, 2) => Some(if corner == (0, 0) { 0.15 } else { 3.0 }),
+                // One past the range, the rest without data.
+                (0, _) => (corner == (0, 1)).then_some(6.0),
+                // Layer 1: the block's own row-dependent distance.
+                _ => Some(0.5 + by as f32 * 0.02),
+            }
+        });
+        let res = 160;
+        let atlas = encode_atlas(&map, [320, 320], res, 0.1, f32::INFINITY, NEAR_CUT_M, false);
+        let at =
+            |layer: u32, y: u32, x: u32| atlas_reads(atlas[((layer * res + y) * res + x) as usize]);
+        for y in [0, 37, 159] {
+            assert!((at(0, y, 0).unwrap() - 1.0).abs() < 1e-3);
+            assert!((at(0, y, 4).unwrap() - 1.0).abs() < 1e-3);
+            assert!(at(0, y, 1).is_none());
+            assert!((at(0, y, 2).unwrap() - 3.0).abs() < 1e-3);
+            assert!(at(0, y, 3).is_none());
+            assert!((at(1, y, 77).unwrap() - (0.5 + y as f32 * 0.02)).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn atlas_buffer_rows_are_padded_for_the_texture_copy() {
+        assert_eq!(atlas_row_texels(160), 192);
+        assert_eq!(atlas_row_texels(320), 320);
+        for res in [8, 64, 120, 160, 200, 320, 640] {
+            let row = atlas_row_texels(res);
+            assert!(row >= res && row < res + 64, "{res}: {row}");
+            assert_eq!(row * 4 % 256, 0, "{res}: {row}");
+        }
+    }
+
+    #[test]
+    fn the_atlas_shader_validates_and_matches_the_params() {
+        let module = naga::front::wgsl::parse_str(ATLAS_WGSL).expect("atlas WGSL parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .expect("atlas WGSL validates");
+        let (_, ty) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("AtlasParams"))
+            .expect("struct AtlasParams");
+        let naga::TypeInner::Struct { span, .. } = ty.inner else {
+            panic!("AtlasParams is not a struct");
+        };
+        assert_eq!(span as usize, ATLAS_PARAM_ROWS * 16);
+        assert_eq!(
+            atlas_params(0.1, f32::INFINITY, 0.2, 160, false),
+            [
+                [0.1, 0.0, 1.0, 0.2],
+                [DEPTH_ATLAS_RANGE_M, 160.0, 0.0, 192.0]
+            ]
+        );
+        assert_eq!(
+            atlas_params(0.1, 20.0, 0.3, 320, true),
+            [
+                [0.1, 20.0, 0.0, 0.3],
+                [DEPTH_ATLAS_RANGE_M, 320.0, 1.0, 320.0]
+            ]
+        );
+    }
+
+    /// The rows `flux_xr_sim.wgsl` reads (its header comment): the
+    /// header, then per layer the position relative to the anchor with the
+    /// near plane, the orientation and the fov tangents.
+    #[test]
+    fn the_collide_rows_follow_the_sim_layout() {
+        let right = Fov {
+            left: -0.8,
+            right: 0.9,
+            up: 0.85,
+            down: -0.9,
+        };
+        let turned = Quat::from_rotation_y(0.2).to_array();
+        let c = DepthCollide {
+            views: [
+                DepthView {
+                    orientation: [0.0, 0.0, 0.0, 1.0],
+                    position: [-0.03, 1.2, 0.4],
+                    fov: FOV,
+                },
+                DepthView {
+                    orientation: turned,
+                    position: [0.03, 1.2, 0.4],
+                    fov: right,
+                },
+            ],
+            near: 0.1,
+            res: 160,
+            thickness_m: 0.15,
+            every: 1,
+        };
+        let rows = c.rows(Vec3::new(0.0, 1.0, -0.5), 7);
+        assert_eq!(rows.len(), COLLIDE_ROWS);
+        // Every frame: stride 1, phase 0 whatever the frame.
+        assert_eq!(rows[0][0].to_bits(), 1);
+        assert_eq!(c.rows(Vec3::ZERO, 12_345)[0][0].to_bits(), 1);
+        assert_eq!(rows[0][1..], [0.15, DEPTH_ATLAS_RANGE_M, 160.0]);
+        // Every 3rd frame: the phase walks with the frame.
+        let c3 = DepthCollide { every: 3, ..c };
+        let phases: Vec<u32> = (0..4)
+            .map(|f| c3.rows(Vec3::ZERO, f)[0][0].to_bits())
+            .collect();
+        assert_eq!(phases, [3, 3 | 1 << 16, 3 | 2 << 16, 3]);
+        // Out of range clamps; 0 would read as off.
+        let c0 = DepthCollide { every: 0, ..c };
+        assert_eq!(c0.rows(Vec3::ZERO, 5)[0][0].to_bits(), 1);
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(near(rows[1], [-0.03, 0.2, 0.9, 0.1]), "{:?}", rows[1]);
+        assert_eq!(rows[2], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            rows[3],
+            [
+                FOV.left.tan(),
+                FOV.right.tan(),
+                FOV.up.tan(),
+                FOV.down.tan()
+            ]
+        );
+        assert!(near(rows[4], [0.03, 0.2, 0.9, 0.1]), "{:?}", rows[4]);
+        assert_eq!(rows[5], turned);
+        assert_eq!(
+            rows[6],
+            [
+                right.left.tan(),
+                right.right.tan(),
+                right.up.tan(),
+                right.down.tan()
+            ]
+        );
+    }
+
     #[test]
     fn the_uniform_packs_the_matrices_and_flags() {
         let pos = [0.1, 1.4, 0.2];
@@ -1854,9 +2987,11 @@ mod tests {
         assert_eq!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
         r.far = 20.0;
         r.layer = 1;
+        r.filter_edge_m = FILTER_EDGE_M;
         let rows = r.uniform();
         assert_eq!(rows[18][..3], [0.1, 20.0, 0.0]);
         assert_eq!(rows[20][0], 1.0);
+        assert_eq!(rows[20][3], FILTER_EDGE_M);
         // The inverse view-projection really inverts.
         let inv = Mat4::from_cols_array_2d(&[rows[4], rows[5], rows[6], rows[7]]);
         assert!((inv * r.view_proj).abs_diff_eq(Mat4::IDENTITY, 1e-4));

@@ -1214,3 +1214,220 @@ removal on (`envdepthhands 1`) against off.
 | First depth frame | 3138 ms after creation, 0 not-available frames |
 | Hand removal supported / applied | yes / yes |
 | Layer 0 fov (deg, l r u d) | -54.0 40.0 44.0 -55.0 |
+
+## Live depth as a collision source (board #3352)
+
+Phase 2 of #3324, route B'1 (#3350, #3351), then B'2: the environment
+depth map reaches the world sim through the core particle sim's existing
+obstacle texture slot. The sim's compute pipeline can sample one texture
+for this (group 1 binding 2, RGBA8, declared by `particle_lib.wgsl` as
+`obstacle_tex`). B'1 read the atlas back to the CPU and uploaded it (no
+core change); B'2 copies it on the GPU, with one core change: the
+accessors `ParticleSystem::obstacle_texture` / `obstacle_size` (its own
+commit, for main). So:
+
+1. **The atlas** (`env_depth.rs`, `ATLAS_WGSL`, CPU twin
+   `encode_atlas`). Each frame with an acquired depth image, a compute pass
+   condenses both layers into `W x 2H` RGBA8 texels in a storage buffer:
+   layer 0 in rows `0..H`, layer 1 below, each in the map's own row order
+   (row 0 the bottom of the view; `envdepthflipv 1` is honored by reading
+   the map upside down). The distance along the depth camera's -Z over
+   5 m is a 16-bit fraction: high byte in R (the 2 cm reading on its
+   own), low byte in B. G is 255 where there is data; a texel without
+   data, nearer than `envdepthnear` or at or past 5 m has G 0 (so the
+   range never reads as a wall). A is 0, which keeps the core's
+   luminance-to-alpha pass off the bytes. At the default 160 per side each
+   texel is the nearest of its 2x2 block of the 320 map: surfaces grow,
+   never shrink. Eight bits were the plan; with them the sim's gradient
+   normals on a seat 0.8-2 m out tilted up to 28 degrees (p90 9), which
+   the settle drift turns into a slide toward the viewer; 16 bits hold
+   them under 1 degree at no cost (GPU test below).
+2. **The copy (B'2).** In the frame's one command encoder, before the
+   sims' dispatch, the atlas pass is followed by `copy_buffer_to_texture`
+   into the world effect's obstacle texture (`obstacle_texture()`). Buffer
+   rows are padded to the 256-byte copy alignment (160 texels = 640 bytes,
+   padded to 768; 320 = 1280, aligned). The texture is checked every frame
+   (the pinch-hold swaps in another effect with its own): at any size but
+   the atlas's, `update_obstacle_webcam` with a zeroed image of that size
+   allocates it and rebinds the sim's bind group once, then the copy
+   fills it. No CPU round trip and no lag: the rows carry the same
+   frame's poses, acquired before the sim's inputs are written.
+   (B'1, measured below: three staging buffers mapped asynchronously, the
+   atlas uploaded through `update_obstacle_webcam` a frame later.)
+3. **The aux rows** (`WORLD_AUX_ROWS` 173 -> 180, `DepthCollide::rows`):
+   `aux[173]` = (the stride as `u32` bits: low 16 `depthcollideevery`
+   N, 0 when no atlas is in the texture, high 16 the frame's phase, frame
+   mod N; thickness band m; range m; texels per side); per layer k, `aux[174 + 3k]` = camera
+   position relative to the anchor and the near plane, `aux[175 + 3k]` =
+   orientation quaternion, `aux[176 + 3k]` = fov tangents (left, right,
+   up, down). An atlas older than 100 ms (the depth stopped), or none yet
+   in this effect (a parked effect just swapped in), zeroes them.
+4. **The collide** (`flux_xr_sim.wgsl`, `xr_depth_collide`, after the box
+   collide). Particle `i` is tested only when `(i + phase) % N == 0`, so
+   each is tested every N frames (N = 1: every frame). Layer 0, else
+   (outside layer 0's view) layer 1: the first layer whose view holds the
+   particle decides, with data or without. It collides when it lies
+   between `margin` in front of the surface and `thickness` behind it
+   (deeper is left alone: the occluder hides it). The normal is the depth
+   gradient (central differences over the texel's four neighbors,
+   unprojected), facing the camera; at a silhouette (a neighbor without
+   data or 0.5 m away) the ray toward the camera. The particle moves out
+   along the normal onto the plane through the point `margin` in front of
+   the surface on its ray; the inward normal speed is reflected with the
+   header's restitution, as for a box; the tangential speed is damped by
+   0.9; an upward normal counts as resting (ages faster, like a table).
+   `textureLoad`, not a filtered sample: interpolating across a
+   silhouette would invent a surface between a person and the wall
+   behind. The atlas side comes from the rows, not `textureDimensions`
+   (the texture is sized before the first copy; the 1x1 placeholder's
+   zeros read as no data anyway). Murmur ignores the rows.
+
+Also in this pass, for the occluder: the lookup is edge-aware bilinear by
+default (`envdepthfilter 1`): the 2x2 texels around the ray are
+interpolated when their distances are within 0.25 m of each other, else
+the nearest of those with data is taken. Within a surface the depth steps
+go; a silhouette is still cut on the texel grid (moved half a texel out),
+so `envdepthfilter 2`, bilinear across silhouettes too, is there as the
+comparison. `envdepthhands` is now live: polled once a second, applied
+with `xrSetEnvironmentDepthHandRemovalMETA` on a change, and the log line
+(`environment depth: hand removal asked on: the runtime answered
+SUCCESS`) says what was asked and what the runtime answered.
+
+```
+adb shell setprop debug.fosfora.depthcollide 0|1          # world mode only; default 1 wherever the depth map is on; 1 implies the provider
+adb shell setprop debug.fosfora.depthcollideres 160|320   # atlas texels per layer side (default 160)
+adb shell setprop debug.fosfora.depthcollidethick 0.15    # the thickness band behind a surface, m
+adb shell setprop debug.fosfora.depthcollideevery 2       # test each particle every N frames, 1..8 (default 2), up to N-1 frames late
+adb shell setprop debug.fosfora.depthcollideupload 0|1    # diagnostic: 0 runs the atlas pass but skips its copy into the texture (nothing collides), default 1
+adb shell setprop debug.fosfora.envdepthfilter 0|1|2      # occluder lookup: nearest texel | edge-aware (default) | bilinear everywhere
+adb shell setprop debug.fosfora.envdepthhands 0|1         # live: polled once a second
+```
+
+Logcat: the creation line gains `filter ...` and `depth collide on
+(160x320 atlas, thickness 0.15 m, every 2 frames)`; every 10 s `depth
+atlas: N copied into the obstacle texture (N after sizing it), N frames
+without a texture to copy into, N not copied (depthcollideupload 0), N
+frames without a depth frame · 160x320`.
+
+**Tests (desktop).** Unit (`env_depth.rs`): the atlas encode (each layer
+in its half, row order, the flip, the 2x2 nearest with holes, too-near
+and out-of-range texels, R/G/B values, the spans), the aux rows' layout,
+the filter on a synthetic 2x2; the atlas and occluder shaders validate
+in naga. GPU (`tests/depth_collide_gpu.rs`, ignored like the core's
+probes; lavapipe or any adapter): the atlas pass on a D16 array, copied
+into an RGBA8 texture through the padded rows, matches its CPU twin at
+160 and 320, upright and flipped; the Flux sim run
+headless behind the loader's preamble with the core's bindings: a wall
+1 m ahead over the lower half of the view stops 20K particles flying at
+1 m/s (six frames in, at the margin bouncing back at the
+restitution; forty frames in none behind it, all flying away) while the
+upper half, without data, flies through; with the switch row off
+everything flies through; with `every 2` about half bounce on the frame
+the wall is reached and all of them two frames later; outside layer 0's
+view layer 1 answers, and layer 0 in view over no data decides alone; the 1x1 placeholder collides with nothing; particles falling onto a
+horizontal seat bounce up within 3 degrees of vertical and none falls
+through (a few cm early along the ray where the seat is seen at a
+grazing angle, the texel's nearest depth). The core's Flux and Murmur
+world probes still pass.
+
+**Cost** (Quest 3, `aa8fb45`, `mode world`, Flux XR Room 400K, 72 Hz,
+unworn, the room's 17 anchors located, 60 s runs; App GPU ms; each
+particle tested every frame, before `depthcollideevery`):
+
+```
+adb shell "setprop debug.fosfora.effect 'Flux XR Room'"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=0"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideevery=1"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=320;depthcollideevery=1"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideevery=2"
+```
+
+| Config | Battery | App GPU med / p90 / max | CPU avg / max ms | fps (min) | Long | Stale | Atlas lag |
+|---|---|---|---|---|---|---|---|
+| collide off (occluder on) | 43 C | 10.28 / 10.98 / 11.95 | 1.59 / 2.5 | | 2 | 4 | n/a |
+| collide on, 160 (same pair) | 43 C | 10.84 / 12.15 / 12.91 | 2.02 / 4.0 | 64 | 29 | 134 | 1 frame |
+| collide on, 160 (earlier, cooler) | | 10.44 / 11.54 / 12.21 | | | | 35 | 1 frame |
+| collide on, 320 (earlier, cooler) | | 10.59 / 11.66 / 13.49 | | | | 61 | 1 frame |
+| collide on, 160, every 2 | | see `d39bb4c` below | | | | | |
+
+**`d39bb4c`, back to back** (battery 42 -> 46 C over the three runs, GPU
+clock 640 MHz throughout; atlas 678 uploads / 10 s, lag 1 frame, 0
+failed):
+
+| Config | App GPU med / p90 / max | CPU avg ms | Long | Stale |
+|---|---|---|---|---|
+| collide off | 10.38 / 11.01 / 11.79 | 1.67 | 9 | 14 |
+| collide on, 160, every 1 | 11.21 / 12.14 / 12.74 | 2.07 | 41 | 209 |
+| collide on, 160, every 2 | 11.27 / 12.27 / 13.29 | 2.06 | 56 | 270 |
+
+Testing each particle every other frame changed nothing: the
+per-particle test is not the cost. **The cost is the atlas plumbing:**
+its own command encoder and submit per frame, the 200 KB
+`write_texture` upload through `update_obstacle_webcam`, and the map and
+poll on the CPU. Next pass: the atlas pass and its copy are recorded into
+the frame's one command encoder (one submit per frame), the staging
+buffer is mapped after it, and `depthcollideupload 0` (a diagnostic:
+everything but the upload, so nothing collides) splits the pass from the
+upload.
+
+**`44243f0`, one submit, heat-adverse order** (43 -> 47 C: on with the
+upload first, off last):
+
+| Config | App GPU med / p90 / max | CPU avg ms |
+|---|---|---|
+| collide on, 160, upload | 11.48 / 12.29 / 13.38 | 1.91 |
+| collide on, 160, `depthcollideupload 0` | 10.97 / 11.87 / 13.01 | 1.76 |
+| collide off | 10.80 / 11.76 / 12.54 | 1.68 |
+
+So the upload costs ~0.5 ms GPU and ~0.2 ms CPU, the atlas pass ~0.2 ms.
+The single submit also made the read-back land 2 frames late (84-94
+atlases superseded per 10 s). Kevin approved B'2, which removes the round
+trip: the GPU copy above (`dc72ac5` core accessor, then the XR change).
+
+**B'2 on the device** (`1122a85`, Flux XR Room 400K, `mode world`,
+72 Hz, unworn, cooled to 40 C first, four 60 s runs back to back,
+battery 40 -> 45 C across the series):
+
+```
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=0"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160"
+scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideupload=0"
+```
+
+| Run (in order) | App GPU med / p90 / max | CPU avg ms |
+|---|---|---|
+| collide on, 160 (GPU copy, every 2) | 9.20 / 9.69 / 10.06 | 1.63 |
+| collide off | 9.27 / 9.78 / 10.54 | 1.56 |
+| collide on, 160, again | 9.27 / 9.80 / 10.16 | 1.63 |
+| collide on, 160, `depthcollideupload 0` | 9.36 / 9.73 / 10.46 | 1.60 |
+
+Atlas: 721 copied into the obstacle texture per 10 s, 0 after sizing
+(one sizing at start), 0 frames without a texture, 0 frames without a
+depth frame. **The collision source now costs nothing measurable: at
+most 0.1 ms GPU and +0.07 ms CPU**, against ~0.7 ms GPU, 0.4 ms CPU and
+1-2 frames of lag with the CPU upload (B'1). Caveat: the room query
+returned 0 anchors in all four runs (the headset had just woken from a
+doze), so only the stage floor emitted (~330K alive) and the absolute
+numbers sit below the located-room baseline of 9.25-9.38 ms; the pairs
+are consistent. Stale frames were 179-235 in every run, collide off
+included, so they are not the feature's.
+
+The atlas path works on the device: 709 uploads per 10 s, lag exactly 1
+frame, 0 failed, 0 skipped. Hand removal: the creation line read
+"supported true, asked false" with `envdepthhands 0`. **The collide
+costs about 0.6 ms of App GPU at the median, 1.2 ms at p90, and 0.4 ms
+of frame-loop CPU** (likely the atlas's 200 KB read back, copied again by the
+core's alpha check and uploaded); on a hot device that is enough for 134
+stale frames a minute, which judders worn. Heat moves the baseline by a
+millisecond: collide off read 9.25 ms at 35 C this morning (the phase 1
+table) and 10.28 at 43 C for this pair, so compare only back-to-back
+pairs. Hence `depthcollideevery` (default 2) and the per-particle
+trims: the side from the rows instead of `textureDimensions`, no layer 1
+attempt once layer 0's view holds the particle, the stride test before
+any other work and the fov rows and collide header read only when they
+are needed.
+
+**Worn gate: pending.** Embers land on a hand-held object, a person and
+an unscanned chair; they slide off a shoulder; none trapped inside
+people; occluder edges with `envdepthfilter` 1 against 2; hand removal
+with `envdepthhands` 0 against 1 (live).

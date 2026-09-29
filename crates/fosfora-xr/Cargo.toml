@@ -52,5 +52,14 @@ libc = "0.2"
 [dev-dependencies]
 naga = { version = "27", features = ["wgsl-in"] }
 
+# The desktop GPU tests (`tests/depth_collide_gpu.rs`, `#[ignore]`d like the
+# core's probes: they need an adapter) drive the XR-only shaders headless.
+# The same wgpu, pollster and bytemuck as the core, so nothing new in the lock;
+# desktop only, so the Android lint keeps its Vulkan-only wgpu.
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+wgpu = "27"
+pollster = "0.4"
+bytemuck = "1"
+
 [lints]
 workspace = true

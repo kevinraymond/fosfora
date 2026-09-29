@@ -10,7 +10,7 @@ use openxr as xr;
 use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
-use crate::env_depth::{EnvDepthOptions, EnvDepthSlot};
+use crate::env_depth::{EnvDepthOptions, EnvDepthPasses, EnvDepthSlot};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
@@ -618,6 +618,18 @@ impl XrSession {
         }
     }
 
+    /// Ask for the hands in or out of the live depth map (board #3352);
+    /// see `EnvDepthSlot::set_hand_removal`. Nothing without the depth.
+    pub fn set_env_depth_hand_removal(&mut self, on: bool) {
+        match self.env_depth.as_mut() {
+            Some(slot) => slot.set_hand_removal(on),
+            None => info!(
+                "environment depth: hand removal asked {}: no depth provider in this run",
+                if on { "on" } else { "off" }
+            ),
+        }
+    }
+
     /// Relaunch Space Setup and requery the room's anchors
     /// (`Room::rescan`); nothing without a room.
     pub fn rescan_room(&mut self) {
@@ -722,13 +734,12 @@ impl XrSession {
                 None => Vec::new(),
             },
         };
-        before_render(&input, scene.as_deref_mut());
-
-        let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
-        log_stereo(view_flags, &views, &cameras);
-        // The live depth map, acquired right before rendering at the same
-        // predicted display time and in the same space as the views.
-        // A failed creation is retried from here (`EnvDepthSlot::get`).
+        // The live depth map, acquired at the same predicted display time
+        // and in the same space as the views. A failed creation is retried
+        // from here (`EnvDepthSlot::get`). With the collide on, this
+        // frame's atlas pass writes the world sim's obstacle texture in
+        // the frame's submit, ahead of the sim, so the sim's rows carry
+        // this frame's poses (board #3352).
         let mut env = self
             .env_depth
             .as_mut()
@@ -737,6 +748,16 @@ impl XrSession {
             e.poll_check(&gfx.device);
             e.acquire(&self.space, time)
         });
+        if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref())
+            && let Some(collide) = e.prepare_atlas(&gfx.queue, f)
+            && let Some(s) = scene.as_deref_mut()
+        {
+            s.set_depth_collide(collide);
+        }
+        before_render(&input, scene.as_deref_mut());
+
+        let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
+        log_stereo(view_flags, &views, &cameras);
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
             e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
         }
@@ -745,10 +766,12 @@ impl XrSession {
             .iter()
             .map(|e| [e.extent.width, e.extent.height])
             .collect();
-        let env_draw = env
+        let env_passes = env
             .as_deref()
-            .zip(env_frame)
-            .and_then(|(e, f)| e.prepare(&gfx.queue, &f, &cameras, &extents));
+            .map_or_else(EnvDepthPasses::default, |e| EnvDepthPasses {
+                occluder: env_frame.and_then(|f| e.prepare(&gfx.queue, &f, &cameras, &extents)),
+                atlas: e.atlas_pass(),
+            });
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -769,14 +792,17 @@ impl XrSession {
             .collect();
         // Only a world-mode scene draws into the eyes; a quad scene reaches
         // them through the quad texture.
-        gfx.render(
+        let atlas = gfx.render(
             &targets,
             &cameras,
             clear,
             particles,
             scene.filter(|s| s.is_world()),
-            env_draw.as_ref(),
+            &env_passes,
         );
+        if let Some(e) = env {
+            e.note_atlas(atlas);
+        }
 
         for eye in &mut self.eyes {
             eye.swapchain

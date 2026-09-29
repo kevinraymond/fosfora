@@ -3191,6 +3191,21 @@ impl ParticleSystem {
         self.rebuild_flow_field_bind_group(device);
     }
 
+    /// The obstacle texture the sim samples (group 1, binding 2), so an XR
+    /// host can write the obstacle image on the GPU instead of uploading it
+    /// from the CPU (board #3352). Rgba8Unorm with `COPY_DST` once sized
+    /// through [`Self::update_obstacle_webcam`]; the 1x1 placeholder until
+    /// then. Fetch it again after any call that may resize it: a resize
+    /// replaces the texture.
+    pub fn obstacle_texture(&self) -> &wgpu::Texture {
+        &self.obstacle.texture
+    }
+
+    /// The obstacle texture's size in texels, `(width, height)`.
+    pub fn obstacle_size(&self) -> (u32, u32) {
+        (self.obstacle.width, self.obstacle.height)
+    }
+
     /// Update obstacle texture from webcam frame data (per-frame).
     #[allow(dead_code)]
     pub fn update_obstacle_webcam(
