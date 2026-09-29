@@ -64,13 +64,16 @@
 //              at the burst with this probability, for a sim whose
 //              particles are nearly all alive (few dead slots to claim)
 //   aux[171]   burst center xyz (anchor-relative), w = burst radius (m)
-//   aux[172]   lift point xyz (anchor-relative: the far palm), w unused
+//   aux[172]   lift point xyz (anchor-relative: the far palm), w = the
+//              burst's brightness 0..1 (0 reads as 1): the streak shrinks
+//              and dims as the throw recedes, the impact is 1
 // A burst particle is born within the radius of the center, flying
 // radially outward (0.3..1.2 m/s at a 0.12 m burst, slower for the
 // throw's thinner streak), with half the lifetime, and drawn to be seen
 // against the cloud: XR_BURST_SIZE times the sprite, XR_BURST_ALPHA
 // opaque, its color pulled toward white (a 6000 ball drawn like the cloud
-// is 1.5% of a 400K cloud and reads as nothing; board #3329). It
+// is 1.5% of a 400K cloud and reads as nothing; board #3329), all three
+// scaled by the brightness in aux[172].w. It
 // is not bound to the volume: its life lane reads XR_FREE, it never
 // respawns at the bounds and has no edge fade (a throw lands on walls
 // outside the volume), and it dies XR_FREE_REACH_M from the anchor (past
@@ -415,6 +418,8 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
 // out from its center, fully opaque at once and with a shorter life.
 fn xr_burst(idx: u32, half: f32) -> Particle {
     let b = aux[XR_AUX_INSTRUMENTS + 1u].home;
+    let given = aux[XR_AUX_INSTRUMENTS + 2u].home.w;
+    let bright = select(clamp(given, 0.0, 1.0), 1.0, given <= 0.0);
     var p = emit_particle(idx, half);
     let r = xr_rand3(idx, 6u);
     let s = xr_rand3(idx, 7u);
@@ -429,14 +434,19 @@ fn xr_burst(idx: u32, half: f32) -> Particle {
     let life = u.lifetime * XR_BURST_LIFE;
     p.pos_life = vec4f(b.xyz + at, XR_FREE);
     // Bigger, brighter and more opaque than the cloud, so the streak and
-    // the ball read through it.
-    let size = p.flags.z * XR_BURST_SIZE;
+    // the ball read through it; a dimmed streak falls back toward the
+    // cloud's sprite, opacity and color.
+    let size = p.flags.z * mix(1.0, XR_BURST_SIZE, bright);
+    let alpha = mix(p.flags.w, XR_BURST_ALPHA, bright);
     p.vel_size = vec4f(dir * speed, size);
-    p.color = vec4f(mix(p.color.rgb, vec3f(1.0, 0.95, 0.85), XR_BURST_WHITE), XR_BURST_ALPHA);
+    p.color = vec4f(
+        mix(p.color.rgb, vec3f(1.0, 0.95, 0.85), XR_BURST_WHITE * bright),
+        alpha
+    );
     // Past the fade-in, at its base opacity: a burst shows at once (the
     // surface and volume spawns start invisible for particles born inside
     // a box; this one is born in front of the surface).
-    p.flags = vec4f(life * 0.05, life, size, XR_BURST_ALPHA);
+    p.flags = vec4f(life * 0.05, life, size, alpha);
     return p;
 }
 

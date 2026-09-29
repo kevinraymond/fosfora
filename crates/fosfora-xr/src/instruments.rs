@@ -46,9 +46,13 @@ pub const THROW_SPEED_M_S: f32 = 6.0;
 pub const MIN_FLIGHT_S: f32 = 0.12;
 pub const RANGE_M: f32 = 12.0;
 pub const MISS_M: f32 = 3.0;
-/// The streak: particles per frame in flight, and its radius (m).
+/// The streak: particles per frame in flight, its radius (m), and how
+/// bright it is by the end of the flight against the start (1): the
+/// streak shrinks and dims as the throw recedes, and the impact bursts at
+/// full brightness (Kevin, worn, Sep 28).
 pub const STREAK_PER_FRAME: u32 = 300;
 pub const STREAK_RADIUS_M: f32 = 0.03;
+pub const STREAK_END_BRIGHTNESS: f32 = 0.3;
 /// The impact: particles (`debug.fosfora.burstcount`), frames it is spread
 /// over, radius (m), and the clearance off the surface (m).
 pub const BURST_COUNT: u32 = 6000;
@@ -196,6 +200,9 @@ pub struct Burst {
     pub hand: usize,
     /// Part of the impact, not the streak.
     pub impact: bool,
+    /// Size and opacity against a fresh burst's, 0..1: the streak fades
+    /// from 1 to [`STREAK_END_BRIGHTNESS`] over the flight; the impact is 1.
+    pub brightness: f32,
 }
 
 /// Each hand's flight, packed into the rows one a frame.
@@ -258,6 +265,7 @@ impl Thrower {
                 count: STREAK_PER_FRAME,
                 hand,
                 impact: false,
+                brightness: 1.0 - k * (1.0 - STREAK_END_BRIGHTNESS),
             }
         } else {
             // The remainder on the first frame, so the frames sum to the
@@ -272,6 +280,7 @@ impl Thrower {
                 count,
                 hand,
                 impact: true,
+                brightness: 1.0,
             };
             if f.impact_frames >= frames {
                 *slot = None;
@@ -417,7 +426,8 @@ impl Lifter {
 ///   radius (m), w the steal fraction ([`steal_fraction`], filled in where
 ///   the alive count is known; 0 here);
 /// - row 1: the burst center xyz, w its radius (m);
-/// - row 2: the lift point xyz (the far palm).
+/// - row 2: the lift point xyz (the far palm), w the burst's brightness
+///   (0 with no burst; the sim reads 0 as 1).
 ///
 /// No burst and no lift is all zeros, the rows' meaning before they existed.
 pub fn rows(burst: Option<Burst>, lift: Option<Lift>, anchor: Vec3) -> [[f32; 4]; INSTRUMENT_ROWS] {
@@ -426,12 +436,13 @@ pub fn rows(burst: Option<Burst>, lift: Option<Lift>, anchor: Vec3) -> [[f32; 4]
         rows[0][0] = f32::from_bits(b.count);
         let c = b.center - anchor;
         rows[1] = [c.x, c.y, c.z, b.radius];
+        rows[2][3] = b.brightness.clamp(0.0, 1.0);
     }
     if let Some(l) = lift.filter(|l| l.strength > 0.0) {
         rows[0][1] = l.strength.clamp(0.0, 1.0);
         rows[0][2] = l.radius;
         let p = l.at - anchor;
-        rows[2] = [p.x, p.y, p.z, 0.0];
+        rows[2][..3].copy_from_slice(&[p.x, p.y, p.z]);
     }
     rows
 }
@@ -563,6 +574,21 @@ mod tests {
                 f.duration_s
             );
             assert!(streak.iter().all(|b| b.count == STREAK_PER_FRAME));
+            // Bright at the hand, dimming to the end value at the hit; the
+            // impact at full brightness.
+            assert!((streak[0].brightness - 1.0).abs() < 0.05, "{:?}", streak[0]);
+            let last_b = streak.last().unwrap().brightness;
+            assert!(
+                (last_b - STREAK_END_BRIGHTNESS).abs() < 0.05 && last_b >= STREAK_END_BRIGHTNESS,
+                "{last_b}"
+            );
+            assert!(
+                streak
+                    .windows(2)
+                    .all(|w| w[1].brightness <= w[0].brightness),
+                "the streak never brightens"
+            );
+            assert!(impact.iter().all(|b| b.brightness == 1.0));
             // The streak runs from the pinch toward the hit.
             assert!(streak[0].center.abs_diff_eq(f.from, 0.1));
             let last = streak.last().unwrap().center;
@@ -746,6 +772,7 @@ mod tests {
             count: 0,
             hand: 0,
             impact: true,
+            brightness: 1.0,
         };
         let lift = Lift {
             at: Vec3::ONE,
@@ -768,6 +795,7 @@ mod tests {
             count: 1500,
             hand: 1,
             impact: true,
+            brightness: 0.5,
         };
         let lift = Lift {
             at: Vec3::new(0.2, 1.1, -1.4),
@@ -781,7 +809,10 @@ mod tests {
         assert_eq!(r[1], [0.5, 0.5, -2.0, BURST_RADIUS_M]);
         let p = Vec3::from_slice(&r[2][..3]);
         assert!(p.abs_diff_eq(Vec3::new(0.2, 0.1, -0.4), 1e-6));
-        assert_eq!(r[2][3], 0.0);
+        assert_eq!(r[2][3], 0.5);
+        // A burst alone still carries its brightness; a lift alone leaves 0.
+        assert_eq!(rows(Some(burst), None, anchor)[2], [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(rows(None, Some(lift), anchor)[2][3], 0.0);
     }
 
     #[test]

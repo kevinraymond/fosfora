@@ -1046,5 +1046,14 @@ rows 170..173 follow the hand lanes (WORLD_AUX_ROWS 173). Knobs:
   to a hit 5 m out leave one puff of 300 per frame along the ray, the
   farthest at the current center and none beyond it; the impact's 6000
   land in the ball at the hit; all survive 10 frames on (the test fails
-  at the old reach). Worn re-gate pending: a hand throw starts off the
-  view axis, so the near-eye streak is lighter than the diagnostic's.
+  at the old reach).
+- **Worn re-gate (Kevin, Sep 28, 405d0e8): pass**, "I see it working
+  now." His wish: the streak should get smaller and dimmer as it travels
+  away, then explode into the current colors. So each frame's burst
+  carries a brightness (row 172 w): 1 at the hand falling to 0.3 at the
+  hit for the streak (`STREAK_END_BRIGHTNESS`), 1 for the impact; the sim
+  mixes sprite size, opacity and the pull toward white between the cloud's
+  and the burst's by it. Unworn, same setup: a white ball at the hit over
+  a dimmer, warmer trail. App GPU 9.56 ms median, 9.91 p90, 10.32 max
+  over 68 s with 11 throws, 72 fps, 4 long of 4928. Kevin notes the
+  effect may be partly lost on him without stereo vision.
