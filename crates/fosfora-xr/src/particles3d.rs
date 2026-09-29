@@ -76,6 +76,10 @@ pub struct ObstacleBox {
     /// `surfaces::is_hidden_wall`): an obstacle like any other, but no
     /// canvas is drawn on it. Not uploaded.
     pub hidden: bool,
+    /// The scene anchor's UUID, the key its behavior is saved under
+    /// (`room_file.rs`); all zero for the synthetic stage floor. Not
+    /// uploaded.
+    pub uuid: [u8; 16],
 }
 
 /// Uniform block for the S7 obstacles, matching `struct Obstacles` in the

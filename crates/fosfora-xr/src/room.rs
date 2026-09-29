@@ -86,6 +86,9 @@ enum Shape {
 
 struct Anchor {
     space: sys::Space,
+    /// The anchor's UUID: stable across sessions and rescans (#3335), the
+    /// key of its behavior in the room file.
+    uuid: [u8; 16],
     label: String,
     shape: Shape,
     /// Last located pose in the base space, once tracking reports one.
@@ -121,6 +124,9 @@ pub struct Room {
     rescan_at_start: Rescan,
     started: bool,
     anchors: Vec<Anchor>,
+    /// The room id of `anchors` (`room_file::room_id`), recomputed when a
+    /// query replaces them.
+    id: Option<u64>,
     last_locate: Option<Instant>,
     /// Current obstacle boxes in the base space; rebuilt on relocate.
     pub boxes: Vec<ObstacleBox>,
@@ -171,6 +177,7 @@ impl Room {
             rescan_at_start,
             started: false,
             anchors: Vec::new(),
+            id: None,
             last_locate: None,
             boxes: Vec::new(),
             mesh_triangles: None,
@@ -491,6 +498,7 @@ impl Room {
 
         for r in buffer {
             let space = r.space;
+            let uuid = r.uuid.data;
             let enabled = |component: sys::SpaceComponentTypeFB| -> bool {
                 let mut status = sys::SpaceComponentStatusFB {
                     ty: sys::SpaceComponentStatusFB::TYPE,
@@ -601,9 +609,13 @@ impl Room {
                     other => warn!("scene: anchor {label}: xrSetSpaceComponentStatusFB {other:?}"),
                 }
             }
-            info!("scene: anchor {label}: {shape:?}, locatable {locatable}");
+            info!(
+                "scene: anchor {label} {}: {shape:?}, locatable {locatable}",
+                crate::room_file::uuid_hex(&uuid)
+            );
             self.anchors.push(Anchor {
                 space,
+                uuid,
                 label,
                 shape,
                 pose: old_pose(space),
@@ -612,6 +624,15 @@ impl Room {
         }
         for space in dropped {
             destroy_space(&self.instance, space);
+        }
+        let id = crate::room_file::room_id(self.anchors.iter().map(|a| a.uuid));
+        if id != self.id {
+            info!(
+                "scene: room id {} ({} anchors)",
+                id.map_or("none".to_owned(), crate::room_file::room_id_hex),
+                self.anchors.len()
+            );
+            self.id = id;
         }
         // Locate right away so the first frame after the query has boxes.
         self.last_locate = None;
@@ -659,8 +680,15 @@ impl Room {
                     // world up for floors and table tops).
                     let up = glam::Quat::from_xyzw(o.x, o.y, o.z, o.w) * glam::Vec3::Z;
                     info!(
-                        "scene: anchor {} located at ({:.2}, {:.2}, {:.2}), local +Z -> ({:.2}, {:.2}, {:.2})",
-                        anchor.label, p.x, p.y, p.z, up.x, up.y, up.z
+                        "scene: anchor {} {} located at ({:.2}, {:.2}, {:.2}), local +Z -> ({:.2}, {:.2}, {:.2})",
+                        anchor.label,
+                        crate::room_file::uuid_hex(&anchor.uuid),
+                        p.x,
+                        p.y,
+                        p.z,
+                        up.x,
+                        up.y,
+                        up.z
                     );
                 }
                 anchor.pose = Some(location.pose);
@@ -670,7 +698,7 @@ impl Room {
         self.boxes = self
             .anchors
             .iter()
-            .filter_map(|a| a.pose.map(|pose| to_box(pose, a.shape, &a.label)))
+            .filter_map(|a| a.pose.map(|pose| to_box(pose, a.shape, &a.label, a.uuid)))
             .collect();
         if located != self.anchors.len() {
             info!(
@@ -782,9 +810,10 @@ fn mesh_triangle_count(mesh: &xr::raw::SpatialEntityMeshMETA, space: sys::Space)
 }
 
 /// An anchor's bounding shape in the base space as an oriented box of the
-/// surface kind its `label` names, flagged as an emitter (its weight is the
-/// kind's) and as hidden for a wall the runtime hides.
-fn to_box(pose: sys::Posef, shape: Shape, label: &str) -> ObstacleBox {
+/// surface kind its `label` names, flagged as an emitter (its weight is
+/// its behavior's) and as hidden for a wall the runtime hides, carrying
+/// the anchor's `uuid`.
+fn to_box(pose: sys::Posef, shape: Shape, label: &str, uuid: [u8; 16]) -> ObstacleBox {
     let q = glam::Quat::from_xyzw(
         pose.orientation.x,
         pose.orientation.y,
@@ -818,5 +847,6 @@ fn to_box(pose: sys::Posef, shape: Shape, label: &str) -> ObstacleBox {
         kind: crate::surfaces::surface_kind(label),
         emit: 1.0,
         hidden: crate::surfaces::is_hidden_wall(label),
+        uuid,
     }
 }

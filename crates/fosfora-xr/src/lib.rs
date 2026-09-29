@@ -46,6 +46,7 @@ pub mod reach;
 pub mod ripple;
 #[cfg(target_os = "android")]
 mod room;
+pub mod room_file;
 #[cfg(target_os = "android")]
 mod scene;
 pub mod space;

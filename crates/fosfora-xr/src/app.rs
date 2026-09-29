@@ -881,6 +881,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         kind: crate::surfaces::KIND_FLOOR,
         emit: 0.0,
         hidden: false,
+        uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
