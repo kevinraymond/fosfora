@@ -467,6 +467,83 @@ the hand instruments.*
   `world`), `canvasgain` (1), `canvasbars` (24, up to 64),
   `canvastest ceiling`.
 
+### The hand instruments
+
+- **What.** Two instruments on the Go-Go far hand and the poses, acting
+  on the Flux world sims (World, Coarse, Room; Murmur ignores them): a
+  pinch tap throws a burst of embers that flies to where the hand points
+  and bursts on the surface it hits, and an open palm held still, facing
+  down, lifts embers off the surface under it toward the palm. The drag
+  that moves the cloud's home is the anchor drag, as before. Host module
+  `crates/fosfora-xr/src/instruments.rs` (the ray cast, the flights, the
+  lift and the rows, host-tested).
+- **Instrument rows.** Three rows appended after Murmur's hand lanes,
+  170..173 (`XR_AUX_INSTRUMENTS`, `XR_AUX_INSTRUMENT_ROWS` in
+  `flux_xr_sim.wgsl`; the upload is now 173 rows, `WORLD_AUX_ROWS` in
+  `scene.rs`, and the core pins follow): `aux[170]` x = burst count (u32
+  bits), y = lift strength 0..1, z = lift radius (m), w = steal fraction;
+  `aux[171]` the burst center (anchor-relative), w its radius;
+  `aux[172]` the lift point (the far palm). All zero is no instrument, so
+  every writer from before the rows, and every core test that uploads
+  163 or 170 rows, is unchanged.
+- **The throw.** A tap not taken by the hand menu (while the menu shows,
+  its pinches are its own) casts a ray from the head through the far
+  pinch point, from that point, against the room's boxes: a slab test per
+  oriented box, the nearest entry, a box containing the pinch point
+  skipped, the stage floor only while the room has no FLOOR anchor. A
+  miss ends 3 m along the ray. The burst flies from the pinch point to
+  the hit at 6 m/s (at least 0.12 s), shedding a 300-particle streak per
+  frame 3 cm across, then bursts 6000 (`burstcount`) over 4 frames, 0.12
+  m in radius, centered one radius plus 2 cm off the surface along its
+  normal: the ball is born whole in front of the surface, and the half
+  flying at it bounces off it, instead of half of it being born inside
+  the wall box and lost behind it. One flight per hand, a new tap
+  replacing it; the rows carry one burst a frame, so two flights take
+  turns frame by frame, and an impact counts only its packed frames, so
+  it still delivers its whole count. Each throw logs the hit box, its
+  kind, the point, the normal, the distance and the reach.
+- **The burst in the sim.** In the dead-slot path, before the surface
+  pick, the first `burst count` claimed slots spawn at the burst:
+  uniform in the ball, flying radially out at 0.3..1.2 m/s (scaled by
+  radius / 0.12, so the streak stays thin), the volume path's color and
+  size at full opacity from birth (past the fade-in), half the lifetime.
+  Other slots take the existing path unchanged. A burst particle's life
+  lane is `XR_FREE` (2.0; the renderer reads only xyz): it is not bound
+  to the volume (no respawn at the bounds, no edge fade), since walls sit
+  outside the 1.5 m volume, and it dies past three half extents. Flux XR
+  World runs near its particle count (53333/s over a 12 s life for 400K
+  slots), so only the few hundred slots that die each frame are free to
+  claim; the scene therefore sets the steal fraction, (count - dead
+  slots) / alive from the last alive readback, at most 5 %, and a living
+  particle respawns at the burst with that probability. Flux XR Room
+  keeps a pool of declined slots (380K of 400K alive worn) and steals
+  nothing.
+- **The lift.** A far hand that reads open on the real hand, palm normal
+  against world up under -0.6, far palm speed (low-passed, 0.1 s) under
+  0.35 m/s for 0.25 s, turns the lift on at the far palm; it stays on
+  while the hand stays open and palm down and slower than 0.7 m/s, so the
+  embers can be led; strength ramps 0 -> 1 over 0.3 s and back. The
+  menu's left hand never lifts while the menu is up; with both hands
+  lifting, the later one wins. In the sim, a particle under the palm
+  within the radius horizontally accelerates toward the palm at
+  strength x 4 m/s^2 x (1 - (r / radius)^2), its lateral speed damped (3
+  per second times the same factor), and it does not rest (no rest
+  aging); above the palm nothing acts. Lift on and off are logged per
+  hand.
+- **Tests.** Host: the ray hits the nearest face with its normal, a
+  flight reaches its hit in distance / 6 m/s at 72 and 90 Hz and its
+  impact sums to the count, two flights alternate and each delivers its
+  count, the lift needs a still, open, palm-down hand and ramps by time,
+  a fist, a palm up, a sweep and the menu hand never lift, the rows are
+  all zero with nothing playing. GPU (core): `flux_xr_throw_bursts_at_the_point`
+  (2000 at a point: the first frame's 2000 newborns all within the
+  radius; outside the volume, 2000 still there ten frames later) and
+  `flux_xr_lift_raises_resting_embers` (embers settled on the room table
+  at y -0.472, top -0.480; 20 frames of lift raise the column's mean to
+  -0.410, against -0.468 without it).
+- **Knobs.** `debug.fosfora.throw` (0/1, default 1), `burstcount`
+  (6000), `lift` (0/1, default 1), `liftradius` (0.35).
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:

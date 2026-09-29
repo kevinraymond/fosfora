@@ -9,7 +9,7 @@
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
 //! geometry as obstacles; the room's surfaces as emitters, the floor
-//! ripple and the wall spectrum.
+//! ripple, the wall spectrum and the hand instruments.
 
 #[cfg(target_os = "android")]
 mod app;
@@ -25,6 +25,7 @@ mod gfx;
 mod hud;
 #[cfg(target_os = "android")]
 mod input;
+pub mod instruments;
 pub mod math;
 pub mod palm_panel;
 #[cfg(target_os = "android")]

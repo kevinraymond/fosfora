@@ -53,16 +53,23 @@ pub struct XrScene {
     world: Option<World>,
 }
 
-/// Rows of the world-mode aux block: the head, the obstacle block, then
-/// Murmur's per-hand lanes. The obstacle block ends at row 163 (`XR_AUX_*`
-/// in `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170
-/// (`XR_AUX_END` in `murmur_xr_sim.wgsl`); core tests pin the sims' side.
+/// Rows of the world-mode aux block: the head, the obstacle block,
+/// Murmur's per-hand lanes, then Flux's instrument rows. The obstacle block
+/// ends at row 163 (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`),
+/// the lanes at 170 (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the
+/// instruments at 173 (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in
+/// the Flux sim); core tests pin the sims' side.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
-const WORLD_AUX_ROWS: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
+const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
 const _: () = assert!(
-    WORLD_AUX_ROWS == 170,
+    HAND_LANES_END == 170,
     "murmur_xr_sim.wgsl reads 170 aux rows"
+);
+const WORLD_AUX_ROWS: usize = HAND_LANES_END + crate::instruments::INSTRUMENT_ROWS;
+const _: () = assert!(
+    WORLD_AUX_ROWS == 173,
+    "flux_xr_sim.wgsl reads the instrument rows 170..173"
 );
 
 /// World-mode state (see the module docs).
@@ -85,6 +92,9 @@ struct World {
     emitter_half: f32,
     /// This frame's summed emitter weight (for the log).
     emitter_weight: f32,
+    /// The particle count (`max_count`): with the alive count, how many
+    /// dead slots a burst can claim.
+    max_count: u32,
 }
 
 /// How a world-mode effect is set up for this run.
@@ -153,6 +163,7 @@ impl XrScene {
     ) -> Result<Self> {
         let mut warmup = WARMUP_FRAMES;
         let mut emitter_half = 0.0;
+        let mut max_count = 0;
         // `count` is the particle count itself, so no quality scaling.
         let mut renderer = start_renderer(
             device,
@@ -186,6 +197,7 @@ impl XrScene {
                 }
                 // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
                 emitter_half = particles.emitter.radius.max(0.05);
+                max_count = particles.max_count;
                 particles.initial_size *= options.size_scale;
                 particles.size_end *= options.size_scale;
                 // Fill time at the emission rate, plus a quarter for the
@@ -233,6 +245,7 @@ impl XrScene {
                 aux: Vec::new(),
                 emitter_half,
                 emitter_weight: 0.0,
+                max_count,
             }),
         })
     }
@@ -260,10 +273,11 @@ impl XrScene {
     /// near fade within `near_fade_m`; 0 = off), the settle drift
     /// (`drift_m_s` downward; 0 = none), the obstacles with their emitter
     /// weights (`surfaces`, from the kinds and flags the boxes carry and
-    /// where they sit against this effect's volume) and Murmur's per-hand
-    /// lanes (`pose::lane_rows`, already in the anchor's frame), the
-    /// positions moved into the anchor's frame. Call before
-    /// [`Self::dispatch_world`].
+    /// where they sit against this effect's volume), Murmur's per-hand
+    /// lanes (`pose::lane_rows`, already in the anchor's frame) and the
+    /// instrument rows (`instruments::rows`, likewise; their steal
+    /// fraction is set here from this sim's alive count), the positions
+    /// moved into the anchor's frame. Call before [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -278,6 +292,7 @@ impl XrScene {
         obstacles: &ObstacleSet,
         surfaces: SurfaceWeights,
         hand_lanes: &[[f32; 4]; crate::pose::HAND_LANE_ROWS],
+        instruments: &[[f32; 4]; crate::instruments::INSTRUMENT_ROWS],
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -306,6 +321,14 @@ impl XrScene {
         world
             .aux
             .extend(hand_lanes.iter().map(|&home| ParticleAux { home }));
+        let mut instruments = *instruments;
+        let alive =
+            particle_system(&mut self.renderer.layer_stack.layers).map_or(0, |ps| ps.alive_count);
+        instruments[0][3] =
+            crate::instruments::steal_fraction(instruments[0][0].to_bits(), alive, world.max_count);
+        world
+            .aux
+            .extend(instruments.iter().map(|&home| ParticleAux { home }));
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);

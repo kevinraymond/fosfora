@@ -452,8 +452,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             "no feedback background, gain 1"
         );
         assert!(pd.flow_field);
-        // aux[0..163] carries the XR inputs; the buffer holds max_count rows.
-        assert!(pd.max_count >= 163);
+        // aux[0..173] carries the XR inputs; the buffer holds max_count rows.
+        assert!(pd.max_count as usize >= WORLD_AUX_ROWS);
         assert!(pfx.passes.iter().all(|p| !p.feedback));
         assert!(pfx.postprocess.as_ref().is_some_and(|p| !p.enabled));
     }
@@ -806,12 +806,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         aux
     }
 
-    /// `pfx` (scaled to `count`, 60K/s) stepped at 60 fps with `aux` every
-    /// frame, and the alive positions after each frame count in `capture`.
+    /// `pfx` (scaled to `count`, 60K/s) stepped at 60 fps with frame `f`'s
+    /// aux block from `aux_at(f)`, and the alive positions after each frame
+    /// count in `capture`.
     fn flux_room_run(
         mut pfx: crate::effect::format::PfxEffect,
         count: u32,
-        aux: &[crate::gpu::particle::types::ParticleAux],
+        aux_at: impl Fn(u32) -> Vec<crate::gpu::particle::types::ParticleAux>,
         capture: &[u32],
     ) -> Vec<Vec<Vec3>> {
         use crate::gpu::test_gpu::test_gpu;
@@ -851,7 +852,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             let ts = f64::from(frame) / f64::from(FPS);
             let hop = murmur_hop(frame, FPS);
             let wave = vec![0.0; crate::gpu::audio_textures::WAVEFORM_PEEK];
-            particles(&mut sr).update_aux_in_place(&queue, aux);
+            particles(&mut sr).update_aux_in_place(&queue, &aux_at(frame));
             sr.step(ts, 1.0 / FPS as f32, &hop, &wave, false);
             let ps = particles(&mut sr);
             let mut enc = device.create_command_encoder(&Default::default());
@@ -883,7 +884,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[ignore = "requires a GPU/software adapter"]
     fn flux_xr_room_emits_on_a_table() {
         let _guard = crate::gpu::test_gpu::gpu_guard();
-        let captures = flux_room_run(xr_flux_room_preset(), 20_000, &room_table_aux(), &[5, 20]);
+        let aux = room_table_aux();
+        let captures = flux_room_run(xr_flux_room_preset(), 20_000, |_| aux.clone(), &[5, 20]);
         let (center, half_x, half_z, half_t) = (
             ROOM_TABLE,
             ROOM_TABLE_HALF.x,
@@ -957,7 +959,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[ignore = "requires a GPU/software adapter"]
     fn flux_xr_world_ignores_the_surface_lanes() {
         let _guard = crate::gpu::test_gpu::gpu_guard();
-        let born = flux_room_run(xr_flux_preset(), 20_000, &room_table_aux(), &[5])
+        let aux = room_table_aux();
+        let born = flux_room_run(xr_flux_preset(), 20_000, |_| aux.clone(), &[5])
             .pop()
             .expect("one capture");
         let above = born.iter().filter(|p| p.y > 0.0).count();
@@ -965,6 +968,168 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             above * 4 > born.len(),
             "{above} of {} particles in the upper half of the volume",
             born.len()
+        );
+    }
+
+    // ---- The hands as instruments (board #3327) ------------------------------
+
+    /// Rows of the XR app's world-mode upload: the head, the obstacle block,
+    /// Murmur's per-hand lanes and Flux's instrument rows
+    /// (`crates/fosfora-xr/src/scene.rs` asserts 173 on its side).
+    const WORLD_AUX_ROWS: usize = 173;
+
+    /// Flux's instrument rows start where Murmur's hand lanes end and end
+    /// where the upload does; every world preset holds that many aux rows.
+    #[test]
+    fn flux_xr_instrument_rows_follow_the_hand_lanes() {
+        let flux = |name: &str| sim_u32_const(XR_FLUX_SIM, name);
+        assert_eq!(
+            flux("XR_AUX_INSTRUMENTS"),
+            sim_u32_const(XR_MURMUR_SIM, "XR_AUX_END")
+        );
+        assert_eq!(flux("XR_AUX_INSTRUMENTS"), 170);
+        assert_eq!(flux("XR_AUX_INSTRUMENT_ROWS"), 3);
+        assert_eq!(
+            flux("XR_AUX_INSTRUMENTS") + flux("XR_AUX_INSTRUMENT_ROWS"),
+            WORLD_AUX_ROWS as u32
+        );
+        let coarse: crate::effect::format::PfxEffect =
+            serde_json::from_str(XR_FLUX_COARSE_PRESET).expect("coarse parses");
+        for pfx in [
+            xr_flux_preset(),
+            xr_flux_room_preset(),
+            coarse,
+            xr_murmur_preset(),
+        ] {
+            let pd = pfx.particles.expect("particles");
+            assert!(pd.max_count as usize >= WORLD_AUX_ROWS, "{}", pfx.name);
+        }
+    }
+
+    /// `rows` (163 or more) extended with zeros to the full upload, then
+    /// the instrument rows: a burst of `burst` particles at `at` (radius
+    /// `radius`), a lift at `palm` of `lift` strength and `lift_radius`.
+    fn with_instruments(
+        mut rows: Vec<crate::gpu::particle::types::ParticleAux>,
+        burst: u32,
+        at: Vec3,
+        radius: f32,
+        lift: f32,
+        palm: Vec3,
+        lift_radius: f32,
+    ) -> Vec<crate::gpu::particle::types::ParticleAux> {
+        use crate::gpu::particle::types::ParticleAux;
+        rows.resize(WORLD_AUX_ROWS, ParticleAux { home: [0.0; 4] });
+        rows[170].home = [f32::from_bits(burst), lift, lift_radius, 0.0];
+        rows[171].home = [at.x, at.y, at.z, radius];
+        rows[172].home = [palm.x, palm.y, palm.z, 0.0];
+        rows
+    }
+
+    /// The throw's burst, headless on Flux XR World with no obstacles: with
+    /// the instrument rows asking for 2000 at a point, the first frame's
+    /// newborns are exactly the burst, every one within its radius of the
+    /// point. A burst outside the volume stays there (a throw lands on
+    /// walls beyond it): ten frames later the particles are still loose
+    /// out there, not respawned inside.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_xr_throw_bursts_at_the_point() {
+        use crate::gpu::particle::types::ParticleAux;
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        let mut head = vec![ParticleAux { home: [0.0; 4] }; 163];
+        head[0].home = [0.0, 0.0, 0.0, 0.15];
+        const RADIUS: f32 = 0.12;
+        let inside = Vec3::new(0.4, 0.2, -0.6);
+        let burst = with_instruments(head.clone(), 2000, inside, RADIUS, 0.0, Vec3::ZERO, 0.0);
+        let born = flux_room_run(xr_flux_preset(), 20_000, |_| burst.clone(), &[1])
+            .pop()
+            .expect("one capture");
+        assert_eq!(born.len(), 2000, "the first frame's newborns");
+        let far = born
+            .iter()
+            .map(|p| p.distance(inside))
+            .fold(0.0f32, f32::max);
+        assert!(far <= RADIUS + 1e-4, "a newborn {far} m from the burst");
+        let spread = born
+            .iter()
+            .filter(|p| p.distance(inside) > RADIUS * 0.5)
+            .count();
+        assert!(spread * 2 > born.len(), "a ball, not a point: {spread}");
+        // Outside the 1.5 m volume, then no more bursts.
+        let outside = Vec3::new(2.0, 0.2, -0.6);
+        let once = with_instruments(head.clone(), 2000, outside, RADIUS, 0.0, Vec3::ZERO, 0.0);
+        let quiet = with_instruments(head, 0, outside, RADIUS, 0.0, Vec3::ZERO, 0.0);
+        let caps = flux_room_run(
+            xr_flux_preset(),
+            20_000,
+            |f| if f == 0 { once.clone() } else { quiet.clone() },
+            &[10],
+        );
+        let loose = caps[0].iter().filter(|p| p.x > 1.5).count();
+        assert!(
+            loose >= 1990,
+            "{loose} of the 2000 still outside the volume"
+        );
+    }
+
+    /// The palm lift, headless on Flux XR Room: embers born on the room
+    /// table settle on its top; a lift 0.35 m above the table's middle
+    /// then raises the ones under it. Over the next 20 frames the mean
+    /// height of the particles in the lift's column rises, and ends above
+    /// the same column without the lift.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_xr_lift_raises_resting_embers() {
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        const SETTLE: u32 = 60;
+        const LIFT_FRAMES: u32 = 20;
+        const LIFT_RADIUS: f32 = 0.35;
+        let top = ROOM_TABLE.y + ROOM_TABLE_HALF.z;
+        let palm = Vec3::new(ROOM_TABLE.x, top + 0.35, ROOM_TABLE.z);
+        let still = with_instruments(room_table_aux(), 0, Vec3::ZERO, 0.0, 0.0, palm, 0.0);
+        let lifting =
+            with_instruments(room_table_aux(), 0, Vec3::ZERO, 0.0, 1.0, palm, LIFT_RADIUS);
+        let column = |ps: &[Vec3]| {
+            let under: Vec<f32> = ps
+                .iter()
+                .filter(|p| glam::Vec2::new(p.x - palm.x, p.z - palm.z).length() < LIFT_RADIUS)
+                .map(|p| p.y)
+                .collect();
+            assert!(under.len() > 200, "only {} under the palm", under.len());
+            under.iter().sum::<f32>() / under.len() as f32
+        };
+        let lifted = flux_room_run(
+            xr_flux_room_preset(),
+            20_000,
+            |f| {
+                if f < SETTLE {
+                    still.clone()
+                } else {
+                    lifting.clone()
+                }
+            },
+            &[SETTLE, SETTLE + LIFT_FRAMES],
+        );
+        let control = flux_room_run(
+            xr_flux_room_preset(),
+            20_000,
+            |_| still.clone(),
+            &[SETTLE + LIFT_FRAMES],
+        );
+        let (before, after, without) =
+            (column(&lifted[0]), column(&lifted[1]), column(&control[0]));
+        eprintln!(
+            "lift column mean y: settled {before:.3} · lifted {after:.3} · no lift {without:.3} (table top {top:.3})"
+        );
+        assert!(
+            (before - top).abs() < 0.05,
+            "settled at {before}, top {top}"
+        );
+        assert!(after > before + 0.02, "{before} -> {after}");
+        assert!(
+            after > without + 0.02,
+            "{after} against {without} without the lift"
         );
     }
 
@@ -1027,9 +1192,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     /// Murmur's per-hand behavior lanes (board #3314) start where the obstacle
-    /// block ends, one shared row and three per hand, and the XR app's
-    /// upload ends with them (`crates/fosfora-xr/src/scene.rs` asserts 170
-    /// rows on its side).
+    /// block ends, one shared row and three per hand, and Murmur reads no
+    /// further (`crates/fosfora-xr/src/scene.rs` asserts 170 rows for the
+    /// lanes' end on its side). Flux's instrument rows follow them in the
+    /// upload (`flux_xr_instrument_rows_follow_the_hand_lanes`).
     #[test]
     fn murmur_xr_hand_lanes_follow_the_obstacle_block() {
         let get = |name: &str| sim_u32_const(XR_MURMUR_SIM, name);
@@ -1044,8 +1210,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             get("XR_AUX_HANDS") + 1 + 2 * get("XR_AUX_HAND_ROWS")
         );
         assert_eq!(get("XR_AUX_END"), MURMUR_AUX_ROWS as u32);
+        assert_eq!(
+            get("XR_AUX_END"),
+            sim_u32_const(XR_FLUX_SIM, "XR_AUX_INSTRUMENTS")
+        );
         let pd = xr_murmur_preset().particles.expect("particles");
-        assert!(pd.max_count as usize >= MURMUR_AUX_ROWS);
+        assert!(pd.max_count as usize >= WORLD_AUX_ROWS);
     }
 
     /// The preset is a hidden world variant of desktop Murmur: the loader
@@ -1349,7 +1519,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     /// Rows of the XR inputs Murmur reads: the head, the obstacle block and
-    /// the per-hand lanes (`XR_AUX_END`).
+    /// the per-hand lanes (`XR_AUX_END`). The upload is longer
+    /// (`WORLD_AUX_ROWS`: Flux's instrument rows follow, which Murmur
+    /// ignores).
     const MURMUR_AUX_ROWS: usize = 170;
 
     /// The Murmur tests' aux block: the wearer's head at `eye` with the
