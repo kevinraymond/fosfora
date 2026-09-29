@@ -1038,7 +1038,11 @@ impl App {
             // Handle effect load from web (coalesced to the last one this frame)
             if let Some(effect_idx) = web_result.effect_load {
                 let active_locked = self.layer_stack.active().map_or(false, |l| l.locked);
-                if !active_locked {
+                if !crate::web::state::remote_loadable(&self.effect_loader.effects, effect_idx) {
+                    log::warn!(
+                        "Web remote asked for effect {effect_idx}, which it does not list; ignored"
+                    );
+                } else if !active_locked {
                     self.load_effect(effect_idx);
                 }
             }

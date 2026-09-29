@@ -130,6 +130,14 @@ pub struct PresetsChanged {
     pub current: Option<usize>,
 }
 
+/// Whether the web remote may load effect `index`: only what its effect list
+/// offers. Hidden effects (the launch visual, the 10M-particle Stress benchmark)
+/// are left out of that list, and a client sending a raw index must not reach
+/// them either.
+pub fn remote_loadable(effects: &[PfxEffect], index: usize) -> bool {
+    effects.get(index).is_some_and(|e| !e.hidden)
+}
+
 // -- Builders --
 
 /// Per-layer tuple: (params, effect_index, blend_mode, opacity, enabled, locked).
@@ -349,6 +357,18 @@ fn build_params(store: &ParamStore) -> Vec<ParamInfo> {
 mod tests {
     use super::*;
     use crate::params::types::ParamDef;
+
+    #[test]
+    fn remote_loads_only_listed_effects() {
+        let effect = |json: &str| serde_json::from_str::<PfxEffect>(json).unwrap();
+        let effects = vec![
+            effect(r#"{"name":"Flux"}"#),
+            effect(r#"{"name":"Stress","hidden":true}"#),
+        ];
+        assert!(remote_loadable(&effects, 0));
+        assert!(!remote_loadable(&effects, 1));
+        assert!(!remote_loadable(&effects, 2));
+    }
 
     #[test]
     fn audio_snapshot_contains_type() {
