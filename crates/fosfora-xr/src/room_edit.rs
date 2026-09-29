@@ -30,8 +30,10 @@
 //! through what renders on its kind ([`EditAction::Cycle`]), a hold cycles
 //! every surface of its kind one step from it ([`EditAction::AssignKind`]); either without a hit, or
 //! without a ray (the hand lost, the panel up) while a hit is still held,
-//! does nothing and says so ([`EditFrame::unaimed`]). The highlight pulses
-//! once ([`PULSE_S`]) for a cycle, twice for a class assignment.
+//! does nothing and says so ([`EditFrame::unaimed`]). A quick, short drag
+//! counts as a tap ([`short_drag_is_tap`]; `app.rs` times it). The
+//! highlight pulses once ([`PULSE_S`]) for a cycle, twice for a class
+//! assignment.
 
 use glam::Vec3;
 
@@ -50,6 +52,21 @@ pub const PULSE_S: f32 = 0.3;
 /// Pulses for a cycle and for a class assignment.
 pub const CYCLE_PULSES: u32 = 1;
 pub const CLASS_PULSES: u32 = 2;
+/// A right drag shorter than this (s, from its start) and ...
+pub const SHORT_DRAG_S: f32 = 0.5;
+/// ... that ends nearer than this to where it started (m) is a tap.
+pub const SHORT_DRAG_M: f32 = 0.10;
+
+/// Whether a right drag that lasted `secs` from its start and ended
+/// `travel_m` from where it started counts as a tap while Edit room is
+/// on. A pinch that moves past `gesture::DRAG_START_M` (2.5 cm) before it
+/// opens is a drag, which the editor has no use for: of Kevin's right
+/// pinches, 16 in one worn pass and 2 in the next registered as drags and
+/// did nothing (Sep 29). A quick one that stays within 10 cm is a tap
+/// that wobbled; a slow or long one is not a tap.
+pub fn short_drag_is_tap(secs: f32, travel_m: f32) -> bool {
+    secs < SHORT_DRAG_S && travel_m < SHORT_DRAG_M
+}
 
 /// A pointing ray: `dir` is unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -551,6 +568,17 @@ mod tests {
         let f = e.step(&input(&b[..1], NOWHERE));
         assert_eq!(f.hit, None);
         assert!(f.changed);
+    }
+
+    #[test]
+    fn a_short_drag_is_a_tap_and_a_long_or_far_one_is_not() {
+        assert!(short_drag_is_tap(0.0, 0.0));
+        assert!(short_drag_is_tap(0.2, 0.04));
+        assert!(short_drag_is_tap(0.49, 0.099));
+        // Too long, too far, or both.
+        assert!(!short_drag_is_tap(0.5, 0.04));
+        assert!(!short_drag_is_tap(0.2, 0.10));
+        assert!(!short_drag_is_tap(1.2, 0.3));
     }
 
     #[test]

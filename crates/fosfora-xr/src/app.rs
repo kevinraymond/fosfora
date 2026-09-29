@@ -935,6 +935,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut gestures = Gestures::default();
     let (mut anchor, mut anchor_half) = (cube_center, cube_half);
     let mut drag_total = glam::Vec3::ZERO;
+    // Board #3326: the right drag in Edit room, its start time and its
+    // travel so far, for the short-drag rule.
+    let mut edit_drag: Option<(f32, glam::Vec3)> = None;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -1102,11 +1105,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("gesture: hold right · edit room");
                     }
                     Gesture::DragStart { hand: 1 } if edit_on => {
+                        edit_drag = Some((t, glam::Vec3::ZERO));
                         info!("gesture: drag right began · edit room: the anchor stays");
                     }
-                    Gesture::Drag { hand: 1, .. } if edit_on => {}
+                    Gesture::Drag { hand: 1, delta } if edit_on => {
+                        if let Some((_, travel)) = edit_drag.as_mut() {
+                            *travel += glam::Vec3::from(delta);
+                        }
+                    }
                     Gesture::DragEnd { hand: 1 } if edit_on => {
-                        info!("gesture: drag right ended · edit room");
+                        // A quick, short drag is a tap that wobbled past
+                        // the drag radius (`room_edit::short_drag_is_tap`).
+                        match edit_drag.take() {
+                            Some((start, travel))
+                                if crate::room_edit::short_drag_is_tap(t - start, travel.length()) =>
+                            {
+                                edit_tap = true;
+                                info!("gesture: short drag right counts as a tap · edit room");
+                            }
+                            _ => info!("gesture: drag right ended · edit room"),
+                        }
                     }
                     Gesture::Tap { hand } => {
                         // While the menu is up its pinches are its own.
