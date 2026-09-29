@@ -105,6 +105,14 @@ pub struct WebConfig {
     /// venue network can drive the show.
     #[serde(default)]
     pub lan: bool,
+    /// What another device must present to connect: `?key=` on the network
+    /// link (the page passes it on to its WebSocket), `--key` / `FOSFORA_KEY`
+    /// for a bridge. This computer's own connections need none. Created on
+    /// first start and kept across restarts, so a bookmarked link or a Docker
+    /// env var keeps working; replacing it disconnects every holder of the old
+    /// one. Empty refuses every other device.
+    #[serde(default)]
+    pub access_key: String,
 }
 
 fn default_true() -> bool {
@@ -120,6 +128,24 @@ impl Default for WebConfig {
             enabled: true,
             port: 9002,
             lan: false,
+            access_key: String::new(),
+        }
+    }
+}
+
+/// A fresh access key: 128 random bits as 32 hex digits, or empty (which
+/// refuses every other device) if the OS has no randomness to give.
+pub fn new_access_key() -> String {
+    let mut bytes = [0u8; 16];
+    match getrandom::fill(&mut bytes) {
+        Ok(()) => bytes.iter().fold(String::with_capacity(32), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+            s
+        }),
+        Err(e) => {
+            log::error!("No access key for the web remote (other devices are refused): {e}");
+            String::new()
         }
     }
 }
@@ -212,12 +238,22 @@ mod tests {
             enabled: false,
             port: 8080,
             lan: true,
+            access_key: "k".into(),
         };
         let json = serde_json::to_string(&c).unwrap();
         let c2: WebConfig = serde_json::from_str(&json).unwrap();
         assert!(!c2.enabled);
         assert_eq!(c2.port, 8080);
         assert!(c2.lan);
+        assert_eq!(c2.access_key, "k");
+    }
+
+    #[test]
+    fn access_keys_are_random_hex() {
+        let (a, b) = (new_access_key(), new_access_key());
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, b);
     }
 
     /// A web.json saved before LAN access was a setting has no `lan` key; it

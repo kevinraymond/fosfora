@@ -117,7 +117,7 @@ def main():
           f"@ {args.fps}fps")
 
     # Init bridge
-    bridge = FosforaBridge("realsense-depth", args.host, args.port)
+    bridge = FosforaBridge("realsense-depth", args.host, args.port, args.key)
     bridge.declare_fields(build_schema())
 
     if not bridge.connect():

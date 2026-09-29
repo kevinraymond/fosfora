@@ -132,7 +132,7 @@ def main():
     args = parser.parse_args()
 
     # Bridge
-    bridge = FosforaBridge("iphone-arkit", args.host, args.port)
+    bridge = FosforaBridge("iphone-arkit", args.host, args.port, args.key)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[iphone-arkit] Fields: {len(schema)}")

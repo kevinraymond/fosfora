@@ -68,6 +68,10 @@ impl WebSystem {
 
     pub fn new() -> Self {
         let mut sys = Self::unconnected(WebConfig::load());
+        if sys.config.access_key.is_empty() {
+            sys.config.access_key = types::new_access_key();
+            sys.config.save();
+        }
 
         if sys.config.enabled {
             sys.start_server();
@@ -86,6 +90,7 @@ impl WebSystem {
         match server::spawn_accept_loop(
             self.config.port,
             self.config.lan,
+            self.config.access_key.clone(),
             tx.clone(),
             clients.clone(),
             self.latest_state.clone(),
@@ -145,6 +150,14 @@ impl WebSystem {
     /// Allow or refuse connections from other devices; restarts the server.
     pub fn set_lan(&mut self, lan: bool) {
         self.config.lan = lan;
+        self.config.save();
+        self.restart_server();
+    }
+
+    /// Replace the access key. Restarts the server, so every connection drops
+    /// and only devices given the new key get back in.
+    pub fn replace_access_key(&mut self) {
+        self.config.access_key = types::new_access_key();
         self.config.save();
         self.restart_server();
     }

@@ -180,7 +180,7 @@ def main():
     args = parser.parse_args()
     args.fps = args.fps if args.fps != 30 else 60  # default 60 for gamepad
 
-    bridge = FosforaBridge("gamepad", args.host, args.port)
+    bridge = FosforaBridge("gamepad", args.host, args.port, args.key)
     bridge.declare_fields(build_schema())
 
     if not bridge.connect():

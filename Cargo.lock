@@ -1656,6 +1656,7 @@ dependencies = [
  "env_logger",
  "flate2",
  "fontdue",
+ "getrandom 0.3.4",
  "gif 0.13.3",
  "glam",
  "gltf",

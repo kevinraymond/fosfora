@@ -68,20 +68,45 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
             }
         });
 
-        // Try to find LAN IP
-        if let Some(ip) = get_lan_ip().filter(|_| web.config.lan) {
-            let lan_url = format!("http://{ip}:{port}");
+        // Other devices: the LAN link carries the access key they need.
+        if web.config.lan {
+            let key = web.config.access_key.clone();
+            if let Some(ip) = get_lan_ip() {
+                let lan_url = format!("http://{ip}:{port}/?key={key}");
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("LAN")
+                            .size(SMALL_SIZE)
+                            .color(tc.text_secondary),
+                    );
+                    if ui
+                        .link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE))
+                        .on_hover_text("Click to copy. Includes the access key.")
+                        .clicked()
+                    {
+                        ui.ctx().copy_text(lan_url.clone());
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("LAN")
+                    RichText::new("Key")
                         .size(SMALL_SIZE)
                         .color(tc.text_secondary),
                 );
                 if ui
-                    .link(RichText::new(&lan_url).size(SMALL_SIZE).color(WEB_BLUE))
+                    .link(RichText::new(&key).size(SMALL_SIZE).monospace())
+                    .on_hover_text("Click to copy. Bridges take it as --key or FOSFORA_KEY.")
                     .clicked()
                 {
-                    ui.ctx().copy_text(lan_url.clone());
+                    ui.ctx().copy_text(key.clone());
+                }
+                if ui
+                    .small_button("New")
+                    .on_hover_text("Disconnects every device using the current key")
+                    .clicked()
+                {
+                    web.replace_access_key();
                 }
             });
         }

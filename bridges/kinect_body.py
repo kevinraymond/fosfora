@@ -108,7 +108,7 @@ def main():
         print("  Install Azure Kinect SDK + pykinect-azure for live data.")
         print("=" * 60)
 
-    bridge = FosforaBridge("kinect-body", args.host, args.port)
+    bridge = FosforaBridge("kinect-body", args.host, args.port, args.key)
     schema = build_schema()
     bridge.declare_fields(schema)
     print(f"[kinect-body] Fields: {len(schema)}")
