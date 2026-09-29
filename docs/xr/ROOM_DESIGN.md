@@ -414,4 +414,30 @@ z)", "edit room: no surface", "edit room: table 0 (TABLE dc83ba94) ->
 sparks" followed by the lanes' line, "edit room: every wall like ..."
 for a class, and the mode's changes. Worn gate (Kevin): point at the
 desk and turn its embers off and on, put the spectrum on the side wall,
-relaunch and find the room as left.
+relaunch and find the room as left. Step 2b (Sep 29), after two worn
+passes: every tap and hold landed in the log, but most steps of the full
+catalogue looked the same on a given surface (a wall on embers, sparks,
+ripple or none shows nothing, a table on spectrum, ripple or none is
+dark) and the only naming of the result was the palm panel, which the
+wearer is not looking at while pointing, so "it's not very obvious that
+anything is happening on either tap or hold" (Kevin). Kevin chose to
+narrow the cycle now and to make every behavior render on every surface
+later (C). A tap and a hold now step through the kind's own catalogue
+(`SurfaceBehavior::catalogue`, `next_for`), what renders on it, `none`
+first: table, other and unlabeled anchors none, embers, sparks; floor
+none, sparks, ripple; wall none, spectrum; ceiling and frame none only.
+A behavior off it (a knob put the spectrum on a table) goes to the first
+entry after `none`; the knob still takes any behavior on any kind. After
+each action a label floats at the hit for 1.5 s, fading over its last
+0.4 s, naming the result: "desk: sparks", "all tables: none", "ceiling:
+nothing to change". It is white text on a dark rounded ground at alpha
+0.85 (the fade scales both; text on a ground, so it reads with one eye),
+egui into a 512 x 96 texture of its own, shown 0.28 m wide as a
+billboard 8 cm out along the face normal and 6 cm up from the hit,
+facing the head with the head's right, drawn with the panel's pipeline
+right after the panel (`label.rs`). And a quick, short right drag counts
+as a tap: of Kevin's right pinches, 16 in one pass and 2 in the next
+moved past the 2.5 cm drag radius before opening and did nothing, so a
+drag in Edit room that ends under 0.5 s from its start and under 10 cm
+from where it started is the editor's tap, logged "gesture: short drag
+right counts as a tap · edit room".
