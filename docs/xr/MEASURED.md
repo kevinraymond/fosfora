@@ -1631,9 +1631,24 @@ was 4.7-5.25 m ahead, which needs about 5 m); the change is live with no
 reset of the cloud; the panel still fits and the new stepper steps (-/+
 and the held repeat).
 
-**Cost: pending.** Flux XR Room 400K at 0.75 / 1.5 / 3 / 6 m and Murmur
-XR World at 1.5 / 3 m, 72 Hz, App GPU median / p90 / max. Expect the
-Flux sprite draw to cheapen as the volume grows (sprites overlap less, as
-the 3 m volume of board #3276 measured) and to cost more at 0.75 m;
-Murmur's neighbor scan may cost less in larger cells with the per-cell
-cap, at a coarser flock.
+**Cost** (Quest 3 right after a reboot, `8895ed7`, `mode world`, 72 Hz,
+unworn, 40 s runs, battery 41-43 C; App GPU ms). The room query returned
+0 anchors in these headless runs, so only the stage floor emitted:
+
+| Effect | Space half | App GPU med / p90 / max | fps | Notes |
+|---|---|---|---|---|
+| Flux XR Room 400K | preset (1.50) | 9.20 / 9.74 / 9.88 | 73 | 0 stale |
+| Flux XR Room 400K | 0.75 m | 9.96 / 10.06 / 10.13 | | the floor left the volume (emitter weight 0.00); 400K alive packed in the small cube |
+| Flux XR Room 400K | 1.5 m | 9.25 / 9.62 / 9.69 | | |
+| Flux XR Room 400K | 3 m | 9.33 / 9.64 / 9.73 | | |
+| Flux XR Room 400K | 6 m | 9.29 / 9.58 / 9.66 | | |
+| Murmur XR World 40K | 1.5 m | 10.33 / 11.00 / 11.62 | 69-73 | 5 long |
+| Murmur XR World 40K | 3 m | 10.17 / 11.39 / 11.62 | | 7 long |
+
+The control itself costs nothing: 1.5 m set through the stepper's path
+matches the preset, and 3 and 6 m are within run-to-run noise of it. A
+small volume costs about 0.7 ms at 0.75 m, and that is density, not the
+control: the same 400K sprites packed into 1/8 of the volume overdraw
+more. Murmur is unchanged at 3 m (the median slightly lower, the p90
+within noise). An earlier sweep on a degraded runtime (14 ms at every
+size) was the device, not the build, and is not recorded here.
