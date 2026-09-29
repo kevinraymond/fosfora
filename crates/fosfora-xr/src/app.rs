@@ -228,13 +228,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
     //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
-    //       drawn first in the eye pass as a depth occluder, so unscanned things hide the sprites; default off until measured)
+    //       drawn first in the eye pass as a depth occluder, so unscanned things hide the sprites; default on in mr/world, off elsewhere:
+    //       it measured at 0.1-0.3 ms, inside run-to-run noise, MEASURED.md)
     //   adb shell setprop debug.fosfora.envdepthshow 0|1         (diagnostic: the same pass drawn as gray, 0 m black to 4 m white, linear in
     //       the stored bytes, still writing depth; implies the acquire, for a screencap of orientation and alignment)
     //   adb shell setprop debug.fosfora.envdepthhands 0|1        (ask the runtime to remove the hands from the depth map; default 1, the
     //       skinned hand mesh stays the hand occluder)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
-    //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 1 reads texture row 0 as the top of the view, the default; 0 as the bottom)
+    //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
+    //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
     //   adb shell setprop debug.fosfora.envdepthcheck 1          (self-check: once a second, with the room's boxes located, read a 40x40 grid of each
     //       depth layer back and log how well it agrees with the boxes and the floor along the same rays, as read, rows flipped
     //       and columns mirrored; implies the acquire, draws nothing by itself)
@@ -265,7 +267,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         _ => default,
     };
     // Board #3324: the live environment depth (`env_depth.rs`).
-    let env_occlude = toggle("debug.fosfora.envdepth", false);
+    let env_occlude = toggle("debug.fosfora.envdepth", mixed);
     let env_show = toggle("debug.fosfora.envdepthshow", false);
     let env_check = toggle("debug.fosfora.envdepthcheck", false);
     let env_depth = (env_occlude || env_show || env_check).then(|| {

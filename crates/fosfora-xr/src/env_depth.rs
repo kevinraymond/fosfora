@@ -54,7 +54,11 @@ pub struct EnvDepthOptions {
     /// Discard distance (m), `debug.fosfora.envdepthnear`.
     pub near_cut_m: f32,
     /// Texture row 0 is the top of the view (`debug.fosfora.envdepthflipv`,
-    /// default on); off reads row 0 as the bottom.
+    /// default off: row 0 is the bottom). The runtime renders the map in its
+    /// own GL framebuffer, so the rows come in GL order whatever the app's
+    /// API; `envdepthcheck` against the room's boxes on the Quest 3 (v207)
+    /// agreed to a median of 1-2 cm read bottom-up and was 12-17 cm off
+    /// read top-down.
     pub flip_v: bool,
     /// Once a second, read a grid of the depth map back and compare it
     /// with the room's boxes and the floor (`debug.fosfora.envdepthcheck`).
@@ -68,7 +72,7 @@ impl Default for EnvDepthOptions {
             show: false,
             hand_removal: true,
             near_cut_m: NEAR_CUT_M,
-            flip_v: true,
+            flip_v: false,
             check: false,
         }
     }
@@ -408,7 +412,8 @@ pub fn ray_obb(o: Vec3, d: Vec3, b: &Obb) -> Option<f32> {
 }
 
 /// How a texel maps to a ray: row 0 at the top of the view (what the
-/// shader assumes with `envdepthflipv 1`), at the bottom, or row 0 at the
+/// shader assumes with `envdepthflipv 1`), at the bottom (the default,
+/// verified on the device), or row 0 at the
 /// top with the columns mirrored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reading {
@@ -1543,7 +1548,7 @@ mod tests {
             target_size: [1680, 1760],
             layer: 0,
             near_cut_m: NEAR_CUT_M,
-            flip_v: true,
+            flip_v: EnvDepthOptions::default().flip_v,
         }
     }
 
@@ -1637,13 +1642,18 @@ mod tests {
                 fov: FOV,
             },
         );
-        // Just inside the top-left corner of the depth fov.
+        // Just inside the top-left corner of the depth fov. The default,
+        // verified on the device (envdepthcheck): row 0 is the bottom of
+        // the view, GL order.
+        assert!(!r.flip_v);
         let top_left = Vec3::new(FOV.left.tan() + 1e-3, FOV.up.tan() - 1e-3, -1.0);
-        assert_eq!(r.texel(r.depth_uv(top_left).unwrap()), [0, 0]);
-        let bottom_right = Vec3::new(FOV.right.tan() - 1e-3, FOV.down.tan() + 1e-3, -1.0);
-        assert_eq!(r.texel(r.depth_uv(bottom_right).unwrap()), [319, 319]);
-        r.flip_v = false;
         assert_eq!(r.texel(r.depth_uv(top_left).unwrap()), [0, 319]);
+        let bottom_right = Vec3::new(FOV.right.tan() - 1e-3, FOV.down.tan() + 1e-3, -1.0);
+        assert_eq!(r.texel(r.depth_uv(bottom_right).unwrap()), [319, 0]);
+        // `envdepthflipv 1`: row 0 at the top.
+        r.flip_v = true;
+        assert_eq!(r.texel(r.depth_uv(top_left).unwrap()), [0, 0]);
+        assert_eq!(r.texel(r.depth_uv(bottom_right).unwrap()), [319, 319]);
         // Behind the camera or outside the fov: nothing.
         assert!(r.depth_uv(Vec3::new(0.0, 0.0, 1.0)).is_none());
         assert!(r.depth_uv(Vec3::new(5.0, 0.0, -1.0)).is_none());
@@ -1684,7 +1694,7 @@ mod tests {
         let (l, rt) = (FOV.left.tan(), FOV.right.tan());
         let (up, down) = (FOV.up.tan(), FOV.down.tan());
         let sample = |uv: Vec2| {
-            let v_up = 1.0 - uv.y;
+            let v_up = if r.flip_v { 1.0 - uv.y } else { uv.y };
             let dir = Vec3::new(l + uv.x * (rt - l), down + v_up * (up - down), -1.0);
             let q = hit(depth_pos, dir, truth, n) - depth_pos;
             encode(-q.z, r.near, r.far)
@@ -1841,7 +1851,7 @@ mod tests {
         assert_eq!(rows[16], [0.1, 1.4, 0.2, RAY_DISTANCE_M]);
         assert_eq!(rows[18], [0.1, 0.0, 1.0, NEAR_CUT_M]);
         assert_eq!(rows[19], [320.0, 320.0, 1680.0, 1760.0]);
-        assert_eq!(rows[20], [0.0, 1.0, SHOW_FAR_M, 0.0]);
+        assert_eq!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
         r.far = 20.0;
         r.layer = 1;
         let rows = r.uniform();
