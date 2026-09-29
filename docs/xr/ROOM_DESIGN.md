@@ -316,6 +316,32 @@ proves the plumbing; 5 to 7 come with C.
   behavior, strength, params}` plus `{kind_defaults}`; written on every
   change, read when the anchors are located.
 
+**Implemented, step 1 (Sep 29).** The lane block is aux 181..213, one
+row per box in the obstacle block's order (the room's boxes, then the
+stage floor). `x` is the behavior id + 1, so a zero row means unset and
+the box runs its kind's default through the old kind gate: an upload
+without the block behaves exactly as before. The kind defaults are the
+old fixed rule (table embers, floor sparks, wall spectrum, the rest
+none), so with no file and no knob the room looks as it did. A set lane
+gates the box's spawns by its behavior (embers on the beat gate, sparks
+on the bass gate, the rest closed) times its strength; the spawn stays
+on the upward face. The room id is FNV-1a 64 over the anchors' UUIDs
+sorted bytewise, 16 hex digits; the file is `rooms/<room id>.json`,
+version 1, `{"version": 1, "kind_defaults": {"table": "embers", ...},
+"anchors": [{"uuid", "kind", "behavior", "strength", "params"}]}`,
+loaded when the room id changes and saved on every change, never on
+load; the stage floor's entry is kept under the all-zero UUID. The knob
+`debug.fosfora.surface` takes comma-separated
+`<target>=<behavior>[@<strength>]`, the target a UUID (or a unique
+prefix of at least 8 hex digits), a box index `#<k>` or a kind name
+(the class assignment: the kind's default and every anchor of that
+kind), the behavior one of `none embers sparks spectrum ripple`, the
+strength 0..1 (default 1); `clear` drops every assignment. The wall
+spectrum picks among the visible walls whose behavior is the spectrum
+(none: no canvas); the ripple goes to the largest floor on the ripple
+(the stage floor included), else the largest scene floor, else the
+stage floor, and pinning it to a floor turns that floor's sparks off.
+
 ### The interaction, hands-first
 
 Edit room on (panel toggle) → the right hand's beam is on and the hit
