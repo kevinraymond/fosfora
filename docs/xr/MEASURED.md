@@ -1003,7 +1003,10 @@ rows 170..173 follow the hand lanes (WORLD_AUX_ROWS 173). Knobs:
   the far wall at 4.7 m; about 97 lifts. Alive ranged 7K to 399K (median
   256K): a throw steals from the living cloud and the surface gates breathe.
   Runtime App GPU 9.75 ms median, 10.93 p90, 15.32 max; 72 fps median,
-  p10 70, min 56; 623 stale frames.
+  p10 70, min 56; 623 stale frames. **Known failure in that pass: the
+  throw.** Kevin saw a small burst at the hand that fell a short way and
+  faded, no streak to the aimed surface and nothing at it; the 511 log
+  lines are the aiming ray's hits, not visible impacts (board #3329).
 - **Throw range:** the aiming ray first looked only as far as a miss ends
   (3 m), so the wall 4-5 m ahead read as a miss and the burst hung in the
   air. The ray now looks 12 m; a real miss still bursts 3 m out.
@@ -1020,3 +1023,28 @@ rows 170..173 follow the hand lanes (WORLD_AUX_ROWS 173). Knobs:
 - **Bars, device:** one running top for the whole wall left the high bands
   dark (mean height 0.11-0.26); a top per bar, held within 16 dB of the
   loudest and never below -40 dB, gives mean 0.45-0.58 and max 0.8-1.0.
+- **Throw fix (board #3329, unworn, Sep 28):** the flight and the impact
+  were right all along: with the cloud thinned to 100K and a 30K burst
+  the ball appeared exactly at the logged ceiling hit, raining down under
+  the settle drift. Two faults hid it at the product scale. Burst
+  particles were drawn like the cloud (5 mm sprites, opacity 0.08-0.13,
+  the same color), so a 6000 ball was 1.5% of a 400K cloud and the 300 a
+  frame streak puffs (3 cm) vanished; what Kevin saw at the hand was the
+  near end of the streak (sprites six times larger on screen at 0.5 m)
+  falling at 0.5 m/s. And a free particle died 3 half extents (4.5 m)
+  from the anchor, so a burst on the far wall (5.25 m) died on its first
+  frame. Now a burst particle is drawn at twice the sprite size, opacity
+  0.35 and its color half way to warm white (`XR_BURST_SIZE`, `_ALPHA`,
+  `_WHITE`), and dies 13 m from the anchor (`XR_FREE_REACH_M`, past the
+  ray's 12 m). Screencaps with `throwtest 6` on Flux XR Room 400K show a
+  bright ball at the ceiling hit with the streak's puffs trailing below
+  it, then a spray raining from the hit. Cost: App GPU 9.52 ms median,
+  9.82 p90, 10.31 max over 78 s with 13 throws, 72 fps, 2 long frames of
+  5658, 5 stale; within the pass's 9.75. A first try at 3x size, opacity
+  0.6 and 0.7 white drowned the view in yellow with throws every 2 s. GPU
+  test (core, Flux XR World at 20K): a flight's rows walked over 20 frames
+  to a hit 5 m out leave one puff of 300 per frame along the ray, the
+  farthest at the current center and none beyond it; the impact's 6000
+  land in the ball at the hit; all survive 10 frames on (the test fails
+  at the old reach). Worn re-gate pending: a hand throw starts off the
+  view axis, so the near-eye streak is lighter than the diagnostic's.

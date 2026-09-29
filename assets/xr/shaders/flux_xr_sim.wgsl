@@ -67,10 +67,15 @@
 //   aux[172]   lift point xyz (anchor-relative: the far palm), w unused
 // A burst particle is born within the radius of the center, flying
 // radially outward (0.3..1.2 m/s at a 0.12 m burst, slower for the
-// throw's thinner streak), at full opacity and with half the lifetime. It
+// throw's thinner streak), with half the lifetime, and drawn to be seen
+// against the cloud: XR_BURST_SIZE times the sprite, XR_BURST_ALPHA
+// opaque, its color pulled toward white (a 6000 ball drawn like the cloud
+// is 1.5% of a 400K cloud and reads as nothing; board #3329). It
 // is not bound to the volume: its life lane reads XR_FREE, it never
 // respawns at the bounds and has no edge fade (a throw lands on walls
-// outside the volume), and it dies past XR_FREE_REACH half extents. The
+// outside the volume), and it dies XR_FREE_REACH_M from the anchor (past
+// the 12 m the throw's ray looks; the old 3 half extents, 4.5 m, killed a
+// burst on a wall 5 m ahead on its first frame). The
 // lift pulls the particles under the palm, within its radius
 // horizontally, up toward it (strength x XR_LIFT_ACCEL, fading to the
 // rim), damps their lateral speed so they gather under the palm, and
@@ -99,12 +104,16 @@ const XR_AUX_INSTRUMENTS: u32 = 170u;
 const XR_AUX_INSTRUMENT_ROWS: u32 = 3u;
 
 // Bursts: the radius the 0.3..1.2 m/s speeds are for, the lifetime
-// fraction, the life lane of a particle not bound to the volume, and how
-// many half extents out it dies.
+// fraction, the sprite size and base opacity against the cloud's and how
+// far toward white the color goes, the life lane of a particle not bound
+// to the volume, and how far from the anchor (m) it dies.
 const XR_BURST_REF_RADIUS: f32 = 0.12;
 const XR_BURST_LIFE: f32 = 0.5;
+const XR_BURST_SIZE: f32 = 2.0;
+const XR_BURST_ALPHA: f32 = 0.35;
+const XR_BURST_WHITE: f32 = 0.5;
 const XR_FREE: f32 = 2.0;
-const XR_FREE_REACH: f32 = 3.0;
+const XR_FREE_REACH_M: f32 = 13.0;
 // The lift's acceleration at strength 1 (m/s^2) and its lateral damping
 // (per second).
 const XR_LIFT_ACCEL: f32 = 4.0;
@@ -419,13 +428,15 @@ fn xr_burst(idx: u32, half: f32) -> Particle {
     let speed = mix(0.3, 1.2, s.x) * radius / XR_BURST_REF_RADIUS;
     let life = u.lifetime * XR_BURST_LIFE;
     p.pos_life = vec4f(b.xyz + at, XR_FREE);
-    p.vel_size = vec4f(dir * speed, p.vel_size.w);
+    // Bigger, brighter and more opaque than the cloud, so the streak and
+    // the ball read through it.
+    let size = p.flags.z * XR_BURST_SIZE;
+    p.vel_size = vec4f(dir * speed, size);
+    p.color = vec4f(mix(p.color.rgb, vec3f(1.0, 0.95, 0.85), XR_BURST_WHITE), XR_BURST_ALPHA);
     // Past the fade-in, at its base opacity: a burst shows at once (the
     // surface and volume spawns start invisible for particles born inside
     // a box; this one is born in front of the surface).
-    p.color.a = p.flags.w;
-    p.flags.x = life * 0.05;
-    p.flags.y = life;
+    p.flags = vec4f(life * 0.05, life, size, XR_BURST_ALPHA);
     return p;
 }
 
@@ -542,8 +553,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let edge = max(abs(pos.x), max(abs(pos.y), abs(pos.z))) / half;
     if free {
         // A burst particle: loose in the room until it dies, or when it
-        // flies far past the volume.
-        if edge > XR_FREE_REACH {
+        // flies farther than a throw can reach.
+        if length(pos) > XR_FREE_REACH_M {
             p.pos_life.w = 0.0;
             write_particle(idx, p);
             return;

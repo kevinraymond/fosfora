@@ -810,10 +810,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     /// aux block from `aux_at(f)`, and the alive positions after each frame
     /// count in `capture`.
     fn flux_room_run(
+        pfx: crate::effect::format::PfxEffect,
+        count: u32,
+        aux_at: impl Fn(u32) -> Vec<crate::gpu::particle::types::ParticleAux>,
+        capture: &[u32],
+    ) -> Vec<Vec<Vec3>> {
+        flux_room_run_with(pfx, count, aux_at, capture, |p| {
+            (p[3] > 0.0).then(|| Vec3::new(p[0], p[1], p[2]))
+        })
+    }
+
+    /// `flux_room_run` with each capture's slots passed through `keep`
+    /// (the `pos_life` lane; `None` drops the slot).
+    fn flux_room_run_with(
         mut pfx: crate::effect::format::PfxEffect,
         count: u32,
         aux_at: impl Fn(u32) -> Vec<crate::gpu::particle::types::ParticleAux>,
         capture: &[u32],
+        keep: impl Fn(&[f32; 4]) -> Option<Vec3>,
     ) -> Vec<Vec<Vec3>> {
         use crate::gpu::test_gpu::test_gpu;
         use crate::headless::scene_renderer::SceneRenderer;
@@ -860,18 +874,27 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             ps.dispatch(&mut enc, &queue);
             queue.submit([enc.finish()]);
             if capture.contains(&(frame + 1)) {
-                out.push(alive(&read_slots(
-                    &device,
-                    &queue,
-                    particles(&mut sr),
-                    count,
-                )));
+                let slots = read_pos_life(&device, &queue, particles(&mut sr), count);
+                out.push(slots.iter().filter_map(&keep).collect());
             }
         }
         wait(&device);
         let err = pollster::block_on(device.pop_error_scope());
         assert!(err.is_none(), "validation error: {err:?}");
         out
+    }
+
+    /// `flux_room_run`, but each capture holds only the burst particles:
+    /// the slots whose life lane reads XR_FREE (2.0; the cloud's read 1).
+    fn flux_free_run(
+        pfx: crate::effect::format::PfxEffect,
+        count: u32,
+        aux_at: impl Fn(u32) -> Vec<crate::gpu::particle::types::ParticleAux>,
+        capture: &[u32],
+    ) -> Vec<Vec<Vec3>> {
+        flux_room_run_with(pfx, count, aux_at, capture, |p| {
+            (p[3] > 1.5).then(|| Vec3::new(p[0], p[1], p[2]))
+        })
     }
 
     /// The Flux XR Room sim, headless: with one table in the aux block (kind
@@ -1070,6 +1093,121 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         assert!(
             loose >= 1990,
             "{loose} of the 2000 still outside the volume"
+        );
+    }
+
+    /// A throw's flight, headless on Flux XR World: the instrument rows
+    /// walk the streak's center from the pinch to a hit 5 m out over 20
+    /// frames (300 a frame, 3 cm), then deliver the impact (4 frames of
+    /// 1500, 12 cm) there. The burst particles (life lane XR_FREE, 2.0)
+    /// trail the flight: after 5 frames they reach the fifth center and no
+    /// farther; after the flight every frame's puff sits in its own stretch
+    /// of the ray; the impact's 6000 land within the ball at the hit; and
+    /// ten frames on they are all still there, 5 m from the anchor (the
+    /// old reach, 3 half extents, killed a burst on a far wall at once).
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn flux_xr_throw_flies_along_the_ray_and_bursts_at_the_hit() {
+        use crate::gpu::particle::types::ParticleAux;
+        let _guard = crate::gpu::test_gpu::gpu_guard();
+        const FLIGHT: u32 = 20;
+        const STREAK: u32 = 300;
+        const STREAK_RADIUS: f32 = 0.03;
+        const IMPACT_FRAMES: u32 = 4;
+        const IMPACT: u32 = 1500;
+        const STEAL: f32 = 0.08;
+        const RADIUS: f32 = 0.12;
+        const QUIET: u32 = 10;
+        let from = Vec3::new(0.3, -0.2, -0.5);
+        let to = Vec3::new(0.0, 0.5, -5.0);
+        let center = to + Vec3::Z * (RADIUS + 0.02);
+        assert!(to.length() > 4.5, "the hit is past the old reach");
+        let head = vec![ParticleAux { home: [0.0; 4] }; 163];
+        let rows = |f: u32| {
+            if f < FLIGHT {
+                let k = f as f32 / FLIGHT as f32;
+                with_instruments(
+                    head.clone(),
+                    STREAK,
+                    from.lerp(to, k),
+                    STREAK_RADIUS,
+                    0.0,
+                    Vec3::ZERO,
+                    0.0,
+                )
+            } else if f < FLIGHT + IMPACT_FRAMES {
+                // By now the 20K sim is full (1000 emitted a frame), so the
+                // impact comes from the living, as the app's steal fraction
+                // (instruments::steal_fraction) arranges on the device.
+                let mut rows =
+                    with_instruments(head.clone(), IMPACT, center, RADIUS, 0.0, Vec3::ZERO, 0.0);
+                rows[170].home[3] = STEAL;
+                rows
+            } else {
+                with_instruments(head.clone(), 0, center, RADIUS, 0.0, Vec3::ZERO, 0.0)
+            }
+        };
+        let after = [
+            5,
+            FLIGHT,
+            FLIGHT + IMPACT_FRAMES,
+            FLIGHT + IMPACT_FRAMES + QUIET,
+        ];
+        let caps = flux_free_run(xr_flux_preset(), 20_000, rows, &after);
+        let ray = (to - from).normalize();
+        let along = |p: &Vec3| (*p - from).dot(ray);
+        let step = from.distance(to) / FLIGHT as f32;
+        // Born within 3 cm of the center, then flying out at up to 0.3 m/s
+        // with the flow on top: a puff's spread grows with its age.
+        let slack = |age_frames: u32| STREAK_RADIUS + 0.01 + 0.4 * age_frames as f32 / 60.0;
+        // After 5 frames: 1500 burst particles, the farthest at the fifth
+        // center (4/20 of the way), none beyond it.
+        let early = &caps[0];
+        assert_eq!(early.len(), (5 * STREAK) as usize, "the first five puffs");
+        let farthest = early.iter().map(along).fold(0.0f32, f32::max);
+        assert!(
+            (farthest - 4.0 * step).abs() <= slack(1),
+            "{farthest} vs {}",
+            4.0 * step
+        );
+        // After the flight: 6000, one puff per frame's stretch of the ray,
+        // the first at the pinch and the last a step short of the hit.
+        let flown = &caps[1];
+        assert_eq!(flown.len(), (FLIGHT * STREAK) as usize);
+        for f in 0..FLIGHT {
+            let at = f as f32 * step;
+            let near = slack(FLIGHT - f);
+            let puff = flown
+                .iter()
+                .filter(|p| p.distance(from + ray * at) <= near)
+                .count();
+            assert!(
+                puff >= (STREAK - 10) as usize,
+                "puff {f}: {puff} of {STREAK} within {near:.2} m of {at:.2} m along the ray"
+            );
+        }
+        // The impact: 6000 more, every one within the ball at the hit (plus
+        // four frames of flying out at up to 1.2 m/s). The steal takes 8% of
+        // the living a frame, streak particles among them, so the total is
+        // not exact; the ball is.
+        let hit = &caps[2];
+        assert!(
+            hit.len() > flown.len() + 4000,
+            "{} after the impact",
+            hit.len()
+        );
+        let ball = hit
+            .iter()
+            .filter(|p| p.distance(center) <= RADIUS + 0.1)
+            .count();
+        assert!(ball >= 5900, "{ball} in the ball");
+        // Ten quiet frames later they are all still loose out there.
+        let later = &caps[3];
+        assert!(
+            later.len() >= hit.len() - 10,
+            "{} of {} survive 5 m out",
+            later.len(),
+            hit.len()
         );
     }
 
@@ -1712,6 +1850,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         ps: &crate::gpu::particle::ParticleSystem,
         count: u32,
     ) -> Vec<Option<Vec3>> {
+        read_pos_life(device, queue, ps, count)
+            .iter()
+            .map(|p| (p[3] > 0.0).then(|| Vec3::new(p[0], p[1], p[2])))
+            .collect()
+    }
+
+    /// Every slot's `pos_life` lane after the last submitted dispatch.
+    fn read_pos_life(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        ps: &crate::gpu::particle::ParticleSystem,
+        count: u32,
+    ) -> Vec<[f32; 4]> {
         let bytes = u64::from(count) * 16;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("murmur-positions"),
@@ -1726,11 +1877,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             .slice(..)
             .map_async(wgpu::MapMode::Read, |r| r.unwrap());
         wait(device);
-        let out: Vec<Option<Vec3>> =
-            bytemuck::cast_slice::<u8, [f32; 4]>(&staging.slice(..).get_mapped_range())
-                .iter()
-                .map(|p| (p[3] > 0.0).then(|| Vec3::new(p[0], p[1], p[2])))
-                .collect();
+        let out =
+            bytemuck::cast_slice::<u8, [f32; 4]>(&staging.slice(..).get_mapped_range()).to_vec();
         staging.unmap();
         out
     }
