@@ -381,12 +381,17 @@ the ray is the throw's, from the head through the right far pinch point
 the stage floor while the room has none; a tap cycles the pointed
 surface's behavior one step (none, embers, sparks, spectrum, ripple,
 none, from its effective behavior, so an unassigned table goes to
-sparks, its strength kept), a hold (0.7 s) writes its behavior and
-strength to every surface of its kind and the kind default. The right
+sparks, its strength kept), a hold (0.7 s) moves every surface of its
+kind, and the kind default, one step past it at its strength (the class
+cycle: first built as "apply this surface's behavior to its kind", which
+did nothing visible when the kind already ran it, Kevin, worn). The right
 tap no longer throws or toggles the sprite size, the right hold no
 longer cycles the effect, the right drag no longer moves the anchor;
 the left hand, the lift and the pitcher are unchanged. While the panel
-is up its pinches are its own and the editor has no ray; a gesture
+is up its pinches are its own and the editor is frozen: the hit, the
+highlight and the status cell hold, the beam goes, nothing fires (first
+built with the hit clearing, so the status read "no surface" whenever
+the wearer turned the palm up to read it, Kevin, worn); a gesture
 without a ray or a hit changes nothing and is logged. The hit has
 hysteresis: another box counts after 0.15 s under the ray, the hit
 clears after 0.3 s off it, and the gestures act on the hit as shown.

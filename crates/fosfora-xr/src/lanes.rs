@@ -371,6 +371,25 @@ impl RoomLanes {
         self.assign(&Target::Kind(boxes[k].kind), behavior, strength, boxes)
     }
 
+    /// The class cycle from one surface: the step after box `k`'s
+    /// effective behavior becomes its kind's default and every anchor of
+    /// that kind's, at `k`'s strength, saved and logged. Returns the new
+    /// behavior, `Err` past the boxes. Every hold then changes something
+    /// the wearer can see, where re-applying the behavior the kind already
+    /// ran did not (Kevin, worn, Sep 29).
+    pub fn cycle_kind_of(
+        &mut self,
+        k: usize,
+        boxes: &[LaneBox<'_>],
+    ) -> Result<SurfaceBehavior, String> {
+        let (behavior, strength) = self
+            .effective(k, boxes)
+            .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
+        let next = behavior.next();
+        self.assign(&Target::Kind(boxes[k].kind), next, strength, boxes)?;
+        Ok(next)
+    }
+
     /// Advance box `k` one step through the catalogue
     /// ([`SurfaceBehavior::next`]) from its effective behavior (the kind's
     /// default when it has no entry, not `none`), its strength kept (1
@@ -836,6 +855,18 @@ mod tests {
         lanes.assign_kind_of(5, &boxes).unwrap();
         assert_eq!(lanes.effective(3, &boxes), Some((B::Ripple, 1.0)));
         assert!(lanes.assign_kind_of(9, &boxes).is_err());
+        // The class cycle: one step past the surface, for the whole kind,
+        // so a hold always changes something.
+        let before = lanes.effective(1, &boxes).unwrap().0;
+        let next = lanes.cycle_kind_of(1, &boxes).unwrap();
+        assert_eq!(next, before.next());
+        for (k, b) in boxes.iter().enumerate() {
+            if b.kind == boxes[1].kind {
+                assert_eq!(lanes.effective(k, &boxes).unwrap().0, next, "box {k}");
+            }
+        }
+        assert_eq!(lanes.file.kind_default(boxes[1].kind), next);
+        assert!(lanes.cycle_kind_of(9, &boxes).is_err());
         assert!(
             lanes
                 .assign(&Target::Index(9), B::None, 1.0, &boxes)

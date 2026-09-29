@@ -21,9 +21,14 @@
 //! box, or, with the hit held over a miss, as far as the hit was, or
 //! [`MISS_BEAM_M`] along the ray.
 //!
+//! While the palm panel is up the editor is frozen: the hit and the
+//! highlight stay, the beam goes, nothing ages and nothing fires, so the
+//! wearer can turn the palm up and read the status cell for the surface
+//! under the beam.
+//!
 //! **The gestures** act on the hit as it shows: a tap cycles its behavior
-//! ([`EditAction::Cycle`]), a hold applies its behavior to every surface
-//! of its kind ([`EditAction::AssignKind`]); either without a hit, or
+//! ([`EditAction::Cycle`]), a hold cycles every surface of its kind one
+//! step from it ([`EditAction::AssignKind`]); either without a hit, or
 //! without a ray (the hand lost, the panel up) while a hit is still held,
 //! does nothing and says so ([`EditFrame::unaimed`]). The highlight pulses
 //! once ([`PULSE_S`]) for a cycle, twice for a class assignment.
@@ -71,6 +76,10 @@ pub struct EditInput<'a> {
     pub on: bool,
     /// The right hand's ray; `None` untracked or with the panel up.
     pub ray: Option<Ray>,
+    /// The palm panel is up: the hit and the highlight hold as they are
+    /// (nothing ages, nothing fires), so the wearer can turn the palm to
+    /// read the status cell without the surface going to "no surface".
+    pub frozen: bool,
     /// The boxes to cast against: the room's, then the stage floor while
     /// the room has no floor (the lanes' order, so an index is a lane's).
     pub boxes: &'a [RayBox],
@@ -85,7 +94,8 @@ pub struct EditInput<'a> {
 pub enum EditAction {
     /// Box k one step through the catalogue.
     Cycle(usize),
-    /// Box k's behavior to every surface of its kind.
+    /// Every surface of box k's kind one step past k's behavior (the
+    /// class cycle; `lanes::RoomLanes::cycle_kind_of`).
     AssignKind(usize),
 }
 
@@ -128,6 +138,16 @@ impl RoomEditor {
             return EditFrame {
                 changed: before.is_some(),
                 ..EditFrame::default()
+            };
+        }
+        if input.frozen {
+            return EditFrame {
+                hit: self.hit,
+                changed: false,
+                beam: None,
+                action: None,
+                unaimed: None,
+                pulse: self.pulse_now(),
             };
         }
         let dt = input.dt.max(0.0);
@@ -274,6 +294,7 @@ mod tests {
             on: true,
             ray: toward(at),
             boxes,
+            frozen: false,
             tap: false,
             hold: false,
             dt: DT,
@@ -357,6 +378,35 @@ mod tests {
             assert_eq!(f.hit.map(|h| h.index), Some(0), "frame {i}");
             assert!(!f.changed, "frame {i}");
         }
+    }
+
+    #[test]
+    fn the_panel_up_freezes_the_hit_and_fires_nothing() {
+        let b = boxes();
+        let mut e = RoomEditor::default();
+        point(&mut e, &b, TABLE, frames(CONFIRM_S));
+        assert_eq!(e.hit().map(|h| h.index), Some(1));
+        // Frozen far longer than a miss clears, with a gesture and no
+        // ray: the hit holds, nothing fires, no beam, no "unaimed".
+        let mut f = EditFrame::default();
+        for _ in 0..frames(MISS_S * 4.0) {
+            f = e.step(&EditInput {
+                ray: None,
+                frozen: true,
+                tap: true,
+                ..input(&b, TABLE)
+            });
+        }
+        assert_eq!(f.hit.map(|h| h.index), Some(1));
+        assert!(!f.changed);
+        assert_eq!(f.beam, None);
+        assert_eq!(f.action, None);
+        assert_eq!(f.unaimed, None);
+        // Unfrozen with the ray back on the table: still the hit, at once.
+        let f = e.step(&input(&b, TABLE));
+        assert_eq!(f.hit.map(|h| h.index), Some(1));
+        assert!(!f.changed);
+        assert!(f.beam.is_some());
     }
 
     #[test]
