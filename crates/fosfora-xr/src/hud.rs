@@ -49,7 +49,7 @@ const GRAPH_MAX_MS: f32 = 20.0;
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 9] = [
+const STEPPERS: [(&str, f32, f32, f32); 10] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
@@ -64,7 +64,15 @@ const STEPPERS: [(&str, f32, f32, f32); 9] = [
         500.0,
     ),
     ("cloud density", 0.05, 1.0, 0.05),
+    (
+        "space half m",
+        crate::space::SPACE_HALF_MIN,
+        crate::space::SPACE_HALF_MAX,
+        crate::space::SPACE_HALF_STEP,
+    ),
 ];
+
+const _: () = assert!(STEPPERS.len() == grid::STEPPERS);
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +92,9 @@ pub struct Controls {
     /// The world effect's emission against its preset's, 0.05..1: thins
     /// the cloud (not the pitcher's pour).
     pub density: f32,
+    /// The world effect's space size: the half extent of the cube its
+    /// particles live in (meters; board #3325).
+    pub space_half: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -112,7 +123,8 @@ impl Controls {
             5 => &mut self.reach_gain,
             6 => &mut self.hand_scare,
             7 => &mut self.pitcher_rate,
-            _ => &mut self.density,
+            8 => &mut self.density,
+            _ => &mut self.space_half,
         }
     }
 }

@@ -234,6 +234,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
     //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
     //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)
+    //   adb shell setprop debug.fosfora.space 1.5                (board #3325, world mode: the space size, the half extent in meters of the cube
+    //       around the anchor the particles live in and respawn out of, 0.5..6, for every world effect; unset, each keeps its preset's;
+    //       the debug panel's "space half m", live, without resetting the cloud)
     //   adb shell setprop debug.fosfora.pitchertest 1            (diagnostic: the pitcher on, pouring from 0.5 m ahead of the head, along the
     //       view tilted 30 degrees down, untracked, for an unworn cost measurement)
     //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
@@ -720,6 +723,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The runtime's performance counters feed only the debug panel.
     let mut perf_on = hud.as_ref().is_some_and(Hud::debug);
     session.set_perf_metrics(perf_on);
+    // The space size: the knob's for every world effect, else the showing
+    // preset's until the stepper moves (outside world mode it drives
+    // nothing and shows the test sim's cube).
+    let mut space = crate::space::SpaceControl::new(
+        debug_prop("debug.fosfora.space").and_then(|v| v.parse::<f32>().ok()),
+        scene
+            .as_ref()
+            .and_then(XrScene::space)
+            .map_or(cube_half, |(_, preset)| preset),
+    );
     let mut controls = Controls {
         gravity,
         near_fade: near_cull,
@@ -732,6 +745,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         pitcher: false,
         pitcher_rate: crate::instruments::PITCHER_RATE,
         density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
+        space_half: space.shown(),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1688,6 +1702,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 world_effects[world_index],
                 base * controls.density,
                 base
+            );
+        }
+        // The space size: the showing world effect's volume, applied when
+        // the stepper moves and when a pinch-hold swaps in an effect set
+        // for another; the stepper shows the size it runs at.
+        if world
+            && let Some(s) = scene.as_mut()
+            && let Some((requested, preset)) = s.space()
+            && let Some(half) = space.update(&mut controls.space_half, requested, preset)
+        {
+            s.set_space_half(half);
+            info!(
+                "space size: '{}' at {:.2} m half extent",
+                world_effects[world_index], controls.space_half
             );
         }
         // The pitcher's last 10 s, while it is on or has poured.

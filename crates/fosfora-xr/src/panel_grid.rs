@@ -50,6 +50,12 @@ pub const MIN_FONT: f32 = 12.0;
 /// hands, reach, gesture, anchor and audio) needs above the controls, with
 /// room to spare: about 250 points in the texture dumps.
 pub const HEADER_H: f32 = 320.0;
+/// The debug panel's -/+ steppers (`STEPPERS` in `hud.rs`, which checks
+/// the count), two to a row.
+pub const STEPPERS: usize = 10;
+/// The most rows the debug panel shows: Prev/Next, the steppers' pair
+/// rows, Recenter and Rescan, Pitcher and Debug.
+pub const DEBUG_ROWS: usize = 1 + STEPPERS.div_ceil(2) + 2;
 
 // A stepper's label over its value in one row, and the menu's title over
 // its bottom row.
@@ -182,10 +188,6 @@ pub fn hit(bottom: f32, rows: usize, cursor: [f32; 2]) -> Option<Hit> {
 mod tests {
     use super::*;
 
-    /// The most rows the debug panel shows: Prev/Next, five rows of two
-    /// steppers, two rows of paired buttons.
-    const DEBUG_ROWS: usize = 8;
-
     #[test]
     fn the_rows_tile_the_block_bottom_up() {
         for (bottom, n) in [(PANEL_H, DEBUG_ROWS), (MENU_H, 1)] {
@@ -283,7 +285,10 @@ mod tests {
             assert!(f >= MIN_FONT, "{f}");
         }
         assert_close!(MIN_FONT, 12.0);
-        // The debug panel: the header over the fullest control block.
+        // The debug panel: the header over the fullest control block, ten
+        // steppers in five full pair rows (the space size filled the fifth
+        // row's empty cell, board #3325), so no taller than with nine.
+        assert_eq!(DEBUG_ROWS, 8);
         assert!(block_top(PANEL_H, DEBUG_ROWS) >= MARGIN + HEADER_H);
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));

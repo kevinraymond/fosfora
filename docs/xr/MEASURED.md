@@ -1562,3 +1562,93 @@ points; it lands on a chair, a person and the left hand and slides off;
 the cloud thins with the density stepper; the panel's two columns are
 legible and every stepper still steps (-/+ and the held repeat); object
 edges with `envdepthfilter` 2 against 1, the stream at a chair's edge.
+
+## Space size (board #3325)
+
+A conceptual zoom of the space the cloud lives in: the half extent of the
+cube around the anchor that the world effect's particles live in and
+respawn out of (the presets' `emitter.radius`: 1.5 m in Flux XR World,
+Flux XR Room and Murmur XR World, the 3 m volume of board #3276; 1 m in
+Flux XR World Coarse), set live from the debug panel or a knob.
+
+**What it scales.** The world sims read the volume from the core uniform
+`emitter_radius`, which the particle system copies from its def every
+update; `XrScene::set_space_half` writes the def's radius (no core
+change) and the half the surface weights are taken against. Flux spawns
+uniformly in the new cube, respawns a particle that leaves it and fades
+opacity over its outer 30 %; a surface emits only when its top face
+reaches into the cube, so a table or wall outside the volume stops
+emitting and one inside starts, the next frame. Changing the size does
+not reset the cloud: a particle outside a smaller cube respawns inside on
+its next step, a larger one fills over a lifetime (12 s) at the same
+emission rate, so the same count spreads thinner (8x the volume at twice
+the half extent).
+
+**What it does not.** The near fade (0.15 m around the head), the settle
+drift, the hand pad and kick, the Go-Go reach and a throw's or the
+pitcher's particles (free of the volume, `XR_FREE_REACH_M` 13 m) do not
+read the radius. Nor does the particle count or the emission rate: the
+cloud density stepper stays the way to thin it.
+
+**Murmur.** The 3D spatial hash spans +-`emitter_radius` with a fixed
+cell count, so a larger volume means larger cells and, with
+`MAX_PER_CELL` capped at 16, a coarser neighbor sample in a dense flock;
+the cruise speed, the audio predator's reach and the roost's pull are in
+half extents too (so the flock keeps its proportions), so the flock flies
+faster and wider in a larger volume. The hash is unchanged.
+
+**The control.** The debug panel's tenth stepper, "space half m", 0.5 to
+6 m by 0.25, fills the empty cell of the fifth pair row, so the panel
+keeps its eight rows and its texture. Until the knob or the stepper asks
+for a size each effect keeps its preset's, and the stepper shows it (1.50
+for Flux XR Room); once asked, the size holds for every effect a
+pinch-hold swaps in (each scene stores what it was asked for and the app
+applies the asked size to the one showing, as the cloud density does).
+
+```
+adb shell setprop debug.fosfora.space 1.5   # the half extent, m, 0.5..6, every world effect; unset keeps each preset's
+```
+
+Logcat: `space half 1.50 -> 3.00 m` from the scene and `space size:
+'Flux XR Room' at 3.00 m half extent` from the app on each change or
+swap; `space half ... (re-applied)` if a rebuild of the particle system
+reset the def to the preset's.
+
+**Tests (desktop).** `space.rs`: the presets kept until asked, an asked
+size applied to a swapped-in effect and shown on the stepper, the knob
+clamped to the range (0 unset), the write-back after a rebuild, the floor
+of 0.05 m. `surfaces.rs`: a table whose top face starts 2 m out weighs 0
+at half 1.5 and 0.5 at 2.5; the desk emits at 0.75, 1.5 and 2.5.
+`panel_grid.rs`: the debug panel's row count derives from the stepper
+count (`hud.rs` checks it at compile time) and is still 8, and the
+tiling, cell and font tests pass unchanged.
+
+**Worn gate: pending.** At 0.75 m the cloud hugs the wearer and the desk
+still emits (its top face is inside); at 3 m it fills the room and embers
+reach the far wall's spectrum (a wall reaches into the cube only within
+the half extent of the anchor on each axis: the far wall of board #3327
+was 4.7-5.25 m ahead, which needs about 5 m); the change is live with no
+reset of the cloud; the panel still fits and the new stepper steps (-/+
+and the held repeat).
+
+**Cost** (Quest 3 right after a reboot, `8895ed7`, `mode world`, 72 Hz,
+unworn, 40 s runs, battery 41-43 C; App GPU ms). The room query returned
+0 anchors in these headless runs, so only the stage floor emitted:
+
+| Effect | Space half | App GPU med / p90 / max | fps | Notes |
+|---|---|---|---|---|
+| Flux XR Room 400K | preset (1.50) | 9.20 / 9.74 / 9.88 | 73 | 0 stale |
+| Flux XR Room 400K | 0.75 m | 9.96 / 10.06 / 10.13 | | the floor left the volume (emitter weight 0.00); 400K alive packed in the small cube |
+| Flux XR Room 400K | 1.5 m | 9.25 / 9.62 / 9.69 | | |
+| Flux XR Room 400K | 3 m | 9.33 / 9.64 / 9.73 | | |
+| Flux XR Room 400K | 6 m | 9.29 / 9.58 / 9.66 | | |
+| Murmur XR World 40K | 1.5 m | 10.33 / 11.00 / 11.62 | 69-73 | 5 long |
+| Murmur XR World 40K | 3 m | 10.17 / 11.39 / 11.62 | | 7 long |
+
+The control itself costs nothing: 1.5 m set through the stepper's path
+matches the preset, and 3 and 6 m are within run-to-run noise of it. A
+small volume costs about 0.7 ms at 0.75 m, and that is density, not the
+control: the same 400K sprites packed into 1/8 of the volume overdraw
+more. Murmur is unchanged at 3 m (the median slightly lower, the p90
+within noise). An earlier sweep on a degraded runtime (14 ms at every
+size) was the device, not the build, and is not recorded here.

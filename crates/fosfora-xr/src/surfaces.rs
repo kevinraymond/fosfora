@@ -368,6 +368,28 @@ mod tests {
     }
 
     #[test]
+    fn the_space_size_decides_which_surfaces_emit() {
+        // Board #3325: a table whose top face starts 2 m from the anchor
+        // (x 2.0..2.8), and a desk inside any size.
+        let boxes = [
+            table(Vec3::new(2.4, -0.5, 0.0), [0.4, 0.4]),
+            table(Vec3::new(0.3, -0.5, 0.0), [0.8, 0.4]),
+        ];
+        let small = weights_of(&boxes, 1.5);
+        assert_close!(small[0], 0.0);
+        let large = weights_of(&boxes, 2.5);
+        assert!(large[0] > 0.0, "{large:?}");
+        assert!(
+            (large[0] - 0.5).abs() < 1e-6,
+            "by area against the desk {large:?}"
+        );
+        // The desk emits at both, and at the smallest step.
+        for half in [0.75, 1.5, 2.5] {
+            assert!((weights_of(&boxes, half)[1] - 1.0).abs() < 1e-6, "{half}");
+        }
+    }
+
+    #[test]
     fn the_synthetic_floor_emits_only_without_a_scene_floor() {
         assert_close!(synthetic_floor_emit([KIND_TABLE, KIND_WALL]), 1.0);
         assert_close!(synthetic_floor_emit([]), 1.0);
