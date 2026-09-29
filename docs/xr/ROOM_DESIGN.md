@@ -525,3 +525,32 @@ through the whole volume.
 (both layouts) puts every kind default and every anchor, the stage floor
 too, on none in one save: the quiet room from which one assignment can be
 judged (Kevin's fourth pass, Sep 29).
+
+**Implemented, step 2e (Sep 29).** Worn, fifth pass: "The whole entire
+scene, clouds, glow, flock, whatever persist no matter what I'm trying"
+(Kevin). Two causes. "All: none" filled the room: the sim fell back to
+the volume emitter whenever no box carried weight (step 1's rule for a
+room with no anchors), and the weights follow the behaviors, so a room
+whose every surface was explicitly none spawned the full cloud from
+nowhere. And Cloud off only took the emission to 0: the sprites alive
+drew on until they died (12 s for Flux XR Room, 15 s for Murmur's
+birds), and the other world effects (Flux XR World, Coarse, Murmur)
+ignore the lanes anyway. Now Cloud off hides the world effect's draw at
+once, whatever the effect (`Gfx::set_world_visible`, from
+`Cloud::visible`): the eye pass skips it for both eyes while its sim
+steps on, so on is instant and the room is as it would have been. The
+depth occluders, the ripple, the wall spectrum, the highlight, the
+label, the beams and the panel still draw; the pitcher's pour and the
+throw's bursts are the world effect's particles and hide with it. The
+emission-0 path is gone, and the density path takes the density alone.
+Solo is unchanged, shown, and what was alive before a solo switch still
+fades over its lifetime (an instant kill needs a core method, a separate
+decision). In the sim, the volume fallback runs only when the
+surface-emit preset has no boxes at all: with boxes and no weight
+anywhere nothing spawns, so a room all on none is silent, and a run with
+no room at all keeps the volume cloud. The XR app always pushes the
+stage floor as a box in mr and world modes, and its default is the
+ripple, so a Flux XR Room run with no anchors now spawns nothing unless
+the stage floor's lane emits: the unworn cost sweeps set
+`debug.fosfora.surface "#0=sparks"`. Logs: "cloud off: the world effect
+is hidden", "cloud on".
