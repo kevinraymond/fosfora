@@ -17,9 +17,10 @@
 //! Each box also runs a behavior (board #3326), chosen per surface instead
 //! of by its kind: a lane of its own in the aux block, one row per box
 //! after the pour row ([`lane_row`]). A zero row is unset and the box runs
-//! its kind's default ([`SurfaceBehavior::default_for`]), which is what
-//! every box ran before the lanes, so an upload without them (the core's
-//! tests, a desktop run) changes nothing.
+//! its kind's default ([`SurfaceBehavior::default_for`]): what every box
+//! ran before the lanes, but for the floor, whose default is the ripple
+//! since step 2d, so an unset floor spawns nothing. An upload without the
+//! lanes (the core's tests, which use tables) changes nothing.
 
 use glam::{Quat, Vec3};
 
@@ -72,12 +73,12 @@ pub enum SurfaceBehavior {
     /// default).
     Embers,
     /// Sparks up off the top face with the bass (Flux XR Room; a floor's
-    /// default).
+    /// default until step 2d).
     Sparks,
     /// The wall spectrum (`canvas.rs`; a wall's default).
     Spectrum,
-    /// The floor ripple (`ripple.rs`): assigning it to a floor pins the
-    /// ripple there.
+    /// The floor ripple (`ripple.rs`; a floor's default): only a floor
+    /// running it carries the ripple.
     Ripple,
 }
 
@@ -168,13 +169,19 @@ impl SurfaceBehavior {
         matches!(self, Self::Embers | Self::Sparks)
     }
 
-    /// What a surface of `kind` runs with no assignment: what the fixed
-    /// rule per kind gave it before the lanes (tables shed embers, floors
-    /// spark, walls carry the spectrum), so the defaults keep today's look.
+    /// What a surface of `kind` runs with no assignment: tables shed
+    /// embers and walls carry the spectrum, as the fixed rule per kind gave
+    /// them before the lanes; floors carry the ripple (step 2d, decision
+    /// #3459). The floor's default was sparks, with the ripple falling back
+    /// to the largest floor when none was on it, so "floor ripple kept
+    /// rippling when I switch to embers or none" (Kevin, worn, Sep 29): now
+    /// a floor sparks only when assigned and `none` leaves nothing on it.
+    /// The default is the last of the floor's [`Self::catalogue`], so a tap
+    /// from it goes to none, then sparks, then back to the ripple.
     pub fn default_for(kind: u32) -> Self {
         match kind {
             KIND_TABLE => Self::Embers,
-            KIND_FLOOR => Self::Sparks,
+            KIND_FLOOR => Self::Ripple,
             KIND_WALL => Self::Spectrum,
             _ => Self::None,
         }
@@ -303,7 +310,9 @@ fn base_name(b: &crate::lanes::LaneBox<'_>) -> String {
 }
 
 /// The synthetic stage floor's emitter flag: 1 when the room returned no
-/// FLOOR box, else 0, so the floor never emits twice.
+/// FLOOR box, else 0, so the floor never emits twice. The flag only lets
+/// the stage floor emit; its behavior decides whether it does: the ripple
+/// by default (no weight), sparks when assigned.
 pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
     if room_kinds.into_iter().any(|k| k == KIND_FLOOR) {
         0.0
@@ -537,6 +546,8 @@ mod tests {
         }
     }
 
+    /// The stage floor, assigned sparks (its default, the ripple, weighs
+    /// nothing).
     fn synthetic_floor(anchor: Vec3, emit: f32) -> SurfaceBox {
         SurfaceBox {
             kind: KIND_FLOOR,
@@ -768,7 +779,7 @@ mod tests {
         let w = weights_of(&boxes, 1.5);
         assert!((w[0] - 1.0).abs() < 1e-6, "{w:?}");
         assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
-        assert!((w[2] - 0.5).abs() < 1e-6, "floor default {w:?}");
+        assert!((w[2] - 0.5).abs() < 1e-6, "the floor on sparks {w:?}");
         assert_close!(w[3], 0.0);
         let boxes = &boxes[..3];
         let mut out = [0.0; 3];
@@ -938,10 +949,15 @@ mod tests {
             assert_eq!(seen, expected, "kind {kind}");
         }
         // The defaults are on their kind's catalogue: an unassigned table
-        // goes to sparks, a floor to the ripple, a wall to none.
+        // goes to sparks, a wall to none, a floor (the ripple, the last of
+        // its catalogue) to none, then sparks, then back to the ripple.
         assert_eq!(B::Embers.next_for(KIND_TABLE), B::Sparks);
-        assert_eq!(B::Sparks.next_for(KIND_FLOOR), B::Ripple);
         assert_eq!(B::Spectrum.next_for(KIND_WALL), B::None);
+        let mut floor = vec![B::default_for(KIND_FLOOR)];
+        for _ in 0..3 {
+            floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
+        }
+        assert_eq!(floor, [B::Ripple, B::None, B::Sparks, B::Ripple]);
         for (kind, _) in KIND_NAMES {
             assert!(B::catalogue(kind).contains(&B::default_for(kind)));
         }
@@ -963,10 +979,11 @@ mod tests {
     }
 
     #[test]
-    fn the_kind_defaults_are_the_fixed_rule() {
+    fn the_kind_defaults_are_the_fixed_rule_but_the_floor_ripples() {
         use SurfaceBehavior as B;
         assert_eq!(B::default_for(KIND_TABLE), B::Embers);
-        assert_eq!(B::default_for(KIND_FLOOR), B::Sparks);
+        // Step 2d (decision #3459): the ripple, not sparks.
+        assert_eq!(B::default_for(KIND_FLOOR), B::Ripple);
         assert_eq!(B::default_for(KIND_WALL), B::Spectrum);
         for kind in [KIND_NONE, KIND_CEILING, KIND_FRAME, KIND_OTHER, 99] {
             assert_eq!(B::default_for(kind), B::None, "kind {kind}");
@@ -1055,6 +1072,43 @@ mod tests {
             1.5,
         );
         assert_close!(w, [1.0, 0.5]);
+    }
+
+    #[test]
+    fn an_unset_floor_weighs_nothing_and_one_on_sparks_its_weight() {
+        // Step 2d: a floor with no assignment runs the ripple, which spawns
+        // nothing; assigned sparks it weighs `weights.floor`, the stage
+        // floor as a scene floor.
+        let desk = table(Vec3::new(0.0, -0.5, -0.5), [0.8, 0.4]);
+        let stage = synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 1.0);
+        let scene = SurfaceBox {
+            rot: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(2.0, 1.5, 0.02),
+            center: Vec3::new(0.0, -1.02, 0.0),
+            ..stage
+        };
+        for floor in [stage, scene] {
+            let unset = SurfaceBox {
+                behavior: lane_behavior([0.0; 4], KIND_FLOOR),
+                ..floor
+            };
+            assert_eq!(unset.behavior, SurfaceBehavior::Ripple);
+            assert_close!(weights_of(&[desk, unset], 1.5), [1.0, 0.0]);
+            let sparks = SurfaceBox {
+                behavior: lane_behavior(
+                    lane_row(SurfaceBehavior::Sparks, 1.0, [0.0; 2]),
+                    KIND_FLOOR,
+                ),
+                ..floor
+            };
+            let mut out = [0.0; 2];
+            let weights = SurfaceWeights {
+                table: 1.0,
+                floor: 0.35,
+            };
+            emitter_weights(&[desk, sparks], 1.5, weights, &mut out);
+            assert_close!(out, [1.0, weights.floor]);
+        }
     }
 
     #[test]

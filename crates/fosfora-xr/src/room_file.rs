@@ -10,7 +10,7 @@
 //!
 //! ```json
 //! { "version": 1,
-//!   "kind_defaults": { "table": "embers", "floor": "sparks", "wall": "spectrum",
+//!   "kind_defaults": { "table": "embers", "floor": "ripple", "wall": "spectrum",
 //!                      "ceiling": "none", "frame": "none", "other": "none" },
 //!   "anchors": [ { "uuid": "<32 hex>", "kind": "table", "behavior": "embers",
 //!                  "strength": 1.0, "params": [0.0, 0.0] } ] }
@@ -18,8 +18,11 @@
 //!
 //! An anchor with an entry runs the entry; one without runs its kind's
 //! default; a room without a file runs the built-in defaults
-//! ([`SurfaceBehavior::default_for`], the fixed rule per kind the sims
-//! used before the lanes). An entry's `kind` is informational (the kind
+//! ([`SurfaceBehavior::default_for`]: the fixed rule per kind the sims
+//! used before the lanes, but the floor on the ripple since step 2d). A
+//! file keeps the kind defaults it was saved with: every save writes all
+//! of them, so one saved while the floor's built-in was sparks keeps the
+//! floor on sparks. An entry's `kind` is informational (the kind
 //! at save time). The synthetic stage floor has no anchor: an assignment
 //! to it is kept under the all-zero UUID, which no anchor has, and never
 //! counts toward the room id.
@@ -400,7 +403,7 @@ mod tests {
             file.resolve(&uuid(9), KIND_TABLE),
             (B::Embers, 1.0, [0.0; 2])
         );
-        assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Sparks);
+        assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Ripple);
         assert_eq!(file.resolve(&uuid(9), KIND_WALL).0, B::Spectrum);
         assert_eq!(file.resolve(&uuid(9), KIND_OTHER).0, B::None);
         file.assign(uuid(1), KIND_TABLE, B::None, 1.0);
@@ -425,6 +428,30 @@ mod tests {
         );
         file.clear();
         assert_eq!(file, RoomFile::default());
+    }
+
+    #[test]
+    fn a_file_keeps_the_floor_default_it_names_and_one_without_takes_the_ripple() {
+        use SurfaceBehavior as B;
+        // Step 2d: the floor's built-in default is the ripple. A file that
+        // names the floor's default keeps it (every save before 2d wrote
+        // "sparks", the built-in then); one that does not takes the
+        // ripple.
+        let with = r#"{ "version": 1, "kind_defaults": { "table": "embers", "floor": "sparks" },
+                        "anchors": [] }"#;
+        let (file, skipped) = RoomFile::from_json(with).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Sparks);
+        assert_eq!(file.resolve(&STAGE_FLOOR_UUID, KIND_FLOOR).0, B::Sparks);
+        let without = r#"{ "version": 1, "kind_defaults": { "table": "embers" }, "anchors": [] }"#;
+        let (file, _) = RoomFile::from_json(without).expect("reads");
+        assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Ripple);
+        // What a save writes now.
+        assert!(
+            RoomFile::default()
+                .to_json()
+                .contains(r#""floor": "ripple""#)
+        );
     }
 
     #[test]
@@ -459,7 +486,7 @@ mod tests {
         file.assign(uuid(1), KIND_TABLE, B::None, 1.0);
         file.assign(STAGE_FLOOR_UUID, KIND_FLOOR, B::Ripple, 1.0);
         file.anchors[0].params = [0.5, -2.0];
-        file.set_kind_default(KIND_FLOOR, B::Ripple);
+        file.set_kind_default(KIND_FLOOR, B::Sparks);
         let text = file.to_json();
         let (back, skipped) = RoomFile::from_json(&text).expect("reads");
         assert!(skipped.is_empty(), "{skipped:?}");
@@ -470,7 +497,7 @@ mod tests {
         // The shape the design names.
         let v: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["version"], 1);
-        assert_eq!(v["kind_defaults"]["floor"], "ripple");
+        assert_eq!(v["kind_defaults"]["floor"], "sparks");
         assert_eq!(v["kind_defaults"]["table"], "embers");
         assert_eq!(v["kind_defaults"].as_object().unwrap().len(), 6);
         let a = &v["anchors"][2];
@@ -514,10 +541,10 @@ mod tests {
         let (file, skipped) = RoomFile::from_json(&text).expect("reads");
         assert_eq!(skipped.len(), 5, "{skipped:?}");
         // The unknown table default stays built-in, the known wall one
-        // takes; the reserved floor one is unset.
+        // takes; the reserved floor one is unset: the built-in ripple.
         assert_eq!(file.kind_default(KIND_TABLE), B::Embers);
         assert_eq!(file.kind_default(KIND_WALL), B::None);
-        assert_eq!(file.kind_default(KIND_FLOOR), B::Sparks);
+        assert_eq!(file.kind_default(KIND_FLOOR), B::Ripple);
         // The entry with a reserved behavior is dropped: its kind default.
         assert_eq!(file.entry(&uuid(1)), None);
         // A missing strength is full.

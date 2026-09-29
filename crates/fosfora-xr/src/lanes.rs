@@ -693,13 +693,14 @@ mod tests {
     fn without_a_file_the_lanes_are_the_kind_defaults() {
         let boxes = room();
         let (rows, behaviors) = lane_rows(&RoomFile::default(), &boxes);
+        // The floors, scene and stage, on the ripple (step 2d).
         let expected = [
             B::Embers,
             B::Spectrum,
             B::Spectrum,
-            B::Sparks,
+            B::Ripple,
             B::None,
-            B::Sparks,
+            B::Ripple,
         ];
         assert_eq!(&behaviors[..6], &expected);
         for (row, b) in rows.iter().zip(expected) {
@@ -731,7 +732,7 @@ mod tests {
         assert_eq!(lanes.behavior(0), B::None);
         assert_eq!(lanes.behavior(1), B::None);
         assert_eq!(lanes.behavior(2), B::None);
-        assert_eq!(lanes.behavior(3), B::Sparks);
+        assert_eq!(lanes.behavior(3), B::Ripple, "the floor's default");
         assert_eq!(lanes.behavior(5), B::Ripple);
         assert_close!(lanes.rows()[5], lane_row(B::Ripple, 0.5, [0.0; 2]));
         // The same value again applies nothing.
@@ -745,7 +746,7 @@ mod tests {
         let mut again = RoomLanes::new(dir.clone());
         assert!(again.update(room_of(&shuffled), &shuffled));
         assert_eq!(again.behavior(3), B::None, "the desk");
-        assert_eq!(again.behavior(0), B::Sparks, "the floor");
+        assert_eq!(again.behavior(0), B::Ripple, "the floor");
         assert_eq!(again.behavior(5), B::Ripple, "the stage floor");
         // A bad value changes nothing, in memory or on disk.
         let before = std::fs::read_to_string(&path).unwrap();
@@ -900,9 +901,10 @@ mod tests {
         // Put on embers by the knob, it cycles back to none.
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::None));
-        // The floor: sparks by default, then the ripple, none, sparks.
+        // The floor: the ripple by default (step 2d), then none, sparks,
+        // the ripple.
         let floor: Vec<_> = (0..3).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
-        assert_eq!(floor, [B::Ripple, B::None, B::Sparks]);
+        assert_eq!(floor, [B::None, B::Sparks, B::Ripple]);
         // A table the knob put on the spectrum: the first after none.
         assert!(lanes.poll_knob(Some("#0=spectrum"), false, &boxes));
         assert_eq!(lanes.cycle(0, &boxes), Ok(B::Embers));

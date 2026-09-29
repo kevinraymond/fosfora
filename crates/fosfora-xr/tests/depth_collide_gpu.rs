@@ -1457,13 +1457,33 @@ fn is_ember(s: &Sample) -> bool {
     s.vel.y.abs() < 1e-6 && s.vel.length() <= 0.03 * std::f32::consts::SQRT_2 + 1e-6
 }
 
-/// Unset lanes run the kinds' defaults, as before the lanes: the table
-/// sheds embers and the floor sparks, each over half the draws with both
-/// gates open, and nothing is born anywhere else.
+/// Unset lanes run the kinds' defaults (step 2d, decision #3459): the
+/// table sheds embers as before the lanes, the floor's default is the
+/// ripple, which spawns nothing, so every newborn is an ember on the
+/// table's face and the floor's half of the draws spawns nothing. The
+/// floor waits for a lane.
 #[test]
 #[ignore = "requires a GPU/software adapter"]
-fn unset_lanes_emit_from_both_faces_by_kind() {
+fn unset_lanes_emit_from_the_table_alone_the_floor_waits_for_a_lane() {
     let born = newborns(room_aux(&[table_box(), floor_box()], &[]));
+    assert!(born.len() > SLOTS / 3, "{} born", born.len());
+    assert!(born.len() < SLOTS * 2 / 3, "{} born", born.len());
+    for s in &born {
+        assert_eq!(face_of(s.pos), Face::Table, "{s:?}");
+        assert!(is_ember(s), "{s:?}: not an ember");
+    }
+}
+
+/// The floor's lane set to sparks, the table's unset: both faces emit as
+/// before step 2d, the table embers and the floor sparks, each over half
+/// the draws with both gates open, and nothing is born anywhere else.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_floor_on_sparks_emits_beside_an_unset_table() {
+    let born = newborns(room_aux(
+        &[table_box(), floor_box()],
+        &[None, Some((SurfaceBehavior::Sparks, 1.0))],
+    ));
     let (table, floor) = (count(&born, Face::Table), count(&born, Face::Floor));
     assert_eq!(table + floor, born.len(), "a newborn off both faces");
     assert!(born.len() > SLOTS * 9 / 10, "{} born", born.len());
@@ -1539,20 +1559,26 @@ fn the_strength_scales_a_surface_share() {
     assert!(born.iter().all(is_ember), "a floor spark on embers");
 }
 
-/// A wall weighted 1: with its lane unset its kind's gate (0.3) lets it
-/// shed from its top edge, as before the lanes; on the spectrum nothing is
-/// born from it, and the table beside it keeps emitting.
+/// A wall weighted 1: on embers it sheds from its top edge; on the
+/// spectrum, or with its lane unset (its default, the spectrum, through
+/// the same gate since step 2d; a fixed 0.3 gate before), nothing is born
+/// from it, and the table beside it keeps emitting.
 #[test]
 #[ignore = "requires a GPU/software adapter"]
 fn a_wall_on_the_spectrum_emits_nothing() {
     let boxes = [table_box(), wall_box()];
-    let unset = newborns(room_aux(&boxes, &[]));
-    assert!(count(&unset, Face::WallTop) > SLOTS / 20, "the unset path");
-    let born = newborns(room_aux(
+    let embers = newborns(room_aux(
         &boxes,
-        &[None, Some((SurfaceBehavior::Spectrum, 1.0))],
+        &[None, Some((SurfaceBehavior::Embers, 1.0))],
     ));
-    assert_eq!(count(&born, Face::WallTop), 0);
-    assert!(count(&born, Face::Table) > SLOTS / 3, "{} born", born.len());
-    assert_eq!(count(&born, Face::Table), born.len());
+    assert!(
+        count(&embers, Face::WallTop) > SLOTS / 20,
+        "the wall's face"
+    );
+    for lanes in [&[None, Some((SurfaceBehavior::Spectrum, 1.0))][..], &[]] {
+        let born = newborns(room_aux(&boxes, lanes));
+        assert_eq!(count(&born, Face::WallTop), 0, "{lanes:?}");
+        assert!(count(&born, Face::Table) > SLOTS / 3, "{} born", born.len());
+        assert_eq!(count(&born, Face::Table), born.len());
+    }
 }
