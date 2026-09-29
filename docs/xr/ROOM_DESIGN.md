@@ -182,8 +182,9 @@ Surfaces as emitters (the desk and the floor) plus the floor ripple.
 
 ### Still open
 
-- Which anchor the "wall the wearer faces" is when the room has four,
-  and whether it follows the head or is picked once per preset.
+- ~~Which anchor the "wall the wearer faces" is~~: answered in the second
+  pass. The pick follows the head with hysteresis (a 0.15 margin held for
+  1 s), and held on one wall through a 6 min worn session.
 - Whether Murmur's small-flock preset (40K, #3307) needs its own surface
   behaviors or shares the embers room's.
 

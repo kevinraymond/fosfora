@@ -982,3 +982,41 @@ real floor shows rings from under the wearer on each beat. Knobs:
 - **Rate:** at the volume preset's 53333/s the room settled near 60K alive,
   because a claimed slot is declined while its surface's gate is closed;
   at 160000/s it holds 330K unworn (floor only) and 380K worn (16 anchors).
+
+## Room second pass: the wall spectrum and the hand instruments (board #3327)
+
+The spectrum climbs the wall the wearer faces (a canvas quad on one
+WALL_FACE, picked with hysteresis, 24 bars from the mel bands, each bar
+normalized against its own running top), and the hands play the room: a
+short pinch-release throws a streak from the far hand along the line from
+the head through the pinch that bursts where it hits a surface; an open
+palm, down and still, lifts embers off the surface under it. Instrument
+rows 170..173 follow the hand lanes (WORLD_AUX_ROWS 173). Knobs:
+`debug.fosfora.canvas`, `canvasgain`, `canvasbars`, `canvastest ceiling`,
+`throw`, `burstcount`, `throwtest N`, `lift`, `liftradius`.
+
+- **Worn gate (Sep 28, seated, Flux XR Room 400K with the ripple, the
+  spectrum and both instruments, the bundled track on the tap): pass.**
+  Kevin: "this is awesome, everything seems to be working as intended."
+  The pick held on one wall 5.25 m ahead for the whole 6 min; bar height
+  mean 0.58, max 0.99. 511 throws logged, hitting the floor, a table and
+  the far wall at 4.7 m; about 97 lifts. Alive ranged 7K to 399K (median
+  256K): a throw steals from the living cloud and the surface gates breathe.
+  Runtime App GPU 9.75 ms median, 10.93 p90, 15.32 max; 72 fps median,
+  p10 70, min 56; 623 stale frames.
+- **Throw range:** the aiming ray first looked only as far as a miss ends
+  (3 m), so the wall 4-5 m ahead read as a miss and the burst hung in the
+  air. The ray now looks 12 m; a real miss still bursts 3 m out.
+- **Unworn (72 Hz, 30 s sweeps, headset face up):** Flux XR Room 400K with
+  the spectrum in view on the ceiling stand-in 8.09 / 8.75 ms median / max,
+  and with the canvas off 9.09 / 10.05, both 72 fps, 0 long. The order is
+  the anchor-load noise between runs (whether the room's surfaces emitted),
+  so the spectrum's cost is under that floor.
+- **GPU tests (core, Flux XR Room at 20K):** a burst of 2000 lands every
+  newborn within its 0.12 m radius, and a burst outside the volume keeps
+  1990 or more of them out there 10 frames later (burst particles are
+  free of the volume); embers settled on a table at mean y -0.472 rise to
+  -0.410 after 20 frames of lift, against -0.468 without it.
+- **Bars, device:** one running top for the whole wall left the high bands
+  dark (mean height 0.11-0.26); a top per bar, held within 16 dB of the
+  loudest and never below -40 dB, gives mean 0.45-0.58 and max 0.8-1.0.
