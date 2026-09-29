@@ -18,7 +18,10 @@ use glam::Mat4;
 use log::info;
 
 use crate::gfx::SWAPCHAIN_FORMAT;
-use crate::surfaces::{KIND_NONE, SurfaceBox, SurfaceWeights, emitter_weights};
+use crate::surfaces::{
+    KIND_NONE, SURFACE_LANE_ROWS, SurfaceBehavior, SurfaceBox, SurfaceWeights, emitter_weights,
+    lane_behavior,
+};
 
 /// Bytes per particle: `pos: vec3` + `life` + `vel: vec3` + `seed`.
 const PARTICLE_BYTES: u64 = 32;
@@ -53,6 +56,7 @@ struct SimUniform {
 /// Obstacle capacities, matching `MAX_SPHERES` / `MAX_BOXES` in the sim WGSL.
 pub const MAX_SPHERES: usize = 64;
 pub const MAX_BOXES: usize = 32;
+const _: () = assert!(SURFACE_LANE_ROWS == MAX_BOXES, "one surface lane per box");
 
 /// An oriented box obstacle in the reference space: a scene plane (thin
 /// box), a scene volume or the floor.
@@ -165,23 +169,33 @@ impl ObstacleSet {
 
     /// Replace every box's emitter flag with its emitter weight for a world
     /// sim whose emitter cube is `cube_half` around the origin
-    /// (`surfaces::emitter_weights`). Call on the anchor-relative set
+    /// (`surfaces::emitter_weights`), each box running the behavior its
+    /// row of `lanes` gives it (the rows the sim reads, so the weights and
+    /// the sim's gates agree). Call on the anchor-relative set
     /// ([`Self::relative_to`]), once per frame, so the weights follow the
     /// anchor.
-    pub fn set_emitter_weights(&mut self, cube_half: f32, weights: SurfaceWeights) {
+    pub fn set_emitter_weights(
+        &mut self,
+        cube_half: f32,
+        weights: SurfaceWeights,
+        lanes: &[[f32; 4]; SURFACE_LANE_ROWS],
+    ) {
         let n = self.box_count as usize;
         let mut boxes = [SurfaceBox {
             kind: KIND_NONE,
             emit: 0.0,
+            behavior: SurfaceBehavior::None,
             center: glam::Vec3::ZERO,
             rot: glam::Quat::IDENTITY,
             half: glam::Vec3::ZERO,
         }; MAX_BOXES];
         for (k, b) in boxes[..n].iter_mut().enumerate() {
             let (c, h) = (self.box_center[k], self.box_half[k]);
+            let kind = c[3] as u32;
             *b = SurfaceBox {
-                kind: c[3] as u32,
+                kind,
                 emit: h[3],
+                behavior: lane_behavior(lanes[k], kind),
                 center: glam::Vec3::new(c[0], c[1], c[2]),
                 rot: glam::Quat::from_array(self.box_rot[k]),
                 half: glam::Vec3::new(h[0], h[1], h[2]),

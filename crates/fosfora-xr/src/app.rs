@@ -1477,6 +1477,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &lanes,
                         &instrument_rows,
                         pour_row,
+                        &[[0.0; 4]; crate::surfaces::SURFACE_LANE_ROWS],
                     );
                 }
                 if let Some(offset) = hand_mesh_test {

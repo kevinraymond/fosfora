@@ -2,10 +2,11 @@
 //! the atlas compute pass and its copy into an RGBA8 texture against the
 //! pass's CPU twin, and `flux_xr_sim.wgsl`'s
 //! collide against a depth atlas, run headless behind the loader's compute
-//! preamble; and the particle pitcher's pour (board #3402) through the same
-//! sim onto a floor box. The GPU tests are `#[ignore]`d like the core's probes (they
-//! need an adapter); run them with
-//! `cargo test -p fosfora-xr --test depth_collide_gpu -- --ignored`.
+//! preamble; the particle pitcher's pour (board #3402) through the same
+//! sim onto a floor box; and the surface behavior lanes (board #3326),
+//! which move the room's emission from box to box. The GPU tests are
+//! `#[ignore]`d like the core's probes (they need an adapter); run them
+//! with `cargo test -p fosfora-xr --test depth_collide_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
 
 use std::collections::HashMap;
@@ -19,6 +20,9 @@ use fosfora_xr::instruments::{
     PITCHER_SPEED_M_S, POUR_NOZZLE_M, POUR_SPREAD_DEG, Pour, pour_row, rows as instrument_rows,
 };
 use fosfora_xr::math::Fov;
+use fosfora_xr::surfaces::{
+    KIND_FLOOR, KIND_TABLE, KIND_WALL, SURFACE_LANE_ROWS, SurfaceBehavior, lane_row,
+};
 use glam::Vec3;
 
 /// The depth map's side on the Quest 3 (v207).
@@ -336,7 +340,9 @@ const PREAMBLE: [&str; 7] = [
 ];
 const FLUX_SIM: &str = include_str!("../../../assets/xr/shaders/flux_xr_sim.wgsl");
 /// Rows the XR app uploads (`WORLD_AUX_ROWS` in `scene.rs`).
-const WORLD_AUX_ROWS: usize = 181;
+const WORLD_AUX_ROWS: usize = 213;
+/// The first surface lane (`XR_AUX_SURFACE`).
+const AUX_SURFACE: usize = 181;
 const FPS: f32 = 60.0;
 
 fn sim_source() -> String {
@@ -363,8 +369,9 @@ fn sim_const(module: &naga::Module, name: &str) -> u32 {
 }
 
 /// The depth rows sit right after the instrument rows, the pour row after
-/// them, ending where the XR app's upload does; the sim validates with
-/// them, and its pour cone is the pitcher's.
+/// them, then the surface lanes, one per box, ending where the XR app's
+/// upload does; the sim validates with them, its pour cone is the
+/// pitcher's and its behavior ids are the catalogue's.
 #[test]
 fn the_sim_reads_the_depth_rows_after_the_instruments() {
     let module = naga::front::wgsl::parse_str(&sim_source()).expect("flux_xr_sim.wgsl parses");
@@ -385,7 +392,30 @@ fn the_sim_reads_the_depth_rows_after_the_instruments() {
         get("XR_AUX_DEPTH") + get("XR_AUX_DEPTH_ROWS"),
         get("XR_AUX_POUR")
     );
-    assert_eq!(get("XR_AUX_POUR") as usize + 1, WORLD_AUX_ROWS);
+    assert_eq!(get("XR_AUX_POUR") + 1, get("XR_AUX_SURFACE"));
+    assert_eq!(get("XR_AUX_SURFACE") as usize, AUX_SURFACE);
+    assert_eq!(get("XR_AUX_SURFACE_ROWS"), get("XR_MAX_BOXES"));
+    assert_eq!(get("XR_AUX_SURFACE_ROWS") as usize, SURFACE_LANE_ROWS);
+    assert_eq!(
+        (get("XR_AUX_SURFACE") + get("XR_AUX_SURFACE_ROWS")) as usize,
+        WORLD_AUX_ROWS
+    );
+    for (name, b) in [
+        ("XR_BEHAVIOR_NONE", SurfaceBehavior::None),
+        ("XR_BEHAVIOR_EMBERS", SurfaceBehavior::Embers),
+        ("XR_BEHAVIOR_SPARKS", SurfaceBehavior::Sparks),
+        ("XR_BEHAVIOR_SPECTRUM", SurfaceBehavior::Spectrum),
+        ("XR_BEHAVIOR_RIPPLE", SurfaceBehavior::Ripple),
+    ] {
+        assert_eq!(get(name), b.id(), "{name}");
+    }
+    for (name, kind) in [
+        ("XR_KIND_TABLE", KIND_TABLE),
+        ("XR_KIND_FLOOR", KIND_FLOOR),
+        ("XR_KIND_WALL", KIND_WALL),
+    ] {
+        assert_eq!(get(name), kind, "{name}");
+    }
     let naga::Literal::F32(spread) = sim_literal(&module, "XR_POUR_SPREAD") else {
         panic!("XR_POUR_SPREAD is not an f32");
     };
@@ -428,6 +458,13 @@ impl Uniforms {
     fn f32(&mut self, name: &str, v: f32) {
         self.set(name, v.to_bits());
     }
+
+    /// `param(i)` for i in 4..8: `effect_params_1[i - 4]`.
+    fn param(&mut self, i: usize, v: f32) {
+        assert!((4..8).contains(&i), "param({i}) is not in effect_params_1");
+        let at = self.offsets["effect_params_1"] + 4 * (i - 4);
+        self.bytes[at..at + 4].copy_from_slice(&v.to_bits().to_le_bytes());
+    }
 }
 
 /// The scene of one sim test: particles, the aux block and the obstacle
@@ -457,6 +494,12 @@ struct SimOptions {
     dead: bool,
     /// From this frame on, this aux block.
     aux_from: Option<(u32, Vec<[f32; 4]>)>,
+    /// Dead slots the emitter may fill each frame (`emit_count`).
+    emit: u32,
+    /// `param(6)` on: spawns go to the weighted boxes' top faces (Flux XR
+    /// Room's `surface_emit`), with the bass at 1 and the beat phase at 0,
+    /// so both the embers' and the sparks' gates are fully open.
+    surface: bool,
 }
 
 impl Default for SimOptions {
@@ -466,6 +509,8 @@ impl Default for SimOptions {
             lifetime: 100.0,
             dead: false,
             aux_from: None,
+            emit: 0,
+            surface: false,
         }
     }
 }
@@ -575,7 +620,12 @@ fn run_sim_with(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<Vec
     let mut u = Uniforms::new(&module);
     u.f32("delta_time", 1.0 / FPS);
     u.set("max_particles", count);
-    u.set("emit_count", 0);
+    u.set("emit_count", opts.emit);
+    if opts.surface {
+        u.param(6, 1.0);
+        u.f32("bass", 1.0);
+        u.f32("beat_phase", 0.0);
+    }
     // A volume big enough that nothing respawns at its bounds.
     u.f32("emitter_radius", 5.0);
     u.f32("lifetime", opts.lifetime);
@@ -1181,6 +1231,7 @@ fn a_pour_lands_on_the_floor_within_its_cone_and_rests_there() {
         lifetime: PRESET_LIFETIME,
         dead: true,
         aux_from: Some((POUR_FRAMES, pour_aux(true, 0))),
+        ..SimOptions::default()
     };
     let mut frames: Vec<u32> = (1..=90).collect();
     frames.push(150);
@@ -1271,4 +1322,237 @@ fn a_pour_lands_on_the_floor_within_its_cone_and_rests_there() {
             "{s:?}: not a burst's life"
         );
     }
+}
+
+// ---- The surface behavior lanes (board #3326) ----------------------------------
+
+/// The lane tests' boxes: a table centered at x = -1 and a floor at x = +1,
+/// both 0.8 m square with their top faces at y = 0, 1.2 m apart, and a
+/// wall 1.5 m behind them, its top edge at y = 1; all inside the volume.
+const TABLE_X: f32 = -1.0;
+const FLOOR_X: f32 = 1.0;
+const FACE_HALF: f32 = 0.4;
+const WALL_TOP: f32 = 1.0;
+/// `XR_SURFACE_LIFT`: a surface newborn sits this far above its face.
+const SURFACE_LIFT: f32 = 0.01;
+const SLOTS: usize = 20_000;
+
+/// A box as the lane tests place it: kind, center, half extents (axis
+/// aligned, so the upward face is local +Y).
+type TestBox = (u32, Vec3, Vec3);
+
+fn table_box() -> TestBox {
+    (
+        KIND_TABLE,
+        Vec3::new(TABLE_X, -0.3, 0.0),
+        Vec3::new(FACE_HALF, 0.3, FACE_HALF),
+    )
+}
+
+fn floor_box() -> TestBox {
+    (
+        KIND_FLOOR,
+        Vec3::new(FLOOR_X, -0.05, 0.0),
+        Vec3::new(FACE_HALF, 0.05, FACE_HALF),
+    )
+}
+
+fn wall_box() -> TestBox {
+    (
+        KIND_WALL,
+        Vec3::new(0.0, WALL_TOP * 0.5, -1.5),
+        Vec3::new(0.8, WALL_TOP * 0.5, 0.02),
+    )
+}
+
+/// The aux block for `boxes`, each weighted 1 (as the XR app weighs them
+/// is `surfaces.rs`'s business; here the sim's gates alone decide), with
+/// box k's lane set to `lanes[k]` (`None`, or past the list: unset).
+fn room_aux(boxes: &[TestBox], lanes: &[Option<(SurfaceBehavior, f32)>]) -> Vec<[f32; 4]> {
+    let mut aux = vec![[0.0; 4]; WORLD_AUX_ROWS];
+    aux[1] = [
+        f32::from_bits(0),
+        f32::from_bits(boxes.len() as u32),
+        RESTITUTION,
+        MARGIN,
+    ];
+    for (k, &(kind, center, half)) in boxes.iter().enumerate() {
+        aux[67 + k] = [center.x, center.y, center.z, kind as f32];
+        aux[99 + k] = [0.0, 0.0, 0.0, 1.0];
+        aux[131 + k] = [half.x, half.y, half.z, 1.0];
+        if let Some(&Some((behavior, strength))) = lanes.get(k) {
+            aux[AUX_SURFACE + k] = lane_row(behavior, strength, [0.0; 2]);
+        }
+    }
+    aux
+}
+
+/// One frame of Flux XR Room over 20K dead slots, every one free to
+/// emit: the newborns, as spawned (a slot born this frame is written as
+/// the emitter made it, before any integration).
+fn newborns(aux: Vec<[f32; 4]>) -> Vec<Sample> {
+    let setup = SimSetup {
+        particles: vec![(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO); SLOTS],
+        aux,
+        atlas: None,
+        every: 1,
+    };
+    let opts = SimOptions {
+        dead: true,
+        emit: SLOTS as u32,
+        surface: true,
+        ..SimOptions::default()
+    };
+    run_sim_with(&setup, &opts, &[1])
+        .pop()
+        .expect("one capture")
+        .into_iter()
+        .filter(|s| s.life > 0.0)
+        .collect()
+}
+
+/// Where a newborn was born.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Face {
+    Table,
+    Floor,
+    /// The wall's top edge (its upward face).
+    WallTop,
+    Elsewhere,
+}
+
+fn face_of(p: Vec3) -> Face {
+    let on = |x: f32, half_x: f32, z: f32, top: f32| {
+        (p.y - (top + SURFACE_LIFT)).abs() < 1e-3
+            && (p.x - x).abs() <= half_x + 1e-4
+            && (p.z - z).abs() <= FACE_HALF + 1e-4
+    };
+    let (_, wall, wall_half) = wall_box();
+    if on(TABLE_X, FACE_HALF, 0.0, 0.0) {
+        Face::Table
+    } else if on(FLOOR_X, FACE_HALF, 0.0, 0.0) {
+        Face::Floor
+    } else if (p.y - (WALL_TOP + SURFACE_LIFT)).abs() < 1e-3
+        && (p.x - wall.x).abs() <= wall_half.x + 1e-4
+        && (p.z - wall.z).abs() <= wall_half.z + 1e-4
+    {
+        Face::WallTop
+    } else {
+        Face::Elsewhere
+    }
+}
+
+fn count(born: &[Sample], face: Face) -> usize {
+    born.iter().filter(|s| face_of(s.pos) == face).count()
+}
+
+/// The sparks' velocity: up at 0.3 + 1.2 x bass (1.5 m/s at bass 1), a
+/// little sideways.
+fn is_spark(s: &Sample) -> bool {
+    s.vel.y > 1.0 && s.vel.x.abs() <= 0.1 && s.vel.z.abs() <= 0.1
+}
+
+/// The embers' velocity: a slow slide across the face, nothing upward.
+fn is_ember(s: &Sample) -> bool {
+    s.vel.y.abs() < 1e-6 && s.vel.length() <= 0.03 * std::f32::consts::SQRT_2 + 1e-6
+}
+
+/// Unset lanes run the kinds' defaults, as before the lanes: the table
+/// sheds embers and the floor sparks, each over half the draws with both
+/// gates open, and nothing is born anywhere else.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn unset_lanes_emit_from_both_faces_by_kind() {
+    let born = newborns(room_aux(&[table_box(), floor_box()], &[]));
+    let (table, floor) = (count(&born, Face::Table), count(&born, Face::Floor));
+    assert_eq!(table + floor, born.len(), "a newborn off both faces");
+    assert!(born.len() > SLOTS * 9 / 10, "{} born", born.len());
+    for n in [table, floor] {
+        assert!(n * 10 > born.len() * 4, "table {table} floor {floor}");
+    }
+    for s in &born {
+        match face_of(s.pos) {
+            Face::Table => assert!(is_ember(s), "{s:?}: not an ember"),
+            _ => assert!(is_spark(s), "{s:?}: not a spark"),
+        }
+    }
+}
+
+/// The table on embers and the floor on none: every newborn on the
+/// table's face, as an ember; the floor's draws spawn nothing.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_lane_of_none_turns_a_floor_off() {
+    let born = newborns(room_aux(
+        &[table_box(), floor_box()],
+        &[
+            Some((SurfaceBehavior::Embers, 1.0)),
+            Some((SurfaceBehavior::None, 1.0)),
+        ],
+    ));
+    assert!(born.len() > SLOTS / 3, "{} born", born.len());
+    assert!(born.len() < SLOTS * 2 / 3, "{} born", born.len());
+    for s in &born {
+        assert_eq!(face_of(s.pos), Face::Table, "{s:?}");
+        assert!(is_ember(s), "{s:?}: not an ember");
+    }
+}
+
+/// The table on none and the floor on sparks: every newborn on the
+/// floor's face, flying up.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_lane_of_none_turns_a_table_off() {
+    let born = newborns(room_aux(
+        &[table_box(), floor_box()],
+        &[
+            Some((SurfaceBehavior::None, 1.0)),
+            Some((SurfaceBehavior::Sparks, 1.0)),
+        ],
+    ));
+    assert!(born.len() > SLOTS / 3, "{} born", born.len());
+    for s in &born {
+        assert_eq!(face_of(s.pos), Face::Floor, "{s:?}");
+        assert!(is_spark(s), "{s:?}: not a spark");
+    }
+}
+
+/// The table on embers at half strength, the floor on embers at full: the
+/// table's share of the newborns is its gated weight's share, a third
+/// (0.5 against 1), and the floor sheds embers, not sparks.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn the_strength_scales_a_surface_share() {
+    let born = newborns(room_aux(
+        &[table_box(), floor_box()],
+        &[
+            Some((SurfaceBehavior::Embers, 0.5)),
+            Some((SurfaceBehavior::Embers, 1.0)),
+        ],
+    ));
+    let (table, floor) = (count(&born, Face::Table), count(&born, Face::Floor));
+    assert_eq!(table + floor, born.len());
+    // About 15K newborns: one standard deviation of the share is 0.4 %.
+    assert!(born.len() > SLOTS * 2 / 3, "{} born", born.len());
+    let share = table as f32 / born.len() as f32;
+    assert!((share - 1.0 / 3.0).abs() < 0.03, "table share {share}");
+    assert!(born.iter().all(is_ember), "a floor spark on embers");
+}
+
+/// A wall weighted 1: with its lane unset its kind's gate (0.3) lets it
+/// shed from its top edge, as before the lanes; on the spectrum nothing is
+/// born from it, and the table beside it keeps emitting.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_wall_on_the_spectrum_emits_nothing() {
+    let boxes = [table_box(), wall_box()];
+    let unset = newborns(room_aux(&boxes, &[]));
+    assert!(count(&unset, Face::WallTop) > SLOTS / 20, "the unset path");
+    let born = newborns(room_aux(
+        &boxes,
+        &[None, Some((SurfaceBehavior::Spectrum, 1.0))],
+    ));
+    assert_eq!(count(&born, Face::WallTop), 0);
+    assert!(count(&born, Face::Table) > SLOTS / 3, "{} born", born.len());
+    assert_eq!(count(&born, Face::Table), born.len());
 }

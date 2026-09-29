@@ -54,8 +54,11 @@
 //   aux[170..173]   the instrument rows (below; Murmur ignores them)
 //   aux[173..180]   the live depth rows (below; Murmur ignores them)
 //   aux[180]        the pour row (below; Murmur ignores it)
+//   aux[181..213]   the surface behavior lanes, one per box (below;
+//                   Murmur ignores them)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
-// near fade, no instruments, no depth collide and no pour.
+// near fade, no instruments, no depth collide, no pour and every box on
+// its kind's behavior.
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -140,6 +143,22 @@
 // faces of the weighted boxes instead of in the volume; with no weight
 // anywhere, or param(6) = 0 (every other preset: they have six inputs),
 // the volume path runs unchanged.
+//
+// Surface behavior lanes (board #3326; crates/fosfora-xr/src/lanes.rs and
+// surfaces.rs `lane_row`): what each box does, chosen per surface and
+// saved per room, instead of the fixed rule per kind.
+//   aux[181 + k]   box k's lane: x = behavior id + 1 (0 = unset), y =
+//                  strength 0..1, z and w = two parameters (unused yet)
+// Behavior ids: 0 none, 1 embers, 2 sparks, 3 spectrum (the wall canvas),
+// 4 ripple (the floor ripple); 5 to 7 are reserved and run nothing here.
+// An unset lane runs the kind's default (table embers, floor sparks, wall
+// spectrum, the rest none) through xr_kind_gate, exactly as before the
+// lanes; a set one gates the box's spawns by its behavior (embers on the
+// table's beat gate, sparks on the floor's bass gate, anything else
+// closed) times its strength, and gives the newborn sparks' velocity for
+// sparks, the ember slide otherwise. The spawn stays on the upward face:
+// a wall on embers sheds along its top edge in this pass. The weight in
+// aux[131 + k].w is the XR app's, taken for the same behaviors.
 
 const XR_AUX_HEAD: u32 = 0u;
 const XR_AUX_HEADER: u32 = 1u;
@@ -155,8 +174,12 @@ const XR_AUX_INSTRUMENT_ROWS: u32 = 3u;
 // After the instrument rows (board #3352).
 const XR_AUX_DEPTH: u32 = 173u;
 const XR_AUX_DEPTH_ROWS: u32 = 7u;
-// After the depth rows (board #3402); the XR app uploads 181 rows.
+// After the depth rows (board #3402).
 const XR_AUX_POUR: u32 = 180u;
+// After the pour row, one per box (board #3326); the XR app uploads 213
+// rows.
+const XR_AUX_SURFACE: u32 = 181u;
+const XR_AUX_SURFACE_ROWS: u32 = 32u;  // XR_MAX_BOXES
 
 // The depth collide's tangential damping per colliding frame, and the
 // depth jump between neighboring texels (m) that reads as a silhouette.
@@ -189,6 +212,13 @@ const XR_SURFACE_LIFT: f32 = 0.01;
 const XR_EMBER_SPEED: f32 = 0.03;
 const XR_KIND_TABLE: u32 = 1u;
 const XR_KIND_FLOOR: u32 = 2u;
+const XR_KIND_WALL: u32 = 3u;
+// The behavior catalogue (surfaces.rs `SurfaceBehavior`).
+const XR_BEHAVIOR_NONE: u32 = 0u;
+const XR_BEHAVIOR_EMBERS: u32 = 1u;
+const XR_BEHAVIOR_SPARKS: u32 = 2u;
+const XR_BEHAVIOR_SPECTRUM: u32 = 3u;
+const XR_BEHAVIOR_RIPPLE: u32 = 4u;
 // Beat envelope decay per unit of beat phase for the table gate.
 const XR_BEAT_DECAY: f32 = 6.0;
 
@@ -461,23 +491,85 @@ fn emit_particle(idx: u32, half: f32) -> Particle {
     return p;
 }
 
-// How open a surface kind's emission is this frame, 0..1: tables shed
-// embers on the beat, floors spark with the bass.
+// How open the embers' emission is this frame, 0..1: shed on the beat.
+// u.beat is a one-frame pulse; the envelope over beat_phase (a 0..1
+// sawtooth at the tempo) keeps the desk shedding for about a sixth of a
+// beat after each one, so the burst reads.
+fn xr_ember_gate() -> f32 {
+    return 0.15 + 0.85 * max(u.beat, exp(-XR_BEAT_DECAY * u.beat_phase));
+}
+
+// How open the sparks' emission is this frame, 0..1: with the bass.
+fn xr_spark_gate() -> f32 {
+    return 0.1 + 0.9 * u.bass;
+}
+
+// How open a surface kind's emission is this frame, 0..1, for a box whose
+// lane is unset: tables shed embers on the beat, floors spark with the
+// bass.
 fn xr_kind_gate(kind: u32) -> f32 {
     if kind == XR_KIND_TABLE {
-        // u.beat is a one-frame pulse; the envelope over beat_phase (a 0..1
-        // sawtooth at the tempo) keeps the desk shedding for about a sixth
-        // of a beat after each one, so the burst reads.
-        return 0.15 + 0.85 * max(u.beat, exp(-XR_BEAT_DECAY * u.beat_phase));
+        return xr_ember_gate();
     }
     if kind == XR_KIND_FLOOR {
-        return 0.1 + 0.9 * u.bass;
+        return xr_spark_gate();
     }
     return 0.3;
 }
 
+// How open a behavior's emission is this frame, 0..1: the embers and the
+// sparks emit, nothing else does (the spectrum and the ripple draw
+// elsewhere).
+fn xr_behavior_gate(behavior: u32) -> f32 {
+    if behavior == XR_BEHAVIOR_EMBERS {
+        return xr_ember_gate();
+    }
+    if behavior == XR_BEHAVIOR_SPARKS {
+        return xr_spark_gate();
+    }
+    return 0.0;
+}
+
+// A kind's default behavior (surfaces.rs `SurfaceBehavior::default_for`).
+fn xr_kind_behavior(kind: u32) -> u32 {
+    if kind == XR_KIND_TABLE {
+        return XR_BEHAVIOR_EMBERS;
+    }
+    if kind == XR_KIND_FLOOR {
+        return XR_BEHAVIOR_SPARKS;
+    }
+    if kind == XR_KIND_WALL {
+        return XR_BEHAVIOR_SPECTRUM;
+    }
+    return XR_BEHAVIOR_NONE;
+}
+
 fn xr_box_kind(k: u32) -> u32 {
     return u32(max(aux[XR_AUX_BOX_CENTER + k].home.w, 0.0) + 0.5);
+}
+
+// Box k's lane code: its behavior id + 1, 0 when unset.
+fn xr_box_lane(k: u32) -> u32 {
+    return u32(max(aux[XR_AUX_SURFACE + k].home.x, 0.0) + 0.5);
+}
+
+// The behavior box k runs: its lane's, else its kind's default.
+fn xr_box_behavior(k: u32) -> u32 {
+    let code = xr_box_lane(k);
+    if code == 0u {
+        return xr_kind_behavior(xr_box_kind(k));
+    }
+    return code - 1u;
+}
+
+// How open box k's emission is this frame, 0..1: its lane's behavior times
+// the lane's strength, or with the lane unset its kind's gate.
+fn xr_box_gate(k: u32) -> f32 {
+    let code = xr_box_lane(k);
+    if code == 0u {
+        return xr_kind_gate(xr_box_kind(k));
+    }
+    return xr_behavior_gate(code - 1u) * clamp(aux[XR_AUX_SURFACE + k].home.y, 0.0, 1.0);
 }
 
 // A spawn on box k's upward face: the local axis closest to vertical,
@@ -530,7 +622,8 @@ fn xr_surface_point(k: u32, half: f32, r: vec3f) -> vec3f {
 // Spawn a particle for slot idx: on a surface when this preset asks for it
 // and some box carries weight, otherwise in the volume (emit_particle,
 // unchanged). Surface spawns draw over the boxes' cumulative weight times
-// their kind's gate against the ungated total, so a draw past the gated sum
+// their gate (xr_box_gate: the lane's behavior and strength, or the kind's)
+// against the ungated total, so a draw past the gated sum
 // spawns nothing: returns false and the slot stays dead this frame, and the
 // room's emission breathes with the music.
 fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
@@ -552,7 +645,7 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
     var chosen = XR_MAX_BOXES;
     for (var k = 0u; k < box_count; k++) {
         let w = max(aux[XR_AUX_BOX_HALF + k].home.w, 0.0);
-        acc += w * xr_kind_gate(xr_box_kind(k));
+        acc += w * xr_box_gate(k);
         if draw < acc {
             chosen = k;
             break;
@@ -568,7 +661,7 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
     let pos = xr_surface_point(chosen, half, at);
     let jitter = xr_rand3(idx, 5u) * 2.0 - 1.0;
     var vel: vec3f;
-    if xr_box_kind(chosen) == XR_KIND_FLOOR {
+    if xr_box_behavior(chosen) == XR_BEHAVIOR_SPARKS {
         // Sparks: up with the bass, a little sideways.
         vel = vec3f(jitter.x * 0.1, 0.3 + 1.2 * u.bass, jitter.z * 0.1);
     } else {
