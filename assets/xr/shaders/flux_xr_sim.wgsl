@@ -51,8 +51,30 @@
 //   aux[131..163]   box half extents (xyz); w = emitter weight 0..1
 //   aux[163..170]   Murmur's per-hand behavior lanes (murmur_xr_sim.wgsl;
 //                   unused here)
-// All zero (nothing written yet, or a desktop test) means no obstacles and
-// no near fade.
+//   aux[170..173]   the instrument rows (below; Murmur ignores them)
+// All zero (nothing written yet, or a desktop test) means no obstacles, no
+// near fade and no instruments.
+//
+// Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
+// hands as instruments):
+//   aux[170]   x = burst count (u32 bits): of this frame's claimed dead
+//              slots, the first x spawn at the burst instead of the
+//              emitter; y = lift strength 0..1 (0 = no lift); z = lift
+//              radius (m); w = steal fraction: a living particle respawns
+//              at the burst with this probability, for a sim whose
+//              particles are nearly all alive (few dead slots to claim)
+//   aux[171]   burst center xyz (anchor-relative), w = burst radius (m)
+//   aux[172]   lift point xyz (anchor-relative: the far palm), w unused
+// A burst particle is born within the radius of the center, flying
+// radially outward (0.3..1.2 m/s at a 0.12 m burst, slower for the
+// throw's thinner streak), at full opacity and with half the lifetime. It
+// is not bound to the volume: its life lane reads XR_FREE, it never
+// respawns at the bounds and has no edge fade (a throw lands on walls
+// outside the volume), and it dies past XR_FREE_REACH half extents. The
+// lift pulls the particles under the palm, within its radius
+// horizontally, up toward it (strength x XR_LIFT_ACCEL, fading to the
+// rim), damps their lateral speed so they gather under the palm, and
+// keeps them from resting (no XR_REST_AGING); above the palm, nothing.
 //
 // Surface lanes (board #3317; crates/fosfora-xr/src/surfaces.rs): the kind
 // is 0 none, 1 table (DESK or TABLE), 2 floor, 3 wall, 4 ceiling, 5 door or
@@ -72,6 +94,21 @@ const XR_AUX_SPHERES: u32 = 3u;
 const XR_AUX_BOX_CENTER: u32 = 67u;   // XR_AUX_SPHERES + XR_MAX_SPHERES
 const XR_AUX_BOX_ROT: u32 = 99u;      // + XR_MAX_BOXES
 const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
+// After Murmur's per-hand lanes (163..170, XR_AUX_END in murmur_xr_sim.wgsl).
+const XR_AUX_INSTRUMENTS: u32 = 170u;
+const XR_AUX_INSTRUMENT_ROWS: u32 = 3u;
+
+// Bursts: the radius the 0.3..1.2 m/s speeds are for, the lifetime
+// fraction, the life lane of a particle not bound to the volume, and how
+// many half extents out it dies.
+const XR_BURST_REF_RADIUS: f32 = 0.12;
+const XR_BURST_LIFE: f32 = 0.5;
+const XR_FREE: f32 = 2.0;
+const XR_FREE_REACH: f32 = 3.0;
+// The lift's acceleration at strength 1 (m/s^2) and its lateral damping
+// (per second).
+const XR_LIFT_ACCEL: f32 = 4.0;
+const XR_LIFT_DAMP: f32 = 3.0;
 
 // Surface emission: the param slot that turns it on, how far above the face
 // a particle is born (m), and the table embers' lateral speed (m/s).
@@ -364,6 +401,34 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
     return true;
 }
 
+// A burst particle for slot idx (the instrument rows, above): the volume
+// path's color, size and opacity, born within the burst's radius, flying
+// out from its center, fully opaque at once and with a shorter life.
+fn xr_burst(idx: u32, half: f32) -> Particle {
+    let b = aux[XR_AUX_INSTRUMENTS + 1u].home;
+    var p = emit_particle(idx, half);
+    let r = xr_rand3(idx, 6u);
+    let s = xr_rand3(idx, 7u);
+    let z = r.x * 2.0 - 1.0;
+    let ring = sqrt(max(1.0 - z * z, 0.0));
+    let angle = r.y * 6.2831853;
+    let dir = vec3f(ring * cos(angle), z, ring * sin(angle));
+    let radius = max(b.w, 0.0);
+    // Uniform in the ball: the radius goes as the cube root.
+    let at = dir * radius * pow(r.z, 1.0 / 3.0);
+    let speed = mix(0.3, 1.2, s.x) * radius / XR_BURST_REF_RADIUS;
+    let life = u.lifetime * XR_BURST_LIFE;
+    p.pos_life = vec4f(b.xyz + at, XR_FREE);
+    p.vel_size = vec4f(dir * speed, p.vel_size.w);
+    // Past the fade-in, at its base opacity: a burst shows at once (the
+    // surface and volume spawns start invisible for particles born inside
+    // a box; this one is born in front of the surface).
+    p.color.a = p.flags.w;
+    p.flags.x = life * 0.05;
+    p.flags.y = life;
+    return p;
+}
+
 @compute @workgroup_size(256)
 fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let idx = gid.x;
@@ -377,10 +442,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let age = p.flags.x;
     let max_life = p.flags.y;
 
+    let instruments = aux[XR_AUX_INSTRUMENTS].home;
+    let burst_count = bitcast<u32>(instruments.x);
     if life <= 0.0 {
         let slot = emit_claim();
         var born: Particle;
-        if slot < u.emit_count && xr_emit(idx, half, &born) {
+        if slot < burst_count {
+            write_particle(idx, xr_burst(idx, half));
+            mark_alive(idx);
+        } else if slot < u.emit_count && xr_emit(idx, half, &born) {
             write_particle(idx, born);
             mark_alive(idx);
         } else {
@@ -388,6 +458,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         }
         return;
     }
+
+    // A sim with few dead slots takes the rest of a burst from the living.
+    if burst_count > 0u && instruments.w > 0.0 && xr_rand3(idx, 8u).x < instruments.w {
+        write_particle(idx, xr_burst(idx, half));
+        mark_alive(idx);
+        return;
+    }
+    let free = life > 1.5;
 
     let new_age = age + u.delta_time;
     if new_age >= max_life {
@@ -434,18 +512,43 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Drag.
     vel *= 1.0 - (1.0 - u.drag) * dt * 60.0;
 
+    // The lift: under the palm, within its radius, up toward it.
+    var lifted = false;
+    if instruments.y > 0.0 {
+        let palm = aux[XR_AUX_INSTRUMENTS + 2u].home.xyz;
+        let radius = max(instruments.z, 0.01);
+        let to = palm - pos;
+        let across = length(to.xz) / radius;
+        if across < 1.0 && to.y > 0.0 {
+            let pull = instruments.y * (1.0 - across * across);
+            vel += normalize(to) * (XR_LIFT_ACCEL * pull * dt);
+            let damp = max(1.0 - XR_LIFT_DAMP * pull * dt, 0.0);
+            vel.x *= damp;
+            vel.z *= damp;
+            lifted = true;
+        }
+    }
+
     // Integrate with the settle drift, then push out of hands, furniture and
     // the floor.
     let settle = aux[XR_AUX_HEADER + 1u].home.z;
     pos += (vel - vec3f(0.0, settle, 0.0)) * dt;
-    let rested = xr_collide(&pos, &vel);
+    let rested = xr_collide(&pos, &vel) && !lifted;
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
     // Still alive, so the alive count and the density stay steady. In
     // surface mode the respawn is a surface spawn, and a closed gate lets
     // the particle die instead.
     let edge = max(abs(pos.x), max(abs(pos.y), abs(pos.z))) / half;
-    if edge > 1.0 {
+    if free {
+        // A burst particle: loose in the room until it dies, or when it
+        // flies far past the volume.
+        if edge > XR_FREE_REACH {
+            p.pos_life.w = 0.0;
+            write_particle(idx, p);
+            return;
+        }
+    } else if edge > 1.0 {
         var born: Particle;
         if xr_emit(idx, half, &born) {
             write_particle(idx, born);
@@ -470,7 +573,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // must recover when a particle moves back.
     let fade_in = smoothstep(0.0, 0.05, life_frac);
     let fade_out = 1.0 - smoothstep(0.7, 1.0, life_frac);
-    let edge_fade = 1.0 - smoothstep(1.0 - XR_EDGE_FADE, 1.0, edge);
+    let edge_fade = select(1.0 - smoothstep(1.0 - XR_EDGE_FADE, 1.0, edge), 1.0, free);
     var alpha = p.flags.w * fade_in * fade_out * edge_fade;
 
     // Near the head a sprite a few millimeters across fills the view: fade it
@@ -489,7 +592,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     col = vec3f(col.r + warm_shift * 0.2, col.g, col.b - warm_shift * 0.1);
     col = clamp(col, vec3f(0.0), vec3f(1.0));
 
-    p.pos_life = vec4f(pos, 1.0);
+    p.pos_life = vec4f(pos, select(1.0, XR_FREE, free));
     p.vel_size = vec4f(vel, size);
     p.color = vec4f(col, alpha);
     // Resting particles age faster, so surfaces turn over instead of

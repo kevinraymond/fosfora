@@ -56,6 +56,16 @@ pub fn surface_kind(label: &str) -> u32 {
         .unwrap_or(KIND_NONE)
 }
 
+/// Whether an anchor's labels name a wall the runtime hides
+/// (`INVISIBLE_WALL_FACE`: a boundary Space Setup adds to close an open
+/// room, with no real surface behind it). Its kind stays [`KIND_WALL`], so
+/// the particles still collide with it, but nothing is drawn on it.
+pub fn is_hidden_wall(label: &str) -> bool {
+    label
+        .split(',')
+        .any(|l| l.trim().eq_ignore_ascii_case("INVISIBLE_WALL_FACE"))
+}
+
 /// The synthetic stage floor's emitter flag: 1 when the room returned no
 /// FLOOR box, else 0, so the floor never emits twice.
 pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
@@ -90,6 +100,35 @@ impl TopFace {
             }
         }
         let normal = if axes[i].y >= 0.0 { axes[i] } else { -axes[i] };
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        Self {
+            normal,
+            center: center + normal * h[i],
+            axes: [axes[j], axes[k]],
+            half: [h[j], h[k]],
+        }
+    }
+
+    /// Of `center` / `rot` / `half`, the face across the box's thinnest
+    /// local axis whose outward normal points toward `toward`: a scene
+    /// plane's face on the side of `toward` (a wall's room-facing face,
+    /// seen from the wearer's head). The same shape as the top face, any
+    /// orientation.
+    pub fn facing(center: Vec3, rot: Quat, half: Vec3, toward: Vec3) -> Self {
+        let axes = [rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z];
+        let h = half.to_array();
+        // Last of the smallest half extent: a plane's local Z on a tie.
+        let mut i = 2;
+        for k in (0..2).rev() {
+            if h[k] < h[i] {
+                i = k;
+            }
+        }
+        let normal = if axes[i].dot(toward - center) >= 0.0 {
+            axes[i]
+        } else {
+            -axes[i]
+        };
         let (j, k) = ((i + 1) % 3, (i + 2) % 3);
         Self {
             normal,
@@ -254,6 +293,32 @@ mod tests {
         let f = TopFace::of(Vec3::new(0.0, 2.5, 0.0), rot, Vec3::new(2.0, 2.0, 0.02));
         assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
         assert!((f.center.y - 2.52).abs() < 1e-5);
+    }
+
+    #[test]
+    fn hidden_walls_are_told_apart() {
+        assert!(is_hidden_wall("INVISIBLE_WALL_FACE"));
+        assert!(is_hidden_wall("OTHER, invisible_wall_face"));
+        assert!(!is_hidden_wall("WALL_FACE"));
+        assert!(!is_hidden_wall("WALL_ART"));
+        assert!(!is_hidden_wall(""));
+    }
+
+    #[test]
+    fn the_facing_face_is_the_thin_side_toward_the_viewer() {
+        // A wall plane 4 m wide, 2.5 m tall, 4 cm thick, its local +Z
+        // pointing +X (into the room from a wall at x = -2).
+        let rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let center = Vec3::new(-2.0, 1.25, 0.0);
+        let half = Vec3::new(2.0, 1.25, 0.02);
+        let f = TopFace::facing(center, rot, half, Vec3::new(0.0, 1.2, 0.5));
+        assert!(f.normal.abs_diff_eq(Vec3::X, 1e-5), "{:?}", f.normal);
+        assert!(f.center.abs_diff_eq(Vec3::new(-1.98, 1.25, 0.0), 1e-5));
+        assert!((f.area() - 10.0).abs() < 1e-4);
+        // Seen from behind, the other face.
+        let b = TopFace::facing(center, rot, half, Vec3::new(-3.0, 1.2, 0.0));
+        assert!(b.normal.abs_diff_eq(Vec3::NEG_X, 1e-5));
+        assert!(b.center.abs_diff_eq(Vec3::new(-2.02, 1.25, 0.0), 1e-5));
     }
 
     #[test]

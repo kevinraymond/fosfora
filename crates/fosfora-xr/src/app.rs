@@ -214,6 +214,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
     //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
     //       the floor, lifted toward the room, for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.canvas 0|1               (the wall spectrum: mel bars on the wall the wearer faces; default on in mr/world)
+    //   adb shell setprop debug.fosfora.canvasgain 1             (wall spectrum brightness multiplier; 1 = peak alpha 0.25)
+    //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
+    //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
+    //       for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
+    //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact)
+    //   adb shell setprop debug.fosfora.lift 0|1                 (Flux world effects: an open far palm held still, facing down, lifts embers; default on)
+    //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
+    //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
+    //       along the view, untracked, for an unworn check)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -661,6 +672,65 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         surface_weights.table,
         surface_weights.floor
     );
+    // Board #3327: the wall spectrum, on the wall the wearer faces.
+    let canvas_ceiling = debug_prop("debug.fosfora.canvastest").as_deref() == Some("ceiling");
+    let mut canvas = toggle("debug.fosfora.canvas", mixed).then(|| {
+        crate::canvas::Canvas::new(
+            debug_prop("debug.fosfora.canvasbars")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(crate::canvas::DEFAULT_BARS),
+            knob("debug.fosfora.canvasgain", 1.0).max(0.0),
+        )
+    });
+    info!(
+        "wall spectrum {}",
+        canvas.as_ref().map_or("off".to_owned(), |c| format!(
+            "on ({} bars, gain {}){}",
+            c.bars,
+            c.gain,
+            if canvas_ceiling {
+                " · test: on the ceiling"
+            } else {
+                ""
+            }
+        ))
+    );
+    let mut wall_pick = crate::canvas::WallPick::default();
+    // The picked wall (room box index, face center) and the mel length,
+    // for the log: logged when the pick changes and once a second.
+    let mut canvas_wall: Option<(usize, glam::Vec3)> = None;
+    let mut canvas_mel = 0usize;
+    // Board #3327: the hands as instruments, on the Flux world sims (the
+    // effects not in POSE_EFFECTS; Murmur ignores the rows).
+    let throw_on = toggle("debug.fosfora.throw", true);
+    let lift_on = toggle("debug.fosfora.lift", true);
+    let mut thrower = crate::instruments::Thrower::new(
+        debug_prop("debug.fosfora.burstcount")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(crate::instruments::BURST_COUNT),
+    );
+    let mut lifter = crate::instruments::Lifter::new(
+        knob(
+            "debug.fosfora.liftradius",
+            crate::instruments::LIFT_RADIUS_M,
+        )
+        .max(0.01),
+    );
+    info!(
+        "instruments: throw {} (burst {}) · lift {} (radius {} m)",
+        if throw_on { "on" } else { "off" },
+        thrower.burst_count,
+        if lift_on { "on" } else { "off" },
+        lifter.radius
+    );
+    // A tap this frame not taken by the hand menu (the throw needs the far
+    // hand, computed below), and each hand's lift as last logged.
+    let mut tapped: Option<usize> = None;
+    let mut lift_logged = [false; 2];
+    let throw_test_s = debug_prop("debug.fosfora.throwtest")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| *s > 0.0);
+    let mut last_throw_test = 0.0f32;
     // A floor surface; it emits only while the room has no FLOOR anchor
     // (set per frame below), so the floor never emits twice.
     let floor_box = floor.then_some(ObstacleBox {
@@ -669,6 +739,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
         kind: crate::surfaces::KIND_FLOOR,
         emit: 0.0,
+        hidden: false,
     });
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
@@ -796,6 +867,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             for g in gestures.step(pinches, dt) {
                 match g {
                     Gesture::Tap { hand } => {
+                        // While the menu is up its pinches are its own.
+                        if !panel_up {
+                            tapped = Some(hand);
+                        }
                         size_boost = !size_boost;
                         info!(
                             "gesture: tap {} · sprite size x{} {}",
@@ -1096,6 +1171,117 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         ..*f
                     });
                 }
+                // The hands as instruments: the throw aimed through the far
+                // pinch point, the lift at the far palm.
+                let tap = tapped.take();
+                let instruments = world
+                    && !POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                let instrument_rows = if instruments {
+                    let head = glam::Vec3::from(input.head);
+                    // The far pinch point of this frame's throw, if any: a
+                    // tap, or the unworn diagnostic's point ahead of the
+                    // view.
+                    let pinch_of = |hand: usize| {
+                        input.hands.pinch_point[hand].map(|p| glam::Vec3::from(p) + offsets[hand])
+                    };
+                    let mut throw = tap.filter(|_| throw_on).map(|h| (h, pinch_of(h)));
+                    if let Some(every) = throw_test_s
+                        && t - last_throw_test >= every
+                    {
+                        last_throw_test = t;
+                        let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                        throw = Some((1, Some(head + ahead * 0.5)));
+                    }
+                    if let Some((hand, pinch)) = throw {
+                        let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
+                            center: glam::Vec3::from(b.center),
+                            rot: glam::Quat::from_array(b.rot),
+                            half: glam::Vec3::from(b.half),
+                            kind: b.kind,
+                        };
+                        // The stage floor only while the room has no floor.
+                        let mut boxes: Vec<_> = input.room_boxes.iter().map(ray_box).collect();
+                        let room_n = boxes.len();
+                        if !input
+                            .room_boxes
+                            .iter()
+                            .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+                            && let Some(f) = &floor_box
+                        {
+                            boxes.push(ray_box(f));
+                        }
+                        let flight =
+                            pinch.and_then(|p| crate::instruments::Flight::aim(head, p, &boxes));
+                        match flight {
+                            Some(f) => {
+                                let aim = match f.hit {
+                                    Some(h) => format!(
+                                        "hit box {}{} (kind {}) at ({:.2}, {:.2}, {:.2}), normal ({:.2}, {:.2}, {:.2})",
+                                        h.index,
+                                        if h.index >= room_n { " (stage floor)" } else { "" },
+                                        boxes[h.index].kind,
+                                        h.point.x,
+                                        h.point.y,
+                                        h.point.z,
+                                        h.normal.x,
+                                        h.normal.y,
+                                        h.normal.z
+                                    ),
+                                    None => format!(
+                                        "miss, bursting in the air at ({:.2}, {:.2}, {:.2})",
+                                        f.to.x, f.to.y, f.to.z
+                                    ),
+                                };
+                                info!(
+                                    "throw {}: {aim} · {:.2} m from the far pinch (reach {:.2} m) · flight {:.2} s · burst {}",
+                                    hand_name(hand),
+                                    f.from.distance(f.to),
+                                    offsets[hand].length(),
+                                    f.duration_s,
+                                    thrower.burst_count
+                                );
+                                thrower.throw(hand, f);
+                            }
+                            None => info!("throw {}: no pinch point, skipped", hand_name(hand)),
+                        }
+                    }
+                    let burst = thrower.step(dt);
+                    let lift = if lift_on {
+                        lifter.step(
+                            [0, 1].map(|h| crate::instruments::LiftHand {
+                                pose: pose_frame.pose[h],
+                                far_palm: input.hands.palm[h]
+                                    .map(|(p, _)| glam::Vec3::from(p) + offsets[h]),
+                                normal: input.hands.palm[h]
+                                    .map(|(_, q)| glam::Quat::from_array(q) * glam::Vec3::NEG_Y),
+                                blocked: h == 0 && panel_up,
+                            }),
+                            dt,
+                        )
+                    } else {
+                        None
+                    };
+                    for h in 0..2 {
+                        let on = lifter.is_on(h);
+                        if on != lift_logged[h] {
+                            lift_logged[h] = on;
+                            match lift.filter(|l| on && l.hand == h) {
+                                Some(l) => info!(
+                                    "lift {} on at ({:.2}, {:.2}, {:.2}), radius {:.2} m",
+                                    hand_name(h),
+                                    l.at.x,
+                                    l.at.y,
+                                    l.at.z,
+                                    l.radius
+                                ),
+                                None => info!("lift {} {}", hand_name(h), if on { "on (the other hand's lift wins)" } else { "off" }),
+                            }
+                        }
+                    }
+                    crate::instruments::rows(burst, lift, glam::Vec3::from(anchor))
+                } else {
+                    [[0.0; 4]; crate::instruments::INSTRUMENT_ROWS]
+                };
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
                     s.set_world_inputs(
@@ -1107,6 +1293,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &set,
                         surface_weights,
                         &lanes,
+                        &instrument_rows,
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1202,6 +1389,58 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let rows = quad.map(|corners| r.uniform(t, corners));
                 gfx.set_ripple(rows.as_ref());
             }
+            if let Some(c) = canvas.as_mut() {
+                c.update(dt, &hop.frame.mel);
+                canvas_mel = hop.frame.mel.len();
+                let head = glam::Vec3::from(input.head);
+                let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                let face_of = |b: &ObstacleBox| {
+                    crate::canvas::WallFace::of(
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                        head,
+                    )
+                };
+                // The room's walls, less the ones the runtime hides.
+                let walls: Vec<(usize, crate::canvas::WallFace)> = input
+                    .room_boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.kind == crate::surfaces::KIND_WALL && !b.hidden)
+                    .map(|(i, b)| (i, face_of(b)))
+                    .collect();
+                let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
+                let picked = wall_pick
+                    .update(head, forward, &faces, dt)
+                    .map(|k| walls[k]);
+                let face = if canvas_ceiling {
+                    input
+                        .room_boxes
+                        .iter()
+                        .enumerate()
+                        .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
+                        .map(|(i, b)| (i, face_of(b)))
+                } else {
+                    picked
+                };
+                let now = face.map(|(i, f)| (i, f.center));
+                if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
+                    match now {
+                        Some((i, c)) => info!(
+                            "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
+                            walls.len(),
+                            c.x,
+                            c.y,
+                            c.z
+                        ),
+                        None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
+                    }
+                }
+                canvas_wall = now;
+                let rows = face.map(|(_, f)| c.uniform(f.corners()));
+                gfx.set_canvas(rows.as_ref());
+            }
             if let Some(scene) = scene {
                 match live_audio.as_mut() {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
@@ -1284,6 +1523,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.room_summary().unwrap_or_default(),
                     size_boost
                 );
+                if let Some(c) = &canvas {
+                    let heights = c.heights();
+                    let peak = heights.iter().copied().fold(0.0f32, f32::max);
+                    let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
+                    info!(
+                        "wall spectrum: {} · {} bars from {} mel bands · top {:.2} · height mean {:.2} max {:.2}",
+                        canvas_wall.map_or("no wall".to_owned(), |(i, p)| format!(
+                            "box {i} at ({:.2}, {:.2}, {:.2})",
+                            p.x, p.y, p.z
+                        )),
+                        heights.len(),
+                        canvas_mel,
+                        c.top(),
+                        mean,
+                        peak
+                    );
+                }
                 // Seated reach: each hand's furthest real and virtual
                 // shoulder-to-palm distance this second.
                 if reach_on && reach_max.iter().any(|m| m.0 > 0.0) {

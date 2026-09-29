@@ -62,6 +62,9 @@
 //   aux[165 + 3h]       the hold's center xyz, w radius (meters)
 //   aux[166 + 3h]       the hold's velocity xyz (m/s): the birds it holds
 //                       move with it; w = seconds since the hold began
+//   aux[170..173]       Flux's instrument rows (the throw's burst and the
+//                       palm lift, flux_xr_sim.wgsl); ignored here: the
+//                       app uploads them for every world effect
 // A hold latches the birds inside its radius during its first
 // HOLD_CAPTURE_S, keeps them inside and carries them with the hand, and
 // lets them go when it ends (or when one falls HOLD_LOSE radii behind). The
@@ -126,6 +129,7 @@ const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
 const XR_AUX_HANDS: u32 = 163u;       // + XR_MAX_BOXES
 const XR_AUX_HAND_ROWS: u32 = 3u;
 const XR_AUX_END: u32 = 170u;         // XR_AUX_HANDS + 1 + 2 * XR_AUX_HAND_ROWS
+// (Flux's instrument rows follow, 170..173; unread here.)
 
 // Fraction of the half extent over which opacity fades out toward the bounds.
 const XR_EDGE_FADE: f32 = 0.3;
