@@ -230,13 +230,21 @@ fn open_connection(
         fragsize: FRAG_BYTES,
     };
 
-    let monitor_device = find_monitor_source();
-
-    let c_app = CString::new(app_name).expect("app name must not contain null bytes");
-    let c_stream = CString::new(stream_desc).expect("stream desc must not contain null bytes");
-    let c_dev = monitor_device.as_ref().map(|s| {
-        CString::new(s.as_str()).expect("PulseAudio device name must not contain null bytes")
+    // A device name with an interior NUL cannot be passed to C: capture from the
+    // default source instead of panicking the audio thread.
+    let monitor_device = find_monitor_source().filter(|s| {
+        let ok = !s.contains('\0');
+        if !ok {
+            log::warn!(
+                "PulseAudio device name {s:?} contains a NUL byte; using the default source"
+            );
+        }
+        ok
     });
+
+    let c_app = CString::new(app_name)?;
+    let c_stream = CString::new(stream_desc)?;
+    let c_dev = monitor_device.as_deref().and_then(|s| CString::new(s).ok());
     let dev_ptr = c_dev.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
 
     let mut error: c_int = 0;
