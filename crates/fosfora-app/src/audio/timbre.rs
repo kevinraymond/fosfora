@@ -3,7 +3,8 @@
 //! MFCCs describe a frame's static spectral envelope; their *rate of change* captures timbre
 //! motion — filter sweeps, vocal entries, evolving pads — that the loudness-driven `flux` misses.
 //! Each hop this fits a line to the last [`RING`] MFCC frames and takes the per-coefficient slope
-//! (a causal delta-MFCC). The newest frame is one edge of the window, so it adds no latency.
+//! (a causal delta-MFCC). Being a trailing fit, the slope is centred on the window's middle
+//! frame: a 2-hop group delay (~21–23 ms), where a centred fit would need 2 hops of lookahead.
 //!
 //! - `dmfcc[0..13]` — the 13 slopes, exposed **bindings-only** as `audio.dmfcc.N` (not part of the
 //!   [`crate::audio::AudioFeatures`] ABI, to save the uniform budget) — raw bipolar values the

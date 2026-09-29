@@ -50,7 +50,7 @@ pub struct HopOutput {
     /// `section_novelty`, `buildup`, `drop` (58..=60).
     /// Read those from `frame.features`, which is complete.
     ///
-    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 324-byte
+    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 332-byte
     /// `Copy` per hop either way).
     #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub pre_norm: AudioFeatures,

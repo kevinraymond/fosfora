@@ -75,13 +75,14 @@ const W_BASS: f32 = 1.0;
 
 /// Tuning histogram: 1 bin per cent over ±50 cents.
 const TUNING_BINS: usize = 100;
-/// Per-frame histogram decay ≈ 10 s memory at ~100 analysis frames/s.
+/// Per-frame histogram decay: a 1,000-hop time constant, ≈ 11 s at the 86–94 Hz hop rate.
 const TUNING_DECAY: f32 = 0.999;
 /// EMA rate for the smoothed cents offset (slow — tuning is near-constant per track).
 const TUNING_EMA: f32 = 0.02;
 /// Rebuild kernels once the tuning estimate has drifted this far from the built value…
 const KERNEL_REGEN_CENTS: f32 = 2.0;
-/// …and no more often than this (~3 s at 100 fps) to avoid per-frame kernel churn.
+/// …and no more often than this (~3.2–3.5 s at the 86–94 Hz hop rate) to avoid per-frame
+/// kernel churn.
 const KERNEL_REGEN_MIN_FRAMES: u32 = 300;
 
 /// One sparse constant-Q kernel per semitone: (fft_bin, weight) pairs.
