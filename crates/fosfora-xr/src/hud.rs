@@ -124,6 +124,9 @@ pub enum Action {
     SetEditRoom(bool),
     /// The hand menu's Cloud toggle changed (not saved).
     SetCloud(bool),
+    /// The "All: none" button: every room surface and every kind default
+    /// to none, saved (board #3326, Kevin's debug ask).
+    AllNone,
 }
 
 impl Controls {
@@ -154,6 +157,7 @@ enum Target {
     TogglePitcher,
     ToggleEdit,
     ToggleCloud,
+    AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -567,6 +571,7 @@ impl Hud {
                 controls.cloud = !controls.cloud;
                 actions.push(Action::SetCloud(controls.cloud));
             }
+            Some(Target::AllNone) => actions.push(Action::AllNone),
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 let v = controls.field(i);
@@ -1038,7 +1043,9 @@ fn cloud_row(on: bool) -> Control<'static> {
             Target::ToggleCloud,
             if on { "Cloud: on" } else { "Cloud: off" },
         )),
-        None,
+        // Every surface to none in one press, for telling what a single
+        // assignment does afterwards (board #3326).
+        Some(Cell::Button(Target::AllNone, "All: none")),
     ])
 }
 

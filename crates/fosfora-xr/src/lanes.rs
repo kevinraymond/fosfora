@@ -371,6 +371,32 @@ impl RoomLanes {
         self.assign(&Target::Kind(boxes[k].kind), behavior, strength, boxes)
     }
 
+    /// Every kind default and every anchor of the room to none at full
+    /// strength, in one save and one log line (the panel's "All: none"):
+    /// the quiet room from which a single assignment can be judged.
+    pub fn all_none(&mut self, boxes: &[LaneBox<'_>]) {
+        let mut entries = 0;
+        for (kind, _) in crate::surfaces::KIND_NAMES {
+            let live = boxes
+                .iter()
+                .filter(|b| b.kind == kind && b.uuid != STAGE_FLOOR_UUID)
+                .map(|b| b.uuid);
+            entries += self
+                .file
+                .assign_kind(kind, SurfaceBehavior::None, 1.0, live);
+        }
+        // The stage floor too, under its own UUID, as the knob's `#k` does.
+        if let Some(b) = boxes.iter().find(|b| b.uuid == STAGE_FLOOR_UUID) {
+            self.file.assign(b.uuid, b.kind, SurfaceBehavior::None, 1.0);
+            entries += 1;
+        }
+        let lines = [format!(
+            "every surface ({} in the room, {entries} entries, every kind default) -> none@1.00",
+            boxes.len()
+        )];
+        self.commit(&lines);
+    }
+
     /// The class cycle from one surface: the step after box `k`'s
     /// effective behavior in its kind's catalogue
     /// ([`SurfaceBehavior::next_for`]) becomes its kind's default and every
@@ -822,6 +848,32 @@ mod tests {
         again.update(id, &boxes);
         assert_eq!(again.behavior(0), B::Sparks);
         assert_eq!(again.behavior(3), B::Ripple);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_none_quiets_every_surface_and_every_kind_default() {
+        let dir =
+            std::env::temp_dir().join(format!("fosfora-lanes-allnone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        lanes
+            .assign(&Target::Index(0), B::Sparks, 0.5, &boxes)
+            .unwrap();
+        lanes.all_none(&boxes);
+        for k in 0..boxes.len() {
+            assert_eq!(lanes.effective(k, &boxes), Some((B::None, 1.0)), "box {k}");
+        }
+        for (kind, _) in crate::surfaces::KIND_NAMES {
+            assert_eq!(lanes.file.kind_default(kind), B::None);
+        }
+        // Saved: a fresh load sees the same.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_eq!(again.effective(0, &boxes), Some((B::None, 1.0)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

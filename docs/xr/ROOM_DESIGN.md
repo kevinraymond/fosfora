@@ -521,3 +521,7 @@ hit that spawns nothing (a floor on the ripple, a wall), the 2c rule
 stays (behaviors kept, strengths 0): turning every row to none there
 would leave no weight anywhere, and the sim would fall back to spawning
 through the whole volume.
+ An "All: none" button beside the Cloud toggle
+(both layouts) puts every kind default and every anchor, the stage floor
+too, on none in one save: the quiet room from which one assignment can be
+judged (Kevin's fourth pass, Sep 29).

@@ -951,6 +951,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3326: the right drag in Edit room, its start time and its
     // travel so far, for the short-drag rule.
     let mut edit_drag: Option<(f32, glam::Vec3)> = None;
+    // The panel's "All: none" this frame, applied once the frame's boxes
+    // are known.
+    let mut all_none = false;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -1239,6 +1242,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             ),
                             // Logged with the cloud's change, below.
                             Action::SetCloud(_) => {}
+                            Action::AllNone => all_none = true,
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
                                 if on { "on" } else { "off" },
@@ -1249,6 +1253,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     }
                 }
+            }
+            if all_none {
+                all_none = false;
+                info!("edit room: every surface -> none (the panel)");
+                surface_lanes.all_none(&lane_boxes);
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
