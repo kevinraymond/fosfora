@@ -894,6 +894,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         .filter(|s| *s > 0.0);
     controls.edit_room = pick_test_s.is_some() || toggle("debug.fosfora.editroom", false);
     let mut editor = crate::room_edit::RoomEditor::default();
+    // Its label at the surface after each action (`label.rs`).
+    let mut label = crate::label::Label::default();
+    let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
     let mut edit_was_on = false;
     let mut edit_status = String::from(EDIT_OFF);
     let mut last_pick_test = 0.0f32;
@@ -1493,18 +1496,30 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("edit room: {g} with no surface under the beam, nothing changed");
                     }
                     let effective = |k: usize| surface_lanes.effective(k, &lane_boxes);
+                    label.step(dt);
+                    // The label for an action: its text at the hit.
+                    let mut labeled = None;
                     match frame.action {
                         Some(crate::room_edit::EditAction::Cycle(k)) => {
-                            if let Some((b, _)) = effective(k) {
+                            let before = effective(k).map(|(b, _)| b);
+                            if let Some(b) = before {
                                 let next = b.next_for(lane_boxes[k].kind);
                                 info!("edit room: {} -> {}", named(k), next.name());
                             }
-                            if let Err(e) = surface_lanes.cycle(k, &lane_boxes) {
-                                log::warn!("edit room: {e}; nothing changed");
+                            match surface_lanes.cycle(k, &lane_boxes) {
+                                Ok(after) => {
+                                    labeled = Some(crate::label::cycle_text(
+                                        &crate::surfaces::friendly_name(k, &lane_boxes),
+                                        before.unwrap_or_default(),
+                                        after,
+                                    ));
+                                }
+                                Err(e) => log::warn!("edit room: {e}; nothing changed"),
                             }
                         }
                         Some(crate::room_edit::EditAction::AssignKind(k)) => {
-                            if let Some((b, _)) = effective(k) {
+                            let before = effective(k).map(|(b, _)| b);
+                            if let Some(b) = before {
                                 info!(
                                     "edit room: every {} like {} -> {}",
                                     crate::surfaces::kind_name(lane_boxes[k].kind),
@@ -1512,12 +1527,37 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     b.next_for(lane_boxes[k].kind).name()
                                 );
                             }
-                            if let Err(e) = surface_lanes.cycle_kind_of(k, &lane_boxes) {
-                                log::warn!("edit room: {e}; nothing changed");
+                            match surface_lanes.cycle_kind_of(k, &lane_boxes) {
+                                Ok(after) => {
+                                    labeled = Some(crate::label::class_text(
+                                        lane_boxes[k].kind,
+                                        before.unwrap_or_default(),
+                                        after,
+                                    ));
+                                }
+                                Err(e) => log::warn!("edit room: {e}; nothing changed"),
                             }
                         }
                         None => {}
                     }
+                    if let (Some(text), Some(h)) = (labeled, frame.hit) {
+                        label.show(text, h.point, h.normal);
+                    }
+                    if !edit_on {
+                        label.clear();
+                    }
+                    label_texture.show(
+                        &gfx,
+                        label.now().map(|l| {
+                            let pose = crate::label::billboard(
+                                l.point,
+                                l.normal,
+                                head,
+                                glam::Quat::from_array(input.head_rot),
+                            );
+                            (l.text, l.alpha, pose)
+                        }),
+                    );
                     edit_status = if !edit_on {
                         EDIT_OFF.to_owned()
                     } else if let Some(h) = frame.hit {

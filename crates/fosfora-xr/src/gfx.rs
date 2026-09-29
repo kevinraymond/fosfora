@@ -66,8 +66,10 @@ pub struct Gfx {
     quad: Option<QuadBinding>,
     quad_layout: wgpu::BindGroupLayout,
     /// The debug panel: a posed, textured quad (`set_panel`, `set_panel_pose`).
-    panel: Option<QuadBinding>,
-    panel_visible: std::cell::Cell<bool>,
+    panel: PosedQuad,
+    /// The room editor's label (`set_label`, `set_label_pose`, `label.rs`):
+    /// another posed quad, drawn right after the panel.
+    label: PosedQuad,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
     /// Beams (`set_beam`): the debug panel's pointer, one per hand for
@@ -112,6 +114,14 @@ struct QuadBinding {
     bind_group: wgpu::BindGroup,
 }
 
+/// A posed, textured quad the panel's pipeline draws (the hand menu, the
+/// room editor's label): hidden until it has a texture and a pose.
+#[derive(Default)]
+struct PosedQuad {
+    binding: Option<QuadBinding>,
+    visible: std::cell::Cell<bool>,
+}
+
 /// Beam slots: the debug panel's pointer, each hand's reach beam and the
 /// room editor's pick (board #3326). `BEAM_WGSL`'s array takes its length
 /// from this, as the uniform does.
@@ -136,9 +146,10 @@ pub struct Beam {
     pub alpha: f32,
 }
 
-/// Where the debug panel sits this frame: its center and the vectors from
-/// the center to its right and top edges (reference space, meters). The
-/// texture's top-left corner is at `center - right + up`.
+/// Where the debug panel (or the room editor's label) sits this frame: its
+/// center and the vectors from the center to its right and top edges
+/// (reference space, meters). The texture's top-left corner is at
+/// `center - right + up`.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelPose {
     pub center: [f32; 3],
@@ -419,8 +430,8 @@ impl Gfx {
         Ok(Self {
             quad: None,
             quad_layout,
-            panel: None,
-            panel_visible: std::cell::Cell::new(false),
+            panel: PosedQuad::default(),
+            label: PosedQuad::default(),
             panel_pipeline,
             panel_layout,
             beam,
@@ -513,20 +524,42 @@ impl Gfx {
     /// The texture the debug panel shows (premultiplied alpha). Hidden until
     /// [`Self::set_panel_pose`] places it.
     pub fn set_panel(&mut self, view: &wgpu::TextureView) {
+        self.panel.binding = Some(self.posed_binding("xr-panel", view));
+    }
+
+    /// Place the debug panel for this frame, or hide it with `None`.
+    pub fn set_panel_pose(&self, pose: Option<PanelPose>) {
+        self.place_posed(&self.panel, pose);
+    }
+
+    /// The texture the room editor's label shows (premultiplied alpha,
+    /// `label.rs`). Hidden until [`Self::set_label_pose`] places it.
+    pub fn set_label(&mut self, view: &wgpu::TextureView) {
+        self.label.binding = Some(self.posed_binding("xr-label", view));
+    }
+
+    /// Place the room editor's label for this frame, or hide it with
+    /// `None`.
+    pub fn set_label_pose(&self, pose: Option<PanelPose>) {
+        self.place_posed(&self.label, pose);
+    }
+
+    /// A posed quad's uniform and bind group for `view`, named `name`.
+    fn posed_binding(&self, name: &str, view: &wgpu::TextureView) -> QuadBinding {
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xr-panel-uniform"),
+            label: Some(&format!("{name}-uniform")),
             size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("xr-panel-sampler"),
+            label: Some(&format!("{name}-sampler")),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xr-panel"),
+            label: Some(name),
             layout: &self.panel_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -543,16 +576,16 @@ impl Gfx {
                 },
             ],
         });
-        self.panel = Some(QuadBinding {
+        QuadBinding {
             uniform,
             bind_group,
-        });
+        }
     }
 
-    /// Place the debug panel for this frame, or hide it with `None`.
-    pub fn set_panel_pose(&self, pose: Option<PanelPose>) {
-        let (Some(panel), Some(pose)) = (&self.panel, pose) else {
-            self.panel_visible.set(false);
+    /// Place a posed quad for this frame, or hide it with `None`.
+    fn place_posed(&self, quad: &PosedQuad, pose: Option<PanelPose>) {
+        let (Some(binding), Some(pose)) = (&quad.binding, pose) else {
+            quad.visible.set(false);
             return;
         };
         let (c, r, u) = (pose.center, pose.right, pose.up);
@@ -560,8 +593,8 @@ impl Gfx {
             c[0], c[1], c[2], pose.v_max, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
         ];
         self.queue
-            .write_buffer(&panel.uniform, 0, bytemuck::bytes_of(&data));
-        self.panel_visible.set(true);
+            .write_buffer(&binding.uniform, 0, bytemuck::bytes_of(&data));
+        quad.visible.set(true);
     }
 
     /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`, `BEAM_PICK`) for
@@ -950,12 +983,15 @@ impl Gfx {
             }
             // Last, over the sprites (which write no depth), so the panel
             // reads cleanly through the cloud; depth-tested against the
-            // hand occluders, so a finger poking it shows in front.
-            if let Some(panel) = self.panel.as_ref().filter(|_| self.panel_visible.get()) {
-                pass.set_pipeline(&self.panel_pipeline);
-                pass.set_bind_group(0, &eye.bind_group, &[]);
-                pass.set_bind_group(1, &panel.bind_group, &[]);
-                pass.draw(0..6, 0..1);
+            // hand occluders, so a finger poking it shows in front. The
+            // room editor's label right after it, on the same terms.
+            for quad in [&self.panel, &self.label] {
+                if let Some(b) = quad.binding.as_ref().filter(|_| quad.visible.get()) {
+                    pass.set_pipeline(&self.panel_pipeline);
+                    pass.set_bind_group(0, &eye.bind_group, &[]);
+                    pass.set_bind_group(1, &b.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -1550,8 +1586,9 @@ fn build_ghost_pipeline(
     )
 }
 
-/// The debug panel's pipeline: a posed quad, premultiplied alpha over the
-/// eye target, depth-tested and depth-writing.
+/// The debug panel's pipeline (the room editor's label's too): a posed
+/// quad, premultiplied alpha over the eye target, depth-tested and
+/// depth-writing.
 fn build_panel_pipeline(
     device: &wgpu::Device,
     eye_layout: &wgpu::BindGroupLayout,
