@@ -32,11 +32,13 @@ const CENTROID_F_MAX: f32 = 18000.0;
 /// (was a hardcoded 0.85); can be promoted to a user setting later with no ABI impact.
 const ROLLOFF_PERCENTILE: f32 = 0.85;
 
-/// A4 (#1455): magnitude floor (~−60 dB below a unit tone) applied before the log in the
-/// spectral-flux feature. Per-bin log magnitude is wildly unstable near the noise floor —
+/// A4 (#1455): magnitude floor (~−54 dB below a full-scale tone) applied before the log in
+/// the spectral-flux feature. Per-bin log magnitude is wildly unstable near the noise floor —
 /// without a floor, sub-signal bins dominate the flux and it tracks level again. Clamping
 /// them to a common floor makes their frame-to-frame diff zero, so flux reads change only.
-const FLUX_FLOOR: f32 = 1e-3;
+/// Tuned while the spectrum read 6 dB low; doubled with the coherent-gain correction (#54)
+/// so it sits at the same signal level.
+const FLUX_FLOOR: f32 = 2e-3;
 
 /// Mel bands for the A17 scrolling spectrogram texture (#1468). Independent of the
 /// MFCC filterbank (N_MELS) — a higher band count gives finer vertical detail in the
@@ -53,6 +55,9 @@ struct FftResolution {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     size: usize,
     window: Vec<f32>,
+    /// `2 / Σw`: one-sided amplitude scaling with the window's coherent gain divided out,
+    /// so a full-scale sine reads 1.0 (0 dB) at its peak bin (#54).
+    scale: f32,
     fft_buffer: Vec<Complex<f32>>,
     magnitude: Vec<f32>,
     prev_magnitude: Vec<f32>,
@@ -72,11 +77,13 @@ impl FftResolution {
                 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32).cos())
             })
             .collect();
+        let scale = 2.0 / window.iter().sum::<f32>();
 
         Self {
             fft,
             size,
             window,
+            scale,
             fft_buffer: vec![Complex::new(0.0, 0.0); size],
             magnitude: vec![0.0; num_bins],
             prev_magnitude: vec![0.0; num_bins],
@@ -105,9 +112,8 @@ impl FftResolution {
         std::mem::swap(&mut self.magnitude, &mut self.prev_magnitude);
 
         // Compute magnitude spectrum
-        let scale = 2.0 / self.size as f32;
         for i in 0..self.num_bins {
-            self.magnitude[i] = self.fft_buffer[i].norm() * scale;
+            self.magnitude[i] = self.fft_buffer[i].norm() * self.scale;
         }
     }
 

@@ -70,6 +70,17 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   wraps the short way round and holds.
 - **Downbeats weighed each beat's loudness rise after auto-gain**, which flattens the accents
   that mark the "one"; they now read the true level.
+- **Quiet line or mic input made audio-reactive visuals stutter**: a level hovering near the
+  silence threshold switched the audio features off and on and could drop the beat grid. The
+  gate now closes only after a clear drop held for a quarter second.
+- **Loudness read 3–6 dB low, and anti-phase stereo counted as silence.** Left and right are
+  now summed as the broadcast standard specifies, so `loudness_m` and `loudness_s` read about
+  3 LU higher on typical music; retune anything keyed to a fixed loudness level.
+- **A DC offset from some interfaces and loopback paths inflated sub-bass** and the lowest
+  onset bands. It is now filtered out before analysis.
+- **The spectrum and spectrogram textures read 6 dB low**, as did the fixed-range dB bands; a
+  full-scale tone now reads 0 dB, so they sit slightly brighter. Beat and onset detection
+  are unchanged.
 
 ## v2.0.0 — 2026-09-27
 
