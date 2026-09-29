@@ -219,7 +219,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
-    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat; default on in mr/world)
+    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat, on a floor whose behavior is the ripple, a floor's default; default on in mr/world)
     //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
     //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
     //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
@@ -938,9 +938,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
     // Board #3326: each box's behavior (the room file and the `surface`
-    // knob), and the floor the ripple is on with why, for the log.
+    // knob), and the floor the ripple is on with why, for the log (`None`
+    // before the first frame, so the first pick is logged too).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
-    let mut ripple_floor: Option<(usize, &str)> = None;
+    let mut ripple_floor: Option<Option<(usize, &str)>> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1827,50 +1828,56 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass.max(f.sub_bass),
                     f.bass,
                 );
-                // A floor on the ripple pins it (the largest of them, the
-                // stage floor too); else the largest scene floor, else the
-                // stage floor. The ripple never goes away.
+                // Only a floor whose behavior is the ripple carries it
+                // (step 2d, decision #3459): the largest scene floor on
+                // the ripple, else the stage floor on it while the room
+                // has no scene floor (then it stands in for one, as its
+                // emitter flag and the editor's ray take it; beside a
+                // scene floor it is out of the editor's reach, and its
+                // default would put the ripple back under a scene floor
+                // the wearer turned to none); with none, no ripple. The
+                // fallback to the largest scene floor is gone: "floor
+                // ripple kept rippling when I switch to embers or none"
+                // (Kevin, worn, Sep 29).
                 let ripple_of = |k: usize| {
                     surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Ripple
                 };
-                let largest = |pinned: bool| {
-                    input
+                let largest = input
+                    .room_boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, b)| b.kind == crate::surfaces::KIND_FLOOR && ripple_of(k))
+                    .map(|(k, b)| {
+                        (
+                            k,
+                            crate::surfaces::TopFace::of(
+                                glam::Vec3::from(b.center),
+                                glam::Quat::from_array(b.rot),
+                                glam::Vec3::from(b.half),
+                            ),
+                        )
+                    })
+                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()));
+                let stage_k = input.room_boxes.len();
+                let stage_ripples = floor_box.is_some()
+                    && !input
                         .room_boxes
                         .iter()
-                        .enumerate()
-                        .filter(|&(k, b)| {
-                            b.kind == crate::surfaces::KIND_FLOOR && (!pinned || ripple_of(k))
-                        })
-                        .map(|(k, b)| {
-                            (
-                                k,
-                                crate::surfaces::TopFace::of(
-                                    glam::Vec3::from(b.center),
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                ),
-                            )
-                        })
-                        .max_by(|a, b| a.1.area().total_cmp(&b.1.area()))
-                };
-                let stage_k = input.room_boxes.len();
-                let stage_pinned = floor_box.is_some() && ripple_of(stage_k);
-                let (scene_floor, pick) = match largest(true) {
-                    Some((k, f)) => (Some(f), Some((k, "pinned by its lane"))),
-                    None if stage_pinned => {
-                        (None, Some((stage_k, "the stage floor, pinned by its lane")))
+                        .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+                    && ripple_of(stage_k);
+                let (scene_floor, pick) = match largest {
+                    Some((k, f)) => (Some(f), Some((k, "a scene floor on the ripple"))),
+                    None if stage_ripples => {
+                        (None, Some((stage_k, "the stage floor on the ripple")))
                     }
-                    None => match largest(false) {
-                        Some((k, f)) => (Some(f), Some((k, "the largest scene floor"))),
-                        None => (None, floor_box.map(|_| (stage_k, "the stage floor"))),
-                    },
+                    None => (None, None),
                 };
-                if !ripple_ceiling && pick != ripple_floor {
+                if !ripple_ceiling && Some(pick) != ripple_floor {
                     match pick {
                         Some((k, why)) => info!("floor ripple: on box {k} ({why})"),
-                        None => info!("floor ripple: no floor"),
+                        None => info!("floor ripple: no floor on ripple"),
                     }
-                    ripple_floor = pick;
+                    ripple_floor = Some(pick);
                 }
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
                 let quad = if ripple_ceiling {
@@ -1889,8 +1896,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 center,
                             )
                         })
-                } else {
+                } else if pick.is_some() {
                     r.quad(scene_floor, stage_top)
+                } else {
+                    None
                 };
                 let rows = quad.map(|corners| r.uniform(t, corners));
                 gfx.set_ripple(rows.as_ref());
