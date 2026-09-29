@@ -65,6 +65,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   Stress benchmark. It now loads only effects in its list.
 - **Right after a stall such as an effect loading, audio-reactive visuals replayed audio from
   before it**: the newest analysis frames were the ones dropped. The oldest are dropped now.
+- **Tracks tuned close to a quarter tone off** could have their tuning estimate swing through
+  standard pitch, smearing chroma and key across two notes for seconds. The estimate now
+  wraps the short way round and holds.
 - **Downbeats weighed each beat's loudness rise after auto-gain**, which flattens the accents
   that mark the "one"; they now read the true level.
 

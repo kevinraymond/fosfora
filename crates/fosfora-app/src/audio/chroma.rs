@@ -16,7 +16,9 @@
 //!
 //! A slow tuning estimator tracks the global A-reference offset (±50 cents) from
 //! parabola-refined spectral peaks and shifts the kernel centers so a 432 Hz-tuned
-//! track no longer smears across pitch classes.
+//! track no longer smears across pitch classes. The offset is circular — +50 and −50
+//! cents are the same tuning, a semitone apart in name only — so the histogram, its
+//! mode and the smoothing all wrap (#61).
 
 pub const N_CHROMA: usize = 12;
 
@@ -73,8 +75,15 @@ const BASS_PERSIST_HOPS: u8 = 3;
 /// halved); ≥ 4 over-trusts the bass line and subdominant errors grow.
 const W_BASS: f32 = 1.0;
 
-/// Tuning histogram: 1 bin per cent over ±50 cents.
+/// Tuning histogram: 1 bin per cent over ±50 cents, circular (bin 0 neighbours bin 99).
 const TUNING_BINS: usize = 100;
+/// The mode is the heaviest window of `2 × TUNING_MODE_HALF + 1` bins, so a peak split
+/// across neighbouring bins — or across the ±50 wrap — counts as one peak.
+const TUNING_MODE_HALF: usize = 2;
+/// How far past ±50 cents the estimate may run before it is renamed by a semitone.
+/// Material tuned a quarter tone off would otherwise flip its pitch-class names every
+/// time the estimate wobbles across the boundary.
+const TUNING_WRAP_HYSTERESIS: f32 = 5.0;
 /// Per-frame histogram decay: a 1,000-hop time constant, ≈ 11 s at the 86–94 Hz hop rate.
 const TUNING_DECAY: f32 = 0.999;
 /// EMA rate for the smoothed cents offset (slow — tuning is near-constant per track).
@@ -116,7 +125,7 @@ pub struct CqtChroma {
 
     // Tuning estimator
     tuning_hist: Vec<f32>, // TUNING_BINS, cents histogram (magnitude-weighted, decaying)
-    tuning_cents: f32,     // EMA'd global offset from A440, in cents
+    tuning_cents: f32,     // EMA'd global offset from A440, in cents (±(50 + hysteresis))
     kernel_cents: f32,     // offset the current kernels were built for
     frames_since_regen: u32,
 
@@ -361,27 +370,24 @@ impl CqtChroma {
             }
             // Fractional-semitone deviation from equal temperament (A4 = MIDI 69).
             let semitone = 12.0 * (freq / 440.0).log2() + 69.0;
-            let cents = (semitone - semitone.round()) * 100.0; // (−50, 50]
-            let bin = (((cents + 50.0) / 100.0) * TUNING_BINS as f32) as usize;
-            self.tuning_hist[bin.min(TUNING_BINS - 1)] += b;
+            let cents = (semitone - semitone.round()) * 100.0; // [−50, 50]
+            // +50 and −50 are the same tuning: both land in bin 0.
+            let bin = ((cents + 50.0) / 100.0 * TUNING_BINS as f32) as usize % TUNING_BINS;
+            self.tuning_hist[bin] += b;
         }
 
-        // Mode of the histogram — only trust it when clearly concentrated.
-        let mut mode_bin = 0usize;
-        let mut mode_val = 0.0f32;
-        let mut total = 0.0f32;
-        for (i, &v) in self.tuning_hist.iter().enumerate() {
-            total += v;
-            if v > mode_val {
-                mode_val = v;
-                mode_bin = i;
-            }
-        }
-        let mean = total / TUNING_BINS as f32;
-        if mode_val > 1e-6 && mode_val > 3.0 * mean {
-            let mode_cents = (mode_bin as f32 + 0.5) / TUNING_BINS as f32 * 100.0 - 50.0;
-            self.tuning_cents += TUNING_EMA * (mode_cents - self.tuning_cents);
-            self.tuning_cents = self.tuning_cents.clamp(-50.0, 50.0);
+        // Mode of the circular histogram — only trust it when clearly concentrated.
+        let Some(mode_cents) = circular_mode_cents(&self.tuning_hist) else {
+            return;
+        };
+        // Step the shorter way round the circle, so an estimate near +50 heading for a
+        // mode near −50 moves a few cents instead of sweeping through 0.
+        self.tuning_cents += TUNING_EMA * wrap_cents(mode_cents - self.tuning_cents);
+        let limit = 50.0 + TUNING_WRAP_HYSTERESIS;
+        if self.tuning_cents > limit {
+            self.tuning_cents -= 100.0;
+        } else if self.tuning_cents < -limit {
+            self.tuning_cents += 100.0;
         }
     }
 
@@ -395,6 +401,43 @@ impl CqtChroma {
             self.frames_since_regen = 0;
         }
     }
+}
+
+/// Wrap a cents difference into [−50, 50).
+fn wrap_cents(c: f32) -> f32 {
+    (c + 50.0).rem_euclid(100.0) - 50.0
+}
+
+/// The histogram's mode in cents, or `None` when no window stands out. The heaviest
+/// circular window of `2 × TUNING_MODE_HALF + 1` bins wins, and the mode is that
+/// window's weighted centre; it is trusted only when the window's tallest bin clears
+/// 3× the mean bin.
+fn circular_mode_cents(hist: &[f32]) -> Option<f32> {
+    let n = hist.len();
+    let half = TUNING_MODE_HALF as isize;
+    let at = |i: usize, d: isize| hist[(i as isize + d).rem_euclid(n as isize) as usize];
+
+    let mut best = 0usize;
+    let mut best_mass = 0.0f32;
+    for i in 0..n {
+        let mass: f32 = (-half..=half).map(|d| at(i, d)).sum();
+        if mass > best_mass {
+            best_mass = mass;
+            best = i;
+        }
+    }
+    let peak = (-half..=half).map(|d| at(best, d)).fold(0.0f32, f32::max);
+    let mean = hist.iter().sum::<f32>() / n as f32;
+    if peak <= 1e-6 || peak <= 3.0 * mean {
+        return None;
+    }
+
+    // Offset of the window's centre of mass from its middle bin, in bins.
+    let offset = (-half..=half).map(|d| d as f32 * at(best, d)).sum::<f32>() / best_mass;
+    let bins_per_cent = n as f32 / 100.0;
+    Some(wrap_cents(
+        (best as f32 + 0.5 + offset) / bins_per_cent - 50.0,
+    ))
 }
 
 #[cfg(test)]
@@ -466,6 +509,68 @@ mod tests {
             "tuning estimate {} cents, expected ≈ −32",
             cqt.tuning_cents
         );
+    }
+
+    /// Circular distance in cents between two tuning offsets.
+    fn cents_apart(a: f32, b: f32) -> f32 {
+        wrap_cents(a - b).abs()
+    }
+
+    /// #61: the tuning estimate moves the short way round the circle. Material settled
+    /// just sharp of a quarter tone (+46.5 measured) followed by material just flat of one
+    /// (−42.5) is an 11-cent move across the ±50 wrap; stepping linearly instead swept
+    /// the estimate through 0, a quarter tone from both, for hundreds of hops.
+    #[test]
+    fn tuning_crosses_the_wrap_the_short_way() {
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        // Measured by the QIFFT on these synthetic peaks as +46.5 and −42.5 cents.
+        let sharp = sine_mag(392.0 * 2.0f32.powf(49.0 / 1200.0));
+        let flat = sine_mag(440.0 * 2.0f32.powf(-45.0 / 1200.0));
+        for _ in 0..1500 {
+            cqt.compute(&sharp);
+        }
+        assert!(
+            cents_apart(cqt.tuning_cents, 46.5) < 2.0,
+            "settled at {}",
+            cqt.tuning_cents
+        );
+        let mut worst = 0.0f32;
+        for _ in 0..4000 {
+            cqt.compute(&flat);
+            worst = worst.max(cents_apart(cqt.tuning_cents, 50.0));
+        }
+        assert!(
+            worst < 9.0,
+            "estimate strayed {worst} cents from the boundary"
+        );
+        assert!(
+            (cqt.tuning_cents - (-42.5)).abs() < 2.0,
+            "ended at {} cents, expected ≈ −42.5 (renamed past the wrap)",
+            cqt.tuning_cents
+        );
+    }
+
+    /// A single peak split across the wrap is one peak, centred on the boundary.
+    #[test]
+    fn mode_of_a_peak_split_across_the_wrap() {
+        let mut hist = vec![0.1f32; TUNING_BINS];
+        hist[TUNING_BINS - 1] = 5.0;
+        hist[0] = 5.0;
+        hist[40] = 7.0; // taller single bin, but less mass than the split peak
+        let mode = circular_mode_cents(&hist).expect("concentrated");
+        assert!(cents_apart(mode, 50.0) < 0.5, "mode {mode}");
+    }
+
+    #[test]
+    fn flat_histogram_has_no_mode() {
+        assert_eq!(circular_mode_cents(&[1.0f32; TUNING_BINS]), None);
+    }
+
+    #[test]
+    fn wrap_cents_takes_the_short_way_round() {
+        assert_eq!(wrap_cents(98.0), -2.0);
+        assert_eq!(wrap_cents(-98.0), 2.0);
+        assert_eq!(wrap_cents(10.0), 10.0);
     }
 
     #[test]
