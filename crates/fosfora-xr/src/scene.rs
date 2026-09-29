@@ -17,6 +17,7 @@
 //!   the eye targets.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use fosfora_app::audio::AudioFrame;
@@ -54,11 +55,14 @@ pub struct XrScene {
 }
 
 /// Rows of the world-mode aux block: the head, the obstacle block,
-/// Murmur's per-hand lanes, then Flux's instrument rows. The obstacle block
-/// ends at row 163 (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`),
-/// the lanes at 170 (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the
-/// instruments at 173 (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in
-/// the Flux sim); core tests pin the sims' side.
+/// Murmur's per-hand lanes, then Flux's instrument rows and its live depth
+/// rows. The obstacle block ends at row 163 (`XR_AUX_*` in
+/// `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170 (`XR_AUX_END`
+/// in `murmur_xr_sim.wgsl`), the instruments at 173
+/// (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in the Flux sim), the
+/// depth rows at 180 (`XR_AUX_DEPTH` + `XR_AUX_DEPTH_ROWS`, board #3352);
+/// core tests pin the sims' side up to 173, `tests/depth_collide_gpu.rs`
+/// the depth rows.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
 const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
@@ -66,11 +70,18 @@ const _: () = assert!(
     HAND_LANES_END == 170,
     "murmur_xr_sim.wgsl reads 170 aux rows"
 );
-const WORLD_AUX_ROWS: usize = HAND_LANES_END + crate::instruments::INSTRUMENT_ROWS;
+const INSTRUMENTS_END: usize = HAND_LANES_END + crate::instruments::INSTRUMENT_ROWS;
 const _: () = assert!(
-    WORLD_AUX_ROWS == 173,
+    INSTRUMENTS_END == 173,
     "flux_xr_sim.wgsl reads the instrument rows 170..173"
 );
+const WORLD_AUX_ROWS: usize = INSTRUMENTS_END + crate::env_depth::COLLIDE_ROWS;
+const _: () = assert!(
+    WORLD_AUX_ROWS == 180,
+    "flux_xr_sim.wgsl reads the depth rows 173..180"
+);
+/// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
+const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
 
 /// World-mode state (see the module docs).
 struct World {
@@ -95,6 +106,9 @@ struct World {
     /// The particle count (`max_count`): with the alive count, how many
     /// dead slots a burst can claim.
     max_count: u32,
+    /// The depth atlas last put in this effect's obstacle texture: the
+    /// poses it was built from and when it arrived (board #3352).
+    depth: Option<(crate::env_depth::DepthCollide, Instant)>,
 }
 
 /// How a world-mode effect is set up for this run.
@@ -246,6 +260,7 @@ impl XrScene {
                 emitter_half,
                 emitter_weight: 0.0,
                 max_count,
+                depth: None,
             }),
         })
     }
@@ -274,10 +289,12 @@ impl XrScene {
     /// (`drift_m_s` downward; 0 = none), the obstacles with their emitter
     /// weights (`surfaces`, from the kinds and flags the boxes carry and
     /// where they sit against this effect's volume), Murmur's per-hand
-    /// lanes (`pose::lane_rows`, already in the anchor's frame) and the
+    /// lanes (`pose::lane_rows`, already in the anchor's frame), the
     /// instrument rows (`instruments::rows`, likewise; their steal
-    /// fraction is set here from this sim's alive count), the positions
-    /// moved into the anchor's frame. Call before [`Self::dispatch_world`].
+    /// fraction is set here from this sim's alive count) and the live
+    /// depth rows of the atlas last put in this effect (zero, so no depth
+    /// collide, without a recent one), the positions moved into the
+    /// anchor's frame. Call before [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -329,6 +346,13 @@ impl XrScene {
         world
             .aux
             .extend(instruments.iter().map(|&home| ParticleAux { home }));
+        let depth = match world.depth {
+            Some((c, at)) if at.elapsed() < ATLAS_MAX_AGE => c.rows(glam::Vec3::from(a)),
+            _ => [[0.0; 4]; crate::env_depth::COLLIDE_ROWS],
+        };
+        world
+            .aux
+            .extend(depth.iter().map(|&home| ParticleAux { home }));
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
             ps.update_aux_in_place(queue, &world.aux);
@@ -341,9 +365,9 @@ impl XrScene {
     /// built resizes the 1x1 placeholder and rebinds it; the others write
     /// in place.
     pub fn set_depth_atlas(&mut self, atlas: &crate::env_depth::DepthAtlas<'_>) {
-        if self.world.is_none() {
+        let Some(world) = self.world.as_mut() else {
             return;
-        }
+        };
         let renderer = &mut self.renderer;
         if let Some(ps) = particle_system(&mut renderer.layer_stack.layers) {
             ps.update_obstacle_webcam(
@@ -353,6 +377,7 @@ impl XrScene {
                 atlas.width,
                 atlas.height,
             );
+            world.depth = Some((atlas.collide, Instant::now()));
         }
     }
 

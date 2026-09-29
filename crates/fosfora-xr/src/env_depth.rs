@@ -542,8 +542,9 @@ pub fn check_layer(
 // update_obstacle_webcam`). `flux_xr_sim.wgsl` reads it with the poses of
 // the frame it came from (aux rows 173..180).
 
-/// The distance the atlas's 8 bits span (m): 2 cm steps. A texel at or
-/// past it holds no data (no phantom wall at the range).
+/// The distance the atlas's 16 bits span (m): 0.08 mm steps, 2 cm in the
+/// high byte alone. A texel at or past it holds no data (no phantom wall
+/// at the range).
 pub const DEPTH_ATLAS_RANGE_M: f32 = 5.0;
 /// Atlas texels per layer side (`debug.fosfora.depthcollideres`): 160,
 /// each the nearest valid distance of a 2x2 block of the 320 map
@@ -563,15 +564,27 @@ pub fn atlas_distance(d: f32, near: f32, far: f32, near_cut: f32) -> Option<f32>
     (dist >= near_cut && dist < DEPTH_ATLAS_RANGE_M).then_some(dist)
 }
 
-/// One atlas texel as the RGBA8 bytes of a little-endian `u32`: R the
-/// distance over [`DEPTH_ATLAS_RANGE_M`] (rounded, 2 cm steps), G 255 for
-/// data, B 0 and A 0. Alpha 0 everywhere keeps the core's
-/// luminance-to-alpha pass (`ObstacleTexture::update`) off the bytes.
+/// One atlas texel as the RGBA8 bytes of a little-endian `u32`: the
+/// distance over [`DEPTH_ATLAS_RANGE_M`] as a rounded 16-bit fraction, its
+/// high byte in R (2 cm steps on its own) and its low byte in B; G 255 for
+/// data; A 0. Alpha 0 everywhere keeps the core's luminance-to-alpha pass
+/// (`ObstacleTexture::update`) off the bytes. Eight bits alone tilted the
+/// sim's gradient normals on a seat 1 m out by up to 28 degrees (2 cm
+/// steps against ~2 cm of depth between neighboring texels), which the
+/// settle drift turns into a slide toward the camera.
 pub fn atlas_texel(dist: Option<f32>) -> u32 {
     dist.map_or(0, |d| {
-        let r = ((d / DEPTH_ATLAS_RANGE_M).clamp(0.0, 1.0) * 255.0 + 0.5).floor() as u32;
-        r.min(255) | (255 << 8)
+        let v = ((d / DEPTH_ATLAS_RANGE_M).clamp(0.0, 1.0) * 65535.0 + 0.5).floor() as u32;
+        let v = v.min(65535);
+        (v >> 8) | (255 << 8) | ((v & 255) << 16)
     })
+}
+
+/// The distance (m) an atlas texel reads as, `None` without data: the
+/// sim's `xr_depth_at` on the CPU.
+pub fn atlas_read(px: u32) -> Option<f32> {
+    let [r, g, b, _] = px.to_le_bytes();
+    (g == 255).then(|| f32::from(u16::from(r) << 8 | u16::from(b)) / 65535.0 * DEPTH_ATLAS_RANGE_M)
 }
 
 /// The map texels `[lo, hi)` atlas texel `i` of `res` covers along a side
@@ -703,10 +716,11 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
             }
         }
     }
+    // A 16-bit fraction of the range: high byte in R, low byte in B.
     var px = 0u;
     if best >= 0.0 {
-        let r = u32(floor(clamp(best / p.atlas.x, 0.0, 1.0) * 255.0 + 0.5));
-        px = min(r, 255u) | (255u << 8u);
+        let v = min(u32(floor(clamp(best / p.atlas.x, 0.0, 1.0) * 65535.0 + 0.5)), 65535u);
+        px = (v >> 8u) | (255u << 8u) | ((v & 255u) << 16u);
     }
     atlas[(id.z * res + id.y) * res + id.x] = px;
 }
@@ -725,6 +739,41 @@ pub struct DepthCollide {
     /// How far behind a surface a particle still collides with it (m);
     /// deeper is left alone (the occluder hides it).
     pub thickness_m: f32,
+}
+
+/// Rows of the world aux block the depth collide takes, right after the
+/// instrument rows (`XR_AUX_DEPTH` and `XR_AUX_DEPTH_ROWS` in
+/// `flux_xr_sim.wgsl`, rows 173..180): the header, then three per layer.
+pub const COLLIDE_ROWS: usize = 7;
+/// An atlas older than this (ms) is no longer collided with: the depth
+/// stopped (the provider paused, the headset off the head), so the sim
+/// stops trusting a picture of the room that may have moved. At 72 Hz one
+/// arrives every 14 ms.
+pub const ATLAS_MAX_AGE_MS: u64 = 100;
+
+impl DepthCollide {
+    /// The aux rows for this atlas, positions relative to the effect's
+    /// `anchor` (the sim's origin):
+    ///
+    /// - 0: x 1 (an atlas is in the obstacle texture), y the thickness
+    ///   band (m), z the atlas range (m), w texels per layer side
+    /// - 1 + 3k: layer k's depth camera position xyz, w its near plane (m)
+    /// - 2 + 3k: its orientation, quaternion camera to world (x, y, z, w)
+    /// - 3 + 3k: the tangents of its fov: left, right, up, down
+    ///
+    /// All zero (the rows when no atlas is valid) turns the collide off.
+    pub fn rows(&self, anchor: Vec3) -> [[f32; 4]; COLLIDE_ROWS] {
+        let mut rows = [[0.0; 4]; COLLIDE_ROWS];
+        rows[0] = [1.0, self.thickness_m, DEPTH_ATLAS_RANGE_M, self.res as f32];
+        for (k, v) in self.views.iter().enumerate() {
+            let p = Vec3::from(v.position) - anchor;
+            let f = v.fov;
+            rows[1 + 3 * k] = [p.x, p.y, p.z, self.near];
+            rows[2 + 3 * k] = v.orientation;
+            rows[3 + 3 * k] = [f.left.tan(), f.right.tan(), f.up.tan(), f.down.tan()];
+        }
+        rows
+    }
 }
 
 /// One read-back atlas, ready for the obstacle texture: `width` x
@@ -2398,9 +2447,8 @@ mod tests {
 
     /// The distance an atlas texel reads as, or `None` without data.
     fn atlas_reads(px: u32) -> Option<f32> {
-        let [r, g, b, a] = px.to_le_bytes();
-        assert_eq!((b, a), (0, 0), "B and A stay 0");
-        (g == 255).then(|| f32::from(r) / 255.0 * DEPTH_ATLAS_RANGE_M)
+        assert_eq!(px.to_le_bytes()[3], 0, "A stays 0");
+        atlas_read(px)
     }
 
     /// Both layers of a 320 map, stored as the runtime would (texture row 0
@@ -2424,13 +2472,20 @@ mod tests {
     #[test]
     fn an_atlas_texel_packs_distance_and_validity() {
         assert_eq!(atlas_texel(None), 0);
+        // 1 m is 13107 / 65535 of 5 m: high byte 51 (R, the 2 cm reading),
+        // low byte 51 (B).
         let px = atlas_texel(Some(1.0));
-        assert_eq!(px.to_le_bytes(), [51, 255, 0, 0]);
+        assert_eq!(px.to_le_bytes(), [51, 255, 51, 0]);
         assert_eq!(atlas_reads(px), Some(1.0));
-        // 2 cm steps, rounded; the range clamps to 255.
-        assert_eq!(atlas_texel(Some(0.0)).to_le_bytes()[0], 0);
-        assert_eq!(atlas_texel(Some(0.029)).to_le_bytes()[0], 1);
-        assert_eq!(atlas_texel(Some(9.0)).to_le_bytes()[0], 255);
+        // 16-bit steps, rounded; the range clamps.
+        for d in [0.0, 0.2, 0.537, 1.2345, 3.3, 4.99] {
+            let back = atlas_reads(atlas_texel(Some(d))).unwrap();
+            assert!(
+                (back - d).abs() <= 0.5 * DEPTH_ATLAS_RANGE_M / 65535.0 + 1e-6,
+                "{d} -> {back}"
+            );
+        }
+        assert_eq!(atlas_texel(Some(9.0)).to_le_bytes(), [255, 255, 255, 0]);
         // No data, too near, at or past the range: nothing.
         let (n, f) = (0.1, f32::INFINITY);
         assert!(atlas_distance(1.0, n, f, NEAR_CUT_M).is_none());
@@ -2480,7 +2535,7 @@ mod tests {
             |layer: u32, y: u32, x: u32| atlas_reads(atlas[((layer * res + y) * res + x) as usize]);
         let close = |got: Option<f32>, want: f32| {
             let got = got.expect("data");
-            assert!((got - want).abs() <= 0.0101, "{got} vs {want}");
+            assert!((got - want).abs() <= 1e-3, "{got} vs {want}");
         };
         for y in [0, 1, 100, 319] {
             for x in [0, 160, 319] {
@@ -2533,12 +2588,12 @@ mod tests {
         let at =
             |layer: u32, y: u32, x: u32| atlas_reads(atlas[((layer * res + y) * res + x) as usize]);
         for y in [0, 37, 159] {
-            assert!((at(0, y, 0).unwrap() - 1.0).abs() < 0.011);
-            assert!((at(0, y, 4).unwrap() - 1.0).abs() < 0.011);
+            assert!((at(0, y, 0).unwrap() - 1.0).abs() < 1e-3);
+            assert!((at(0, y, 4).unwrap() - 1.0).abs() < 1e-3);
             assert!(at(0, y, 1).is_none());
-            assert!((at(0, y, 2).unwrap() - 3.0).abs() < 0.011);
+            assert!((at(0, y, 2).unwrap() - 3.0).abs() < 1e-3);
             assert!(at(0, y, 3).is_none());
-            assert!((at(1, y, 77).unwrap() - (0.5 + y as f32 * 0.02)).abs() < 0.011);
+            assert!((at(1, y, 77).unwrap() - (0.5 + y as f32 * 0.02)).abs() < 1e-3);
         }
     }
 
@@ -2569,6 +2624,63 @@ mod tests {
             [
                 [0.1, 20.0, 0.0, 0.3],
                 [DEPTH_ATLAS_RANGE_M, 320.0, 1.0, 0.0]
+            ]
+        );
+    }
+
+    /// The rows `flux_xr_sim.wgsl` reads (its header comment): the
+    /// header, then per layer the position relative to the anchor with the
+    /// near plane, the orientation and the fov tangents.
+    #[test]
+    fn the_collide_rows_follow_the_sim_layout() {
+        let right = Fov {
+            left: -0.8,
+            right: 0.9,
+            up: 0.85,
+            down: -0.9,
+        };
+        let turned = Quat::from_rotation_y(0.2).to_array();
+        let c = DepthCollide {
+            views: [
+                DepthView {
+                    orientation: [0.0, 0.0, 0.0, 1.0],
+                    position: [-0.03, 1.2, 0.4],
+                    fov: FOV,
+                },
+                DepthView {
+                    orientation: turned,
+                    position: [0.03, 1.2, 0.4],
+                    fov: right,
+                },
+            ],
+            near: 0.1,
+            res: 160,
+            thickness_m: 0.15,
+        };
+        let rows = c.rows(Vec3::new(0.0, 1.0, -0.5));
+        assert_eq!(rows.len(), COLLIDE_ROWS);
+        assert_eq!(rows[0], [1.0, 0.15, DEPTH_ATLAS_RANGE_M, 160.0]);
+        let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(near(rows[1], [-0.03, 0.2, 0.9, 0.1]), "{:?}", rows[1]);
+        assert_eq!(rows[2], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            rows[3],
+            [
+                FOV.left.tan(),
+                FOV.right.tan(),
+                FOV.up.tan(),
+                FOV.down.tan()
+            ]
+        );
+        assert!(near(rows[4], [0.03, 0.2, 0.9, 0.1]), "{:?}", rows[4]);
+        assert_eq!(rows[5], turned);
+        assert_eq!(
+            rows[6],
+            [
+                right.left.tan(),
+                right.right.tan(),
+                right.up.tan(),
+                right.down.tan()
             ]
         );
     }
