@@ -4,11 +4,12 @@
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
 //! turned more to the ceiling is a hold instead, `palm_panel.rs`): for now a single
-//! row, the debug panel's on/off toggle. With debug on the same quad grows
-//! upward into the debug panel (frame timing, the effect, hands, reach,
-//! anchor and audio, and controls for what can change without a restart),
-//! the toggle still its bottom row. The quad keeps its bottom edge when it
-//! resizes, so the toggle stays under the pointer either way.
+//! row, the particle pitcher's on/off toggle and the debug panel's. With
+//! debug on the same quad grows upward into the debug panel (frame timing,
+//! the effect, hands, reach, anchor and audio, and controls for what can
+//! change without a restart), the toggles still its bottom row. The quad
+//! keeps its bottom edge when it resizes, so the toggles stay under the
+//! pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
 //! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
@@ -48,7 +49,7 @@ const GRAPH_MAX_MS: f32 = 20.0;
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 7] = [
+const STEPPERS: [(&str, f32, f32, f32); 8] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
@@ -56,6 +57,12 @@ const STEPPERS: [(&str, f32, f32, f32); 7] = [
     ("reach 1:1 within m", 0.2, 0.8, 0.05),
     ("reach gain", 0.0, 60.0, 2.0),
     ("hand scare", 0.0, 1.0, 0.25),
+    (
+        "pitcher /s",
+        crate::instruments::PITCHER_RATE_MIN,
+        crate::instruments::PITCHER_RATE_MAX,
+        500.0,
+    ),
 ];
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -69,6 +76,10 @@ pub struct Controls {
     pub reach_gain: f32,
     /// Murmur's hand predator strength, 0..1.
     pub hand_scare: f32,
+    /// The particle pitcher is on (the hand menu's Pitcher toggle).
+    pub pitcher: bool,
+    /// The pitcher's particles per second.
+    pub pitcher_rate: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -82,6 +93,8 @@ pub enum Action {
     RescanRoom,
     /// The hand menu's debug toggle changed; the app saves it.
     SetDebug(bool),
+    /// The hand menu's pitcher toggle changed (not saved).
+    SetPitcher(bool),
 }
 
 impl Controls {
@@ -93,7 +106,8 @@ impl Controls {
             3 => &mut self.hand_kick,
             4 => &mut self.reach_threshold,
             5 => &mut self.reach_gain,
-            _ => &mut self.hand_scare,
+            6 => &mut self.hand_scare,
+            _ => &mut self.pitcher_rate,
         }
     }
 }
@@ -106,6 +120,7 @@ enum Target {
     Recenter,
     Rescan,
     ToggleDebug,
+    TogglePitcher,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -448,7 +463,7 @@ impl Hud {
                     if debug {
                         crowded = panel_ui(ui, view, &history, controls, rows);
                     } else {
-                        menu_ui(ui, rows);
+                        menu_ui(ui, controls, rows);
                     }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
@@ -503,6 +518,10 @@ impl Hud {
             Some(Target::ToggleDebug) => {
                 self.debug = !self.debug;
                 actions.push(Action::SetDebug(self.debug));
+            }
+            Some(Target::TogglePitcher) => {
+                controls.pitcher = !controls.pitcher;
+                actions.push(Action::SetPitcher(controls.pitcher));
             }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
@@ -914,29 +933,39 @@ fn panel_ui(
     } else {
         Control::Button(Target::Recenter, "Recenter the cloud")
     });
-    block.push(menu_row(true));
+    block.push(menu_row(true, controls.pitcher));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
 }
 
 /// The hand menu with the debug panel off: a title over its bottom row.
-fn menu_ui(ui: &mut egui::Ui, mut rows: Rows<'_>) {
+fn menu_ui(ui: &mut egui::Ui, controls: &Controls, mut rows: Rows<'_>) {
     ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
-    rows.block(ui, MENU_H, &[menu_row(false)]);
+    rows.block(ui, MENU_H, &[menu_row(false, controls.pitcher)]);
 }
 
-/// The bottom row in both layouts, the debug toggle. Its state is in the
-/// words, not a color.
-fn menu_row(debug: bool) -> Control<'static> {
-    Control::Button(
-        Target::ToggleDebug,
-        if debug {
-            "Debug panel: on"
-        } else {
-            "Debug panel: off"
-        },
-    )
+/// The bottom row in both layouts: the pitcher's toggle and the debug
+/// panel's. Their state is in the words, not a color.
+fn menu_row(debug: bool, pitcher: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::TogglePitcher,
+            if pitcher {
+                "Pitcher: on"
+            } else {
+                "Pitcher: off"
+            },
+        )),
+        Some(Cell::Button(
+            Target::ToggleDebug,
+            if debug {
+                "Debug panel: on"
+            } else {
+                "Debug panel: off"
+            },
+        )),
+    ])
 }
 
 /// GPU frame time over the last two seconds, with the 72 Hz budget line.

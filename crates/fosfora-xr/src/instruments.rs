@@ -31,6 +31,16 @@
 //! over [`LIFT_RAMP_S`] and back, by time. The hand menu's left hand never
 //! lifts while the menu is up. There is one lift lane: with both hands
 //! lifting, the one that started later wins.
+//!
+//! **The pitcher** (board #3402). Turned on from the hand menu, the right
+//! far palm (the left holds the menu) pours a steady stream along its palm
+//! normal: [`Pitcher::step`] yields a [`Pour`] of `rate x dt` particles a
+//! frame (the fraction carried over), born within [`POUR_NOZZLE_M`] of the
+//! far palm and flying at the pitcher's speed within [`POUR_SPREAD_DEG`] of
+//! the normal, with the cloud's full lifetime, so the stream reaches the
+//! floor, lands and slides. It rides the burst rows ([`Pour::as_burst`])
+//! plus one row of its own ([`pour_row`]); a throw's burst wins the rows,
+//! and the pour skips that frame.
 
 use glam::{Quat, Vec3};
 
@@ -74,6 +84,17 @@ pub const LIFT_RAMP_S: f32 = 0.3;
 const SPEED_TAU_S: f32 = 0.1;
 /// Speed a newly seen palm starts from (m/s), so it has to settle first.
 const SPEED_UNSEEN_M_S: f32 = 1.0;
+
+/// Pitcher: its rate (particles per second, `debug.fosfora.pitcherrate`,
+/// and the panel's range), speed (m/s, `debug.fosfora.pitcherspeed`), the
+/// cone's half-angle around the palm normal (degrees; `XR_POUR_SPREAD` in
+/// `flux_xr_sim.wgsl`) and the nozzle's radius (m).
+pub const PITCHER_RATE: f32 = 4000.0;
+pub const PITCHER_RATE_MIN: f32 = 500.0;
+pub const PITCHER_RATE_MAX: f32 = 20_000.0;
+pub const PITCHER_SPEED_M_S: f32 = 1.5;
+pub const POUR_SPREAD_DEG: f32 = 6.0;
+pub const POUR_NOZZLE_M: f32 = 0.02;
 
 /// At most this fraction of the living particles is taken for a burst
 /// ([`steal_fraction`]).
@@ -418,6 +439,124 @@ impl Lifter {
             hand,
         })
     }
+}
+
+/// This frame's pour for the rows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pour {
+    /// The far palm.
+    pub center: Vec3,
+    /// The palm normal (unit).
+    pub dir: Vec3,
+    pub count: u32,
+    /// m/s.
+    pub speed: f32,
+    /// The nozzle (m).
+    pub radius: f32,
+}
+
+impl Pour {
+    /// The pour as the burst rows carry it: the count, the nozzle, full
+    /// brightness (the burst look, so the stream reads through the cloud).
+    pub fn as_burst(&self) -> Burst {
+        Burst {
+            center: self.center,
+            radius: self.radius,
+            count: self.count,
+            hand: 1,
+            impact: false,
+            brightness: 1.0,
+        }
+    }
+}
+
+/// What the pitcher did since the last [`Pitcher::take_stats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PourStats {
+    /// Frames a pour was packed.
+    pub frames: u32,
+    /// Particles asked of the sim in those frames.
+    pub asked: u64,
+    /// Frames the pour gave way to a throw's burst.
+    pub skipped: u32,
+}
+
+/// The particle pitcher on the right far palm.
+#[derive(Debug, Clone, Copy)]
+pub struct Pitcher {
+    pub on: bool,
+    /// Particles per second.
+    pub rate: f32,
+    /// m/s.
+    pub speed: f32,
+    /// The fraction of a particle not yet poured.
+    carry: f32,
+    stats: PourStats,
+}
+
+impl Default for Pitcher {
+    fn default() -> Self {
+        Self::new(PITCHER_RATE, PITCHER_SPEED_M_S)
+    }
+}
+
+impl Pitcher {
+    /// Off, at `rate` particles per second and `speed` m/s.
+    pub fn new(rate: f32, speed: f32) -> Self {
+        Self {
+            on: false,
+            rate,
+            speed,
+            carry: 0.0,
+            stats: PourStats::default(),
+        }
+    }
+
+    /// Advance by `dt` with the right far palm (`None`: untracked) and its
+    /// normal; this frame's pour. Off or untracked, nothing (and nothing
+    /// carried over). `throw_busy`: a throw has the rows this frame, so the
+    /// frame's particles are dropped and the frame counted as skipped.
+    pub fn step(&mut self, palm: Option<(Vec3, Vec3)>, throw_busy: bool, dt: f32) -> Option<Pour> {
+        let Some((center, normal)) = palm.filter(|_| self.on) else {
+            self.carry = 0.0;
+            return None;
+        };
+        let dir = normal.try_normalize()?;
+        self.carry += self.rate.max(0.0) * dt.max(0.0);
+        let whole = self.carry.floor();
+        self.carry -= whole;
+        if throw_busy {
+            self.stats.skipped += 1;
+            return None;
+        }
+        let count = whole as u32;
+        if count == 0 {
+            return None;
+        }
+        self.stats.frames += 1;
+        self.stats.asked += u64::from(count);
+        Some(Pour {
+            center,
+            dir,
+            count,
+            speed: self.speed,
+            radius: POUR_NOZZLE_M,
+        })
+    }
+
+    /// The counts since the last call, reset.
+    pub fn take_stats(&mut self) -> PourStats {
+        std::mem::take(&mut self.stats)
+    }
+}
+
+/// The pour row after the depth rows (`XR_AUX_POUR` in `flux_xr_sim.wgsl`):
+/// xyz the pour's direction (unit; a direction is the same in the anchor's
+/// frame, which only translates), w its speed (m/s). All zeros without a
+/// pour: a burst in the burst rows is then a throw's, flying outward.
+pub fn pour_row(pour: Option<Pour>) -> [f32; 4] {
+    pour.filter(|p| p.count > 0)
+        .map_or([0.0; 4], |p| [p.dir.x, p.dir.y, p.dir.z, p.speed.max(0.0)])
 }
 
 /// The instrument rows (layout in `flux_xr_sim.wgsl`, "Instrument rows"),
@@ -813,6 +952,108 @@ mod tests {
         // A burst alone still carries its brightness; a lift alone leaves 0.
         assert_eq!(rows(Some(burst), None, anchor)[2], [0.0, 0.0, 0.0, 0.5]);
         assert_eq!(rows(None, Some(lift), anchor)[2][3], 0.0);
+    }
+
+    const RIGHT_PALM: (Vec3, Vec3) = (Vec3::new(0.3, 1.0, -1.5), Vec3::new(0.0, -1.0, 0.0));
+
+    #[test]
+    fn a_pitcher_pours_its_rate_with_the_fraction_carried_over() {
+        for (dt, hz) in [(1.0 / 72.0, 72.0), (1.0 / 90.0, 90.0)] {
+            let mut p = Pitcher {
+                on: true,
+                ..Pitcher::default()
+            };
+            let pours: Vec<Pour> = (0..hz as usize)
+                .filter_map(|_| p.step(Some(RIGHT_PALM), false, dt))
+                .collect();
+            // One second: the rate, to the particle, in frames of the
+            // whole part of rate x dt (55 or 56 at 72 Hz, not 55 each).
+            let total: u32 = pours.iter().map(|p| p.count).sum();
+            assert!(
+                (total as f32 - PITCHER_RATE).abs() <= 1.0,
+                "{total} at {hz} Hz"
+            );
+            let per = PITCHER_RATE / hz;
+            assert!(
+                pours
+                    .iter()
+                    .all(|p| p.count == per.floor() as u32 || p.count == per.ceil() as u32),
+                "{pours:?}"
+            );
+            let first = pours[0];
+            assert_eq!((first.center, first.dir), RIGHT_PALM);
+            assert_eq!(
+                (first.speed, first.radius),
+                (PITCHER_SPEED_M_S, POUR_NOZZLE_M)
+            );
+            let stats = p.take_stats();
+            assert_eq!(
+                (stats.frames, stats.asked, stats.skipped),
+                (hz as u32, u64::from(total), 0)
+            );
+            assert_eq!(p.take_stats(), PourStats::default());
+        }
+        // A slow pitcher pours on some frames only, still at its rate.
+        let mut p = Pitcher {
+            on: true,
+            ..Pitcher::new(PITCHER_RATE_MIN, PITCHER_SPEED_M_S)
+        };
+        let total: u32 = (0..720)
+            .filter_map(|_| p.step(Some(RIGHT_PALM), false, DT))
+            .map(|p| p.count)
+            .sum();
+        assert!(
+            (total as f32 - 10.0 * PITCHER_RATE_MIN).abs() <= 1.0,
+            "{total}"
+        );
+    }
+
+    #[test]
+    fn off_or_untracked_nothing_pours_and_a_throw_takes_the_frame() {
+        let mut p = Pitcher::default();
+        assert!(p.step(Some(RIGHT_PALM), false, DT).is_none(), "off");
+        p.on = true;
+        assert!(p.step(None, false, DT).is_none(), "untracked");
+        assert_eq!(p.take_stats(), PourStats::default());
+        // A throw's frames are dropped, not saved up for later.
+        for _ in 0..10 {
+            assert!(p.step(Some(RIGHT_PALM), true, DT).is_none());
+        }
+        let after = p.step(Some(RIGHT_PALM), false, DT).expect("pours again");
+        assert!(
+            after.count <= (PITCHER_RATE * DT).ceil() as u32,
+            "{after:?}"
+        );
+        let stats = p.take_stats();
+        assert_eq!((stats.frames, stats.skipped), (1, 10));
+        // The palm normal is made unit; a zero normal pours nothing.
+        let long = p
+            .step(Some((RIGHT_PALM.0, Vec3::new(0.0, 0.0, -3.0))), false, DT)
+            .unwrap();
+        assert_eq!(long.dir, Vec3::NEG_Z);
+        assert!(
+            p.step(Some((RIGHT_PALM.0, Vec3::ZERO)), false, DT)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_pour_rides_the_burst_rows_and_its_own() {
+        let anchor = Vec3::new(0.0, 1.0, -1.0);
+        let mut p = Pitcher {
+            on: true,
+            ..Pitcher::default()
+        };
+        let pour = p.step(Some(RIGHT_PALM), false, DT).unwrap();
+        let r = rows(Some(pour.as_burst()), None, anchor);
+        assert_eq!(r[0][0].to_bits(), pour.count);
+        assert_eq!(r[1], [0.3, 0.0, -0.5, POUR_NOZZLE_M]);
+        assert_eq!(r[2][3], 1.0);
+        assert_eq!(pour_row(Some(pour)), [0.0, -1.0, 0.0, PITCHER_SPEED_M_S]);
+        // No pour, or an empty one: zeros, and a burst in the rows is a
+        // throw's.
+        assert_eq!(pour_row(None), [0.0; 4]);
+        assert_eq!(pour_row(Some(Pour { count: 0, ..pour })), [0.0; 4]);
     }
 
     #[test]

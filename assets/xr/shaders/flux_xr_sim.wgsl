@@ -53,8 +53,9 @@
 //                   unused here)
 //   aux[170..173]   the instrument rows (below; Murmur ignores them)
 //   aux[173..180]   the live depth rows (below; Murmur ignores them)
+//   aux[180]        the pour row (below; Murmur ignores it)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
-// near fade, no instruments and no depth collide.
+// near fade, no instruments, no depth collide and no pour.
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -117,6 +118,19 @@
 // differences); at a silhouette (a neighbor without data or more than
 // XR_DEPTH_SILHOUETTE_M away) it is the ray toward the camera.
 //
+// Pour row (board #3402; crates/fosfora-xr/src/instruments.rs, the
+// particle pitcher on the right far palm):
+//   aux[180]   xyz = the pour's direction (unit, the palm normal), w = its
+//              speed (m/s); 0 = no pour
+// A pour rides the burst rows: aux[170].x its count, aux[171] the far palm
+// and the nozzle's radius, aux[172].w brightness 1. With w > 0 a burst
+// particle flies along the direction at the speed, within XR_POUR_SPREAD of
+// it (uniform over the cone's cap), instead of out of the ball, and lives
+// the full lifetime instead of XR_BURST_LIFE of it, so the stream reaches
+// the floor and rests there; it looks like any burst particle. With w = 0
+// the burst is a throw's, unchanged. The XR app zeroes the row on a frame a
+// throw has the burst rows.
+//
 // Surface lanes (board #3317; crates/fosfora-xr/src/surfaces.rs): the kind
 // is 0 none, 1 table (DESK or TABLE), 2 floor, 3 wall, 4 ceiling, 5 door or
 // window frame, 6 other, as a float; the weight is 0 for a box that emits
@@ -138,9 +152,11 @@ const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
 // After Murmur's per-hand lanes (163..170, XR_AUX_END in murmur_xr_sim.wgsl).
 const XR_AUX_INSTRUMENTS: u32 = 170u;
 const XR_AUX_INSTRUMENT_ROWS: u32 = 3u;
-// After the instrument rows (board #3352); the XR app uploads 180 rows.
+// After the instrument rows (board #3352).
 const XR_AUX_DEPTH: u32 = 173u;
 const XR_AUX_DEPTH_ROWS: u32 = 7u;
+// After the depth rows (board #3402); the XR app uploads 181 rows.
+const XR_AUX_POUR: u32 = 180u;
 
 // The depth collide's tangential damping per colliding frame, and the
 // depth jump between neighboring texels (m) that reads as a silhouette.
@@ -158,6 +174,9 @@ const XR_BURST_ALPHA: f32 = 0.35;
 const XR_BURST_WHITE: f32 = 0.5;
 const XR_FREE: f32 = 2.0;
 const XR_FREE_REACH_M: f32 = 13.0;
+// The pour's cone: half-angle around its direction (radians; 6 degrees,
+// instruments::POUR_SPREAD_DEG).
+const XR_POUR_SPREAD: f32 = 0.10471976;
 // The lift's acceleration at strength 1 (m/s^2) and its lateral damping
 // (per second).
 const XR_LIFT_ACCEL: f32 = 4.0;
@@ -563,9 +582,25 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
     return true;
 }
 
+// A pour particle's direction: within XR_POUR_SPREAD of `axis` (unit),
+// uniform over the cone's cap.
+fn xr_pour_dir(idx: u32, axis: vec3f) -> vec3f {
+    let c = xr_rand3(idx, 9u);
+    let cos_t = 1.0 - c.x * (1.0 - cos(XR_POUR_SPREAD));
+    let sin_t = sqrt(max(1.0 - cos_t * cos_t, 0.0));
+    let phi = c.y * 6.2831853;
+    // Any vector not along the axis gives the cap's frame.
+    let helper = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), abs(axis.x) > 0.9);
+    let t1 = normalize(cross(axis, helper));
+    let t2 = cross(axis, t1);
+    return axis * cos_t + (t1 * cos(phi) + t2 * sin(phi)) * sin_t;
+}
+
 // A burst particle for slot idx (the instrument rows, above): the volume
 // path's color, size and opacity, born within the burst's radius, flying
-// out from its center, fully opaque at once and with a shorter life.
+// out from its center, fully opaque at once and with a shorter life; a
+// pour's (the pour row, above) flies along the pour instead and lives the
+// full lifetime.
 fn xr_burst(idx: u32, half: f32) -> Particle {
     let b = aux[XR_AUX_INSTRUMENTS + 1u].home;
     let given = aux[XR_AUX_INSTRUMENTS + 2u].home.w;
@@ -580,15 +615,21 @@ fn xr_burst(idx: u32, half: f32) -> Particle {
     let radius = max(b.w, 0.0);
     // Uniform in the ball: the radius goes as the cube root.
     let at = dir * radius * pow(r.z, 1.0 / 3.0);
-    let speed = mix(0.3, 1.2, s.x) * radius / XR_BURST_REF_RADIUS;
-    let life = u.lifetime * XR_BURST_LIFE;
+    var vel = dir * (mix(0.3, 1.2, s.x) * radius / XR_BURST_REF_RADIUS);
+    var life = u.lifetime * XR_BURST_LIFE;
+    let pour = aux[XR_AUX_POUR].home;
+    let axis_len = length(pour.xyz);
+    if pour.w > 0.0 && axis_len > 1e-4 {
+        vel = xr_pour_dir(idx, pour.xyz / axis_len) * pour.w;
+        life = u.lifetime;
+    }
     p.pos_life = vec4f(b.xyz + at, XR_FREE);
     // Bigger, brighter and more opaque than the cloud, so the streak and
     // the ball read through it; a dimmed streak falls back toward the
     // cloud's sprite, opacity and color.
     let size = p.flags.z * mix(1.0, XR_BURST_SIZE, bright);
     let alpha = mix(p.flags.w, XR_BURST_ALPHA, bright);
-    p.vel_size = vec4f(dir * speed, size);
+    p.vel_size = vec4f(vel, size);
     p.color = vec4f(
         mix(p.color.rgb, vec3f(1.0, 0.95, 0.85), XR_BURST_WHITE * bright),
         alpha
