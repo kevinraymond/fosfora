@@ -172,6 +172,8 @@ struct CircularBuffer {
     cap: usize,
     write: usize,
     count: usize,
+    /// Reused by the median/MAD selection so the per-hop threshold allocates nothing.
+    scratch: Vec<f64>,
 }
 
 impl CircularBuffer {
@@ -181,6 +183,7 @@ impl CircularBuffer {
             cap: capacity,
             write: 0,
             count: 0,
+            scratch: Vec::with_capacity(capacity),
         }
     }
 
@@ -196,48 +199,47 @@ impl CircularBuffer {
         self.count
     }
 
-    fn values(&self) -> Vec<f64> {
-        if self.count == 0 {
-            return Vec::new();
-        }
+    /// The contents oldest-first, written into `out` (cleared first).
+    fn copy_values_into(&self, out: &mut Vec<f64>) {
+        out.clear();
         if self.count < self.cap {
-            self.buf[..self.count].to_vec()
+            out.extend_from_slice(&self.buf[..self.count]);
         } else {
-            let start = self.write;
-            let mut v = Vec::with_capacity(self.cap);
-            v.extend_from_slice(&self.buf[start..]);
-            v.extend_from_slice(&self.buf[..start]);
-            v
+            out.extend_from_slice(&self.buf[self.write..]);
+            out.extend_from_slice(&self.buf[..self.write]);
         }
     }
 
-    fn median(&self) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let mut vals = self.values();
-        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mid = vals.len() / 2;
-        if vals.len().is_multiple_of(2) {
-            f64::midpoint(vals[mid - 1], vals[mid])
-        } else {
-            vals[mid]
-        }
+    #[cfg(test)]
+    fn values(&self) -> Vec<f64> {
+        let mut v = Vec::new();
+        self.copy_values_into(&mut v);
+        v
     }
 
-    fn mad(&self) -> f64 {
+    #[cfg(test)]
+    fn median(&mut self) -> f64 {
+        self.median_mad().0
+    }
+
+    #[cfg(test)]
+    fn mad(&mut self) -> f64 {
+        self.median_mad().1
+    }
+
+    /// Median and median absolute deviation, `(0.0, 0.0)` when empty. One pass fills
+    /// the scratch, so the median is found once and nothing is allocated (#75).
+    fn median_mad(&mut self) -> (f64, f64) {
         if self.count == 0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
-        let med = self.median();
-        let mut abs_devs: Vec<f64> = self.values().iter().map(|v| (v - med).abs()).collect();
-        abs_devs.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mid = abs_devs.len() / 2;
-        if abs_devs.len().is_multiple_of(2) {
-            f64::midpoint(abs_devs[mid - 1], abs_devs[mid])
-        } else {
-            abs_devs[mid]
+        self.scratch.clear();
+        self.scratch.extend_from_slice(&self.buf[..self.count]);
+        let med = median_in_place(&mut self.scratch);
+        for v in &mut self.scratch {
+            *v = (*v - med).abs();
         }
+        (med, median_in_place(&mut self.scratch))
     }
 
     fn max(&self) -> f64 {
@@ -267,6 +269,20 @@ impl CircularBuffer {
         } else {
             self.buf.iter().sum::<f64>() / self.cap as f64
         }
+    }
+}
+
+/// Median of a non-empty slice (mean of the middle two for an even length), by
+/// selection; reorders `v`. Matches sorting and indexing the middle.
+fn median_in_place(v: &mut [f64]) -> f64 {
+    let mid = v.len() / 2;
+    let even = v.len().is_multiple_of(2);
+    let (below, at, _) = v.select_nth_unstable_by(mid, f64::total_cmp);
+    if even {
+        let lower = below.iter().copied().max_by(f64::total_cmp).unwrap_or(*at);
+        f64::midpoint(lower, *at)
+    } else {
+        *at
     }
 }
 
@@ -384,7 +400,7 @@ impl OnsetDetector {
         self.ensure_bands(bass_spectrum.len());
 
         // Current per-band log magnitude.
-        let mut cur = vec![0.0f64; N_ONSET_BANDS];
+        let mut cur = [0.0f64; N_ONSET_BANDS];
         for (b, &(lo, hi)) in self.band_bins.iter().enumerate() {
             let hi = hi.min(bass_spectrum.len());
             let mut e = 0.0f64;
@@ -409,7 +425,8 @@ impl OnsetDetector {
                 part[self.band_partition[b] as usize] += flux;
             }
         }
-        self.prev_log.clone_from(&cur);
+        self.prev_log.clear();
+        self.prev_log.extend_from_slice(&cur);
 
         // Mean flux per partition, weighted into one onset value (weights sum to 1).
         let mean = |sum: f64, count: usize| if count > 0 { sum / count as f64 } else { 0.0 };
@@ -431,9 +448,8 @@ impl OnsetDetector {
         (is_onset, onset_strength, combined_flux)
     }
 
-    fn compute_threshold(&self) -> f64 {
-        let median = self.onset_history.median();
-        let mad = self.onset_history.mad();
+    fn compute_threshold(&mut self) -> f64 {
+        let (median, mad) = self.onset_history.median_mad();
         let base_threshold = median + self.threshold_mult as f64 * mad;
 
         let min_threshold = 0.001;
@@ -801,6 +817,20 @@ struct TempoEstimator {
     /// Q2b (F3): last tempo published while locked — held on the wire through
     /// unlocks so the readout never blanks or glides mid-set.
     last_locked_bpm: f64,
+    /// Buffers `compute_tempo` reuses across its every-few-hops runs (#75).
+    acf: AcfScratch,
+}
+
+/// Working storage for one autocorrelation tempo estimate, kept on the estimator so a
+/// run allocates nothing after the first.
+#[derive(Default)]
+struct AcfScratch {
+    history: Vec<f64>,
+    fft_buf: Vec<Complex<f64>>,
+    fft_scratch: Vec<Complex<f64>>,
+    autocorr: Vec<f64>,
+    peaks: Vec<(f64, f64)>,
+    floor: Vec<f64>,
 }
 
 impl TempoEstimator {
@@ -842,6 +872,7 @@ impl TempoEstimator {
             challenge_level: None,
             challenge_above_since: None,
             last_locked_bpm: 0.0,
+            acf: AcfScratch::default(),
         }
     }
 
@@ -1263,7 +1294,15 @@ impl TempoEstimator {
     }
 
     fn compute_tempo(&mut self) -> (f64, f64, f64) {
-        let history = self.onset_history.values();
+        let mut acf = std::mem::take(&mut self.acf);
+        let result = self.compute_tempo_with(&mut acf);
+        self.acf = acf;
+        result
+    }
+
+    fn compute_tempo_with(&mut self, acf: &mut AcfScratch) -> (f64, f64, f64) {
+        self.onset_history.copy_values_into(&mut acf.history);
+        let history = &acf.history;
         let n = history.len();
 
         // Convert BPM range to lag range (frames)
@@ -1280,20 +1319,27 @@ impl TempoEstimator {
         // subharmonics, reducing octave ambiguity.
         // Mean-subtract to remove DC offset — critical for autocorrelation contrast.
         let mean = history.iter().sum::<f64>() / n as f64;
-        let mut buffer: Vec<Complex<f64>> = vec![Complex::new(0.0, 0.0); self.fft_size];
-        for (i, &v) in history.iter().enumerate() {
-            buffer[i] = Complex::new(v - mean, 0.0);
-        }
+        let buffer = &mut acf.fft_buf;
+        buffer.clear();
+        buffer.extend(history.iter().map(|&v| Complex::new(v - mean, 0.0)));
+        buffer.resize(self.fft_size, Complex::new(0.0, 0.0));
+        let scratch_len = self
+            .fft_forward
+            .get_inplace_scratch_len()
+            .max(self.fft_inverse.get_inplace_scratch_len());
+        acf.fft_scratch.resize(scratch_len, Complex::new(0.0, 0.0));
 
-        self.fft_forward.process(&mut buffer);
+        self.fft_forward
+            .process_with_scratch(buffer, &mut acf.fft_scratch);
 
         // Power spectrum |X|^2 — standard autocorrelation (Wiener-Khinchin)
-        for c in &mut buffer {
+        for c in buffer.iter_mut() {
             let power = c.norm_sqr();
             *c = Complex::new(power, 0.0);
         }
 
-        self.fft_inverse.process(&mut buffer);
+        self.fft_inverse
+            .process_with_scratch(buffer, &mut acf.fft_scratch);
 
         // Normalize by fft_size (rustfft doesn't normalize) and by zero-lag
         let scale = 1.0 / self.fft_size as f64;
@@ -1310,11 +1356,15 @@ impl TempoEstimator {
         // history). Divide it out; clamp the factor so the noisy far tail (few
         // products per bin) cannot explode.
         let acr_len = (4 * max_lag + 1).min(n).min(self.fft_size);
-        let autocorr: Vec<f64> = buffer[..acr_len]
-            .iter()
-            .enumerate()
-            .map(|(lag, c)| (c.re * scale / zero_lag) * (n as f64 / (n - lag) as f64).min(4.0))
-            .collect();
+        let autocorr = &mut acf.autocorr;
+        autocorr.clear();
+        autocorr.extend(
+            buffer[..acr_len]
+                .iter()
+                .enumerate()
+                .map(|(lag, c)| (c.re * scale / zero_lag) * (n as f64 / (n - lag) as f64).min(4.0)),
+        );
+        let autocorr = &*autocorr;
         let acr_max = autocorr.len() - 1;
 
         // Q2: candidates live in CONTINUOUS lag from here on. Adjacent-bin
@@ -1324,7 +1374,8 @@ impl TempoEstimator {
         // max, so refine each ACF peak at its own bin, then project metrical
         // ratios in float.
         let range_end = max_lag.min(acr_max.saturating_sub(1));
-        let mut peaks: Vec<(f64, f64)> = Vec::new(); // (refined lag, refined height)
+        let peaks = &mut acf.peaks; // (refined lag, refined height)
+        peaks.clear();
         for lag in min_lag.max(1)..=range_end {
             let (alpha, beta, gamma) = (autocorr[lag - 1], autocorr[lag], autocorr[lag + 1]);
             if beta < alpha || beta < gamma || beta <= 0.0 {
@@ -1369,14 +1420,14 @@ impl TempoEstimator {
         let max_lag_f = 60.0 / (self.bpm_range.0 as f64 * self.frame_time);
 
         let mut best: Option<(f64, f64)> = None; // (lag, weighted score)
-        for &(peak_lag, _) in &peaks {
+        for &(peak_lag, _) in peaks.iter() {
             for &(num, den) in &ratios {
                 let cand = peak_lag * num / den;
                 if cand < min_lag_f || cand > max_lag_f {
                     continue;
                 }
                 let bpm = 60.0 / (cand * self.frame_time);
-                let weighted = comb_score(&autocorr, cand)
+                let weighted = comb_score(autocorr, cand)
                     * self.tempo_prior_weight(bpm)
                     * self.continuity_weight(bpm);
                 if best.is_none_or(|(_, b)| weighted > b) {
@@ -1394,11 +1445,13 @@ impl TempoEstimator {
         // floor across the candidate range.
         let confidence = {
             let range_end = max_lag.min(acr_max);
-            let mut sorted_vals: Vec<f64> = autocorr[min_lag..=range_end].to_vec();
-            sorted_vals
-                .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let noise_floor = sorted_vals[sorted_vals.len() / 2]; // median
-            let peak = acf_at(&autocorr, best_lag_f);
+            let floor = &mut acf.floor;
+            floor.clear();
+            floor.extend_from_slice(&autocorr[min_lag..=range_end]);
+            let mid = floor.len() / 2;
+            // Upper median, by selection rather than a sort.
+            let noise_floor = *floor.select_nth_unstable_by(mid, f64::total_cmp).1;
+            let peak = acf_at(autocorr, best_lag_f);
             ((peak - noise_floor) / (1.0 - noise_floor).max(1e-6)).clamp(0.0, 1.0)
         };
 
@@ -2048,7 +2101,7 @@ mod tests {
 
     #[test]
     fn circular_buffer_median_empty() {
-        let buf = CircularBuffer::new(5);
+        let mut buf = CircularBuffer::new(5);
         assert_eq!(buf.median(), 0.0);
     }
 
