@@ -3,7 +3,10 @@
 //! after the pour row (`surfaces::lane_row`) and the behavior per box the
 //! weights, the wall spectrum and the floor ripple follow. Plain data, so
 //! it builds and tests on the desktop; `app.rs` feeds it the frame's
-//! boxes and the `debug.fosfora.surface` knob.
+//! boxes, the `debug.fosfora.surface` knob and the room editor's pinches
+//! (`room_edit.rs`), which go through the same typed calls the knob does
+//! ([`RoomLanes::assign`], [`RoomLanes::assign_kind_of`],
+//! [`RoomLanes::cycle`]): one path that writes, saves and logs.
 //!
 //! The rows are rebuilt only when the box list (UUIDs and kinds, in order)
 //! or an assignment changes: the boxes relocate once a second but keep
@@ -321,33 +324,98 @@ impl RoomLanes {
             .collect::<Result<Vec<_>, _>>()?;
         let mut lines = Vec::new();
         for (a, hits) in assignments.iter().zip(&targets) {
-            let what = format!("{}@{:.2}", a.behavior.name(), a.strength);
-            match a.target {
-                Target::Kind(kind) => {
-                    let live = hits.iter().map(|&k| boxes[k].uuid);
-                    let n = self.file.assign_kind(kind, a.behavior, a.strength, live);
-                    lines.push(format!(
-                        "every {} ({} in the room, {n} entries, the kind default) -> {what}",
-                        kind_name(kind),
-                        hits.len()
-                    ));
-                }
-                _ => {
-                    for &k in hits {
-                        let b = &boxes[k];
-                        self.file.assign(b.uuid, b.kind, a.behavior, a.strength);
-                        let (label, uuid8) = box_label(b);
-                        lines.push(format!("{label} {uuid8} ({}) -> {what}", kind_name(b.kind)));
-                    }
-                }
-            }
+            lines.extend(self.write(a, hits, boxes));
         }
+        self.commit(&lines);
+        Ok(())
+    }
+
+    /// Assign `behavior` at `strength` to what `target` names among
+    /// `boxes` (a box, or a kind: its default and every anchor of it), save
+    /// the file and log it, as a knob value of one assignment does. `Err`
+    /// (nothing applied) when the target names nothing.
+    pub fn assign(
+        &mut self,
+        target: &Target,
+        behavior: SurfaceBehavior,
+        strength: f32,
+        boxes: &[LaneBox<'_>],
+    ) -> Result<(), String> {
+        let hits = resolve(target, boxes)?;
+        let a = Assignment {
+            target: target.clone(),
+            behavior,
+            strength,
+        };
+        let lines = self.write(&a, &hits, boxes);
+        self.commit(&lines);
+        Ok(())
+    }
+
+    /// What box `k` of `boxes` runs under the file as it is now (not as of
+    /// the last update): its entry's behavior and strength, else its kind's
+    /// default at full strength. `None` past the boxes.
+    pub fn effective(&self, k: usize, boxes: &[LaneBox<'_>]) -> Option<(SurfaceBehavior, f32)> {
+        let b = boxes.get(k)?;
+        let (behavior, strength, _) = self.file.resolve(&b.uuid, b.kind);
+        Some((behavior, strength))
+    }
+
+    /// The class assignment from one surface: box `k`'s effective behavior
+    /// and strength become its kind's default and every anchor of that
+    /// kind's, saved and logged.
+    pub fn assign_kind_of(&mut self, k: usize, boxes: &[LaneBox<'_>]) -> Result<(), String> {
+        let (behavior, strength) = self
+            .effective(k, boxes)
+            .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
+        self.assign(&Target::Kind(boxes[k].kind), behavior, strength, boxes)
+    }
+
+    /// Advance box `k` one step through the catalogue
+    /// ([`SurfaceBehavior::next`]) from its effective behavior (the kind's
+    /// default when it has no entry, not `none`), its strength kept (1
+    /// when unset); saved and logged. Returns the new behavior, `Err` past
+    /// the boxes.
+    pub fn cycle(&mut self, k: usize, boxes: &[LaneBox<'_>]) -> Result<SurfaceBehavior, String> {
+        let (behavior, strength) = self
+            .effective(k, boxes)
+            .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
+        let next = behavior.next();
+        self.assign(&Target::Index(k), next, strength, boxes)?;
+        Ok(next)
+    }
+
+    /// Write one assignment to the file for the boxes `hits` it resolved
+    /// to; the log lines it makes (without the save suffix).
+    fn write(&mut self, a: &Assignment, hits: &[usize], boxes: &[LaneBox<'_>]) -> Vec<String> {
+        let what = format!("{}@{:.2}", a.behavior.name(), a.strength);
+        if let Target::Kind(kind) = a.target {
+            let live = hits.iter().map(|&k| boxes[k].uuid);
+            let n = self.file.assign_kind(kind, a.behavior, a.strength, live);
+            return vec![format!(
+                "every {} ({} in the room, {n} entries, the kind default) -> {what}",
+                kind_name(kind),
+                hits.len()
+            )];
+        }
+        hits.iter()
+            .map(|&k| {
+                let b = &boxes[k];
+                self.file.assign(b.uuid, b.kind, a.behavior, a.strength);
+                let (label, uuid8) = box_label(b);
+                format!("{label} {uuid8} ({}) -> {what}", kind_name(b.kind))
+            })
+            .collect()
+    }
+
+    /// After a change: save the file, log `lines` with how the save went,
+    /// and bump the revision so the next update rebuilds the rows.
+    fn commit(&mut self, lines: &[String]) {
         let saved = self.save();
         for line in lines {
             info!("room {}: {line}{saved}", room_label(self.room));
         }
         self.revision += 1;
-        Ok(())
     }
 
     /// Save the room file; the log's suffix for how that went.
@@ -674,6 +742,105 @@ mod tests {
         // Unset and set again: applies again.
         assert!(!again.poll_knob(None, false, &shuffled));
         assert!(again.poll_knob(Some("clear"), false, &shuffled));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cycle_steps_through_the_catalogue_and_wraps() {
+        assert_eq!(B::None.next(), B::Embers);
+        assert_eq!(B::Embers.next(), B::Sparks);
+        assert_eq!(B::Sparks.next(), B::Spectrum);
+        assert_eq!(B::Spectrum.next(), B::Ripple);
+        assert_eq!(B::Ripple.next(), B::None);
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        // The couch (other, default none): five pinches go round once.
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            seen.push(lanes.cycle(4, &boxes).unwrap());
+        }
+        assert_eq!(
+            seen,
+            [B::Embers, B::Sparks, B::Spectrum, B::Ripple, B::None]
+        );
+        lanes.update(id, &boxes);
+        assert_eq!(lanes.behavior(4), B::None);
+        // Past the boxes: refused, nothing written.
+        assert!(lanes.cycle(6, &boxes).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cycle_on_an_unset_box_starts_from_its_default_and_keeps_the_strength() {
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-unset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        // The desk runs embers with no entry: its first pinch is sparks,
+        // not embers (the step after none).
+        assert_eq!(lanes.effective(0, &boxes), Some((B::Embers, 1.0)));
+        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Sparks));
+        // A wall on the spectrum by default goes to the ripple.
+        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Ripple));
+        // A strength set by the knob is kept across a cycle.
+        assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Spectrum));
+        assert_eq!(lanes.effective(3, &boxes), Some((B::Spectrum, 0.4)));
+        lanes.update(id, &boxes);
+        assert_close!(lanes.rows()[3], lane_row(B::Spectrum, 0.4, [0.0; 2]));
+        assert_eq!(lanes.behavior(0), B::Sparks);
+        assert_eq!(lanes.behavior(1), B::Ripple);
+        // Saved: a relaunch finds them.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_eq!(again.behavior(0), B::Sparks);
+        assert_eq!(again.behavior(3), B::Spectrum);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_class_assignment_takes_the_pointed_surfaces_behavior() {
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-kind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        // The first wall to none at 0.5, then to every wall.
+        lanes
+            .assign(&Target::Index(1), B::None, 0.5, &boxes)
+            .unwrap();
+        lanes.assign_kind_of(1, &boxes).unwrap();
+        assert_eq!(lanes.effective(2, &boxes), Some((B::None, 0.5)));
+        // The kind default too: a wall the file does not know runs none.
+        let mut more = boxes.clone();
+        more.insert(
+            5,
+            LaneBox {
+                uuid: uuid(6),
+                kind: KIND_WALL,
+                label: "WALL_FACE",
+            },
+        );
+        assert_eq!(lanes.effective(5, &more).map(|e| e.0), Some(B::None));
+        // The stage floor's class is the floor kind: the scene floor too.
+        lanes
+            .assign(&Target::Index(5), B::Ripple, 1.0, &boxes)
+            .unwrap();
+        lanes.assign_kind_of(5, &boxes).unwrap();
+        assert_eq!(lanes.effective(3, &boxes), Some((B::Ripple, 1.0)));
+        assert!(lanes.assign_kind_of(9, &boxes).is_err());
+        assert!(
+            lanes
+                .assign(&Target::Index(9), B::None, 1.0, &boxes)
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

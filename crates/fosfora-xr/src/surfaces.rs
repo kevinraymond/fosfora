@@ -125,6 +125,14 @@ impl SurfaceBehavior {
             .find(|b| b.name().eq_ignore_ascii_case(name))
     }
 
+    /// The next behavior in the catalogue, wrapping: none, embers, sparks,
+    /// spectrum, ripple, none. The room editor's pinch steps a surface
+    /// through it (board #3326).
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self::ALL[(self.id() as usize + 1) % Self::ALL.len()]
+    }
+
     /// Whether the sim spawns particles on a surface running it.
     pub fn emits(self) -> bool {
         matches!(self, Self::Embers | Self::Sparks)
