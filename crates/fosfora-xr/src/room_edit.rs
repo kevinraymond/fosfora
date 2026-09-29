@@ -348,9 +348,10 @@ impl Cloud {
 /// nothing (the ripple, the spectrum, `none`, an unset row), every other
 /// row keeps its behavior at strength 0 (2c's rule): the weights stay on
 /// the boxes that emit, a draw that lands on one spawns nothing (the sim
-/// multiplies a box's gate by its lane's strength), and the sim never
-/// falls back to the volume, which it does when no box weighs anything.
-/// An unset row there (all zero: the sim would run its kind's default at
+/// multiplies a box's gate by its lane's strength). That kept the sim off
+/// its volume fallback, which ran whenever no box weighed anything; since
+/// step 2e it runs only with no boxes at all, so turning every row to none
+/// there would now be silent too, but the rule stands. An unset row there (all zero: the sim would run its kind's default at
 /// full, whatever the strength) becomes `none` at 0.
 pub fn solo(
     rows: &[[f32; 4]; SURFACE_LANE_ROWS],
@@ -884,8 +885,9 @@ mod tests {
         // On the floor on sparks: its own weight, and nothing else weighs.
         assert_close!(weigh(&solo(&rows, Some(2))), [0.0, 0.0, 0.5, 0.0, 0.0]);
         // On the wall (the spectrum spawns nothing), or on nothing: the
-        // weights stay where they were, so the sim does not fall back to
-        // the volume, and every strength but the hit's is 0.
+        // weights stay where they were (2c's rule, from when no weight
+        // anywhere sent the sim to the volume), and every strength but the
+        // hit's is 0.
         for hit in [Some(3), None] {
             let soloed = solo(&rows, hit);
             assert_close!(weigh(&soloed), [1.0, 0.5, 0.5, 0.0, 0.0]);

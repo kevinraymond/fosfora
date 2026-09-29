@@ -58,7 +58,8 @@
 //                   Murmur ignores them)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
 // near fade, no instruments, no depth collide, no pour and every box on
-// its kind's behavior.
+// its kind's behavior; with no boxes, a surface-emit preset spawns in the
+// volume.
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -140,9 +141,11 @@
 // nothing (every kind but tables and floors in the first pass, a surface
 // out of the volume, the stage floor when the room has its own). A preset
 // with param(6) > 0.5 (Flux XR Room's `surface_emit`) spawns on the top
-// faces of the weighted boxes instead of in the volume; with no weight
-// anywhere, or param(6) = 0 (every other preset: they have six inputs),
-// the volume path runs unchanged.
+// faces of the weighted boxes instead of in the volume; with boxes but no
+// weight anywhere (every surface on none, say) it spawns nothing (step
+// 2e: the volume fallback filled a room whose surfaces were all none);
+// with no boxes at all, or param(6) = 0 (every other preset: they have six
+// inputs), the volume path runs unchanged.
 //
 // Surface behavior lanes (board #3326; crates/fosfora-xr/src/lanes.rs and
 // surfaces.rs `lane_row`): what each box does, chosen per surface and
@@ -613,8 +616,9 @@ fn xr_surface_point(k: u32, half: f32, r: vec3f) -> vec3f {
 }
 
 // Spawn a particle for slot idx: on a surface when this preset asks for it
-// and some box carries weight, otherwise in the volume (emit_particle,
-// unchanged). Surface spawns draw over the boxes' cumulative weight times
+// and some box carries weight; with boxes but no weight anywhere, nowhere
+// (returns false); in the volume when the preset does not ask for surfaces
+// or there are no boxes (emit_particle, unchanged). Surface spawns draw over the boxes' cumulative weight times
 // their gate (xr_box_gate: the lane's behavior and strength, or the kind's
 // default behavior)
 // against the ungated total, so a draw past the gated sum
@@ -630,8 +634,19 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
         }
     }
     if total <= 0.0 {
-        *out = emit_particle(idx, half);
-        return true;
+        // The volume only for a run with no room at all (no anchors, no
+        // stage floor): boxes that all weigh nothing are a room whose
+        // surfaces are all `none` (or spawn nothing, like the ripple and
+        // the spectrum), which is silent, not a cloud from nowhere (step
+        // 2e). The XR app pushes the stage floor as a box in mr and world
+        // modes, so a run with no anchors spawns nothing unless the stage
+        // floor's lane emits (its default is the ripple): the unworn cost
+        // sweeps set `debug.fosfora.surface "#0=sparks"`.
+        if box_count == 0u {
+            *out = emit_particle(idx, half);
+            return true;
+        }
+        return false;
     }
     let pick = xr_rand3(idx, 3u);
     let draw = pick.x * total;
