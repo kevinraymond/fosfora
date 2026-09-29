@@ -1198,8 +1198,14 @@ fn a_pour_lands_on_the_floor_within_its_cone_and_rests_there() {
         let angle = s.vel.angle_between(Vec3::NEG_Y);
         assert!(angle <= spread + 1e-4, "{s:?}: {angle} rad off the pour");
         widest = widest.max(angle);
-        assert_eq!(s.max_life, PRESET_LIFETIME, "{s:?}: not the full lifetime");
-        assert_eq!(s.life, 2.0, "free of the volume, like a burst");
+        assert!(
+            (s.max_life - PRESET_LIFETIME).abs() < 1e-6,
+            "{s:?}: not the full lifetime"
+        );
+        assert!(
+            (s.life - 2.0).abs() < 1e-6,
+            "free of the volume, like a burst"
+        );
     }
     assert!(widest > spread * 0.7, "a cone, not a line: {widest}");
     // Where each lands: its first frame at the floor, within the cone's
@@ -1260,9 +1266,8 @@ fn a_pour_lands_on_the_floor_within_its_cone_and_rests_there() {
                 "{s:?}: not flying outward"
             );
         }
-        assert_eq!(
-            s.max_life,
-            PRESET_LIFETIME * 0.5,
+        assert!(
+            (s.max_life - PRESET_LIFETIME * 0.5).abs() < 1e-6,
             "{s:?}: not a burst's life"
         );
     }

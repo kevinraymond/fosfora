@@ -11,6 +11,11 @@
 //! geometry as obstacles; the room's surfaces as emitters, the floor
 //! ripple, the wall spectrum and the hand instruments.
 
+// Declared first: `assert_close!` is textually scoped to the modules after it.
+#[cfg(test)]
+#[macro_use]
+mod test_util;
+
 #[cfg(target_os = "android")]
 mod app;
 #[cfg(target_os = "android")]

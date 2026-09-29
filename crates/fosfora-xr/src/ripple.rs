@@ -340,7 +340,7 @@ mod tests {
         let rings: Vec<_> = r.rings().copied().collect();
         assert_eq!(rings.len(), 1);
         assert_eq!(rings[0].origin, Vec2::new(HEAD.x, HEAD.z));
-        assert_eq!(rings[0].born_s, 0.5);
+        assert_close!(rings[0].born_s, 0.5);
         assert!((rings[0].amp - (AMP_FLOOR + (1.0 - AMP_FLOOR) * 0.8)).abs() < 1e-6);
         // A beat with no low end still shows, dimmer.
         r.update(0.6, 0.01, HEAD, true, 0.0, 0.0);
@@ -386,7 +386,7 @@ mod tests {
         let mut r = Ripple::default();
         r.update(0.0, 0.01, Vec3::ZERO, true, 1.0, 0.0);
         let t = CUT_S + 0.01;
-        assert_eq!(r.intensity(t, Vec2::new(SPEED_M_S * t, 0.0)), 0.0);
+        assert_close!(r.intensity(t, Vec2::new(SPEED_M_S * t, 0.0)), 0.0);
         let rows = r.uniform(t, [Vec3::ZERO; 4]);
         assert!(rows[8..].iter().all(|row| row[3] == 0.0));
         // And the next update frees its slot.
@@ -398,7 +398,7 @@ mod tests {
     fn the_glow_breathes_with_the_bass() {
         let mut r = Ripple::default();
         r.update(0.0, 0.01, Vec3::ZERO, false, 0.0, 0.0);
-        assert_eq!(r.intensity(0.0, Vec2::ZERO), 0.0);
+        assert_close!(r.intensity(0.0, Vec2::ZERO), 0.0);
         r.update(0.01, 0.01, Vec3::ZERO, false, 0.0, 1.0);
         let center = r.intensity(0.01, Vec2::ZERO);
         assert!((center - GLOW_LEVEL).abs() < 1e-6);
@@ -411,8 +411,8 @@ mod tests {
         r.update(0.0, 0.01, HEAD, true, 1.0, 0.5);
         let corners = r.quad(None, Some(0.0)).expect("synthetic floor quad");
         let rows = r.uniform(0.5, corners);
-        assert_eq!(rows[0][1], LIFT_M);
-        assert_eq!(
+        assert_close!(rows[0][1], LIFT_M);
+        assert_close!(
             rows[4],
             [WIDTH_M, GLOW_RADIUS_M, GLOW_LEVEL * 0.5, PEAK_ALPHA * 0.5]
         );

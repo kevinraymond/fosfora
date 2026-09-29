@@ -355,12 +355,12 @@ mod tests {
             table(Vec3::new(0.3, -0.5, 0.0), [0.4, 0.4]),
         ];
         let w = weights_of(&boxes, 1.5);
-        assert_eq!(w[0], 0.0);
+        assert_close!(w[0], 0.0);
         // Still weighed against the desk, which exists in the room.
         assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
         // A floor 2 m below the anchor (the top face out of reach in y).
         let w = weights_of(&[synthetic_floor(Vec3::new(0.0, 2.0, 0.0), 1.0)], 1.5);
-        assert_eq!(w[0], 0.0);
+        assert_close!(w[0], 0.0);
         // The anchor dragged 5 m across the room: the floor under it still
         // counts, though its center (the stage origin) is out of the cube.
         let w = weights_of(&[synthetic_floor(Vec3::new(5.0, 1.0, 3.0), 1.0)], 1.5);
@@ -369,12 +369,13 @@ mod tests {
 
     #[test]
     fn the_synthetic_floor_emits_only_without_a_scene_floor() {
-        assert_eq!(synthetic_floor_emit([KIND_TABLE, KIND_WALL]), 1.0);
-        assert_eq!(synthetic_floor_emit([]), 1.0);
-        assert_eq!(synthetic_floor_emit([KIND_TABLE, KIND_FLOOR]), 0.0);
+        assert_close!(synthetic_floor_emit([KIND_TABLE, KIND_WALL]), 1.0);
+        assert_close!(synthetic_floor_emit([]), 1.0);
+        assert_close!(synthetic_floor_emit([KIND_TABLE, KIND_FLOOR]), 0.0);
         let w = weights_of(&[synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 0.0)], 1.5);
-        assert_eq!(
-            w[0], 0.0,
+        assert_close!(
+            w[0],
+            0.0,
             "a flagged-off floor must not double the scene floor"
         );
     }

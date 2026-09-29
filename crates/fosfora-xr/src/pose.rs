@@ -780,13 +780,13 @@ mod tests {
         };
         let rows = lane_rows(26, [open, holding], 0.4, anchor);
         assert_eq!(rows[0][0].to_bits(), 26);
-        assert_eq!(rows[1], [1.0, 0.0, 0.75, 0.0]);
-        assert_eq!(rows[2], [0.0; 4]);
-        assert_eq!(rows[4], [1.0, 1.0, 0.75, 1.0]);
+        assert_close!(rows[1], [1.0, 0.0, 0.75, 0.0]);
+        assert_close!(rows[2], [0.0; 4]);
+        assert_close!(rows[4], [1.0, 1.0, 0.75, 1.0]);
         let c = rows[5];
         assert!((Vec3::new(c[0], c[1], c[2]) - Vec3::new(0.3, 0.4, -1.0)).length() < 1e-6);
-        assert_eq!(c[3], 0.25);
-        assert_eq!(rows[6], [0.5, 0.0, 0.0, 0.05]);
+        assert_close!(c[3], 0.25);
+        assert_close!(rows[6], [0.5, 0.0, 0.0, 0.05]);
     }
 
     #[test]
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(kind, HoldKind::PalmUp);
         // Above the far palm, along its normal.
         assert!((center - (L + Vec3::Y * HOLD_RADIUS_M * HOLD_LIFT)).length() < 1e-6);
-        assert_eq!(radius, HOLD_RADIUS_M);
+        assert_close!(radius, HOLD_RADIUS_M);
     }
 
     #[test]
@@ -856,7 +856,7 @@ mod tests {
         assert!(none.is_none() && ended.is_none());
         let at = |x: f32| Some((HoldKind::PalmUp, Vec3::new(x, 1.0, -1.0), 0.25));
         let (h, _) = t.update(at(0.0), DT);
-        assert_eq!(h.expect("hold").age_s, 0.0);
+        assert_close!(h.expect("hold").age_s, 0.0);
         let mut last = None;
         for i in 1..=36 {
             last = t.update(at(0.5 * i as f32 * DT), DT).0;

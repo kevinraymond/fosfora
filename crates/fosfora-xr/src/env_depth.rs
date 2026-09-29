@@ -2945,8 +2945,8 @@ mod tests {
         assert_eq!(c0.rows(Vec3::ZERO, 5)[0][0].to_bits(), 1);
         let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
         assert!(near(rows[1], [-0.03, 0.2, 0.9, 0.1]), "{:?}", rows[1]);
-        assert_eq!(rows[2], [0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(
+        assert_close!(rows[2], [0.0, 0.0, 0.0, 1.0]);
+        assert_close!(
             rows[3],
             [
                 FOV.left.tan(),
@@ -2956,8 +2956,8 @@ mod tests {
             ]
         );
         assert!(near(rows[4], [0.03, 0.2, 0.9, 0.1]), "{:?}", rows[4]);
-        assert_eq!(rows[5], turned);
-        assert_eq!(
+        assert_close!(rows[5], turned);
+        assert_close!(
             rows[6],
             [
                 right.left.tan(),
@@ -2982,17 +2982,17 @@ mod tests {
         let rows = r.uniform();
         assert_eq!(rows[0..4], r.view_proj.to_cols_array_2d());
         assert_eq!(rows[8..12], r.depth_view.to_cols_array_2d());
-        assert_eq!(rows[16], [0.1, 1.4, 0.2, RAY_DISTANCE_M]);
-        assert_eq!(rows[18], [0.1, 0.0, 1.0, NEAR_CUT_M]);
-        assert_eq!(rows[19], [320.0, 320.0, 1680.0, 1760.0]);
-        assert_eq!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
+        assert_close!(rows[16], [0.1, 1.4, 0.2, RAY_DISTANCE_M]);
+        assert_close!(rows[18], [0.1, 0.0, 1.0, NEAR_CUT_M]);
+        assert_close!(rows[19], [320.0, 320.0, 1680.0, 1760.0]);
+        assert_close!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
         r.far = 20.0;
         r.layer = 1;
         r.filter_edge_m = FILTER_EDGE_M;
         let rows = r.uniform();
         assert_eq!(rows[18][..3], [0.1, 20.0, 0.0]);
-        assert_eq!(rows[20][0], 1.0);
-        assert_eq!(rows[20][3], FILTER_EDGE_M);
+        assert_close!(rows[20][0], 1.0);
+        assert_close!(rows[20][3], FILTER_EDGE_M);
         // The inverse view-projection really inverts.
         let inv = Mat4::from_cols_array_2d(&[rows[4], rows[5], rows[6], rows[7]]);
         assert!((inv * r.view_proj).abs_diff_eq(Mat4::IDENTITY, 1e-4));

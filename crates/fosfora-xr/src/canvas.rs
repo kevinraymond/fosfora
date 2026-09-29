@@ -502,15 +502,15 @@ mod tests {
         let mut bars = [0.0; 24];
         bands_to_bars(&bands, &mut bars);
         // Bar 0 is bands 0..2 (mean 0.5), the last 61..64 (mean 62).
-        assert_eq!(bars[0], 0.5);
-        assert_eq!(bars[23], 62.0);
+        assert_close!(bars[0], 0.5);
+        assert_close!(bars[23], 62.0);
         assert!(bars.windows(2).all(|w| w[1] > w[0]));
         // Fewer bands than bars is the canvas's job to avoid; still no panic.
         let mut many = [0.0; 4];
         bands_to_bars(&[1.0, 3.0], &mut many);
-        assert_eq!(many, [1.0, 1.0, 3.0, 3.0]);
+        assert_close!(many, [1.0, 1.0, 3.0, 3.0]);
         bands_to_bars(&[], &mut many);
-        assert_eq!(many, [0.0; 4]);
+        assert_close!(many, [0.0; 4]);
     }
 
     #[test]
@@ -570,7 +570,7 @@ mod tests {
         for _ in 0..(20 * 72) {
             c.update(DT, &[0.1, 0.0]);
         }
-        assert_eq!(c.top(), MIN_TOP);
+        assert_close!(c.top(), MIN_TOP);
         assert_eq!(c.heights(), &[0.0, 0.0]);
     }
 
@@ -595,8 +595,8 @@ mod tests {
         for (row, p) in rows.iter().zip(corners) {
             assert_eq!(row[..3], p.to_array());
         }
-        assert_eq!(rows[4][0], 6.0);
-        assert_eq!(rows[4][1], PEAK_ALPHA * 0.5);
+        assert_close!(rows[4][0], 6.0);
+        assert_close!(rows[4][1], PEAK_ALPHA * 0.5);
         assert!(rows[4][2] > 0.0);
         assert_eq!(rows[5][..3], COLOR);
         let packed: Vec<f32> = rows[8..].iter().flatten().copied().collect();

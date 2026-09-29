@@ -229,8 +229,8 @@ mod tests {
         // under the pointer stays under it.
         let menu = MENU_H - row(MENU_H, 0).max[1];
         let panel = PANEL_H - row(PANEL_H, 0).max[1];
-        assert_eq!(menu, MARGIN);
-        assert_eq!(panel, MARGIN);
+        assert_close!(menu, MARGIN);
+        assert_close!(panel, MARGIN);
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         ] {
             assert!(f >= MIN_FONT, "{f}");
         }
-        assert_eq!(MIN_FONT, 12.0);
+        assert_close!(MIN_FONT, 12.0);
         // The debug panel: the header over the fullest control block.
         assert!(block_top(PANEL_H, DEBUG_ROWS) >= MARGIN + HEADER_H);
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.

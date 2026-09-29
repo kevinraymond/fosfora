@@ -677,7 +677,7 @@ mod tests {
         assert!(Flight::aim(HEAD, HEAD, &boxes).is_none());
         // A short throw still flies for the minimum time.
         let near = Flight::aim(HEAD, Vec3::new(0.0, 1.2, -1.9), &boxes).unwrap();
-        assert_eq!(near.duration_s, MIN_FLIGHT_S);
+        assert_close!(near.duration_s, MIN_FLIGHT_S);
     }
 
     /// Frames of `thrower.step` until it has nothing to pack, with each
@@ -731,7 +731,11 @@ mod tests {
                     .all(|w| w[1].brightness <= w[0].brightness),
                 "the streak never brightens"
             );
-            assert!(impact.iter().all(|b| b.brightness == 1.0));
+            assert!(
+                impact
+                    .iter()
+                    .all(|b| crate::test_util::close(&b.brightness, &1.0))
+            );
             // The streak runs from the pinch toward the hit.
             assert!(streak[0].center.abs_diff_eq(f.from, 0.1));
             let last = streak.last().unwrap().center;
@@ -831,7 +835,7 @@ mod tests {
             assert!(on.strength > 0.0 && on.strength < 1.0, "{on:?}");
             assert_eq!((on.at, on.radius, on.hand), (PALM, LIFT_RADIUS_M, 1));
             let full = hold(&mut l, LIFT_RAMP_S, dt, |_| open_down(PALM)).unwrap();
-            assert_eq!(full.strength, 1.0);
+            assert_close!(full.strength, 1.0);
             // A fist: off, ramping down over the ramp time, by time.
             let fist = |_| LiftHand {
                 pose: Some(Pose::Fist),
@@ -949,13 +953,13 @@ mod tests {
         let r = rows(Some(burst), Some(lift), anchor);
         assert_eq!(r[0][0].to_bits(), 1500);
         assert_eq!(r[0][1..], [0.5, 0.35, 0.0]);
-        assert_eq!(r[1], [0.5, 0.5, -2.0, BURST_RADIUS_M]);
+        assert_close!(r[1], [0.5, 0.5, -2.0, BURST_RADIUS_M]);
         let p = Vec3::from_slice(&r[2][..3]);
         assert!(p.abs_diff_eq(Vec3::new(0.2, 0.1, -0.4), 1e-6));
-        assert_eq!(r[2][3], 0.5);
+        assert_close!(r[2][3], 0.5);
         // A burst alone still carries its brightness; a lift alone leaves 0.
-        assert_eq!(rows(Some(burst), None, anchor)[2], [0.0, 0.0, 0.0, 0.5]);
-        assert_eq!(rows(None, Some(lift), anchor)[2][3], 0.0);
+        assert_close!(rows(Some(burst), None, anchor)[2], [0.0, 0.0, 0.0, 0.5]);
+        assert_close!(rows(None, Some(lift), anchor)[2][3], 0.0);
     }
 
     const RIGHT_PALM: (Vec3, Vec3) = (Vec3::new(0.3, 1.0, -1.5), Vec3::new(0.0, -1.0, 0.0));
@@ -1051,25 +1055,25 @@ mod tests {
         let pour = p.step(Some(RIGHT_PALM), false, DT).unwrap();
         let r = rows(Some(pour.as_burst()), None, anchor);
         assert_eq!(r[0][0].to_bits(), pour.count);
-        assert_eq!(r[1], [0.3, 0.0, -0.5, POUR_NOZZLE_M]);
-        assert_eq!(r[2][3], 1.0);
-        assert_eq!(pour_row(Some(pour)), [0.0, -1.0, 0.0, PITCHER_SPEED_M_S]);
+        assert_close!(r[1], [0.3, 0.0, -0.5, POUR_NOZZLE_M]);
+        assert_close!(r[2][3], 1.0);
+        assert_close!(pour_row(Some(pour)), [0.0, -1.0, 0.0, PITCHER_SPEED_M_S]);
         // No pour, or an empty one: zeros, and a burst in the rows is a
         // throw's.
-        assert_eq!(pour_row(None), [0.0; 4]);
-        assert_eq!(pour_row(Some(Pour { count: 0, ..pour })), [0.0; 4]);
+        assert_close!(pour_row(None), [0.0; 4]);
+        assert_close!(pour_row(Some(Pour { count: 0, ..pour })), [0.0; 4]);
     }
 
     #[test]
     fn a_full_sim_steals_what_the_dead_slots_cannot_give() {
         // Plenty of dead slots: nothing taken.
-        assert_eq!(steal_fraction(1500, 380_000, 400_000), 0.0);
+        assert_close!(steal_fraction(1500, 380_000, 400_000), 0.0);
         // A sim at its count: the burst's share of the living.
         let f = steal_fraction(1500, 399_700, 400_000);
         assert!((f - 1200.0 / 399_700.0).abs() < 1e-7, "{f}");
         // Never more than the cap, and nothing without a burst.
-        assert_eq!(steal_fraction(1_000_000, 1000, 1000), MAX_STEAL);
-        assert_eq!(steal_fraction(0, 1000, 1000), 0.0);
-        assert_eq!(steal_fraction(1500, 0, 1000), 0.0);
+        assert_close!(steal_fraction(1_000_000, 1000, 1000), MAX_STEAL);
+        assert_close!(steal_fraction(0, 1000, 1000), 0.0);
+        assert_close!(steal_fraction(1500, 0, 1000), 0.0);
     }
 }

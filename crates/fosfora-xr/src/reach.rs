@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn within_the_threshold_the_hand_is_the_real_hand() {
         for d in [0.0, 0.2, THRESHOLD_M - 0.01, THRESHOLD_M] {
-            assert_eq!(extend(d, THRESHOLD_M, GAIN), d);
+            assert_close!(extend(d, THRESHOLD_M, GAIN), d);
         }
     }
 
@@ -142,7 +142,7 @@ mod tests {
         let at = |d: f32| extend(d, THRESHOLD_M, GAIN);
         assert!((at(0.52) - 2.456).abs() < 0.01, "{}", at(0.52));
         assert!((at(0.45) - 1.35).abs() < 0.01, "{}", at(0.45));
-        assert_eq!(at(0.60), MAX_REACH_M);
+        assert_close!(at(0.60), MAX_REACH_M);
     }
 
     #[test]

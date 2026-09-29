@@ -1774,6 +1774,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // Hand poses: each hand's curl range and highest palm
                 // up-ness this second, against the thresholds.
                 if curl_range.iter().any(|r| r.0 < f32::MAX) {
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "f32::MAX/MIN are the \"none this second\" sentinels, stored verbatim"
+                    )]
                     let range = |r: (f32, f32)| {
                         if r.0 == f32::MAX {
                             "-".to_owned()
@@ -1781,6 +1785,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             format!("{:.3}..{:.3}", r.0, r.1)
                         }
                     };
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "f32::MAX/MIN are the \"none this second\" sentinels, stored verbatim"
+                    )]
                     let up = |u: f32| {
                         if u == f32::MIN {
                             "-".to_owned()
@@ -1802,6 +1810,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 curl_range = [(f32::MAX, 0.0); 2];
                 up_max = [f32::MIN; 2];
+                #[expect(
+                    clippy::float_cmp,
+                    reason = "f32::MAX/MIN are the \"none this second\" sentinels, stored verbatim"
+                )]
                 let mm = |d: f32| {
                     if d == f32::MAX {
                         "-".to_owned()
