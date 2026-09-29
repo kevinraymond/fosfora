@@ -33,11 +33,12 @@ pub const COL_GAP: f32 = 6.0;
 /// The -/+ and Prev/Next boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
 /// The hand menu's rows, in both layouts at the bottom of the block: the
-/// pitcher and debug toggles over the room editor's (board #3326).
-pub const MENU_ROWS: usize = 2;
+/// pitcher and debug toggles over the room editor's (board #3326), over
+/// the cloud's (step 2c).
+pub const MENU_ROWS: usize = 3;
 /// The hand menu's height (points): the top of the texture the quad shows
 /// with debug off, a title over the menu rows.
-pub const MENU_H: f32 = 84.0 + ROW_H + ROW_GAP;
+pub const MENU_H: f32 = 84.0 + 2.0 * (ROW_H + ROW_GAP);
 /// Fonts (points): the title, a stepper's value and label, a button, the
 /// end boxes' glyphs, the graph's labels, and the smallest anywhere on the
 /// panel (legible at arm's length). The header lines are egui's body text
@@ -58,7 +59,7 @@ pub const HEADER_H: f32 = 320.0;
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: Prev/Next, the steppers' pair
 /// rows, Recenter and Rescan, then the menu rows (Pitcher and Debug, Edit
-/// room and its status).
+/// room and its status, Cloud).
 pub const DEBUG_ROWS: usize = 1 + STEPPERS.div_ceil(2) + 1 + MENU_ROWS;
 
 // A stepper's label over its value in one row, and the menu's title over
@@ -297,13 +298,14 @@ mod tests {
         // The debug panel: the header over the fullest control block, ten
         // steppers in five full pair rows (the space size filled the fifth
         // row's empty cell, board #3325), so no taller than with nine,
-        // and the room editor's row under the menu's (board #3326).
-        assert_eq!(DEBUG_ROWS, 9);
+        // the room editor's row under the menu's (board #3326) and the
+        // cloud's under that (step 2c).
+        assert_eq!(DEBUG_ROWS, 10);
         assert!(block_top(PANEL_H, DEBUG_ROWS) >= MARGIN + HEADER_H);
-        // The hand menu: a title over two rows, 40 points taller than
-        // with one.
-        assert_eq!(MENU_ROWS, 2);
-        assert_close!(MENU_H, 124.0);
+        // The hand menu: a title over three rows, 40 points taller for
+        // each past the first.
+        assert_eq!(MENU_ROWS, 3);
+        assert_close!(MENU_H, 164.0);
         assert!(block_top(MENU_H, MENU_ROWS) >= MARGIN + FONT_TITLE * 1.4);
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));

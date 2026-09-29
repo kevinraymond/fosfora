@@ -3,10 +3,11 @@
 //! it and turns the right hand's ray or fingertip into a pointer).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): two
-//! rows, the particle pitcher's on/off toggle and the debug panel's, and
-//! under them the room editor's toggle beside its status ("desk: embers",
-//! board #3326). With debug on the same quad grows upward into the debug
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): three
+//! rows, the particle pitcher's on/off toggle and the debug panel's, under
+//! them the room editor's toggle beside its status ("desk: embers",
+//! board #3326), and under that the cloud's toggle (`room_edit::Cloud`).
+//! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
 //! at its bottom. The quad keeps its bottom edge when it resizes, so the
@@ -99,6 +100,11 @@ pub struct Controls {
     /// The room editor is on (the hand menu's Edit room toggle; not saved,
     /// off at launch).
     pub edit_room: bool,
+    /// The world effect's cloud is on (the hand menu's Cloud toggle; not
+    /// saved, on at launch): off, its emission goes to 0 with `density`
+    /// kept, or with `edit_room` on only the pointed surface spawns
+    /// (`room_edit::Cloud`).
+    pub cloud: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -116,6 +122,8 @@ pub enum Action {
     SetPitcher(bool),
     /// The hand menu's Edit room toggle changed (not saved).
     SetEditRoom(bool),
+    /// The hand menu's Cloud toggle changed (not saved).
+    SetCloud(bool),
 }
 
 impl Controls {
@@ -145,6 +153,7 @@ enum Target {
     ToggleDebug,
     TogglePitcher,
     ToggleEdit,
+    ToggleCloud,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -553,6 +562,10 @@ impl Hud {
             Some(Target::ToggleEdit) => {
                 controls.edit_room = !controls.edit_room;
                 actions.push(Action::SetEditRoom(controls.edit_room));
+            }
+            Some(Target::ToggleCloud) => {
+                controls.cloud = !controls.cloud;
+                actions.push(Action::SetCloud(controls.cloud));
             }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
@@ -1000,6 +1013,7 @@ fn panel_ui(
     });
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
+    block.push(cloud_row(controls.cloud));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1011,11 +1025,24 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, edit_status: &str, mut rows: 
     let block: [Control<'_>; grid::MENU_ROWS] = [
         menu_row(false, controls.pitcher),
         edit_row(controls.edit_room, edit_status),
+        cloud_row(controls.cloud),
     ];
     rows.block(ui, MENU_H, &block);
 }
 
-/// The room editor's row, the bottom row in both layouts: its toggle and
+/// The cloud's row, the bottom row in both layouts: its toggle, the right
+/// cell empty (step 2c). The state is in the words, not a color.
+fn cloud_row(on: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::ToggleCloud,
+            if on { "Cloud: on" } else { "Cloud: off" },
+        )),
+        None,
+    ])
+}
+
+/// The room editor's row, over the cloud's in both layouts: its toggle and
 /// its status (board #3326). The state is in the words, not a color.
 fn edit_row(on: bool, status: &str) -> Control<'_> {
     Control::Pair([

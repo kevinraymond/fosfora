@@ -34,10 +34,25 @@
 //! counts as a tap ([`short_drag_is_tap`]; `app.rs` times it). The
 //! highlight pulses once ([`PULSE_S`]) for a cycle, twice for a class
 //! assignment.
+//!
+//! **The cloud toggle** (step 2c, [`Cloud`]): the hand menu's Cloud row.
+//! Off, the world effect's emission goes to 0 through the density path,
+//! the density kept so on restores it; off while Edit room is on, the
+//! pointed surface is soloed: emission stays at the density, but every
+//! other box's lane row goes to the sim at strength 0 ([`solo`]), so only
+//! the hit spawns and the wearer sees its embers, its sparks or nothing,
+//! alone. The particle system offers no way to clear the living cloud
+//! without a core change, so turning the cloud off, or moving the solo to
+//! another surface, leaves what is alive to die over its lifetime (12 s
+//! for Flux XR Room). Kevin, worn, Sep 29: "Half the time I don't even
+//! know what's happening because the giant particle cloud is everywhere";
+//! with every table shedding into 400K living sprites, one table's change
+//! was lost in the mass.
 
 use glam::Vec3;
 
 use crate::instruments::{Hit, RayBox, cast};
+use crate::surfaces::{SURFACE_LANE_ROWS, SurfaceBehavior, lane_row};
 
 /// Seconds the ray has to stay on another box before it is the hit.
 pub const CONFIRM_S: f32 = 0.15;
@@ -263,6 +278,101 @@ impl RoomEditor {
         self.pulse
             .map_or(0.0, |(age, _)| 1.0 - (age % PULSE_S) / PULSE_S)
     }
+}
+
+/// What the world effect's cloud runs this frame, from the hand menu's
+/// Cloud toggle and Edit room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cloud {
+    /// Emission at the density, the lane rows as the lanes give them.
+    On,
+    /// Emission 0, the density kept.
+    Off,
+    /// Edit room with the cloud off: emission at the density, only box
+    /// `k` (the editor's hit) spawning; with no hit nothing spawns.
+    Solo(Option<usize>),
+}
+
+impl Cloud {
+    /// The cloud for the toggle `cloud`, Edit room `edit_room` and the
+    /// editor's hit (a lane index).
+    pub fn of(cloud: bool, edit_room: bool, hit: Option<usize>) -> Self {
+        match (cloud, edit_room) {
+            (true, _) => Self::On,
+            (false, false) => Self::Off,
+            (false, true) => Self::Solo(hit),
+        }
+    }
+
+    /// The world effect's emission against its preset's, for the cloud
+    /// density `density`: 0 off, else the density.
+    pub fn emission(self, density: f32) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::On | Self::Solo(_) => density,
+        }
+    }
+
+    /// The lane rows to upload for the lanes' `rows`: soloed
+    /// ([`solo`]) while soloing, else as they are. A copy, so the lanes'
+    /// own rows and the room file never change.
+    pub fn rows(self, rows: &[[f32; 4]; SURFACE_LANE_ROWS]) -> [[f32; 4]; SURFACE_LANE_ROWS] {
+        match self {
+            Self::Solo(hit) => solo(rows, hit),
+            Self::On | Self::Off => *rows,
+        }
+    }
+
+    /// The log line for a change to this cloud, `name` naming a box
+    /// (`surfaces::friendly_name`).
+    pub fn describe(self, name: impl FnOnce(usize) -> String) -> String {
+        match self {
+            Self::On => "cloud on".to_owned(),
+            Self::Off => "cloud off: emission 0, the cloud fades over the lifetime".to_owned(),
+            Self::Solo(Some(k)) => format!("cloud off, edit room: solo {}", name(k)),
+            Self::Solo(None) => {
+                "cloud off, edit room: solo, no surface (nothing spawns)".to_owned()
+            }
+        }
+    }
+}
+
+/// `rows` with every box but `hit` at strength 0: the sim multiplies a
+/// box's gate by its lane's strength, so only the hit spawns, and with no
+/// hit nothing does. The behaviors stay, so the weights (which follow the
+/// behaviors, not the strengths) keep the hit's share and a draw that
+/// lands on another box spawns nothing. An unset row (all zero: the sim
+/// would run its kind's gate at full, whatever the strength) becomes
+/// `none` at 0. The hit's row is left as it is.
+pub fn solo(
+    rows: &[[f32; 4]; SURFACE_LANE_ROWS],
+    hit: Option<usize>,
+) -> [[f32; 4]; SURFACE_LANE_ROWS] {
+    let mut out = *rows;
+    for (k, row) in out.iter_mut().enumerate() {
+        if Some(k) == hit {
+            continue;
+        }
+        if row[0] <= 0.5 {
+            *row = lane_row(SurfaceBehavior::None, 0.0, [row[2], row[3]]);
+        } else {
+            row[1] = 0.0;
+        }
+    }
+    out
+}
+
+/// The emission to apply for `cloud` at `density` when it differs from
+/// the one `applied` last (the app's density path): `None` while it holds.
+pub fn emission_change(applied: f32, cloud: Cloud, density: f32) -> Option<f32> {
+    let want = cloud.emission(density);
+    ((applied - want).abs() > 1e-4).then_some(want)
+}
+
+/// The cloud toggle at launch from the `debug.fosfora.cloud` knob's
+/// value: "0" off, anything else (unset too) on.
+pub fn cloud_knob(value: Option<&str>) -> bool {
+    value.map(str::trim) != Some("0")
 }
 
 #[cfg(test)]
@@ -587,5 +697,102 @@ mod tests {
         assert!(r.origin.abs_diff_eq(Vec3::new(0.0, 1.2, -2.0), 1e-6));
         assert!(r.dir.abs_diff_eq(Vec3::NEG_Z, 1e-6));
         assert_eq!(Ray::through(HEAD, HEAD), None);
+    }
+
+    #[test]
+    fn the_cloud_follows_the_toggle_and_edit_room() {
+        assert_eq!(Cloud::of(true, false, None), Cloud::On);
+        assert_eq!(Cloud::of(true, true, Some(3)), Cloud::On);
+        assert_eq!(Cloud::of(false, false, Some(3)), Cloud::Off);
+        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::Solo(Some(3)));
+        assert_eq!(Cloud::of(false, true, None), Cloud::Solo(None));
+        let name = |k: usize| format!("desk {k}");
+        assert_eq!(Cloud::On.describe(name), "cloud on");
+        assert_eq!(
+            Cloud::Off.describe(name),
+            "cloud off: emission 0, the cloud fades over the lifetime"
+        );
+        assert_eq!(
+            Cloud::Solo(Some(2)).describe(name),
+            "cloud off, edit room: solo desk 2"
+        );
+        assert_eq!(
+            Cloud::Solo(None).describe(name),
+            "cloud off, edit room: solo, no surface (nothing spawns)"
+        );
+    }
+
+    #[test]
+    fn cloud_off_keeps_the_density_and_on_restores_it() {
+        // The app's density path: the emission applied, changed only when
+        // the cloud or the density asks for another.
+        let mut density = 0.4;
+        let mut applied = 1.0;
+        let mut run = |cloud: Cloud, density: f32| {
+            if let Some(e) = emission_change(applied, cloud, density) {
+                applied = e;
+            }
+            applied
+        };
+        assert_close!(run(Cloud::On, density), 0.4);
+        assert_close!(run(Cloud::Off, density), 0.0);
+        // The stepper moves while off: the density changes, the emission
+        // stays 0.
+        density = 0.65;
+        assert_close!(run(Cloud::Off, density), 0.0);
+        // Solo runs at the density; off again, 0; on, the new density.
+        assert_close!(run(Cloud::Solo(Some(1)), density), 0.65);
+        assert_close!(run(Cloud::Solo(None), density), 0.65);
+        assert_close!(run(Cloud::Off, density), 0.0);
+        assert_close!(run(Cloud::On, density), 0.65);
+        // Nothing to apply while it holds.
+        assert_eq!(emission_change(0.65, Cloud::On, 0.65), None);
+        assert_eq!(emission_change(0.0, Cloud::Off, 0.65), None);
+        assert_eq!(emission_change(0.65, Cloud::Off, 0.65), Some(0.0));
+    }
+
+    #[test]
+    fn solo_leaves_only_the_hit_spawning() {
+        use SurfaceBehavior as B;
+        let mut rows = [[0.0; 4]; SURFACE_LANE_ROWS];
+        rows[0] = lane_row(B::Spectrum, 1.0, [0.0; 2]);
+        rows[1] = lane_row(B::Embers, 1.0, [0.0; 2]);
+        rows[2] = lane_row(B::Sparks, 0.5, [0.25, 0.75]);
+        rows[3] = lane_row(B::Embers, 0.8, [0.0; 2]);
+        let soloed = solo(&rows, Some(3));
+        // The hit as it was.
+        assert_close!(soloed[3], rows[3]);
+        // The others at strength 0, their behaviors and parameters kept.
+        for k in 0..3 {
+            assert_close!(soloed[k][1], 0.0);
+            assert_close!(soloed[k][0], rows[k][0]);
+            assert_close!(soloed[k][2..], rows[k][2..]);
+            assert_eq!(
+                crate::surfaces::lane_behavior(soloed[k], crate::surfaces::KIND_TABLE),
+                crate::surfaces::lane_behavior(rows[k], crate::surfaces::KIND_TABLE),
+            );
+        }
+        // An unset row runs its kind's gate whatever its strength: none at
+        // 0 instead.
+        assert_close!(soloed[4], lane_row(B::None, 0.0, [0.0; 2]));
+        // With no hit, nothing keeps its strength.
+        let none = solo(&rows, None);
+        assert!(none.iter().all(|r| r[1] == 0.0), "{none:?}");
+        // A copy: the lanes' rows are untouched.
+        assert_close!(rows[1], lane_row(B::Embers, 1.0, [0.0; 2]));
+        // The cloud's rows: soloed only while soloing.
+        assert_close!(Cloud::Solo(Some(3)).rows(&rows)[..], soloed[..]);
+        assert_close!(Cloud::On.rows(&rows)[..], rows[..]);
+        assert_close!(Cloud::Off.rows(&rows)[..], rows[..]);
+    }
+
+    #[test]
+    fn the_cloud_knob_turns_it_off_with_0_only() {
+        assert!(cloud_knob(None));
+        assert!(cloud_knob(Some("1")));
+        assert!(cloud_knob(Some("")));
+        assert!(cloud_knob(Some("yes")));
+        assert!(!cloud_knob(Some("0")));
+        assert!(!cloud_knob(Some(" 0 ")));
     }
 }

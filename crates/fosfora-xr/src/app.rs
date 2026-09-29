@@ -239,6 +239,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
     //       none, embers, sparks; floor: none, sparks, ripple; wall: none, spectrum; ceiling, frame: none), a pinch-hold cycles every surface
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
+    //       off, the world effect's emission goes to 0 (the cloud density kept, so on restores it) and the living cloud fades over its
+    //       lifetime; off with Edit room on, only the surface under the editor's beam spawns (solo), nothing with no surface; the pitcher
+    //       and the throw are unchanged; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
@@ -767,9 +771,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
         space_half: space.shown(),
         edit_room: false,
+        cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
     };
-    // The cloud density each world effect's emission was last set for
-    // (by index in `world_effects`; `new_world` leaves it at 1).
+    // The emission against its preset's each world effect was last set
+    // for: the cloud density, or 0 with the cloud off (by index in
+    // `world_effects`; `new_world` leaves it at 1).
     let mut density_set = vec![1.0f32; world_effects.len()];
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
     // This frame's reach per hand, and the furthest (real, virtual) since
@@ -899,6 +905,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
     let mut edit_was_on = false;
     let mut edit_status = String::from(EDIT_OFF);
+    // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
+    // its changes; on at launch unless the knob turned it off.
+    let mut cloud_ran = crate::room_edit::Cloud::On;
     let mut last_pick_test = 0.0f32;
     info!(
         "edit room {}{}",
@@ -1227,6 +1236,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     "off"
                                 }
                             ),
+                            // Logged with the cloud's change, below.
+                            Action::SetCloud(_) => {}
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
                                 if on { "on" } else { "off" },
@@ -1591,6 +1602,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     gfx.set_highlight(rows.as_ref());
                     edit_was_on = edit_on;
                 }
+                // Step 2c: the cloud toggle, with the editor's hit to
+                // solo while Edit room is on. Its emission is applied
+                // with the density (below), its lane rows with the world
+                // inputs.
+                let cloud = crate::room_edit::Cloud::of(
+                    controls.cloud,
+                    edit_on,
+                    editor.hit().map(|h| h.index),
+                );
+                if world && cloud != cloud_ran {
+                    info!(
+                        "{}",
+                        cloud.describe(|k| crate::surfaces::friendly_name(k, &lane_boxes))
+                    );
+                }
+                cloud_ran = cloud;
                 for b in &input.room_boxes {
                     set.push_box(b);
                 }
@@ -1740,7 +1767,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &lanes,
                         &instrument_rows,
                         pour_row,
-                        surface_lanes.rows(),
+                        &cloud_ran.rows(surface_lanes.rows()),
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1989,20 +2016,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         // The cloud density: the showing world effect's emission against
         // the rate `new_world` set, applied when it changes and when a
-        // pinch-hold swaps in an effect set for another.
+        // pinch-hold swaps in an effect set for another; 0 while the cloud
+        // is off, the density kept (step 2c).
         if world
             && let Some(s) = scene.as_mut()
             && let Some(base) = s.base_emit_rate()
             && let Some(set) = density_set.get_mut(world_index)
-            && (*set - controls.density).abs() > 1e-4
+            && let Some(emission) =
+                crate::room_edit::emission_change(*set, cloud_ran, controls.density)
         {
-            *set = controls.density;
-            s.set_emit_rate(base * controls.density);
+            *set = emission;
+            s.set_emit_rate(base * emission);
             info!(
-                "cloud density {:.2}: '{}' emits {:.0}/s (preset {:.0}/s)",
+                "cloud density {:.2}{}: '{}' emits {:.0}/s (preset {:.0}/s)",
                 controls.density,
+                if cloud_ran == crate::room_edit::Cloud::Off {
+                    " (cloud off)"
+                } else {
+                    ""
+                },
                 world_effects[world_index],
-                base * controls.density,
+                base * emission,
                 base
             );
         }
