@@ -195,7 +195,7 @@ Source: [Faraldo et al. (2016)](https://doi.org/10.1007/978-3-319-30671-1_25) �
 
 Source: [Faraldo et al. (2016)](https://doi.org/10.1007/978-3-319-30671-1_25) — the strength of the winning profile match.
 
-**`pitch`** — the note a solo instrument or voice is singing, as a smooth 0 to 1 sweep across five octaves. 0 is a low A at 55 Hz, 1 is the A five octaves up, and every octave is exactly 0.2 apart, so it is easy to map onto anything musical. It tracks one line at a time, so it works on vocals and leads, not full chords.
+**`pitch`** — the note a solo instrument or voice is singing, as a smooth 0 to 1 sweep across five octaves. 0 is a low A at 55 Hz, 1 is the A five octaves up, and every octave is exactly 0.2 apart, so it is easy to map onto anything musical. It tracks one line at a time, so it works on vocals and leads, not full chords. Notes below 55 Hz are not tracked: `pitch` holds its last value and `pitch_confidence` reads 0.
 
 Source: [de Cheveigné & Kawahara, *YIN, a fundamental frequency estimator for speech and music*, JASA 2002](https://doi.org/10.1121/1.1458024) — the classic pitch tracker ([free full text](https://web.archive.org/web/20260426151005/http://audition.ens.fr/adc/pdf/2002_JASA_YIN.pdf); implementation notes at [librosa's `yin`](https://librosa.org/doc/latest/generated/librosa.yin.html)). Fosfora holds the last note through gaps so the visual does not snap to the bottom on every rest.
 
