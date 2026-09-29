@@ -440,4 +440,41 @@ as a tap: of Kevin's right pinches, 16 in one pass and 2 in the next
 moved past the 2.5 cm drag radius before opening and did nothing, so a
 drag in Edit room that ends under 0.5 s from its start and under 10 cm
 from where it started is the editor's tap, logged "gesture: short drag
-right counts as a tap · edit room".
+right counts as a tap · edit room". Step 2c (Sep 29), after the third worn pass:
+the labels changed but "further away is just a blob of pixels", and "the
+actual effects are NOT cycling ... Half the time I don't even know
+what's happening because the giant particle cloud is everywhere"
+(Kevin). The log showed the edits landing; they were lost in the mass.
+In that pass the summed emitter weight was 1.85 with the floor on ripple,
+every table shedding into 160,000 particles a second, so a table going
+from embers to sparks to none moved where a share of them were born
+while 400K living sprites drifted on for their 12 s lifetime. Unworn
+earlier, with the headset on the desk, the sum was 0.99 with the floor
+at 0.5: the largest table sat outside the 1.5 m volume, and the tables
+in reach shared 0.49 as slivers of it. Three changes. The label's width
+now follows its distance from the head, 0.11 m per meter clamped to
+0.28..1.4 m, so it holds about 6 degrees across from the chair to the
+far wall (0.28 m up to 2.5 m away, 0.33 m at 3 m, 0.88 m at 8 m), from a
+1024 x 192 texture with the text starting at 88 px and shrinking to fit
+down to 40 px, so it is sharp up close too; the fade and the billboard
+are unchanged. The table weights are taken against the largest emitting
+table inside the volume, not the room's largest (`emitter_weights`), so
+the nearest big table weighs 1.0 and a room whose only emitting table is
+a side table gives it 1.0; other kinds follow the same reference, the
+floor keeps its own weight. And a third hand menu row, under Edit room
+in both layouts, "Cloud: on/off" (on at launch, not saved; knob
+`debug.fosfora.cloud 0|1`). Off, the world effect's emission goes to 0
+through the density path, the density kept so on restores it. Off with
+Edit room on, the pointed surface is soloed: the emission stays at the
+density, but the lane rows uploaded to the sim carry strength 0 for every
+box but the editor's hit (`room_edit::solo`, on a copy each frame, never
+on the lanes' rows or the file), so only that surface spawns, and with
+no hit nothing does; the wearer points at the desk and sees its embers,
+its sparks or nothing, alone, and the label names it. The wall spectrum,
+the ripple, the pitcher and the throw are unchanged. The particle system
+has no way to clear the living cloud without a core change, so turning
+the cloud off, or moving the solo, leaves what is alive to die over its
+lifetime (12 s for Flux XR Room). Logs: "cloud off: emission 0, the
+cloud fades over the lifetime", "cloud off, edit room: solo desk",
+"cloud off, edit room: solo, no surface (nothing spawns)", "cloud on",
+and the density line with "(cloud off)".
