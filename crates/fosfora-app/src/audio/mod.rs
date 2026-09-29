@@ -19,6 +19,7 @@ pub mod pitch;
 pub mod pulse_capture;
 pub mod ranging;
 pub mod reconnect;
+pub mod resample;
 pub mod schema;
 pub mod smoother;
 pub mod stereo;
@@ -289,6 +290,10 @@ pub struct AudioSystem {
     last_scan: Instant,
     /// Ring buffer mirroring audio samples for recording (written by audio thread).
     pub recording_ring: Arc<RingBuffer>,
+    /// Sample rate of what `recording_ring` carries, which is what a recording must encode at.
+    /// Follows the device, except across a switch made while a recording drains the ring: then
+    /// it holds and the new analysis thread resamples into it (#79).
+    pub recording_rate: u32,
     /// Audio sample rate in Hz.
     pub sample_rate: u32,
     /// How the analyzer scales the 7 bands (A1 #1452). Held so a device switch preserves it
@@ -386,6 +391,7 @@ impl AudioSystem {
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
             Arc::new(RingBuffer::new()),
+            None,
         );
         // Scanned just now, so drawing the picker starts no scan.
         sys.last_scan = Instant::now();
@@ -405,6 +411,7 @@ impl AudioSystem {
             tuning,
             tempo,
             Arc::new(RingBuffer::new()),
+            None,
         )
     }
 
@@ -441,6 +448,7 @@ impl AudioSystem {
             tuning,
             tempo,
             Arc::new(RingBuffer::new()),
+            None,
         );
         system.set_auto_reconnect(false);
         system
@@ -464,6 +472,7 @@ impl AudioSystem {
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
         recording_ring: Arc<RingBuffer>,
+        recording_rate: Option<u32>,
     ) -> Self {
         // A full queue evicts its oldest frame (#59): when the render side stalls, the
         // newest analysis is what it should see on catching up, not frames from before the
@@ -481,6 +490,7 @@ impl AudioSystem {
                 let ring = opened.ring.clone();
                 let sample_rate = opened.sample_rate;
                 let rec_ring = recording_ring.clone();
+                let recording_rate = recording_rate.unwrap_or(sample_rate as u32);
                 let beats = beat_counter.clone();
                 let downbeats = downbeat_counter.clone();
                 let drops = drop_counter.clone();
@@ -496,6 +506,7 @@ impl AudioSystem {
                             tx,
                             shutdown_flag,
                             rec_ring,
+                            recording_rate,
                             beats,
                             downbeats,
                             drops,
@@ -531,6 +542,7 @@ impl AudioSystem {
                         .checked_sub(Duration::from_secs(60))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
+                    recording_rate,
                     sample_rate: sample_rate as u32,
                     band_scale,
                     tuning,
@@ -593,6 +605,7 @@ impl AudioSystem {
                         .checked_sub(Duration::from_secs(60))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
+                    recording_rate: recording_rate.unwrap_or(44100),
                     sample_rate: 44100,
                     band_scale,
                     tuning,
@@ -670,6 +683,12 @@ impl AudioSystem {
         // `self.tempo` are deliberately left unswapped below. Same for `recording_ring`
         // (A9 #1460): an in-progress recording holds a clone, so handing the fresh thread a
         // new ring would leave that recording's writer draining one nobody writes to.
+        // A recording in progress holds the only other clone of `recording_ring` (its writer
+        // thread's; the old analysis thread's went with the join above). Its encoder was told
+        // the rate at start, so keep the ring at that rate and have the new thread resample
+        // into it. With no other holder, the ring follows the new device (#79).
+        let recording_rate =
+            (Arc::strong_count(&self.recording_ring) > 1).then_some(self.recording_rate);
         let mut new = Self::from_opened(
             opened,
             requested,
@@ -677,6 +696,7 @@ impl AudioSystem {
             self.tuning.clone(),
             self.tempo.clone(),
             self.recording_ring.clone(),
+            recording_rate,
         );
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
@@ -707,6 +727,7 @@ impl AudioSystem {
         // ours, so the new audio thread already writes to the same ring an in-progress
         // recording is draining.
         self.sample_rate = new.sample_rate;
+        self.recording_rate = new.recording_rate;
         self.beat_counter = std::mem::replace(&mut new.beat_counter, Arc::new(AtomicU32::new(0)));
         self.beats_seen = self.beat_counter.load(Ordering::Relaxed);
         self.downbeat_counter =
@@ -1268,6 +1289,7 @@ fn audio_thread(
     tx: DropOldestSender<AudioFrame>,
     shutdown: Arc<AtomicBool>,
     recording_ring: Arc<RingBuffer>,
+    recording_rate: u32,
     beat_counter: Arc<AtomicU32>,
     downbeat_counter: Arc<AtomicU32>,
     drop_counter: Arc<AtomicU32>,
@@ -1286,6 +1308,18 @@ fn audio_thread(
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(read_buf.len() / 2);
+    // #79: set only when this device's rate differs from what the recording ring carries.
+    let mut recording_resampler = (recording_rate != sample_rate as u32)
+        .then(|| resample::LinearResampler::new(sample_rate as u32, recording_rate));
+    let mut recording_scratch: Vec<f32> = Vec::new();
+    if recording_resampler.is_some() {
+        log::info!(
+            "Recording audio resampled {} Hz -> {recording_rate} Hz",
+            sample_rate as u32
+        );
+        // Room for the largest read at the steepest common ratio (192 kHz ring, 44.1 kHz device).
+        recording_scratch.reserve(mono_scratch.capacity() * 5);
+    }
 
     // A5 (#1456): accumulate capture reads here and analyze exactly ANALYSIS_HOP samples at
     // a time. `samples_consumed` is a sample clock — each frame's timestamp is derived from
@@ -1331,7 +1365,13 @@ fn audio_thread(
         mono_scratch.extend(stereo.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5));
 
         // Mirror the mono mix to the recording ring (lock-free, no overhead if nobody reads).
-        recording_ring.push(&mono_scratch);
+        if let Some(resampler) = recording_resampler.as_mut() {
+            recording_scratch.clear();
+            resampler.process(&mono_scratch, &mut recording_scratch);
+            recording_ring.push(&recording_scratch);
+        } else {
+            recording_ring.push(&mono_scratch);
+        }
         // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
         fifo.extend_from_slice(&mono_scratch);
         fifo_stereo.extend_from_slice(stereo);
@@ -1466,6 +1506,7 @@ pub(crate) mod tests {
                         tx,
                         shutdown,
                         rec_ring,
+                        sample_rate as u32,
                         beats,
                         downbeats,
                         drops,

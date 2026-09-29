@@ -2082,7 +2082,7 @@ impl ApplicationHandler for FosforaApp {
                             let audio_source = if app.audio.active {
                                 Some(crate::recording::encoder::AudioSource {
                                     ring: app.audio.recording_ring.clone(),
-                                    sample_rate: app.audio.sample_rate,
+                                    sample_rate: app.audio.recording_rate,
                                 })
                             } else {
                                 None
