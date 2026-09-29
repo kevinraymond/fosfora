@@ -1,5 +1,7 @@
-// Feedback test effect — spinning dot that leaves fading trails.
-// Demonstrates prev_frame / feedback() function.
+// Iris — a glowing dot orbits the centre and leaves fading feedback trails, tracing a ring.
+// Bass drives orbit speed, mid widens the orbit, rms sizes the dot, centroid shifts its hue
+// and onsets flash it. Trail decay goes through frame_decay(), so trail length holds steady
+// at any frame rate.
 
 @fragment
 fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
