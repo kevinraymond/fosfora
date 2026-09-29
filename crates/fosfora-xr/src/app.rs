@@ -233,7 +233,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.envdepthshow 0|1         (diagnostic: the same pass drawn as gray, 0 m black to 4 m white, linear in
     //       the stored bytes, still writing depth; implies the acquire, for a screencap of orientation and alignment)
     //   adb shell setprop debug.fosfora.envdepthhands 0|1        (ask the runtime to remove the hands from the depth map; default 1, the
-    //       skinned hand mesh stays the hand occluder)
+    //       skinned hand mesh stays the hand occluder; live: polled once a second and applied when it changes, the log line says what
+    //       was asked and what the runtime answered)
+    //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 1, the default, edge-aware bilinear over the 2x2 texels
+    //       around the ray, interpolated when they are within 0.25 m of each other, else the nearest; 0 the texel under the ray, as
+    //       before; 2 bilinear across silhouettes too, a diagnostic)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -246,8 +250,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.depthcollideres 160|320  (atlas texels per layer side; 160, the default, keeps the nearest of each 2x2 block)
     //   adb shell setprop debug.fosfora.depthcollidethick 0.15   (how far behind a surface a particle still collides with it, m; deeper it is left
     //       alone, the occluder hides it)
-    //   The envdepth and depthcollide knobs are read at startup (restart the app after a change); with envdepth, envdepthshow, envdepthcheck
-    //   and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
+    //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
+    //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -294,6 +298,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .map_or(d.near_cut_m, |v| v.max(0.0)),
             flip_v: toggle("debug.fosfora.envdepthflipv", d.flip_v),
             check: env_check,
+            filter_edge_m: match debug_prop("debug.fosfora.envdepthfilter").as_deref() {
+                Some("0") => 0.0,
+                Some("2") => crate::env_depth::FILTER_SOFT_M,
+                _ => d.filter_edge_m,
+            },
             collide: env_collide,
             collide_res: match debug_prop("debug.fosfora.depthcollideres").as_deref() {
                 Some("320") => 320,
@@ -304,6 +313,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .map_or(d.collide_thickness_m, |v| v.clamp(0.01, 1.0)),
         }
     });
+    // `envdepthhands` is live: polled once a second (below) and applied
+    // when it changes.
+    let mut env_hands = env_depth.map(|o| o.hand_removal);
     let mr = MrOptions {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
@@ -1570,6 +1582,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         if frame_index.is_multiple_of(72) {
+            if let Some(was) = env_hands {
+                let now = match system_prop("debug.fosfora.envdepthhands").as_deref() {
+                    Some("0") => false,
+                    Some("1") => true,
+                    _ => crate::env_depth::EnvDepthOptions::default().hand_removal,
+                };
+                if now != was {
+                    env_hands = Some(now);
+                    session.set_env_depth_hand_removal(now);
+                }
+            }
             if let Some(scene) = &scene {
                 info!(
                     "particles alive {} · emitter weight {:.2}",
@@ -1902,6 +1925,26 @@ fn debug_prop(name: &str) -> Option<String> {
         .output()
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
+/// A system property read in place through bionic, without spawning
+/// `getprop` as [`debug_prop`] does (milliseconds of the frame thread), so
+/// a knob can be polled from the frame loop.
+fn system_prop(name: &str) -> Option<String> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value = [0 as libc::c_char; libc::PROP_VALUE_MAX as usize];
+    // SAFETY: `name` is a NUL-terminated string and `value` holds
+    // PROP_VALUE_MAX bytes, the most the call writes (the NUL included);
+    // both outlive the call.
+    let len = unsafe { libc::__system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|&n| n > 0)?
+        .min(value.len());
+    // `c_char` is u8 on arm64 and i8 elsewhere: take the byte either way.
+    let bytes: Vec<u8> = value[..len].iter().map(|&c| c.to_ne_bytes()[0]).collect();
+    let v = String::from_utf8_lossy(&bytes).trim().to_owned();
     (!v.is_empty()).then_some(v)
 }
 

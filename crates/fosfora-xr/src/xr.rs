@@ -618,6 +618,18 @@ impl XrSession {
         }
     }
 
+    /// Ask for the hands in or out of the live depth map (board #3352);
+    /// see `EnvDepthSlot::set_hand_removal`. Nothing without the depth.
+    pub fn set_env_depth_hand_removal(&mut self, on: bool) {
+        match self.env_depth.as_mut() {
+            Some(slot) => slot.set_hand_removal(on),
+            None => info!(
+                "environment depth: hand removal asked {}: no depth provider in this run",
+                if on { "on" } else { "off" }
+            ),
+        }
+    }
+
     /// Relaunch Space Setup and requery the room's anchors
     /// (`Room::rescan`); nothing without a room.
     pub fn rescan_room(&mut self) {

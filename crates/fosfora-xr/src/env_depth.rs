@@ -1,4 +1,6 @@
-//! The live environment depth as a depth occluder (board #3324, phase 1).
+//! The live environment depth as a depth occluder (board #3324, phase 1)
+//! and as a collision source for the world sim (board #3352, phase 2: the
+//! depth atlas, below).
 //!
 //! `XR_META_environment_depth` hands the app a depth map from the
 //! passthrough cameras every frame: a two-layer `D16_UNORM` array (layer 0
@@ -19,6 +21,12 @@
 //! negligible for a surface near the lookup distance and small elsewhere
 //! (the tests below bound it). Texels with no data (`d >= 1`) and distances
 //! under [`NEAR_CUT_M`] (the depth API is unreliable there) are discarded.
+//! The lookup is edge-aware bilinear by default ([`filtered_distance`]):
+//! interpolated within a surface, the nearest of the four texels across a
+//! silhouette. The nearest texel alone (`envdepthfilter 0`) read as blocky
+//! edges worn; a silhouette is still cut on the texel grid (half a texel
+//! out), which `envdepthfilter 2`, bilinear across it too, is there to
+//! compare against.
 //!
 //! Plain numbers in, so the math and the shader build and test on the
 //! desktop; [`EyeReprojection::frag_depth`] is the CPU mirror of
@@ -39,6 +47,14 @@ pub const SHOW_FAR_M: f32 = 4.0;
 /// Rows of [`EyeReprojection::uniform`], `struct EnvEye` in
 /// [`ENV_DEPTH_WGSL`].
 pub const UNIFORM_ROWS: usize = 21;
+/// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`, the
+/// default): the 2x2 texels around a lookup are interpolated when their
+/// distances are within this of each other (m), else the nearest is
+/// taken.
+pub const FILTER_EDGE_M: f32 = 0.25;
+/// `envdepthfilter 2`: an edge threshold no depth jump reaches, so the
+/// four are always interpolated, across silhouettes too (a diagnostic).
+pub const FILTER_SOFT_M: f32 = 1.0e6;
 /// How far behind the surface the depth map shows a particle still
 /// collides with it (m, `debug.fosfora.depthcollidethick`): deeper, it is
 /// behind the surface and the occluder hides it.
@@ -67,6 +83,10 @@ pub struct EnvDepthOptions {
     /// Once a second, read a grid of the depth map back and compare it
     /// with the room's boxes and the floor (`debug.fosfora.envdepthcheck`).
     pub check: bool,
+    /// The occluder's lookup (`debug.fosfora.envdepthfilter`): 0 the texel
+    /// under the ray (nearest), otherwise the edge threshold (m) of the
+    /// edge-aware filter ([`filtered_distance`]).
+    pub filter_edge_m: f32,
     /// Build the depth atlas every frame for the world sim's collide
     /// (`debug.fosfora.depthcollide`, board #3352).
     pub collide: bool,
@@ -85,6 +105,7 @@ impl Default for EnvDepthOptions {
             near_cut_m: NEAR_CUT_M,
             flip_v: false,
             check: false,
+            filter_edge_m: FILTER_EDGE_M,
             collide: false,
             collide_res: COLLIDE_RES,
             collide_thickness_m: COLLIDE_THICKNESS_M,
@@ -149,6 +170,10 @@ pub struct EyeReprojection {
     pub layer: u32,
     pub near_cut_m: f32,
     pub flip_v: bool,
+    /// See [`EnvDepthOptions::filter_edge_m`]. The CPU mirror below
+    /// ([`Self::reproject`]) takes its sample through a closure; the
+    /// filter's own mirror is [`filtered_distance`].
+    pub filter_edge_m: f32,
 }
 
 impl EyeReprojection {
@@ -187,7 +212,7 @@ impl EyeReprojection {
             self.layer as f32,
             if self.flip_v { 1.0 } else { 0.0 },
             SHOW_FAR_M,
-            0.0,
+            self.filter_edge_m.max(0.0),
         ];
         rows
     }
@@ -251,6 +276,53 @@ impl EyeReprojection {
     }
 }
 
+/// The distance the occluder writes at depth map coordinates `uv` (0..1
+/// each, as [`EyeReprojection::depth_uv`] gives them) of a `size` map,
+/// with `texel` the decoded distance of a texel (`None`: no data, or under
+/// the discard distance): the CPU mirror of `map_distance` in
+/// [`ENV_DEPTH_WGSL`]. With `edge_m` 0, the texel under `uv`. Otherwise
+/// edge-aware bilinear over the 2x2 texels around `uv`: interpolated when
+/// all four have data within `edge_m` of each other, else the nearest of
+/// those with data, so a silhouette never blends a person into the wall
+/// behind. `None` where the occluder discards.
+pub fn filtered_distance(
+    uv: Vec2,
+    size: [u32; 2],
+    edge_m: f32,
+    texel: impl Fn([u32; 2]) -> Option<f32>,
+) -> Option<f32> {
+    let s = Vec2::new(size[0] as f32, size[1] as f32);
+    let last = [size[0].saturating_sub(1), size[1].saturating_sub(1)];
+    let at = |x: f32, y: f32| {
+        texel([
+            (x.max(0.0) as u32).min(last[0]),
+            (y.max(0.0) as u32).min(last[1]),
+        ])
+    };
+    if edge_m <= 0.0 {
+        let t = (uv * s).floor();
+        return at(t.x, t.y);
+    }
+    let p = uv * s - 0.5;
+    let base = p.floor();
+    let f = p - base;
+    let d = [
+        at(base.x, base.y),
+        at(base.x + 1.0, base.y),
+        at(base.x, base.y + 1.0),
+        at(base.x + 1.0, base.y + 1.0),
+    ];
+    let nearest = d.iter().flatten().copied().reduce(f32::min)?;
+    if let [Some(a), Some(b), Some(c), Some(e)] = d {
+        let far = a.max(b).max(c).max(e);
+        if far - nearest <= edge_m {
+            let lerp = |x: f32, y: f32, t: f32| x + (y - x) * t;
+            return Some(lerp(lerp(a, b, f.x), lerp(c, e, f.x), f.y));
+        }
+    }
+    Some(nearest)
+}
+
 /// The occluder's shader. Group 0: binding 0 the eye's `EnvEye` rows
 /// ([`EyeReprojection::uniform`]), binding 1 the depth map. The vertex
 /// stage is one full-screen triangle; the fragment stage mirrors
@@ -272,7 +344,8 @@ struct EnvEye {
     // depth map width, height, eye target width, height
     sizes: vec4<f32>,
     // x layer (0 left, 1 right), y 1 = texture row 0 is the top,
-    // z distance shown as white (m)
+    // z distance shown as white (m), w the filter's edge threshold (m; 0 =
+    // the texel under the ray)
     misc: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> env: EnvEye;
@@ -295,6 +368,51 @@ fn decode(d: f32) -> f32 {
     }
     let f = env.depth_range.y;
     return 2.0 * n * f / (f + n - (2.0 * d - 1.0) * (f - n));
+}
+
+// The decoded distance of texel t, or -1: no data, or nearer than the
+// discard distance.
+fn texel_distance(t: vec2<i32>) -> f32 {
+    let d = textureLoad(depth_map, t, i32(env.misc.x), 0);
+    // 1 is no data (or infinity): nothing to occlude with.
+    if d >= 1.0 {
+        return -1.0;
+    }
+    let dist = decode(d);
+    return select(-1.0, dist, dist >= env.depth_range.w);
+}
+
+// The distance to write at depth map coordinates uv, or -1 to discard
+// (filtered_distance in env_depth.rs is the CPU mirror). misc.w 0: the
+// texel under uv. Otherwise edge-aware bilinear over the 2x2 texels around
+// uv: interpolated when all four have data within misc.w of each other,
+// else the nearest of those with data.
+fn map_distance(uv: vec2<f32>) -> f32 {
+    let last = vec2<i32>(env.sizes.xy) - vec2<i32>(1);
+    if env.misc.w <= 0.0 {
+        return texel_distance(min(vec2<i32>(floor(uv * env.sizes.xy)), last));
+    }
+    let p = uv * env.sizes.xy - 0.5;
+    let base = floor(p);
+    let f = p - base;
+    let b = vec2<i32>(base);
+    let d = vec4<f32>(
+        texel_distance(clamp(b, vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(1, 0), vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(0, 1), vec2<i32>(0), last)),
+        texel_distance(clamp(b + vec2<i32>(1, 1), vec2<i32>(0), last))
+    );
+    let valid = d >= vec4<f32>(0.0);
+    if !any(valid) {
+        return -1.0;
+    }
+    let with_data = select(vec4<f32>(1e30), d, valid);
+    let nearest = min(min(with_data.x, with_data.y), min(with_data.z, with_data.w));
+    let far = max(max(d.x, d.y), max(d.z, d.w));
+    if all(valid) && far - nearest <= env.misc.w {
+        return mix(mix(d.x, d.y, f.x), mix(d.z, d.w, f.x), f.y);
+    }
+    return nearest;
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -330,15 +448,8 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> FragOut {
     if u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0 {
         discard;
     }
-    let size = vec2<i32>(env.sizes.xy);
-    let texel = min(vec2<i32>(floor(vec2<f32>(u, v) * env.sizes.xy)), size - vec2<i32>(1));
-    let d = textureLoad(depth_map, texel, i32(env.misc.x), 0);
-    // 1 is no data (or infinity): nothing to occlude with.
-    if d >= 1.0 {
-        discard;
-    }
-    let dist = decode(d);
-    if dist < env.depth_range.w {
+    let dist = map_distance(vec2<f32>(u, v));
+    if dist < 0.0 {
         discard;
     }
     let q = pd * (dist / -pd.z);
@@ -918,6 +1029,26 @@ mod runtime {
                 _ => None,
             }
         }
+
+        /// Ask for the hands in or out of the depth map
+        /// (`debug.fosfora.envdepthhands`, polled while running): applied
+        /// now to a live provider, kept for a creation still being retried.
+        pub fn set_hand_removal(&mut self, on: bool) {
+            match self {
+                Self::Ready(d) => d.set_hand_removal(on),
+                Self::Retry { opts, .. } => {
+                    opts.hand_removal = on;
+                    info!(
+                        "environment depth: hand removal asked {}: kept for the provider's creation, still being retried",
+                        if on { "on" } else { "off" }
+                    );
+                }
+                Self::GaveUp => info!(
+                    "environment depth: hand removal asked {}: no provider (creation gave up)",
+                    if on { "on" } else { "off" }
+                ),
+            }
+        }
     }
 
     /// One acquired depth image: which swapchain image, its projection's
@@ -1014,6 +1145,9 @@ mod runtime {
         provider: Provider,
         size: [u32; 2],
         opts: EnvDepthOptions,
+        /// Whether the system can remove the hands from the map
+        /// (`supports_hand_removal`).
+        hand_removal_supported: bool,
         created: Instant,
         acquired: u64,
         not_available: u64,
@@ -1190,7 +1324,7 @@ mod runtime {
                 })
                 .collect();
             info!(
-                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
+                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · filter {} · discard under {} m · v flip {} · self-check {} · depth collide {}",
                 images.len(),
                 if hand_removal { "on" } else { "off" },
                 opts.hand_removal,
@@ -1200,6 +1334,13 @@ mod runtime {
                     "occluder"
                 } else {
                     "no draw"
+                },
+                if opts.filter_edge_m <= 0.0 {
+                    "nearest texel".to_owned()
+                } else if opts.filter_edge_m >= super::FILTER_SOFT_M {
+                    "bilinear everywhere".to_owned()
+                } else {
+                    format!("edge-aware ({} m)", opts.filter_edge_m)
                 },
                 opts.near_cut_m,
                 opts.flip_v,
@@ -1225,6 +1366,7 @@ mod runtime {
                 provider,
                 size: [width, height],
                 opts,
+                hand_removal_supported,
                 created: Instant::now(),
                 acquired: 0,
                 not_available: 0,
@@ -1395,6 +1537,7 @@ mod runtime {
                     layer: eye as u32,
                     near_cut_m: self.opts.near_cut_m,
                     flip_v: self.opts.flip_v,
+                    filter_edge_m: self.opts.filter_edge_m,
                 };
                 queue.write_buffer(&self.uniforms[eye], 0, bytemuck::cast_slice(&r.uniform()));
             }
@@ -1533,6 +1676,42 @@ mod runtime {
     }
 
     impl EnvDepth {
+        /// Ask the runtime to remove the hands from the depth map, or keep
+        /// them (`xrSetEnvironmentDepthHandRemovalMETA`), and log what was
+        /// asked and what the runtime answered. On a system without hand
+        /// removal nothing is sent (the call is only valid with support).
+        pub fn set_hand_removal(&mut self, on: bool) {
+            let asked = if on { "on" } else { "off" };
+            if !self.hand_removal_supported {
+                info!(
+                    "environment depth: hand removal asked {asked}: the system does not support it, not sent"
+                );
+                return;
+            }
+            let set = sys::EnvironmentDepthHandRemovalSetInfoMETA {
+                ty: sys::EnvironmentDepthHandRemovalSetInfoMETA::TYPE,
+                next: ptr::null(),
+                enabled: on.into(),
+            };
+            // SAFETY: `set` is a fully initialized input struct that
+            // outlives the call; the provider is live (destroyed only when
+            // `self` drops).
+            let res = unsafe {
+                (self.provider.fp.set_environment_depth_hand_removal)(self.provider.handle, &set)
+            };
+            info!(
+                "environment depth: hand removal asked {asked}: the runtime answered {res:?}{}",
+                if res == sys::Result::SUCCESS {
+                    ""
+                } else {
+                    " (the previous setting stays)"
+                }
+            );
+            if res == sys::Result::SUCCESS {
+                self.opts.hand_removal = on;
+            }
+        }
+
         /// The depth atlas for the sim's collide: condense both layers of
         /// `frame`'s image into the atlas (a compute pass into a storage
         /// buffer, copied into a free staging buffer that is then mapped;
@@ -2160,6 +2339,7 @@ mod tests {
             layer: 0,
             near_cut_m: NEAR_CUT_M,
             flip_v: EnvDepthOptions::default().flip_v,
+            filter_edge_m: 0.0,
         }
     }
 
@@ -2445,6 +2625,44 @@ mod tests {
         assert_eq!(span as usize, UNIFORM_ROWS * 16);
     }
 
+    /// A 2x2 map (texels (0,0), (1,0), (0,1), (1,1) in `d`) looked up at
+    /// its middle and around it.
+    fn filter_2x2(d: [Option<f32>; 4], uv: Vec2, edge_m: f32) -> Option<f32> {
+        filtered_distance(uv, [2, 2], edge_m, |[x, y]| d[(y * 2 + x) as usize])
+    }
+
+    #[test]
+    fn the_filter_interpolates_a_surface_and_keeps_a_silhouette_sharp() {
+        let mid = Vec2::splat(0.5);
+        // A flat (slanted) surface: bilinear. At the middle, the mean.
+        let flat = [Some(1.0), Some(1.05), Some(1.1), Some(1.15)];
+        let got = filter_2x2(flat, mid, FILTER_EDGE_M).unwrap();
+        assert!((got - 1.075).abs() < 1e-6, "{got}");
+        // A quarter of the way from texel (0,0)'s center to (1,0)'s.
+        let got = filter_2x2(flat, Vec2::new(0.375, 0.25), FILTER_EDGE_M).unwrap();
+        assert!((got - 1.0125).abs() < 1e-6, "{got}");
+        // Spread past the threshold (0.3 m over the four): the nearest.
+        let steep = [Some(1.0), Some(1.1), Some(1.2), Some(1.3)];
+        assert_eq!(filter_2x2(steep, mid, FILTER_EDGE_M), Some(1.0));
+        // A silhouette (a person at 1 m before a wall at 3 m): the nearest,
+        // never a point between them.
+        let edge = [Some(3.0), Some(1.0), Some(3.0), Some(3.0)];
+        assert_eq!(filter_2x2(edge, mid, FILTER_EDGE_M), Some(1.0));
+        // `envdepthfilter 2` blends across it.
+        let soft = filter_2x2(edge, mid, FILTER_SOFT_M).unwrap();
+        assert!((soft - 2.5).abs() < 1e-6, "{soft}");
+        // A texel without data: the nearest of the others; none: discard.
+        let hole = [Some(2.0), None, Some(1.5), Some(2.1)];
+        assert_eq!(filter_2x2(hole, mid, FILTER_EDGE_M), Some(1.5));
+        assert_eq!(filter_2x2([None; 4], mid, FILTER_EDGE_M), None);
+        // Off (0): the texel under the lookup, as before.
+        assert_eq!(filter_2x2(flat, Vec2::new(0.9, 0.1), 0.0), Some(1.05));
+        assert_eq!(filter_2x2(hole, Vec2::new(0.9, 0.1), 0.0), None);
+        // At the map's edge the neighbors clamp: flat stays flat.
+        let got = filter_2x2(flat, Vec2::new(0.01, 0.01), FILTER_EDGE_M).unwrap();
+        assert!((got - 1.0).abs() < 1e-6, "{got}");
+    }
+
     /// The distance an atlas texel reads as, or `None` without data.
     fn atlas_reads(px: u32) -> Option<f32> {
         assert_eq!(px.to_le_bytes()[3], 0, "A stays 0");
@@ -2705,9 +2923,11 @@ mod tests {
         assert_eq!(rows[20], [0.0, 0.0, SHOW_FAR_M, 0.0]);
         r.far = 20.0;
         r.layer = 1;
+        r.filter_edge_m = FILTER_EDGE_M;
         let rows = r.uniform();
         assert_eq!(rows[18][..3], [0.1, 20.0, 0.0]);
         assert_eq!(rows[20][0], 1.0);
+        assert_eq!(rows[20][3], FILTER_EDGE_M);
         // The inverse view-projection really inverts.
         let inv = Mat4::from_cols_array_2d(&[rows[4], rows[5], rows[6], rows[7]]);
         assert!((inv * r.view_proj).abs_diff_eq(Mat4::IDENTITY, 1e-4));
