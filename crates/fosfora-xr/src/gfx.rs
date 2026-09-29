@@ -18,7 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
-use crate::env_depth::EnvDepthPasses;
+use crate::env_depth::{AtlasOutcome, EnvDepthPasses};
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::scene::XrScene;
 use crate::xr::XrContext;
@@ -773,10 +773,10 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render both eyes and submit once: the depth atlas pass and the
-    /// environment depth occluder (`env_depth`, each when there is one),
-    /// the quad
-    /// (depth-writing), the S7 occluders and then the S5 particles
+    /// Render both eyes and submit once: the depth atlas pass with its copy
+    /// into the world effect's obstacle texture (returning what it did)
+    /// and the environment depth occluder (`env_depth`, each when there is
+    /// one), the quad (depth-writing), the S7 occluders and then the S5 particles
     /// (depth-tested, additive) into each eye. With a world-mode `scene` (C3b), its sim is dispatched first and
     /// its sprites are drawn last in the same eye pass, tested against the
     /// depth the occluders and the primer wrote. The render pass is the last
@@ -790,7 +790,7 @@ impl Gfx {
         particles: Option<&Particles3d>,
         mut scene: Option<&mut XrScene>,
         env_depth: &EnvDepthPasses<'_>,
-    ) {
+    ) -> Option<AtlasOutcome> {
         for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
             self.queue.write_buffer(
                 &eye.buffer,
@@ -806,11 +806,21 @@ impl Gfx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("xr-frame"),
             });
-        // The depth atlas (board #3352) rides in this one submission,
-        // before the sim; it is read back and uploaded a frame later.
-        if let Some(a) = &env_depth.atlas {
-            a.record(&mut encoder);
-        }
+        // The depth atlas (board #3352): its pass and the copy into the
+        // world effect's obstacle texture ride in this one submission,
+        // before the sim reads them.
+        let atlas = env_depth.atlas.as_ref().map(|a| {
+            let target = if a.copies() {
+                let (w, h) = a.size();
+                scene
+                    .as_deref_mut()
+                    .filter(|s| s.is_world())
+                    .and_then(|s| s.depth_atlas_target(w, h))
+            } else {
+                None
+            };
+            a.record(&mut encoder, target.as_ref().map(|(t, sized)| (t, *sized)))
+        });
         if let Some(p) = particles {
             p.step(&mut encoder);
         }
@@ -914,6 +924,7 @@ impl Gfx {
             }
         }
         self.queue.submit([encoder.finish()]);
+        atlas
     }
 }
 

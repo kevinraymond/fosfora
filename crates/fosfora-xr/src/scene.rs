@@ -106,8 +106,8 @@ struct World {
     /// The particle count (`max_count`): with the alive count, how many
     /// dead slots a burst can claim.
     max_count: u32,
-    /// The depth atlas last put in this effect's obstacle texture: the
-    /// poses it was built from and when it arrived (board #3352).
+    /// The depth atlas last written into this effect's obstacle texture:
+    /// the poses it was built from and when (board #3352).
     depth: Option<(crate::env_depth::DepthCollide, Instant)>,
     /// Frames of inputs written, for the depth collide's phase.
     depth_frame: u32,
@@ -365,31 +365,32 @@ impl XrScene {
         }
     }
 
-    /// World mode: put a read-back depth atlas into the effect's obstacle
-    /// texture, which `flux_xr_sim.wgsl` reads for the collide with the
-    /// live depth map (board #3352). The first upload after the effect is
-    /// built resizes the 1x1 placeholder and rebinds it; the others write
-    /// in place.
-    pub fn set_depth_atlas(&mut self, atlas: &crate::env_depth::DepthAtlas<'_>) {
-        let Some(world) = self.world.as_mut() else {
-            return;
-        };
-        let renderer = &mut self.renderer;
-        if let Some(ps) = particle_system(&mut renderer.layer_stack.layers) {
-            // `depthcollideupload 0` (a diagnostic) keeps everything else,
-            // the rows included: the sim then reads the placeholder's
-            // zeros, no data, and collides with nothing.
-            if atlas.upload {
-                ps.update_obstacle_webcam(
-                    &renderer.device,
-                    &renderer.queue,
-                    atlas.bytes,
-                    atlas.width,
-                    atlas.height,
-                );
-            }
-            world.depth = Some((atlas.collide, Instant::now()));
+    /// World mode: the poses of the depth atlas this frame's atlas pass
+    /// writes into the effect's obstacle texture (board #3352), for the
+    /// sim's depth rows ([`Self::set_world_inputs`]).
+    pub fn set_depth_collide(&mut self, collide: crate::env_depth::DepthCollide) {
+        if let Some(world) = self.world.as_mut() {
+            world.depth = Some((collide, Instant::now()));
         }
+    }
+
+    /// World mode: the effect's obstacle texture, for the depth atlas's
+    /// copy (`width` x `height` texels), and whether it was just sized.
+    /// The texture starts as the core's 1x1 placeholder, and a pinch-hold
+    /// swaps in another effect with its own, so it is checked every frame:
+    /// at any other size, a zeroed image of the atlas's size goes through
+    /// `update_obstacle_webcam`, which allocates the texture and rebinds
+    /// the sim's bind group, and the copy then fills it on the GPU.
+    pub fn depth_atlas_target(&mut self, width: u32, height: u32) -> Option<(wgpu::Texture, bool)> {
+        self.world.as_ref()?;
+        let renderer = &mut self.renderer;
+        let ps = particle_system(&mut renderer.layer_stack.layers)?;
+        let sized = ps.obstacle_size() != (width, height);
+        if sized {
+            let zeros = vec![0u8; (width * height * 4) as usize];
+            ps.update_obstacle_webcam(&renderer.device, &renderer.queue, &zeros, width, height);
+        }
+        Some((ps.obstacle_texture().clone(), sized))
     }
 
     /// World mode: record this frame's sim dispatch (after [`Self::step`],

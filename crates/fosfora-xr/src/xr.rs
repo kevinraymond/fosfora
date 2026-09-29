@@ -734,34 +734,32 @@ impl XrSession {
                 None => Vec::new(),
             },
         };
-        // The live depth map. A failed creation is retried from here
-        // (`EnvDepthSlot::get`). The depth atlas built from an earlier
-        // frame's map, once read back, goes into the world sim's obstacle
-        // texture before the sim's inputs are written (board #3352).
+        // The live depth map, acquired at the same predicted display time
+        // and in the same space as the views. A failed creation is retried
+        // from here (`EnvDepthSlot::get`). With the collide on, this
+        // frame's atlas pass writes the world sim's obstacle texture in
+        // the frame's submit, ahead of the sim, so the sim's rows carry
+        // this frame's poses (board #3352).
         let mut env = self
             .env_depth
             .as_mut()
             .and_then(|slot| slot.get(&self.session, self.system, gfx));
-        if let Some(e) = env.as_deref_mut() {
-            e.poll_atlas(&gfx.device, |atlas| {
-                if let Some(s) = scene.as_deref_mut() {
-                    s.set_depth_atlas(atlas);
-                }
-            });
+        let env_frame = env.as_deref_mut().and_then(|e| {
+            e.poll_check(&gfx.device);
+            e.acquire(&self.space, time)
+        });
+        if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref())
+            && let Some(collide) = e.prepare_atlas(&gfx.queue, f)
+            && let Some(s) = scene.as_deref_mut()
+        {
+            s.set_depth_collide(collide);
         }
         before_render(&input, scene.as_deref_mut());
 
         let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
         log_stereo(view_flags, &views, &cameras);
-        // Acquired right before rendering at the same predicted display
-        // time and in the same space as the views.
-        let env_frame = env.as_deref_mut().and_then(|e| {
-            e.poll_check(&gfx.device);
-            e.acquire(&self.space, time)
-        });
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
             e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
-            e.prepare_atlas(&gfx.queue, f);
         }
         let extents: Vec<[u32; 2]> = self
             .eyes
@@ -794,7 +792,7 @@ impl XrSession {
             .collect();
         // Only a world-mode scene draws into the eyes; a quad scene reaches
         // them through the quad texture.
-        gfx.render(
+        let atlas = gfx.render(
             &targets,
             &cameras,
             clear,
@@ -802,10 +800,8 @@ impl XrSession {
             scene.filter(|s| s.is_world()),
             &env_passes,
         );
-        // The atlas pass went out with the frame's one submit: map its
-        // staging buffer now.
         if let Some(e) = env {
-            e.map_atlas();
+            e.note_atlas(atlas);
         }
 
         for eye in &mut self.eyes {

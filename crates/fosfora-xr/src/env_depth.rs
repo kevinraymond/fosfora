@@ -97,9 +97,10 @@ pub struct EnvDepthOptions {
     /// Each particle is tested every this many frames
     /// (`debug.fosfora.depthcollideevery`).
     pub collide_every: u32,
-    /// Upload the atlas into the obstacle texture
-    /// (`debug.fosfora.depthcollideupload`, a diagnostic; see
-    /// [`DepthAtlas::upload`]).
+    /// Copy the atlas into the obstacle texture
+    /// (`debug.fosfora.depthcollideupload`, a diagnostic: 0 runs the
+    /// atlas pass, the rows and the sim's test but skips the copy, so
+    /// nothing collides; it splits the pass's cost from the copy's).
     pub collide_upload: bool,
 }
 
@@ -656,11 +657,14 @@ pub fn check_layer(
 // The particle sim cannot sample the runtime's depth image (it lives in the
 // core's compute pipeline, whose one texture slot for this is the RGBA8
 // obstacle texture), so a compute pass condenses both layers of each
-// acquired image into a small RGBA8 atlas in a storage buffer, which is
-// mapped back a frame later without stalling the loop and uploaded into
-// the world scene's obstacle texture (`ParticleSystem::
-// update_obstacle_webcam`). `flux_xr_sim.wgsl` reads it with the poses of
-// the frame it came from (aux rows 173..180).
+// acquired image into a small RGBA8 atlas in a storage buffer, and the same
+// command encoder copies it into the world scene's obstacle texture
+// (`ParticleSystem::obstacle_texture`, sized once per effect through
+// `update_obstacle_webcam`) before the sim's dispatch: no CPU round trip,
+// no lag. `flux_xr_sim.wgsl` reads it with the same frame's poses (aux
+// rows 173..180). The first version read the atlas back and uploaded it:
+// ~0.5 ms GPU and 0.2 ms CPU for the upload alone on the Quest 3, landing
+// one to two frames late.
 
 /// The distance the atlas's 16 bits span (m): 0.08 mm steps, 2 cm in the
 /// high byte alone. A texel at or past it holds no data (no phantom wall
@@ -672,6 +676,14 @@ pub const DEPTH_ATLAS_RANGE_M: f32 = 5.0;
 pub const COLLIDE_RES: u32 = 160;
 /// Rows of [`ATLAS_WGSL`]'s `AtlasParams`.
 pub const ATLAS_PARAM_ROWS: usize = 2;
+
+/// Texels per row of the atlas's storage buffer for `res` texels per layer
+/// side: rows are padded to the 256-byte `bytes_per_row` alignment a
+/// buffer-to-texture copy requires (160 texels are 640 bytes, padded to
+/// 768 = 192 texels; 320 are 1280 bytes, already aligned).
+pub fn atlas_row_texels(res: u32) -> u32 {
+    (res * 4).next_multiple_of(256) / 4
+}
 
 /// The distance the map's stored value `d` gives, or `None` where the
 /// atlas holds no data: no depth (`d >= 1`), nearer than `near_cut` or at
@@ -777,13 +789,15 @@ pub fn atlas_params(
             DEPTH_ATLAS_RANGE_M,
             res as f32,
             if flip_v { 1.0 } else { 0.0 },
-            0.0,
+            atlas_row_texels(res) as f32,
         ],
     ]
 }
 
 /// Condenses both layers of the depth image into the atlas (see
-/// [`encode_atlas`], its CPU twin), one invocation per atlas texel. Only
+/// [`encode_atlas`], its CPU twin), one invocation per atlas texel, rows
+/// [`atlas_row_texels`] apart in the buffer (the padding is never
+/// written, the copy into the texture skips it). Only
 /// samples the image, like the self-check, so it stays in the layout the
 /// occluder uses.
 pub const ATLAS_WGSL: &str = r"
@@ -791,7 +805,7 @@ struct AtlasParams {
     // near, far (0 when infinite), 1 when infinite, discard distance (m)
     depth_range: vec4<f32>,
     // x the atlas range (m), y texels per layer side, z 1 = map row 0 is
-    // the top of the view
+    // the top of the view, w texels per buffer row (padded to 256 bytes)
     atlas: vec4<f32>,
 }
 @group(0) @binding(0) var depth_map: texture_depth_2d_array;
@@ -842,14 +856,14 @@ fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
         let v = min(u32(floor(clamp(best / p.atlas.x, 0.0, 1.0) * 65535.0 + 0.5)), 65535u);
         px = (v >> 8u) | (255u << 8u) | ((v & 255u) << 16u);
     }
-    atlas[(id.z * res + id.y) * res + id.x] = px;
+    atlas[(id.z * res + id.y) * u32(p.atlas.w) + id.x] = px;
 }
 ";
 
-/// What the sim needs besides the atlas bytes: the poses and fov of the
-/// acquired frame the atlas was built from (it arrives a frame late, so
-/// these travel with it, never the current frame's), its near plane, the
-/// atlas side and the collide's thickness band.
+/// What the sim needs besides the atlas: the poses and fov of the
+/// acquired frame the atlas was built from (the same frame: the atlas is
+/// written into the obstacle texture in that frame's submit), its near
+/// plane, the atlas side, the collide's thickness band and stride.
 #[derive(Debug, Clone, Copy)]
 pub struct DepthCollide {
     pub views: [DepthView; 2],
@@ -919,21 +933,10 @@ impl DepthCollide {
     }
 }
 
-/// One read-back atlas, ready for the obstacle texture: `width` x
-/// `height` RGBA8 texels (see [`encode_atlas`]).
-pub struct DepthAtlas<'a> {
-    /// Put it in the obstacle texture (`debug.fosfora.depthcollideupload`,
-    /// a diagnostic: 0 runs everything but the upload, to split the
-    /// atlas pass's cost from the upload's).
-    pub upload: bool,
-    pub bytes: &'a [u8],
-    pub width: u32,
-    pub height: u32,
-    pub collide: DepthCollide,
-}
-
 #[cfg(target_os = "android")]
-pub use runtime::{AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot};
+pub use runtime::{
+    AtlasOutcome, AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot,
+};
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
 /// occluder pipeline. The `openxr` crate binds the extension's function
@@ -954,9 +957,9 @@ mod runtime {
     use xr::sys::Handle as _;
 
     use super::{
-        ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthAtlas, DepthCollide,
-        DepthView, ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS,
-        atlas_params, check_layer,
+        ATLAS_PARAM_ROWS, ATLAS_WGSL, CHECK_GRID, CHECK_WGSL, CheckStats, DepthCollide, DepthView,
+        ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, Obb, Reading, UNIFORM_ROWS, atlas_params,
+        atlas_row_texels, check_layer,
     };
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::math::Fov;
@@ -972,10 +975,6 @@ mod runtime {
     const CREATE_RETRY_EVERY: Duration = Duration::from_secs(5);
     /// Time between two self-check read-backs.
     const CHECK_EVERY: Duration = Duration::from_secs(1);
-    /// Depth atlas read-backs in flight at most (one lands a frame after it
-    /// is built on the Quest 3, so two are busy at a time and the third
-    /// absorbs a slow frame).
-    const ATLAS_SLOTS: usize = 3;
     /// Time between the depth atlas's running-count log lines.
     const ATLAS_LOG_EVERY: Duration = Duration::from_secs(10);
 
@@ -1390,7 +1389,7 @@ mod runtime {
                         if opts.collide_upload {
                             ""
                         } else {
-                            ", upload off (diagnostic)"
+                            ", copy into the texture off (diagnostic)"
                         },
                         res = opts.collide_res
                     )
@@ -1423,6 +1422,10 @@ mod runtime {
         /// (`ENVIRONMENT_DEPTH_NOT_AVAILABLE_META`, counted) or on an
         /// error (logged, rate-limited).
         pub fn acquire(&mut self, space: &xr::Space, time: xr::Time) -> Option<EnvDepthFrame> {
+            // The atlas pass follows this acquire's image, or none.
+            if let Some(a) = self.atlas.as_mut() {
+                a.image = None;
+            }
             if !self.provider.running {
                 self.start_retry_in = self.start_retry_in.saturating_sub(1);
                 if self.start_retry_in > 0 {
@@ -1754,37 +1757,19 @@ mod runtime {
             }
         }
 
-        /// The depth atlas for the sim's collide, step 1 of 3: reserve a
-        /// free staging buffer for `frame`'s atlas and write the pass's
-        /// params. [`Self::atlas_pass`] then gives the pass that
-        /// `Gfx::render` records into the frame's one command encoder (a
-        /// compute pass condensing both layers of the image into the
-        /// storage buffer, the image only ever sampled, and the copy into
-        /// the staging buffer), and [`Self::map_atlas`] maps the buffer
-        /// after that single submit; [`Self::poll_atlas`] hands it over a
-        /// frame later. Every staging buffer still in flight: the frame is
-        /// skipped (counted). Called after each acquire.
-        pub fn prepare_atlas(&mut self, queue: &wgpu::Queue, frame: &EnvDepthFrame) {
-            let Some(a) = self.atlas.as_mut() else {
-                return;
-            };
-            // A reservation whose frame never rendered (an error between
-            // the acquire and the submit) is released first.
-            if let Some((i, _)) = a.recorded.take() {
-                a.slots[i].frame = None;
-                a.slots[i].state.store(SLOT_IDLE, Ordering::Release);
-            }
-            if a.bind_groups.get(frame.index as usize).is_none() {
-                return;
-            }
-            let Some(i) = a
-                .slots
-                .iter()
-                .position(|s| s.state.load(Ordering::Acquire) == SLOT_IDLE)
-            else {
-                a.window.busy += 1;
-                return;
-            };
+        /// The depth atlas for the sim's collide, before the frame is
+        /// recorded: write the pass's params for `frame` and keep its image
+        /// for [`Self::atlas_pass`]. Returns what the sim's rows need: the
+        /// same frame's poses, since the pass writes the obstacle texture
+        /// in this frame's submit, ahead of the sim. `None` without the
+        /// collide. Called after each acquire.
+        pub fn prepare_atlas(
+            &mut self,
+            queue: &wgpu::Queue,
+            frame: &EnvDepthFrame,
+        ) -> Option<DepthCollide> {
+            let a = self.atlas.as_mut()?;
+            a.bind_groups.get(frame.index as usize)?;
             let params = atlas_params(
                 frame.near,
                 frame.far,
@@ -1793,126 +1778,55 @@ mod runtime {
                 self.opts.flip_v,
             );
             queue.write_buffer(&a.params, 0, bytemuck::cast_slice(&params));
-            let slot = &mut a.slots[i];
-            slot.state.store(SLOT_RECORDED, Ordering::Release);
-            slot.frame = Some(*frame);
-            slot.built_at = a.frames;
-            a.recorded = Some((i, frame.index));
-        }
-
-        /// Step 2: the atlas pass reserved by [`Self::prepare_atlas`], for
-        /// `Gfx::render` to record; `None` without one this frame.
-        pub fn atlas_pass(&self) -> Option<AtlasPass<'_>> {
-            let a = self.atlas.as_ref()?;
-            let (i, index) = a.recorded?;
-            Some(AtlasPass {
-                pipeline: &a.pipeline,
-                bind_group: a.bind_groups.get(index as usize)?,
-                storage: &a.storage,
-                staging: &a.slots[i].buffer,
+            a.image = Some(frame.index);
+            Some(DepthCollide {
+                views: frame.views,
+                near: frame.near,
                 res: a.res,
+                thickness_m: self.opts.collide_thickness_m,
+                every: self.opts.collide_every,
             })
         }
 
-        /// Step 3, after the frame's submit: map the staging buffer the
-        /// atlas pass was copied into.
-        pub fn map_atlas(&mut self) {
-            let Some(a) = self.atlas.as_mut() else {
-                return;
-            };
-            let Some((i, _)) = a.recorded.take() else {
-                return;
-            };
-            let slot = &a.slots[i];
-            slot.state.store(SLOT_PENDING, Ordering::Release);
-            let done = Arc::clone(&slot.state);
-            slot.buffer
-                .slice(..)
-                .map_async(wgpu::MapMode::Read, move |r| {
-                    let state = if r.is_ok() { SLOT_MAPPED } else { SLOT_FAILED };
-                    done.store(state, Ordering::Release);
-                });
+        /// This frame's atlas pass (prepared by [`Self::prepare_atlas`]),
+        /// for `Gfx::render` to record; `None` without one.
+        pub fn atlas_pass(&self) -> Option<AtlasPass<'_>> {
+            let a = self.atlas.as_ref()?;
+            Some(AtlasPass {
+                pipeline: &a.pipeline,
+                bind_group: a.bind_groups.get(a.image? as usize)?,
+                storage: &a.storage,
+                res: a.res,
+                copy: self.opts.collide_upload,
+            })
         }
 
-        /// Hand the newest depth atlas the GPU has delivered to `upload`,
-        /// with the poses of the frame it was built from, and free its
-        /// staging buffer (an older one delivered meanwhile is dropped);
-        /// never waits. Called once per rendered frame, before the sim's
-        /// inputs are written. Logs the counts every 10 s.
-        pub fn poll_atlas(&mut self, device: &wgpu::Device, upload: impl FnOnce(&DepthAtlas<'_>)) {
+        /// After the frame's submit: count what the atlas pass did
+        /// (`None`: no depth frame this frame) and log the counts every
+        /// 10 s.
+        pub fn note_atlas(&mut self, outcome: Option<AtlasOutcome>) {
             let Some(a) = self.atlas.as_mut() else {
                 return;
             };
-            a.frames += 1;
-            // Non-blocking: runs the map callbacks of the copies that are done.
-            let _ = device.poll(wgpu::PollType::Poll);
-            let mut newest: Option<usize> = None;
-            for (i, s) in a.slots.iter().enumerate() {
-                match s.state.load(Ordering::Acquire) {
-                    SLOT_MAPPED if newest.is_none_or(|n| s.built_at > a.slots[n].built_at) => {
-                        newest = Some(i);
-                    }
-                    SLOT_FAILED => a.window.failed += 1,
-                    _ => {}
+            a.image = None;
+            let w = &mut a.window;
+            match outcome {
+                Some(AtlasOutcome::Copied { sized }) => {
+                    w.copied += 1;
+                    w.sized += u64::from(sized);
                 }
+                Some(AtlasOutcome::NoTarget) => w.no_target += 1,
+                Some(AtlasOutcome::NotCopied) => w.not_copied += 1,
+                None => w.without += 1,
             }
-            for (i, s) in a.slots.iter_mut().enumerate() {
-                let state = s.state.load(Ordering::Acquire);
-                if Some(i) == newest || (state != SLOT_MAPPED && state != SLOT_FAILED) {
-                    continue;
-                }
-                if state == SLOT_MAPPED {
-                    s.buffer.unmap();
-                    a.window.superseded += 1;
-                }
-                s.frame = None;
-                s.state.store(SLOT_IDLE, Ordering::Release);
-            }
-            match newest {
-                Some(i) => {
-                    let (res, frames) = (a.res, a.frames);
-                    let s = &mut a.slots[i];
-                    if let Some(frame) = s.frame.take() {
-                        let lag = frames.saturating_sub(s.built_at);
-                        {
-                            let bytes = s.buffer.slice(..).get_mapped_range();
-                            // The mapped range itself, no copy of ours:
-                            // the core copies it once more on the way to
-                            // the texture.
-                            upload(&DepthAtlas {
-                                upload: self.opts.collide_upload,
-                                bytes: &bytes,
-                                width: res,
-                                height: 2 * res,
-                                collide: DepthCollide {
-                                    views: frame.views,
-                                    near: frame.near,
-                                    res,
-                                    thickness_m: self.opts.collide_thickness_m,
-                                    every: self.opts.collide_every,
-                                },
-                            });
-                        }
-                        a.window.uploaded += 1;
-                        a.window.lag_sum += lag;
-                        a.window.lag_max = a.window.lag_max.max(lag);
-                    }
-                    s.buffer.unmap();
-                    s.state.store(SLOT_IDLE, Ordering::Release);
-                }
-                None => a.window.without += 1,
-            }
-            if a.window.since.elapsed() >= ATLAS_LOG_EVERY {
-                let w = &a.window;
+            if w.since.elapsed() >= ATLAS_LOG_EVERY {
                 info!(
-                    "depth atlas: {} uploaded, {} frames without one, {} acquires skipped (read-backs busy), {} superseded, {} failed · lag mean {:.2} max {} frames · {}x{}",
-                    w.uploaded,
+                    "depth atlas: {} copied into the obstacle texture ({} after sizing it), {} frames without a texture to copy into, {} not copied (depthcollideupload 0), {} frames without a depth frame · {}x{}",
+                    w.copied,
+                    w.sized,
+                    w.no_target,
+                    w.not_copied,
                     w.without,
-                    w.busy,
-                    w.superseded,
-                    w.failed,
-                    w.lag_sum as f64 / w.uploaded.max(1) as f64,
-                    w.lag_max,
                     a.res,
                     2 * a.res
                 );
@@ -1921,28 +1835,50 @@ mod runtime {
         }
     }
 
-    /// Staging buffer states (`AtlasSlot::state`): free, mapping, mapped,
-    /// the map failed, reserved and recorded for this frame's submit.
-    const SLOT_IDLE: u8 = 0;
-    const SLOT_PENDING: u8 = 1;
-    const SLOT_MAPPED: u8 = 2;
-    const SLOT_FAILED: u8 = 3;
-    const SLOT_RECORDED: u8 = 4;
+    /// What this frame's atlas pass did (`AtlasPass::record`).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AtlasOutcome {
+        /// Copied into the world effect's obstacle texture; `sized` when
+        /// the texture was (re)allocated at the atlas's size first (the
+        /// effect's first atlas, or an effect just built).
+        Copied { sized: bool },
+        /// No world effect's texture to copy into.
+        NoTarget,
+        /// `depthcollideupload 0`: the pass ran, the copy did not.
+        NotCopied,
+    }
 
     /// This frame's depth atlas pass, recorded by `Gfx::render` into the
-    /// frame's command encoder before the sim's dispatch.
+    /// frame's command encoder before the sims' dispatch.
     pub struct AtlasPass<'a> {
         pipeline: &'a wgpu::ComputePipeline,
         bind_group: &'a wgpu::BindGroup,
         storage: &'a wgpu::Buffer,
-        staging: &'a wgpu::Buffer,
         res: u32,
+        copy: bool,
     }
 
     impl AtlasPass<'_> {
-        /// The compute pass into the storage buffer, then its copy into the
-        /// reserved staging buffer.
-        pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        /// The obstacle texture's size the copy needs: `res` x `2 res`.
+        pub fn size(&self) -> (u32, u32) {
+            (self.res, 2 * self.res)
+        }
+
+        /// Whether the atlas is copied into the obstacle texture
+        /// (`depthcollideupload`); without, no texture is needed.
+        pub fn copies(&self) -> bool {
+            self.copy
+        }
+
+        /// The compute pass into the storage buffer, then (unless the
+        /// diagnostic turns it off) the copy into `target`, the world
+        /// effect's obstacle texture at [`Self::size`]; `sized` says it
+        /// was just (re)allocated, for the log.
+        pub fn record(
+            &self,
+            encoder: &mut wgpu::CommandEncoder,
+            target: Option<(&wgpu::Texture, bool)>,
+        ) -> AtlasOutcome {
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("xr-env-depth-atlas"),
@@ -1952,7 +1888,30 @@ mod runtime {
                 pass.set_bind_group(0, self.bind_group, &[]);
                 pass.dispatch_workgroups(self.res.div_ceil(8), self.res.div_ceil(8), 2);
             }
-            encoder.copy_buffer_to_buffer(self.storage, 0, self.staging, 0, self.staging.size());
+            if !self.copy {
+                return AtlasOutcome::NotCopied;
+            }
+            let Some((texture, sized)) = target else {
+                return AtlasOutcome::NoTarget;
+            };
+            let (width, height) = self.size();
+            encoder.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo {
+                    buffer: self.storage,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(atlas_row_texels(self.res) * 4),
+                        rows_per_image: Some(height),
+                    },
+                },
+                texture.as_image_copy(),
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            AtlasOutcome::Copied { sized }
         }
     }
 
@@ -1964,57 +1923,42 @@ mod runtime {
         pub atlas: Option<AtlasPass<'a>>,
     }
 
-    /// The depth atlas's GPU side and its read-backs in flight.
+    /// The depth atlas's GPU side.
     struct Atlas {
         pipeline: wgpu::ComputePipeline,
         /// Per swapchain image: the image, the storage buffer, the params.
         bind_groups: Vec<wgpu::BindGroup>,
         params: wgpu::Buffer,
+        /// The atlas, rows padded to [`atlas_row_texels`]; copied into the
+        /// obstacle texture.
         storage: wgpu::Buffer,
-        slots: Vec<AtlasSlot>,
         /// Texels per layer side.
         res: u32,
-        /// Rendered frames so far (`poll_atlas` calls), for the lag.
-        frames: u64,
+        /// This frame's swapchain image, from `prepare_atlas` until
+        /// `note_atlas` (cleared by every acquire).
+        image: Option<u32>,
         window: AtlasWindow,
-        /// The slot and swapchain image reserved by `prepare_atlas`, until
-        /// `map_atlas`.
-        recorded: Option<(usize, u32)>,
-    }
-
-    /// One staging buffer and the frame whose atlas it carries.
-    struct AtlasSlot {
-        buffer: wgpu::Buffer,
-        /// `SLOT_*`, written by the map callback.
-        state: Arc<AtomicU8>,
-        frame: Option<EnvDepthFrame>,
-        /// `Atlas::frames` when it was built.
-        built_at: u64,
     }
 
     /// The counts of one log window.
     struct AtlasWindow {
         since: Instant,
-        uploaded: u64,
+        copied: u64,
+        sized: u64,
+        no_target: u64,
+        not_copied: u64,
         without: u64,
-        busy: u64,
-        superseded: u64,
-        failed: u64,
-        lag_sum: u64,
-        lag_max: u64,
     }
 
     impl AtlasWindow {
         fn new() -> Self {
             Self {
                 since: Instant::now(),
-                uploaded: 0,
+                copied: 0,
+                sized: 0,
+                no_target: 0,
+                not_copied: 0,
                 without: 0,
-                busy: 0,
-                superseded: 0,
-                failed: 0,
-                lag_sum: 0,
-                lag_max: 0,
             }
         }
     }
@@ -2076,7 +2020,7 @@ mod runtime {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
-        let bytes = u64::from(2 * res * res) * 4;
+        let bytes = u64::from(2 * res * atlas_row_texels(res)) * 4;
         let storage = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("xr-env-depth-atlas"),
             size: bytes,
@@ -2089,19 +2033,6 @@ mod runtime {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let slots = (0..ATLAS_SLOTS)
-            .map(|_| AtlasSlot {
-                buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("xr-env-depth-atlas-staging"),
-                    size: bytes,
-                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }),
-                state: Arc::new(AtomicU8::new(SLOT_IDLE)),
-                frame: None,
-                built_at: 0,
-            })
-            .collect();
         let bind_groups = images
             .iter()
             .map(|(_, view)| {
@@ -2130,11 +2061,9 @@ mod runtime {
             bind_groups,
             params,
             storage,
-            slots,
             res,
-            frames: 0,
+            image: None,
             window: AtlasWindow::new(),
-            recorded: None,
         }
     }
 
@@ -2924,6 +2853,17 @@ mod tests {
     }
 
     #[test]
+    fn atlas_buffer_rows_are_padded_for_the_texture_copy() {
+        assert_eq!(atlas_row_texels(160), 192);
+        assert_eq!(atlas_row_texels(320), 320);
+        for res in [8, 64, 120, 160, 200, 320, 640] {
+            let row = atlas_row_texels(res);
+            assert!(row >= res && row < res + 64, "{res}: {row}");
+            assert_eq!(row * 4 % 256, 0, "{res}: {row}");
+        }
+    }
+
+    #[test]
     fn the_atlas_shader_validates_and_matches_the_params() {
         let module = naga::front::wgsl::parse_str(ATLAS_WGSL).expect("atlas WGSL parses");
         naga::valid::Validator::new(
@@ -2943,13 +2883,16 @@ mod tests {
         assert_eq!(span as usize, ATLAS_PARAM_ROWS * 16);
         assert_eq!(
             atlas_params(0.1, f32::INFINITY, 0.2, 160, false),
-            [[0.1, 0.0, 1.0, 0.2], [DEPTH_ATLAS_RANGE_M, 160.0, 0.0, 0.0]]
+            [
+                [0.1, 0.0, 1.0, 0.2],
+                [DEPTH_ATLAS_RANGE_M, 160.0, 0.0, 192.0]
+            ]
         );
         assert_eq!(
             atlas_params(0.1, 20.0, 0.3, 320, true),
             [
                 [0.1, 20.0, 0.0, 0.3],
-                [DEPTH_ATLAS_RANGE_M, 320.0, 1.0, 0.0]
+                [DEPTH_ATLAS_RANGE_M, 320.0, 1.0, 320.0]
             ]
         );
     }

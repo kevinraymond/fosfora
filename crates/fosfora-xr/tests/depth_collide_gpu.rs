@@ -1,5 +1,6 @@
 //! The live depth map as a collision source (board #3352), on a desktop GPU:
-//! the atlas compute pass against its CPU twin, and `flux_xr_sim.wgsl`'s
+//! the atlas compute pass and its copy into an RGBA8 texture against the
+//! pass's CPU twin, and `flux_xr_sim.wgsl`'s
 //! collide against a depth atlas, run headless behind the loader's compute
 //! preamble. The GPU tests are `#[ignore]`d like the core's probes (they
 //! need an adapter); run them with
@@ -10,7 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use fosfora_xr::env_depth::{
-    ATLAS_WGSL, COLLIDE_ROWS, DepthCollide, DepthView, NEAR_CUT_M, atlas_params, encode_atlas,
+    ATLAS_WGSL, COLLIDE_ROWS, DepthCollide, DepthView, NEAR_CUT_M, atlas_params, atlas_row_texels,
+    encode_atlas,
 };
 use fosfora_xr::math::Fov;
 use glam::Vec3;
@@ -121,7 +123,10 @@ fn synthetic_map() -> Vec<u16> {
     map
 }
 
-/// The atlas pass over `map` (both layers, `MAP` square), read back.
+/// The atlas pass over `map` (both layers, `MAP` square) as the XR app
+/// records it: the pass into the padded storage buffer, then in the same
+/// encoder the copy into an RGBA8 texture of the atlas's size (the
+/// obstacle texture on the device); the texture read back, unpadded.
 fn run_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -172,7 +177,7 @@ fn run_atlas(
     });
     let storage = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("env-depth-atlas"),
-        size: u64::from(2 * res * res) * 4,
+        size: u64::from(2 * res * atlas_row_texels(res)) * 4,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: false,
     });
@@ -209,8 +214,55 @@ fn run_atlas(
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(res.div_ceil(8), res.div_ceil(8), 2);
     }
+    let extent = wgpu::Extent3d {
+        width: res,
+        height: 2 * res,
+        depth_or_array_layers: 1,
+    };
+    let layout = wgpu::TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(atlas_row_texels(res) * 4),
+        rows_per_image: Some(2 * res),
+    };
+    let obstacle = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("obstacle"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    encoder.copy_buffer_to_texture(
+        wgpu::TexelCopyBufferInfo {
+            buffer: &storage,
+            layout,
+        },
+        obstacle.as_image_copy(),
+        extent,
+    );
+    // Read the texture back through a second padded buffer.
+    let back = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("obstacle-back"),
+        size: storage.size(),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        obstacle.as_image_copy(),
+        wgpu::TexelCopyBufferInfo {
+            buffer: &back,
+            layout,
+        },
+        extent,
+    );
     queue.submit([encoder.finish()]);
-    bytemuck::cast_slice(&read_buffer(device, queue, &storage)).to_vec()
+    let padded: Vec<u32> = bytemuck::cast_slice(&read_buffer(device, queue, &back)).to_vec();
+    padded
+        .chunks(atlas_row_texels(res) as usize)
+        .flat_map(|row| row[..res as usize].iter().copied())
+        .collect()
 }
 
 /// The atlas the GPU builds from a D16 image is its CPU twin's: the same
@@ -907,7 +959,8 @@ fn every_other_frame_still_stops_every_particle() {
 }
 
 /// Rows that claim an atlas over the core's 1x1 placeholder (which the
-/// XR app never writes: the rows come with an upload) still collide with
+/// XR app sizes before the atlas's first copy, except with
+/// `depthcollideupload 0`) still collide with
 /// nothing: the sim takes the side from the rows, not the texture, and
 /// the placeholder's zeros, however the load is bounded, read as no data.
 #[test]
