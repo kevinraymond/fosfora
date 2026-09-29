@@ -220,6 +220,58 @@ pub fn is_hidden_wall(label: &str) -> bool {
         .any(|l| l.trim().eq_ignore_ascii_case("INVISIBLE_WALL_FACE"))
 }
 
+/// What the room editor's status row calls box `k` of `boxes` (the lanes'
+/// order: the room's boxes, then the stage floor): the label that decides
+/// its kind ([`surface_kind`]) as a word, `desk`, `table`, `wall`,
+/// `floor`, `ceiling`, `window`, `door`, `storage`, `couch`, any other
+/// label lowercased with spaces for underscores, the stage floor `floor`;
+/// with the box index appended (`table 3`) when another box in `boxes`
+/// has the same name, so two tables are told apart by a word, not a
+/// color. Empty past the boxes.
+pub fn friendly_name(k: usize, boxes: &[crate::lanes::LaneBox<'_>]) -> String {
+    let Some(b) = boxes.get(k) else {
+        return String::new();
+    };
+    let name = base_name(b);
+    if boxes
+        .iter()
+        .enumerate()
+        .any(|(i, o)| i != k && base_name(o) == name)
+    {
+        format!("{name} {k}")
+    } else {
+        name
+    }
+}
+
+/// [`friendly_name`] without the disambiguation.
+fn base_name(b: &crate::lanes::LaneBox<'_>) -> String {
+    if b.uuid == crate::room_file::STAGE_FLOOR_UUID {
+        return "floor".to_owned();
+    }
+    let kind = surface_kind(b.label);
+    let label = b
+        .label
+        .split(',')
+        .map(str::trim)
+        .find(|l| surface_kind(l) == kind)
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    match label.as_str() {
+        "" => "surface".to_owned(),
+        "DESK" => "desk".to_owned(),
+        "TABLE" => "table".to_owned(),
+        "WALL_FACE" => "wall".to_owned(),
+        "FLOOR" => "floor".to_owned(),
+        "CEILING" => "ceiling".to_owned(),
+        "WINDOW_FRAME" => "window".to_owned(),
+        "DOOR_FRAME" => "door".to_owned(),
+        "STORAGE" => "storage".to_owned(),
+        "COUCH" => "couch".to_owned(),
+        other => other.to_ascii_lowercase().replace('_', " "),
+    }
+}
+
 /// The synthetic stage floor's emitter flag: 1 when the room returned no
 /// FLOOR box, else 0, so the floor never emits twice.
 pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
@@ -230,17 +282,62 @@ pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
     }
 }
 
-/// A box's upward face: its outward normal, the center of the face and its
-/// two in-plane axes (unit) with their half extents.
+/// One face of a box: its outward normal, the center of the face and its
+/// two in-plane axes (unit) with their half extents. [`Face::of`] is the
+/// upward face (the emitters', the ripple's), [`Face::facing`] a plane's
+/// face toward a point (the wall spectrum's), [`Face::across`] the face a
+/// ray entered (the room editor's highlight).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TopFace {
+pub struct Face {
     pub normal: Vec3,
     pub center: Vec3,
     pub axes: [Vec3; 2],
     pub half: [f32; 2],
 }
 
-impl TopFace {
+/// The name the upward-face callers use: a [`Face`] from [`Face::of`].
+pub type TopFace = Face;
+
+impl Face {
+    /// Of `center` / `rot` (box -> world) / `half`, the face whose outward
+    /// normal is the box axis most aligned with `normal`, signed: the face
+    /// a ray entered, from the cast's hit normal (`instruments::Hit`). A
+    /// table hit from above gives its top, a wall hit from the room its
+    /// room-facing side of the 4 cm slab, a storage volume hit on a side
+    /// that side.
+    pub fn across(center: Vec3, rot: Quat, half: Vec3, normal: Vec3) -> Self {
+        let axes = [rot * Vec3::X, rot * Vec3::Y, rot * Vec3::Z];
+        let h = half.to_array();
+        // First of the largest |cos|.
+        let mut i = 0;
+        for k in 1..3 {
+            if axes[k].dot(normal).abs() > axes[i].dot(normal).abs() {
+                i = k;
+            }
+        }
+        let n = if axes[i].dot(normal) >= 0.0 {
+            axes[i]
+        } else {
+            -axes[i]
+        };
+        let (j, k) = ((i + 1) % 3, (i + 2) % 3);
+        Self {
+            normal: n,
+            center: center + n * h[i],
+            axes: [axes[j], axes[k]],
+            half: [h[j], h[k]],
+        }
+    }
+
+    /// The face as a quad `lift_m` off it along its normal, corners in
+    /// order around it: `-a-b`, `+a-b`, `+a+b`, `-a+b` for the two axes
+    /// times their half extents.
+    pub fn corners(&self, lift_m: f32) -> [Vec3; 4] {
+        let c = self.center + self.normal * lift_m;
+        let (a, b) = (self.axes[0] * self.half[0], self.axes[1] * self.half[1]);
+        [c - a - b, c + a - b, c + a + b, c - a + b]
+    }
+
     /// Of `center` / `rot` (box -> world) / `half`, the face whose outward
     /// normal points most nearly up.
     pub fn of(center: Vec3, rot: Quat, half: Vec3) -> Self {
@@ -484,6 +581,140 @@ mod tests {
         let b = TopFace::facing(center, rot, half, Vec3::new(-3.0, 1.2, 0.0));
         assert!(b.normal.abs_diff_eq(Vec3::NEG_X, 1e-5));
         assert!(b.center.abs_diff_eq(Vec3::new(-2.02, 1.25, 0.0), 1e-5));
+    }
+
+    #[test]
+    fn the_face_across_a_hit_normal_is_the_face_the_ray_entered() {
+        use crate::instruments::{RayBox, cast};
+        let cast_one = |b: RayBox, origin: Vec3, to: Vec3| {
+            let hit = cast(origin, (to - origin).normalize(), &[b], 8.0).expect("a hit");
+            Face::across(b.center, b.rot, b.half, hit.normal)
+        };
+        // A table (local +Z up) seen from a seated head above and in front.
+        let t = table(Vec3::new(0.0, 0.4, -0.8), [0.6, 0.4]);
+        let rb = RayBox {
+            center: t.center,
+            rot: t.rot,
+            half: t.half,
+            kind: KIND_TABLE,
+        };
+        let f = cast_one(rb, Vec3::new(0.0, 1.2, 0.0), Vec3::new(0.1, 0.77, -0.7));
+        assert_eq!(f, TopFace::of(t.center, t.rot, t.half));
+        assert!((f.center.y - 0.77).abs() < 1e-5);
+        // A wall plane at x = -2 (local +Z into the room), 4 cm thick,
+        // hit from the room at an angle: its room-facing side.
+        let wall = RayBox {
+            center: Vec3::new(-2.0, 1.25, 0.0),
+            rot: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(2.0, 1.25, 0.02),
+            kind: KIND_WALL,
+        };
+        let f = cast_one(wall, Vec3::new(0.0, 1.2, 0.0), Vec3::new(-2.0, 1.5, -1.2));
+        assert!(f.normal.abs_diff_eq(Vec3::X, 1e-5), "{:?}", f.normal);
+        assert!(f.center.abs_diff_eq(Vec3::new(-1.98, 1.25, 0.0), 1e-5));
+        assert!((f.area() - 10.0).abs() < 1e-4);
+        assert_eq!(
+            f,
+            TopFace::facing(wall.center, wall.rot, wall.half, Vec3::ZERO)
+        );
+        // A storage volume (0.4 x 0.9 x 0.3 half, +Z up) hit on its +X
+        // side from the right.
+        let storage = RayBox {
+            center: Vec3::new(1.0, 0.45, -1.0),
+            rot: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(0.4, 0.3, 0.45),
+            kind: KIND_OTHER,
+        };
+        let f = cast_one(storage, Vec3::new(2.5, 0.5, -1.0), storage.center);
+        assert!(f.normal.abs_diff_eq(Vec3::X, 1e-5), "{:?}", f.normal);
+        assert!(f.center.abs_diff_eq(Vec3::new(1.4, 0.45, -1.0), 1e-5));
+        let mut half = f.half;
+        half.sort_by(f32::total_cmp);
+        assert_close!(half, [0.3, 0.45]);
+        // A normal off the axes still picks the nearest axis, signed.
+        let f = Face::across(
+            storage.center,
+            storage.rot,
+            storage.half,
+            Vec3::new(-0.2, 0.9, 0.1),
+        );
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+    }
+
+    #[test]
+    fn the_corners_go_round_the_face_lifted_off_it() {
+        let f = Face {
+            normal: Vec3::Y,
+            center: Vec3::new(1.0, 0.75, -1.0),
+            axes: [Vec3::X, Vec3::NEG_Z],
+            half: [0.6, 0.4],
+        };
+        let c = f.corners(0.01);
+        assert!(c.iter().all(|p| (p.y - 0.76).abs() < 1e-6), "{c:?}");
+        assert!(c[0].abs_diff_eq(Vec3::new(0.4, 0.76, -0.6), 1e-6));
+        assert!(c[2].abs_diff_eq(Vec3::new(1.6, 0.76, -1.4), 1e-6));
+        // Around, not across: each side is an axis.
+        assert!(((c[1] - c[0]).length() - 1.2).abs() < 1e-5);
+        assert!(((c[2] - c[1]).length() - 0.8).abs() < 1e-5);
+        assert!(((c[3] - c[2]).length() - 1.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_editor_names_surfaces_in_words_and_tells_twins_apart() {
+        use crate::lanes::LaneBox;
+        let b = |n: u8, label: &'static str| LaneBox {
+            uuid: [n; 16],
+            kind: surface_kind(label),
+            label,
+        };
+        let stage = LaneBox {
+            uuid: crate::room_file::STAGE_FLOOR_UUID,
+            kind: KIND_FLOOR,
+            label: "",
+        };
+        let singles = [
+            ("DESK", "desk"),
+            ("TABLE", "table"),
+            ("WALL_FACE", "wall"),
+            ("CEILING", "ceiling"),
+            ("WINDOW_FRAME", "window"),
+            ("DOOR_FRAME", "door"),
+            ("STORAGE", "storage"),
+            ("COUCH", "couch"),
+            ("WALL_ART", "wall art"),
+            ("Lamp", "lamp"),
+        ];
+        let boxes: Vec<_> = singles
+            .iter()
+            .enumerate()
+            .map(|(i, (l, _))| b(i as u8 + 1, l))
+            .chain([stage])
+            .collect();
+        for (k, (_, name)) in singles.iter().enumerate() {
+            assert_eq!(friendly_name(k, &boxes), *name, "{}", singles[k].0);
+        }
+        // The stage floor alone is "floor".
+        assert_eq!(friendly_name(singles.len(), &boxes), "floor");
+        assert_eq!(friendly_name(99, &boxes), "");
+        // Two tables, four walls and a scene floor next to the stage
+        // floor: each carries its index.
+        let room = [
+            b(1, "TABLE"),
+            b(2, "WALL_FACE"),
+            b(3, "TABLE"),
+            b(4, "DESK"),
+            b(5, "WALL_FACE"),
+            b(6, "FLOOR"),
+            b(7, "OTHER,TABLE"),
+            stage,
+        ];
+        let names: Vec<_> = (0..room.len()).map(|k| friendly_name(k, &room)).collect();
+        assert_eq!(
+            names,
+            [
+                "table 0", "wall 1", "table 2", "desk", "wall 4", "floor 5", "table 6", "floor 7"
+            ]
+        );
     }
 
     #[test]
