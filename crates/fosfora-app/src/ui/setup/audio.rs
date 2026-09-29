@@ -81,7 +81,8 @@ pub fn page(ui: &mut Ui, s: &mut ShellState<'_>) {
     );
 
     ui.add_space(22.0);
-    kit::group_title(ui, "What it hears", Some("45 features, live"));
+    let count = format!("{} features, live", crate::audio::features::NUM_FEATURES);
+    kit::group_title(ui, "What it hears", Some(&count));
     if !s.audio.active {
         kit::help(ui, "Nothing to show until an input is listening.");
     } else {

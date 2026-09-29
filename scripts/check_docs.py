@@ -10,6 +10,7 @@ Checks:
   * `#anchors` match a real heading in the target file
   * relative <img src=...> and ![](...) targets exist
   * the effect catalogue in docs/GALLERY.md still matches assets/effects/*.pfx
+  * "N audio features" claims match NUM_FEATURES in audio/features.rs
   * (--check-assets) every clip GALLERY.md references exists in the demo-assets release
 
 Remote URLs are not fetched — this is a structural check, not a link-rot check.
@@ -162,6 +163,30 @@ def check_gallery() -> list[str]:
     return errors
 
 
+def check_feature_count() -> list[str]:
+    """Every "N audio features" claim in the current docs must match `NUM_FEATURES`.
+
+    The count went stale at 74 in five places (and at 81 in a doc comment) while the ABI
+    grew to 83. CHANGELOG.md is exempt: its old entries are right about their own release.
+    """
+    src = REPO / "crates" / "fosfora-app" / "src" / "audio" / "features.rs"
+    m = re.search(r"pub const NUM_FEATURES: usize = (\d+);", src.read_text())
+    if not m:
+        return [f"{src.relative_to(REPO)}: NUM_FEATURES not found"]
+    actual = int(m.group(1))
+
+    claim = re.compile(r"(\d+)\s+(?:audio|detected)\s+features\b")
+    errors = []
+    for md in md_files():
+        rel = md.relative_to(REPO)
+        if rel.name == "CHANGELOG.md":
+            continue
+        for n in claim.findall(md.read_text(encoding="utf-8", errors="replace")):
+            if int(n) != actual:
+                errors.append(f"{rel} says '{n} audio features', NUM_FEATURES is {actual}")
+    return errors
+
+
 def check_gallery_assets() -> list[str]:
     """Verify every clip GALLERY.md points at actually exists in the demo-assets release.
 
@@ -213,7 +238,7 @@ def check_gallery_assets() -> list[str]:
 
 def main() -> int:
     check_assets = "--check-assets" in sys.argv[1:]
-    errors = check_links() + check_gallery()
+    errors = check_links() + check_gallery() + check_feature_count()
     if check_assets:
         errors += check_gallery_assets()
     if errors:

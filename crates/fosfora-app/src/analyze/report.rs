@@ -24,7 +24,7 @@ pub struct Analysis {
     pub sections: Vec<SectionReport>,
     pub events: Events,
     /// Per-hop feature streams. Present only with `--dense`; a 4-minute song is ~20k hops ×
-    /// 81 features, so this is tens of MB of JSON and most consumers want the summary.
+    /// 83 features, so this is tens of MB of JSON and most consumers want the summary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames: Option<Frames>,
 }
