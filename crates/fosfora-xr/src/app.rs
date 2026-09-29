@@ -241,7 +241,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect's emission goes to 0 (the cloud density kept, so on restores it) and the living cloud fades over its
-    //       lifetime; off with Edit room on, only the surface under the editor's beam spawns (solo), nothing with no surface; the pitcher
+    //       lifetime; off with Edit room on, only the surface under the editor's beam spawns (solo, at the full rate), nothing with no surface; the pitcher
     //       and the throw are unchanged; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)

@@ -530,6 +530,24 @@ pub fn emitter_weights(
     }
 }
 
+/// [`emitter_weights`] with box `k` running the behavior row `k` of
+/// `lanes` gives it ([`lane_behavior`]): the rows the sim reads, so the
+/// weights and the sim's gates agree. The behaviors in `boxes` are
+/// overwritten. `ObstacleSet::set_emitter_weights` (Android only) weighs
+/// the obstacle block through it, so the desktop tests take the same path.
+pub fn lane_emitter_weights(
+    boxes: &mut [SurfaceBox],
+    lanes: &[[f32; 4]],
+    cube_half: f32,
+    weights: SurfaceWeights,
+    out: &mut [f32],
+) {
+    for (b, row) in boxes.iter_mut().zip(lanes) {
+        b.behavior = lane_behavior(*row, b.kind);
+    }
+    emitter_weights(boxes, cube_half, weights, out);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

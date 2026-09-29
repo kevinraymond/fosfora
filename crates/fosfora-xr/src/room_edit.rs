@@ -39,9 +39,9 @@
 //! Off, the world effect's emission goes to 0 through the density path,
 //! the density kept so on restores it; off while Edit room is on, the
 //! pointed surface is soloed: emission stays at the density, but every
-//! other box's lane row goes to the sim at strength 0 ([`solo`]), so only
-//! the hit spawns and the wearer sees its embers, its sparks or nothing,
-//! alone. The particle system offers no way to clear the living cloud
+//! other box's lane row goes to the sim as `none` ([`solo`]), so only the
+//! hit spawns, at the full rate (step 2d), and the wearer sees its embers,
+//! its sparks or nothing, alone. The particle system offers no way to clear the living cloud
 //! without a core change, so turning the cloud off, or moving the solo to
 //! another surface, leaves what is alive to die over its lifetime (12 s
 //! for Flux XR Room). Kevin, worn, Sep 29: "Half the time I don't even
@@ -52,7 +52,7 @@
 use glam::Vec3;
 
 use crate::instruments::{Hit, RayBox, cast};
-use crate::surfaces::{SURFACE_LANE_ROWS, SurfaceBehavior, lane_row};
+use crate::surfaces::{KIND_NONE, SURFACE_LANE_ROWS, SurfaceBehavior, lane_behavior, lane_row};
 
 /// Seconds the ray has to stay on another box before it is the hit.
 pub const CONFIRM_S: f32 = 0.15;
@@ -337,23 +337,33 @@ impl Cloud {
     }
 }
 
-/// `rows` with every box but `hit` at strength 0: the sim multiplies a
-/// box's gate by its lane's strength, so only the hit spawns, and with no
-/// hit nothing does. The behaviors stay, so the weights (which follow the
-/// behaviors, not the strengths) keep the hit's share and a draw that
-/// lands on another box spawns nothing. An unset row (all zero: the sim
-/// would run its kind's gate at full, whatever the strength) becomes
-/// `none` at 0. The hit's row is left as it is.
+/// `rows` soloed on `hit`, so only the hit spawns. With a hit that spawns
+/// (its row sets embers or sparks), every other row becomes `none` at
+/// strength 0 and the hit's is left as it is: the weights, which follow the
+/// behaviors, then see one emitting box, the largest emitting table (the
+/// reference, step 2c) or the only box of its kind, and every draw lands
+/// on it, so it spawns at the full rate (step 2d; 2c kept the others'
+/// behaviors, so the hit spawned only its share of the room's weight,
+/// about 1.0 / 1.85 in Kevin's room). With no hit, or a hit that spawns
+/// nothing (the ripple, the spectrum, `none`, an unset row), every other
+/// row keeps its behavior at strength 0 (2c's rule): the weights stay on
+/// the boxes that emit, a draw that lands on one spawns nothing (the sim
+/// multiplies a box's gate by its lane's strength), and the sim never
+/// falls back to the volume, which it does when no box weighs anything.
+/// An unset row there (all zero: the sim would run its kind's default at
+/// full, whatever the strength) becomes `none` at 0.
 pub fn solo(
     rows: &[[f32; 4]; SURFACE_LANE_ROWS],
     hit: Option<usize>,
 ) -> [[f32; 4]; SURFACE_LANE_ROWS] {
+    let spawns = |row: &[f32; 4]| row[0] > 0.5 && lane_behavior(*row, KIND_NONE).emits();
+    let alone = hit.and_then(|k| rows.get(k)).is_some_and(spawns);
     let mut out = *rows;
     for (k, row) in out.iter_mut().enumerate() {
         if Some(k) == hit {
             continue;
         }
-        if row[0] <= 0.5 {
+        if alone || row[0] <= 0.5 {
             *row = lane_row(SurfaceBehavior::None, 0.0, [row[2], row[3]]);
         } else {
             row[1] = 0.0;
@@ -762,28 +772,128 @@ mod tests {
         let soloed = solo(&rows, Some(3));
         // The hit as it was.
         assert_close!(soloed[3], rows[3]);
-        // The others at strength 0, their behaviors and parameters kept.
-        for k in 0..3 {
-            assert_close!(soloed[k][1], 0.0);
-            assert_close!(soloed[k][0], rows[k][0]);
-            assert_close!(soloed[k][2..], rows[k][2..]);
-            assert_eq!(
-                crate::surfaces::lane_behavior(soloed[k], crate::surfaces::KIND_TABLE),
-                crate::surfaces::lane_behavior(rows[k], crate::surfaces::KIND_TABLE),
-            );
+        // Step 2d: every other row none at 0, its parameters kept, so the
+        // weights see the hit alone.
+        for k in (0..3).chain(4..SURFACE_LANE_ROWS) {
+            assert_close!(soloed[k], lane_row(B::None, 0.0, [rows[k][2], rows[k][3]]));
         }
-        // An unset row runs its kind's gate whatever its strength: none at
-        // 0 instead.
-        assert_close!(soloed[4], lane_row(B::None, 0.0, [0.0; 2]));
-        // With no hit, nothing keeps its strength.
-        let none = solo(&rows, None);
-        assert!(none.iter().all(|r| r[1] == 0.0), "{none:?}");
+        // A hit that spawns nothing (the wall's spectrum, an unset row) and
+        // no hit keep 2c's rule: the others' behaviors at strength 0, so the
+        // weights stay on the emitting boxes and nothing spawns.
+        for hit in [Some(0), Some(4), None] {
+            let kept = solo(&rows, hit);
+            for k in 0..4 {
+                if Some(k) == hit {
+                    assert_close!(kept[k], rows[k]);
+                    continue;
+                }
+                assert_close!(kept[k][1], 0.0);
+                assert_close!(kept[k][0], rows[k][0]);
+                assert_close!(kept[k][2..], rows[k][2..]);
+            }
+            // An unset row runs its kind's gate whatever its strength: none
+            // at 0 instead.
+            if hit != Some(4) {
+                assert_close!(kept[4], lane_row(B::None, 0.0, [0.0; 2]));
+            }
+        }
         // A copy: the lanes' rows are untouched.
         assert_close!(rows[1], lane_row(B::Embers, 1.0, [0.0; 2]));
         // The cloud's rows: soloed only while soloing.
         assert_close!(Cloud::Solo(Some(3)).rows(&rows)[..], soloed[..]);
         assert_close!(Cloud::On.rows(&rows)[..], rows[..]);
         assert_close!(Cloud::Off.rows(&rows)[..], rows[..]);
+    }
+
+    #[test]
+    fn a_soloed_surface_takes_the_whole_weight() {
+        use crate::surfaces::{
+            KIND_FLOOR, KIND_TABLE, KIND_WALL, SurfaceBox, SurfaceWeights, lane_emitter_weights,
+        };
+        use SurfaceBehavior as B;
+        // The weights as `ObstacleSet::set_emitter_weights` takes them from
+        // the uploaded rows: a desk, a side table half its top, a scene
+        // floor on sparks, a wall on the spectrum and the stage floor (its
+        // flag off beside a scene floor) on its default, the ripple.
+        let up = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let flat = |kind, center: Vec3, half: Vec3, emit| SurfaceBox {
+            kind,
+            emit,
+            behavior: B::None,
+            center,
+            rot: up,
+            half,
+        };
+        let boxes = [
+            flat(
+                KIND_TABLE,
+                Vec3::new(0.0, -0.8, -0.6),
+                Vec3::new(0.8, 0.4, 0.37),
+                1.0,
+            ),
+            flat(
+                KIND_TABLE,
+                Vec3::new(0.8, -0.8, 0.3),
+                Vec3::new(0.4, 0.4, 0.37),
+                1.0,
+            ),
+            flat(
+                KIND_FLOOR,
+                Vec3::new(0.0, -1.22, 0.0),
+                Vec3::new(2.0, 1.5, 0.02),
+                1.0,
+            ),
+            SurfaceBox {
+                rot: Quat::IDENTITY,
+                ..flat(
+                    KIND_WALL,
+                    Vec3::new(0.0, 0.0, -1.4),
+                    Vec3::new(2.0, 1.25, 0.02),
+                    1.0,
+                )
+            },
+            SurfaceBox {
+                rot: Quat::IDENTITY,
+                ..flat(
+                    KIND_FLOOR,
+                    Vec3::new(0.0, -1.25, 0.0),
+                    Vec3::new(10.0, 0.05, 10.0),
+                    0.0,
+                )
+            },
+        ];
+        let mut rows = [[0.0; 4]; SURFACE_LANE_ROWS];
+        for (k, b) in [B::Embers, B::Embers, B::Sparks, B::Spectrum, B::Ripple]
+            .into_iter()
+            .enumerate()
+        {
+            rows[k] = lane_row(b, 1.0, [0.0; 2]);
+        }
+        let weigh = |rows: &[[f32; 4]; SURFACE_LANE_ROWS]| {
+            let mut b = boxes;
+            let mut out = [0.0; 5];
+            lane_emitter_weights(&mut b, rows, 1.5, SurfaceWeights::default(), &mut out);
+            out
+        };
+        // Unsoloed: the desk 1, the side table half, the floor its 0.5.
+        assert_close!(weigh(&rows), [1.0, 0.5, 0.5, 0.0, 0.0]);
+        // Soloed on the side table: the only emitting table, the reference,
+        // so it weighs 1 and every draw lands on it.
+        assert_close!(weigh(&solo(&rows, Some(1))), [0.0, 1.0, 0.0, 0.0, 0.0]);
+        assert_close!(weigh(&solo(&rows, Some(0))), [1.0, 0.0, 0.0, 0.0, 0.0]);
+        // On the floor on sparks: its own weight, and nothing else weighs.
+        assert_close!(weigh(&solo(&rows, Some(2))), [0.0, 0.0, 0.5, 0.0, 0.0]);
+        // On the wall (the spectrum spawns nothing), or on nothing: the
+        // weights stay where they were, so the sim does not fall back to
+        // the volume, and every strength but the hit's is 0.
+        for hit in [Some(3), None] {
+            let soloed = solo(&rows, hit);
+            assert_close!(weigh(&soloed), [1.0, 0.5, 0.5, 0.0, 0.0]);
+            assert!(
+                (0..5).all(|k| Some(k) == hit || soloed[k][1] == 0.0),
+                "{soloed:?}"
+            );
+        }
     }
 
     #[test]
