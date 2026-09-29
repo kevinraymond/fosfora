@@ -130,6 +130,8 @@ pub struct Room {
     last_locate: Option<Instant>,
     /// Current obstacle boxes in the base space; rebuilt on relocate.
     pub boxes: Vec<ObstacleBox>,
+    /// Each box's semantic labels, in `boxes` order; rebuilt with them.
+    pub labels: std::sync::Arc<[String]>,
     /// Triangle count of the room's global mesh, if the runtime reports one
     /// (evidence only; the mesh is not an obstacle in the spike).
     pub mesh_triangles: Option<u32>,
@@ -180,6 +182,7 @@ impl Room {
             id: None,
             last_locate: None,
             boxes: Vec::new(),
+            labels: std::sync::Arc::default(),
             mesh_triangles: None,
         };
         Ok(room)
@@ -486,6 +489,7 @@ impl Room {
                 old.len() - kept
             );
             self.boxes.clear();
+            self.labels = std::sync::Arc::default();
             self.mesh_triangles = None;
         }
         let dropped: Vec<sys::Space> = old
@@ -700,12 +704,25 @@ impl Room {
             .iter()
             .filter_map(|a| a.pose.map(|pose| to_box(pose, a.shape, &a.label, a.uuid)))
             .collect();
+        self.labels = self
+            .anchors
+            .iter()
+            .filter(|a| a.pose.is_some())
+            .map(|a| a.label.clone())
+            .collect();
         if located != self.anchors.len() {
             info!(
                 "scene: {located}/{} anchors located this pass",
                 self.anchors.len()
             );
         }
+    }
+
+    /// The room id of the anchors the last query returned (every one, not
+    /// only the located: the id holds while their LOCATABLE components
+    /// come on one by one); `None` without anchors.
+    pub fn room_id(&self) -> Option<u64> {
+        self.id
     }
 
     pub fn anchor_summary(&self) -> String {

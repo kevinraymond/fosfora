@@ -32,6 +32,7 @@ mod hud;
 #[cfg(target_os = "android")]
 mod input;
 pub mod instruments;
+pub mod lanes;
 pub mod math;
 pub mod palm_panel;
 pub mod panel_grid;

@@ -68,6 +68,12 @@ pub struct FrameInput {
     /// Scene anchors as oriented boxes in the reference space (empty until
     /// the query returns, or when the room is off).
     pub room_boxes: Vec<ObstacleBox>,
+    /// Each room box's semantic labels, in `room_boxes` order (for the
+    /// log).
+    pub room_labels: std::sync::Arc<[String]>,
+    /// The room id of the anchor set (`room_file::room_id`); `None`
+    /// without anchors.
+    pub room_id: Option<u64>,
     /// The runtime's frame timing (`XR_META_performance_metrics`), latest.
     pub perf: PerfSample,
 }
@@ -733,6 +739,12 @@ impl XrSession {
                 }
                 None => Vec::new(),
             },
+            room_labels: self
+                .room
+                .as_ref()
+                .map(|r| r.labels.clone())
+                .unwrap_or_default(),
+            room_id: self.room.as_ref().and_then(Room::room_id),
         };
         // The live depth map, acquired at the same predicted display time
         // and in the same space as the views. A failed creation is retried
