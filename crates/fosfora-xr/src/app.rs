@@ -218,7 +218,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       as a pinch-hold does; for measuring the switch unworn)
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
-    //       table gets this, the others by top-face area)
+    //       emitting table inside the volume gets this, the others by top-face area against it)
     //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat; default on in mr/world)
     //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
     //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)

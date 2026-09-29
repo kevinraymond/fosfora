@@ -437,8 +437,8 @@ impl Face {
 /// `floorweight`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceWeights {
-    /// Scales every table; the largest table (the desk) gets this, the
-    /// others their top-face area's share of it.
+    /// Scales every table; the largest emitting table in the volume (the
+    /// desk) gets this, the others their top-face area's share of it.
     pub table: f32,
     pub floor: f32,
 }
@@ -470,15 +470,21 @@ pub struct SurfaceBox {
 
 /// The emitter weight in 0..1 of each box, in order, for the boxes whose
 /// behavior emits (embers or sparks; every other box 0): tables by
-/// top-face area against the largest such table, floors at
-/// `weights.floor`, any other kind like a table no larger than the largest
-/// one (`weights.table` when no table emits). A box whose top face does
-/// not reach into the emitter cube (`cube_half` around the origin, the
-/// volume the sim respawns out of) gets 0, so a dragged anchor never picks
-/// a surface its particles would
-/// respawn from at once. The test is on the face's point nearest the
-/// anchor, not its center: the synthetic floor is 20 m across and centered
-/// on the stage origin, not under the anchor.
+/// top-face area against the largest such table inside the volume, floors
+/// at `weights.floor`, any other kind like a table no larger than that one
+/// (`weights.table` when no table in the volume emits). A box whose top
+/// face does not reach into the emitter cube (`cube_half` around the
+/// origin, the volume the sim respawns out of) gets 0, so a dragged anchor
+/// never picks a surface its particles would respawn from at once. The
+/// test is on the face's point nearest the anchor, not its center: the
+/// synthetic floor is 20 m across and centered on the stage origin, not
+/// under the anchor.
+///
+/// The reference is the largest table that can emit, not the room's
+/// largest (step 2c): with the desk out of the volume the tables in reach
+/// were slivers of it (a summed weight of 0.99 with the floor's 0.5, Sep
+/// 29), and a room whose only emitting table is a side table now gives it
+/// 1.0.
 pub fn emitter_weights(
     boxes: &[SurfaceBox],
     cube_half: f32,
@@ -486,15 +492,19 @@ pub fn emitter_weights(
     out: &mut [f32],
 ) {
     let faces = || {
-        boxes
-            .iter()
-            .map(|b| (b, TopFace::of(b.center, b.rot, b.half)))
+        boxes.iter().map(|b| {
+            let face = TopFace::of(b.center, b.rot, b.half);
+            let inside = face.nearest(Vec3::ZERO).abs().max_element() <= cube_half;
+            (b, face, inside)
+        })
     };
     let largest_table = faces()
-        .filter(|(b, _)| b.kind == KIND_TABLE && b.emit > 0.0 && b.behavior.emits())
-        .map(|(_, f)| f.area())
+        .filter(|(b, _, inside)| {
+            *inside && b.kind == KIND_TABLE && b.emit > 0.0 && b.behavior.emits()
+        })
+        .map(|(_, f, _)| f.area())
         .fold(0.0f32, f32::max);
-    for (w, (b, face)) in out.iter_mut().zip(faces()) {
+    for (w, (b, face, inside)) in out.iter_mut().zip(faces()) {
         let base = match b.kind {
             _ if !b.behavior.emits() => 0.0,
             KIND_TABLE if largest_table > 0.0 => weights.table * face.area() / largest_table,
@@ -503,8 +513,6 @@ pub fn emitter_weights(
             _ if largest_table > 0.0 => weights.table * (face.area() / largest_table).min(1.0),
             _ => weights.table,
         };
-        let reach = face.nearest(Vec3::ZERO);
-        let inside = reach.abs().max_element() <= cube_half;
         *w = if inside {
             (base * b.emit).clamp(0.0, 1.0)
         } else {
@@ -748,19 +756,24 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_table_weighs_one_and_the_others_by_area() {
+    fn the_largest_table_in_the_volume_weighs_one_and_the_others_by_area() {
         let boxes = [
             table(Vec3::new(0.0, -0.5, -0.5), [0.8, 0.4]),
             table(Vec3::new(0.8, -0.5, 0.3), [0.4, 0.4]),
             synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 1.0),
+            // A dining table four times the desk's top, beyond the cube
+            // (x 3.0..5.0): no weight, and not the reference.
+            table(Vec3::new(4.0, -0.5, 0.0), [1.0, 1.28]),
         ];
         let w = weights_of(&boxes, 1.5);
         assert!((w[0] - 1.0).abs() < 1e-6, "{w:?}");
         assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
         assert!((w[2] - 0.5).abs() < 1e-6, "floor default {w:?}");
+        assert_close!(w[3], 0.0);
+        let boxes = &boxes[..3];
         let mut out = [0.0; 3];
         emitter_weights(
-            &boxes,
+            boxes,
             1.5,
             SurfaceWeights {
                 table: 0.5,
@@ -782,8 +795,9 @@ mod tests {
         ];
         let w = weights_of(&boxes, 1.5);
         assert_close!(w[0], 0.0);
-        // Still weighed against the desk, which exists in the room.
-        assert!((w[1] - 0.5).abs() < 1e-6, "{w:?}");
+        // Weighed against the tables that can emit, not the desk out of
+        // reach (step 2c): the largest in the volume weighs 1.
+        assert!((w[1] - 1.0).abs() < 1e-6, "{w:?}");
         // A floor 2 m below the anchor (the top face out of reach in y).
         let w = weights_of(&[synthetic_floor(Vec3::new(0.0, 2.0, 0.0), 1.0)], 1.5);
         assert_close!(w[0], 0.0);
@@ -791,6 +805,37 @@ mod tests {
         // counts, though its center (the stage origin) is out of the cube.
         let w = weights_of(&[synthetic_floor(Vec3::new(5.0, 1.0, 3.0), 1.0)], 1.5);
         assert!((w[0] - 0.5).abs() < 1e-6, "{w:?}");
+    }
+
+    #[test]
+    fn with_the_largest_table_out_of_the_volume_a_small_table_inside_weighs_one() {
+        use SurfaceBehavior as B;
+        // Step 2c, the unworn case of Sep 29: the desk beyond a 1.5 m cube
+        // (x 1.7..3.3), a side table half its top inside, a shelf half the
+        // side table's, the floor.
+        let desk = table(Vec3::new(2.5, -0.5, 0.0), [0.8, 0.4]);
+        let side = table(Vec3::new(0.3, -0.5, 0.0), [0.4, 0.4]);
+        let shelf = SurfaceBox {
+            kind: KIND_OTHER,
+            ..table(Vec3::new(-0.6, -0.2, 0.3), [0.4, 0.2])
+        };
+        let floor = synthetic_floor(Vec3::new(0.0, 1.0, 0.0), 1.0);
+        let w = weights_of(&[desk, side, shelf, floor], 1.5);
+        // The side table is the reference; the shelf its share of it; the
+        // floor its own weight.
+        assert_close!(w, [0.0, 1.0, 0.5, 0.5]);
+        // The room's only emitting table: 1, at any size.
+        let tiny = table(Vec3::new(0.3, -0.5, 0.0), [0.1, 0.1]);
+        assert_close!(weights_of(&[desk, tiny], 1.5), [0.0, 1.0]);
+        // A larger table inside that does not emit is not the reference.
+        let dark = SurfaceBox {
+            behavior: B::None,
+            ..table(Vec3::new(-0.3, -0.5, -0.5), [0.8, 0.4])
+        };
+        assert_close!(weights_of(&[dark, side], 1.5), [0.0, 1.0]);
+        // The space grown to take the desk in: the desk is the reference
+        // again and the side table half of it.
+        assert_close!(weights_of(&[desk, side], 2.5), [1.0, 0.5]);
     }
 
     #[test]
