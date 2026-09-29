@@ -3747,13 +3747,9 @@ impl App {
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        // Check for GPU device loss
-        if self
-            .gpu
-            .device_lost
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            log::error!("GPU device lost — cannot render");
+        // A lost device can't render anything. The caller checks `gpu.is_device_lost()` before
+        // treating `Lost` as a surface loss (a resize would rebuild textures on the dead device).
+        if self.gpu.is_device_lost() {
             return Err(wgpu::SurfaceError::Lost);
         }
         self.post_process.flash_budget = self
@@ -4237,7 +4233,9 @@ impl App {
         // Run completed async map callbacks so the readbacks land (wgpu only fires
         // them during a poll). Non-blocking: it processes work the GPU already
         // finished and never stalls the frame.
-        let _ = self.gpu.device.poll(wgpu::PollType::Poll);
+        if let Err(e) = self.gpu.device.poll(wgpu::PollType::Poll) {
+            log::warn!("GPU poll failed: {e}");
+        }
 
         // NDI: request async map on staging buffer (must be after queue.submit)
         #[cfg(feature = "ndi")]

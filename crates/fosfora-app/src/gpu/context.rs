@@ -33,6 +33,12 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
+    /// The device-lost callback has fired. Everything created on the device is dead with it, so
+    /// this is not a surface problem a resize can fix.
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The windowed context. Without `desktop` there is no winit window to build a
     /// surface from; a frontend that brings its own device renders through
     /// `headless::scene_renderer::SceneRenderer::new`, which takes one.
