@@ -22,6 +22,11 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   and other devices also need the web remote's access key: scan the QR code shown there or
   open the link beside it, and give bridges `--key` or `FOSFORA_KEY`. **New key** disconnects
   every old holder.
+- **Pitch tracking costs about 1% of what it did** (5.3 ms to 0.05 ms per analysis step),
+  freeing nearly half a CPU core on the audio thread. A fundamental below 55 Hz, which read as
+  the bottom of the `pitch` range, now reads as no pitch: the last value holds at zero confidence.
+- **Building from source needs Rust 1.97**, the toolchain the repository pins and tests; the
+  declared minimum of 1.90 was never tested.
 
 ### Fixed
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
@@ -83,6 +88,14 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   are unchanged.
 - **Windows loopback capture was silent on 32-bit integer devices**, paused the beat clock
   through silent stretches, and leaked memory on every reconnect. All three are fixed.
+- **Surround devices lost their centre channel**, so vocals and dialogue from a 5.1 or 7.1
+  input or Windows loopback barely reached the visuals. Extra channels are now folded into
+  stereo, centre and surrounds at −3 dB, LFE left out.
+- **Switching audio device mid-recording** to one with a different sample rate pitch-shifted
+  the rest of the recording's audio and let it drift from the picture. The new device's audio
+  is now converted to the recording's rate.
+- **After a GPU driver reset or a removed GPU** the app rebuilt its textures on the dead device
+  every frame, flooding the log. It now exits once, with an error saying to restart it.
 
 ## v2.0.0 — 2026-09-27
 
