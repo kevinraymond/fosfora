@@ -752,6 +752,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         pitcher_rate: crate::instruments::PITCHER_RATE,
         density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
         space_half: space.shown(),
+        edit_room: false,
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1124,6 +1125,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         audio: &audio_source,
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
+                        edit_status: "edit room off",
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
