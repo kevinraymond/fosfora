@@ -1093,8 +1093,8 @@ scan does not know (an unscanned chair, a person, the wearer's own body,
 a moved object) hide the sprites. Phase 2, the depth map as a collision
 source for the sim, is not in this pass.
 
-**Setup** (`crates/fosfora-xr/src/env_depth.rs`). With `envdepth` or
-`envdepthshow` on, the session creates a depth provider and its
+**Setup** (`crates/fosfora-xr/src/env_depth.rs`). With `envdepth` (on
+by default in `mr` and `world`), `envdepthshow` or `envdepthcheck` on, the session creates a depth provider and its
 swapchain (a two-layer `D16_UNORM` array per image, left eye then right,
 wrapped as wgpu textures), sets hand removal when the system supports it
 and starts the provider. Each frame, after the views are located, the
@@ -1111,11 +1111,11 @@ fov are discarded; a frame with no depth image (`NOT_AVAILABLE`, just
 after start) skips the draw. The knobs are read at startup:
 
 ```
-adb shell setprop debug.fosfora.envdepth 1        # the occluder (default off until measured)
+adb shell setprop debug.fosfora.envdepth 0        # the occluder off (default on in mr and world, off elsewhere)
 adb shell setprop debug.fosfora.envdepthshow 1    # the diagnostic: the same pass drawn as gray
 adb shell setprop debug.fosfora.envdepthhands 0   # keep the hands in the depth map (default 1: removed)
 adb shell setprop debug.fosfora.envdepthnear 0.2  # discard distance, m
-adb shell setprop debug.fosfora.envdepthflipv 0   # read texture row 0 as the bottom (default 1: the top)
+adb shell setprop debug.fosfora.envdepthflipv 1   # read texture row 0 as the top (default 0: the bottom, verified)
 adb shell setprop debug.fosfora.envdepthcheck 1   # the numeric self-check (below); draws nothing by itself
 ```
 
@@ -1130,7 +1130,8 @@ to 4 m white, linear in the stored bytes, so a screencap's gray level /
 255 x 4 is the distance in meters. Upright and aligned means the gray
 edges of the desk, the door frame and a hand held out sit on the
 passthrough edges in both eyes; a map upside down (the floor bright at
-the top) means `envdepthflipv 0`. Logcat's `environment depth:` lines give
+the top) means the row order is wrong (`envdepthflipv`). A screencap
+never shows passthrough, hence the self-check below. Logcat's `environment depth:` lines give
 the swapchain length and size, whether hand removal was applied, the
 first frame (after how many not-available frames and ms), its near/far
 and fov, any near/far change, and a count every 720 frames.
@@ -1149,6 +1150,23 @@ texels compared, the fraction within 10 cm and 25 cm and the median of
 map minus room depth. The reading with the high agreement is the right
 one.
 
+**Check verdict (Quest 3, `7421282`, unworn on the desk, 17 boxes + the
+floor, six consecutive checks, all stable):**
+
+| Reading | Layer 0: 10 cm / 25 cm / median | Layer 1: 10 cm / 25 cm / median |
+|---|---|---|
+| Row 0 at the top | 12 % / 24 % / −0.170 m | 8 % / 16 % / −0.12 m |
+| Row 0 at the bottom | 42 % / 52 % / +0.006 m | 42 % / 59 % / +0.017 m |
+| Columns mirrored | 3 % / 10 % / −0.188 m | 4 % / 11 % / −0.29 m |
+
+Texture row 0 is the **bottom** of the view: the runtime renders the map
+in its own GL framebuffer (the MR service's log shows
+`GL_DEPTH_COMPONENT16` framebuffers), so the rows come in GL order
+whatever the app's graphics API. `envdepthflipv` now defaults to 0. Read
+that way the map matches the scanned room to a median of 1-2 cm; the 42 %
+within 10 cm is the real room against 4 cm slabs and unscanned objects,
+not a misalignment.
+
 **Runtime facts (Quest 3, v207, Sep 29).**
 
 - The first three launches failed at `xrCreateEnvironmentDepthProviderMETA`
@@ -1165,14 +1183,28 @@ one.
 - The diagnostic gray renders in both eyes with plausible near/far
   structure; orientation is for the self-check to settle.
 
-| Effect, 72 Hz | Config | GPU ms med / p90 / max | fps | Long frames |
-|---|---|---|---|---|
-| Flux XR Room 400K | baseline | pending | pending | pending |
-| Flux XR Room 400K | envdepth on | pending | pending | pending |
-| Flux XR Room 400K | diagnostic | pending | pending | pending |
-| Murmur XR World 40K | baseline | pending | pending | pending |
-| Murmur XR World 40K | envdepth on | pending | pending | pending |
-| Murmur XR World 40K | diagnostic | pending | pending | pending |
+**Cost** (Quest 3, `mode world`, 72 Hz, unworn on the desk, the room's
+17 anchors located, 60 s runs with the first 5 s skipped; App GPU ms):
+
+| Effect | Config | GPU ms med / p90 / max | fps (med) | Long | Stale |
+|---|---|---|---|---|---|
+| Flux XR Room 400K | baseline | 9.25 / 9.66 / 9.73 | 73 | 0 | 0 |
+| Flux XR Room 400K | occluder | 9.36 / 9.68 / 9.99 | 73 | 0 | 0-1 |
+| Flux XR Room 400K | occluder, second run | 9.39 / 9.70 / 10.04 | 73 | 0 | 0-1 |
+| Flux XR Room 400K | diagnostic gray | 9.20 / 9.66 / 10.02 | 73 | 0 | 0 |
+| Murmur XR World 40K | baseline | 10.11 / 10.80 / 12.41 | 73 (min 71) | 3 | 9 |
+| Murmur XR World 40K | occluder | 10.39 / 10.71 / 11.75 | 72 (min 68) | 6 | 26 |
+| Murmur XR World 40K | diagnostic gray | not run | | | |
+
+The full-screen reprojection costs 0.1-0.3 ms, inside run-to-run noise;
+no early-z gain shows unworn. `envdepth` is therefore on by default in
+`mr` and `world`. A first Flux baseline run, taken before the room query
+had returned anchors, read 6.00 ms with only the stage floor emitting:
+that is the emitter weight, not the occluder, so it was rerun.
+
+**Worn gate: pending.** An unscanned object, a person and the wearer's
+own body hiding the cloud; no halo on head turns; the hands with
+removal on (`envdepthhands 1`) against off.
 
 | Depth map | Value |
 |---|---|
