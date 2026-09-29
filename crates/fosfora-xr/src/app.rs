@@ -229,7 +229,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       along the view, untracked, for an unworn check)
     //   adb shell setprop debug.fosfora.pitcher 0|1              (board #3402, Flux world effects: the particle pitcher, a stream poured from the
     //       right far palm along its normal; default 0; the hand menu's Pitcher row turns it on and off, not saved)
-    //   adb shell setprop debug.fosfora.pitcherrate 4000         (the pitcher's particles per second, 500..20000; the debug panel's "pitcher /s")
+    //   adb shell setprop debug.fosfora.pitcherrate 4000         (the pitcher's particles per second, 500..10000; the debug panel's "pitcher /s";
+    //       above ~10000/s into a full cloud the steal path costs frames, so lower the cloud density with it)
     //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
     //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
     //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)

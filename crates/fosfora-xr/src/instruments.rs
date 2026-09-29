@@ -88,10 +88,14 @@ const SPEED_UNSEEN_M_S: f32 = 1.0;
 /// Pitcher: its rate (particles per second, `debug.fosfora.pitcherrate`,
 /// and the panel's range), speed (m/s, `debug.fosfora.pitcherspeed`), the
 /// cone's half-angle around the palm normal (degrees; `XR_POUR_SPREAD` in
-/// `flux_xr_sim.wgsl`) and the nozzle's radius (m).
+/// `flux_xr_sim.wgsl`) and the nozzle's radius (m). The rate is capped at
+/// 10000/s: into a full cloud the pour's particles come from the living
+/// through the steal path every frame, and 20000/s measured 12.2 ms App
+/// GPU against 9.6 ms off (MEASURED.md); the intended use is with the
+/// cloud density lowered.
 pub const PITCHER_RATE: f32 = 4000.0;
 pub const PITCHER_RATE_MIN: f32 = 500.0;
-pub const PITCHER_RATE_MAX: f32 = 20_000.0;
+pub const PITCHER_RATE_MAX: f32 = 10_000.0;
 pub const PITCHER_SPEED_M_S: f32 = 1.5;
 pub const POUR_SPREAD_DEG: f32 = 6.0;
 pub const POUR_NOZZLE_M: f32 = 0.02;

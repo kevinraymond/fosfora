@@ -1504,7 +1504,7 @@ for the A/B.
 
 ```
 adb shell setprop debug.fosfora.pitcher 0|1          # the pitcher at launch (default 0); the hand menu's Pitcher toggle after
-adb shell setprop debug.fosfora.pitcherrate 4000     # particles per second, 500..20000 (the panel's "pitcher /s")
+adb shell setprop debug.fosfora.pitcherrate 4000     # particles per second, 500..10000 (the panel's "pitcher /s")
 adb shell setprop debug.fosfora.pitcherspeed 1.5     # the stream's speed, m/s
 adb shell setprop debug.fosfora.pitchertest 1        # diagnostic: pitcher on, pouring from 0.5 m ahead of the view, 30 degrees down, untracked
 adb shell setprop debug.fosfora.density 1.0          # the cloud density, 0.05..1 (the panel's "cloud density")
@@ -1533,8 +1533,29 @@ the box, none below; the same rows with row 180 zero give the throw's
 outward ball at half the lifetime. The core's throw and lift tests pass
 unchanged.
 
-**Cost: pending** (the pour at 4000/s and 20000/s, `pitchertest 1`,
-against the pitcher off, Flux XR Room 400K, `mode world`, 72 Hz).
+**Cost** (Quest 3, `f78b00d`, Flux XR Room 400K, full cloud, `mode
+world`, 72 Hz, unworn with `pitchertest 1`, 40 s runs, battery 31-37 C;
+App GPU ms):
+
+| Pitcher | App GPU med / p90 / max | fps | Long | Asked per 10 s |
+|---|---|---|---|---|
+| off | 9.62 / 10.29 / 10.41 | 73 | 0 | |
+| 4000/s | 9.89 / 10.61 / 11.32 | 72 | 6 | ~40100 (720 frames pouring, 0 skipped for a throw) |
+| 20000/s | 12.21 / 14.07 / 15.17 | 66 (min 56) | 44 | ~209K-226K |
+
+4000/s costs about 0.3 ms. 20000/s into a full cloud is over budget:
+with ~398K alive there are almost no dead slots, so every frame the pour
+takes its particles from the living through the steal path (row 170 w),
+and its sprites are twice the cloud's. The rate is therefore capped at
+10000/s (stepper 500..10000 by 500, the knob clamped the same); above
+about that into a full cloud the steal path costs frames, and the
+intended use is with the cloud density lowered, which leaves dead slots
+for the pour. Screencaps: a bright white-yellow stream reading clearly
+through the cloud, pouring down and forward and spreading on the floor;
+the panel's two columns legible with every stepper and the paired rows
+in place. Stale frames were high in every run, pitcher off included
+(the headset had just woken from a doze), so they are not the
+feature's.
 
 **Worn gate: pending.** The stream pours from the right palm where it
 points; it lands on a chair, a person and the left hand and slides off;
