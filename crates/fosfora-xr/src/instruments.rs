@@ -39,10 +39,12 @@ use crate::pose::Pose;
 /// Rows of the instrument block after Murmur's hand lanes.
 pub const INSTRUMENT_ROWS: usize = 3;
 
-/// Throw: flight speed (m/s), shortest flight (s), and where a miss ends
-/// (m along the ray from the pinch point).
+/// Throw: flight speed (m/s), shortest flight (s), how far the ray looks
+/// for a surface (m: a room's far wall), and where a miss ends (m along
+/// the ray from the pinch point).
 pub const THROW_SPEED_M_S: f32 = 6.0;
 pub const MIN_FLIGHT_S: f32 = 0.12;
+pub const RANGE_M: f32 = 12.0;
 pub const MISS_M: f32 = 3.0;
 /// The streak: particles per frame in flight, and its radius (m).
 pub const STREAK_PER_FRAME: u32 = 300;
@@ -164,7 +166,7 @@ impl Flight {
     /// `head` through it, against `boxes`. `None` when the two coincide.
     pub fn aim(head: Vec3, pinch: Vec3, boxes: &[RayBox]) -> Option<Self> {
         let dir = (pinch - head).try_normalize()?;
-        let hit = cast(pinch, dir, boxes, MISS_M);
+        let hit = cast(pinch, dir, boxes, RANGE_M);
         let (to, center) = match hit {
             Some(h) => (h.point, h.point + h.normal * (HIT_LIFT_M + BURST_RADIUS_M)),
             None => {
