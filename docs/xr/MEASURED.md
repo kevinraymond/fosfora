@@ -1652,3 +1652,98 @@ control: the same 400K sprites packed into 1/8 of the volume overdraw
 more. Murmur is unchanged at 3 m (the median slightly lower, the p90
 within noise). An earlier sweep on a degraded runtime (14 ms at every
 size) was the device, not the build, and is not recorded here.
+
+## Room preset editor, step 1: the surface lane (board #3326)
+
+Option B of the editor (`ROOM_DESIGN.md`, "The room preset editor"), the
+first of its two steps: every room surface runs a **behavior** chosen per
+surface instead of the fixed rule per kind, keyed by the anchor's UUID,
+saved per room, restored when the room's anchors come back. Step 2 (the
+beam pick, the highlight and the panel page) is separate and carries the
+worn gate; this step's gate is unworn by design: a knob that assigns a
+behavior over adb and a GPU test that a lane value moves the emission to
+the right box.
+
+**What was built** (`xr-room-lane`, board #3444). A lane block of 32 rows
+after the pour row (aux 181 to 213, one `vec4` per obstacle box: behavior
+id + 1 with 0 = unset, strength, two spare parameters), the Flux world sim
+gated by the lane (embers on the beat gate, sparks on the bass gate,
+anything else closed) with the kind rule as the default for an unset
+lane, the emitter weights taken for the same behaviors, the anchor UUID
+kept from `xrRetrieveSpaceQueryResultsFB` and carried on each box, the
+room id (FNV-1a 64 of the sorted UUIDs), `rooms/<room id>.json` under the
+config dir with kind defaults and per-anchor entries, the wall spectrum
+restricted to walls on `spectrum` and the floor ripple pinned by a floor
+on `ripple`, and `debug.fosfora.surface`. Desktop tests cover the file,
+the room id, the knob grammar, the weights and the lane row; five GPU
+tests in `tests/depth_collide_gpu.rs` run the sim with lanes set and
+unset (a mutation that puts the kind rule back fails four of them).
+
+```
+adb shell setprop debug.fosfora.surface "dc83ba94=none,wall=none,87277f7a=spectrum@0.7"
+adb shell setprop debug.fosfora.surface "table=none"     # the class: the kind default and every table
+adb shell setprop debug.fosfora.surface "#7=ripple"      # a box by index, the stage floor too
+adb shell setprop debug.fosfora.surface clear
+```
+
+**On the Quest 3** (`61a2273`, v207, `mode world`, Flux XR Room 400K, 72
+Hz, unworn on the desk, Sep 29). The query returned 19 results, 17
+anchors (7 planes, 10 volumes), room id `a03160e5a4a3b311`; the lane table
+logged once per rebuild names every box:
+
+```
+room a03160e5a4a3b311: 0 TABLE dc83ba94 table embers 1.00 | 1 STORAGE a5438e6b other none 1.00 |
+  2 WALL_FACE 87277f7a wall spectrum 1.00 | ... | 7 FLOOR 36614aec floor sparks 1.00 |
+  8 WINDOW_FRAME 57898c62 frame none 1.00 | 10 CEILING 41d44ee8 ceiling none 1.00 | ... |
+  16 WALL_FACE 4fd306df wall spectrum 1.00 | 17 stage floor 00000000 floor sparks 1.00
+```
+
+- `table=none`: the summed emitter weight fell from 0.99 to 0.50 (the
+  five tables off, the floor's 0.5 left); `clear` put 0.99 back.
+- `floor=ripple`: "floor ripple: on box 7 (pinned by its lane)", the
+  weight 0.99 to 0.49 (the floor's sparks off, the tables left).
+- `wall=none,8f7ada5c=spectrum`: "wall spectrum: on box 12 (1 walls)",
+  the other three walls dropped. A wall pinned behind the head
+  (`87277f7a`) gave "no wall": the hysteresis pick still refuses a wall
+  the wearer faces away from, so a pin behind the chair draws nothing
+  until the wearer turns.
+- `dc83ba94=none,wall=none,87277f7a=spectrum@0.7`: three log lines, one
+  per assignment, and a file with five entries (four walls, one table)
+  and `"wall": "none"` as the kind default. A relaunch logged "loaded
+  rooms/a03160e5a4a3b311.json (5 anchors assigned)" and the same lane
+  table, before the anchors had all located (2/17 on the first pass).
+- `zz=drips`: "'zz' is not a UUID (at least 8 hex digits), #<index> or a
+  kind; nothing applied". Reserved names are refused the same way.
+- With the room off (`room 0`): the stage floor takes `#0=…` and the log
+  says "not saved (no room)".
+
+Unworn, the scene query alternates between 17 anchors and 0 across
+launches (0 from 12:07 to 12:12, 17 before and after) and the located
+count climbs over the first seconds (2, 8, 16 of 17). The knob waits for
+the anchors while the room is on, so a value set before the room is back
+applies once it is.
+
+**Cost** (App GPU med / p90 / max in ms, 60 s runs, the first 5 s
+skipped; the room query returned 0 anchors in the sweeps, so only the
+stage floor emitted, as in the space size sweep):
+
+| Build | Effect | Device state | App GPU med / max | long | stale |
+|---|---|---|---|---|---|
+| `abb9e1c` (before) | Flux XR Room 400K | 32 C, 2 h up | 9.65 / 10.22 | 0 | 138 |
+| `61a2273` (lanes) | Flux XR Room 400K | 35 C, back to back | 9.55 / 10.39 | 0 | 169 |
+| `61a2273` | Murmur XR World 40K | 40 C | 11.89 / 14.60 | 83 | 558 |
+| `61a2273` | Flux XR Room 400K | right after a reboot, 42 C | 9.05 / 9.89 | 0 | 0 |
+| `61a2273` | Murmur XR World 40K | after the reboot | 10.18 / 11.95 | 2 | 5 |
+
+The lane costs nothing measurable: back to back with the previous build
+Flux XR Room is within noise (9.65 to 9.55), and after a reboot both
+effects match this morning's pre-lane numbers on the same device state
+(board #3420: Flux XR Room 9.20 / 9.88, Murmur 10.33 / 11.62). The warm
+Murmur row (11.89 at 40 C, 83 long frames) is the device's heat, not the
+build: the same build gave 10.18 after the reboot, and Murmur reads no
+lane (its sim stops at row 170; the only change for it is 512 bytes more
+in the per-frame aux upload).
+
+**Worn gate:** none for this step (step 2's: point at the desk and turn
+its embers off and on, put the spectrum on the side wall, relaunch and
+find the room as left).

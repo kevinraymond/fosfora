@@ -221,6 +221,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.surface "wall=none,#3=ripple,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
+    //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
+    //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
+    //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
+    //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
+    //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
     //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact)
     //   adb shell setprop debug.fosfora.lift 0|1                 (Flux world effects: an open far palm held still, facing down, lifts embers; default on)
@@ -881,7 +887,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         kind: crate::surfaces::KIND_FLOOR,
         emit: 0.0,
         hidden: false,
+        uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
+    // Board #3326: each box's behavior (the room file and the `surface`
+    // knob), and the floor the ripple is on with why, for the log.
+    let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
+    let mut ripple_floor: Option<(usize, &str)> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -985,6 +996,36 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         // session is borrowed inside it).
         let mut rescan = false;
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
+            // Board #3326: the boxes in the obstacle block's order (the
+            // room's, then the stage floor) and each one's behavior; the
+            // knob waits while the room is on but has no anchors yet.
+            let lane_boxes: Vec<crate::lanes::LaneBox<'_>> = input
+                .room_boxes
+                .iter()
+                .enumerate()
+                .map(|(i, b)| crate::lanes::LaneBox {
+                    uuid: b.uuid,
+                    kind: b.kind,
+                    label: input.room_labels.get(i).map_or("", String::as_str),
+                })
+                .chain(floor_box.iter().map(|f| crate::lanes::LaneBox {
+                    uuid: f.uuid,
+                    kind: f.kind,
+                    label: "",
+                }))
+                .collect();
+            if frame_index.is_multiple_of(72) {
+                surface_lanes.poll_knob(
+                    system_prop("debug.fosfora.surface").as_deref(),
+                    has_room && input.room_id.is_none(),
+                    &lane_boxes,
+                );
+            }
+            if surface_lanes.update(input.room_id, &lane_boxes) {
+                // The wall pick is an index into the spectrum walls,
+                // which may have changed.
+                wall_pick = crate::canvas::WallPick::default();
+            }
             // S7: hands and room as obstacles. I5: pinch gestures.
             for (h, d) in input.hands.tip_distance.iter().enumerate() {
                 if let Some(d) = d {
@@ -1477,6 +1518,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &lanes,
                         &instrument_rows,
                         pour_row,
+                        surface_lanes.rows(),
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1536,19 +1578,51 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass.max(f.sub_bass),
                     f.bass,
                 );
-                // The largest scene floor, else the stage floor.
-                let scene_floor = input
-                    .room_boxes
-                    .iter()
-                    .filter(|b| b.kind == crate::surfaces::KIND_FLOOR)
-                    .map(|b| {
-                        crate::surfaces::TopFace::of(
-                            glam::Vec3::from(b.center),
-                            glam::Quat::from_array(b.rot),
-                            glam::Vec3::from(b.half),
-                        )
-                    })
-                    .max_by(|a, b| a.area().total_cmp(&b.area()));
+                // A floor on the ripple pins it (the largest of them, the
+                // stage floor too); else the largest scene floor, else the
+                // stage floor. The ripple never goes away.
+                let ripple_of = |k: usize| {
+                    surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Ripple
+                };
+                let largest = |pinned: bool| {
+                    input
+                        .room_boxes
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, b)| {
+                            b.kind == crate::surfaces::KIND_FLOOR && (!pinned || ripple_of(k))
+                        })
+                        .map(|(k, b)| {
+                            (
+                                k,
+                                crate::surfaces::TopFace::of(
+                                    glam::Vec3::from(b.center),
+                                    glam::Quat::from_array(b.rot),
+                                    glam::Vec3::from(b.half),
+                                ),
+                            )
+                        })
+                        .max_by(|a, b| a.1.area().total_cmp(&b.1.area()))
+                };
+                let stage_k = input.room_boxes.len();
+                let stage_pinned = floor_box.is_some() && ripple_of(stage_k);
+                let (scene_floor, pick) = match largest(true) {
+                    Some((k, f)) => (Some(f), Some((k, "pinned by its lane"))),
+                    None if stage_pinned => {
+                        (None, Some((stage_k, "the stage floor, pinned by its lane")))
+                    }
+                    None => match largest(false) {
+                        Some((k, f)) => (Some(f), Some((k, "the largest scene floor"))),
+                        None => (None, floor_box.map(|_| (stage_k, "the stage floor"))),
+                    },
+                };
+                if !ripple_ceiling && pick != ripple_floor {
+                    match pick {
+                        Some((k, why)) => info!("floor ripple: on box {k} ({why})"),
+                        None => info!("floor ripple: no floor"),
+                    }
+                    ripple_floor = pick;
+                }
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
                 let quad = if ripple_ceiling {
                     input
@@ -1585,12 +1659,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         head,
                     )
                 };
-                // The room's walls, less the ones the runtime hides.
+                // The room's walls on the spectrum (by default every wall),
+                // less the ones the runtime hides.
                 let walls: Vec<(usize, crate::canvas::WallFace)> = input
                     .room_boxes
                     .iter()
                     .enumerate()
-                    .filter(|(_, b)| b.kind == crate::surfaces::KIND_WALL && !b.hidden)
+                    .filter(|&(i, b)| {
+                        let spectrum = crate::surfaces::SurfaceBehavior::Spectrum;
+                        b.kind == crate::surfaces::KIND_WALL
+                            && !b.hidden
+                            && surface_lanes.behavior(i) == spectrum
+                    })
                     .map(|(i, b)| (i, face_of(b)))
                     .collect();
                 let faces: Vec<_> = walls.iter().map(|w| w.1).collect();

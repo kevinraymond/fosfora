@@ -56,14 +56,15 @@ pub struct XrScene {
 
 /// Rows of the world-mode aux block: the head, the obstacle block,
 /// Murmur's per-hand lanes, then Flux's instrument rows, its live depth
-/// rows and its pour row. The obstacle block ends at row 163 (`XR_AUX_*`
-/// in `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170
-/// (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the instruments at 173
-/// (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in the Flux sim), the
-/// depth rows at 180 (`XR_AUX_DEPTH` + `XR_AUX_DEPTH_ROWS`, board #3352),
-/// the pour row after them, ending at 181 (`XR_AUX_POUR`, board #3402);
-/// core tests pin the sims' side up to 173, `tests/depth_collide_gpu.rs`
-/// the rows after.
+/// rows, its pour row and the surface behavior lanes. The obstacle block
+/// ends at row 163 (`XR_AUX_*` in `assets/xr/shaders/flux_xr_sim.wgsl`),
+/// the lanes at 170 (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the
+/// instruments at 173 (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in
+/// the Flux sim), the depth rows at 180 (`XR_AUX_DEPTH` +
+/// `XR_AUX_DEPTH_ROWS`, board #3352), the pour row at 181 (`XR_AUX_POUR`,
+/// board #3402), the surface lanes after it, one per box, ending at 213
+/// (`XR_AUX_SURFACE` + `XR_AUX_SURFACE_ROWS`, board #3326); core tests pin
+/// the sims' side up to 173, `tests/depth_collide_gpu.rs` the rows after.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
 const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
@@ -81,11 +82,14 @@ const _: () = assert!(
     DEPTH_END == 180,
     "flux_xr_sim.wgsl reads the depth rows 173..180"
 );
-const WORLD_AUX_ROWS: usize = DEPTH_END + 1;
+const POUR_END: usize = DEPTH_END + 1;
+const _: () = assert!(POUR_END == 181, "flux_xr_sim.wgsl reads the pour row 180");
+const SURFACE_END: usize = POUR_END + crate::surfaces::SURFACE_LANE_ROWS;
 const _: () = assert!(
-    WORLD_AUX_ROWS == 181,
-    "flux_xr_sim.wgsl reads the pour row 180"
+    SURFACE_END == 213,
+    "flux_xr_sim.wgsl reads the surface lanes 181..213"
 );
+const WORLD_AUX_ROWS: usize = SURFACE_END;
 /// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
 const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
 
@@ -316,9 +320,11 @@ impl XrScene {
     /// instrument rows (`instruments::rows`, likewise; their steal
     /// fraction is set here from this sim's alive count), the live depth
     /// rows of the atlas last put in this effect (zero, so no depth
-    /// collide, without a recent one) and the pour row
-    /// (`instruments::pour_row`), the positions moved into the anchor's
-    /// frame. Call before [`Self::dispatch_world`].
+    /// collide, without a recent one), the pour row
+    /// (`instruments::pour_row`) and the surface lanes (`lanes.rs`, one
+    /// row per box in the obstacles' order; the weights follow the
+    /// behaviors they give), the positions moved into the anchor's frame.
+    /// Call before [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -335,6 +341,7 @@ impl XrScene {
         hand_lanes: &[[f32; 4]; crate::pose::HAND_LANE_ROWS],
         instruments: &[[f32; 4]; crate::instruments::INSTRUMENT_ROWS],
         pour: [f32; 4],
+        surface_lanes: &[[f32; 4]; crate::surfaces::SURFACE_LANE_ROWS],
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -360,7 +367,7 @@ impl XrScene {
         // The weights are taken against the volume around today's anchor,
         // so a dragged anchor never emits from a surface it has left.
         let mut relative = obstacles.relative_to(a);
-        relative.set_emitter_weights(world.emitter_half, surfaces);
+        relative.set_emitter_weights(world.emitter_half, surfaces, surface_lanes);
         world.emitter_weight = relative.emitter_weight_sum();
         world
             .aux
@@ -393,6 +400,9 @@ impl XrScene {
             .aux
             .extend(depth.iter().map(|&home| ParticleAux { home }));
         world.aux.push(ParticleAux { home: pour });
+        world
+            .aux
+            .extend(surface_lanes.iter().map(|&home| ParticleAux { home }));
         world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {

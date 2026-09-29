@@ -32,6 +32,7 @@ mod hud;
 #[cfg(target_os = "android")]
 mod input;
 pub mod instruments;
+pub mod lanes;
 pub mod math;
 pub mod palm_panel;
 pub mod panel_grid;
@@ -46,6 +47,7 @@ pub mod reach;
 pub mod ripple;
 #[cfg(target_os = "android")]
 mod room;
+pub mod room_file;
 #[cfg(target_os = "android")]
 mod scene;
 pub mod space;
