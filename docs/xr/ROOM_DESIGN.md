@@ -186,3 +186,20 @@ Surfaces as emitters (the desk and the floor) plus the floor ripple.
   and whether it follows the head or is picked once per preset.
 - Whether Murmur's small-flock preset (40K, #3307) needs its own surface
   behaviors or shares the embers room's.
+
+### Follow-ups from the first worn pass (Kevin, Sep 28)
+
+The first pass passed worn ("a good v1"). Asked for next, on the board:
+
+- A "rescan room" action on the hand menu that relaunches Space Setup and
+  requeries the anchors (today only a knob does it, and only when no
+  anchors are found). Note that the particles collide with the anchors'
+  boxes, not the global mesh, which is still unused.
+- Reacting to the live environment, not only the scanned room: the
+  environment depth extension as a depth occluder first, then as a
+  collision source.
+- A "space size" control: the emitter cube's half extent as a stepper, a
+  conceptual zoom of the volume the particles live in.
+- The room preset editor: point at a surface and attach a behavior to it,
+  or assign a behavior to a class (all vertical, all horizontal surfaces).
+

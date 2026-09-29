@@ -946,3 +946,39 @@ hand. Knobs: `debug.fosfora.poses`, `openpad`, `openkick`, `holdradius`.
   defaults: pad 0.05 m, kick 0.1 m/s; the fist keeps 0.10 m and 0.4 m/s.
 - **Cost:** unworn 40K, 10.03 / 10.40 ms GPU median / max at 72 fps
   (before: 9.7 / 12.7).
+
+## Room first pass: surfaces as emitters and the floor ripple (board #3317)
+
+The room's real surfaces emit (the "Flux XR Room" preset: tables shed
+embers on the beat, the floor sparks with the bass; the surface kind and
+weight ride in the box block's unused w lanes) and one lit quad on the
+real floor shows rings from under the wearer on each beat. Knobs:
+`debug.fosfora.floorweight`, `tableweight`, `ripple`, `ripplegain`,
+`ripplespeed`, `rippletest ceiling`.
+
+- **Worn gate (Sep 28, seated, Flux XR Room 400K + ripple, the bundled
+  track on the playback tap): pass.** Kevin: "a good v1, everything
+  working as designed." The room located 16 anchors; emitter weight 1.29
+  (the desk 1, the other tables by area, the scene floor 0.5); 375-388K
+  alive. Runtime App GPU over the 5 min worn window (which ends with a
+  cycle through Murmur): 9.50 ms median, 11.85 p90, 16.99 max; 72 fps
+  median, p10 69, min 48; 713 stale and about 115 long frames of ~22K.
+- **Unworn (72 Hz, 30 s sweeps, headset face up, room not located so only
+  the stage floor emitted at weight 0.5):** Flux XR Room 400K 7.01 / 7.76
+  ms GPU median / max, 72 fps, 0 long, ~330K alive; ripple off 7.00 / 7.88
+  (the floor is out of view unworn, so this pair says nothing about the
+  ripple's cost). Murmur XR World 40K, ripple off: 9.95 / 10.92, 72 fps.
+  So the room in view (surfaces, the ripple, tracked hands) is worth about
+  2.5 ms over the unworn floor-only run.
+- **Ripple, in view (unworn ceiling stand-in, rough, not a sweep):** 7-8 ms
+  App GPU with the quad filling the view at gain 4 against 5.2-6.7 without
+  it, before empty ring slots were skipped in the shader. Rings show with
+  no z-fighting on a face whose occluder writes depth; the parked hand
+  mesh cuts a clean hand-shaped hole in them.
+- **Emission (GPU test, Flux XR Room at 20K, one table box):** after 5
+  frames every particle sits on the table top; after 20, each is on it or
+  falling off its edge, at least 90 % still on top. "Flux XR World" with
+  the surface lanes written spawns exactly as before.
+- **Rate:** at the volume preset's 53333/s the room settled near 60K alive,
+  because a claimed slot is declined while its surface's gate is closed;
+  at 160000/s it holds 330K unworn (floor only) and 380K worn (16 anchors).
