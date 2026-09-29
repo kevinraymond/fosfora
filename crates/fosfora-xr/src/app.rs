@@ -214,6 +214,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
     //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
     //       the floor, lifted toward the room, for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.canvas 0|1               (the wall spectrum: mel bars on the wall the wearer faces; default on in mr/world)
+    //   adb shell setprop debug.fosfora.canvasgain 1             (wall spectrum brightness multiplier; 1 = peak alpha 0.25)
+    //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
+    //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
+    //       for an unworn screencap from a headset lying face up)
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -661,6 +666,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         surface_weights.table,
         surface_weights.floor
     );
+    // Board #3327: the wall spectrum, on the wall the wearer faces.
+    let canvas_ceiling = debug_prop("debug.fosfora.canvastest").as_deref() == Some("ceiling");
+    let mut canvas = toggle("debug.fosfora.canvas", mixed).then(|| {
+        crate::canvas::Canvas::new(
+            debug_prop("debug.fosfora.canvasbars")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(crate::canvas::DEFAULT_BARS),
+            knob("debug.fosfora.canvasgain", 1.0).max(0.0),
+        )
+    });
+    info!(
+        "wall spectrum {}",
+        canvas.as_ref().map_or("off".to_owned(), |c| format!(
+            "on ({} bars, gain {}){}",
+            c.bars,
+            c.gain,
+            if canvas_ceiling {
+                " · test: on the ceiling"
+            } else {
+                ""
+            }
+        ))
+    );
+    let mut wall_pick = crate::canvas::WallPick::default();
+    // The picked wall (room box index, face center) and the mel length,
+    // for the log: logged when the pick changes and once a second.
+    let mut canvas_wall: Option<(usize, glam::Vec3)> = None;
+    let mut canvas_mel = 0usize;
     // A floor surface; it emits only while the room has no FLOOR anchor
     // (set per frame below), so the floor never emits twice.
     let floor_box = floor.then_some(ObstacleBox {
@@ -669,6 +702,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         half: [FLOOR_HALF_M, FLOOR_HALF_THICKNESS_M, FLOOR_HALF_M],
         kind: crate::surfaces::KIND_FLOOR,
         emit: 0.0,
+        hidden: false,
     });
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
@@ -1202,6 +1236,58 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let rows = quad.map(|corners| r.uniform(t, corners));
                 gfx.set_ripple(rows.as_ref());
             }
+            if let Some(c) = canvas.as_mut() {
+                c.update(dt, &hop.frame.mel);
+                canvas_mel = hop.frame.mel.len();
+                let head = glam::Vec3::from(input.head);
+                let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                let face_of = |b: &ObstacleBox| {
+                    crate::canvas::WallFace::of(
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                        head,
+                    )
+                };
+                // The room's walls, less the ones the runtime hides.
+                let walls: Vec<(usize, crate::canvas::WallFace)> = input
+                    .room_boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, b)| b.kind == crate::surfaces::KIND_WALL && !b.hidden)
+                    .map(|(i, b)| (i, face_of(b)))
+                    .collect();
+                let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
+                let picked = wall_pick
+                    .update(head, forward, &faces, dt)
+                    .map(|k| walls[k]);
+                let face = if canvas_ceiling {
+                    input
+                        .room_boxes
+                        .iter()
+                        .enumerate()
+                        .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
+                        .map(|(i, b)| (i, face_of(b)))
+                } else {
+                    picked
+                };
+                let now = face.map(|(i, f)| (i, f.center));
+                if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
+                    match now {
+                        Some((i, c)) => info!(
+                            "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
+                            walls.len(),
+                            c.x,
+                            c.y,
+                            c.z
+                        ),
+                        None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
+                    }
+                }
+                canvas_wall = now;
+                let rows = face.map(|(_, f)| c.uniform(f.corners()));
+                gfx.set_canvas(rows.as_ref());
+            }
             if let Some(scene) = scene {
                 match live_audio.as_mut() {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
@@ -1284,6 +1370,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     session.room_summary().unwrap_or_default(),
                     size_boost
                 );
+                if let Some(c) = &canvas {
+                    let heights = c.heights();
+                    let peak = heights.iter().copied().fold(0.0f32, f32::max);
+                    let mean = heights.iter().sum::<f32>() / heights.len().max(1) as f32;
+                    info!(
+                        "wall spectrum: {} · {} bars from {} mel bands · top {:.2} · height mean {:.2} max {:.2}",
+                        canvas_wall.map_or("no wall".to_owned(), |(i, p)| format!(
+                            "box {i} at ({:.2}, {:.2}, {:.2})",
+                            p.x, p.y, p.z
+                        )),
+                        heights.len(),
+                        canvas_mel,
+                        c.top(),
+                        mean,
+                        peak
+                    );
+                }
                 // Seated reach: each hand's furthest real and virtual
                 // shoulder-to-palm distance this second.
                 if reach_on && reach_max.iter().any(|m| m.0 > 0.0) {

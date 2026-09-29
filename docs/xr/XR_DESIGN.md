@@ -416,6 +416,57 @@ ripple.*
 - **Knobs.** `debug.fosfora.ripple` (0/1, default on in `mr` and `world`),
   `ripplegain` (1), `ripplespeed` (2.5). No debug panel row.
 
+## The room second pass (board #3327)
+
+*The second step of `ROOM_DESIGN.md`'s sequencing: the wall spectrum and
+the hand instruments.*
+
+### The wall spectrum
+
+- **What.** One lit quad on the wall the wearer faces, the mel spectrum
+  as bars of light climbing it: bars across the wall's width (24 by
+  default, low bands on the wearer's left), each brightest at its top
+  with a bright cap line, over a faint glow along the bottom. The
+  ripple's look: premultiplied warm white, peak alpha 0.25
+  (`canvasgain`). Host module `crates/fosfora-xr/src/canvas.rs` (wall
+  pick, bar model, uniform packing and the WGSL, validated by naga in a
+  host test); drawn by `build_surface_pipeline` in `gfx.rs`, the ripple's
+  pipeline factored to take a shader and a row count.
+- **Which wall** (the "still open" question of `ROOM_DESIGN.md`: it
+  follows the head, with hysteresis). The room's `WALL_FACE` boxes, less
+  `INVISIBLE_WALL_FACE` (still kind 3 in the surface lanes and still an
+  obstacle; `ObstacleBox::hidden` keeps the canvas off it). A wall's
+  room-facing face is the face across its thinnest axis whose normal
+  points at the head (`TopFace::facing`). The score is the cosine between
+  the view direction and the direction to the face's center; walls behind
+  the head (score <= 0) are never picked, and another wall takes over only
+  after scoring 0.15 above the current one for 1 s, so a glance changes
+  nothing. The log names the picked room box and its center when it
+  changes and once a second.
+- **Bars.** The mel column (`hop.frame.mel`, 64 bands on the device, read
+  at runtime) is split evenly into the bars (the bar count, or the mel
+  length if smaller) and each bar is the mean of its bands. The bands are
+  dB in 0..1 over 80 dB, so the gain is a log-domain offset: each bar's
+  top is its own running maximum (instant rise, 8 s decay) and the wall
+  shows the 28 dB below it. One top for every bar was the first device
+  run: music falls off toward the high bands and the wall read mean
+  height 0.11-0.26 with its right half dark; per bar, 0.45-0.47. A bar's
+  top is held within 16 dB of the loudest bar's and never under 0.5 (-40
+  dB), so a band far below the rest or near silence does not stretch its
+  noise over the wall. Heights rise at once and fall at 2.5 wall heights
+  per second, by time.
+- **Draw order and depth.** Right after the ripple, before the sprites:
+  hidden by the occluders in front of the wall, under the embers. The
+  wall box's occluder writes depth at its face, so the quad sits 2 cm off
+  it with the ripple's depth bias.
+- **Checked unworn** (`debug.fosfora.canvastest ceiling`, the ripple's
+  trick: the canvas on the CEILING anchor's face toward the head, for a
+  headset that sees the ceiling): the bars show with no z-fighting
+  against the ceiling occluder.
+- **Knobs.** `debug.fosfora.canvas` (0/1, default on in `mr` and
+  `world`), `canvasgain` (1), `canvasbars` (24, up to 64),
+  `canvastest ceiling`.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:

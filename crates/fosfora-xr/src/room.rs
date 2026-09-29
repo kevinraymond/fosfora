@@ -570,10 +570,7 @@ impl Room {
         self.boxes = self
             .anchors
             .iter()
-            .filter_map(|a| {
-                a.pose
-                    .map(|pose| to_box(pose, a.shape, crate::surfaces::surface_kind(&a.label)))
-            })
+            .filter_map(|a| a.pose.map(|pose| to_box(pose, a.shape, &a.label)))
             .collect();
         if located != self.anchors.len() {
             info!(
@@ -679,9 +676,10 @@ fn mesh_triangle_count(mesh: &xr::raw::SpatialEntityMeshMETA, space: sys::Space)
     Ok(out.index_count_output / 3)
 }
 
-/// An anchor's bounding shape in the base space as an oriented box of
-/// surface `kind`, flagged as an emitter (its weight is the kind's).
-fn to_box(pose: sys::Posef, shape: Shape, kind: u32) -> ObstacleBox {
+/// An anchor's bounding shape in the base space as an oriented box of the
+/// surface kind its `label` names, flagged as an emitter (its weight is the
+/// kind's) and as hidden for a wall the runtime hides.
+fn to_box(pose: sys::Posef, shape: Shape, label: &str) -> ObstacleBox {
     let q = glam::Quat::from_xyzw(
         pose.orientation.x,
         pose.orientation.y,
@@ -712,7 +710,8 @@ fn to_box(pose: sys::Posef, shape: Shape, kind: u32) -> ObstacleBox {
         center: center.to_array(),
         rot: q.to_array(),
         half: half.to_array(),
-        kind,
+        kind: crate::surfaces::surface_kind(label),
         emit: 1.0,
+        hidden: crate::surfaces::is_hidden_wall(label),
     }
 }

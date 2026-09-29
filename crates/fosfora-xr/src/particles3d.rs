@@ -68,6 +68,10 @@ pub struct ObstacleBox {
     /// sim reads is derived from it per frame by
     /// [`ObstacleSet::set_emitter_weights`].
     pub emit: f32,
+    /// A surface the runtime hides (`INVISIBLE_WALL_FACE`,
+    /// `surfaces::is_hidden_wall`): an obstacle like any other, but no
+    /// canvas is drawn on it. Not uploaded.
+    pub hidden: bool,
 }
 
 /// Uniform block for the S7 obstacles, matching `struct Obstacles` in the
