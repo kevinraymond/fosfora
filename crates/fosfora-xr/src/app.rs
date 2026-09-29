@@ -236,8 +236,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
-    //       the right far hand's beam picks a room surface, a pinch cycles its behavior (none, embers, sparks, spectrum, ripple), a pinch-hold
-    //       cycles every surface of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
+    //       none, embers, sparks; floor: none, sparks, ripple; wall: none, spectrum; ceiling, frame: none), a pinch-hold cycles every surface
+    //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
@@ -1477,7 +1478,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     match frame.action {
                         Some(crate::room_edit::EditAction::Cycle(k)) => {
                             if let Some((b, _)) = effective(k) {
-                                info!("edit room: {} -> {}", named(k), b.next().name());
+                                let next = b.next_for(lane_boxes[k].kind);
+                                info!("edit room: {} -> {}", named(k), next.name());
                             }
                             if let Err(e) = surface_lanes.cycle(k, &lane_boxes) {
                                 log::warn!("edit room: {e}; nothing changed");
@@ -1489,7 +1491,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                     "edit room: every {} like {} -> {}",
                                     crate::surfaces::kind_name(lane_boxes[k].kind),
                                     named(k),
-                                    b.next().name()
+                                    b.next_for(lane_boxes[k].kind).name()
                                 );
                             }
                             if let Err(e) = surface_lanes.cycle_kind_of(k, &lane_boxes) {

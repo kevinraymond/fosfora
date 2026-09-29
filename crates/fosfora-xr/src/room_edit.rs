@@ -27,8 +27,8 @@
 //! under the beam.
 //!
 //! **The gestures** act on the hit as it shows: a tap cycles its behavior
-//! ([`EditAction::Cycle`]), a hold cycles every surface of its kind one
-//! step from it ([`EditAction::AssignKind`]); either without a hit, or
+//! through what renders on its kind ([`EditAction::Cycle`]), a hold cycles
+//! every surface of its kind one step from it ([`EditAction::AssignKind`]); either without a hit, or
 //! without a ray (the hand lost, the panel up) while a hit is still held,
 //! does nothing and says so ([`EditFrame::unaimed`]). The highlight pulses
 //! once ([`PULSE_S`]) for a cycle, twice for a class assignment.
@@ -92,7 +92,8 @@ pub struct EditInput<'a> {
 /// What a gesture asks of the lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditAction {
-    /// Box k one step through the catalogue.
+    /// Box k one step through its kind's catalogue
+    /// (`surfaces::SurfaceBehavior::next_for`).
     Cycle(usize),
     /// Every surface of box k's kind one step past k's behavior (the
     /// class cycle; `lanes::RoomLanes::cycle_kind_of`).

@@ -372,11 +372,12 @@ impl RoomLanes {
     }
 
     /// The class cycle from one surface: the step after box `k`'s
-    /// effective behavior becomes its kind's default and every anchor of
-    /// that kind's, at `k`'s strength, saved and logged. Returns the new
-    /// behavior, `Err` past the boxes. Every hold then changes something
-    /// the wearer can see, where re-applying the behavior the kind already
-    /// ran did not (Kevin, worn, Sep 29).
+    /// effective behavior in its kind's catalogue
+    /// ([`SurfaceBehavior::next_for`]) becomes its kind's default and every
+    /// anchor of that kind's, at `k`'s strength, saved and logged. Returns
+    /// the new behavior, `Err` past the boxes. Every hold then changes
+    /// something the wearer can see, where re-applying the behavior the
+    /// kind already ran did not (Kevin, worn, Sep 29).
     pub fn cycle_kind_of(
         &mut self,
         k: usize,
@@ -385,21 +386,22 @@ impl RoomLanes {
         let (behavior, strength) = self
             .effective(k, boxes)
             .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
-        let next = behavior.next();
+        let next = behavior.next_for(boxes[k].kind);
         self.assign(&Target::Kind(boxes[k].kind), next, strength, boxes)?;
         Ok(next)
     }
 
-    /// Advance box `k` one step through the catalogue
-    /// ([`SurfaceBehavior::next`]) from its effective behavior (the kind's
-    /// default when it has no entry, not `none`), its strength kept (1
-    /// when unset); saved and logged. Returns the new behavior, `Err` past
-    /// the boxes.
+    /// Advance box `k` one step through its kind's catalogue
+    /// ([`SurfaceBehavior::next_for`]) from its effective behavior (the
+    /// kind's default when it has no entry, not `none`), its strength kept
+    /// (1 when unset); saved and logged. Returns the new behavior, `Err`
+    /// past the boxes. A kind whose catalogue is only `none` (a ceiling)
+    /// goes to `none`, which is still written.
     pub fn cycle(&mut self, k: usize, boxes: &[LaneBox<'_>]) -> Result<SurfaceBehavior, String> {
         let (behavior, strength) = self
             .effective(k, boxes)
             .ok_or_else(|| format!("no box #{k} ({} boxes)", boxes.len()))?;
-        let next = behavior.next();
+        let next = behavior.next_for(boxes[k].kind);
         self.assign(&Target::Index(k), next, strength, boxes)?;
         Ok(next)
     }
@@ -777,15 +779,13 @@ mod tests {
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The couch (other, default none): five pinches go round once.
+        // The couch (other, default none): three pinches go round its
+        // kind's catalogue once.
         let mut seen = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..3 {
             seen.push(lanes.cycle(4, &boxes).unwrap());
         }
-        assert_eq!(
-            seen,
-            [B::Embers, B::Sparks, B::Spectrum, B::Ripple, B::None]
-        );
+        assert_eq!(seen, [B::Embers, B::Sparks, B::None]);
         lanes.update(id, &boxes);
         assert_eq!(lanes.behavior(4), B::None);
         // Past the boxes: refused, nothing written.
@@ -805,21 +805,22 @@ mod tests {
         // not embers (the step after none).
         assert_eq!(lanes.effective(0, &boxes), Some((B::Embers, 1.0)));
         assert_eq!(lanes.cycle(0, &boxes), Ok(B::Sparks));
-        // A wall on the spectrum by default goes to the ripple.
-        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Ripple));
+        // A wall on the spectrum by default goes to none (a wall's
+        // catalogue is none and the spectrum).
+        assert_eq!(lanes.cycle(1, &boxes), Ok(B::None));
         // A strength set by the knob is kept across a cycle.
         assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
-        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Spectrum));
-        assert_eq!(lanes.effective(3, &boxes), Some((B::Spectrum, 0.4)));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Ripple));
+        assert_eq!(lanes.effective(3, &boxes), Some((B::Ripple, 0.4)));
         lanes.update(id, &boxes);
-        assert_close!(lanes.rows()[3], lane_row(B::Spectrum, 0.4, [0.0; 2]));
+        assert_close!(lanes.rows()[3], lane_row(B::Ripple, 0.4, [0.0; 2]));
         assert_eq!(lanes.behavior(0), B::Sparks);
-        assert_eq!(lanes.behavior(1), B::Ripple);
+        assert_eq!(lanes.behavior(1), B::None);
         // Saved: a relaunch finds them.
         let mut again = RoomLanes::new(dir.clone());
         again.update(id, &boxes);
         assert_eq!(again.behavior(0), B::Sparks);
-        assert_eq!(again.behavior(3), B::Spectrum);
+        assert_eq!(again.behavior(3), B::Ripple);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -859,7 +860,8 @@ mod tests {
         // so a hold always changes something.
         let before = lanes.effective(1, &boxes).unwrap().0;
         let next = lanes.cycle_kind_of(1, &boxes).unwrap();
-        assert_eq!(next, before.next());
+        assert_eq!(next, before.next_for(boxes[1].kind));
+        assert_eq!((before, next), (B::None, B::Spectrum));
         for (k, b) in boxes.iter().enumerate() {
             if b.kind == boxes[1].kind {
                 assert_eq!(lanes.effective(k, &boxes).unwrap().0, next, "box {k}");
@@ -872,6 +874,43 @@ mod tests {
                 .assign(&Target::Index(9), B::None, 1.0, &boxes)
                 .is_err()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cycle_follows_the_kind_and_a_ceiling_goes_to_none() {
+        use crate::surfaces::KIND_CEILING;
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-kinds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut boxes = room();
+        boxes.insert(
+            5,
+            LaneBox {
+                uuid: uuid(6),
+                kind: KIND_CEILING,
+                label: "CEILING",
+            },
+        );
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        // The ceiling runs none and has nothing else: it stays none.
+        assert_eq!(lanes.cycle(5, &boxes), Ok(B::None));
+        assert_eq!(lanes.cycle_kind_of(5, &boxes), Ok(B::None));
+        // Put on embers by the knob, it cycles back to none.
+        assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
+        assert_eq!(lanes.cycle(5, &boxes), Ok(B::None));
+        // The floor: sparks by default, then the ripple, none, sparks.
+        let floor: Vec<_> = (0..3).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        assert_eq!(floor, [B::Ripple, B::None, B::Sparks]);
+        // A table the knob put on the spectrum: the first after none.
+        assert!(lanes.poll_knob(Some("#0=spectrum"), false, &boxes));
+        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Embers));
+        // The class cycle from a wall: none, then back to the spectrum,
+        // for both walls.
+        assert_eq!(lanes.cycle_kind_of(1, &boxes), Ok(B::None));
+        assert_eq!(lanes.cycle_kind_of(2, &boxes), Ok(B::Spectrum));
+        assert_eq!(lanes.effective(1, &boxes).unwrap().0, B::Spectrum);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

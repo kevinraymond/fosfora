@@ -125,12 +125,42 @@ impl SurfaceBehavior {
             .find(|b| b.name().eq_ignore_ascii_case(name))
     }
 
-    /// The next behavior in the catalogue, wrapping: none, embers, sparks,
-    /// spectrum, ripple, none. The room editor's pinch steps a surface
-    /// through it (board #3326).
+    /// The next behavior in the whole catalogue, wrapping: none, embers,
+    /// sparks, spectrum, ripple, none. The room editor steps through a
+    /// kind's own ([`Self::next_for`]); this one is for the knob's side.
     #[must_use]
     pub fn next(self) -> Self {
         Self::ALL[(self.id() as usize + 1) % Self::ALL.len()]
+    }
+
+    /// The behaviors that render on a surface of `kind`, in the room
+    /// editor's cycle order, `none` first: a table, another kind or an
+    /// unlabeled anchor sheds embers or sparks off its top face; a floor
+    /// sparks or carries the ripple; a wall carries the spectrum; a
+    /// ceiling or a frame runs nothing that shows yet. Stepping through
+    /// the whole catalogue instead left most steps looking alike on a
+    /// given surface (a wall on embers, sparks, ripple or none emits
+    /// nothing; Kevin, worn, Sep 29). The knob still takes any behavior on
+    /// any kind.
+    pub fn catalogue(kind: u32) -> &'static [Self] {
+        match kind {
+            KIND_FLOOR => &[Self::None, Self::Sparks, Self::Ripple],
+            KIND_WALL => &[Self::None, Self::Spectrum],
+            KIND_CEILING | KIND_FRAME => &[Self::None],
+            _ => &[Self::None, Self::Embers, Self::Sparks],
+        }
+    }
+
+    /// The step after this one in `kind`'s [`Self::catalogue`], wrapping.
+    /// Off the catalogue (the knob put the spectrum on a table), the first
+    /// entry after `none`, or `none` when the catalogue is only `none`.
+    #[must_use]
+    pub fn next_for(self, kind: u32) -> Self {
+        let order = Self::catalogue(kind);
+        match order.iter().position(|&b| b == self) {
+            Some(i) => order[(i + 1) % order.len()],
+            None => order.get(1).copied().unwrap_or(Self::None),
+        }
     }
 
     /// Whether the sim spawns particles on a surface running it.
@@ -835,6 +865,56 @@ mod tests {
             emitting,
             vec![SurfaceBehavior::Embers, SurfaceBehavior::Sparks]
         );
+    }
+
+    #[test]
+    fn each_kind_cycles_through_what_renders_on_it_and_wraps() {
+        use SurfaceBehavior as B;
+        // Every step of each kind's order, from none round to none.
+        let orders: [(u32, &[B]); 7] = [
+            (KIND_TABLE, &[B::None, B::Embers, B::Sparks]),
+            (KIND_OTHER, &[B::None, B::Embers, B::Sparks]),
+            (KIND_NONE, &[B::None, B::Embers, B::Sparks]),
+            (KIND_FLOOR, &[B::None, B::Sparks, B::Ripple]),
+            (KIND_WALL, &[B::None, B::Spectrum]),
+            (KIND_CEILING, &[B::None]),
+            (KIND_FRAME, &[B::None]),
+        ];
+        for (kind, order) in orders {
+            assert_eq!(B::catalogue(kind), order, "kind {kind}");
+            let mut b = B::None;
+            let mut seen = Vec::new();
+            for _ in 0..order.len() {
+                b = b.next_for(kind);
+                seen.push(b);
+            }
+            let mut expected = order[1..].to_vec();
+            expected.push(B::None);
+            assert_eq!(seen, expected, "kind {kind}");
+        }
+        // The defaults are on their kind's catalogue: an unassigned table
+        // goes to sparks, a floor to the ripple, a wall to none.
+        assert_eq!(B::Embers.next_for(KIND_TABLE), B::Sparks);
+        assert_eq!(B::Sparks.next_for(KIND_FLOOR), B::Ripple);
+        assert_eq!(B::Spectrum.next_for(KIND_WALL), B::None);
+        for (kind, _) in KIND_NAMES {
+            assert!(B::catalogue(kind).contains(&B::default_for(kind)));
+        }
+    }
+
+    #[test]
+    fn off_the_catalogue_a_cycle_starts_after_none() {
+        use SurfaceBehavior as B;
+        // The knob put the spectrum on a table, embers on a wall, the
+        // ripple on a couch, sparks on a ceiling.
+        assert_eq!(B::Spectrum.next_for(KIND_TABLE), B::Embers);
+        assert_eq!(B::Ripple.next_for(KIND_OTHER), B::Embers);
+        assert_eq!(B::Embers.next_for(KIND_WALL), B::Spectrum);
+        assert_eq!(B::Embers.next_for(KIND_FLOOR), B::Sparks);
+        assert_eq!(B::Sparks.next_for(KIND_CEILING), B::None);
+        // A ceiling or a frame on none stays none.
+        assert_eq!(B::None.next_for(KIND_CEILING), B::None);
+        assert_eq!(B::None.next_for(KIND_FRAME), B::None);
     }
 
     #[test]
