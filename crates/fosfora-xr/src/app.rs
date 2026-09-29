@@ -231,6 +231,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       right far palm along its normal; default 0; the hand menu's Pitcher row turns it on and off, not saved)
     //   adb shell setprop debug.fosfora.pitcherrate 4000         (the pitcher's particles per second, 500..20000; the debug panel's "pitcher /s")
     //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
+    //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
+    //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)
     //   adb shell setprop debug.fosfora.pitchertest 1            (diagnostic: the pitcher on, pouring from 0.5 m ahead of the head, along the
     //       view tilted 30 degrees down, untracked, for an unworn cost measurement)
     //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
@@ -728,7 +730,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         // The pitcher's knobs, below.
         pitcher: false,
         pitcher_rate: crate::instruments::PITCHER_RATE,
+        density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
     };
+    // The cloud density each world effect's emission was last set for
+    // (by index in `world_effects`; `new_world` leaves it at 1).
+    let mut density_set = vec![1.0f32; world_effects.len()];
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
     // This frame's reach per hand, and the furthest (real, virtual) since
     // the last log line.
@@ -1662,6 +1668,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 world_effects[next],
                 next + 1,
                 world_effects.len()
+            );
+        }
+        // The cloud density: the showing world effect's emission against
+        // the rate `new_world` set, applied when it changes and when a
+        // pinch-hold swaps in an effect set for another.
+        if world
+            && let Some(s) = scene.as_mut()
+            && let Some(base) = s.base_emit_rate()
+            && let Some(set) = density_set.get_mut(world_index)
+            && (*set - controls.density).abs() > 1e-4
+        {
+            *set = controls.density;
+            s.set_emit_rate(base * controls.density);
+            info!(
+                "cloud density {:.2}: '{}' emits {:.0}/s (preset {:.0}/s)",
+                controls.density,
+                world_effects[world_index],
+                base * controls.density,
+                base
             );
         }
         // The pitcher's last 10 s, while it is on or has poured.
