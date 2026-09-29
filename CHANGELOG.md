@@ -65,6 +65,8 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   Stress benchmark. It now loads only effects in its list.
 - **Right after a stall such as an effect loading, audio-reactive visuals replayed audio from
   before it**: the newest analysis frames were the ones dropped. The oldest are dropped now.
+- **Downbeats weighed each beat's loudness rise after auto-gain**, which flattens the accents
+  that mark the "one"; they now read the true level.
 
 ## v2.0.0 — 2026-09-27
 

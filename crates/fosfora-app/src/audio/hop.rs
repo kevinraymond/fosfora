@@ -264,11 +264,13 @@ impl HopAnalyzer {
         raw.beat_strength = beat_result.beat_strength;
 
         // A12 (#1463): bar/downbeat/meter tracking. Runs every frame (advances bar_phase
-        // on the audio clock, integrates flux); heavy scoring gates on a fired beat.
+        // on the audio clock, integrates flux); heavy scoring gates on a fired beat. RMS is
+        // the pre-normalization level (#60): the adaptive normalizer re-ranges `raw.rms`
+        // per hop, which would distort the beat-to-beat loudness rise the tracker scores.
         let db = self.downbeat_tracker.process(
             &beat_result,
             band_flux,
-            raw.rms,
+            pre_norm.rms,
             &pre_norm_chroma,
             timestamp,
             loud_silent,

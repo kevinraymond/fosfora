@@ -130,8 +130,9 @@ impl DownbeatTracker {
     }
 
     /// Called every audio frame. `band_flux` is `Analyzer::band_flux_3()` (low/mid/high),
-    /// `rms` the current amplitude, `chroma` the pre-normalization pitch-class vector, and
-    /// `timestamp` the audio-thread clock (seconds). Heavy scoring runs only on a fired beat.
+    /// `rms` the pre-normalization RMS amplitude, `chroma` the pre-normalization pitch-class
+    /// vector, and `timestamp` the audio-thread clock (seconds). Heavy scoring runs only on
+    /// a fired beat.
     ///
     /// `loud_silent` is the A10 perceptual silence gate, mirroring `BeatDetector::process`
     /// (#1598). Without it this tracker had no silence gate at all: beats stop firing through
