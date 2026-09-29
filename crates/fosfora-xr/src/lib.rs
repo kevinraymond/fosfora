@@ -29,6 +29,7 @@ mod input;
 pub mod instruments;
 pub mod math;
 pub mod palm_panel;
+pub mod panel_grid;
 #[cfg(target_os = "android")]
 mod particles3d;
 #[cfg(target_os = "android")]

@@ -227,6 +227,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
+    //   adb shell setprop debug.fosfora.pitcher 0|1              (board #3402, Flux world effects: the particle pitcher, a stream poured from the
+    //       right far palm along its normal; default 0; the hand menu's Pitcher row turns it on and off, not saved)
+    //   adb shell setprop debug.fosfora.pitcherrate 4000         (the pitcher's particles per second, 500..10000; the debug panel's "pitcher /s";
+    //       above ~10000/s into a full cloud the steal path costs frames, so lower the cloud density with it)
+    //   adb shell setprop debug.fosfora.pitcherspeed 1.5         (the pitcher's stream speed, m/s)
+    //   adb shell setprop debug.fosfora.density 1.0              (board #3402, world mode: the cloud density, the world effect's emission rate
+    //       against its preset's (scaled with the count), 0.05..1; the debug panel's "cloud density"; the pitcher's pour is not scaled)
+    //   adb shell setprop debug.fosfora.pitchertest 1            (diagnostic: the pitcher on, pouring from 0.5 m ahead of the head, along the
+    //       view tilted 30 degrees down, untracked, for an unworn cost measurement)
     //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
     //       drawn first in the eye pass as a depth occluder, so unscanned things hide the sprites; default on in mr/world, off elsewhere:
     //       it measured at 0.1-0.3 ms, inside run-to-run noise, MEASURED.md)
@@ -235,9 +244,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.envdepthhands 0|1        (ask the runtime to remove the hands from the depth map; default 1, the
     //       skinned hand mesh stays the hand occluder; live: polled once a second and applied when it changes, the log line says what
     //       was asked and what the runtime answered)
-    //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 1, the default, edge-aware bilinear over the 2x2 texels
-    //       around the ray, interpolated when they are within 0.25 m of each other, else the nearest; 0 the texel under the ray, as
-    //       before; 2 bilinear across silhouettes too, a diagnostic)
+    //   adb shell setprop debug.fosfora.envdepthfilter 0|1|2     (the occluder's lookup: 2, the default, bilinear over the 2x2 texels around the
+    //       ray, across silhouettes too, for softer object edges (board #3402); 1 edge-aware, interpolated when the four are within
+    //       0.25 m of each other, else the nearest, which cut silhouettes on the texel grid ("very chonky" worn); 0 the texel under the ray)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 0 reads texture row 0 as the bottom of the view, the default; the
     //       runtime renders the map in GL order, verified by envdepthcheck against the room's boxes; 1 as the top)
@@ -304,7 +313,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             check: env_check,
             filter_edge_m: match debug_prop("debug.fosfora.envdepthfilter").as_deref() {
                 Some("0") => 0.0,
-                Some("2") => crate::env_depth::FILTER_SOFT_M,
+                Some("1") => crate::env_depth::FILTER_EDGE_M,
                 _ => d.filter_edge_m,
             },
             collide: env_collide,
@@ -719,7 +728,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         reach_threshold,
         reach_gain,
         hand_scare,
+        // The pitcher's knobs, below.
+        pitcher: false,
+        pitcher_rate: crate::instruments::PITCHER_RATE,
+        density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
     };
+    // The cloud density each world effect's emission was last set for
+    // (by index in `world_effects`; `new_world` leaves it at 1).
+    let mut density_set = vec![1.0f32; world_effects.len()];
     let mut reach = crate::reach::Reach::new(reach_threshold, reach_gain);
     // This frame's reach per hand, and the furthest (real, virtual) since
     // the last log line.
@@ -799,12 +815,40 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         )
         .max(0.01),
     );
+    // Board #3402: the particle pitcher on the right far palm; the hand
+    // menu turns it on and off, the debug panel sets its rate.
+    let mut pitcher = crate::instruments::Pitcher::new(
+        knob(
+            "debug.fosfora.pitcherrate",
+            crate::instruments::PITCHER_RATE,
+        )
+        .clamp(
+            crate::instruments::PITCHER_RATE_MIN,
+            crate::instruments::PITCHER_RATE_MAX,
+        ),
+        knob(
+            "debug.fosfora.pitcherspeed",
+            crate::instruments::PITCHER_SPEED_M_S,
+        )
+        .clamp(0.1, 10.0),
+    );
+    let pitcher_test = toggle("debug.fosfora.pitchertest", false);
+    pitcher.on = pitcher_test || toggle("debug.fosfora.pitcher", false);
+    (controls.pitcher, controls.pitcher_rate) = (pitcher.on, pitcher.rate);
     info!(
-        "instruments: throw {} (burst {}) · lift {} (radius {} m)",
+        "instruments: throw {} (burst {}) · lift {} (radius {} m) · pitcher {} ({}/s at {} m/s){}",
         if throw_on { "on" } else { "off" },
         thrower.burst_count,
         if lift_on { "on" } else { "off" },
-        lifter.radius
+        lifter.radius,
+        if pitcher.on { "on" } else { "off" },
+        pitcher.rate,
+        pitcher.speed,
+        if pitcher_test {
+            " · test: pouring ahead of the view"
+        } else {
+            ""
+        }
     );
     // A tap this frame not taken by the hand menu (the throw needs the far
     // hand, computed below), and each hand's lift as last logged.
@@ -1042,6 +1086,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             Action::RescanRoom => rescan = true,
                             Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                            Action::SetPitcher(on) => info!(
+                                "pitcher {} ({}/s at {} m/s)",
+                                if on { "on" } else { "off" },
+                                controls.pitcher_rate,
+                                pitcher.speed
+                            ),
                             _ => {}
                         }
                     }
@@ -1265,7 +1315,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let tap = tapped.take();
                 let instruments = world
                     && !POSE_EFFECTS.contains(&world_effects[world_index].as_str());
-                let instrument_rows = if instruments {
+                let (instrument_rows, pour_row) = if instruments {
                     let head = glam::Vec3::from(input.head);
                     // The far pinch point of this frame's throw, if any: a
                     // tap, or the unworn diagnostic's point ahead of the
@@ -1335,6 +1385,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     }
                     let burst = thrower.step(dt);
+                    // The pitcher on the right far palm, along its normal;
+                    // a throw's burst has the rows first.
+                    pitcher.on = controls.pitcher;
+                    pitcher.rate = controls.pitcher_rate;
+                    let nozzle = if pitcher_test {
+                        let rot = glam::Quat::from_array(input.head_rot);
+                        let ahead = rot * glam::Vec3::NEG_Z;
+                        Some((
+                            head + ahead * 0.5,
+                            rot * glam::Quat::from_rotation_x(-30f32.to_radians()) * glam::Vec3::NEG_Z,
+                        ))
+                    } else {
+                        input.hands.palm[1]
+                            .filter(|_| input.hands.tracked[1])
+                            .map(|(p, q)| {
+                                (
+                                    glam::Vec3::from(p) + offsets[1],
+                                    glam::Quat::from_array(q) * glam::Vec3::NEG_Y,
+                                )
+                            })
+                    };
+                    let pour = pitcher.step(nozzle, burst.is_some(), dt);
                     let lift = if lift_on {
                         lifter.step(
                             [0, 1].map(|h| crate::instruments::LiftHand {
@@ -1367,9 +1439,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         }
                     }
-                    crate::instruments::rows(burst, lift, glam::Vec3::from(anchor))
+                    (
+                        crate::instruments::rows(
+                            burst.or(pour.map(|p| p.as_burst())),
+                            lift,
+                            glam::Vec3::from(anchor),
+                        ),
+                        crate::instruments::pour_row(pour),
+                    )
                 } else {
-                    [[0.0; 4]; crate::instruments::INSTRUMENT_ROWS]
+                    ([[0.0; 4]; crate::instruments::INSTRUMENT_ROWS], [0.0; 4])
                 };
                 p.set_obstacles(queue, &set);
                 if let Some(s) = scene.as_deref_mut() {
@@ -1383,6 +1462,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         surface_weights,
                         &lanes,
                         &instrument_rows,
+                        pour_row,
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1590,6 +1670,40 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 next + 1,
                 world_effects.len()
             );
+        }
+        // The cloud density: the showing world effect's emission against
+        // the rate `new_world` set, applied when it changes and when a
+        // pinch-hold swaps in an effect set for another.
+        if world
+            && let Some(s) = scene.as_mut()
+            && let Some(base) = s.base_emit_rate()
+            && let Some(set) = density_set.get_mut(world_index)
+            && (*set - controls.density).abs() > 1e-4
+        {
+            *set = controls.density;
+            s.set_emit_rate(base * controls.density);
+            info!(
+                "cloud density {:.2}: '{}' emits {:.0}/s (preset {:.0}/s)",
+                controls.density,
+                world_effects[world_index],
+                base * controls.density,
+                base
+            );
+        }
+        // The pitcher's last 10 s, while it is on or has poured.
+        if frame_index.is_multiple_of(720) {
+            let stats = pitcher.take_stats();
+            if pitcher.on || stats != crate::instruments::PourStats::default() {
+                info!(
+                    "pitcher {} at {}/s, {} m/s: {} frames pouring, {} particles asked, {} frames skipped for a throw (10 s)",
+                    if pitcher.on { "on" } else { "off" },
+                    pitcher.rate,
+                    pitcher.speed,
+                    stats.frames,
+                    stats.asked,
+                    stats.skipped
+                );
+            }
         }
         if frame_index.is_multiple_of(72) {
             if let Some(was) = env_hands {

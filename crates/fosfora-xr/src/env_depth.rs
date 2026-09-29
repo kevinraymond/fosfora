@@ -21,12 +21,13 @@
 //! negligible for a surface near the lookup distance and small elsewhere
 //! (the tests below bound it). Texels with no data (`d >= 1`) and distances
 //! under [`NEAR_CUT_M`] (the depth API is unreliable there) are discarded.
-//! The lookup is edge-aware bilinear by default ([`filtered_distance`]):
-//! interpolated within a surface, the nearest of the four texels across a
-//! silhouette. The nearest texel alone (`envdepthfilter 0`) read as blocky
-//! edges worn; a silhouette is still cut on the texel grid (half a texel
-//! out), which `envdepthfilter 2`, bilinear across it too, is there to
-//! compare against.
+//! The lookup is bilinear over the 2x2 texels by default, across
+//! silhouettes too (`envdepthfilter 2`, [`filtered_distance`]). The
+//! nearest texel alone (`envdepthfilter 0`) read as blocky edges worn;
+//! edge-aware (`envdepthfilter 1`: interpolated within a surface, the
+//! nearest of the four across a silhouette) still cut a silhouette on the
+//! texel grid, and object edges read "very chonky" worn (board #3402), so
+//! the default blends across them; 1 stays for the A/B.
 //!
 //! Plain numbers in, so the math and the shader build and test on the
 //! desktop; [`EyeReprojection::frag_depth`] is the CPU mirror of
@@ -47,13 +48,13 @@ pub const SHOW_FAR_M: f32 = 4.0;
 /// Rows of [`EyeReprojection::uniform`], `struct EnvEye` in
 /// [`ENV_DEPTH_WGSL`].
 pub const UNIFORM_ROWS: usize = 21;
-/// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`, the
-/// default): the 2x2 texels around a lookup are interpolated when their
-/// distances are within this of each other (m), else the nearest is
-/// taken.
+/// The occluder's edge-aware filter (`debug.fosfora.envdepthfilter 1`):
+/// the 2x2 texels around a lookup are interpolated when their distances
+/// are within this of each other (m), else the nearest is taken.
 pub const FILTER_EDGE_M: f32 = 0.25;
-/// `envdepthfilter 2`: an edge threshold no depth jump reaches, so the
-/// four are always interpolated, across silhouettes too (a diagnostic).
+/// `envdepthfilter 2`, the default: an edge threshold no depth jump
+/// reaches, so the four are always interpolated, across silhouettes too
+/// (softer object edges; board #3402).
 pub const FILTER_SOFT_M: f32 = 1.0e6;
 /// How far behind the surface the depth map shows a particle still
 /// collides with it (m, `debug.fosfora.depthcollidethick`): deeper, it is
@@ -113,7 +114,7 @@ impl Default for EnvDepthOptions {
             near_cut_m: NEAR_CUT_M,
             flip_v: false,
             check: false,
-            filter_edge_m: FILTER_EDGE_M,
+            filter_edge_m: FILTER_SOFT_M,
             collide: false,
             collide_res: COLLIDE_RES,
             collide_thickness_m: COLLIDE_THICKNESS_M,

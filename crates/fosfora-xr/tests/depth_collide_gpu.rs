@@ -2,7 +2,8 @@
 //! the atlas compute pass and its copy into an RGBA8 texture against the
 //! pass's CPU twin, and `flux_xr_sim.wgsl`'s
 //! collide against a depth atlas, run headless behind the loader's compute
-//! preamble. The GPU tests are `#[ignore]`d like the core's probes (they
+//! preamble; and the particle pitcher's pour (board #3402) through the same
+//! sim onto a floor box. The GPU tests are `#[ignore]`d like the core's probes (they
 //! need an adapter); run them with
 //! `cargo test -p fosfora-xr --test depth_collide_gpu -- --ignored`.
 #![cfg(not(target_os = "android"))]
@@ -13,6 +14,9 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use fosfora_xr::env_depth::{
     ATLAS_WGSL, COLLIDE_ROWS, DepthCollide, DepthView, NEAR_CUT_M, atlas_params, atlas_row_texels,
     encode_atlas,
+};
+use fosfora_xr::instruments::{
+    PITCHER_SPEED_M_S, POUR_NOZZLE_M, POUR_SPREAD_DEG, Pour, pour_row, rows as instrument_rows,
 };
 use fosfora_xr::math::Fov;
 use glam::Vec3;
@@ -332,27 +336,35 @@ const PREAMBLE: [&str; 7] = [
 ];
 const FLUX_SIM: &str = include_str!("../../../assets/xr/shaders/flux_xr_sim.wgsl");
 /// Rows the XR app uploads (`WORLD_AUX_ROWS` in `scene.rs`).
-const WORLD_AUX_ROWS: usize = 180;
+const WORLD_AUX_ROWS: usize = 181;
 const FPS: f32 = 60.0;
 
 fn sim_source() -> String {
     format!("{}\n{FLUX_SIM}", PREAMBLE.join("\n"))
 }
 
-fn sim_const(module: &naga::Module, name: &str) -> u32 {
+fn sim_literal(module: &naga::Module, name: &str) -> naga::Literal {
     let (_, c) = module
         .constants
         .iter()
         .find(|(_, c)| c.name.as_deref() == Some(name))
         .unwrap_or_else(|| panic!("const {name}"));
     match module.global_expressions[c.init] {
-        naga::Expression::Literal(naga::Literal::U32(v)) => v,
+        naga::Expression::Literal(v) => v,
         ref e => panic!("const {name} is {e:?}"),
     }
 }
 
-/// The depth rows sit right after the instrument rows and end where the
-/// XR app's upload does; the sim validates with them.
+fn sim_const(module: &naga::Module, name: &str) -> u32 {
+    match sim_literal(module, name) {
+        naga::Literal::U32(v) => v,
+        v => panic!("const {name} is {v:?}"),
+    }
+}
+
+/// The depth rows sit right after the instrument rows, the pour row after
+/// them, ending where the XR app's upload does; the sim validates with
+/// them, and its pour cone is the pitcher's.
 #[test]
 fn the_sim_reads_the_depth_rows_after_the_instruments() {
     let module = naga::front::wgsl::parse_str(&sim_source()).expect("flux_xr_sim.wgsl parses");
@@ -370,8 +382,16 @@ fn the_sim_reads_the_depth_rows_after_the_instruments() {
     assert_eq!(get("XR_AUX_DEPTH"), 173);
     assert_eq!(get("XR_AUX_DEPTH_ROWS") as usize, COLLIDE_ROWS);
     assert_eq!(
-        (get("XR_AUX_DEPTH") + get("XR_AUX_DEPTH_ROWS")) as usize,
-        WORLD_AUX_ROWS
+        get("XR_AUX_DEPTH") + get("XR_AUX_DEPTH_ROWS"),
+        get("XR_AUX_POUR")
+    );
+    assert_eq!(get("XR_AUX_POUR") as usize + 1, WORLD_AUX_ROWS);
+    let naga::Literal::F32(spread) = sim_literal(&module, "XR_POUR_SPREAD") else {
+        panic!("XR_POUR_SPREAD is not an f32");
+    };
+    assert!(
+        (spread - POUR_SPREAD_DEG.to_radians()).abs() < 1e-6,
+        "{spread}"
     );
 }
 
@@ -426,6 +446,40 @@ struct SimSetup {
 
 /// Every particle's position and velocity after each frame in `capture`.
 type Captures = Vec<Vec<(Vec3, Vec3)>>;
+
+/// What [`run_sim_with`] changes from [`run_sim`]'s defaults.
+struct SimOptions {
+    /// The preset's drag (1: none).
+    drag: f32,
+    /// Lifetime (s): a burst lives `XR_BURST_LIFE` of it, a pour all of it.
+    lifetime: f32,
+    /// Every particle starts dead, a slot for a burst (else alive).
+    dead: bool,
+    /// From this frame on, this aux block.
+    aux_from: Option<(u32, Vec<[f32; 4]>)>,
+}
+
+impl Default for SimOptions {
+    fn default() -> Self {
+        Self {
+            drag: 1.0,
+            lifetime: 100.0,
+            dead: false,
+            aux_from: None,
+        }
+    }
+}
+
+/// One particle after a frame.
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    pos: Vec3,
+    vel: Vec3,
+    /// The life lane: 0 dead, 1 alive in the volume, 2 free (a burst's).
+    life: f32,
+    /// Its lifetime (s).
+    max_life: f32,
+}
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -504,6 +558,14 @@ fn rgba_texture(
 /// fluid), stepped at 60 fps with no flow, no drag, no emission and no
 /// drift: only the particles' own velocity and the collide move them.
 fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
+    run_sim_with(setup, &SimOptions::default(), capture)
+        .into_iter()
+        .map(|frame| frame.iter().map(|s| (s.pos, s.vel)).collect())
+        .collect()
+}
+
+/// [`run_sim`] with `opts`, reading every particle's lanes back.
+fn run_sim_with(setup: &SimSetup, opts: &SimOptions, capture: &[u32]) -> Vec<Vec<Sample>> {
     let (device, queue, _guard) = gpu();
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let source = sim_source();
@@ -516,10 +578,10 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
     u.set("emit_count", 0);
     // A volume big enough that nothing respawns at its bounds.
     u.f32("emitter_radius", 5.0);
-    u.f32("lifetime", 100.0);
+    u.f32("lifetime", opts.lifetime);
     u.f32("initial_size", 0.004);
     u.f32("size_end", 0.004);
-    u.f32("drag", 1.0);
+    u.f32("drag", opts.drag);
     u.f32("flow_enabled", 0.0);
     let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("sim-test-uniforms"),
@@ -532,7 +594,7 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
         setup
             .particles
             .iter()
-            .map(|(p, _)| [p.x, p.y, p.z, 1.0])
+            .map(|(p, _)| [p.x, p.y, p.z, if opts.dead { 0.0 } else { 1.0 }])
             .collect(),
         setup
             .particles
@@ -540,7 +602,7 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
             .map(|(_, v)| [v.x, v.y, v.z, 0.004])
             .collect(),
         vec![[0.5, 0.5, 0.5, 0.1]; count as usize],
-        vec![[0.0, 100.0, 0.004, 0.1]; count as usize],
+        vec![[0.0, opts.lifetime, 0.004, 0.1]; count as usize],
     ];
     let storage = |label, bytes: &[u8]| {
         let b = device.create_buffer(&wgpu::BufferDescriptor {
@@ -685,6 +747,13 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
         u.f32("time", frame as f32 / FPS);
         queue.write_buffer(&uniforms, 0, &u.bytes);
         queue.write_buffer(&counters, 0, &[0u8; 16]);
+        if let Some((from, next)) = &opts.aux_from
+            && frame == *from
+        {
+            aux.clone_from(next);
+            aux.resize(WORLD_AUX_ROWS, [0.0; 4]);
+            queue.write_buffer(&aux_buf, 0, bytemuck::cast_slice(&aux));
+        }
         if setup.every > 1 && bytemuck::cast::<f32, u32>(aux[173][0]) != 0 {
             let every = setup.every;
             aux[173][0] = f32::from_bits(every | (frame % every) << 16);
@@ -708,10 +777,18 @@ fn run_sim(setup: &SimSetup, capture: &[u32]) -> Captures {
                 bytemuck::cast_slice(&read_buffer(device, queue, &ins[0])).to_vec();
             let vel: Vec<[f32; 4]> =
                 bytemuck::cast_slice(&read_buffer(device, queue, &ins[1])).to_vec();
+            let flags: Vec<[f32; 4]> =
+                bytemuck::cast_slice(&read_buffer(device, queue, &ins[3])).to_vec();
             out.push(
                 pos.iter()
                     .zip(&vel)
-                    .map(|(p, v)| (Vec3::new(p[0], p[1], p[2]), Vec3::new(v[0], v[1], v[2])))
+                    .zip(&flags)
+                    .map(|((p, v), f)| Sample {
+                        pos: Vec3::new(p[0], p[1], p[2]),
+                        vel: Vec3::new(v[0], v[1], v[2]),
+                        life: p[3],
+                        max_life: f[1],
+                    })
                     .collect(),
             );
         }
@@ -1036,5 +1113,157 @@ fn particles_bounce_up_off_a_horizontal_surface() {
     }
     for (p, v) in &caps[1] {
         assert!(p.y > SEAT_Y && v.y > 0.0, "at {p}: velocity {v}");
+    }
+}
+
+// ---- The pitcher's pour (board #3402) ------------------------------------------
+
+/// The settle drift the XR app runs world mode with (m/s, `gravity`), and
+/// the Flux world presets' drag and lifetime.
+const SETTLE: f32 = 0.5;
+const PRESET_DRAG: f32 = 0.98;
+const PRESET_LIFETIME: f32 = 12.0;
+/// The floor box's top, 1 m under the nozzle at the anchor.
+const FLOOR_TOP: f32 = -1.0;
+const POUR_PER_FRAME: u32 = 200;
+const POUR_FRAMES: u32 = 30;
+
+/// The aux block for a pour at the anchor, straight down at the pitcher's
+/// speed, over a floor box (the obstacle header with one box, the settle
+/// drift), packed by the XR app's own row builders. `pour` false: the same
+/// burst rows with the pour row zero, as on a frame a throw has them.
+fn pour_aux(pour: bool, count: u32) -> Vec<[f32; 4]> {
+    let mut aux = vec![[0.0; 4]; WORLD_AUX_ROWS];
+    aux[1] = [f32::from_bits(0), f32::from_bits(1), RESTITUTION, MARGIN];
+    aux[2] = [0.0, 0.0, SETTLE, 0.0];
+    aux[67] = [0.0, FLOOR_TOP - 0.05, 0.0, 0.0];
+    aux[99] = [0.0, 0.0, 0.0, 1.0];
+    aux[131] = [2.0, 0.05, 2.0, 0.0];
+    let p = Pour {
+        center: Vec3::ZERO,
+        dir: Vec3::NEG_Y,
+        count,
+        speed: PITCHER_SPEED_M_S,
+        radius: POUR_NOZZLE_M,
+    };
+    aux[170..173].copy_from_slice(&instrument_rows(Some(p.as_burst()), None, Vec3::ZERO));
+    if pour {
+        aux[180] = pour_row(Some(p));
+    }
+    aux
+}
+
+/// 20K dead slots, parked well away from the pour.
+fn dead_slots() -> SimSetup {
+    SimSetup {
+        particles: vec![(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO); 20_000],
+        aux: pour_aux(true, POUR_PER_FRAME),
+        atlas: None,
+        every: 1,
+    }
+}
+
+/// A pour of 200 a frame for 30 frames from the anchor, straight down at
+/// 1.5 m/s, onto a floor box 1 m below, with the presets' drag and
+/// lifetime and the app's settle drift. The newborns fly within the 6
+/// degree cone at the pitcher's speed and live the full lifetime; each
+/// lands no wider than the cone's geometric width at the floor (the nozzle
+/// plus 1 m x tan 6 degrees); two and a half seconds in all 6000 rest on
+/// it, the margin above its top, none below. The same burst rows with the
+/// pour row zero are a throw's: the ball, flying outward, with half the
+/// lifetime.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_pour_lands_on_the_floor_within_its_cone_and_rests_there() {
+    let spread = POUR_SPREAD_DEG.to_radians();
+    let opts = SimOptions {
+        drag: PRESET_DRAG,
+        lifetime: PRESET_LIFETIME,
+        dead: true,
+        aux_from: Some((POUR_FRAMES, pour_aux(true, 0))),
+    };
+    let mut frames: Vec<u32> = (1..=90).collect();
+    frames.push(150);
+    let caps = run_sim_with(&dead_slots(), &opts, &frames);
+    // The first frame's newborns: at the nozzle, in the cone, full life.
+    let born: Vec<&Sample> = caps[0].iter().filter(|s| s.life > 0.0).collect();
+    assert_eq!(born.len(), POUR_PER_FRAME as usize);
+    let mut widest = 0.0f32;
+    for s in &born {
+        assert!(s.pos.length() <= POUR_NOZZLE_M + 1e-4, "{s:?}");
+        assert!(
+            (s.vel.length() - PITCHER_SPEED_M_S).abs() < 1e-3,
+            "{s:?}: not at the pitcher's speed"
+        );
+        let angle = s.vel.angle_between(Vec3::NEG_Y);
+        assert!(angle <= spread + 1e-4, "{s:?}: {angle} rad off the pour");
+        widest = widest.max(angle);
+        assert_eq!(s.max_life, PRESET_LIFETIME, "{s:?}: not the full lifetime");
+        assert_eq!(s.life, 2.0, "free of the volume, like a burst");
+    }
+    assert!(widest > spread * 0.7, "a cone, not a line: {widest}");
+    // Where each lands: its first frame at the floor, within the cone's
+    // width there (and a frame's slide).
+    let width = POUR_NOZZLE_M + spread.tan() * (0.0 - FLOOR_TOP);
+    let landed = |s: &Sample| s.life > 0.0 && s.pos.y <= FLOOR_TOP + MARGIN + 1e-3;
+    let mut first: Vec<Option<Vec3>> = vec![None; 20_000];
+    for cap in &caps[..90] {
+        for (i, s) in cap.iter().enumerate() {
+            if first[i].is_none() && landed(s) {
+                first[i] = Some(s.pos);
+            }
+        }
+    }
+    let lands: Vec<Vec3> = first.iter().flatten().copied().collect();
+    assert_eq!(lands.len(), (POUR_PER_FRAME * POUR_FRAMES) as usize);
+    let across = lands.iter().map(|p| p.x.hypot(p.z)).fold(0.0f32, f32::max);
+    assert!(
+        across <= width + 0.003,
+        "landed {across} m out, cone {width} m"
+    );
+    assert!(across > width * 0.5, "{across}: the cone's spread lost");
+    // Resting: every poured particle alive at the floor, none below it.
+    let rest = caps.last().expect("frame 150");
+    let poured: Vec<&Sample> = rest.iter().filter(|s| s.life > 0.0).collect();
+    assert_eq!(poured.len(), (POUR_PER_FRAME * POUR_FRAMES) as usize);
+    for s in poured {
+        assert!(
+            (s.pos.y - (FLOOR_TOP + MARGIN)).abs() < 1e-3,
+            "{s:?}: not resting on the floor"
+        );
+    }
+    // The pour row zero: the throw's ball, unchanged.
+    let ball = run_sim_with(
+        &SimSetup {
+            aux: pour_aux(false, POUR_PER_FRAME),
+            ..dead_slots()
+        },
+        &SimOptions {
+            aux_from: None,
+            ..opts
+        },
+        &[1],
+    );
+    let born: Vec<&Sample> = ball[0].iter().filter(|s| s.life > 0.0).collect();
+    assert_eq!(born.len(), POUR_PER_FRAME as usize);
+    let scale = POUR_NOZZLE_M / 0.12;
+    for s in born {
+        assert!(s.pos.length() <= POUR_NOZZLE_M + 1e-4, "{s:?}");
+        let speed = s.vel.length();
+        assert!(
+            speed >= 0.3 * scale - 1e-4 && speed <= 1.2 * scale + 1e-4,
+            "{s:?}: not a throw's speed"
+        );
+        if s.pos.length() > 1e-3 {
+            assert!(
+                s.vel.normalize().dot(s.pos.normalize()) > 0.999,
+                "{s:?}: not flying outward"
+            );
+        }
+        assert_eq!(
+            s.max_life,
+            PRESET_LIFETIME * 0.5,
+            "{s:?}: not a burst's life"
+        );
     }
 }

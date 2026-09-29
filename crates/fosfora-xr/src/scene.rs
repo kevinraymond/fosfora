@@ -55,14 +55,15 @@ pub struct XrScene {
 }
 
 /// Rows of the world-mode aux block: the head, the obstacle block,
-/// Murmur's per-hand lanes, then Flux's instrument rows and its live depth
-/// rows. The obstacle block ends at row 163 (`XR_AUX_*` in
-/// `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170 (`XR_AUX_END`
-/// in `murmur_xr_sim.wgsl`), the instruments at 173
+/// Murmur's per-hand lanes, then Flux's instrument rows, its live depth
+/// rows and its pour row. The obstacle block ends at row 163 (`XR_AUX_*`
+/// in `assets/xr/shaders/flux_xr_sim.wgsl`), the lanes at 170
+/// (`XR_AUX_END` in `murmur_xr_sim.wgsl`), the instruments at 173
 /// (`XR_AUX_INSTRUMENTS` + `XR_AUX_INSTRUMENT_ROWS` in the Flux sim), the
-/// depth rows at 180 (`XR_AUX_DEPTH` + `XR_AUX_DEPTH_ROWS`, board #3352);
+/// depth rows at 180 (`XR_AUX_DEPTH` + `XR_AUX_DEPTH_ROWS`, board #3352),
+/// the pour row after them, ending at 181 (`XR_AUX_POUR`, board #3402);
 /// core tests pin the sims' side up to 173, `tests/depth_collide_gpu.rs`
-/// the depth rows.
+/// the rows after.
 const OBSTACLE_END: usize = 1 + std::mem::size_of::<ObstacleSet>() / 16;
 const _: () = assert!(OBSTACLE_END == 163, "flux_xr_sim.wgsl reads 163 aux rows");
 const HAND_LANES_END: usize = OBSTACLE_END + crate::pose::HAND_LANE_ROWS;
@@ -75,10 +76,15 @@ const _: () = assert!(
     INSTRUMENTS_END == 173,
     "flux_xr_sim.wgsl reads the instrument rows 170..173"
 );
-const WORLD_AUX_ROWS: usize = INSTRUMENTS_END + crate::env_depth::COLLIDE_ROWS;
+const DEPTH_END: usize = INSTRUMENTS_END + crate::env_depth::COLLIDE_ROWS;
 const _: () = assert!(
-    WORLD_AUX_ROWS == 180,
+    DEPTH_END == 180,
     "flux_xr_sim.wgsl reads the depth rows 173..180"
+);
+const WORLD_AUX_ROWS: usize = DEPTH_END + 1;
+const _: () = assert!(
+    WORLD_AUX_ROWS == 181,
+    "flux_xr_sim.wgsl reads the pour row 180"
 );
 /// See [`crate::env_depth::ATLAS_MAX_AGE_MS`].
 const ATLAS_MAX_AGE: Duration = Duration::from_millis(crate::env_depth::ATLAS_MAX_AGE_MS);
@@ -106,6 +112,9 @@ struct World {
     /// The particle count (`max_count`): with the alive count, how many
     /// dead slots a burst can claim.
     max_count: u32,
+    /// The emission rate `new_world` set (the preset's, scaled with the
+    /// count): the base the cloud density scales (board #3402).
+    base_emit_rate: f32,
     /// The depth atlas last written into this effect's obstacle texture:
     /// the poses it was built from and when (board #3352).
     depth: Option<(crate::env_depth::DepthCollide, Instant)>,
@@ -180,6 +189,7 @@ impl XrScene {
         let mut warmup = WARMUP_FRAMES;
         let mut emitter_half = 0.0;
         let mut max_count = 0;
+        let mut base_emit_rate = 0.0;
         // `count` is the particle count itself, so no quality scaling.
         let mut renderer = start_renderer(
             device,
@@ -214,6 +224,7 @@ impl XrScene {
                 // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
                 emitter_half = particles.emitter.radius.max(0.05);
                 max_count = particles.max_count;
+                base_emit_rate = particles.emit_rate;
                 particles.initial_size *= options.size_scale;
                 particles.size_end *= options.size_scale;
                 // Fill time at the emission rate, plus a quarter for the
@@ -262,6 +273,7 @@ impl XrScene {
                 emitter_half,
                 emitter_weight: 0.0,
                 max_count,
+                base_emit_rate,
                 depth: None,
                 depth_frame: 0,
             }),
@@ -294,10 +306,11 @@ impl XrScene {
     /// where they sit against this effect's volume), Murmur's per-hand
     /// lanes (`pose::lane_rows`, already in the anchor's frame), the
     /// instrument rows (`instruments::rows`, likewise; their steal
-    /// fraction is set here from this sim's alive count) and the live
-    /// depth rows of the atlas last put in this effect (zero, so no depth
-    /// collide, without a recent one), the positions moved into the
-    /// anchor's frame. Call before [`Self::dispatch_world`].
+    /// fraction is set here from this sim's alive count), the live depth
+    /// rows of the atlas last put in this effect (zero, so no depth
+    /// collide, without a recent one) and the pour row
+    /// (`instruments::pour_row`), the positions moved into the anchor's
+    /// frame. Call before [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
         reason = "one call per frame, each argument a separate input"
@@ -313,6 +326,7 @@ impl XrScene {
         surfaces: SurfaceWeights,
         hand_lanes: &[[f32; 4]; crate::pose::HAND_LANE_ROWS],
         instruments: &[[f32; 4]; crate::instruments::INSTRUMENT_ROWS],
+        pour: [f32; 4],
     ) {
         let Some(world) = self.world.as_mut() else {
             return;
@@ -358,6 +372,7 @@ impl XrScene {
         world
             .aux
             .extend(depth.iter().map(|&home| ParticleAux { home }));
+        world.aux.push(ParticleAux { home: pour });
         world.depth_frame = world.depth_frame.wrapping_add(1);
         debug_assert_eq!(world.aux.len(), WORLD_AUX_ROWS);
         if let Some(ps) = particle_system(&mut self.renderer.layer_stack.layers) {
@@ -461,6 +476,12 @@ impl XrScene {
                 }
             }
         }
+    }
+
+    /// World mode: the emission rate [`Self::new_world`] set (particles
+    /// per second), the base the cloud density scales.
+    pub fn base_emit_rate(&self) -> Option<f32> {
+        self.world.as_ref().map(|w| w.base_emit_rate)
     }
 
     /// Alive particles as of the last counter readback (first particle layer).

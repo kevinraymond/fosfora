@@ -4,21 +4,24 @@
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
 //! turned more to the ceiling is a hold instead, `palm_panel.rs`): for now a single
-//! row, the debug panel's on/off toggle. With debug on the same quad grows
-//! upward into the debug panel (frame timing, the effect, hands, reach,
-//! anchor and audio, and controls for what can change without a restart),
-//! the toggle still its bottom row. The quad keeps its bottom edge when it
-//! resizes, so the toggle stays under the pointer either way.
+//! row, the particle pitcher's on/off toggle and the debug panel's. With
+//! debug on the same quad grows upward into the debug panel (frame timing,
+//! the effect, hands, reach, anchor and audio, and controls for what can
+//! change without a restart), the toggles still its bottom row. The quad
+//! keeps its bottom edge when it resizes, so the toggles stay under the
+//! pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
-//! depth perception, and a ray jitters): each is a full-width
-//! row about 2.5 cm tall, picked by the pointer's height alone, with a left
-//! and a right half where it has two actions (Prev/Next, -/+). The target
-//! under the pointer when a press starts fires at once and stays locked
-//! until release, so drift during the press changes nothing; holding a -/+
-//! repeats. egui only lays out and paints; it gets no pointer input. Nothing
-//! is told apart by hue alone: the row under the pointer has a thick
-//! outline, a pressed half turns white.
+//! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
+//! the panel, picked by the pointer's height alone, then by its side: a
+//! wide row (Prev/Next) has a left and a right half, the others two cells
+//! side by side, each with a left and a right half where it has two
+//! actions (-/+); `panel_grid.rs` holds the layout and the hit test. The
+//! target under the pointer when a press starts fires at once and stays
+//! locked until release, so drift during the press changes nothing;
+//! holding a -/+ repeats. egui only lays out and paints; it gets no pointer
+//! input. Nothing is told apart by hue alone: the control under the
+//! pointer has a thick outline, a pressed one turns white.
 
 use std::collections::VecDeque;
 
@@ -27,36 +30,26 @@ use glam::{Quat, Vec3};
 
 use crate::gfx::{Beam, Gfx, PanelPose};
 use crate::palm_panel::{PalmPanel, Touch};
+use crate::panel_grid::{
+    self as grid, FONT_BUTTON, FONT_END, FONT_GRAPH, FONT_LABEL, FONT_TITLE, FONT_VALUE, MENU_H,
+    PIXELS_PER_POINT, TEX_H, TEX_W,
+};
 use crate::perf::PerfSample;
 
-/// Texture size (pixels) and egui scale: 3200 px per meter on the 20 x 46 cm
-/// panel, about the display's density at arm's length. The width keeps a
-/// row at a multiple of 256 bytes, which a texture-to-buffer copy (`dump`)
-/// requires.
-const TEX_W: u32 = 640;
-const TEX_H: u32 = 1472;
+/// The texture's width keeps a row at a multiple of 256 bytes, which a
+/// texture-to-buffer copy (`dump`) requires.
 const _: () = assert!((TEX_W * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
-const PIXELS_PER_POINT: f32 = 1.6;
 /// Frame-time history for the graph: two seconds at 72 Hz.
 const HISTORY: usize = 144;
 /// The 72 Hz frame budget (ms), drawn on the graph.
 const BUDGET_MS: f32 = 1000.0 / 72.0;
 const GRAPH_MAX_MS: f32 = 20.0;
 
-/// The hand menu's height (points): the part of the texture it shows. The
-/// toggle row sits as far above the bottom edge as it does in the full
-/// debug panel, so toggling leaves it exactly under the pointer.
-const MENU_H_PT: f32 = 124.0;
-/// Control rows: height and gap (points; 1 point = 0.5 mm on the panel).
-const ROW_H: f32 = 50.0;
-const ROW_GAP: f32 = 6.0;
-/// The -/+ and Prev/Next boxes at the row ends.
-const END_BOX_W: f32 = 64.0;
 /// Holding a -/+ repeats after this delay, at this interval (seconds).
 const REPEAT_DELAY_S: f64 = 0.45;
 const REPEAT_EVERY_S: f64 = 0.15;
 /// The -/+ rows: label, range and step of each `Controls` field.
-const STEPPERS: [(&str, f32, f32, f32); 7] = [
+const STEPPERS: [(&str, f32, f32, f32); 9] = [
     ("settle m/s", 0.0, 1.5, 0.1),
     ("near fade m", 0.0, 0.5, 0.05),
     ("hand pad m", 0.0, 0.25, 0.02),
@@ -64,6 +57,13 @@ const STEPPERS: [(&str, f32, f32, f32); 7] = [
     ("reach 1:1 within m", 0.2, 0.8, 0.05),
     ("reach gain", 0.0, 60.0, 2.0),
     ("hand scare", 0.0, 1.0, 0.25),
+    (
+        "pitcher /s",
+        crate::instruments::PITCHER_RATE_MIN,
+        crate::instruments::PITCHER_RATE_MAX,
+        500.0,
+    ),
+    ("cloud density", 0.05, 1.0, 0.05),
 ];
 
 /// Values the panel's -/+ rows change; the app applies them every frame.
@@ -77,6 +77,13 @@ pub struct Controls {
     pub reach_gain: f32,
     /// Murmur's hand predator strength, 0..1.
     pub hand_scare: f32,
+    /// The particle pitcher is on (the hand menu's Pitcher toggle).
+    pub pitcher: bool,
+    /// The pitcher's particles per second.
+    pub pitcher_rate: f32,
+    /// The world effect's emission against its preset's, 0.05..1: thins
+    /// the cloud (not the pitcher's pour).
+    pub density: f32,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -90,6 +97,8 @@ pub enum Action {
     RescanRoom,
     /// The hand menu's debug toggle changed; the app saves it.
     SetDebug(bool),
+    /// The hand menu's pitcher toggle changed (not saved).
+    SetPitcher(bool),
 }
 
 impl Controls {
@@ -101,7 +110,9 @@ impl Controls {
             3 => &mut self.hand_kick,
             4 => &mut self.reach_threshold,
             5 => &mut self.reach_gain,
-            _ => &mut self.hand_scare,
+            6 => &mut self.hand_scare,
+            7 => &mut self.pitcher_rate,
+            _ => &mut self.density,
         }
     }
 }
@@ -114,6 +125,7 @@ enum Target {
     Recenter,
     Rescan,
     ToggleDebug,
+    TogglePitcher,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -173,6 +185,8 @@ pub struct Hud {
     gpu_history: VecDeque<f32>,
     /// Whether the panel was showing, to log changes only.
     shown_logged: bool,
+    /// The header was seen running into the controls (logged once).
+    crowded_logged: bool,
 }
 
 impl Hud {
@@ -224,6 +238,7 @@ impl Hud {
             started: std::time::Instant::now(),
             gpu_history: VecDeque::with_capacity(HISTORY),
             shown_logged: false,
+            crowded_logged: false,
         }
     }
 
@@ -309,7 +324,7 @@ impl Hud {
         if self.debug {
             TEX_H as f32 / PIXELS_PER_POINT
         } else {
-            MENU_H_PT
+            MENU_H
         }
     }
 
@@ -434,6 +449,7 @@ impl Hud {
         let touch = self.touch;
         let locked = self.locked.filter(|_| pressed);
         let mut hovered = None;
+        let mut crowded = false;
         let debug = self.debug;
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default()
@@ -450,9 +466,9 @@ impl Hud {
                         hovered: &mut hovered,
                     };
                     if debug {
-                        panel_ui(ui, view, &history, controls, rows);
+                        crowded = panel_ui(ui, view, &history, controls, rows);
                     } else {
-                        menu_ui(ui, rows);
+                        menu_ui(ui, controls, rows);
                     }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
@@ -475,6 +491,11 @@ impl Hud {
                     }
                 });
         });
+
+        if crowded && !self.crowded_logged {
+            log::warn!("debug panel: the header runs into the controls");
+        }
+        self.crowded_logged |= crowded;
 
         // Fire on press, on the target under the pointer then; repeat a
         // held -/+.
@@ -502,6 +523,10 @@ impl Hud {
             Some(Target::ToggleDebug) => {
                 self.debug = !self.debug;
                 actions.push(Action::SetDebug(self.debug));
+            }
+            Some(Target::TogglePitcher) => {
+                controls.pitcher = !controls.pitcher;
+                actions.push(Action::SetPitcher(controls.pitcher));
             }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
@@ -561,7 +586,7 @@ impl Hud {
     }
 }
 
-/// The pointer against the control rows during one layout pass.
+/// The pointer against the controls during one layout pass.
 struct Rows<'a> {
     cursor: Option<Pos2>,
     /// The target held by a press in progress (drawn pressed).
@@ -570,128 +595,222 @@ struct Rows<'a> {
     hovered: &'a mut Option<Target>,
 }
 
+/// A row of controls.
+enum Control<'a> {
+    /// A left and a right action across the row, text between them.
+    Wide {
+        left: (Target, &'a str),
+        right: (Target, &'a str),
+        middle: String,
+    },
+    /// One action across the row.
+    Button(Target, &'a str),
+    /// Two cells side by side (`None`: an empty one).
+    Pair([Option<Cell<'a>>; 2]),
+}
+
+/// One cell of a pair row.
+enum Cell<'a> {
+    /// A `STEPPERS` entry: -/+ at the ends, its label over its value.
+    Stepper {
+        index: usize,
+        label: &'a str,
+        value: String,
+    },
+    /// One action.
+    Button(Target, &'a str),
+}
+
+impl Control<'_> {
+    /// The target at `hit` on this row.
+    fn target(&self, hit: grid::Hit) -> Option<Target> {
+        match self {
+            Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
+            Self::Button(t, _) => Some(*t),
+            Self::Pair(cells) => match cells[hit.col].as_ref()? {
+                Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
+                Cell::Button(t, _) => Some(*t),
+            },
+        }
+    }
+}
+
+fn rect(r: grid::Rect) -> Rect {
+    Rect::from_min_max(Pos2::from(r.min), Pos2::from(r.max))
+}
+
 impl Rows<'_> {
-    /// Allocate a full-width control row and return its rect and which
-    /// half (false left, true right) the pointer is on, if it is on the
-    /// row. A row owns the gap around it, so the rows tile the area.
-    fn row(&mut self, ui: &mut egui::Ui) -> (Rect, Option<bool>) {
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), egui::Sense::hover());
-        let band = rect.expand2(Vec2::new(0.0, ROW_GAP * 0.5 + 0.5));
-        let half = self
-            .cursor
-            .filter(|c| c.y >= band.top() && c.y < band.bottom())
-            .map(|c| c.x >= rect.center().x);
-        (rect, half)
+    /// Paint `controls` (top to bottom) as the block at the bottom of the
+    /// visible panel, which ends at `bottom` (points), and find the target
+    /// under the pointer.
+    fn block(&mut self, ui: &egui::Ui, bottom: f32, controls: &[Control<'_>]) {
+        let n = controls.len();
+        let hit = self.cursor.and_then(|c| grid::hit(bottom, n, [c.x, c.y]));
+        for (i, control) in controls.iter().enumerate() {
+            let k = n - 1 - i;
+            let row = grid::row(bottom, k);
+            let on = hit.filter(|h| h.row == k);
+            if let Some(h) = on
+                && let Some(t) = control.target(h)
+            {
+                *self.hovered = Some(t);
+            }
+            let painter = ui.painter();
+            match control {
+                Control::Wide {
+                    left,
+                    right,
+                    middle,
+                } => {
+                    self.two_way(painter, row, *left, *right, on.map(|h| h.col == 1));
+                    painter.text(
+                        rect(row).center(),
+                        egui::Align2::CENTER_CENTER,
+                        middle,
+                        egui::FontId::proportional(FONT_VALUE),
+                        Color32::WHITE,
+                    );
+                }
+                Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
+                Control::Pair(cells) => {
+                    for (col, cell) in cells.iter().enumerate() {
+                        let area = grid::cell(row, col);
+                        let on = on.filter(|h| h.col == col);
+                        match cell {
+                            Some(Cell::Stepper {
+                                index,
+                                label,
+                                value,
+                            }) => {
+                                self.two_way(
+                                    painter,
+                                    area,
+                                    (Target::Step(*index, false), "-"),
+                                    (Target::Step(*index, true), "+"),
+                                    on.map(|h| h.right),
+                                );
+                                let mid = rect(area.middle());
+                                painter.text(
+                                    Pos2::new(mid.center().x, mid.top() + 2.0),
+                                    egui::Align2::CENTER_TOP,
+                                    label,
+                                    egui::FontId::proportional(FONT_LABEL),
+                                    Color32::from_gray(200),
+                                );
+                                painter.text(
+                                    Pos2::new(mid.center().x, mid.bottom() - 1.0),
+                                    egui::Align2::CENTER_BOTTOM,
+                                    value,
+                                    egui::FontId::proportional(FONT_VALUE),
+                                    Color32::WHITE,
+                                );
+                            }
+                            Some(Cell::Button(t, label)) => {
+                                self.button(painter, area, *t, label, on.is_some());
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    /// A row with a left and a right action and text between them.
+    /// A left and a right action at the ends of `area`, the half under the
+    /// pointer (`Some(true)`: the right) outlined.
     fn two_way(
-        &mut self,
-        ui: &mut egui::Ui,
+        &self,
+        painter: &egui::Painter,
+        area: grid::Rect,
         left: (Target, &str),
         right: (Target, &str),
-        middle: &str,
+        on: Option<bool>,
     ) {
-        let (rect, half) = self.row(ui);
-        if let Some(h) = half {
-            *self.hovered = Some(if h { right.0 } else { left.0 });
-        }
-        let painter = ui.painter();
-        painter.rect_filled(rect, 6.0, Color32::from_gray(34));
-        let (lr, rr) = rect.split_left_right_at_x(rect.center().x);
-        for (target, label, half_rect, is_right) in
-            [(left.0, left.1, lr, false), (right.0, right.1, rr, true)]
-        {
-            let on = half == Some(is_right);
-            if on {
-                painter.rect_filled(half_rect, 6.0, Color32::from_gray(52));
+        painter.rect_filled(rect(area), 6.0, Color32::from_gray(34));
+        let (lh, rh) = area.halves();
+        let (lb, rb) = area.end_boxes();
+        for (target, label, half, boxed, is_right) in [
+            (left.0, left.1, lh, lb, false),
+            (right.0, right.1, rh, rb, true),
+        ] {
+            let hovered = on == Some(is_right);
+            if hovered {
+                painter.rect_filled(rect(half), 6.0, Color32::from_gray(52));
             }
-            let boxed = if is_right {
-                Rect::from_min_max(Pos2::new(rect.right() - END_BOX_W, rect.top()), rect.max)
-            } else {
-                Rect::from_min_max(rect.min, Pos2::new(rect.left() + END_BOX_W, rect.bottom()))
-            };
-            let pressed = self.locked == Some(target);
-            let (fill, text) = if pressed {
+            let (fill, text) = if self.locked == Some(target) {
                 (Color32::WHITE, Color32::BLACK)
             } else {
                 (Color32::from_gray(70), Color32::WHITE)
             };
-            painter.rect_filled(boxed, 6.0, fill);
+            painter.rect_filled(rect(boxed), 6.0, fill);
             painter.text(
-                boxed.center(),
+                rect(boxed).center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::proportional(24.0),
+                egui::FontId::proportional(FONT_END),
                 text,
             );
-            if on {
+            if hovered {
                 painter.rect_stroke(
-                    half_rect,
+                    rect(half),
                     6.0,
                     Stroke::new(3.0_f32, Color32::WHITE),
                     egui::StrokeKind::Inside,
                 );
             }
         }
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            middle,
-            egui::FontId::proportional(16.0),
-            Color32::WHITE,
-        );
-        ui.add_space(ROW_GAP);
     }
 
-    /// A row with one action across its width.
-    fn single(&mut self, ui: &mut egui::Ui, target: Target, label: &str) {
-        let (rect, half) = self.row(ui);
-        if half.is_some() {
-            *self.hovered = Some(target);
-        }
-        let painter = ui.painter();
-        let pressed = self.locked == Some(target);
-        let (fill, text) = if pressed {
+    /// One action filling `area`.
+    fn button(
+        &self,
+        painter: &egui::Painter,
+        area: grid::Rect,
+        target: Target,
+        label: &str,
+        on: bool,
+    ) {
+        let (fill, text) = if self.locked == Some(target) {
             (Color32::WHITE, Color32::BLACK)
-        } else if half.is_some() {
+        } else if on {
             (Color32::from_gray(70), Color32::WHITE)
         } else {
             (Color32::from_gray(45), Color32::WHITE)
         };
-        painter.rect_filled(rect, 6.0, fill);
+        let r = rect(area);
+        painter.rect_filled(r, 6.0, fill);
         painter.text(
-            rect.center(),
+            r.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            egui::FontId::proportional(20.0),
+            egui::FontId::proportional(FONT_BUTTON),
             text,
         );
-        if half.is_some() {
+        if on {
             painter.rect_stroke(
-                rect,
+                r,
                 6.0,
                 Stroke::new(3.0_f32, Color32::WHITE),
                 egui::StrokeKind::Inside,
             );
         }
-        ui.add_space(ROW_GAP);
     }
 }
 
+/// The debug panel: the header top down, the controls at the bottom.
+/// Returns whether the header ran into the controls (for a warning).
 fn panel_ui(
     ui: &mut egui::Ui,
     view: &View<'_>,
     gpu_history: &[f32],
     controls: &mut Controls,
     mut rows: Rows<'_>,
-) {
+) -> bool {
     let dim = Color32::from_gray(150);
     let ms = |v: Option<f32>| v.map_or_else(|| "-".to_owned(), |v| format!("{v:.1}"));
 
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Fosfora XR").strong().size(17.0));
+        ui.label(RichText::new("Fosfora XR").strong().size(FONT_TITLE));
         ui.label(RichText::new(format!("{} · audio {}", view.mode, view.audio)).color(dim));
     });
     ui.separator();
@@ -782,50 +901,76 @@ fn panel_ui(
         }
     });
     ui.separator();
+    let header_end = ui.cursor().top();
 
-    // Controls: big rows, picked by the pointer's height.
+    // Controls: rows at the bottom, picked by the pointer's height, then
+    // its side (`panel_grid.rs`).
+    let mut block = Vec::new();
     if let Some((name, i, n)) = view.effect {
-        rows.two_way(
-            ui,
-            (Target::Prev, "<"),
-            (Target::Next, ">"),
-            &format!("{name}  {}/{n}", i + 1),
-        );
+        block.push(Control::Wide {
+            left: (Target::Prev, "<"),
+            right: (Target::Next, ">"),
+            middle: format!("{name}  {}/{n}", i + 1),
+        });
     }
-    rows.single(ui, Target::Recenter, "Recenter the cloud");
-    if view.room {
-        rows.single(ui, Target::Rescan, "Rescan the room");
+    let steppers: Vec<Cell<'_>> = STEPPERS
+        .iter()
+        .enumerate()
+        .map(|(i, &(label, _, _, step))| {
+            // Whole steps without decimals.
+            let places = if step >= 1.0 { 0 } else { 2 };
+            Cell::Stepper {
+                index: i,
+                label,
+                value: format!("{:.places$}", *controls.field(i)),
+            }
+        })
+        .collect();
+    let mut steppers = steppers.into_iter();
+    while let Some(left) = steppers.next() {
+        block.push(Control::Pair([Some(left), steppers.next()]));
     }
-    for (i, (name, ..)) in STEPPERS.iter().enumerate() {
-        let value = *controls.field(i);
-        rows.two_way(
-            ui,
-            (Target::Step(i, false), "-"),
-            (Target::Step(i, true), "+"),
-            &format!("{name}  {value:.2}"),
-        );
-    }
-    toggle_row(&mut rows, ui, true);
+    block.push(if view.room {
+        Control::Pair([
+            Some(Cell::Button(Target::Recenter, "Recenter the cloud")),
+            Some(Cell::Button(Target::Rescan, "Rescan the room")),
+        ])
+    } else {
+        Control::Button(Target::Recenter, "Recenter the cloud")
+    });
+    block.push(menu_row(true, controls.pitcher));
+    let bottom = grid::PANEL_H;
+    rows.block(ui, bottom, &block);
+    header_end > grid::block_top(bottom, block.len())
 }
 
-/// The hand menu with the debug panel off: a title and the toggle.
-fn menu_ui(ui: &mut egui::Ui, mut rows: Rows<'_>) {
-    ui.label(RichText::new("Fosfora").strong().size(17.0));
-    toggle_row(&mut rows, ui, false);
+/// The hand menu with the debug panel off: a title over its bottom row.
+fn menu_ui(ui: &mut egui::Ui, controls: &Controls, mut rows: Rows<'_>) {
+    ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
+    rows.block(ui, MENU_H, &[menu_row(false, controls.pitcher)]);
 }
 
-/// The debug toggle, the bottom row in both layouts. Its state is in the
-/// words, not a color.
-fn toggle_row(rows: &mut Rows<'_>, ui: &mut egui::Ui, on: bool) {
-    rows.single(
-        ui,
-        Target::ToggleDebug,
-        if on {
-            "Debug panel: on"
-        } else {
-            "Debug panel: off"
-        },
-    );
+/// The bottom row in both layouts: the pitcher's toggle and the debug
+/// panel's. Their state is in the words, not a color.
+fn menu_row(debug: bool, pitcher: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::TogglePitcher,
+            if pitcher {
+                "Pitcher: on"
+            } else {
+                "Pitcher: off"
+            },
+        )),
+        Some(Cell::Button(
+            Target::ToggleDebug,
+            if debug {
+                "Debug panel: on"
+            } else {
+                "Debug panel: off"
+            },
+        )),
+    ])
 }
 
 /// GPU frame time over the last two seconds, with the 72 Hz budget line.
@@ -849,7 +994,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
         Pos2::new(rect.right() - 4.0, y(BUDGET_MS) - 2.0),
         egui::Align2::RIGHT_BOTTOM,
         "13.9 ms",
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(FONT_GRAPH),
         Color32::from_gray(160),
     );
     if history.len() > 1 {
@@ -869,7 +1014,7 @@ fn gpu_graph(ui: &mut egui::Ui, history: &[f32]) {
         rect.left_top() + Vec2::new(4.0, 2.0),
         egui::Align2::LEFT_TOP,
         "GPU ms, 2 s",
-        egui::FontId::proportional(11.0),
+        egui::FontId::proportional(FONT_GRAPH),
         Color32::from_gray(160),
     );
 }
