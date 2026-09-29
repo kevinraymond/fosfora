@@ -2,7 +2,7 @@
 
 What Fosfora hears in your music, in plain English — and the research behind each measurement.
 
-Fosfora listens to your audio and turns it into 83 numbers, updated 86 times a second. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
+Fosfora listens to your audio and turns it into 83 numbers, updated every 512 samples — 86 times a second at 44.1 kHz, 94 at 48 kHz. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
 
 ---
 
@@ -28,7 +28,7 @@ Fosfora listens to your audio and turns it into 83 numbers, updated 86 times a s
 
 ## How to Read This Page
 
-**Every value runs 0 to 1** unless the entry says otherwise. That means you can wire any feature to any slider without doing math first.
+**Every value runs 0 to 1** unless the entry says otherwise — `bar_index` and `beat_index` are the two exceptions, raw counts that only ever go up. That means you can wire any feature to any slider without doing math first.
 
 **The name in `code font` is the real name.** It is exactly what you type in a shader, exactly what you see in the binding matrix, and exactly what goes out over OSC. There is no translation layer.
 
@@ -77,7 +77,7 @@ Fosfora listens to your audio and turns it into 83 numbers, updated 86 times a s
 | `presence` | 4000–6000 Hz | Hi-hats, cymbal shimmer |
 | `brilliance` | 6000+ Hz | Air, sparkle |
 
-Source: Fosfora-specific — the band edges are a conventional seven-way split, but the measurement is ours: each band is read from whichever of three FFT sizes best resolves it, and the top three get a gentle tilt so cymbals are not permanently dwarfed by bass. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — the band edges are a conventional seven-way split, but the measurement is ours: each band is read from whichever of three FFT sizes best resolves it, and with the default dB band scaling the top three get a gentle tilt (+3 dB per octave above 2 kHz) so cymbals are not permanently dwarfed by bass. The Legacy band scale has no tilt. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
 
 **`rms`** — the plain, unweighted loudness of the signal. It is the simplest possible "how much sound is there" number, and it responds instantly. Reach for `loudness_m` instead when you want something that matches how loud the music *feels*; use `rms` when you want raw and fast.
 
@@ -139,7 +139,7 @@ Source: Fosfora-specific — a narrow-band version of the same level-independent
 
 Source: [Böck & Widmer, *Maximum Filter Vibrato Suppression for Onset Detection*, DAFx-13](https://www.dafx.de/paper-archive/2013/papers/09.dafx2013_submission_12.pdf) — the SuperFlux algorithm. Its frequency maximum filter is why a vibrato or a wobble bass no longer registers as a stream of false hits.
 
-**`beat`** — the metronome. It is 1 for a single frame on each beat and 0 the rest of the time, following the tempo Fosfora has locked onto rather than every individual hit. Because it predicts as well as listens, it keeps ticking through a breakdown where nothing is actually being struck.
+**`beat`** — the metronome. It is 1 for a single frame on each beat and 0 the rest of the time, following the tempo Fosfora has locked onto rather than every individual hit. It fires on the predicted grid, so a missed or late hit does not shift it, but when a breakdown stops backing the grid with hits it goes quiet after a few beats rather than strobing through silence, and resumes on the grid when the drums return. `beat_phase` keeps running through the gap.
 
 Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) — a predict-and-confirm scheduler that fires on a confirmed hit inside a short window around the expected beat, and fires anyway when a predicted beat is missed.
 
@@ -151,7 +151,7 @@ Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) �
 
 Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) — tempo is found by autocorrelating the onset stream ([Wiener–Khinchin](https://en.wikipedia.org/wiki/Wiener%E2%80%93Khinchin_theorem)), corrected for half/double-time errors against a tempo prior, then tracked with a [Kalman filter](https://en.wikipedia.org/wiki/Kalman_filter). Background reading: [Ellis, *Beat Tracking by Dynamic Programming* (2007)](https://www.ee.columbia.edu/~dpwe/pubs/Ellis07-beattrack.pdf).
 
-**`beat_strength`** — how confident Fosfora is about the beat it just fired. Low values mean it is guessing through a quiet or ambiguous passage. Use it to fade a beat-driven effect out gracefully instead of having it stutter. Available in shaders and bindings, but not sent over OSC.
+**`beat_strength`** — how hard the hit behind this beat was. It is set only on the frame `beat` fires (0 the rest of the time): the strength of the onset that landed on the beat, or 0.5 when the beat fired on the grid with no hit to back it. Use it to scale a beat-driven flash so accented beats hit harder. Available in shaders and bindings, but not sent over OSC.
 
 Source: Ported from [EASEy-GLYPH](https://github.com/kevinraymond/easey-glyph) — the onset strength captured at the moment the beat fired.
 
@@ -167,6 +167,10 @@ Source: Fosfora-specific — the bar-level clock in [`audio/downbeat.rs`](../cra
 
 Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs).
 
+**`bar_index`** and **`beat_index`** — running counts of bars and beats since audio started, as plain whole numbers (0, 1, 2, …), **not** 0 to 1. Each steps up by one exactly when `bar_phase` or `beat_phase` wraps, so `bar_index + bar_phase` is a clock that never jumps backwards — use it for anything that should advance steadily over a whole set, like a slow rotation or a palette that walks forward every four bars (`floor(bar_index / 4)`). Shaders and bindings only.
+
+Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs) and [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
+
 ---
 
 ## Pitch and Harmony
@@ -179,17 +183,17 @@ Source: [Brown, *Calculation of a Constant Q Spectral Transform*, JASA 1991](htt
 
 Source: Fosfora-specific — the strongest entry of `chroma`, in [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
 
-**`key_class`** — what key the track is in, as a note index from 0 to 1. Multiply by 11 to get the root (0 is C). Unlike `dominant_chroma`, this looks at roughly the last twelve seconds, so it stays put through individual chord changes and typically holds steady for a whole track.
+**`key_class`** — what key the track is in, as a note index from 0 to 1. Multiply by 11 to get the root (0 is C). Unlike `dominant_chroma`, this looks at roughly the last twenty seconds, weighted toward the louder moments, so it stays put through individual chord changes and typically holds steady for a whole track.
 
-Source: [Krumhansl & Kessler (1982)](https://doi.org/10.1037/0033-295X.89.4.334), *Psychological Review* 89(4) — the listener-derived key profiles Fosfora correlates against (paywalled; record at [PubMed](https://pubmed.ncbi.nlm.nih.gov/7134332/)).
+Source: [Faraldo et al., *Key Estimation in Electronic Dance Music*, ECIR 2016](https://doi.org/10.1007/978-3-319-30671-1_25) — the "braw" key profiles, median chroma profiles from a corpus of 1,160 expert-annotated Beatport tracks, as shipped in [Essentia's `Key`](https://essentia.upf.edu/reference/std_Key.html). They beat the classic [Krumhansl & Kessler (1982)](https://doi.org/10.1037/0033-295X.89.4.334) profiles on the GiantSteps key benchmark, which is why Fosfora uses them.
 
 **`key_is_minor`** — 0 for a major key, 1 for a minor one. It is the single cheapest way to make a visual feel bright or melancholy without any other analysis. It changes rarely, so treat it as a switch rather than a signal.
 
-Source: [Krumhansl & Kessler (1982)](https://doi.org/10.1037/0033-295X.89.4.334) — the same profile match, reporting which of the 24 major and minor candidates won.
+Source: [Faraldo et al. (2016)](https://doi.org/10.1007/978-3-319-30671-1_25) — the same profile match, reporting which of the 24 major and minor candidates won.
 
 **`key_confidence`** — how sure Fosfora is about the key. Drum-only or atonal passages drive it down. Gate any key-driven color change on this, or the visual will lurch during the breakdown.
 
-Source: [Krumhansl & Kessler (1982)](https://doi.org/10.1037/0033-295X.89.4.334) — the strength of the winning profile match.
+Source: [Faraldo et al. (2016)](https://doi.org/10.1007/978-3-319-30671-1_25) — the strength of the winning profile match.
 
 **`pitch`** — the note a solo instrument or voice is singing, as a smooth 0 to 1 sweep across five octaves. 0 is a low A at 55 Hz, 1 is the A five octaves up, and every octave is exactly 0.2 apart, so it is easy to map onto anything musical. It tracks one line at a time, so it works on vocals and leads, not full chords.
 
@@ -239,6 +243,10 @@ Source: Fosfora-specific — a mid/side energy ratio in [`audio/stereo.rs`](../c
 
 Source: Fosfora-specific — a Pearson correlation between the channels, in [`audio/stereo.rs`](../crates/fosfora-app/src/audio/stereo.rs).
 
+**`band_pan_sub_bass` `band_pan_bass` `band_pan_low_mid` `band_pan_mid` `band_pan_upper_mid` `band_pan_presence` `band_pan_brilliance`** — `pan`, split by frequency band: where each of the seven bands sits between the speakers, on the same 0 (left) to 1 (right) scale and with the same band edges as `sub_bass` … `brilliance`. A mix with the hi-hats panned left and the bass centred reads exactly that way here, where `pan` would only report the overall balance. A band with no real energy in it reads 0.5. OSC clients receive these as −1 to 1, like `pan`.
+
+Source: Fosfora-specific — a left/right energy balance per band over the analyzer's 4096-point spectrum, in [`audio/stereo.rs`](../crates/fosfora-app/src/audio/stereo.rs).
+
 ---
 
 ## Drums vs. Instruments
@@ -247,7 +255,7 @@ Fosfora separates the sound into hits and held tones, and reports both. This is 
 
 **`percussive_energy`** — how much drum there is. Kicks, snares and hi-hats push it up; a sustained pad or held chord leaves it near 0. Route it to anything sharp: strobes, shakes, hard cuts.
 
-Source: [FitzGerald, *Harmonic/Percussive Separation Using Median Filtering*, DAFx-10](https://dafx10.iem.at/papers/DerryFitzGerald_DAFx10_P15.pdf) — Fosfora runs it moment by moment, so it adds no delay.
+Source: [FitzGerald, *Harmonic/Percussive Separation Using Median Filtering*, DAFx-10](https://dafx10.iem.at/papers/DerryFitzGerald_DAFx10_P15.pdf) — Fosfora runs it moment by moment. The percussive side adds no delay; the harmonic side is a median over the last 0.2 seconds, so it trails a new sustained sound by about 100 milliseconds.
 
 **`harmonic_energy`** — how much sustained, pitched material there is. Pads, vocals, bass notes and chords push it up; a drum-only passage leaves it near 0. Route it to anything smooth: flowing color, slow drift, glow.
 
@@ -263,7 +271,7 @@ Source: [FitzGerald (2010)](https://dafx10.iem.at/papers/DerryFitzGerald_DAFx10_
 
 These three look at the track over tens of seconds rather than milliseconds. They are the closest Fosfora gets to understanding the arrangement.
 
-**`section_novelty`** — the track just changed character. It peaks when a song moves into a new part, verse to chorus or breakdown to main section, by noticing that the sound has stopped resembling what came just before. It reports the change about three seconds late, so treat it as a cue to switch looks rather than as a hit.
+**`section_novelty`** — the track just changed character. It peaks when a song moves into a new part, verse to chorus or breakdown to main section, by noticing that the sound has stopped resembling what came just before. It peaks about three seconds after the change, and the confirmed section-boundary event sent over OSC (`/section/boundary`) arrives about six seconds after it, carrying how long ago the boundary actually was. Treat both as a cue to switch looks rather than as a hit.
 
 Source: [Foote, *Automatic Audio Segmentation Using a Measure of Audio Novelty*, ICME 2000](https://ccrma.stanford.edu/workshops/mir2009/references/Foote_00.pdf) — self-similarity novelty with a checkerboard kernel.
 
@@ -271,7 +279,7 @@ Source: [Foote, *Automatic Audio Segmentation Using a Measure of Audio Novelty*,
 
 Source: Fosfora-specific — no published algorithm; a weighted combination of four cues in [`audio/structure.rs`](../crates/fosfora-app/src/audio/structure.rs), tuned for electronic music. The weights are adjustable live in the audio panel.
 
-**`drop`** — the moment the track lands. Fires once, for a single frame, when a long build-up is suddenly answered by a jump in loudness and the bass coming back in. It then refuses to fire again for 16 seconds, so a busy chorus cannot machine-gun it.
+**`drop`** — the moment the track lands. Fires once, for a single frame, when a long build-up is suddenly answered by a jump in loudness and the bass coming back in. It then refuses to fire again for 16 seconds, so a busy chorus cannot machine-gun it. Treat it as a bonus, not a cue to build a show around: on hand-labelled electronic tracks it catches about a quarter of real drops, and about a quarter of the times it fires are not drops. For a dependable pre-drop ramp, use `buildup`.
 
 Source: Fosfora-specific — no published algorithm; a hand-tuned state machine in [`audio/structure.rs`](../crates/fosfora-app/src/audio/structure.rs), with thresholds exposed in the audio panel.
 
@@ -348,6 +356,7 @@ The papers and standards Fosfora's audio analysis is built on.
 **Pitch, harmony and key**
 - Alain de Cheveigné and Hideki Kawahara, "YIN, a fundamental frequency estimator for speech and music", *J. Acoust. Soc. Am.* 111(4), 2002, pp. 1917–1930. [PDF](https://web.archive.org/web/20260426151005/http://audition.ens.fr/adc/pdf/2002_JASA_YIN.pdf) · [DOI](https://doi.org/10.1121/1.1458024) · [record](https://pubmed.ncbi.nlm.nih.gov/12002874/)
 - Judith C. Brown, "Calculation of a constant Q spectral transform", *J. Acoust. Soc. Am.* 89(1), 1991, pp. 425–434. [PDF](https://www.ee.columbia.edu/~dpwe/papers/Brown91-cqt.pdf)
+- Ángel Faraldo, Emilia Gómez, Sergi Jordà and Perfecto Herrera, "Key Estimation in Electronic Dance Music", *Advances in Information Retrieval (ECIR 2016)*, LNCS 9626, pp. 335–347. [DOI](https://doi.org/10.1007/978-3-319-30671-1_25)
 - Carol L. Krumhansl and Edward J. Kessler, "Tracing the dynamic changes in perceived tonal organization in a spatial representation of musical keys", *Psychological Review* 89(4), 1982, pp. 334–368. [DOI](https://doi.org/10.1037/0033-295X.89.4.334) · [record](https://pubmed.ncbi.nlm.nih.gov/7134332/)
 
 **Timbre**

@@ -1,9 +1,11 @@
 //! A14 (#1465): harmonic/percussive source separation (HPSS) energies.
 //!
 //! Fitzgerald-2010 median-filter HPSS on the 1024-pt medium magnitude spectrum (513 bins),
-//! run causally per analysis hop so it adds zero latency:
+//! run causally per analysis hop, so it waits on no future frames:
 //! - **Harmonic** estimate `H[f]` = trailing **time**-median over the last [`TIME_FRAMES`]
 //!   frames at each bin — sustained tones survive a median across time, transients don't.
+//!   A trailing median centres half a window back, so `H` trails a new sustained tone by
+//!   ~8 hops (~93 ms at 44.1 kHz); the centred-median fix is #66.
 //! - **Percussive** estimate `P[f]` = **frequency**-median over ±[`FREQ_RADIUS`] bins of the
 //!   current frame — broadband transients survive a median across frequency, tonal peaks don't.
 //!
