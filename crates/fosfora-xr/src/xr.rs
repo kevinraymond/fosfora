@@ -10,7 +10,7 @@ use openxr as xr;
 use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
-use crate::env_depth::{EnvDepth, EnvDepthOptions};
+use crate::env_depth::{EnvDepthOptions, EnvDepthSlot};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
@@ -270,7 +270,7 @@ pub struct XrSession {
     // S7 objects first: they hold session-owned handles (depth provider,
     // passthrough layer, hand trackers, anchor spaces) and must go before
     // the session.
-    env_depth: Option<EnvDepth>,
+    env_depth: Option<EnvDepthSlot>,
     passthrough: Option<Passthrough>,
     hands: Option<Hands>,
     room: Option<Room>,
@@ -285,6 +285,8 @@ pub struct XrSession {
     running: bool,
     events: xr::EventDataBuffer,
     has_refresh_rate_ext: bool,
+    /// For the environment depth's creation retries.
+    system: xr::SystemId,
     /// Display rate to request when the session becomes ready (S5 sweep).
     wanted_hz: Option<f32>,
 }
@@ -430,7 +432,7 @@ impl XrSession {
         // Board #3324: created only when a knob asks for it, so the
         // baseline run is the app without it.
         let env_depth = match mr.env_depth {
-            Some(opts) if ctx.has_env_depth => EnvDepth::new(&session, ctx.system, gfx, opts),
+            Some(opts) if ctx.has_env_depth => EnvDepthSlot::new(&session, ctx.system, gfx, opts),
             Some(_) => {
                 warn!("environment depth requested but XR_META_environment_depth is missing");
                 None
@@ -448,6 +450,7 @@ impl XrSession {
 
         Ok(Self {
             env_depth,
+            system: ctx.system,
             passthrough,
             hands,
             room,
@@ -725,20 +728,27 @@ impl XrSession {
         log_stereo(view_flags, &views, &cameras);
         // The live depth map, acquired right before rendering at the same
         // predicted display time and in the same space as the views.
-        let env_frame = self
+        // A failed creation is retried from here (`EnvDepthSlot::get`).
+        let mut env = self
             .env_depth
             .as_mut()
-            .and_then(|e| e.acquire(&self.space, time));
+            .and_then(|slot| slot.get(&self.session, self.system, gfx));
+        let env_frame = env.as_deref_mut().and_then(|e| {
+            e.poll_check(&gfx.device);
+            e.acquire(&self.space, time)
+        });
+        if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
+            e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
+        }
         let extents: Vec<[u32; 2]> = self
             .eyes
             .iter()
             .map(|e| [e.extent.width, e.extent.height])
             .collect();
-        let env_draw = self
-            .env_depth
-            .as_ref()
+        let env_draw = env
+            .as_deref()
             .zip(env_frame)
-            .map(|(e, f)| e.prepare(&gfx.queue, &f, &cameras, &extents));
+            .and_then(|(e, f)| e.prepare(&gfx.queue, &f, &cameras, &extents));
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {

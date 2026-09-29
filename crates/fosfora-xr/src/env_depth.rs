@@ -56,6 +56,9 @@ pub struct EnvDepthOptions {
     /// Texture row 0 is the top of the view (`debug.fosfora.envdepthflipv`,
     /// default on); off reads row 0 as the bottom.
     pub flip_v: bool,
+    /// Once a second, read a grid of the depth map back and compare it
+    /// with the room's boxes and the floor (`debug.fosfora.envdepthcheck`).
+    pub check: bool,
 }
 
 impl Default for EnvDepthOptions {
@@ -66,6 +69,7 @@ impl Default for EnvDepthOptions {
             hand_removal: true,
             near_cut_m: NEAR_CUT_M,
             flip_v: true,
+            check: false,
         }
     }
 }
@@ -335,8 +339,181 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> FragOut {
 }
 ";
 
+// ---- The numeric self-check (`debug.fosfora.envdepthcheck`) ----------
+//
+// A screencap never shows passthrough, so whether the map is upright and
+// aligned is checked against the room the scan knows: a grid of texels of
+// each layer is read back, each texel's ray (from the acquired pose and
+// fov) is cast against the room's boxes and the stage floor, and the
+// depth the map stores along it is compared with the distance to the
+// nearest hit. The same comparison with the rows flipped, and with the
+// columns mirrored, says which reading of the texture fits the room.
+
+/// Texels per side of the read-back grid, per layer.
+pub const CHECK_GRID: u32 = 40;
+
+/// The texel the check reads for grid index `i` along a side of `dim`
+/// texels: the middle of each `dim / CHECK_GRID` block.
+pub fn check_texel(i: u32, dim: u32) -> u32 {
+    i * dim / CHECK_GRID + dim / (2 * CHECK_GRID)
+}
+
+/// Loads the check grid of both layers into a flat array, layer-major then
+/// row-major: `out[(layer * CHECK_GRID + gy) * CHECK_GRID + gx]` is the
+/// stored value at texel (`check_texel(gx)`, `check_texel(gy)`).
+pub const CHECK_WGSL: &str = r"
+const GRID: u32 = 40u;
+@group(0) @binding(0) var depth_map: texture_depth_2d_array;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= GRID || id.y >= GRID || id.z >= 2u {
+        return;
+    }
+    let dim = textureDimensions(depth_map);
+    let texel = id.xy * dim / GRID + dim / (2u * GRID);
+    out[(id.z * GRID + id.y) * GRID + id.x] = textureLoad(depth_map, vec2<i32>(texel), i32(id.z), 0);
+}
+";
+
+/// An oriented box: center, rotation box to world, half extents.
+#[derive(Debug, Clone, Copy)]
+pub struct Obb {
+    pub center: Vec3,
+    pub rot: Quat,
+    pub half: Vec3,
+}
+
+/// Where the ray `o + t d` enters `b` (t > 0); `None` when it misses or
+/// starts inside (the camera inside a box sees past it, not its faces).
+pub fn ray_obb(o: Vec3, d: Vec3, b: &Obb) -> Option<f32> {
+    let inv = b.rot.inverse();
+    let lo = inv * (o - b.center);
+    let ld = inv * d;
+    let (mut enter, mut exit) = (f32::NEG_INFINITY, f32::INFINITY);
+    for k in 0..3 {
+        let (p, v, h) = (lo[k], ld[k], b.half[k]);
+        if v.abs() < 1e-9 {
+            if p.abs() > h {
+                return None;
+            }
+            continue;
+        }
+        let (a, c) = ((-h - p) / v, (h - p) / v);
+        enter = enter.max(a.min(c));
+        exit = exit.min(a.max(c));
+    }
+    (enter <= exit && enter > 0.0).then_some(enter)
+}
+
+/// How a texel maps to a ray: row 0 at the top of the view (what the
+/// shader assumes with `envdepthflipv 1`), at the bottom, or row 0 at the
+/// top with the columns mirrored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    RowTop,
+    RowBottom,
+    ColsMirrored,
+}
+
+/// The ray through the middle of texel (`tx`, `ty`) of a `size` map in
+/// depth-camera space, scaled to z = -1 so a distance along it is the
+/// depth along -Z.
+pub fn texel_dir(fov: Fov, size: [u32; 2], tx: u32, ty: u32, reading: Reading) -> Vec3 {
+    let mut u = (tx as f32 + 0.5) / size[0] as f32;
+    let mut v_up = 1.0 - (ty as f32 + 0.5) / size[1] as f32;
+    match reading {
+        Reading::RowTop => {}
+        Reading::RowBottom => v_up = 1.0 - v_up,
+        Reading::ColsMirrored => u = 1.0 - u,
+    }
+    let (l, r) = (fov.left.tan(), fov.right.tan());
+    let (up, down) = (fov.up.tan(), fov.down.tan());
+    Vec3::new(l + u * (r - l), down + v_up * (up - down), -1.0)
+}
+
+/// One layer's agreement with the room for one [`Reading`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CheckStats {
+    /// Texels with depth data (`d < 1`).
+    pub valid: u32,
+    /// Of those, texels whose ray hits a box or the floor.
+    pub compared: u32,
+    /// Fractions of `compared` within 10 cm and 25 cm.
+    pub within_10: f32,
+    pub within_25: f32,
+    /// Median of map depth minus room depth (m).
+    pub median_m: f32,
+}
+
+/// Compare one layer's grid (`CHECK_GRID`², row-major, as [`CHECK_WGSL`]
+/// writes it) with the nearest hit among `boxes` and the floor plane
+/// `y = floor_y` along each texel's ray, read as `reading`. `view` is the
+/// layer's acquired pose and fov, in the boxes' space.
+pub fn check_layer(
+    grid: &[f32],
+    size: [u32; 2],
+    view: &DepthView,
+    near: f32,
+    far: f32,
+    boxes: &[Obb],
+    floor_y: Option<f32>,
+    reading: Reading,
+) -> CheckStats {
+    let [x, y, z, w] = view.orientation;
+    let rot = Quat::from_xyzw(x, y, z, w);
+    let origin = Vec3::from(view.position);
+    let mut errors = Vec::new();
+    let mut valid = 0;
+    for gy in 0..CHECK_GRID {
+        for gx in 0..CHECK_GRID {
+            let Some(&d) = grid.get((gy * CHECK_GRID + gx) as usize) else {
+                continue;
+            };
+            if !(0.0..1.0).contains(&d) {
+                continue;
+            }
+            valid += 1;
+            let tx = check_texel(gx, size[0]);
+            let ty = check_texel(gy, size[1]);
+            // Unnormalized (z = -1 in the camera): t is the depth along -Z.
+            let dir = rot * texel_dir(view.fov, size, tx, ty, reading);
+            let floor = floor_y
+                .filter(|_| dir.y < -1e-6)
+                .map(|fy| (fy - origin.y) / dir.y)
+                .filter(|&t| t > 0.0);
+            let hit = boxes
+                .iter()
+                .filter_map(|b| ray_obb(origin, dir, b))
+                .chain(floor)
+                .min_by(f32::total_cmp);
+            if let Some(t) = hit {
+                errors.push(decode_distance(d, near, far) - t);
+            }
+        }
+    }
+    let compared = errors.len();
+    if compared == 0 {
+        return CheckStats {
+            valid,
+            ..CheckStats::default()
+        };
+    }
+    let frac = |m: f32| errors.iter().filter(|e| e.abs() <= m).count() as f32 / compared as f32;
+    let (within_10, within_25) = (frac(0.10), frac(0.25));
+    errors.sort_by(f32::total_cmp);
+    CheckStats {
+        valid,
+        compared: compared as u32,
+        within_10,
+        within_25,
+        median_m: errors[compared / 2],
+    }
+}
+
 #[cfg(target_os = "android")]
-pub use runtime::{EnvDepth, EnvDepthDraw, EnvDepthFrame};
+pub use runtime::{EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthSlot};
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
 /// occluder pipeline. The `openxr` crate binds the extension's function
@@ -345,7 +522,9 @@ pub use runtime::{EnvDepth, EnvDepthDraw, EnvDepthFrame};
 #[cfg(target_os = "android")]
 mod runtime {
     use std::ptr;
-    use std::time::Instant;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::time::{Duration, Instant};
 
     use anyhow::{Context, Result, bail};
     use ash::vk::{self, Handle as _};
@@ -354,16 +533,112 @@ mod runtime {
     use xr::sys;
     use xr::sys::Handle as _;
 
-    use super::{DepthView, ENV_DEPTH_WGSL, EnvDepthOptions, EyeReprojection, UNIFORM_ROWS};
+    use super::{
+        CHECK_GRID, CHECK_WGSL, CheckStats, DepthView, ENV_DEPTH_WGSL, EnvDepthOptions,
+        EyeReprojection, Obb, Reading, UNIFORM_ROWS, check_layer,
+    };
     use crate::gfx::{EyeCamera, Gfx, SWAPCHAIN_FORMAT};
     use crate::math::Fov;
-    use crate::particles3d::DEPTH_FORMAT;
+    use crate::particles3d::{DEPTH_FORMAT, ObstacleBox};
     use crate::room::check;
 
     /// Frames between retries of a provider start that failed.
     const START_RETRY_FRAMES: u32 = 144;
     /// Acquired frames between the running-count log lines (~10 s at 72 Hz).
     const LOG_EVERY_FRAMES: u64 = 720;
+    /// Creation retries after a failed creation, and the wait between them.
+    const CREATE_ATTEMPTS: u32 = 12;
+    const CREATE_RETRY_EVERY: Duration = Duration::from_secs(5);
+    /// Time between two self-check read-backs.
+    const CHECK_EVERY: Duration = Duration::from_secs(1);
+
+    /// The environment depth, or its creation waiting for a retry. On the
+    /// Quest 3 (v207, Sep 29) `xrCreateEnvironmentDepthProviderMETA`
+    /// failed with `ERROR_RUNTIME_FAILURE` for every client, the OS
+    /// shell's included, until a reboot: runtime state, not ours. So a
+    /// failed creation is retried every 5 s, up to 12 times.
+    pub enum EnvDepthSlot {
+        Ready(Box<EnvDepth>),
+        Retry {
+            opts: EnvDepthOptions,
+            attempts: u32,
+            next_at: Instant,
+        },
+        GaveUp,
+    }
+
+    impl EnvDepthSlot {
+        /// Create the environment depth, or a slot that retries it. `None`
+        /// when the extension is not enabled on the instance.
+        pub fn new(
+            session: &xr::Session<xr::Vulkan>,
+            system: xr::SystemId,
+            gfx: &Gfx,
+            opts: EnvDepthOptions,
+        ) -> Option<Self> {
+            match EnvDepth::create(session, system, gfx, opts) {
+                Ok(Some(d)) => Some(Self::Ready(Box::new(d))),
+                Ok(None) => {
+                    warn!(
+                        "environment depth requested but XR_META_environment_depth is not enabled"
+                    );
+                    None
+                }
+                Err(e) => {
+                    warn!(
+                        "environment depth: creation failed: {e:#}; retrying every {} s, up to {CREATE_ATTEMPTS} times",
+                        CREATE_RETRY_EVERY.as_secs()
+                    );
+                    Some(Self::Retry {
+                        opts,
+                        attempts: 0,
+                        next_at: Instant::now() + CREATE_RETRY_EVERY,
+                    })
+                }
+            }
+        }
+
+        /// The live environment depth, retrying its creation first when a
+        /// retry is due. Called once per rendered frame.
+        pub fn get(
+            &mut self,
+            session: &xr::Session<xr::Vulkan>,
+            system: xr::SystemId,
+            gfx: &Gfx,
+        ) -> Option<&mut EnvDepth> {
+            if let Self::Retry {
+                opts,
+                attempts,
+                next_at,
+            } = self
+                && Instant::now() >= *next_at
+            {
+                *attempts += 1;
+                let n = *attempts;
+                match EnvDepth::create(session, system, gfx, *opts) {
+                    Ok(Some(d)) => {
+                        info!("environment depth: created on retry {n}/{CREATE_ATTEMPTS}");
+                        *self = Self::Ready(Box::new(d));
+                    }
+                    Ok(None) => *self = Self::GaveUp,
+                    Err(e) if n >= CREATE_ATTEMPTS => {
+                        warn!(
+                            "environment depth: retry {n}/{CREATE_ATTEMPTS} failed: {e:#}; giving up"
+                        );
+                        *self = Self::GaveUp;
+                    }
+                    Err(e) => {
+                        warn!("environment depth: retry {n}/{CREATE_ATTEMPTS} failed: {e:#}");
+                        *next_at = Instant::now() + CREATE_RETRY_EVERY;
+                    }
+                }
+            }
+            match self {
+                Self::Ready(d) => Some(d),
+                _ => None,
+            }
+        }
+    }
 
     /// One acquired depth image: which swapchain image, its projection's
     /// planes and the pose and fov of each layer.
@@ -446,6 +721,8 @@ mod runtime {
     pub struct EnvDepth {
         // wgpu objects first: they reference the runtime's images, which
         // the swapchain in `provider` owns (fields drop in order).
+        /// The self-check (`debug.fosfora.envdepthcheck`), when asked for.
+        check: Option<Check>,
         /// Per swapchain image, per eye: the eye's uniform and the image.
         bind_groups: Vec<[wgpu::BindGroup; 2]>,
         _images: Vec<(wgpu::Texture, wgpu::TextureView)>,
@@ -463,30 +740,9 @@ mod runtime {
     }
 
     impl EnvDepth {
-        /// Bring the provider up and start it. `None` when the extension is
-        /// not enabled or anything fails (logged): the app runs without it.
-        pub fn new(
-            session: &xr::Session<xr::Vulkan>,
-            system: xr::SystemId,
-            gfx: &Gfx,
-            opts: EnvDepthOptions,
-        ) -> Option<Self> {
-            match Self::try_new(session, system, gfx, opts) {
-                Ok(Some(d)) => Some(d),
-                Ok(None) => {
-                    warn!(
-                        "environment depth requested but XR_META_environment_depth is not enabled"
-                    );
-                    None
-                }
-                Err(e) => {
-                    warn!("environment depth unavailable: {e:#}");
-                    None
-                }
-            }
-        }
-
-        fn try_new(
+        /// Bring the provider up and start it. `Ok(None)` when the
+        /// extension is not enabled on the instance.
+        pub fn create(
             session: &xr::Session<xr::Vulkan>,
             system: xr::SystemId,
             gfx: &Gfx,
@@ -613,6 +869,7 @@ mod runtime {
             };
 
             let (pipeline, layout) = build_pipeline(&gfx.device, opts.show);
+            let check = opts.check.then(|| build_check(&gfx.device, &images));
             let uniforms = [0, 1].map(|eye| {
                 gfx.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some(if eye == 0 {
@@ -647,19 +904,23 @@ mod runtime {
                 })
                 .collect();
             info!(
-                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · discard under {} m · v flip {}",
+                "environment depth: swapchain {} images, {width}x{height} D16 x 2 layers · hand removal {} (supported {hand_removal_supported}, asked {}) · {} · discard under {} m · v flip {} · self-check {}",
                 images.len(),
                 if hand_removal { "on" } else { "off" },
                 opts.hand_removal,
                 if opts.show {
                     "diagnostic gray (writes depth too)"
-                } else {
+                } else if opts.occlude {
                     "occluder"
+                } else {
+                    "no draw"
                 },
                 opts.near_cut_m,
                 opts.flip_v,
+                opts.check,
             );
             Ok(Some(Self {
+                check,
                 bind_groups,
                 _images: images,
                 uniforms,
@@ -808,16 +1069,21 @@ mod runtime {
             })
         }
 
-        /// Write both eyes' uniforms for `frame` and return the draw.
-        /// `cameras` and `extents` (the eye targets' sizes) are in eye
-        /// order, left first, like the depth map's layers.
+        /// Write both eyes' uniforms for `frame` and return the draw;
+        /// `None` when neither the occluder nor the diagnostic is on (the
+        /// self-check alone). `cameras` and `extents` (the eye targets'
+        /// sizes) are in eye order, left first, like the depth map's
+        /// layers.
         pub fn prepare(
             &self,
             queue: &wgpu::Queue,
             frame: &EnvDepthFrame,
             cameras: &[EyeCamera],
             extents: &[[u32; 2]],
-        ) -> EnvDepthDraw<'_> {
+        ) -> Option<EnvDepthDraw<'_>> {
+            if !self.opts.occlude && !self.opts.show {
+                return None;
+            }
             for (eye, (cam, extent)) in cameras.iter().zip(extents).enumerate().take(2) {
                 let depth = frame.views[eye];
                 let r = EyeReprojection {
@@ -835,10 +1101,254 @@ mod runtime {
                 };
                 queue.write_buffer(&self.uniforms[eye], 0, bytemuck::cast_slice(&r.uniform()));
             }
-            EnvDepthDraw {
+            Some(EnvDepthDraw {
                 pipeline: &self.pipeline,
                 bind_groups: &self.bind_groups[frame.index as usize],
+            })
+        }
+
+        /// The self-check, at most once a second: read a grid of both
+        /// layers of `frame`'s image back (a compute pass into a storage
+        /// buffer, copied into a mapped staging buffer; the depth image is
+        /// only ever sampled, so it stays in the layout the occluder uses)
+        /// and keep `frame` and the room's `boxes` for the comparison
+        /// [`Self::poll_check`] makes once the map lands, a few frames
+        /// later. Hidden walls (open room boundaries) are left out; no
+        /// boxes, no check.
+        pub fn check(
+            &mut self,
+            device: &wgpu::Device,
+            queue: &wgpu::Queue,
+            frame: &EnvDepthFrame,
+            boxes: &[ObstacleBox],
+        ) {
+            let Some(c) = self.check.as_mut() else {
+                return;
+            };
+            if c.pending.is_some() || c.last.is_some_and(|t| t.elapsed() < CHECK_EVERY) {
+                return;
             }
+            let boxes: Vec<Obb> = boxes
+                .iter()
+                .filter(|b| !b.hidden)
+                .map(|b| Obb {
+                    center: b.center.into(),
+                    rot: glam::Quat::from_array(b.rot),
+                    half: b.half.into(),
+                })
+                .collect();
+            if boxes.is_empty() {
+                return;
+            }
+            let Some(group) = c.bind_groups.get(frame.index as usize) else {
+                return;
+            };
+            c.last = Some(Instant::now());
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xr-env-depth-check"),
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("xr-env-depth-check"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&c.pipeline);
+                pass.set_bind_group(0, group, &[]);
+                pass.dispatch_workgroups(CHECK_GRID.div_ceil(8), CHECK_GRID.div_ceil(8), 2);
+            }
+            encoder.copy_buffer_to_buffer(&c.storage, 0, &c.staging, 0, c.staging.size());
+            queue.submit([encoder.finish()]);
+            let state = Arc::new(AtomicU8::new(0));
+            let done = Arc::clone(&state);
+            c.staging
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |r| {
+                    done.store(if r.is_ok() { 1 } else { 2 }, Ordering::Release);
+                });
+            c.pending = Some(Pending {
+                frame: *frame,
+                boxes,
+                state,
+                frames: 0,
+            });
+        }
+
+        /// Finish a self-check read-back once the GPU has delivered it and
+        /// log the comparison per layer; never waits. Called every frame.
+        pub fn poll_check(&mut self, device: &wgpu::Device) {
+            let Some(c) = self.check.as_mut() else {
+                return;
+            };
+            let Some(p) = c.pending.as_mut() else {
+                return;
+            };
+            p.frames += 1;
+            // Non-blocking: runs the map callback if the copy is done.
+            let _ = device.poll(wgpu::PollType::Poll);
+            match p.state.load(Ordering::Acquire) {
+                0 => return,
+                1 => {}
+                _ => {
+                    warn!("envdepth check: the read-back map failed");
+                    c.pending = None;
+                    return;
+                }
+            }
+            let grid: Vec<f32> = c
+                .staging
+                .slice(..)
+                .get_mapped_range()
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            c.staging.unmap();
+            let Some(p) = c.pending.take() else {
+                return;
+            };
+            c.runs += 1;
+            let n = (CHECK_GRID * CHECK_GRID) as usize;
+            for (layer, g) in grid.chunks_exact(n).take(2).enumerate() {
+                let stats = |r| {
+                    check_layer(
+                        g,
+                        self.size,
+                        &p.frame.views[layer],
+                        p.frame.near,
+                        p.frame.far,
+                        &p.boxes,
+                        Some(0.0),
+                        r,
+                    )
+                };
+                let top = stats(Reading::RowTop);
+                info!(
+                    "envdepth check #{} layer {layer}: valid {} of {n} · row0 top {} · row0 bottom {} · cols mirrored {} · {} boxes + floor · read back {} frames later",
+                    c.runs,
+                    top.valid,
+                    fmt_stats(&top),
+                    fmt_stats(&stats(Reading::RowBottom)),
+                    fmt_stats(&stats(Reading::ColsMirrored)),
+                    p.boxes.len(),
+                    p.frames,
+                );
+            }
+        }
+    }
+
+    fn fmt_stats(s: &CheckStats) -> String {
+        format!(
+            "[{} compared, 10 cm {:.0} %, 25 cm {:.0} %, median {:+.3} m]",
+            s.compared,
+            s.within_10 * 100.0,
+            s.within_25 * 100.0,
+            s.median_m
+        )
+    }
+
+    /// The self-check's GPU side and its one read-back in flight.
+    struct Check {
+        pipeline: wgpu::ComputePipeline,
+        /// Per swapchain image: the image and the storage buffer.
+        bind_groups: Vec<wgpu::BindGroup>,
+        storage: wgpu::Buffer,
+        staging: wgpu::Buffer,
+        pending: Option<Pending>,
+        last: Option<Instant>,
+        runs: u64,
+    }
+
+    /// A read-back in flight: the frame and the room it is compared with.
+    struct Pending {
+        frame: EnvDepthFrame,
+        boxes: Vec<Obb>,
+        /// 0 waiting, 1 mapped, 2 the map failed.
+        state: Arc<AtomicU8>,
+        frames: u32,
+    }
+
+    fn build_check(device: &wgpu::Device, images: &[(wgpu::Texture, wgpu::TextureView)]) -> Check {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xr-env-depth-check"),
+            source: wgpu::ShaderSource::Wgsl(CHECK_WGSL.into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xr-env-depth-check"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xr-env-depth-check"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("xr-env-depth-check"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("cs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let bytes = u64::from(2 * CHECK_GRID * CHECK_GRID) * 4;
+        let storage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-check"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xr-env-depth-check-staging"),
+            size: bytes,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_groups = images
+            .iter()
+            .map(|(_, view)| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("xr-env-depth-check"),
+                    layout: &layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: storage.as_entire_binding(),
+                        },
+                    ],
+                })
+            })
+            .collect();
+        Check {
+            pipeline,
+            bind_groups,
+            storage,
+            staging,
+            pending: None,
+            last: None,
+            runs: 0,
         }
     }
 
@@ -1214,6 +1724,84 @@ mod tests {
             let bound = 0.01 * (along - 2.0).abs() / 2.0 * 1.5 + 1e-4;
             assert!(e < bound, "45° at {along} m: {e} m (bound {bound})");
         }
+    }
+
+    #[test]
+    fn a_ray_enters_a_turned_box_at_its_face() {
+        let b = Obb {
+            center: Vec3::new(0.0, 0.5, -2.0),
+            rot: Quat::from_rotation_y(0.3),
+            half: Vec3::new(0.5, 0.5, 0.5),
+        };
+        let t = ray_obb(Vec3::new(0.0, 0.5, 0.0), -Vec3::Z, &b).expect("hit");
+        // The face toward the ray is 0.5 m from the center along the
+        // turned axis: 2 - 0.5 / cos(0.3) m out.
+        assert!((t - (2.0 - 0.5 / 0.3f32.cos())).abs() < 1e-4, "{t}");
+        assert!(ray_obb(Vec3::new(3.0, 0.5, 0.0), -Vec3::Z, &b).is_none());
+        assert!(ray_obb(Vec3::new(0.0, 0.5, 0.0), Vec3::Z, &b).is_none());
+        // From inside: no entry.
+        assert!(ray_obb(b.center, -Vec3::Z, &b).is_none());
+    }
+
+    /// A depth map of a room (a table-sized box and the floor) as the
+    /// runtime would store it, row 0 at the top: the check agrees with it
+    /// read that way, and not with the rows flipped or the columns
+    /// mirrored.
+    #[test]
+    fn the_check_tells_the_right_reading_apart() {
+        let size = [320, 320];
+        let (near, far) = (0.1, f32::INFINITY);
+        // Looking ahead and down ~30° from 1.2 m.
+        let rot = Quat::from_rotation_x(-0.5);
+        let view = DepthView {
+            orientation: rot.to_array(),
+            position: [0.0, 1.2, 0.0],
+            fov: FOV,
+        };
+        // A box off to the right, so mirroring the columns shows.
+        let boxes = [Obb {
+            center: Vec3::new(0.6, 0.4, -1.5),
+            rot: Quat::IDENTITY,
+            half: Vec3::new(0.4, 0.4, 0.3),
+        }];
+        let origin = Vec3::from(view.position);
+        let mut grid = vec![1.0f32; (CHECK_GRID * CHECK_GRID) as usize];
+        for gy in 0..CHECK_GRID {
+            for gx in 0..CHECK_GRID {
+                let (tx, ty) = (check_texel(gx, size[0]), check_texel(gy, size[1]));
+                let dir = rot * texel_dir(FOV, size, tx, ty, Reading::RowTop);
+                let floor = (dir.y < 0.0).then(|| -origin.y / dir.y);
+                let hit = boxes
+                    .iter()
+                    .filter_map(|b| ray_obb(origin, dir, b))
+                    .chain(floor)
+                    .min_by(f32::total_cmp);
+                if let Some(t) = hit {
+                    grid[(gy * CHECK_GRID + gx) as usize] = encode(t, near, far);
+                }
+            }
+        }
+        let stats = |r| check_layer(&grid, size, &view, near, far, &boxes, Some(0.0), r);
+        let top = stats(Reading::RowTop);
+        assert!(top.compared > 500, "{top:?}");
+        assert!(top.within_10 > 0.99 && top.median_m.abs() < 1e-3, "{top:?}");
+        let bottom = stats(Reading::RowBottom);
+        assert!(bottom.within_10 < 0.7, "{bottom:?}");
+        let mirrored = stats(Reading::ColsMirrored);
+        assert!(mirrored.within_10 < top.within_10 - 0.05, "{mirrored:?}");
+        assert_eq!(check_texel(0, 320), 4);
+        assert_eq!(check_texel(CHECK_GRID - 1, 320), 316);
+    }
+
+    #[test]
+    fn the_check_shader_validates() {
+        let module = naga::front::wgsl::parse_str(CHECK_WGSL).expect("check WGSL parses");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .expect("check WGSL validates");
     }
 
     #[test]

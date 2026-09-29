@@ -235,7 +235,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       skinned hand mesh stays the hand occluder)
     //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
     //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 1 reads texture row 0 as the top of the view, the default; 0 as the bottom)
-    //   The envdepth knobs are read at startup (restart the app after a change); with envdepth and envdepthshow both 0 no depth
+    //   adb shell setprop debug.fosfora.envdepthcheck 1          (self-check: once a second, with the room's boxes located, read a 40x40 grid of each
+    //       depth layer back and log how well it agrees with the boxes and the floor along the same rays, as read, rows flipped
+    //       and columns mirrored; implies the acquire, draws nothing by itself)
+    //   The envdepth knobs are read at startup (restart the app after a change); with envdepth, envdepthshow and envdepthcheck all 0 no depth
     //   provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
@@ -264,7 +267,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3324: the live environment depth (`env_depth.rs`).
     let env_occlude = toggle("debug.fosfora.envdepth", false);
     let env_show = toggle("debug.fosfora.envdepthshow", false);
-    let env_depth = (env_occlude || env_show).then(|| {
+    let env_check = toggle("debug.fosfora.envdepthcheck", false);
+    let env_depth = (env_occlude || env_show || env_check).then(|| {
         let d = EnvDepthOptions::default();
         EnvDepthOptions {
             occlude: env_occlude,
@@ -274,6 +278,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .and_then(|v| v.parse::<f32>().ok())
                 .map_or(d.near_cut_m, |v| v.max(0.0)),
             flip_v: toggle("debug.fosfora.envdepthflipv", d.flip_v),
+            check: env_check,
         }
     });
     let mr = MrOptions {
