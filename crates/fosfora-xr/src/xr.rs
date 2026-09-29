@@ -10,7 +10,7 @@ use openxr as xr;
 use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
-use crate::env_depth::{EnvDepthOptions, EnvDepthSlot};
+use crate::env_depth::{EnvDepthOptions, EnvDepthPasses, EnvDepthSlot};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
@@ -761,17 +761,19 @@ impl XrSession {
         });
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
             e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
-            e.build_atlas(&gfx.device, &gfx.queue, f);
+            e.prepare_atlas(&gfx.queue, f);
         }
         let extents: Vec<[u32; 2]> = self
             .eyes
             .iter()
             .map(|e| [e.extent.width, e.extent.height])
             .collect();
-        let env_draw = env
+        let env_passes = env
             .as_deref()
-            .zip(env_frame)
-            .and_then(|(e, f)| e.prepare(&gfx.queue, &f, &cameras, &extents));
+            .map_or_else(EnvDepthPasses::default, |e| EnvDepthPasses {
+                occluder: env_frame.and_then(|f| e.prepare(&gfx.queue, &f, &cameras, &extents)),
+                atlas: e.atlas_pass(),
+            });
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -798,8 +800,13 @@ impl XrSession {
             clear,
             particles,
             scene.filter(|s| s.is_world()),
-            env_draw.as_ref(),
+            &env_passes,
         );
+        // The atlas pass went out with the frame's one submit: map its
+        // staging buffer now.
+        if let Some(e) = env {
+            e.map_atlas();
+        }
 
         for eye in &mut self.eyes {
             eye.swapchain

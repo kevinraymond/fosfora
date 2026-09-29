@@ -97,6 +97,10 @@ pub struct EnvDepthOptions {
     /// Each particle is tested every this many frames
     /// (`debug.fosfora.depthcollideevery`).
     pub collide_every: u32,
+    /// Upload the atlas into the obstacle texture
+    /// (`debug.fosfora.depthcollideupload`, a diagnostic; see
+    /// [`DepthAtlas::upload`]).
+    pub collide_upload: bool,
 }
 
 impl Default for EnvDepthOptions {
@@ -113,6 +117,7 @@ impl Default for EnvDepthOptions {
             collide_res: COLLIDE_RES,
             collide_thickness_m: COLLIDE_THICKNESS_M,
             collide_every: COLLIDE_EVERY,
+            collide_upload: true,
         }
     }
 }
@@ -917,6 +922,10 @@ impl DepthCollide {
 /// One read-back atlas, ready for the obstacle texture: `width` x
 /// `height` RGBA8 texels (see [`encode_atlas`]).
 pub struct DepthAtlas<'a> {
+    /// Put it in the obstacle texture (`debug.fosfora.depthcollideupload`,
+    /// a diagnostic: 0 runs everything but the upload, to split the
+    /// atlas pass's cost from the upload's).
+    pub upload: bool,
     pub bytes: &'a [u8],
     pub width: u32,
     pub height: u32,
@@ -924,7 +933,7 @@ pub struct DepthAtlas<'a> {
 }
 
 #[cfg(target_os = "android")]
-pub use runtime::{EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthSlot};
+pub use runtime::{AtlasPass, EnvDepth, EnvDepthDraw, EnvDepthFrame, EnvDepthPasses, EnvDepthSlot};
 
 /// The OpenXR provider, its swapchain wrapped as wgpu textures, and the
 /// occluder pipeline. The `openxr` crate binds the extension's function
@@ -1374,10 +1383,15 @@ mod runtime {
                 opts.check,
                 if opts.collide {
                     format!(
-                        "on ({res}x{} atlas, thickness {} m, every {} frames)",
+                        "on ({res}x{} atlas, thickness {} m, every {} frames{})",
                         2 * opts.collide_res,
                         opts.collide_thickness_m,
                         opts.collide_every,
+                        if opts.collide_upload {
+                            ""
+                        } else {
+                            ", upload off (diagnostic)"
+                        },
                         res = opts.collide_res
                     )
                 } else {
@@ -1740,28 +1754,33 @@ mod runtime {
             }
         }
 
-        /// The depth atlas for the sim's collide: condense both layers of
-        /// `frame`'s image into the atlas (a compute pass into a storage
-        /// buffer, copied into a free staging buffer that is then mapped;
-        /// the image is only ever sampled) and keep `frame` with it for
-        /// [`Self::poll_atlas`]. Every staging buffer still in flight: the
-        /// frame is skipped (counted). Called after each acquire.
-        pub fn build_atlas(
-            &mut self,
-            device: &wgpu::Device,
-            queue: &wgpu::Queue,
-            frame: &EnvDepthFrame,
-        ) {
+        /// The depth atlas for the sim's collide, step 1 of 3: reserve a
+        /// free staging buffer for `frame`'s atlas and write the pass's
+        /// params. [`Self::atlas_pass`] then gives the pass that
+        /// `Gfx::render` records into the frame's one command encoder (a
+        /// compute pass condensing both layers of the image into the
+        /// storage buffer, the image only ever sampled, and the copy into
+        /// the staging buffer), and [`Self::map_atlas`] maps the buffer
+        /// after that single submit; [`Self::poll_atlas`] hands it over a
+        /// frame later. Every staging buffer still in flight: the frame is
+        /// skipped (counted). Called after each acquire.
+        pub fn prepare_atlas(&mut self, queue: &wgpu::Queue, frame: &EnvDepthFrame) {
             let Some(a) = self.atlas.as_mut() else {
                 return;
             };
-            let Some(group) = a.bind_groups.get(frame.index as usize) else {
+            // A reservation whose frame never rendered (an error between
+            // the acquire and the submit) is released first.
+            if let Some((i, _)) = a.recorded.take() {
+                a.slots[i].frame = None;
+                a.slots[i].state.store(SLOT_IDLE, Ordering::Release);
+            }
+            if a.bind_groups.get(frame.index as usize).is_none() {
                 return;
-            };
-            let Some(slot) = a
+            }
+            let Some(i) = a
                 .slots
-                .iter_mut()
-                .find(|s| s.state.load(Ordering::Acquire) == SLOT_IDLE)
+                .iter()
+                .position(|s| s.state.load(Ordering::Acquire) == SLOT_IDLE)
             else {
                 a.window.busy += 1;
                 return;
@@ -1774,20 +1793,37 @@ mod runtime {
                 self.opts.flip_v,
             );
             queue.write_buffer(&a.params, 0, bytemuck::cast_slice(&params));
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("xr-env-depth-atlas"),
-            });
-            {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("xr-env-depth-atlas"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&a.pipeline);
-                pass.set_bind_group(0, group, &[]);
-                pass.dispatch_workgroups(a.res.div_ceil(8), a.res.div_ceil(8), 2);
-            }
-            encoder.copy_buffer_to_buffer(&a.storage, 0, &slot.buffer, 0, slot.buffer.size());
-            queue.submit([encoder.finish()]);
+            let slot = &mut a.slots[i];
+            slot.state.store(SLOT_RECORDED, Ordering::Release);
+            slot.frame = Some(*frame);
+            slot.built_at = a.frames;
+            a.recorded = Some((i, frame.index));
+        }
+
+        /// Step 2: the atlas pass reserved by [`Self::prepare_atlas`], for
+        /// `Gfx::render` to record; `None` without one this frame.
+        pub fn atlas_pass(&self) -> Option<AtlasPass<'_>> {
+            let a = self.atlas.as_ref()?;
+            let (i, index) = a.recorded?;
+            Some(AtlasPass {
+                pipeline: &a.pipeline,
+                bind_group: a.bind_groups.get(index as usize)?,
+                storage: &a.storage,
+                staging: &a.slots[i].buffer,
+                res: a.res,
+            })
+        }
+
+        /// Step 3, after the frame's submit: map the staging buffer the
+        /// atlas pass was copied into.
+        pub fn map_atlas(&mut self) {
+            let Some(a) = self.atlas.as_mut() else {
+                return;
+            };
+            let Some((i, _)) = a.recorded.take() else {
+                return;
+            };
+            let slot = &a.slots[i];
             slot.state.store(SLOT_PENDING, Ordering::Release);
             let done = Arc::clone(&slot.state);
             slot.buffer
@@ -1796,8 +1832,6 @@ mod runtime {
                     let state = if r.is_ok() { SLOT_MAPPED } else { SLOT_FAILED };
                     done.store(state, Ordering::Release);
                 });
-            slot.frame = Some(*frame);
-            slot.built_at = a.frames;
         }
 
         /// Hand the newest depth atlas the GPU has delivered to `upload`,
@@ -1842,7 +1876,11 @@ mod runtime {
                         let lag = frames.saturating_sub(s.built_at);
                         {
                             let bytes = s.buffer.slice(..).get_mapped_range();
+                            // The mapped range itself, no copy of ours:
+                            // the core copies it once more on the way to
+                            // the texture.
                             upload(&DepthAtlas {
+                                upload: self.opts.collide_upload,
                                 bytes: &bytes,
                                 width: res,
                                 height: 2 * res,
@@ -1883,11 +1921,48 @@ mod runtime {
         }
     }
 
-    /// Staging buffer states (`AtlasSlot::state`).
+    /// Staging buffer states (`AtlasSlot::state`): free, mapping, mapped,
+    /// the map failed, reserved and recorded for this frame's submit.
     const SLOT_IDLE: u8 = 0;
     const SLOT_PENDING: u8 = 1;
     const SLOT_MAPPED: u8 = 2;
     const SLOT_FAILED: u8 = 3;
+    const SLOT_RECORDED: u8 = 4;
+
+    /// This frame's depth atlas pass, recorded by `Gfx::render` into the
+    /// frame's command encoder before the sim's dispatch.
+    pub struct AtlasPass<'a> {
+        pipeline: &'a wgpu::ComputePipeline,
+        bind_group: &'a wgpu::BindGroup,
+        storage: &'a wgpu::Buffer,
+        staging: &'a wgpu::Buffer,
+        res: u32,
+    }
+
+    impl AtlasPass<'_> {
+        /// The compute pass into the storage buffer, then its copy into the
+        /// reserved staging buffer.
+        pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("xr-env-depth-atlas"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(self.pipeline);
+                pass.set_bind_group(0, self.bind_group, &[]);
+                pass.dispatch_workgroups(self.res.div_ceil(8), self.res.div_ceil(8), 2);
+            }
+            encoder.copy_buffer_to_buffer(self.storage, 0, self.staging, 0, self.staging.size());
+        }
+    }
+
+    /// What `Gfx::render` records for the environment depth this frame:
+    /// the occluder draw and the atlas pass, each when there is one.
+    #[derive(Default)]
+    pub struct EnvDepthPasses<'a> {
+        pub occluder: Option<EnvDepthDraw<'a>>,
+        pub atlas: Option<AtlasPass<'a>>,
+    }
 
     /// The depth atlas's GPU side and its read-backs in flight.
     struct Atlas {
@@ -1902,6 +1977,9 @@ mod runtime {
         /// Rendered frames so far (`poll_atlas` calls), for the lag.
         frames: u64,
         window: AtlasWindow,
+        /// The slot and swapchain image reserved by `prepare_atlas`, until
+        /// `map_atlas`.
+        recorded: Option<(usize, u32)>,
     }
 
     /// One staging buffer and the frame whose atlas it carries.
@@ -2056,6 +2134,7 @@ mod runtime {
             res,
             frames: 0,
             window: AtlasWindow::new(),
+            recorded: None,
         }
     }
 

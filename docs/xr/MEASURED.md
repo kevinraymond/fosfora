@@ -1290,7 +1290,8 @@ SUCCESS`) says what was asked and what the runtime answered.
 adb shell setprop debug.fosfora.depthcollide 0|1          # world mode only; default 1 wherever the depth map is on; 1 implies the provider
 adb shell setprop debug.fosfora.depthcollideres 160|320   # atlas texels per layer side (default 160)
 adb shell setprop debug.fosfora.depthcollidethick 0.15    # the thickness band behind a surface, m
-adb shell setprop debug.fosfora.depthcollideevery 2       # test each particle every N frames, 1..8 (default 2): GPU cost / N, up to N-1 frames late
+adb shell setprop debug.fosfora.depthcollideevery 2       # test each particle every N frames, 1..8 (default 2), up to N-1 frames late
+adb shell setprop debug.fosfora.depthcollideupload 0|1    # diagnostic: 0 skips the obstacle texture upload (nothing collides), default 1
 adb shell setprop debug.fosfora.envdepthfilter 0|1|2      # occluder lookup: nearest texel | edge-aware (default) | bilinear everywhere
 adb shell setprop debug.fosfora.envdepthhands 0|1         # live: polled once a second
 ```
@@ -1339,6 +1340,26 @@ scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "dep
 | collide on, 160 (earlier, cooler) | | 10.44 / 11.54 / 12.21 | | | | 35 | 1 frame |
 | collide on, 320 (earlier, cooler) | | 10.59 / 11.66 / 13.49 | | | | 61 | 1 frame |
 | collide on, 160, every 2 | | pending | pending | pending | pending | pending | pending |
+
+**`d39bb4c`, back to back** (battery 42 -> 46 C over the three runs, GPU
+clock 640 MHz throughout; atlas 678 uploads / 10 s, lag 1 frame, 0
+failed):
+
+| Config | App GPU med / p90 / max | CPU avg ms | Long | Stale |
+|---|---|---|---|---|
+| collide off | 10.38 / 11.01 / 11.79 | 1.67 | 9 | 14 |
+| collide on, 160, every 1 | 11.21 / 12.14 / 12.74 | 2.07 | 41 | 209 |
+| collide on, 160, every 2 | 11.27 / 12.27 / 13.29 | 2.06 | 56 | 270 |
+
+Testing each particle every other frame changed nothing: the
+per-particle test is not the cost. **The cost is the atlas plumbing:**
+its own command encoder and submit per frame, the 200 KB
+`write_texture` upload through `update_obstacle_webcam`, and the map and
+poll on the CPU. Next pass: the atlas pass and its copy are recorded into
+the frame's one command encoder (one submit per frame), the staging
+buffer is mapped after it, and `depthcollideupload 0` (a diagnostic:
+everything but the upload, so nothing collides) splits the pass from the
+upload. Pending on the device.
 
 The atlas path works on the device: 709 uploads per 10 s, lag exactly 1
 frame, 0 failed, 0 skipped. Hand removal: the creation line read

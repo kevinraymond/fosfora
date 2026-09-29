@@ -376,13 +376,18 @@ impl XrScene {
         };
         let renderer = &mut self.renderer;
         if let Some(ps) = particle_system(&mut renderer.layer_stack.layers) {
-            ps.update_obstacle_webcam(
-                &renderer.device,
-                &renderer.queue,
-                atlas.bytes,
-                atlas.width,
-                atlas.height,
-            );
+            // `depthcollideupload 0` (a diagnostic) keeps everything else,
+            // the rows included: the sim then reads the placeholder's
+            // zeros, no data, and collides with nothing.
+            if atlas.upload {
+                ps.update_obstacle_webcam(
+                    &renderer.device,
+                    &renderer.queue,
+                    atlas.bytes,
+                    atlas.width,
+                    atlas.height,
+                );
+            }
             world.depth = Some((atlas.collide, Instant::now()));
         }
     }

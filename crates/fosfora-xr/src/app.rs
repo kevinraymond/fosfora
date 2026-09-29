@@ -252,6 +252,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       alone, the occluder hides it)
     //   adb shell setprop debug.fosfora.depthcollideevery 2      (each particle is tested against the depth map every N frames, 1..8, each on its
     //       own phase: the collide's GPU cost divided by N, a collision caught up to N-1 frames late; default 2)
+    //   adb shell setprop debug.fosfora.depthcollideupload 0|1   (diagnostic: 0 builds, reads back and hands over the atlas and writes the sim's
+    //       rows but skips the upload into the obstacle texture, so nothing collides; splits the atlas pass's cost from the upload's)
     //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
@@ -313,6 +315,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             collide_thickness_m: debug_prop("debug.fosfora.depthcollidethick")
                 .and_then(|v| v.parse::<f32>().ok())
                 .map_or(d.collide_thickness_m, |v| v.clamp(0.01, 1.0)),
+            collide_upload: debug_prop("debug.fosfora.depthcollideupload").as_deref() != Some("0"),
             collide_every: debug_prop("debug.fosfora.depthcollideevery")
                 .and_then(|v| v.parse::<u32>().ok())
                 .map_or(d.collide_every, |v| {

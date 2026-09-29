@@ -18,7 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
-use crate::env_depth::EnvDepthDraw;
+use crate::env_depth::EnvDepthPasses;
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::scene::XrScene;
 use crate::xr::XrContext;
@@ -773,8 +773,9 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render both eyes and submit once: the environment depth occluder
-    /// (`env_depth`, when a depth frame was acquired), the quad
+    /// Render both eyes and submit once: the depth atlas pass and the
+    /// environment depth occluder (`env_depth`, each when there is one),
+    /// the quad
     /// (depth-writing), the S7 occluders and then the S5 particles
     /// (depth-tested, additive) into each eye. With a world-mode `scene` (C3b), its sim is dispatched first and
     /// its sprites are drawn last in the same eye pass, tested against the
@@ -788,7 +789,7 @@ impl Gfx {
         clear: [f32; 4],
         particles: Option<&Particles3d>,
         mut scene: Option<&mut XrScene>,
-        env_depth: Option<&EnvDepthDraw<'_>>,
+        env_depth: &EnvDepthPasses<'_>,
     ) {
         for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
             self.queue.write_buffer(
@@ -805,6 +806,11 @@ impl Gfx {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("xr-frame"),
             });
+        // The depth atlas (board #3352) rides in this one submission,
+        // before the sim; it is read back and uploaded a frame later.
+        if let Some(a) = &env_depth.atlas {
+            a.record(&mut encoder);
+        }
         if let Some(p) = particles {
             p.step(&mut encoder);
         }
@@ -849,7 +855,7 @@ impl Gfx {
             // The live depth map first, right after the clear: it writes
             // the real room's depth (compare Always) and everything after
             // tests against it.
-            if let Some(d) = env_depth {
+            if let Some(d) = &env_depth.occluder {
                 d.draw(&mut pass, i);
             }
             if let Some(quad) = &self.quad {
