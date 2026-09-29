@@ -18,7 +18,6 @@ pub enum TransitionType {
 }
 
 impl TransitionType {
-    #[allow(dead_code)]
     pub const ALL: &[TransitionType] = &[
         TransitionType::Cut,
         TransitionType::Dissolve,
@@ -52,17 +51,6 @@ pub enum AdvanceMode {
     BeatSync { beats_per_cue: u32 },
 }
 
-impl AdvanceMode {
-    #[allow(dead_code)]
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            AdvanceMode::Manual => "Manual",
-            AdvanceMode::Timer => "Timer",
-            AdvanceMode::BeatSync { .. } => "Beat Sync",
-        }
-    }
-}
-
 /// A single cue in a scene — references a preset and describes the transition into it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneCue {
@@ -94,7 +82,6 @@ fn default_transition_secs() -> f32 {
 
 impl SceneCue {
     /// Create a minimal cue referencing a preset.
-    #[allow(dead_code)]
     pub fn new(preset_name: &str) -> Self {
         Self {
             preset_name: preset_name.to_string(),
@@ -108,7 +95,6 @@ impl SceneCue {
     }
 
     /// Display label, falling back to preset name.
-    #[allow(dead_code)]
     pub fn display_name(&self) -> &str {
         self.label
             .as_deref()
@@ -140,7 +126,6 @@ fn default_version() -> u32 {
 }
 
 impl SceneSet {
-    #[allow(dead_code)]
     pub fn new(name: &str) -> Self {
         Self {
             version: 1,

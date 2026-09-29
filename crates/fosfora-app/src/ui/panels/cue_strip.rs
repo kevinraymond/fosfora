@@ -868,11 +868,7 @@ fn edit_row(ui: &mut Ui, info: &SceneInfo, tl: &TimelineInfo) {
         ui.separator();
 
         ui.label(RichText::new("In").size(13.0).color(tc.text_secondary));
-        for t in [
-            TransitionType::Cut,
-            TransitionType::Dissolve,
-            TransitionType::ParamMorph,
-        ] {
+        for &t in TransitionType::ALL {
             if ui
                 .selectable_label(
                     cue.transition == t,
