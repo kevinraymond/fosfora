@@ -1659,9 +1659,17 @@ impl ApplicationHandler for FosforaApp {
                         ctx.data_mut(|d| d.remove_temp(egui::Id::new(SET_UI_SCALE)));
                     let zoom = ctx.zoom_factor();
                     let want = clamp_scale(asked.unwrap_or(zoom));
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if want != zoom {
                         ctx.set_zoom_factor(want);
                     }
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if want != app.settings.ui_scale {
                         app.settings.ui_scale = want;
                         app.settings.save();

@@ -109,6 +109,7 @@ fn link_block(ui: &mut Ui, i: &crate::ui::panels::link_panel::LinkInfo) {
             );
             kit::row(ui, "Bar length", |ui| {
                 const Q: [f64; 7] = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 16.0];
+                #[expect(clippy::float_cmp, reason = "q is one of Q, all whole numbers")]
                 let beats = |q: f64| {
                     if q == 1.0 {
                         "1 beat".to_string()
@@ -117,6 +118,7 @@ fn link_block(ui: &mut Ui, i: &crate::ui::panels::link_panel::LinkInfo) {
                     }
                 };
                 let names: Vec<String> = Q.iter().map(|q| beats(*q)).collect();
+                #[expect(clippy::float_cmp, reason = "only an exact match selects a menu entry")]
                 let at = Q.iter().position(|q| *q == i.quantum);
                 if let Some(k) = kit::pick(ui, "v2_link_q", 140.0, &beats(i.quantum), &names, at) {
                     kit::send(ui, "link_set_quantum", Q[k]);

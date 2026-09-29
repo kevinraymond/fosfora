@@ -206,6 +206,10 @@ pub fn draw_inspector(
                     if reset {
                         val = *default;
                     }
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if val != current {
                         values.insert(name.clone(), ParamValue::Float(val));
                         *changed = true;
@@ -303,6 +307,10 @@ pub fn draw_inspector(
                             val[axis] = default[axis];
                         }
                     }
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "change detection: any edit, however small, is stored"
+                    )]
                     if val != current {
                         values.insert(name.clone(), ParamValue::Point2D(val));
                         *changed = true;

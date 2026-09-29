@@ -955,6 +955,7 @@ pub fn frame_gain(gain60: f32, keep60: f32, delta_time: f32) -> f32 {
     let n = (delta_time * 60.0).clamp(1e-4, 2.0);
     // Bit-exact passthrough at 60 fps: f32 (1/60)*60 == 1.0 exactly, so the
     // shipped look is untouched on the hardware every effect was authored on.
+    #[expect(clippy::float_cmp, reason = "bit-exact 60 fps passthrough, see above")]
     if n == 1.0 {
         return gain60;
     }

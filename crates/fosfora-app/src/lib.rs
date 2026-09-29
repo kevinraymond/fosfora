@@ -12,6 +12,9 @@
     clippy::implicit_hasher,
     clippy::len_without_is_empty
 )]
+// Tests assert exact floats on purpose: the code under test is deterministic, and an
+// epsilon would hide the bit-level regressions they exist to catch.
+#![cfg_attr(test, allow(clippy::float_cmp))]
 
 #[cfg(feature = "analyze")]
 pub mod analyze;

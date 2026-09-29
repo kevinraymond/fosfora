@@ -108,6 +108,10 @@ impl TempoPreset {
     /// The preset matching this config exactly, or `None` when the user has hand-tuned
     /// the sliders. Keeps the config the single source of truth — no preset field to
     /// drift out of sync with the values it names.
+    #[expect(
+        clippy::float_cmp,
+        reason = "presets write their values verbatim; any other value is hand-tuned"
+    )]
     pub fn from_config(cfg: &TempoConfig) -> Option<TempoPreset> {
         Self::ALL.iter().copied().find(|p| {
             let (c, s) = p.values();
@@ -641,7 +645,7 @@ const LOCK_INNOVATION_R_MULT: f64 = 6.0;
 /// escape for a set that truly changes level.
 const ANCHOR_EARN_SECS: f64 = 8.0;
 const RELATED_TOL_LOG2: f64 = 0.08;
-/// log2 of {2, ½, 3/2, ⅔, 4/3, ¾}.
+/// log2 of {2, ½, 3/2, ⅔, 4/3, ¾}. The two octaves come first (see [`is_octave_level`]).
 const RELATED_RATIOS_LOG2: [f64; 6] = [
     1.0,
     -1.0,
@@ -650,6 +654,12 @@ const RELATED_RATIOS_LOG2: [f64; 6] = [
     0.415_037_499_278_844,
     -0.415_037_499_278_844,
 ];
+
+/// Is `level` (an index into [`RELATED_RATIOS_LOG2`]) one of the octaves, ×2 or ×½?
+fn is_octave_level(level: usize) -> bool {
+    level < 2
+}
+
 const CHALLENGE_TAU_SECS: f64 = 3.0;
 const DISPLACE_CHALLENGE: f64 = 0.7;
 const DISPLACE_SPAN_SECS: f64 = 10.0;
@@ -781,10 +791,11 @@ struct TempoEstimator {
     /// Q2b: hop stamp of the false→true lock transition (anchor-earn clock).
     locked_since: Option<u32>,
     /// Q2b: EMA of confident winners at the one related level in
-    /// `challenge_ratio`; switching levels restarts it.
+    /// `challenge_level`; switching levels restarts it.
     challenge: f64,
-    /// Q2b: log2 ratio (vs anchor) of the level currently challenging.
-    challenge_ratio: f64,
+    /// Q2b: the level currently challenging, as an index into
+    /// [`RELATED_RATIOS_LOG2`]; `None` until one has.
+    challenge_level: Option<usize>,
     /// Q2b: hop stamp when `challenge` first cleared [`DISPLACE_CHALLENGE`].
     challenge_above_since: Option<u32>,
     /// Q2b (F3): last tempo published while locked — held on the wire through
@@ -828,7 +839,7 @@ impl TempoEstimator {
             anchor_born_at: None,
             locked_since: None,
             challenge: 0.0,
-            challenge_ratio: 0.0,
+            challenge_level: None,
             challenge_above_since: None,
             last_locked_bpm: 0.0,
         }
@@ -1015,12 +1026,11 @@ impl TempoEstimator {
                 let d = raw_bpm.log2() - anchor;
                 if d.abs() <= RELATED_TOL_LOG2 {
                     self.challenge += alpha * (0.0 - self.challenge);
-                } else if let Some(r) = RELATED_RATIOS_LOG2
+                } else if let Some(level) = RELATED_RATIOS_LOG2
                     .iter()
-                    .copied()
-                    .find(|r| (d - r).abs() <= RELATED_TOL_LOG2)
+                    .position(|r| (d - r).abs() <= RELATED_TOL_LOG2)
                 {
-                    measurement_bpm = 2.0f64.powf(raw_bpm.log2() - r);
+                    measurement_bpm = 2.0f64.powf(raw_bpm.log2() - RELATED_RATIOS_LOG2[level]);
                     // Displacement evidence accumulates ONLY during probation.
                     // Post-probation the level is settled for the track's
                     // lifetime — owner-ruled after live run 3 (2026-08-08):
@@ -1042,10 +1052,10 @@ impl TempoEstimator {
                     // displacement exists to fix the unrecoverable class —
                     // wrong NON-octave anchors; an octave-wrong young anchor
                     // is benign (beats nest) and the override corrects it.
-                    if in_probation && r.abs() != 1.0 {
-                        if r != self.challenge_ratio {
+                    if in_probation && !is_octave_level(level) {
+                        if self.challenge_level != Some(level) {
                             self.challenge = 0.0;
-                            self.challenge_ratio = r;
+                            self.challenge_level = Some(level);
                             self.challenge_above_since = None;
                         }
                         self.challenge += alpha * (1.0 - self.challenge);
@@ -1085,16 +1095,20 @@ impl TempoEstimator {
         if self.anchor_log2.is_some() {
             if self.challenge > DISPLACE_CHALLENGE {
                 let since = *self.challenge_above_since.get_or_insert(self.frame_count);
+                // `challenge` only rises once a level is set, so `level` is
+                // always present here.
                 if f64::from(self.frame_count.wrapping_sub(since)) * self.frame_time
                     >= DISPLACE_SPAN_SECS
                     && filtered_bpm > 0.0
+                    && let Some(level) = self.challenge_level
                 {
                     // Displace from the ANCHOR, not the filter state — the
                     // anchor is the slow consensus; the filter can be dragged
                     // a few percent by transition mush, and the challenger's
                     // claim is "the true level is anchor × 2^r".
                     let new_bpm = 2.0f64.powf(
-                        self.anchor_log2.unwrap_or(filtered_bpm.log2()) + self.challenge_ratio,
+                        self.anchor_log2.unwrap_or(filtered_bpm.log2())
+                            + RELATED_RATIOS_LOG2[level],
                     );
                     log::info!(
                         "Tempo anchor displaced: {:.1} -> {:.1} BPM after sustained challenge",
@@ -1514,8 +1528,9 @@ struct BeatScheduler {
     period: f64,
     tempo_confidence: f64,
 
-    /// The next grid instant on the sample clock; 0.0 = no grid anchored.
-    next_beat_time: f64,
+    /// The next grid instant on the sample clock; `None` until the first onset
+    /// anchors a grid, and again after silence drops it.
+    next_beat_time: Option<f64>,
     /// Multiplicative grid-rate trim from the PI loop, clamped ±[`PLL_TRIM_CLAMP`].
     period_trim: f64,
     /// Time of the most recently fired (or silently passed) grid beat.
@@ -1548,7 +1563,7 @@ impl BeatScheduler {
             bpm: 0.0,
             period: 0.0,
             tempo_confidence: 0.0,
-            next_beat_time: 0.0,
+            next_beat_time: None,
             period_trim: 0.0,
             last_beat_time: 0.0,
             last_fired_time: 0.0,
@@ -1574,8 +1589,8 @@ impl BeatScheduler {
     }
 
     /// Two-gain PI step: e > 0 means the music runs late vs the grid.
-    fn apply_phase_correction(&mut self, e: f64, period: f64) {
-        self.next_beat_time += PLL_PHASE_GAIN * e;
+    fn apply_phase_correction(&mut self, next_beat_time: &mut f64, e: f64, period: f64) {
+        *next_beat_time += PLL_PHASE_GAIN * e;
         self.period_trim =
             (self.period_trim + PLL_TRIM_GAIN * e / period).clamp(-PLL_TRIM_CLAMP, PLL_TRIM_CLAMP);
     }
@@ -1596,7 +1611,7 @@ impl BeatScheduler {
         // Sustained silence: mute and drop the grid — re-entry re-acquires
         // fresh instead of trusting a phase that free-ran through the gap.
         if is_silence {
-            self.next_beat_time = 0.0;
+            self.next_beat_time = None;
             self.period_trim = 0.0;
             self.beat_support = 0.0;
             self.muted = false;
@@ -1613,19 +1628,46 @@ impl BeatScheduler {
 
         // No grid anchored yet: anchor on the first gated onset. Locked or
         // not, the first beat needs an event to phase against.
-        if self.next_beat_time == 0.0 {
+        let Some(mut next_beat_time) = self.next_beat_time.take() else {
             if is_onset {
-                self.beat_strength = f64::from(onset_strength);
-                self.last_beat_time = timestamp;
-                self.last_fired_time = timestamp;
-                self.next_beat_time = timestamp + period;
-                self.onset_support_pending = false;
-                self.grid_beat_count += 1;
+                self.next_beat_time = Some(self.anchor(onset_strength, timestamp, period));
                 return (true, timestamp, 0.0, self.bpm);
             }
             return (false, 0.0, 0.0, self.bpm);
-        }
+        };
+        let out = self.process_anchored(
+            &mut next_beat_time,
+            is_onset,
+            onset_strength,
+            timestamp,
+            period,
+        );
+        self.next_beat_time = Some(next_beat_time);
+        out
+    }
 
+    /// Start a fresh grid on this onset, which fires as its first beat.
+    /// Returns the new grid's next instant.
+    fn anchor(&mut self, onset_strength: f32, timestamp: f64, period: f64) -> f64 {
+        self.beat_strength = f64::from(onset_strength);
+        self.last_beat_time = timestamp;
+        self.last_fired_time = timestamp;
+        self.onset_support_pending = false;
+        self.grid_beat_count += 1;
+        timestamp + period
+    }
+
+    /// [`Self::process`] once a grid exists. `next_beat_time` is the anchored
+    /// grid instant, taken out of `self` for the duration and written back by
+    /// the caller.
+    fn process_anchored(
+        &mut self,
+        next_beat_time: &mut f64,
+        is_onset: bool,
+        onset_strength: f32,
+        timestamp: f64,
+        period: f64,
+    ) -> (bool, f64, f64, f64) {
         // Onset evidence: measure against the NEAREST grid instant (the
         // upcoming one or the one just passed) and BID to correct that slot.
         // One correction per slot, decided at the slot's deadline by the best
@@ -1637,14 +1679,11 @@ impl BeatScheduler {
         // see the true beat at all. SUPPORT (mute hysteresis) stays tight:
         // only onsets inside the ±window count as "this beat had backing".
         if is_onset && onset_strength >= PLL_MIN_BID_STRENGTH {
-            let prev = self.next_beat_time - period;
-            let e_next = timestamp - self.next_beat_time;
+            let prev = *next_beat_time - period;
+            let e_next = timestamp - *next_beat_time;
             let e_prev = timestamp - prev;
-            let e = if e_prev.abs() < e_next.abs() {
-                e_prev
-            } else {
-                e_next
-            };
+            let nearest_is_next = e_next.abs() <= e_prev.abs();
+            let e = if nearest_is_next { e_next } else { e_prev };
             let capture = period * PLL_CAPTURE_PERIOD_FRAC;
             if e.abs() <= capture {
                 if e.abs() <= self.window() {
@@ -1653,12 +1692,12 @@ impl BeatScheduler {
                 }
                 let prox = (-0.5 * (e / PLL_BID_PROXIMITY_SIGMA_SECS).powi(2)).exp();
                 let score = f64::from(onset_strength).sqrt() * prox;
-                if e == e_next && e < 0.0 {
+                if nearest_is_next && e < 0.0 {
                     // Early side of the upcoming instant: hold until its fire.
                     if self.slot_early_best.is_none_or(|(b, _)| score > b) {
                         self.slot_early_best = Some((score, e));
                     }
-                } else if e == e_prev && e >= 0.0 {
+                } else if !nearest_is_next && e >= 0.0 {
                     // Late side of the just-fired slot: bid into its window.
                     if let Some((_, best)) = &mut self.closing_slot {
                         if best.is_none_or(|(b, _)| score > b) {
@@ -1678,21 +1717,21 @@ impl BeatScheduler {
             if let Some((deadline, best)) = self.closing_slot {
                 if timestamp > deadline {
                     if let Some((_, e)) = best {
-                        self.apply_phase_correction(e, period);
+                        self.apply_phase_correction(next_beat_time, e, period);
                     }
                     self.closing_slot = None;
                 }
             }
             // Grid instants due this hop fire (or pass silently while muted).
-            if self.next_beat_time <= timestamp {
+            if *next_beat_time <= timestamp {
                 // Degenerate transitional slot: around a mode flip, a pending
                 // negative correction can leave the next grid instant at or
                 // before the beat just emitted (measured once in 374 tracks:
                 // a −1.6 ms inversion after an acquisition fire). That instant
                 // IS the beat already fired — advance past it silently so
                 // /beat stays strictly monotonic.
-                if self.next_beat_time <= self.last_fired_time + 0.3 * period {
-                    self.next_beat_time += period;
+                if *next_beat_time <= self.last_fired_time + 0.3 * period {
+                    *next_beat_time += period;
                     let phase = ((timestamp - self.last_beat_time) / period).rem_euclid(1.0);
                     return (false, 0.0, phase, self.bpm);
                 }
@@ -1711,10 +1750,10 @@ impl BeatScheduler {
                 // unresolved slot is settled first — periods are ≫ windows, so
                 // it has necessarily expired by now.)
                 if let Some((_, Some((_, e)))) = self.closing_slot.take() {
-                    self.apply_phase_correction(e, period);
+                    self.apply_phase_correction(next_beat_time, e, period);
                 }
                 self.closing_slot = Some((
-                    self.next_beat_time + period * PLL_CAPTURE_PERIOD_FRAC,
+                    *next_beat_time + period * PLL_CAPTURE_PERIOD_FRAC,
                     self.slot_early_best.take(),
                 ));
                 if self.muted {
@@ -1725,9 +1764,9 @@ impl BeatScheduler {
                     self.muted = true;
                 }
 
-                beat_time = self.next_beat_time;
-                self.last_beat_time = self.next_beat_time;
-                self.next_beat_time += period;
+                beat_time = *next_beat_time;
+                self.last_beat_time = *next_beat_time;
+                *next_beat_time += period;
                 self.grid_beat_count += 1;
                 if !supported {
                     self.beat_strength = 0.5;
@@ -1751,8 +1790,8 @@ impl BeatScheduler {
                 self.last_beat_time = timestamp;
                 self.grid_beat_count += 1;
                 // Fold the grid onto this fire so phase reads from it.
-                while self.next_beat_time <= timestamp {
-                    self.next_beat_time += period;
+                while *next_beat_time <= timestamp {
+                    *next_beat_time += period;
                 }
             } else if is_onset
                 && !self.onset_support_pending
@@ -1761,19 +1800,14 @@ impl BeatScheduler {
                 // Stale anchor: nothing has agreed for several periods —
                 // re-anchor on this onset rather than let a dead grid veto
                 // every candidate forever.
-                self.beat_strength = f64::from(onset_strength);
-                self.last_beat_time = timestamp;
-                self.last_fired_time = timestamp;
-                self.next_beat_time = timestamp + period;
-                self.onset_support_pending = false;
-                self.grid_beat_count += 1;
+                *next_beat_time = self.anchor(onset_strength, timestamp, period);
                 return (true, timestamp, 0.0, self.bpm);
             }
             // Advance the provisional grid past due instants (no emission —
             // unsupported unlocked beats are exactly the old over-firing).
-            while self.next_beat_time <= timestamp {
-                self.last_beat_time = self.next_beat_time;
-                self.next_beat_time += period;
+            while *next_beat_time <= timestamp {
+                self.last_beat_time = *next_beat_time;
+                *next_beat_time += period;
                 self.onset_support_pending = false;
                 self.grid_beat_count += 1;
             }

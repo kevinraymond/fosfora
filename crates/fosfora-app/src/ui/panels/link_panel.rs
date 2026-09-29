@@ -63,6 +63,10 @@ pub fn draw_link_panel(ui: &mut Ui, info: &LinkInfo) {
             .width(130.0)
             .show_ui(ui, |ui| {
                 for &q in &QUANTUM_CHOICES {
+                    #[expect(
+                        clippy::float_cmp,
+                        reason = "only an exact match selects a menu entry"
+                    )]
                     if ui
                         .selectable_label(info.quantum == q, format!("{q} beats"))
                         .clicked()
