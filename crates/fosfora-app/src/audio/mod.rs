@@ -539,7 +539,7 @@ impl AudioSystem {
                     cached_devices: Arc::new(Mutex::new(Vec::new())),
                     scan_in_flight: Arc::new(AtomicBool::new(false)),
                     last_scan: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     recording_rate,
@@ -570,7 +570,7 @@ impl AudioSystem {
                     // rather than waiting out an interval first.
                     #[cfg(target_os = "linux")]
                     last_sink_poll: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                 }
             }
@@ -602,7 +602,7 @@ impl AudioSystem {
                     cached_devices: Arc::new(Mutex::new(Vec::new())),
                     scan_in_flight: Arc::new(AtomicBool::new(false)),
                     last_scan: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
                     recording_rate: recording_rate.unwrap_or(44100),
@@ -631,7 +631,7 @@ impl AudioSystem {
                     sink_poll_in_flight: Arc::new(AtomicBool::new(false)),
                     #[cfg(target_os = "linux")]
                     last_sink_poll: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                 }
             }

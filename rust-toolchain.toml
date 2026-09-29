@@ -2,7 +2,8 @@
 # `-D warnings` gate in CI breaks the build whenever a new release adds a lint,
 # with no code change — e.g. 1.97 activated `float_literal_f32_fallback`. Bump this
 # deliberately (and clear any new lints in the same change). CI's
-# dtolnay/rust-toolchain action is pinned to the same version.
+# dtolnay/rust-toolchain action is pinned to the same version, and
+# crates/fosfora-app/Cargo.toml's `rust-version` matches it.
 [toolchain]
 channel = "1.97.0"
 components = ["rustfmt", "clippy"]

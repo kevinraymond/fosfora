@@ -2,7 +2,9 @@
 name = "fosfora-app"
 version = "2.0.0"
 edition = "2024"
-rust-version = "1.90"
+# The pinned toolchain in rust-toolchain.toml, the only compiler anything checks.
+# `publish = false`, so no downstream resolver reads this; bump the two together.
+rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 description = "Real-time audio-reactive particle and shader engine for live performance"
 repository = "https://github.com/kevinraymond/fosfora"
