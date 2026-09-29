@@ -81,6 +81,8 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 - **The spectrum and spectrogram textures read 6 dB low**, as did the fixed-range dB bands; a
   full-scale tone now reads 0 dB, so they sit slightly brighter. Beat and onset detection
   are unchanged.
+- **Windows loopback capture was silent on 32-bit integer devices**, paused the beat clock
+  through silent stretches, and leaked memory on every reconnect. All three are fixed.
 
 ## v2.0.0 — 2026-09-27
 

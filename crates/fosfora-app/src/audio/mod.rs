@@ -11,6 +11,8 @@ pub mod key;
 pub mod key_sidecar;
 pub mod loudness;
 pub mod normalizer;
+#[cfg(any(target_os = "windows", test))]
+pub mod pcm;
 pub mod pitch;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
