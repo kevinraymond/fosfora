@@ -1,11 +1,11 @@
-//! Bounded inbound control queues that keep the newest message.
+//! Bounded inbound queues that keep the newest message.
 //!
-//! OSC, the web remote and MIDI feed the render thread through bounded queues.
-//! A plain `try_send` on a full queue drops the message being sent, and during a
-//! render stall (a shader compiling on effect load) that is the end of a fader
-//! drag: the parameter stays at whatever intermediate value got through (#103).
-//! A full queue here drops its oldest message instead, so the last value a
-//! controller sent always arrives.
+//! OSC, the web remote, MIDI and the audio analysis thread feed the render thread
+//! through bounded queues. A plain `try_send` on a full queue drops the message
+//! being sent, and during a render stall (a shader compiling on effect load) that
+//! is the end of a fader drag: the parameter stays at whatever intermediate value
+//! got through (#103), and the audio features lag behind the music (#59). A full
+//! queue here drops its oldest message instead, so the newest always arrives.
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
