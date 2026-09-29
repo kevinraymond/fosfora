@@ -36,18 +36,22 @@
 //! assignment.
 //!
 //! **The cloud toggle** (step 2c, [`Cloud`]): the hand menu's Cloud row.
-//! Off, the world effect's emission goes to 0 through the density path,
-//! the density kept so on restores it; off while Edit room is on, the
-//! pointed surface is soloed: emission stays at the density, but every
-//! other box's lane row goes to the sim as `none` ([`solo`]), so only the
-//! hit spawns, at the full rate (step 2d), and the wearer sees its embers,
-//! its sparks or nothing, alone. The particle system offers no way to clear the living cloud
-//! without a core change, so turning the cloud off, or moving the solo to
-//! another surface, leaves what is alive to die over its lifetime (12 s
-//! for Flux XR Room). Kevin, worn, Sep 29: "Half the time I don't even
-//! know what's happening because the giant particle cloud is everywhere";
-//! with every table shedding into 400K living sprites, one table's change
-//! was lost in the mass.
+//! Off, the world effect is hidden at once, whatever the effect
+//! ([`Cloud::visible`], step 2e): the eye pass skips its draw while its
+//! sim steps on, so on shows the room as it would have been. (Step 2c
+//! took the emission to 0 instead, and the living sprites drew on until
+//! they died.) Off while Edit room is on, the pointed surface is soloed: the effect
+//! shows, but every other box's lane row goes to the sim as `none`
+//! ([`solo`]), so only the hit spawns, at the full rate (step 2d), and the
+//! wearer sees its embers, its sparks or nothing, alone. The particle
+//! system offers no way to clear the living cloud without a core change,
+//! so moving the solo to another surface, or into it from on, leaves what
+//! is alive to die over its lifetime (12 s for Flux XR Room). Kevin,
+//! worn, Sep 29: "Half the time I don't even know what's happening
+//! because the giant particle cloud is everywhere"; with every table
+//! shedding into 400K living sprites, one table's change was lost in the
+//! mass. And, after 2d: "The whole entire scene, clouds, glow, flock,
+//! whatever persist no matter what I'm trying."
 
 use glam::Vec3;
 
@@ -284,12 +288,13 @@ impl RoomEditor {
 /// Cloud toggle and Edit room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cloud {
-    /// Emission at the density, the lane rows as the lanes give them.
+    /// Shown, the lane rows as the lanes give them.
     On,
-    /// Emission 0, the density kept.
+    /// Hidden: the sim steps on as it would with the cloud on, the eye
+    /// pass skips its draw.
     Off,
-    /// Edit room with the cloud off: emission at the density, only box
-    /// `k` (the editor's hit) spawning; with no hit nothing spawns.
+    /// Edit room with the cloud off: shown, only box `k` (the editor's
+    /// hit) spawning; with no hit nothing spawns.
     Solo(Option<usize>),
 }
 
@@ -304,13 +309,12 @@ impl Cloud {
         }
     }
 
-    /// The world effect's emission against its preset's, for the cloud
-    /// density `density`: 0 off, else the density.
-    pub fn emission(self, density: f32) -> f32 {
-        match self {
-            Self::Off => 0.0,
-            Self::On | Self::Solo(_) => density,
-        }
+    /// Whether the eye pass draws the world effect (`Gfx::set_world_visible`):
+    /// not while off. The emission and the lane rows do not hide it, so
+    /// the effects that ignore the lanes (Flux XR World, Coarse, Murmur)
+    /// hide as well, and what is alive goes at once.
+    pub fn visible(self) -> bool {
+        !matches!(self, Self::Off)
     }
 
     /// The lane rows to upload for the lanes' `rows`: soloed
@@ -328,7 +332,7 @@ impl Cloud {
     pub fn describe(self, name: impl FnOnce(usize) -> String) -> String {
         match self {
             Self::On => "cloud on".to_owned(),
-            Self::Off => "cloud off: emission 0, the cloud fades over the lifetime".to_owned(),
+            Self::Off => "cloud off: the world effect is hidden".to_owned(),
             Self::Solo(Some(k)) => format!("cloud off, edit room: solo {}", name(k)),
             Self::Solo(None) => {
                 "cloud off, edit room: solo, no surface (nothing spawns)".to_owned()
@@ -371,13 +375,6 @@ pub fn solo(
         }
     }
     out
-}
-
-/// The emission to apply for `cloud` at `density` when it differs from
-/// the one `applied` last (the app's density path): `None` while it holds.
-pub fn emission_change(applied: f32, cloud: Cloud, density: f32) -> Option<f32> {
-    let want = cloud.emission(density);
-    ((applied - want).abs() > 1e-4).then_some(want)
 }
 
 /// The cloud toggle at launch from the `debug.fosfora.cloud` knob's
@@ -721,7 +718,7 @@ mod tests {
         assert_eq!(Cloud::On.describe(name), "cloud on");
         assert_eq!(
             Cloud::Off.describe(name),
-            "cloud off: emission 0, the cloud fades over the lifetime"
+            "cloud off: the world effect is hidden"
         );
         assert_eq!(
             Cloud::Solo(Some(2)).describe(name),
@@ -734,32 +731,22 @@ mod tests {
     }
 
     #[test]
-    fn cloud_off_keeps_the_density_and_on_restores_it() {
-        // The app's density path: the emission applied, changed only when
-        // the cloud or the density asks for another.
-        let mut density = 0.4;
-        let mut applied = 1.0;
-        let mut run = |cloud: Cloud, density: f32| {
-            if let Some(e) = emission_change(applied, cloud, density) {
-                applied = e;
-            }
-            applied
-        };
-        assert_close!(run(Cloud::On, density), 0.4);
-        assert_close!(run(Cloud::Off, density), 0.0);
-        // The stepper moves while off: the density changes, the emission
-        // stays 0.
-        density = 0.65;
-        assert_close!(run(Cloud::Off, density), 0.0);
-        // Solo runs at the density; off again, 0; on, the new density.
-        assert_close!(run(Cloud::Solo(Some(1)), density), 0.65);
-        assert_close!(run(Cloud::Solo(None), density), 0.65);
-        assert_close!(run(Cloud::Off, density), 0.0);
-        assert_close!(run(Cloud::On, density), 0.65);
-        // Nothing to apply while it holds.
-        assert_eq!(emission_change(0.65, Cloud::On, 0.65), None);
-        assert_eq!(emission_change(0.0, Cloud::Off, 0.65), None);
-        assert_eq!(emission_change(0.65, Cloud::Off, 0.65), Some(0.0));
+    fn cloud_off_hides_the_world_effect_and_changes_nothing_it_runs() {
+        assert!(Cloud::On.visible());
+        assert!(!Cloud::Off.visible());
+        assert!(Cloud::Solo(Some(1)).visible());
+        assert!(Cloud::Solo(None).visible());
+        assert!(Cloud::of(true, true, None).visible());
+        assert!(!Cloud::of(false, false, Some(2)).visible());
+        // What the sim is fed while off is what it is fed while on: the
+        // lanes' rows as they are, and the emission at the density, which
+        // the density path takes from the density alone (step 2c went to
+        // 0 here, and the sprites alive then drew on until they died).
+        let mut rows = [[0.0; 4]; SURFACE_LANE_ROWS];
+        rows[0] = lane_row(SurfaceBehavior::Embers, 1.0, [0.0; 2]);
+        rows[1] = lane_row(SurfaceBehavior::Sparks, 0.5, [0.0; 2]);
+        assert_close!(Cloud::Off.rows(&rows)[..], Cloud::On.rows(&rows)[..]);
+        assert_close!(Cloud::Off.rows(&rows)[..], rows[..]);
     }
 
     #[test]

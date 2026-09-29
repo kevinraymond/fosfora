@@ -101,8 +101,8 @@ pub struct Controls {
     /// off at launch).
     pub edit_room: bool,
     /// The world effect's cloud is on (the hand menu's Cloud toggle; not
-    /// saved, on at launch): off, its emission goes to 0 with `density`
-    /// kept, or with `edit_room` on only the pointed surface spawns
+    /// saved, on at launch): off, the effect is hidden, its sim stepping
+    /// on, or with `edit_room` on only the pointed surface spawns
     /// (`room_edit::Cloud`).
     pub cloud: bool,
 }

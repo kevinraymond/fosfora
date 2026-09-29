@@ -92,6 +92,9 @@ pub struct Gfx {
     highlight: QuadBinding,
     highlight_visible: std::cell::Cell<bool>,
     highlight_pipeline: wgpu::RenderPipeline,
+    /// Whether the eye pass draws the world effect (`set_world_visible`;
+    /// the hand menu's Cloud row, board #3326).
+    world_visible: std::cell::Cell<bool>,
     /// Small sprites marking the virtual (reach-extended) hand joints.
     ghost: QuadBinding,
     ghost_count: std::cell::Cell<u32>,
@@ -445,6 +448,7 @@ impl Gfx {
             canvas_pipeline,
             highlight,
             highlight_visible: std::cell::Cell::new(false),
+            world_visible: std::cell::Cell::new(true),
             highlight_pipeline,
             ghost,
             ghost_count: std::cell::Cell::new(0),
@@ -659,6 +663,18 @@ impl Gfx {
                 .write_buffer(&self.highlight.uniform, 0, bytemuck::cast_slice(rows));
         }
         self.highlight_visible.set(rows.is_some());
+    }
+
+    /// Whether the eye pass draws the world effect from this frame on
+    /// (`room_edit::Cloud::visible`; on at start). Hidden, `render` skips
+    /// its `prepare_world` and `draw_world` for every eye, but still
+    /// dispatches its sim, so showing it again is instant and the cloud
+    /// is as it would have been. Everything else still draws: the depth
+    /// occluders, the ripple, the canvas, the highlight, the beams, the
+    /// panel and the label. The pitcher's pour and the throw's bursts are
+    /// particles of the world effect, so they hide with it.
+    pub fn set_world_visible(&self, visible: bool) {
+        self.world_visible.set(visible);
     }
 
     /// The ghost sprites for this frame: xyz and radius per point (at most
@@ -891,8 +907,10 @@ impl Gfx {
         for (i, ((eye, target), cam)) in self.eyes.iter().zip(targets).zip(cameras).enumerate() {
             let depth = self.depth.get(i);
             // Pipeline and camera slot before the pass; the draw goes inside it.
+            // Neither while the world effect is hidden (`set_world_visible`).
             let world_draw = scene
                 .as_deref_mut()
+                .filter(|_| self.world_visible.get())
                 .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr-eye"),
