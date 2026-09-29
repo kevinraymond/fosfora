@@ -11,7 +11,10 @@
 //! **The look.** White text on a dark rounded ground at alpha
 //! [`GROUND_ALPHA`], egui's default fonts as on the panel: text on a
 //! ground, never hue alone, so it reads with one eye against any wall.
-//! The texture is [`LABEL_TEX`], shown [`LABEL_W_M`] wide at its aspect;
+//! The texture is [`LABEL_TEX`], shown at its aspect [`label_w_m`] wide
+//! for its distance from the head, so it keeps about the same angular size
+//! from the chair to the far wall (step 2c: a fixed 0.28 m label was a few
+//! dozen eye pixels at 3 m, "just a blob of pixels", Kevin, worn, Sep 29);
 //! it holds for [`LABEL_S`] and fades out over the last [`FADE_S`] (the
 //! fade scales the ground and the text alike).
 //!
@@ -27,10 +30,15 @@ use crate::surfaces::SurfaceBehavior;
 /// How long a label shows (s), and the fade at its end (s).
 pub const LABEL_S: f32 = 1.5;
 pub const FADE_S: f32 = 0.4;
-/// The label's texture, width x height (px).
-pub const LABEL_TEX: [u32; 2] = [512, 96];
-/// The label's width in the room (m); its height by the texture's aspect.
-pub const LABEL_W_M: f32 = 0.28;
+/// The label's texture, width x height (px): large enough that the text
+/// is sharp up close, where the label is its narrowest.
+pub const LABEL_TEX: [u32; 2] = [1024, 192];
+/// The label's width in the room per meter from the head (m/m, about 6.3
+/// degrees across), and its narrowest and widest (m); its height by the
+/// texture's aspect.
+pub const LABEL_W_PER_M: f32 = 0.11;
+pub const LABEL_W_MIN_M: f32 = 0.28;
+pub const LABEL_W_MAX_M: f32 = 1.4;
 /// The label's center off the hit: out along the face normal and up (m).
 pub const OUT_M: f32 = 0.08;
 pub const UP_M: f32 = 0.06;
@@ -70,6 +78,14 @@ pub fn kind_plural(kind: u32) -> String {
     }
 }
 
+/// The label's width in the room (m) at `distance_m` from the head:
+/// [`LABEL_W_PER_M`] per meter, no narrower than [`LABEL_W_MIN_M`] (the
+/// step 2b label, from arm's length to 2.5 m) and no wider than
+/// [`LABEL_W_MAX_M`] (from 12.7 m, past the editor's 8 m cast).
+pub fn label_w_m(distance_m: f32) -> f32 {
+    (LABEL_W_PER_M * distance_m).clamp(LABEL_W_MIN_M, LABEL_W_MAX_M)
+}
+
 /// The label's alpha at `age` seconds: 1 until the fade, then linearly to
 /// 0 at [`LABEL_S`].
 pub fn fade(age: f32) -> f32 {
@@ -88,7 +104,8 @@ pub struct Billboard {
 }
 
 /// The label's pose for a hit at `point` on a face with outward `normal`,
-/// seen from `head` turned by `head_rot`.
+/// seen from `head` turned by `head_rot`, [`label_w_m`] wide for its
+/// center's distance from the head.
 pub fn billboard(point: Vec3, normal: Vec3, head: Vec3, head_rot: Quat) -> Billboard {
     let center = point + normal.normalize_or_zero() * OUT_M + Vec3::Y * UP_M;
     let view = (center - head).normalize_or(head_rot * Vec3::NEG_Z);
@@ -103,7 +120,7 @@ pub fn billboard(point: Vec3, normal: Vec3, head: Vec3, head_rot: Quat) -> Billb
         Vec3::Y.cross(-view).normalize_or(Vec3::X)
     };
     let up = right.cross(view);
-    let half_w = LABEL_W_M * 0.5;
+    let half_w = label_w_m(center.distance(head)) * 0.5;
     Billboard {
         center,
         right,
@@ -174,10 +191,12 @@ mod render {
 
     /// The text's largest size and the margin it keeps from the ground's
     /// ends (px); a longer text shrinks to fit, down to [`MIN_FONT_PX`].
-    const FONT_PX: f32 = 44.0;
-    const MIN_FONT_PX: f32 = 20.0;
-    const MARGIN_PX: f32 = 24.0;
-    const CORNER_PX: u8 = 22;
+    const FONT_PX: f32 = 88.0;
+    const MIN_FONT_PX: f32 = 40.0;
+    const MARGIN_PX: f32 = 48.0;
+    const CORNER_PX: u8 = 44;
+    /// The ground's inset from the texture's edge (px).
+    const INSET_PX: f32 = 4.0;
 
     /// The label's texture and its egui renderer (`Hud::new`'s pattern: a
     /// context and a renderer of its own), redrawn only while a label
@@ -267,7 +286,7 @@ mod render {
                 .native_pixels_per_point = Some(1.0);
             let output = self.ctx.run(raw, |ctx| {
                 let painter = ctx.layer_painter(egui::LayerId::background());
-                let ground = Rect::from_min_size(Pos2::ZERO, size).shrink(2.0);
+                let ground = Rect::from_min_size(Pos2::ZERO, size).shrink(INSET_PX);
                 painter.rect_filled(
                     ground,
                     CORNER_PX,
@@ -444,8 +463,9 @@ mod tests {
         // and to the side of the view) level and toward +x, the up upward.
         assert!(b.right.y.abs() < 0.01 && b.right.x > 0.9, "{b:?}");
         assert!(b.up.y > 0.9, "{b:?}");
+        // 1.94 m off: the narrowest label.
         assert_close!(b.half_w, 0.14);
-        assert_close!(b.half_h, 0.14 * 96.0 / 512.0);
+        assert_close!(b.half_h, 0.14 * 192.0 / 1024.0);
         // A desk below and to the side, the head turned toward it and
         // rolled: still facing the head, the right following the roll.
         let rot = Quat::from_rotation_y(-0.6) * Quat::from_rotation_z(0.3);
@@ -457,5 +477,38 @@ mod tests {
         let side = billboard(Vec3::new(2.0, 1.14, 0.0), Vec3::NEG_X, head, Quat::IDENTITY);
         assert_orthonormal_and_facing(&side, head);
         assert!(side.right.y.abs() < 1e-5, "{side:?}");
+    }
+
+    #[test]
+    fn the_label_widens_with_distance_between_its_clamps() {
+        // 1 m (arm's length and a little): the step 2b width.
+        assert_close!(label_w_m(1.0), 0.28);
+        // 3 m (a far wall from the chair), 8 m (the cast's range).
+        assert_close!(label_w_m(3.0), 0.33);
+        assert_close!(label_w_m(8.0), 0.88);
+        // The clamp ends: up close and past 12.7 m.
+        assert_close!(label_w_m(0.0), LABEL_W_MIN_M);
+        assert_close!(label_w_m(LABEL_W_MIN_M / LABEL_W_PER_M), LABEL_W_MIN_M);
+        assert_close!(label_w_m(LABEL_W_MAX_M / LABEL_W_PER_M), LABEL_W_MAX_M);
+        assert_close!(label_w_m(40.0), LABEL_W_MAX_M);
+        // Never narrower as the distance grows.
+        let mut last = 0.0;
+        for i in 0..=200 {
+            let w = label_w_m(i as f32 * 0.1);
+            assert!(w >= last, "{i}");
+            last = w;
+        }
+        // The billboard takes it from its center's distance to the head.
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let b = billboard(Vec3::new(0.0, 1.14, -8.08), Vec3::Z, head, Quat::IDENTITY);
+        assert!((b.center.distance(head) - 8.0).abs() < 1e-4, "{b:?}");
+        assert!((b.half_w - 0.44).abs() < 1e-4, "{b:?}");
+        assert!((b.half_h - 0.44 * 192.0 / 1024.0).abs() < 1e-5, "{b:?}");
+    }
+
+    #[test]
+    fn the_texture_is_twice_the_step_2b_one_at_its_aspect() {
+        assert_eq!(LABEL_TEX, [1024, 192]);
+        assert_eq!(LABEL_TEX[0] * 96, LABEL_TEX[1] * 512);
     }
 }
