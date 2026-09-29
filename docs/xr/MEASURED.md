@@ -1747,3 +1747,67 @@ in the per-frame aux upload).
 **Worn gate:** none for this step (step 2's: point at the desk and turn
 its embers off and on, put the spectrum on the side wall, relaunch and
 find the room as left).
+
+## Room preset editor, step 2: point, pick, assign (board #3326)
+
+The second step of option B (`ROOM_DESIGN.md`, "The room preset editor"):
+an **Edit room** mode on the hand menu. With it on, the right far hand's
+ray (the throw's: from the head through the far pinch point, so the reach
+extension puts far walls within pointing range from the chair) casts
+against the room's boxes, the hit face carries a bordered tint, a pinch
+advances that surface's behavior one step through the catalogue (none,
+embers, sparks, spectrum, ripple), a pinch-hold applies it to every
+surface of its kind, and the menu's status cell names the pointed surface
+and its behavior ("desk: embers"). The assignments go through step 1's
+lanes and room file. The right hand's tap, hold and drag belong to the
+editor while the mode is on; the left hand and the panel are unchanged.
+The hit has hysteresis (0.15 s to take a new box, 0.3 s to drop a miss).
+
+```
+adb shell setprop debug.fosfora.editroom 1   # the mode on at launch (the menu's toggle otherwise)
+adb shell setprop debug.fosfora.picktest 3   # diagnostic: the ray 0.5 m ahead of the head, 20 degrees down, a tap every 3 s
+```
+
+**Unworn on the Quest 3** (`3ff2de2`, v207, `mode world`, Flux XR Room
+400K, 72 Hz, the headset on the desk facing the room, Sep 29):
+
+- With the room's 17 anchors, `picktest 3` logged "pointing at storage 9
+  (STORAGE 037a4a92) at (-3.24, 0.21, -1.89)" and then, every 3 s, the
+  cycle in order: embers, sparks, spectrum, ripple, none, embers, ..., each
+  with the lane module's own line and a save of
+  `rooms/a03160e5a4a3b311.json`. A tap with nothing hit logs "tap with no
+  surface under the beam, nothing changed" and touches nothing.
+- The highlight shows in screencaps: a bright rectangular border framing
+  the storage unit's face the ray hit, the fill a shade lighter, with the
+  environment depth occluder on and off alike (the real unit and its
+  anchor box coincide, so the decal a centimeter off the face survives
+  the live depth). The beam is edge-on from the head in this diagnostic,
+  so it does not show; worn, it runs from the far hand to the hit.
+- The hit wandered between wall 5, table 14 and floor 7 within seconds in
+  one run: the unworn head pose drifts (the runtime's tracking with the
+  headset lying still), and the hysteresis absorbed the flicker. To be
+  judged worn.
+- Friendly names read "storage 9", "wall 5", "table 14", "floor 7": the
+  runtime's label in words, the box index appended where the room has
+  several of a kind.
+
+**Cost** (App GPU med / max ms, 60 s, right after a reboot, 41-42 C; the
+room query returned 0 anchors in these runs, so the ray had only the
+stage floor to miss and the highlight was not drawn):
+
+| Setting | App GPU med / max | long | stale |
+|---|---|---|---|
+| editor off | 8.84 / 9.74 | 0 | 0 |
+| editor on, `picktest 3` | 8.90 / 9.78 | 0 | 0 |
+| editor on, idle | 9.05 / 9.85 | 0 | 0 |
+
+The cast, the beam and the mode cost nothing measurable. The highlight is
+one quad through the ripple's pipeline; a warm pair with it drawn (40 C,
+after 30 min of runs) was inside the device's thermal noise (10.28 with a
+97 ms stall and 124 long frames off, 11.02 with 33 long frames on) and is
+not evidence either way. The hand menu grew by one row (84 to 124 points)
+in every mode.
+
+**Worn gate (Kevin):** point at the desk and turn its embers off and on;
+put the spectrum on the side wall; relaunch and find the room as left;
+the border and the status cell read with one eye.
