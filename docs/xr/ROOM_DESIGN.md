@@ -299,8 +299,9 @@ surface is selected.
 ### The behavior catalogue (the lane's values)
 
 0 none · 1 embers off the top face (Flux, today's table behavior) ·
-2 sparks up from the face with the bass (Flux, today's floor behavior) ·
-3 the spectrum canvas (walls) · 4 the ripple (floors) · 5 drips down the
+2 sparks up from the face with the bass (Flux, the floor's behavior
+until step 2d) · 3 the spectrum canvas (walls) · 4 the ripple (floors;
+their default since step 2d) · 5 drips down the
 face gathering at its bottom edge (walls, new) · 6 dust lifting off the
 face on the beat (any, new) · 7 a pool that embers settle into and glow
 (tables, new). The first pass ships 0 to 4, which exist as code, and
@@ -322,7 +323,11 @@ stage floor). `x` is the behavior id + 1, so a zero row means unset and
 the box runs its kind's default through the old kind gate: an upload
 without the block behaves exactly as before. The kind defaults are the
 old fixed rule (table embers, floor sparks, wall spectrum, the rest
-none), so with no file and no knob the room looks as it did. A set lane
+none), so with no file and no knob the room looks as it did. (Amended
+Sep 29, decision #3459, step 2d: the floor's default is now the ripple,
+and an unset lane runs its kind's default behavior through the same
+gate a set lane does, not the old kind gate; an unset table sheds
+embers as before, an unset floor spawns nothing.) A set lane
 gates the box's spawns by its behavior (embers on the beat gate, sparks
 on the bass gate, the rest closed) times its strength; the spawn stays
 on the upward face. The room id is FNV-1a 64 over the anchors' UUIDs
@@ -341,6 +346,9 @@ spectrum picks among the visible walls whose behavior is the spectrum
 (none: no canvas); the ripple goes to the largest floor on the ripple
 (the stage floor included), else the largest scene floor, else the
 stage floor, and pinning it to a floor turns that floor's sparks off.
+(Amended Sep 29, decision #3459, step 2d: the fallback is gone; only a
+floor on the ripple carries it, and with none there is no ripple. See
+step 2d below.)
 
 ### The interaction, hands-first
 
@@ -478,3 +486,38 @@ lifetime (12 s for Flux XR Room). Logs: "cloud off: emission 0, the
 cloud fades over the lifetime", "cloud off, edit room: solo desk",
 "cloud off, edit room: solo, no surface (nothing spawns)", "cloud on",
 and the density line with "(cloud off)".
+
+**Implemented, step 2d (Sep 29, decision #3459).** Worn: "floor ripple
+kept rippling when I switch to embers or none" (Kevin). The ripple fell back to the largest floor whenever no floor
+was on it, and the floor's default was sparks, so a floor could not be
+left dark. Kevin chose: a floor's default is the ripple
+(`SurfaceBehavior::default_for`, `xr_kind_behavior`), and the ripple
+draws only on a floor whose behavior is the ripple, the largest scene
+floor on it, else the stage floor on it while the room has no scene
+floor (then the stage floor stands in, as its emitter flag and the
+editor's ray already take it; beside a scene floor it is out of the
+editor's reach, and its default would put the ripple back under a scene
+floor turned to none). With neither there is no ripple, logged "floor
+ripple: no floor on ripple". A floor sparks only when assigned, and
+none on a floor means nothing on it. In the sim an unset lane now runs
+its kind's default behavior through the behavior gate at full strength
+(`xr_box_gate`), the kind gate is gone: an unset table sheds embers as
+before, an unset floor, wall or other box spawns nothing (the old gate
+gave walls and other kinds a fixed 0.3, which the app never weighted).
+The floor's cycle is unchanged, none, sparks, ripple; its default is
+the last, so a tap from it goes to none, then sparks, then back to the
+ripple. The room file needs no migration, with one catch: every save
+writes all six kind defaults, so a room saved before 2d names "floor":
+"sparks" and keeps it, as a wearer's own assignment would; a room with
+no file takes the ripple. A hold on a floor (the class cycle from
+sparks) or the knob `floor=ripple` puts such a room on the new default.
+And the solo now runs at the full rate: with Cloud off in Edit room and
+a hit that spawns (embers or sparks), every other box's row goes to the
+sim as none at strength 0, not just strength 0, so the weights see one
+emitting box and every draw lands on it; in 2c the others kept their
+behaviors and so their share of the weight, and the pointed surface
+spawned about 1.0 / 1.85 of the rate in Kevin's room. With no hit, or a
+hit that spawns nothing (a floor on the ripple, a wall), the 2c rule
+stays (behaviors kept, strengths 0): turning every row to none there
+would leave no weight anywhere, and the sim would fall back to spawning
+through the whole volume.
