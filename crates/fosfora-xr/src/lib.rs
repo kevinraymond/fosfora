@@ -8,7 +8,8 @@
 //! Spike state: S1 packaging/launch, S2 wgpu on the runtime's Vulkan device,
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
-//! geometry as obstacles.
+//! geometry as obstacles; the room's surfaces as emitters and the floor
+//! ripple.
 
 #[cfg(target_os = "android")]
 mod app;
@@ -33,10 +34,12 @@ mod perf;
 mod playback;
 pub mod pose;
 pub mod reach;
+pub mod ripple;
 #[cfg(target_os = "android")]
 mod room;
 #[cfg(target_os = "android")]
 mod scene;
+pub mod surfaces;
 #[cfg(target_os = "android")]
 mod xr;
 

@@ -47,5 +47,10 @@ ndk = { version = "0.9", default-features = false, features = ["audio", "api-lev
 # tree through ndk; MIT OR Apache-2.0).
 libc = "0.2"
 
+# Host tests validate the XR-only WGSL (`ripple.rs`) at baseline WebGPU
+# capabilities; the same naga as wgpu 27 and the core, so the lock keeps one.
+[dev-dependencies]
+naga = { version = "27", features = ["wgsl-in"] }
+
 [lints]
 workspace = true

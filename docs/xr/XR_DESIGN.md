@@ -324,6 +324,98 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `XR_META_spatial_entity_room_mesh` (no public binding). Both stay options
   for the product.
 
+## The room first pass (board #3317)
+
+*The first pass of `ROOM_DESIGN.md`: surfaces as emitters and the floor
+ripple.*
+
+### Surfaces as emitters
+
+- **Surface lanes.** The two `w` lanes of the box rows that were written 0
+  now belong to the aux block contract: `aux[67 + k].w` is the box's
+  surface kind as a float (0 none, 1 table = DESK or TABLE, 2 floor, 3
+  wall, 4 ceiling, 5 door or window frame, 6 other) and `aux[131 + k].w`
+  its emitter weight in 0..1. Row count and offsets are unchanged (163
+  obstacle rows, 170 with Murmur's lanes). The depth occluders, the S5
+  test sim and Murmur read only `xyz`.
+- **Kinds and weights** (`crates/fosfora-xr/src/surfaces.rs`, host-tested).
+  `surface_kind` maps the anchor's label list, most specific label first.
+  Every room box carries an emitter flag of 1; the synthetic stage floor's
+  is 1 only while the room has no FLOOR anchor, so the floor never emits
+  twice. Each frame, where the block is moved into the anchor's frame
+  (`XrScene::set_world_inputs`), `emitter_weights` turns flags into
+  weights: tables by top-face area against the largest table (the desk
+  gets `tableweight`, default 1), floors `floorweight` (default 0.5),
+  other kinds 0 for now. A box whose top face does not reach into the
+  effect's volume (anchor +- `emitter.radius`) weighs 0, so a dragged
+  anchor never emits from a surface it would respawn out of. The test is
+  on the face point nearest the anchor, not the face center: the synthetic
+  floor is 20 m across and centered on the stage origin.
+- **The sim** (`flux_xr_sim.wgsl`, `xr_emit`). A preset whose `param(6)`
+  is above 0.5 spawns on surfaces when the summed weight is positive;
+  otherwise `emit_particle` runs as before. `param(6)`, not `param(0)`:
+  the Flux XR presets' first input is `trail_decay` (0.88), and they have
+  six inputs, so slot 6 reads 0 for them. A spawn draws over the boxes'
+  cumulative weight times the kind's gate (table `0.15 + 0.85 * beat`,
+  floor `0.1 + 0.9 * bass`, others 0.3) against the ungated total; a draw
+  past the gated sum spawns nothing and the slot stays dead this frame,
+  so the emission breathes with the music. The top face is the local axis
+  closest to vertical, signed up (tables and scene floors +Z, the stage
+  floor +Y), sampled uniformly over its part within the volume's half
+  extent of the anchor, 1 cm above it. Floor sparks leave at
+  `0.3 + 1.2 * bass` m/s up with a little lateral jitter; table embers at
+  3 cm/s sideways, so the settle drift sets them on the top and the flow
+  slides them off the edge. Life, color, size and opacity are the volume
+  path's. The out-of-volume respawn goes through the same pick and dies
+  when the gate is shut.
+- **Preset.** `assets/xr/effects/flux_xr_world_room.pfx`, "Flux XR Room":
+  Flux XR World plus a seventh input `surface_emit` = 1, same sim, count,
+  sizes and emission (hidden; the pinch-hold cycle picks it up by file
+  name). Select it with `debug.fosfora.effect 'Flux XR Room'`. Core tests:
+  `flux_xr_room_preset_turns_on_surface_emission`, and on a GPU
+  `flux_xr_room_emits_on_a_table` and
+  `flux_xr_world_ignores_the_surface_lanes`.
+
+### The floor ripple
+
+- **What.** One lit quad on the floor inside the eye pass: rings expand
+  from under the wearer on each beat over a soft glow that breathes with
+  the bass. Pale and thin, light rather than material: premultiplied warm
+  white, peak alpha 0.25 (`ripplegain` scales it), so the real floor shows
+  through. Host module `crates/fosfora-xr/src/ripple.rs` (origin smoother,
+  ring list, uniform packing and the WGSL, validated by naga in a host
+  test); pipeline `build_ripple_pipeline` in `gfx.rs`.
+- **Origin.** The head projected onto the floor and low-passed with a
+  0.5 s time constant (by time, not frames), so it sits under the chair,
+  needs no anchor and stays when the wearer turns. Each ring keeps the
+  origin it was born at.
+- **Rings.** Up to 8; a beat adds one and replaces the oldest. Radius
+  `ripplespeed * age` (2.5 m/s), a 0.15 m gaussian profile, intensity
+  `amp * exp(-age / 0.8 s)`, cut at 2.5 s. The amplitude is the low end at
+  the beat, `0.3 + 0.7 * max(bass, sub_bass)`, so every beat shows and a
+  heavy one shows brighter. The glow is 0.3 x bass over a 0.6 m radius.
+- **Why the beat, not the kick.** There is no kick pulse (`kick` is a
+  continuous feature), and the beat is the pulse timed to the sound
+  through the playback tap (board #3253).
+- **Where.** On the scene FLOOR anchor's top face when the room has one
+  (the largest), else a 6 m square centered on the origin over the stage
+  floor.
+- **Draw order and depth.** After `draw_occluders`, so a desk or a hand in
+  front of the floor hides it, and before the world sprites, so embers on
+  the floor draw over the light. Depth test `Less`, no depth write. Both
+  floor occluders write depth at the floor (the stage floor's top at
+  y = 0, the scene plane +-2 cm), so the quad sits 2 cm above the highest
+  floor top and carries a depth bias toward the camera (constant -16,
+  slope -2), the usual decal setup; the lift alone is worth little depth
+  at grazing angles.
+- **Checked unworn** (`debug.fosfora.rippletest ceiling`, a diagnostic
+  that mirrors the floor case under the CEILING anchor for a headset
+  lying face up): the rings show without z-fighting against the ceiling
+  occluder, and the parked hand mesh (`handmeshtest`) cuts a hand-shaped
+  hole in them.
+- **Knobs.** `debug.fosfora.ripple` (0/1, default on in `mr` and `world`),
+  `ripplegain` (1), `ripplespeed` (2.5). No debug panel row.
+
 ## Android manifest essentials
 
 *Verified (S1)* against Meta's public "Android Manifest Settings" page:

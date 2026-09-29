@@ -32,6 +32,7 @@ use log::info;
 
 use crate::gfx::{EyeCamera, SWAPCHAIN_FORMAT};
 use crate::particles3d::{DEPTH_FORMAT, ObstacleSet, WARMUP_FRAMES};
+use crate::surfaces::SurfaceWeights;
 
 /// Simulated tempo for the synthetic features.
 const BPM: f64 = 120.0;
@@ -78,6 +79,12 @@ struct World {
     /// Per-frame inputs for the sim, uploaded into the head of the effect's
     /// aux buffer (layout in `assets/xr/shaders/flux_xr_sim.wgsl`).
     aux: Vec<ParticleAux>,
+    /// Half edge of the sim's volume around the anchor (the preset's
+    /// `emitter.radius`, floored as the sim floors it): a surface whose top
+    /// face does not reach into it gets emitter weight 0.
+    emitter_half: f32,
+    /// This frame's summed emitter weight (for the log).
+    emitter_weight: f32,
 }
 
 /// How a world-mode effect is set up for this run.
@@ -145,6 +152,7 @@ impl XrScene {
         options: WorldOptions,
     ) -> Result<Self> {
         let mut warmup = WARMUP_FRAMES;
+        let mut emitter_half = 0.0;
         // `count` is the particle count itself, so no quality scaling.
         let mut renderer = start_renderer(
             device,
@@ -176,6 +184,8 @@ impl XrScene {
                     particles.max_count = count;
                     particles.max_scaled_count = 0;
                 }
+                // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
+                emitter_half = particles.emitter.radius.max(0.05);
                 particles.initial_size *= options.size_scale;
                 particles.size_end *= options.size_scale;
                 // Fill time at the emission rate, plus a quarter for the
@@ -221,8 +231,16 @@ impl XrScene {
                 warmup,
                 dispatches: 0,
                 aux: Vec::new(),
+                emitter_half,
+                emitter_weight: 0.0,
             }),
         })
+    }
+
+    /// World mode: the summed emitter weight of the boxes last uploaded (0
+    /// keeps a surface-mode sim on its volume emitter).
+    pub fn emitter_weight(&self) -> f32 {
+        self.world.as_ref().map_or(0.0, |w| w.emitter_weight)
     }
 
     /// Whether this scene draws through [`Self::render_world`] (else the quad).
@@ -240,9 +258,11 @@ impl XrScene {
 
     /// Upload this frame's world-mode sim inputs: the wearer's head (for the
     /// near fade within `near_fade_m`; 0 = off), the settle drift
-    /// (`drift_m_s` downward; 0 = none), the obstacles and Murmur's
-    /// per-hand lanes (`pose::lane_rows`, already in the anchor's frame),
-    /// the positions moved into the anchor's frame. Call before
+    /// (`drift_m_s` downward; 0 = none), the obstacles with their emitter
+    /// weights (`surfaces`, from the kinds and flags the boxes carry and
+    /// where they sit against this effect's volume) and Murmur's per-hand
+    /// lanes (`pose::lane_rows`, already in the anchor's frame), the
+    /// positions moved into the anchor's frame. Call before
     /// [`Self::dispatch_world`].
     #[allow(
         clippy::too_many_arguments,
@@ -256,6 +276,7 @@ impl XrScene {
         drift_m_s: f32,
         hand_scare: f32,
         obstacles: &ObstacleSet,
+        surfaces: SurfaceWeights,
         hand_lanes: &[[f32; 4]; crate::pose::HAND_LANE_ROWS],
     ) {
         let Some(world) = self.world.as_mut() else {
@@ -267,13 +288,14 @@ impl XrScene {
         world.aux.push(ParticleAux {
             home: [head[0] - a[0], head[1] - a[1], head[2] - a[2], near_fade_m],
         });
-        world.aux.extend(
-            obstacles
-                .relative_to(a)
-                .as_vec4s()
-                .iter()
-                .map(|&home| ParticleAux { home }),
-        );
+        // The weights are taken against the volume around today's anchor,
+        // so a dragged anchor never emits from a surface it has left.
+        let mut relative = obstacles.relative_to(a);
+        relative.set_emitter_weights(world.emitter_half, surfaces);
+        world.emitter_weight = relative.emitter_weight_sum();
+        world
+            .aux
+            .extend(relative.as_vec4s().iter().map(|&home| ParticleAux { home }));
         // The obstacle block's second header row has two unused lanes; the
         // sim reads the drift from the third (`flux_xr_sim.wgsl`, aux[2].z).
         world.aux[2].home[2] = drift_m_s;

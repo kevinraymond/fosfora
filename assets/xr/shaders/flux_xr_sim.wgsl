@@ -46,13 +46,23 @@
 //                   w = hand calm, 0..1: 1 - Murmur's hand scare, so an
 //                   unwritten 0 keeps the full scare (unused here)
 //   aux[3..67]      spheres: xyz center, w radius (hand joints)
-//   aux[67..99]     box centers (xyz)
+//   aux[67..99]     box centers (xyz); w = surface kind (surface lanes)
 //   aux[99..131]    box rotations, quaternion box -> world (x, y, z, w)
-//   aux[131..163]   box half extents (xyz)
+//   aux[131..163]   box half extents (xyz); w = emitter weight 0..1
 //   aux[163..170]   Murmur's per-hand behavior lanes (murmur_xr_sim.wgsl;
 //                   unused here)
 // All zero (nothing written yet, or a desktop test) means no obstacles and
 // no near fade.
+//
+// Surface lanes (board #3317; crates/fosfora-xr/src/surfaces.rs): the kind
+// is 0 none, 1 table (DESK or TABLE), 2 floor, 3 wall, 4 ceiling, 5 door or
+// window frame, 6 other, as a float; the weight is 0 for a box that emits
+// nothing (every kind but tables and floors in the first pass, a surface
+// out of the volume, the stage floor when the room has its own). A preset
+// with param(6) > 0.5 (Flux XR Room's `surface_emit`) spawns on the top
+// faces of the weighted boxes instead of in the volume; with no weight
+// anywhere, or param(6) = 0 (every other preset: they have six inputs),
+// the volume path runs unchanged.
 
 const XR_AUX_HEAD: u32 = 0u;
 const XR_AUX_HEADER: u32 = 1u;
@@ -62,6 +72,16 @@ const XR_AUX_SPHERES: u32 = 3u;
 const XR_AUX_BOX_CENTER: u32 = 67u;   // XR_AUX_SPHERES + XR_MAX_SPHERES
 const XR_AUX_BOX_ROT: u32 = 99u;      // + XR_MAX_BOXES
 const XR_AUX_BOX_HALF: u32 = 131u;    // + XR_MAX_BOXES
+
+// Surface emission: the param slot that turns it on, how far above the face
+// a particle is born (m), and the table embers' lateral speed (m/s).
+const XR_SURFACE_PARAM: u32 = 6u;
+const XR_SURFACE_LIFT: f32 = 0.01;
+const XR_EMBER_SPEED: f32 = 0.03;
+const XR_KIND_TABLE: u32 = 1u;
+const XR_KIND_FLOOR: u32 = 2u;
+// Beat envelope decay per unit of beat phase for the table gate.
+const XR_BEAT_DECAY: f32 = 6.0;
 
 // Fraction of the half extent over which opacity fades out toward the bounds.
 const XR_EDGE_FADE: f32 = 0.3;
@@ -223,6 +243,127 @@ fn emit_particle(idx: u32, half: f32) -> Particle {
     return p;
 }
 
+// How open a surface kind's emission is this frame, 0..1: tables shed
+// embers on the beat, floors spark with the bass.
+fn xr_kind_gate(kind: u32) -> f32 {
+    if kind == XR_KIND_TABLE {
+        // u.beat is a one-frame pulse; the envelope over beat_phase (a 0..1
+        // sawtooth at the tempo) keeps the desk shedding for about a sixth
+        // of a beat after each one, so the burst reads.
+        return 0.15 + 0.85 * max(u.beat, exp(-XR_BEAT_DECAY * u.beat_phase));
+    }
+    if kind == XR_KIND_FLOOR {
+        return 0.1 + 0.9 * u.bass;
+    }
+    return 0.3;
+}
+
+fn xr_box_kind(k: u32) -> u32 {
+    return u32(max(aux[XR_AUX_BOX_CENTER + k].home.w, 0.0) + 0.5);
+}
+
+// A spawn on box k's upward face: the local axis closest to vertical,
+// signed to point up (surfaces.rs `TopFace` picks it the same way), the
+// point uniform over the part of the face under the volume (a 20 m floor
+// is sampled only within the half extent of the anchor), XR_SURFACE_LIFT
+// above it. `r` is three uniform draws.
+fn xr_surface_point(k: u32, half: f32, r: vec3f) -> vec3f {
+    let c = aux[XR_AUX_BOX_CENTER + k].home.xyz;
+    let q = aux[XR_AUX_BOX_ROT + k].home;
+    let h = aux[XR_AUX_BOX_HALF + k].home.xyz;
+    let ax = xr_quat_rotate(q, vec3f(1.0, 0.0, 0.0));
+    let ay = xr_quat_rotate(q, vec3f(0.0, 1.0, 0.0));
+    let az = xr_quat_rotate(q, vec3f(0.0, 0.0, 1.0));
+    // Normal axis n (half extent hn) and the in-plane axes t1, t2.
+    var n = ax;
+    var hn = h.x;
+    var t1 = ay;
+    var t2 = az;
+    var h1 = h.y;
+    var h2 = h.z;
+    if abs(ay.y) > abs(n.y) {
+        n = ay;
+        hn = h.y;
+        t1 = az;
+        t2 = ax;
+        h1 = h.z;
+        h2 = h.x;
+    }
+    if abs(az.y) > abs(n.y) {
+        n = az;
+        hn = h.z;
+        t1 = ax;
+        t2 = ay;
+        h1 = h.x;
+        h2 = h.y;
+    }
+    n *= xr_side(n.y);
+    let face = c + n * hn;
+    // The anchor (the origin) in face coordinates, and the face's range
+    // within the volume's half extent of it.
+    let u0 = dot(-face, t1);
+    let v0 = dot(-face, t2);
+    let lo = vec2f(max(-h1, u0 - half), max(-h2, v0 - half));
+    let hi = max(vec2f(min(h1, u0 + half), min(h2, v0 + half)), lo);
+    let uv = mix(lo, hi, r.xy);
+    return face + t1 * uv.x + t2 * uv.y + n * XR_SURFACE_LIFT;
+}
+
+// Spawn a particle for slot idx: on a surface when this preset asks for it
+// and some box carries weight, otherwise in the volume (emit_particle,
+// unchanged). Surface spawns draw over the boxes' cumulative weight times
+// their kind's gate against the ungated total, so a draw past the gated sum
+// spawns nothing: returns false and the slot stays dead this frame, and the
+// room's emission breathes with the music.
+fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
+    var total = 0.0;
+    var box_count = 0u;
+    if param(XR_SURFACE_PARAM) > 0.5 {
+        box_count = min(bitcast<u32>(aux[XR_AUX_HEADER].home.y), XR_MAX_BOXES);
+        for (var k = 0u; k < box_count; k++) {
+            total += max(aux[XR_AUX_BOX_HALF + k].home.w, 0.0);
+        }
+    }
+    if total <= 0.0 {
+        *out = emit_particle(idx, half);
+        return true;
+    }
+    let pick = xr_rand3(idx, 3u);
+    let draw = pick.x * total;
+    var acc = 0.0;
+    var chosen = XR_MAX_BOXES;
+    for (var k = 0u; k < box_count; k++) {
+        let w = max(aux[XR_AUX_BOX_HALF + k].home.w, 0.0);
+        acc += w * xr_kind_gate(xr_box_kind(k));
+        if draw < acc {
+            chosen = k;
+            break;
+        }
+    }
+    if chosen == XR_MAX_BOXES {
+        return false;
+    }
+    // Life, color, size and opacity as the volume path gives them; the
+    // position and velocity are the surface's.
+    var p = emit_particle(idx, half);
+    let at = xr_rand3(idx, 4u);
+    let pos = xr_surface_point(chosen, half, at);
+    let jitter = xr_rand3(idx, 5u) * 2.0 - 1.0;
+    var vel: vec3f;
+    if xr_box_kind(chosen) == XR_KIND_FLOOR {
+        // Sparks: up with the bass, a little sideways.
+        vel = vec3f(jitter.x * 0.1, 0.3 + 1.2 * u.bass, jitter.z * 0.1);
+    } else {
+        // Embers: a slow slide across the top; the flow and the settle
+        // drift carry them to the edge and off it.
+        vel = vec3f(jitter.x, 0.0, jitter.z) * XR_EMBER_SPEED;
+    }
+    p.pos_life = vec4f(pos, 1.0);
+    p.vel_size = vec4f(vel, p.vel_size.w);
+    *out = p;
+    return true;
+}
+
 @compute @workgroup_size(256)
 fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let idx = gid.x;
@@ -238,9 +379,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
 
     if life <= 0.0 {
         let slot = emit_claim();
-        if slot < u.emit_count {
-            p = emit_particle(idx, half);
-            write_particle(idx, p);
+        var born: Particle;
+        if slot < u.emit_count && xr_emit(idx, half, &born) {
+            write_particle(idx, born);
             mark_alive(idx);
         } else {
             write_particle(idx, p);
@@ -300,12 +441,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     let rested = xr_collide(&pos, &vel);
 
     // Leaving the volume: respawn at a new point inside it (the 2D sim wraps).
-    // Still alive, so the alive count and the density stay steady.
+    // Still alive, so the alive count and the density stay steady. In
+    // surface mode the respawn is a surface spawn, and a closed gate lets
+    // the particle die instead.
     let edge = max(abs(pos.x), max(abs(pos.y), abs(pos.z))) / half;
     if edge > 1.0 {
-        p = emit_particle(idx, half);
-        write_particle(idx, p);
-        mark_alive(idx);
+        var born: Particle;
+        if xr_emit(idx, half, &born) {
+            write_particle(idx, born);
+            mark_alive(idx);
+        } else {
+            p.pos_life.w = 0.0;
+            write_particle(idx, p);
+        }
         return;
     }
 
