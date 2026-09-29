@@ -172,6 +172,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
+    //   adb shell setprop debug.fosfora.rescan 1|query           (once the room is in: launch Space Setup and requery (1), or requery alone (query), replacing the anchors; the hand menu's "Rescan the room" over adb)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s; default 0.5 in mr and world, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
@@ -254,6 +255,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         hands: toggle("debug.fosfora.hands", mixed),
         room: toggle("debug.fosfora.room", mixed),
         scene_capture: toggle("debug.fosfora.scenecapture", false),
+        rescan_at_start: match debug_prop("debug.fosfora.rescan").as_deref() {
+            Some("1") => crate::room::Rescan::Capture,
+            Some("query") => crate::room::Rescan::Query,
+            _ => crate::room::Rescan::Off,
+        },
     };
     let floor = toggle("debug.fosfora.floor", mixed);
     let gravity = debug_prop("debug.fosfora.gravity")
@@ -839,6 +845,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         };
         let scene_mut = scene.as_mut();
         let frames_window = stats.last;
+        let has_room = session.has_room();
+        // The hand menu's rescan, carried out of the frame closure (the
+        // session is borrowed inside it).
+        let mut rescan = false;
         session.frame(&gfx, clear, &mut stats, particles.as_ref(), scene_mut, |input, mut scene| {
             // S7: hands and room as obstacles. I5: pinch gestures.
             for (h, d) in input.hands.tip_distance.iter().enumerate() {
@@ -930,6 +940,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         pinching: input.hands.pinching,
                         gesture: gestures.label(),
                         anchor,
+                        room: has_room,
                         room_boxes: input.room_boxes.len(),
                         rms: last_rms,
                         bass: last_bass,
@@ -952,6 +963,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
                                 moved = true;
                             }
+                            Action::RescanRoom => rescan = true,
                             Action::SetDebug(on) => save_hand_menu(&menu_file, on),
                             _ => {}
                         }
@@ -1465,6 +1477,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         })?;
         frame_index += 1;
+        if rescan {
+            session.rescan_room();
+        }
         if let Some(h) = &hud
             && h.debug() != perf_on
         {

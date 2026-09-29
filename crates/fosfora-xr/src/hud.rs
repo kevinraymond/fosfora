@@ -86,6 +86,8 @@ pub enum Action {
     NextEffect,
     /// Put the anchor back around the wearer.
     Recenter,
+    /// Relaunch Space Setup and requery the room's anchors.
+    RescanRoom,
     /// The hand menu's debug toggle changed; the app saves it.
     SetDebug(bool),
 }
@@ -110,6 +112,7 @@ enum Target {
     Prev,
     Next,
     Recenter,
+    Rescan,
     ToggleDebug,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
@@ -137,6 +140,8 @@ pub struct View<'a> {
     pub pinching: [bool; 2],
     pub gesture: String,
     pub anchor: [f32; 3],
+    /// The room (scene anchors) is on, so it can be rescanned.
+    pub room: bool,
     pub room_boxes: usize,
     pub rms: f32,
     pub bass: f32,
@@ -493,6 +498,7 @@ impl Hud {
             Some(Target::Prev) => actions.push(Action::PrevEffect),
             Some(Target::Next) => actions.push(Action::NextEffect),
             Some(Target::Recenter) => actions.push(Action::Recenter),
+            Some(Target::Rescan) => actions.push(Action::RescanRoom),
             Some(Target::ToggleDebug) => {
                 self.debug = !self.debug;
                 actions.push(Action::SetDebug(self.debug));
@@ -787,6 +793,9 @@ fn panel_ui(
         );
     }
     rows.single(ui, Target::Recenter, "Recenter the cloud");
+    if view.room {
+        rows.single(ui, Target::Rescan, "Rescan the room");
+    }
     for (i, (name, ..)) in STEPPERS.iter().enumerate() {
         let value = *controls.field(i);
         rows.two_way(

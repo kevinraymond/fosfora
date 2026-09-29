@@ -46,6 +46,9 @@ pub struct MrOptions {
     pub room: bool,
     /// Launch Space Setup when the room query finds no anchors.
     pub scene_capture: bool,
+    /// Rescan (or only requery) the room once the first query has
+    /// returned anchors (`debug.fosfora.rescan 1|query`).
+    pub rescan_at_start: crate::room::Rescan,
 }
 
 /// Per-frame input the frame loop hands to `before_render`, by value.
@@ -397,7 +400,7 @@ impl XrSession {
         };
         let room = if mr.room {
             if ctx.has_scene {
-                match Room::new(&session, &space, mr.scene_capture) {
+                match Room::new(&session, &space, mr.scene_capture, mr.rescan_at_start) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         warn!("scene query failed to start: {e:#}");
@@ -585,6 +588,15 @@ impl XrSession {
             }
         } else if let Some(p) = self.perf.take() {
             p.disable();
+        }
+    }
+
+    /// Relaunch Space Setup and requery the room's anchors
+    /// (`Room::rescan`); nothing without a room.
+    pub fn rescan_room(&mut self) {
+        match self.room.as_mut() {
+            Some(room) => room.rescan(),
+            None => warn!("rescan: the room is off (debug.fosfora.room 0 or no scene support)"),
         }
     }
 

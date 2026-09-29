@@ -1057,3 +1057,31 @@ rows 170..173 follow the hand lanes (WORLD_AUX_ROWS 173). Knobs:
   a dimmer, warmer trail. App GPU 9.56 ms median, 9.91 p90, 10.32 max
   over 68 s with 11 throws, 72 fps, 4 long of 4928. Kevin notes the
   effect may be partly lost on him without stereo vision.
+
+## Rescan the room (board #3323)
+
+The hand menu carries "Rescan the room" under "Recenter the cloud"
+whenever the room is on. It relaunches Space Setup
+(`xrRequestSceneCaptureFB`) and the query that follows its completion
+replaces the anchors. `debug.fosfora.rescan 1` does the same once the
+first query has returned anchors; `debug.fosfora.rescan query` reruns the
+query alone, so the replace path can be exercised over adb with nobody
+wearing the headset.
+
+- **Handle reuse (Quest 3, v207, Sep 29):** a requery returns the same
+  `XrSpace` handle for every anchor it returned before. Destroying the old
+  anchors before reading the new results left every new handle invalid
+  (`ERROR_HANDLE_INVALID` from `xrDestroySpace`, "no bounded component"
+  for all 18) and the room went to 0 boxes. The anchors are now
+  reconciled by handle: one the new results still carry is rebuilt from
+  them with its pose kept, one they no longer carry is destroyed.
+- **Unworn, `rescan query`, Flux XR Room 400K:** the second query
+  returned 18 results, "16 kept, 0 dropped", 16 anchors (8 planes, 8
+  volumes), 17 boxes (room 16 + floor) as before; no warnings beyond the
+  usual startup ones; 72 fps, 0 long frames.
+- **Unworn, `rescan 1`:** the runtime accepts the request
+  (`GuardianSDKServer::RequestSceneCaptureFlow 0`) and the app keeps
+  running with its 17 boxes, but the Space Setup flow shows nothing with
+  nobody wearing the headset, so `SceneCaptureComplete` never arrives.
+  The full loop (Space Setup, then the query, a changed room's anchors
+  replacing the old) is the worn gate. Worn gate pending.
