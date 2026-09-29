@@ -9,7 +9,7 @@
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
 //! geometry as obstacles; the room's surfaces as emitters, the floor
-//! ripple, the wall spectrum and the hand instruments.
+//! ripple, the wall spectrum, the hand instruments and the room editor.
 
 // Declared first: `assert_close!` is textually scoped to the modules after it.
 #[cfg(test)]
@@ -27,6 +27,7 @@ pub mod env_depth;
 pub mod gesture;
 #[cfg(target_os = "android")]
 mod gfx;
+pub mod highlight;
 #[cfg(target_os = "android")]
 mod hud;
 #[cfg(target_os = "android")]
