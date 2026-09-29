@@ -425,7 +425,7 @@ mod tests {
         r + "\r\n"
     }
 
-    const KEY: &str = "0123456789abcdef0123456789abcdef";
+    const KEY: &str = "k7m2xq9fhr4tzw8bn3pa";
 
     /// This computer, LAN access off.
     const LOCAL: Gate<'static> = Gate {
@@ -464,9 +464,9 @@ mod tests {
     fn another_device_needs_the_access_key() {
         let headers = ["Host: 192.168.1.5:9002", "Origin: http://192.168.1.5:9002"];
         assert!(upgrade_allowed(&upgrade_to("/ws", &headers), DEVICE).is_err());
-        let wrong = upgrade_to("/ws?key=0123456789abcdef0123456789abcdee", &headers);
+        let wrong = upgrade_to("/ws?key=k7m2xq9fhr4tzw8bn3pb", &headers);
         assert!(upgrade_allowed(&wrong, DEVICE).is_err());
-        let prefix = upgrade_to("/ws?key=0123", &headers);
+        let prefix = upgrade_to("/ws?key=k7m2", &headers);
         assert!(upgrade_allowed(&prefix, DEVICE).is_err());
         let empty = upgrade_to("/ws?key=", &headers);
         assert!(upgrade_allowed(&empty, DEVICE).is_err());
@@ -518,7 +518,7 @@ mod tests {
     fn keys_compare_whole() {
         assert!(key_matches(KEY, KEY));
         assert!(!key_matches("", ""));
-        assert!(!key_matches(&KEY[..31], KEY));
+        assert!(!key_matches(&KEY[..KEY.len() - 1], KEY));
         assert!(!key_matches(&format!("{KEY}0"), KEY));
     }
 

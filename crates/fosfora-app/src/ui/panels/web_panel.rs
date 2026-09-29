@@ -87,6 +87,9 @@ pub fn draw_web_panel(ui: &mut Ui, web: &mut WebSystem) {
                         ui.ctx().copy_text(lan_url.clone());
                     }
                 });
+                if let Some(qr) = crate::ui::widgets::qr::qr_code(ui, &lan_url, 120.0) {
+                    qr.on_hover_text("Scan with a phone's camera to open the remote, key included");
+                }
             }
             ui.horizontal(|ui| {
                 ui.label(

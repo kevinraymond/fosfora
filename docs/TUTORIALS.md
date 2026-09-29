@@ -1197,10 +1197,10 @@ Fosfora includes a built-in web-based touch control surface, perfect for control
 2. Enable the WebSocket server (default port: **9002**)
 3. The panel shows two URLs:
    - **localhost**: for the same machine
-   - **LAN IP**: for other devices on your network (with **Other devices** switched on). It ends
-     in `?key=…`, the access key any other device must present. **New key** replaces it and
-     disconnects every device still using the old one
-4. Open the URL in any web browser on your phone/tablet
+   - **LAN IP**: for other devices on your network (with **Other devices** switched on), with a
+     QR code of it underneath. It ends in `?key=…`, the access key any other device must
+     present. **New key** replaces it and disconnects every device still using the old one
+4. Scan the QR code with your phone's camera, or open the URL in any browser on your phone/tablet
 5. The touch UI connects automatically
 
 ### Features

@@ -1,3 +1,4 @@
+pub mod qr;
 pub mod rows;
 
 use egui::{

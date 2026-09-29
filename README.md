@@ -176,9 +176,9 @@ key, phrase position and drop prediction over OSC with no window at all — Fosf
 analysis brain of a TouchDesigner/Resolume/lighting rig. [The schema →](docs/SIGNAL.md)
 
 **Your phone** — enable the web surface, switch on **Other devices** under Setup ▸ Control, and
-open the network address it shows on any phone or tablet on the same network. The address carries
-the access key other devices need; **New key** disconnects everyone holding the old one. Multiple
-people can connect at once.
+scan the QR code it shows (or open the network address beside it) on any phone or tablet on the
+same network. The link carries the access key other devices need; **New key** disconnects everyone
+holding the old one. Multiple people can connect at once.
 
 ## Documentation
 

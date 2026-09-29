@@ -133,16 +133,23 @@ impl Default for WebConfig {
     }
 }
 
-/// A fresh access key: 128 random bits as 32 hex digits, or empty (which
-/// refuses every other device) if the OS has no randomness to give.
+/// Access-key symbols: lowercase letters and digits minus the lookalikes
+/// 0/o and 1/l, so a key read off the screen types back correctly.
+const KEY_ALPHABET: &[u8; 32] = b"abcdefghijkmnpqrstuvwxyz23456789";
+/// 20 symbols × 5 bits = 100 random bits: far beyond guessing over a network,
+/// short enough to type into a bridge's `--key`.
+const KEY_LEN: usize = 20;
+
+/// A fresh access key, or empty (which refuses every other device) if the OS
+/// has no randomness to give.
 pub fn new_access_key() -> String {
-    let mut bytes = [0u8; 16];
+    let mut bytes = [0u8; KEY_LEN];
     match getrandom::fill(&mut bytes) {
-        Ok(()) => bytes.iter().fold(String::with_capacity(32), |mut s, b| {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-            s
-        }),
+        // 256 is a multiple of 32, so the low five bits of each byte are uniform.
+        Ok(()) => bytes
+            .iter()
+            .map(|b| char::from(KEY_ALPHABET[usize::from(b & 31)]))
+            .collect(),
         Err(e) => {
             log::error!("No access key for the web remote (other devices are refused): {e}");
             String::new()
@@ -249,11 +256,20 @@ mod tests {
     }
 
     #[test]
-    fn access_keys_are_random_hex() {
+    fn access_keys_are_short_and_unambiguous() {
         let (a, b) = (new_access_key(), new_access_key());
-        assert_eq!(a.len(), 32);
-        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_eq!(a.len(), KEY_LEN);
+        assert!(a.bytes().all(|c| KEY_ALPHABET.contains(&c)), "{a}");
+        assert!(!a.contains(['0', 'o', '1', 'l']), "{a}");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn the_key_alphabet_has_32_distinct_symbols() {
+        let mut symbols = KEY_ALPHABET.to_vec();
+        symbols.sort_unstable();
+        symbols.dedup();
+        assert_eq!(symbols.len(), 32);
     }
 
     /// A web.json saved before LAN access was a setting has no `lan` key; it

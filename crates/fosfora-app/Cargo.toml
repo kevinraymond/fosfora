@@ -74,6 +74,8 @@ dirs = "6"
 tungstenite = { version = "0.28", optional = true }
 # The web remote's access key (already in the tree via tungstenite)
 getrandom = { version = "0.3", optional = true }
+# QR code of the web remote's network link (MIT, no dependencies)
+qrcodegen = { version = "1.8", optional = true }
 # Image loading (particle sprites, media layers)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # WebP animation decoding (image crate only decodes first frame)
@@ -196,6 +198,7 @@ desktop = [
     "dep:ctrlc",
     "dep:tungstenite",
     "dep:getrandom",
+    "dep:qrcodegen",
     "dep:rfd",
     "dep:ureq",
     "dep:sha2",
