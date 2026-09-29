@@ -10,6 +10,7 @@ use openxr as xr;
 use xr::sys::Handle as _;
 
 use crate::app::FrameStats;
+use crate::env_depth::{EnvDepth, EnvDepthOptions};
 use crate::gfx::{EyeCamera, Gfx};
 use crate::input::{Hands, HandsFrame};
 use crate::math;
@@ -36,6 +37,8 @@ pub struct XrContext {
     pub has_hand_tracking: bool,
     /// `XR_FB_scene` + `XR_FB_spatial_entity` + `XR_FB_spatial_entity_query`.
     pub has_scene: bool,
+    /// `XR_META_environment_depth` (board #3324).
+    pub has_env_depth: bool,
 }
 
 /// Which S7 features to bring up with the session.
@@ -49,6 +52,9 @@ pub struct MrOptions {
     /// Rescan (or only requery) the room once the first query has
     /// returned anchors (`debug.fosfora.rescan 1|query`).
     pub rescan_at_start: crate::room::Rescan,
+    /// The live environment depth as an occluder or its diagnostic
+    /// (`debug.fosfora.envdepth*`); `None` creates no provider at all.
+    pub env_depth: Option<EnvDepthOptions>,
 }
 
 /// Per-frame input the frame loop hands to `before_render`, by value.
@@ -121,8 +127,10 @@ impl XrContext {
         enabled.meta_spatial_entity_mesh = has_scene && available.meta_spatial_entity_mesh;
         enabled.fb_spatial_entity_storage = has_scene && available.fb_spatial_entity_storage;
         enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
+        // The live depth map from the passthrough cameras (board #3324).
+        enabled.meta_environment_depth = available.meta_environment_depth;
         info!(
-            "S7 extensions: passthrough {} · hand tracking {} (mesh {}) · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {}",
+            "S7 extensions: passthrough {} · hand tracking {} (mesh {}) · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {} · environment depth {}",
             available.fb_passthrough,
             available.ext_hand_tracking,
             available.fb_hand_tracking_mesh,
@@ -137,6 +145,7 @@ impl XrContext {
             names
                 .iter()
                 .any(|n| n == "XR_META_spatial_entity_room_mesh"),
+            available.meta_environment_depth,
         );
 
         let instance = entry
@@ -233,6 +242,7 @@ impl XrContext {
             has_passthrough: enabled.fb_passthrough,
             has_hand_tracking: enabled.ext_hand_tracking,
             has_scene,
+            has_env_depth: enabled.meta_environment_depth,
         })
     }
 }
@@ -257,8 +267,10 @@ struct Eye {
 /// Field order matters: fields drop in declaration order, and the swapchains
 /// and space must be destroyed before the session they belong to.
 pub struct XrSession {
-    // S7 objects first: they hold session-owned handles (passthrough layer,
-    // hand trackers, anchor spaces) and must go before the session.
+    // S7 objects first: they hold session-owned handles (depth provider,
+    // passthrough layer, hand trackers, anchor spaces) and must go before
+    // the session.
+    env_depth: Option<EnvDepth>,
     passthrough: Option<Passthrough>,
     hands: Option<Hands>,
     room: Option<Room>,
@@ -415,6 +427,17 @@ impl XrSession {
             None
         };
 
+        // Board #3324: created only when a knob asks for it, so the
+        // baseline run is the app without it.
+        let env_depth = match mr.env_depth {
+            Some(opts) if ctx.has_env_depth => EnvDepth::new(&session, ctx.system, gfx, opts),
+            Some(_) => {
+                warn!("environment depth requested but XR_META_environment_depth is missing");
+                None
+            }
+            None => None,
+        };
+
         let perf = match PerfMetrics::new(&session) {
             Ok(p) => p,
             Err(e) => {
@@ -424,6 +447,7 @@ impl XrSession {
         };
 
         Ok(Self {
+            env_depth,
             passthrough,
             hands,
             room,
@@ -617,8 +641,9 @@ impl XrSession {
 
     /// One frame: wait, begin, locate hands and room anchors at the
     /// predicted display time, run `before_render` (the effect step) with
-    /// them and `scene`, locate views, render both eyes through wgpu (a
-    /// world-mode `scene` draws into them too), submit the passthrough layer
+    /// them and `scene`, locate views, acquire the environment depth (when
+    /// on), render both eyes through wgpu (a world-mode `scene` draws into
+    /// them too), submit the passthrough layer
     /// (if any) under a projection layer. Must only be called while the
     /// session is running.
     pub fn frame(
@@ -698,6 +723,22 @@ impl XrSession {
 
         let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
         log_stereo(view_flags, &views, &cameras);
+        // The live depth map, acquired right before rendering at the same
+        // predicted display time and in the same space as the views.
+        let env_frame = self
+            .env_depth
+            .as_mut()
+            .and_then(|e| e.acquire(&self.space, time));
+        let extents: Vec<[u32; 2]> = self
+            .eyes
+            .iter()
+            .map(|e| [e.extent.width, e.extent.height])
+            .collect();
+        let env_draw = self
+            .env_depth
+            .as_ref()
+            .zip(env_frame)
+            .map(|(e, f)| e.prepare(&gfx.queue, &f, &cameras, &extents));
 
         let mut image_indices = [0u32; EYE_COUNT];
         for (eye, index) in self.eyes.iter_mut().zip(image_indices.iter_mut()) {
@@ -724,6 +765,7 @@ impl XrSession {
             clear,
             particles,
             scene.filter(|s| s.is_world()),
+            env_draw.as_ref(),
         );
 
         for eye in &mut self.eyes {

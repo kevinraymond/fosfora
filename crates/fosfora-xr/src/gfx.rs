@@ -18,6 +18,7 @@ use openxr as xr;
 use wgpu::hal;
 use wgpu::hal::api::Vulkan as HalVk;
 
+use crate::env_depth::EnvDepthDraw;
 use crate::particles3d::{DEPTH_FORMAT, Particles3d};
 use crate::scene::XrScene;
 use crate::xr::XrContext;
@@ -694,9 +695,88 @@ impl Gfx {
         Ok((texture, view))
     }
 
-    /// Render both eyes and submit once: the quad (depth-writing), the S7
-    /// occluders and then the S5 particles (depth-tested, additive) into each
-    /// eye. With a world-mode `scene` (C3b), its sim is dispatched first and
+    /// Wrap one image of the environment depth swapchain
+    /// (`XR_META_environment_depth`): a `D16_UNORM` array of two layers
+    /// (left, right) the shaders only read, as a wgpu texture plus a
+    /// `D2Array` depth view. The no-op drop callback keeps wgpu from
+    /// freeing the image: the runtime owns it.
+    ///
+    /// Layouts: `create_texture_from_hal` registers the texture as
+    /// uninitialized, so the first time each image is bound wgpu's barrier
+    /// goes from `UNDEFINED`, which Vulkan allows to discard the contents:
+    /// the first frame that uses a given image may show no occlusion.
+    /// After that wgpu tracks the image as sampled and issues no further
+    /// barrier. wgpu-hal samples depth formats in
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL`, not the
+    /// `SHADER_READ_ONLY_OPTIMAL` the runtime hands the image over in and
+    /// expects back at `xrEndFrame`; both are read-only layouts, and this
+    /// is left as is until the device shows it matters.
+    pub fn wrap_env_depth_image(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 2,
+        };
+        let hal_desc = hal::TextureDescriptor {
+            label: Some("xr-env-depth-image"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth16Unorm,
+            usage: wgpu::TextureUses::RESOURCE,
+            memory_flags: hal::MemoryFlags::empty(),
+            view_formats: vec![],
+        };
+        // SAFETY: the image was created by the runtime as a two-layer
+        // `D16_UNORM` 2D array of this size for sampling
+        // (`xrCreateEnvironmentDepthSwapchainMETA`; the size is the
+        // swapchain state's); the Some(no-op) callback means wgpu-hal never
+        // destroys it, and the runtime keeps it alive until the depth
+        // swapchain is destroyed, which `EnvDepth` does after dropping
+        // these wrappers and before this device goes.
+        let hal_texture = unsafe {
+            self.device
+                .as_hal::<HalVk>()
+                .ok_or_else(|| anyhow!("wgpu device is not Vulkan"))?
+                .texture_from_raw(image, &hal_desc, Some(Box::new(|| {})))
+        };
+        // SAFETY: `hal_texture` belongs to this device and matches `desc`.
+        let texture = unsafe {
+            self.device.create_texture_from_hal::<HalVk>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("xr-env-depth-image"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Depth16Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+            )
+        };
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("xr-env-depth-view"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            base_array_layer: 0,
+            array_layer_count: Some(2),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+        Ok((texture, view))
+    }
+
+    /// Render both eyes and submit once: the environment depth occluder
+    /// (`env_depth`, when a depth frame was acquired), the quad
+    /// (depth-writing), the S7 occluders and then the S5 particles
+    /// (depth-tested, additive) into each eye. With a world-mode `scene` (C3b), its sim is dispatched first and
     /// its sprites are drawn last in the same eye pass, tested against the
     /// depth the occluders and the primer wrote. The render pass is the last
     /// use of each swapchain image this frame, so it ends in
@@ -708,6 +788,7 @@ impl Gfx {
         clear: [f32; 4],
         particles: Option<&Particles3d>,
         mut scene: Option<&mut XrScene>,
+        env_depth: Option<&EnvDepthDraw<'_>>,
     ) {
         for (i, (eye, cam)) in self.eyes.iter().zip(cameras).enumerate() {
             self.queue.write_buffer(
@@ -765,6 +846,12 @@ impl Gfx {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            // The live depth map first, right after the clear: it writes
+            // the real room's depth (compare Always) and everything after
+            // tests against it.
+            if let Some(d) = env_depth {
+                d.draw(&mut pass, i);
+            }
             if let Some(quad) = &self.quad {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &eye.bind_group, &[]);

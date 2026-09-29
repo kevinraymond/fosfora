@@ -10,6 +10,7 @@ use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
 use crate::audio::LiveAudio;
+use crate::env_depth::EnvDepthOptions;
 use crate::gesture::{Gesture, Gestures, PinchInput};
 use crate::gfx::Gfx;
 use crate::hud::{Action, Controls, FrameWindow, Hud, View};
@@ -226,6 +227,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.liftradius 0.35          (the lift's radius around the far palm, m)
     //   adb shell setprop debug.fosfora.throwtest 3              (diagnostic: every 3 s a right-hand throw from 0.5 m ahead of the head
     //       along the view, untracked, for an unworn check)
+    //   adb shell setprop debug.fosfora.envdepth 0|1             (board #3324: the live environment depth map, XR_META_environment_depth,
+    //       drawn first in the eye pass as a depth occluder, so unscanned things hide the sprites; default off until measured)
+    //   adb shell setprop debug.fosfora.envdepthshow 0|1         (diagnostic: the same pass drawn as gray, 0 m black to 4 m white, linear in
+    //       the stored bytes, still writing depth; implies the acquire, for a screencap of orientation and alignment)
+    //   adb shell setprop debug.fosfora.envdepthhands 0|1        (ask the runtime to remove the hands from the depth map; default 1, the
+    //       skinned hand mesh stays the hand occluder)
+    //   adb shell setprop debug.fosfora.envdepthnear 0.2         (depth-map distances under this are discarded, m; the API is unreliable below ~0.2 m)
+    //   adb shell setprop debug.fosfora.envdepthflipv 0|1        (diagnostic: 1 reads texture row 0 as the top of the view, the default; 0 as the bottom)
+    //   The envdepth knobs are read at startup (restart the app after a change); with envdepth and envdepthshow both 0 no depth
+    //   provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -250,6 +261,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         Some("1") => true,
         _ => default,
     };
+    // Board #3324: the live environment depth (`env_depth.rs`).
+    let env_occlude = toggle("debug.fosfora.envdepth", false);
+    let env_show = toggle("debug.fosfora.envdepthshow", false);
+    let env_depth = (env_occlude || env_show).then(|| {
+        let d = EnvDepthOptions::default();
+        EnvDepthOptions {
+            occlude: env_occlude,
+            show: env_show,
+            hand_removal: toggle("debug.fosfora.envdepthhands", d.hand_removal),
+            near_cut_m: debug_prop("debug.fosfora.envdepthnear")
+                .and_then(|v| v.parse::<f32>().ok())
+                .map_or(d.near_cut_m, |v| v.max(0.0)),
+            flip_v: toggle("debug.fosfora.envdepthflipv", d.flip_v),
+        }
+    });
     let mr = MrOptions {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
@@ -260,6 +286,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             Some("query") => crate::room::Rescan::Query,
             _ => crate::room::Rescan::Off,
         },
+        env_depth,
     };
     let floor = toggle("debug.fosfora.floor", mixed);
     let gravity = debug_prop("debug.fosfora.gravity")
