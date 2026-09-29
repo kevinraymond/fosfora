@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use super::capture::RingBuffer;
+use super::downmix::Downmix;
 use super::pcm::convert_to_stereo_f32;
 use anyhow::Result;
 use windows::Win32::Media::Audio::{
@@ -299,6 +300,19 @@ fn wasapi_capture_loop(
             }
         };
 
+        // #67: fold a surround mix format into L/R by its speaker mask, so loopback of a 5.1 or
+        // 7.1 endpoint keeps the centre channel (vocals, dialogue) instead of only FL/FR.
+        let downmix = {
+            let fmt = &*mix_format_ptr;
+            let mask = if fmt.cbSize >= 22 {
+                let ext = &*(mix_format_ptr as *const WAVEFORMATEXTENSIBLE);
+                std::ptr::addr_of!(ext.dwChannelMask).read_unaligned()
+            } else {
+                0
+            };
+            Downmix::from_channel_mask(channels, mask)
+        };
+
         loop {
             if shutdown.load(Ordering::Acquire) {
                 log::info!("WASAPI capture thread shutting down");
@@ -349,7 +363,7 @@ fn wasapi_capture_loop(
 
                         let stereo = convert_to_stereo_f32(
                             raw_data,
-                            channels,
+                            &downmix,
                             is_float,
                             bits_per_sample,
                             block_align,

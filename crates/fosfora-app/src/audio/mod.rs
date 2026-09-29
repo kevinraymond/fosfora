@@ -3,6 +3,7 @@ pub mod beat;
 pub mod capture;
 pub mod chroma;
 pub mod downbeat;
+pub mod downmix;
 pub mod features;
 pub mod hop;
 pub mod hpss;

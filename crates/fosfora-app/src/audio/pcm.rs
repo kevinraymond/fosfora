@@ -4,6 +4,8 @@
 //! every mix format it can be handed is unit-tested on every platform, not only on a Windows
 //! host.
 
+use super::downmix::Downmix;
+
 /// Decode one channel of one interleaved frame to f32. Out-of-range offsets read as 0, as
 /// does a format with no branch here.
 fn decode_sample(
@@ -34,12 +36,13 @@ fn decode_sample(
 
 /// Convert raw interleaved audio bytes to interleaved `L,R` stereo f32.
 ///
-/// A13 (#1464): keep the front L/R pair (channels 0/1) rather than downmixing — the analysis thread
-/// derives the mono mix. A mono source is duplicated to both. Output is always even-length, upholding
-/// the capture ring's L/R parity invariant.
+/// A13 (#1464): the ring carries stereo and the analysis thread derives the mono mix. Mono is
+/// duplicated to both sides, stereo passes through, and more channels fold into the pair through
+/// `downmix` (#67). Output is always even-length, upholding the capture ring's L/R parity
+/// invariant.
 pub fn convert_to_stereo_f32(
     data: &[u8],
-    channels: usize,
+    downmix: &Downmix,
     is_float: bool,
     bits_per_sample: u16,
     frame_bytes: usize,
@@ -49,12 +52,8 @@ pub fn convert_to_stereo_f32(
 
     for i in 0..num_frames {
         let frame_start = i * frame_bytes;
-        let l = decode_sample(data, frame_start, 0, is_float, bits_per_sample);
-        let r = if channels >= 2 {
-            decode_sample(data, frame_start, 1, is_float, bits_per_sample)
-        } else {
-            l
-        };
+        let (l, r) =
+            downmix.frame(|ch| decode_sample(data, frame_start, ch, is_float, bits_per_sample));
         stereo.push(l);
         stereo.push(r);
     }
@@ -78,7 +77,13 @@ mod tests {
 
     fn assert_decodes(bytes: &[u8], is_float: bool, bits: u16, tol: f32) {
         let frame_bytes = 2 * usize::from(bits / 8);
-        let got = convert_to_stereo_f32(bytes, 2, is_float, bits, frame_bytes);
+        let got = convert_to_stereo_f32(
+            bytes,
+            &Downmix::wave_default(2),
+            is_float,
+            bits,
+            frame_bytes,
+        );
         let want: Vec<f32> = FRAMES.iter().flatten().copied().collect();
         assert_eq!(got.len(), want.len());
         for (g, w) in got.iter().zip(&want) {
@@ -125,13 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn mono_duplicates_and_surround_keeps_the_front_pair() {
+    fn mono_duplicates_and_surround_folds_into_the_pair() {
         let mono: Vec<u8> = [0.5f32, -0.5]
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect();
         assert_eq!(
-            convert_to_stereo_f32(&mono, 1, true, 32, 4),
+            convert_to_stereo_f32(&mono, &Downmix::wave_default(1), true, 32, 4),
             [0.5, 0.5, -0.5, -0.5]
         );
 
@@ -139,13 +144,20 @@ mod tests {
             .iter()
             .flat_map(|x| x.to_le_bytes())
             .collect();
-        assert_eq!(convert_to_stereo_f32(&quad, 4, true, 32, 16), [0.1, 0.2]);
+        // Quad (FL FR BL BR): the rear pair joins its side at −3 dB instead of being dropped.
+        let got = convert_to_stereo_f32(&quad, &Downmix::wave_default(4), true, 32, 16);
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let want = [0.1 + h * 0.3, 0.2 + h * 0.4];
+        assert!(
+            got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-6),
+            "{got:?}"
+        );
     }
 
     #[test]
     fn unknown_format_and_short_data_read_silence() {
         assert_eq!(
-            convert_to_stereo_f32(&[0xff; 16], 2, false, 8, 2),
+            convert_to_stereo_f32(&[0xff; 16], &Downmix::wave_default(2), false, 8, 2),
             vec![0.0; 16]
         );
         assert_eq!(decode_sample(&[0xff; 3], 0, 1, false, 16), 0.0);
