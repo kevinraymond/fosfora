@@ -240,8 +240,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.envdepthcheck 1          (self-check: once a second, with the room's boxes located, read a 40x40 grid of each
     //       depth layer back and log how well it agrees with the boxes and the floor along the same rays, as read, rows flipped
     //       and columns mirrored; implies the acquire, draws nothing by itself)
-    //   The envdepth knobs are read at startup (restart the app after a change); with envdepth, envdepthshow and envdepthcheck all 0 no depth
-    //   provider is created, so the baseline is the app without it.
+    //   adb shell setprop debug.fosfora.depthcollide 0|1         (board #3352: the live depth map as a collision source for the world sim: each
+    //       frame both layers are condensed into a small atlas, read back a frame later and uploaded into the sim's obstacle texture, and
+    //       particles meeting a surface in it bounce off like off a box; default on in world mode wherever the depth map is on)
+    //   adb shell setprop debug.fosfora.depthcollideres 160|320  (atlas texels per layer side; 160, the default, keeps the nearest of each 2x2 block)
+    //   adb shell setprop debug.fosfora.depthcollidethick 0.15   (how far behind a surface a particle still collides with it, m; deeper it is left
+    //       alone, the occluder hides it)
+    //   The envdepth and depthcollide knobs are read at startup (restart the app after a change); with envdepth, envdepthshow, envdepthcheck
+    //   and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
@@ -270,7 +276,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let env_occlude = toggle("debug.fosfora.envdepth", mixed);
     let env_show = toggle("debug.fosfora.envdepthshow", false);
     let env_check = toggle("debug.fosfora.envdepthcheck", false);
-    let env_depth = (env_occlude || env_show || env_check).then(|| {
+    // Board #3352: the live depth map as a collision source for the world
+    // sim, on by default wherever the depth map is.
+    let env_collide = world
+        && toggle(
+            "debug.fosfora.depthcollide",
+            env_occlude || env_show || env_check,
+        );
+    let env_depth = (env_occlude || env_show || env_check || env_collide).then(|| {
         let d = EnvDepthOptions::default();
         EnvDepthOptions {
             occlude: env_occlude,
@@ -281,6 +294,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 .map_or(d.near_cut_m, |v| v.max(0.0)),
             flip_v: toggle("debug.fosfora.envdepthflipv", d.flip_v),
             check: env_check,
+            collide: env_collide,
+            collide_res: match debug_prop("debug.fosfora.depthcollideres").as_deref() {
+                Some("320") => 320,
+                _ => d.collide_res,
+            },
+            collide_thickness_m: debug_prop("debug.fosfora.depthcollidethick")
+                .and_then(|v| v.parse::<f32>().ok())
+                .map_or(d.collide_thickness_m, |v| v.clamp(0.01, 1.0)),
         }
     });
     let mr = MrOptions {

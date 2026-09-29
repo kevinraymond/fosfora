@@ -335,6 +335,27 @@ impl XrScene {
         }
     }
 
+    /// World mode: put a read-back depth atlas into the effect's obstacle
+    /// texture, which `flux_xr_sim.wgsl` reads for the collide with the
+    /// live depth map (board #3352). The first upload after the effect is
+    /// built resizes the 1x1 placeholder and rebinds it; the others write
+    /// in place.
+    pub fn set_depth_atlas(&mut self, atlas: &crate::env_depth::DepthAtlas<'_>) {
+        if self.world.is_none() {
+            return;
+        }
+        let renderer = &mut self.renderer;
+        if let Some(ps) = particle_system(&mut renderer.layer_stack.layers) {
+            ps.update_obstacle_webcam(
+                &renderer.device,
+                &renderer.queue,
+                atlas.bytes,
+                atlas.width,
+                atlas.height,
+            );
+        }
+    }
+
     /// World mode: record this frame's sim dispatch (after [`Self::step`],
     /// before the eye passes). Draws nothing by itself.
     pub fn dispatch_world(&mut self, encoder: &mut wgpu::CommandEncoder) {

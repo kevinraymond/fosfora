@@ -1742,6 +1742,7 @@ dependencies = [
  "naga",
  "ndk",
  "openxr",
+ "pollster",
  "serde_json",
  "wgpu",
 ]

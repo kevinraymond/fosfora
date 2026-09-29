@@ -722,23 +722,34 @@ impl XrSession {
                 None => Vec::new(),
             },
         };
-        before_render(&input, scene.as_deref_mut());
-
-        let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
-        log_stereo(view_flags, &views, &cameras);
-        // The live depth map, acquired right before rendering at the same
-        // predicted display time and in the same space as the views.
-        // A failed creation is retried from here (`EnvDepthSlot::get`).
+        // The live depth map. A failed creation is retried from here
+        // (`EnvDepthSlot::get`). The depth atlas built from an earlier
+        // frame's map, once read back, goes into the world sim's obstacle
+        // texture before the sim's inputs are written (board #3352).
         let mut env = self
             .env_depth
             .as_mut()
             .and_then(|slot| slot.get(&self.session, self.system, gfx));
+        if let Some(e) = env.as_deref_mut() {
+            e.poll_atlas(&gfx.device, |atlas| {
+                if let Some(s) = scene.as_deref_mut() {
+                    s.set_depth_atlas(atlas);
+                }
+            });
+        }
+        before_render(&input, scene.as_deref_mut());
+
+        let cameras: Vec<EyeCamera> = views.iter().map(camera).collect();
+        log_stereo(view_flags, &views, &cameras);
+        // Acquired right before rendering at the same predicted display
+        // time and in the same space as the views.
         let env_frame = env.as_deref_mut().and_then(|e| {
             e.poll_check(&gfx.device);
             e.acquire(&self.space, time)
         });
         if let (Some(e), Some(f)) = (env.as_deref_mut(), env_frame.as_ref()) {
             e.check(&gfx.device, &gfx.queue, f, &input.room_boxes);
+            e.build_atlas(&gfx.device, &gfx.queue, f);
         }
         let extents: Vec<[u32; 2]> = self
             .eyes
