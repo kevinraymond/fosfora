@@ -98,6 +98,8 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 # worse than the ~100s-KB size cost. Off only for non-desktop (XR) lib builds, where
 # native-tls does not build.
 ureq = { version = "3", features = ["native-tls"], optional = true }
+# Every download is checked against a pinned SHA-256 before it is used.
+sha2 = { version = "0.10", optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
@@ -193,6 +195,7 @@ desktop = [
     "dep:tungstenite",
     "dep:rfd",
     "dep:ureq",
+    "dep:sha2",
 ]
 # Exactly what the release downloads ship: release.yml builds with this, so
 # `cargo build --release --features release` reproduces a download. The
