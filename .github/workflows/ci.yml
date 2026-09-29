@@ -48,6 +48,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Deny check
         uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: dtolnay/rust-toolchain@1.97.0
+      # deny.toml allows rusty_link's GPL licence only because opt-in `--features link`
+      # builds are the sole ones that link it. Prove the shipped feature set really leaves
+      # it out, on every target. The positive control first: if the crate were renamed or
+      # the query broke, "did not match" would otherwise pass forever.
+      - name: GPL rusty_link absent from release builds
+        run: |
+          tree() { cargo tree -q -p fosfora-app --target all -e normal,build -i rusty_link --features "$1" 2>&1; }
+          tree release,link | grep -q '^rusty_link '
+          out=$(tree release || true)
+          if ! grep -q 'did not match any packages' <<<"$out"; then
+            echo "::error::rusty_link (GPL-2.0-or-later) is in the release dependency graph"
+            echo "$out"
+            exit 1
+          fi
 
   lint:
     name: Lint
