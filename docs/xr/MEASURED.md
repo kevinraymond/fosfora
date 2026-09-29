@@ -1384,7 +1384,9 @@ The single submit also made the read-back land 2 frames late (84-94
 atlases superseded per 10 s). Kevin approved B'2, which removes the round
 trip: the GPU copy above (`dc72ac5` core accessor, then the XR change).
 
-**B'2, pending on the device:**
+**B'2 on the device** (`1122a85`, Flux XR Room 400K, `mode world`,
+72 Hz, unworn, cooled to 40 C first, four 60 s runs back to back,
+battery 40 -> 45 C across the series):
 
 ```
 scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=0"
@@ -1392,11 +1394,23 @@ scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "dep
 scripts/xr/sweep.sh --mode world --counts 400000 --hz 72 --seconds 60 --set "depthcollide=1;depthcollideres=160;depthcollideupload=0"
 ```
 
-| Config | App GPU med / p90 / max | CPU avg ms | Long | Stale |
-|---|---|---|---|---|
-| collide off | pending | pending | pending | pending |
-| collide on, 160 (GPU copy, every 2) | pending | pending | pending | pending |
-| collide on, 160, `depthcollideupload 0` | pending | pending | pending | pending |
+| Run (in order) | App GPU med / p90 / max | CPU avg ms |
+|---|---|---|
+| collide on, 160 (GPU copy, every 2) | 9.20 / 9.69 / 10.06 | 1.63 |
+| collide off | 9.27 / 9.78 / 10.54 | 1.56 |
+| collide on, 160, again | 9.27 / 9.80 / 10.16 | 1.63 |
+| collide on, 160, `depthcollideupload 0` | 9.36 / 9.73 / 10.46 | 1.60 |
+
+Atlas: 721 copied into the obstacle texture per 10 s, 0 after sizing
+(one sizing at start), 0 frames without a texture, 0 frames without a
+depth frame. **The collision source now costs nothing measurable: at
+most 0.1 ms GPU and +0.07 ms CPU**, against ~0.7 ms GPU, 0.4 ms CPU and
+1-2 frames of lag with the CPU upload (B'1). Caveat: the room query
+returned 0 anchors in all four runs (the headset had just woken from a
+doze), so only the stage floor emitted (~330K alive) and the absolute
+numbers sit below the located-room baseline of 9.25-9.38 ms; the pairs
+are consistent. Stale frames were 179-235 in every run, collide off
+included, so they are not the feature's.
 
 The atlas path works on the device: 709 uploads per 10 s, lag exactly 1
 frame, 0 failed, 0 skipped. Hand removal: the creation line read
@@ -1414,6 +1428,6 @@ any other work and the fov rows and collide header read only when they
 are needed.
 
 **Worn gate: pending.** Embers land on a hand-held object, a person and
-an unscanned chair; they slide off a shoulder; no particles trapped
-inside people; hand removal on against off (`envdepthhands`, live);
-occluder edges with `envdepthfilter` 0, 1 and 2.
+an unscanned chair; they slide off a shoulder; none trapped inside
+people; occluder edges with `envdepthfilter` 1 against 2; hand removal
+with `envdepthhands` 0 against 1 (live).
