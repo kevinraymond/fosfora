@@ -64,7 +64,8 @@ pub const LIFT_M: f32 = crate::ripple::LIFT_M;
 /// Rows of [`rows`], `struct SurfaceFx` in [`SURFACE_FX_WGSL`].
 pub const UNIFORM_ROWS: usize = 9 + MAX_RINGS;
 /// The streamlines' alpha at full strength and full rms.
-pub const STREAM_PEAK_ALPHA: f32 = 0.30;
+// 0.30 read "too faint" on the real desk (Kevin, worn, Sep 30).
+pub const STREAM_PEAK_ALPHA: f32 = 0.55;
 /// How fast the streaks run along the field (m/s of the clock), doubled
 /// at a full beat envelope by the clock.
 pub const STREAM_SPEED_M_S: f32 = 0.15;
@@ -86,7 +87,7 @@ pub const STREAM_LINE_SOFT_M: f32 = 0.0015;
 /// The fade toward the face's edges (m).
 pub const STREAM_EDGE_M: f32 = 0.05;
 /// The rms scale's floor.
-pub const STREAM_RMS_FLOOR: f32 = 0.4;
+pub const STREAM_RMS_FLOOR: f32 = 0.6;
 /// The field's drift (noise cells per second of the clock): the lines
 /// morph slowly while the streaks run along them.
 pub const STREAM_DRIFT: f32 = 0.04;
@@ -378,7 +379,7 @@ const FILL_TO: f32 = 4.0;
 const LINE_M: f32 = 0.006;
 const LINE_SOFT_M: f32 = 0.0015;
 const EDGE_M: f32 = 0.05;
-const RMS_FLOOR: f32 = 0.4;
+const RMS_FLOOR: f32 = 0.6;
 const DRIFT: f32 = 0.04;
 const STREAK_M: f32 = 0.08;
 const STREAK_TRAVEL_M: f32 = 0.3;
