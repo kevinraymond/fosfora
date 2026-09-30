@@ -77,11 +77,11 @@ pub struct Gfx {
     beam: QuadBinding,
     beam_visible: std::cell::Cell<[bool; BEAM_SLOTS]>,
     beam_pipeline: wgpu::RenderPipeline,
-    /// The floor ripple (`set_ripple`, `ripple.rs`): one lit quad on the
-    /// floor.
-    ripple: QuadBinding,
-    ripple_visible: std::cell::Cell<bool>,
-    ripple_pipeline: wgpu::RenderPipeline,
+    /// The surfaces pass (`set_surfaces`, `surface_fx.rs`, board #3472):
+    /// one uniform slot per lit face, the first `surface_count` drawn.
+    surfaces: Vec<QuadBinding>,
+    surface_count: std::cell::Cell<usize>,
+    surface_pipeline: wgpu::RenderPipeline,
     /// The wall spectrum (`set_canvas`, `canvas.rs`): one lit quad on the
     /// wall the wearer faces.
     canvas: QuadBinding,
@@ -407,12 +407,13 @@ impl Gfx {
         let (panel_pipeline, panel_layout) = build_panel_pipeline(&device, &eye_layout);
         let (beam_pipeline, beam) = build_beam_pipeline(&device, &eye_layout);
         let (ghost_pipeline, ghost) = build_ghost_pipeline(&device, &eye_layout);
-        let (ripple_pipeline, ripple) = build_surface_pipeline(
+        let (surface_pipeline, surfaces) = build_surface_slots(
             &device,
             &eye_layout,
-            crate::ripple::RIPPLE_WGSL,
-            "xr-ripple",
-            crate::ripple::UNIFORM_ROWS,
+            crate::surface_fx::SURFACE_FX_WGSL,
+            "xr-surfaces",
+            crate::surface_fx::UNIFORM_ROWS,
+            crate::surface_fx::MAX_SLOTS,
         );
         let (canvas_pipeline, canvas) = build_surface_pipeline(
             &device,
@@ -440,9 +441,9 @@ impl Gfx {
             beam,
             beam_visible: std::cell::Cell::new([false; BEAM_SLOTS]),
             beam_pipeline,
-            ripple,
-            ripple_visible: std::cell::Cell::new(false),
-            ripple_pipeline,
+            surfaces,
+            surface_count: std::cell::Cell::new(0),
+            surface_pipeline,
             canvas,
             canvas_visible: std::cell::Cell::new(false),
             canvas_pipeline,
@@ -635,14 +636,17 @@ impl Gfx {
         self.beam_visible.set(visible);
     }
 
-    /// The floor ripple for this frame (`Ripple::uniform`'s rows), or
-    /// hidden with `None`.
-    pub fn set_ripple(&self, rows: Option<&[[f32; 4]; crate::ripple::UNIFORM_ROWS]>) {
-        if let Some(rows) = rows {
+    /// The surfaces pass for this frame: one lit face per entry
+    /// (`surface_fx::rows`), each into its own slot and drawn in order; at
+    /// most `surface_fx::MAX_SLOTS`, the rest dropped. Empty hides the
+    /// pass.
+    pub fn set_surfaces(&self, faces: &[[[f32; 4]; crate::surface_fx::UNIFORM_ROWS]]) {
+        let n = faces.len().min(self.surfaces.len());
+        for (slot, rows) in self.surfaces.iter().zip(&faces[..n]) {
             self.queue
-                .write_buffer(&self.ripple.uniform, 0, bytemuck::cast_slice(rows));
+                .write_buffer(&slot.uniform, 0, bytemuck::cast_slice(rows));
         }
-        self.ripple_visible.set(rows.is_some());
+        self.surface_count.set(n);
     }
 
     /// The wall spectrum for this frame (`Canvas::uniform`'s rows), or
@@ -670,9 +674,9 @@ impl Gfx {
     /// its `prepare_world` and `draw_world` for every eye, but still
     /// dispatches its sim, so showing it again is instant and the cloud
     /// is as it would have been. Everything else still draws: the depth
-    /// occluders, the ripple, the canvas, the highlight, the beams, the
-    /// panel and the label. The pitcher's pour and the throw's bursts are
-    /// particles of the world effect, so they hide with it.
+    /// occluders, the surfaces pass, the canvas, the highlight, the beams,
+    /// the panel and the label. The pitcher's pour and the throw's bursts
+    /// are particles of the world effect, so they hide with it.
     pub fn set_world_visible(&self, visible: bool) {
         self.world_visible.set(visible);
     }
@@ -956,14 +960,19 @@ impl Gfx {
             if let Some(p) = particles {
                 p.draw_occluders(&mut pass, i);
             }
-            // The floor ripple after the occluders, so a desk or a hand in
-            // front of the floor hides it, and before the sprites, so
-            // embers on the floor draw over the light.
-            if self.ripple_visible.get() {
-                pass.set_pipeline(&self.ripple_pipeline);
+            // The surfaces pass after the occluders, so a desk or a hand
+            // in front of a surface hides its light, and before the
+            // sprites, so embers on a surface draw over it: one draw per
+            // lit face, its slot bound (board #3472; the floor ripple drew
+            // here before it became the rings).
+            let lit = self.surface_count.get();
+            if lit > 0 {
+                pass.set_pipeline(&self.surface_pipeline);
                 pass.set_bind_group(0, &eye.bind_group, &[]);
-                pass.set_bind_group(1, &self.ripple.bind_group, &[]);
-                pass.draw(0..6, 0..1);
+                for slot in &self.surfaces[..lit] {
+                    pass.set_bind_group(1, &slot.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
             // The wall spectrum right after, on the same terms: behind a
             // hand or a chair in front of the wall, under the embers.
@@ -1371,8 +1380,8 @@ fn build_beam_pipeline(
 }
 
 /// A lit surface quad's pipeline and its uniform of `rows` vec4s: the
-/// floor ripple (`ripple.rs`), the wall spectrum (`canvas.rs`) and the
-/// room editor's highlight (`highlight.rs`). The beam's setup
+/// wall spectrum (`canvas.rs`) and the room editor's highlight
+/// (`highlight.rs`); [`build_surface_slots`] with one slot. The beam's setup
 /// (premultiplied alpha, depth-tested, no depth write, no culling) plus a
 /// depth bias toward the camera. The surface's occluder writes depth at
 /// its face; the quad sits `LIFT_M` off it, and the bias keeps it in
@@ -1386,6 +1395,21 @@ fn build_surface_pipeline(
     label: &str,
     rows: usize,
 ) -> (wgpu::RenderPipeline, QuadBinding) {
+    let (pipeline, mut slots) = build_surface_slots(device, eye_layout, wgsl, label, rows, 1);
+    (pipeline, slots.swap_remove(0))
+}
+
+/// [`build_surface_pipeline`]'s pipeline with `slots` uniforms of `rows`
+/// vec4s, each with its own bind group on the one layout: the surfaces
+/// pass (`surface_fx.rs`) binds one per lit face and draws it.
+fn build_surface_slots(
+    device: &wgpu::Device,
+    eye_layout: &wgpu::BindGroupLayout,
+    wgsl: &str,
+    label: &str,
+    rows: usize,
+    slots: usize,
+) -> (wgpu::RenderPipeline, Vec<QuadBinding>) {
     let bytes = 16 * rows as u64;
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -1404,20 +1428,28 @@ fn build_surface_pipeline(
             count: None,
         }],
     });
-    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: bytes,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout: &uniform_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniform.as_entire_binding(),
-        }],
-    });
+    let bindings = (0..slots)
+        .map(|_| {
+            let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &uniform_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                }],
+            });
+            QuadBinding {
+                uniform,
+                bind_group,
+            }
+        })
+        .collect();
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[eye_layout, &uniform_layout],
@@ -1462,13 +1494,7 @@ fn build_surface_pipeline(
         multiview: None,
         cache: None,
     });
-    (
-        pipeline,
-        QuadBinding {
-            uniform,
-            bind_group,
-        },
-    )
+    (pipeline, bindings)
 }
 
 /// The surface quads' depth bias toward the camera (negative: nearer), in

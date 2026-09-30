@@ -224,11 +224,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
-    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat, on a floor whose behavior is the ripple, a floor's default; default on in mr/world)
-    //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
-    //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
-    //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
-    //       the floor, lifted toward the room, for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.ripple 0|1               (the rings, the floor ripple until D1: rings on each beat on every surface whose
+    //       behavior is the rings, a floor's default, from under the head on a floor, from the face's point nearest the head elsewhere;
+    //       off, no surface shows rings; default on in mr/world)
+    //   adb shell setprop debug.fosfora.ripplegain 1             (rings brightness multiplier; 1 = peak alpha 0.25)
+    //   adb shell setprop debug.fosfora.ripplespeed 2.5          (rings speed, m/s)
+    //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the rings on every CEILING anchor for the run, the room file untouched,
+    //       for an unworn screencap from a headset lying face up)
     //   adb shell setprop debug.fosfora.canvas 0|1               (the wall spectrum: mel bars on the wall the wearer faces; default on in mr/world)
     //   adb shell setprop debug.fosfora.canvasgain 1             (wall spectrum brightness multiplier; 1 = peak alpha 0.25)
     //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
@@ -805,7 +807,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut pose_text = [String::from("open"), String::from("open")];
     let mut pose_label = String::from("-");
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
-    // Board #3317: the floor ripple, on the scene floor or the stage floor.
+    // Board #3317: the floor ripple's state, the rings of the surfaces pass
+    // since D1 (board #3472), on every face whose behavior is the rings.
     let ripple_ceiling = debug_prop("debug.fosfora.rippletest").as_deref() == Some("ceiling");
     let mut ripple = toggle("debug.fosfora.ripple", mixed).then(|| {
         crate::ripple::Ripple::new(
@@ -814,11 +817,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         )
     });
     info!(
-        "floor ripple {} · surface weights table {} floor {}",
+        "rings {}{} · surface weights table {} floor {}",
         ripple.as_ref().map_or("off".to_owned(), |r| format!(
             "on (speed {} m/s, gain {})",
             r.speed, r.gain
         )),
+        if ripple_ceiling {
+            " · test: on the ceiling"
+        } else {
+            ""
+        },
         surface_weights.table,
         surface_weights.floor
     );
@@ -948,10 +956,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
     // Board #3326: each box's behavior (the room file and the `surface`
-    // knob), and the floor the ripple is on with why, for the log (`None`
-    // before the first frame, so the first pick is logged too).
+    // knob).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
-    let mut ripple_floor: Option<Option<(usize, &str)>> = None;
+    // Board #3472: the surfaces pass's clock and its lit faces by shader
+    // (rings, streamlines), for the log (`None` before the first frame, so
+    // the first count is logged too).
+    let mut surface_clock = crate::surface_fx::Clock::default();
+    let mut surfaces_lit: Option<[usize; 2]> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1898,6 +1909,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
+            surface_clock.advance(dt, beat_env);
             if let Some(r) = ripple.as_mut() {
                 r.update(
                     t,
@@ -1907,81 +1919,83 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass.max(f.sub_bass),
                     f.bass,
                 );
-                // Only a floor whose behavior is the ripple carries it
-                // (step 2d, decision #3459): the largest scene floor on
-                // the ripple, else the stage floor on it while the room
-                // has no scene floor (then it stands in for one, as its
-                // emitter flag and the editor's ray take it; beside a
-                // scene floor it is out of the editor's reach, and its
-                // default would put the ripple back under a scene floor
-                // the wearer turned to none); with none, no ripple. The
-                // fallback to the largest scene floor is gone: "floor
-                // ripple kept rippling when I switch to embers or none"
-                // (Kevin, worn, Sep 29).
-                let ripple_of = |k: usize| {
-                    surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Rings
-                };
-                let largest = input
-                    .room_boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(k, b)| b.kind == crate::surfaces::KIND_FLOOR && ripple_of(k))
-                    .map(|(k, b)| {
-                        (
-                            k,
-                            crate::surfaces::TopFace::of(
-                                glam::Vec3::from(b.center),
-                                glam::Quat::from_array(b.rot),
-                                glam::Vec3::from(b.half),
-                            ),
-                        )
-                    })
-                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()));
+            }
+            // Board #3472, D1: the surfaces pass. Every box whose behavior
+            // is a surface shader (the rings, the streamlines) is lit on
+            // the face the behavior acts on, the stage floor too while the
+            // room has no scene floor (then it stands in for one, as its
+            // emitter flag and the editor's ray take it; beside a scene
+            // floor it would double it, step 2d); a hidden wall never. A
+            // floor's face is leveled and kept above the stage floor, as
+            // the ripple's quad was. The rings need the ripple state
+            // (`debug.fosfora.ripple`); `rippletest ceiling` puts them on
+            // every ceiling for the run, the room file untouched.
+            {
+                use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
+                let head = glam::Vec3::from(input.head);
                 let stage_k = input.room_boxes.len();
-                let stage_ripples = floor_box.is_some()
-                    && !input
-                        .room_boxes
-                        .iter()
-                        .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
-                    && ripple_of(stage_k);
-                let (scene_floor, pick) = match largest {
-                    Some((k, f)) => (Some(f), Some((k, "a scene floor on the ripple"))),
-                    None if stage_ripples => {
-                        (None, Some((stage_k, "the stage floor on the ripple")))
-                    }
-                    None => (None, None),
-                };
-                if !ripple_ceiling && Some(pick) != ripple_floor {
-                    match pick {
-                        Some((k, why)) => info!("floor ripple: on box {k} ({why})"),
-                        None => info!("floor ripple: no floor on ripple"),
-                    }
-                    ripple_floor = Some(pick);
-                }
+                let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
-                let quad = if ripple_ceiling {
-                    input
-                        .room_boxes
-                        .iter()
-                        .find(|b| b.kind == crate::surfaces::KIND_CEILING)
-                        .map(|b| {
-                            let center = glam::Vec3::from(b.center);
-                            crate::ripple::Ripple::quad_under(
-                                crate::surfaces::TopFace::of(
-                                    center,
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                ),
-                                center,
-                            )
-                        })
-                } else if pick.is_some() {
-                    r.quad(scene_floor, stage_top)
-                } else {
-                    None
+                let audio = crate::surface_fx::Audio {
+                    rms: f.rms,
+                    bass: f.bass,
+                    beat: beat_env,
+                    clock: surface_clock.seconds(),
                 };
-                let rows = quad.map(|corners| r.uniform(t, corners));
-                gfx.set_ripple(rows.as_ref());
+                let mut counts = [0usize; 2];
+                let mut faces = Vec::new();
+                for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
+                    let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
+                        (SurfaceBehavior::Rings, 1.0)
+                    } else {
+                        (
+                            surface_lanes.behavior(k),
+                            surface_lanes.rows().get(k).map_or(1.0, |r| r[1]),
+                        )
+                    };
+                    if !behavior.draws_on_face()
+                        || b.hidden
+                        || (k == stage_k && scene_floor)
+                        || (behavior == SurfaceBehavior::Rings && ripple.is_none())
+                    {
+                        continue;
+                    }
+                    let mut face = crate::surfaces::acting_face(
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                        head,
+                    );
+                    if b.kind == KIND_FLOOR {
+                        face = crate::surface_fx::level_floor(face, stage_top);
+                    }
+                    let slot = crate::surface_fx::Slot {
+                        face,
+                        kind: b.kind,
+                        behavior,
+                        strength,
+                    };
+                    counts[usize::from(behavior == SurfaceBehavior::Streamlines)] += 1;
+                    faces.push(crate::surface_fx::rows(&slot, audio, ripple.as_ref(), t));
+                }
+                if Some(counts) != surfaces_lit {
+                    let dropped = faces
+                        .len()
+                        .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                    info!(
+                        "surfaces: {} lit (rings {}, streamlines {}){}",
+                        faces.len(),
+                        counts[0],
+                        counts[1],
+                        if dropped > 0 {
+                            format!(", {dropped} past the pass's slots not drawn")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    surfaces_lit = Some(counts);
+                }
+                gfx.set_surfaces(&faces);
             }
             if let Some(c) = canvas.as_mut() {
                 c.update(dt, &hop.frame.mel);

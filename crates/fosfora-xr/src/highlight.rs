@@ -1,8 +1,8 @@
 //! The room editor's highlight (board #3326): the face the pointing ray hit,
 //! tinted. Plain numbers in, so it builds and tests on the desktop; `gfx.rs`
 //! draws it with [`HIGHLIGHT_WGSL`] from the rows [`uniform`] packs, through
-//! the same lit-quad pipeline as the floor ripple and the wall spectrum,
-//! right after them: behind a hand or a chair in front of the surface,
+//! the same lit-quad pipeline as the wall spectrum, right after it and
+//! the surfaces pass: behind a hand or a chair in front of the surface,
 //! under the embers.
 //!
 //! **The look.** The ripple's family: premultiplied warm white, light on the
