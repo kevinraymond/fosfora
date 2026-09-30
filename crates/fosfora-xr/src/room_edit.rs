@@ -293,20 +293,23 @@ pub enum Cloud {
     /// Hidden: the sim steps on as it would with the cloud on, the eye
     /// pass skips its draw.
     Off,
-    /// Edit room with the cloud off: shown, only box `k` (the editor's
-    /// hit) spawning; with no hit nothing spawns.
+    /// Shown, only box `k` (the editor's hit) spawning; with no hit
+    /// nothing spawns. Not reached from the toggle since Kevin's sixth
+    /// worn pass (Sep 30): "cloud off" with Edit room on showed the whole
+    /// effect (the mass alive before the solo, and every effect without
+    /// surface emitters), and "cloud off, still particles flying" is the
+    /// wrong surprise. Kept for an explicit solo later, once the living
+    /// particles can be cleared at once (board #3464).
     Solo(Option<usize>),
 }
 
 impl Cloud {
-    /// The cloud for the toggle `cloud`, Edit room `edit_room` and the
-    /// editor's hit (a lane index).
+    /// The cloud for the toggle `cloud`: off hides the effect whatever
+    /// Edit room and the editor's hit are (`edit_room` and `hit` are
+    /// kept for the explicit solo to come).
     pub fn of(cloud: bool, edit_room: bool, hit: Option<usize>) -> Self {
-        match (cloud, edit_room) {
-            (true, _) => Self::On,
-            (false, false) => Self::Off,
-            (false, true) => Self::Solo(hit),
-        }
+        let _ = (edit_room, hit);
+        if cloud { Self::On } else { Self::Off }
     }
 
     /// Whether the eye pass draws the world effect (`Gfx::set_world_visible`):
@@ -712,8 +715,9 @@ mod tests {
         assert_eq!(Cloud::of(true, false, None), Cloud::On);
         assert_eq!(Cloud::of(true, true, Some(3)), Cloud::On);
         assert_eq!(Cloud::of(false, false, Some(3)), Cloud::Off);
-        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::Solo(Some(3)));
-        assert_eq!(Cloud::of(false, true, None), Cloud::Solo(None));
+        // Off is off, whatever the editor is doing (the sixth worn pass).
+        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::Off);
+        assert_eq!(Cloud::of(false, true, None), Cloud::Off);
         let name = |k: usize| format!("desk {k}");
         assert_eq!(Cloud::On.describe(name), "cloud on");
         assert_eq!(

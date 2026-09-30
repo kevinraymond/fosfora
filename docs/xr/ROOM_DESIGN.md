@@ -554,3 +554,14 @@ ripple, so a Flux XR Room run with no anchors now spawns nothing unless
 the stage floor's lane emits: the unworn cost sweeps set
 `debug.fosfora.surface "#0=sparks"`. Logs: "cloud off: the world effect
 is hidden", "cloud on".
+
+**Implemented, step 2f (Sep 30).** Kevin's sixth worn pass: "cloud: off,
+all: none, and still there are particles flying all around me." The log
+showed two things. The world effect was Flux XR World, the default in
+`mode world`, a volume emitter that ignores the lanes; the room editor
+steers only Flux XR Room. And Cloud off with Edit room on was the solo,
+which showed the effect. So Cloud off now hides the effect whatever Edit
+room is doing; the solo is not reachable from the toggle and returns as
+an explicit mode once the living particles can be cleared at once
+(board #3464).
+

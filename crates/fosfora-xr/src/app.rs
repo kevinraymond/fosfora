@@ -241,8 +241,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
-    //       pitcher's pour and the throw's bursts are its particles and hide with it); off with Edit room on, it shows, and only the surface
-    //       under the editor's beam spawns (solo, at the full rate), nothing with no surface; default 1, not saved)
+    //       pitcher's pour and the throw's bursts are its particles and hide with it), Edit room on or off; default 1, not saved)
     //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
     //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
@@ -1611,12 +1610,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     gfx.set_highlight(rows.as_ref());
                     edit_was_on = edit_on;
                 }
-                // Step 2c: the cloud toggle, with the editor's hit to
-                // solo while Edit room is on. Its lane rows go with the
-                // world inputs; off, it hides the world effect's draw
-                // (step 2e), the sim stepping on. The pitcher's pour and
-                // the throw's bursts are that effect's particles, so they
-                // hide with it.
+                // Step 2c/2e: the cloud toggle. Off hides the world
+                // effect's draw, Edit room or not, the sim stepping on.
+                // The pitcher's pour and the throw's bursts are that
+                // effect's particles, so they hide with it.
                 let cloud = crate::room_edit::Cloud::of(
                     controls.cloud,
                     edit_on,
