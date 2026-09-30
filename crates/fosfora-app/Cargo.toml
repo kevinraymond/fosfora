@@ -152,9 +152,13 @@ windows = { version = "0.61", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 # NSWorkspace.accessibilityDisplayShouldReduceMotion (reduced-motion detection).
 # The accessor lives in the NSAccessibility module gated on its own feature.
+# NSResponder/NSView/NSWindow: the output window's level (output_window.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSWorkspace",
     "NSAccessibility",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
 ] }
 # Syphon output (GH #4). Syphon.framework itself is dlopen'd at runtime (it
 # ships inside the release app bundle), so only Metal/Foundation — system

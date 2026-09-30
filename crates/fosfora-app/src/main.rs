@@ -79,6 +79,17 @@ impl ApplicationHandler for FosforaApp {
             return;
         }
 
+        // macOS merges a new window into an existing one as a tab when the
+        // system tab preference allows it, and it did so with the output
+        // window: the output took the main window's frame, the interface went
+        // behind it as a hidden tab, and the pair moved to the output display
+        // together (GH #212). Fosfora has no document windows to tab.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            event_loop.set_allows_automatic_window_tabbing(false);
+        }
+
         let mut attrs = WindowAttributes::default()
             .with_title("Fosfora")
             .with_inner_size(winit::dpi::LogicalSize::new(1920, 1080));
@@ -170,6 +181,15 @@ impl ApplicationHandler for FosforaApp {
                 } => app.close_output_window(),
                 _ => {}
             }
+            return;
+        }
+
+        // Anything else that is not the main window belongs to an output
+        // window that has already closed: macOS keeps delivering a closed
+        // full-screen window's exit resizes after the window is dropped. Taken
+        // as the main window's, they resized its surface to the output
+        // display's size and left the interface zoomed (GH #212).
+        if window_id != app.window.id() {
             return;
         }
 

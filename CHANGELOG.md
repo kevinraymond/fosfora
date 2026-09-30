@@ -32,6 +32,11 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   needs `libssl-dev`.
 
 ### Fixed
+- **On macOS the second output window stayed black, or took the interface with it.** It now
+  opens as a plain borderless window on its display, with the interface left live on the other,
+  and closing it no longer leaves the interface zoomed.
+- **Webcams stayed dark on macOS and no permission prompt appeared.** Fosfora now asks for
+  camera access the first time a camera is added; allow it, then add the camera again.
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
   Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
   HDR values and blend exactly as before everywhere else.

@@ -61,6 +61,9 @@ impl WebcamCapture {
     /// Start capturing from the given camera index at the requested resolution.
     /// Validates the camera can be opened before spawning the capture thread.
     pub fn start(device_index: u32, resolution: Option<(u32, u32)>) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        ensure_camera_access()?;
+
         let (frame_tx, frame_rx) = crossbeam_channel::bounded(2);
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
@@ -186,6 +189,33 @@ pub fn webcam_available() -> bool {
     use std::sync::OnceLock;
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| list_devices().map_or(false, |d| !d.is_empty()))
+}
+
+/// macOS lets an app use a camera only after the user has allowed it, and
+/// the question is asked only when the app requests access. Without the
+/// request the camera stayed dark and no prompt ever appeared (GH #212).
+///
+/// Waits briefly rather than for the user: a recorded answer comes back at
+/// once, while a prompt on screen can stay there indefinitely and the frame
+/// loop must not stop for it. The user adds the camera again after answering.
+#[cfg(target_os = "macos")]
+fn ensure_camera_access() -> Result<(), String> {
+    if nokhwa::nokhwa_check() {
+        return Ok(());
+    }
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    nokhwa::nokhwa_initialize(move |granted| {
+        let _ = tx.send(granted);
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Fosfora is not allowed to use the camera. Turn it on in \
+             System Settings ▸ Privacy & Security ▸ Camera, then add the camera again."
+            .into()),
+        Err(_) => Err(
+            "Allow Fosfora to use the camera when macOS asks, then add the camera again.".into(),
+        ),
+    }
 }
 
 /// Format a user-friendly camera error message.

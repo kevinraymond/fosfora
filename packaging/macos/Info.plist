@@ -25,5 +25,7 @@
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Fosfora uses your microphone for audio-reactive visuals.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Fosfora uses your camera for live video layers and camera-driven effects.</string>
 </dict>
 </plist>
