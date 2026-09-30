@@ -20,10 +20,19 @@ env:
 permissions:
   contents: read
 
+# A new push to a PR supersedes the run on its old head. Pushes to main are not
+# cancelled: every commit that lands there gets a complete result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Job timeouts are ~3x a warm-cache run (Sep 2026: build 18-25 min, test 15, bench 10,
+# lint 8), so a cold cache fits and a hung step fails instead of burning the 6 h default.
 jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -34,6 +43,7 @@ jobs:
   demos:
     name: Capture demo presets
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       # Every way a demo preset can be wrong is silent at runtime — an unknown param is
@@ -44,6 +54,7 @@ jobs:
   deny:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Deny check
@@ -67,6 +78,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
@@ -121,6 +133,7 @@ jobs:
   xr-lib:
     name: XR lib (aarch64-linux-android)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -140,6 +153,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       # ffmpeg for the loop-export encode tests, which probe the real binary
@@ -187,6 +201,7 @@ jobs:
   bench-fixture:
     name: Bench fixture
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       # No libclang-dev here on purpose (#2359). It is a bindgen dep, and bindgen
@@ -218,6 +233,7 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

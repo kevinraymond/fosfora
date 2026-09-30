@@ -1,0 +1,38 @@
+name: Repo checks
+
+# The plain-Python guards the pre-commit hook runs, on every PR. They live apart from
+# ci.yml because that workflow skips '**.md' changes, and CHANGELOG.md and docs/ are
+# exactly what two of these check. No Rust toolchain: the whole job takes seconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Repo checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # check_changelog.py reads each release tag's own CHANGELOG to confirm shipped
+          # headers are intact; a shallow clone has no tags and would skip that check.
+          fetch-depth: 0
+      - name: CHANGELOG headers and entry rules
+        run: scripts/check_changelog.py
+      - name: Docs (gallery, effect count, links)
+        run: scripts/check_docs.py
+      - name: Shader rate audit
+        run: scripts/audit_pfx_rates.py --check
+      - name: scenelib unit tests
+        run: scripts/test_scenelib.py
