@@ -191,30 +191,63 @@ pub fn webcam_available() -> bool {
     *AVAILABLE.get_or_init(|| list_devices().map_or(false, |d| !d.is_empty()))
 }
 
+/// Where macOS stands on letting Fosfora use a camera.
+#[cfg(target_os = "macos")]
+pub enum CameraAccess {
+    Granted,
+    Denied,
+    /// The prompt is on screen; the receiver gets the user's answer.
+    Asking(crossbeam_channel::Receiver<bool>),
+}
+
+#[cfg(target_os = "macos")]
+pub const CAMERA_DENIED: &str = "Fosfora is not allowed to use the camera. Turn it on in \
+     System Settings ▸ Privacy & Security ▸ Camera, then add the camera again.";
+
 /// macOS lets an app use a camera only after the user has allowed it, and
 /// the question is asked only when the app requests access. Without the
 /// request the camera stayed dark and no prompt ever appeared (GH #212).
 ///
 /// Waits briefly rather than for the user: a recorded answer comes back at
 /// once, while a prompt on screen can stay there indefinitely and the frame
-/// loop must not stop for it. The user adds the camera again after answering.
+/// loop must not stop for it. Asking again while the prompt is up does not
+/// show a second one.
 #[cfg(target_os = "macos")]
-fn ensure_camera_access() -> Result<(), String> {
+pub fn request_camera_access() -> CameraAccess {
     if nokhwa::nokhwa_check() {
-        return Ok(());
+        return CameraAccess::Granted;
     }
     let (tx, rx) = crossbeam_channel::bounded(1);
     nokhwa::nokhwa_initialize(move |granted| {
         let _ = tx.send(granted);
     });
-    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("Fosfora is not allowed to use the camera. Turn it on in \
-             System Settings ▸ Privacy & Security ▸ Camera, then add the camera again."
-            .into()),
-        Err(_) => Err(
-            "Allow Fosfora to use the camera when macOS asks, then add the camera again.".into(),
-        ),
+    let access = match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(true) => CameraAccess::Granted,
+        Ok(false) => CameraAccess::Denied,
+        Err(_) => CameraAccess::Asking(rx),
+    };
+    log::info!(
+        "Camera access: {}",
+        match access {
+            CameraAccess::Granted => "granted",
+            CameraAccess::Denied => "denied",
+            CameraAccess::Asking(_) => "asking the user",
+        }
+    );
+    access
+}
+
+/// The same request, as a gate in front of opening a camera. Callers that
+/// can finish their work once the user answers ask first themselves, as
+/// adding a camera layer does.
+#[cfg(target_os = "macos")]
+fn ensure_camera_access() -> Result<(), String> {
+    match request_camera_access() {
+        CameraAccess::Granted => Ok(()),
+        CameraAccess::Denied => Err(CAMERA_DENIED.into()),
+        CameraAccess::Asking(_) => {
+            Err("Allow Fosfora to use the camera when macOS asks, then try again.".into())
+        }
     }
 }
 

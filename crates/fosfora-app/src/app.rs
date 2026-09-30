@@ -192,6 +192,10 @@ pub struct App {
     pub webcam_device_index: u32,
     #[cfg(feature = "webcam")]
     pub use_ffmpeg_webcam: bool,
+    /// A camera layer waiting on the macOS camera prompt: the answer, and the
+    /// device to add once it is yes (GH #212).
+    #[cfg(all(target_os = "macos", feature = "webcam"))]
+    webcam_access_pending: Option<(crossbeam_channel::Receiver<bool>, u32)>,
     // Particle source loader (background image/video decode)
     pub particle_source_loader: crate::gpu::particle::ParticleSourceLoader,
     /// Background Gaussian-splat scene loader (#1800): decodes .ply/.splat off
@@ -627,6 +631,8 @@ impl App {
             webcam_device_index: webcam_device_from_settings,
             #[cfg(feature = "webcam")]
             use_ffmpeg_webcam,
+            #[cfg(all(target_os = "macos", feature = "webcam"))]
+            webcam_access_pending: None,
             particle_source_loader: crate::gpu::particle::ParticleSourceLoader::new(),
             splat_loader: crate::gpu::particle::SplatSceneLoader::new(),
             splat_demo_download: None,
@@ -764,6 +770,28 @@ impl App {
         // so the six seconds start when there is a window to show them in.
         if let Some(msg) = self.shader_watcher.take_degraded_notice() {
             self.status_error = Some((msg, now));
+        }
+
+        // The macOS camera prompt was answered: add the layer that waited on it.
+        #[cfg(all(target_os = "macos", feature = "webcam"))]
+        if let Some((answer, device_index)) = &self.webcam_access_pending {
+            let device_index = *device_index;
+            match answer.try_recv() {
+                Ok(true) => {
+                    log::info!("Camera access granted at the prompt; adding the camera layer");
+                    self.webcam_access_pending = None;
+                    self.add_webcam_layer(device_index);
+                }
+                Ok(false) => {
+                    self.webcam_access_pending = None;
+                    self.status_error =
+                        Some((crate::media::webcam::CAMERA_DENIED.into(), Instant::now()));
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.webcam_access_pending = None;
+                }
+            }
         }
 
         // Auto-clear status error after 6 seconds
@@ -2181,6 +2209,31 @@ impl App {
                 crate::bindings::catalog::MAX_LAYERS
             );
             return;
+        }
+
+        // On macOS, ask for the camera first. While the prompt is up the
+        // layer waits in `webcam_access_pending` and `update` adds it on a
+        // yes, so the user does not have to add the camera a second time.
+        #[cfg(target_os = "macos")]
+        if self.webcam_capture.is_none() {
+            use crate::media::webcam::{CAMERA_DENIED, CameraAccess, request_camera_access};
+            match request_camera_access() {
+                CameraAccess::Granted => {}
+                CameraAccess::Denied => {
+                    self.status_error = Some((CAMERA_DENIED.into(), Instant::now()));
+                    return;
+                }
+                CameraAccess::Asking(answer) => {
+                    self.webcam_access_pending = Some((answer, device_index));
+                    self.status_error = Some((
+                        "Allow Fosfora to use the camera when macOS asks; the camera layer \
+                         appears once you do."
+                            .into(),
+                        Instant::now(),
+                    ));
+                    return;
+                }
+            }
         }
 
         // Start capture if not already running
