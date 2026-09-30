@@ -64,8 +64,9 @@ const BASS_BIN_LO: usize = 3; // 32.3 Hz at 44.1 k / 4096
 const BASS_BIN_HI: usize = 17; // 183 Hz — just under the MIDI 54 fold floor
 /// Candidate must beat the local median by this factor (peak vs bass-band floor)…
 const BASS_MEDIAN_FACTOR: f32 = 2.0;
-/// …and an absolute magnitude floor (≈ −80 dBFS on the 2/N-scaled spectrum).
-const BASS_ABS_FLOOR: f32 = 1e-4;
+/// …and an absolute magnitude floor (≈ −74 dBFS). Tuned while the spectrum read 6 dB low;
+/// doubled with the coherent-gain correction (#54) so it sits at the same signal level.
+const BASS_ABS_FLOOR: f32 = 2e-4;
 /// Reject peaks further than this from an equal-tempered semitone (fraction of one).
 const BASS_MAX_CENTS_OFF: f32 = 0.35;
 /// Same pitch class for this many consecutive frames before it counts.

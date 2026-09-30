@@ -1,8 +1,11 @@
 //! A15 (#1466): monophonic fundamental-frequency (f0) estimation via YIN.
 //!
 //! Classic YIN (de Cheveigné & Kawahara 2002) on the analyzer's raw, un-windowed time-domain
-//! window — no extra FFT, and DC-immune (the difference function cancels any constant offset):
-//! 1. **Difference function** `d(τ) = Σ_j (x[j] − x[j+τ])²` over an integration window `W`.
+//! window — DC-immune (the difference function cancels any constant offset):
+//! 1. **Difference function** `d(τ) = Σ_j (x[j] − x[j+τ])²` over an integration window `W`,
+//!    expanded as `e(0) + e(τ) − 2·r(τ)` (window energies from a prefix sum, cross term `r` from
+//!    one packed FFT round trip) instead of the direct `O(W·τ)` double loop. Lags stop at the
+//!    period of [`PITCH_F_MIN`]: anything longer maps below the 0..1 range anyway.
 //! 2. **Cumulative mean normalized difference** `d'(τ) = d(τ) / ((1/τ)·Σ_{k≤τ} d(k))` — `d'(0) ≡ 1`,
 //!    which suppresses the octave-too-*high* (τ = T/2) error the raw autocorrelation makes.
 //! 3. **Absolute threshold**: the *first* dip below [`YIN_THRESHOLD`] (followed down to its local
@@ -17,7 +20,13 @@
 //! **held through unvoiced gaps** (confidence gated to 0) so a pitch-keyed visual doesn't snap to
 //! the lowest note on every rest.
 
-/// Full analysis window pulled from the analyzer's 4096-sample time-domain buffer.
+use std::sync::Arc;
+
+use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
+
+/// Full analysis window pulled from the analyzer's 4096-sample time-domain buffer. Also the FFT
+/// size: the cross term needs `W + τ_max ≤ WINDOW` to avoid circular wrap, which `τ < W` gives.
 const WINDOW: usize = 4096;
 /// YIN integration window. `2·W = WINDOW`, so the difference function reaches `τ = W` samples back
 /// with a full-length window at every lag (`j+τ` maxes at `2·W−2 = 4094 < WINDOW`).
@@ -28,6 +37,9 @@ const TAU_MIN: usize = 22;
 const YIN_THRESHOLD: f32 = 0.15;
 /// AC-energy floor under which the window is treated as silent/DC (guards the `d'` 0/0 → NaN).
 const ENERGY_EPS: f64 = 1e-9;
+/// `d(τ)` below this fraction of the two window energies it is computed from is FFT rounding,
+/// not signal: f64 round-trip error at 4096 points is ~1e-13 relative.
+const D_ROUNDING_FLOOR: f64 = 1e-10;
 
 /// Bottom of the log-frequency map — A1. Also the anchor the OSC Hz de-normalization inverts.
 pub const PITCH_F_MIN: f32 = 55.0;
@@ -51,19 +63,98 @@ pub struct PitchAnalyzer {
     sample_rate: f32,
     /// Last voiced pitch (0..1 log-frequency), held through unvoiced gaps.
     last_pitch: f32,
-    /// Difference function `d(τ)`, `τ ∈ [0, W)`.
+    /// One past the longest lag searched: the [`PITCH_F_MIN`] period plus one neighbour for the
+    /// parabolic fit, capped at `W`. ~804 at 44.1 kHz, ~875 at 48 kHz.
+    lag_end: usize,
+    /// Difference function `d(τ)`, `τ ∈ [0, lag_end)`.
     diff: Box<[f32]>,
     /// Cumulative mean normalized difference `d'(τ)`.
     cmnd: Box<[f32]>,
+    fft_forward: Arc<dyn Fft<f64>>,
+    fft_inverse: Arc<dyn Fft<f64>>,
+    /// `WINDOW`-point spectrum; holds the packed `head + i·window` transform, then the
+    /// cross-spectrum, then (after the inverse) the cross-correlation `r(τ)·WINDOW`.
+    spectrum: Box<[Complex<f64>]>,
+    fft_scratch: Box<[Complex<f64>]>,
+    /// `energy_prefix[i] = Σ_{j<i} x[j]²`, so any `W`-long window energy is one subtraction.
+    energy_prefix: Box<[f64]>,
 }
 
 impl PitchAnalyzer {
     pub fn new(sample_rate: f32) -> Self {
+        let lag_end = ((sample_rate / PITCH_F_MIN).ceil() as usize + 2).clamp(TAU_MIN + 2, W);
+        let mut planner = FftPlanner::<f64>::new();
+        let fft_forward = planner.plan_fft_forward(WINDOW);
+        let fft_inverse = planner.plan_fft_inverse(WINDOW);
+        let scratch_len = fft_forward
+            .get_inplace_scratch_len()
+            .max(fft_inverse.get_inplace_scratch_len());
         Self {
             sample_rate,
             last_pitch: 0.0,
-            diff: vec![0.0; W].into_boxed_slice(),
-            cmnd: vec![0.0; W].into_boxed_slice(),
+            lag_end,
+            diff: vec![0.0; lag_end].into_boxed_slice(),
+            cmnd: vec![0.0; lag_end].into_boxed_slice(),
+            fft_forward,
+            fft_inverse,
+            spectrum: vec![Complex::default(); WINDOW].into_boxed_slice(),
+            fft_scratch: vec![Complex::default(); scratch_len].into_boxed_slice(),
+            energy_prefix: vec![0.0; WINDOW + 1].into_boxed_slice(),
+        }
+    }
+
+    /// Fill `diff[τ] = Σ_{j<W} (x[j] − x[j+τ])²` for `τ ∈ [0, lag_end)`, as
+    /// `e(0) + e(τ) − 2·r(τ)` with `e(τ) = Σ_{j<W} x[j+τ]²` and `r(τ) = Σ_{j<W} x[j]·x[j+τ]`.
+    ///
+    /// `r` is the correlation of the zero-padded head `a = x[..W]` with the whole window `b = x`:
+    /// `IFFT(conj(A)·B)`. `j + τ < W + lag_end ≤ WINDOW`, so the circular product never wraps.
+    /// Both real inputs share one complex transform (`z = a + i·b`, split by conjugate symmetry).
+    /// f64 throughout: `d` near the period is a small difference of ~10³-sized terms.
+    fn difference(&mut self, x: &[f32]) {
+        let n = WINDOW;
+        for (j, (z, &s)) in self.spectrum.iter_mut().zip(x).enumerate() {
+            let s = f64::from(s);
+            *z = Complex::new(if j < W { s } else { 0.0 }, s);
+        }
+        self.fft_forward
+            .process_with_scratch(&mut self.spectrum, &mut self.fft_scratch);
+
+        // A[k] = (Z[k] + conj(Z[−k]))/2, B[k] = (Z[k] − conj(Z[−k]))/2i, and conj(A)·B is
+        // Hermitian, so compute bins 0..=n/2 and mirror. The 1/4 from the split and the 1/n
+        // the unnormalized inverse leaves are folded into one scale.
+        let scale = 0.25 / n as f64;
+        for k in 0..=n / 2 {
+            let zk = self.spectrum[k];
+            let zm = self.spectrum[(n - k) % n].conj();
+            let a = zk + zm;
+            // (zk − zm) / i = −i·(zk − zm)
+            let b = Complex::new((zk - zm).im, -(zk - zm).re);
+            let c = a.conj() * b * scale;
+            self.spectrum[k] = c;
+            if k != 0 && k != n / 2 {
+                self.spectrum[n - k] = c.conj();
+            }
+        }
+        self.fft_inverse
+            .process_with_scratch(&mut self.spectrum, &mut self.fft_scratch);
+
+        self.energy_prefix[0] = 0.0;
+        for (i, &s) in x.iter().enumerate() {
+            self.energy_prefix[i + 1] = self.energy_prefix[i] + f64::from(s) * f64::from(s);
+        }
+        let e0 = self.energy_prefix[W];
+        self.diff[0] = 0.0;
+        for tau in 1..self.lag_end {
+            let e_tau = self.energy_prefix[tau + W] - self.energy_prefix[tau];
+            let d = e0 + e_tau - 2.0 * self.spectrum[tau].re;
+            // FFT rounding leaves ~1e-13 of the energies behind where d is truly 0 (DC, silence)
+            // and can push it negative. Snap anything at that level to exactly 0, as the direct
+            // sum gave, so the silence/DC guard below still sees no AC energy.
+            self.diff[tau] = if d > D_ROUNDING_FLOOR * (e0 + e_tau) {
+                d as f32
+            } else {
+                0.0
+            };
         }
     }
 
@@ -79,20 +170,12 @@ impl PitchAnalyzer {
         }
         let x = &time_domain[time_domain.len() - WINDOW..];
 
-        // 1. Difference function d(τ) = Σ_{j<W} (x[j] − x[j+τ])². f64 accumulate: W squared f32
-        //    diffs sum to ~10³ and the ratio in step 2 is scale-sensitive.
-        self.diff[0] = 0.0;
-        for tau in 1..W {
-            let mut sum = 0.0f64;
-            for j in 0..W {
-                let d = (x[j] - x[j + tau]) as f64;
-                sum += d * d;
-            }
-            self.diff[tau] = sum as f32;
-        }
+        // 1. Difference function d(τ) = Σ_{j<W} (x[j] − x[j+τ])².
+        self.difference(x);
+        let lag_end = self.lag_end;
 
         // Silence/DC guard: no AC energy ⇒ d(τ) ≡ 0 ⇒ d'(τ) is 0/0. Hold, don't emit NaN.
-        let total: f64 = self.diff[1..W].iter().map(|&d| d as f64).sum();
+        let total: f64 = self.diff[1..lag_end].iter().map(|&d| d as f64).sum();
         if total < ENERGY_EPS {
             return PitchFeatures {
                 pitch: self.last_pitch,
@@ -104,7 +187,7 @@ impl PitchAnalyzer {
         //    mean is still ~0) are below TAU_MIN and never searched, so hold them at 1 (no dip).
         self.cmnd[0] = 1.0;
         let mut running = 0.0f64;
-        for tau in 1..W {
+        for tau in 1..lag_end {
             running += self.diff[tau] as f64;
             self.cmnd[tau] = if running < ENERGY_EPS {
                 1.0
@@ -117,9 +200,9 @@ impl PitchAnalyzer {
         //    — the fundamental period. No qualifying dip ⇒ global minimum with (low) confidence.
         let mut best_tau = 0usize;
         let mut tau = TAU_MIN;
-        while tau < W {
+        while tau < lag_end {
             if self.cmnd[tau] < YIN_THRESHOLD {
-                while tau + 1 < W && self.cmnd[tau + 1] < self.cmnd[tau] {
+                while tau + 1 < lag_end && self.cmnd[tau + 1] < self.cmnd[tau] {
                     tau += 1;
                 }
                 best_tau = tau;
@@ -130,7 +213,7 @@ impl PitchAnalyzer {
         let voiced = best_tau != 0;
         if !voiced {
             let mut min_tau = TAU_MIN;
-            for t in (TAU_MIN + 1)..W {
+            for t in (TAU_MIN + 1)..lag_end {
                 if self.cmnd[t] < self.cmnd[min_tau] {
                     min_tau = t;
                 }
@@ -139,7 +222,7 @@ impl PitchAnalyzer {
         }
 
         // 4. Parabolic interpolation of the minimum for a sub-sample period (guarded at the edges).
-        let period = if best_tau > TAU_MIN && best_tau + 1 < W {
+        let period = if best_tau > TAU_MIN && best_tau + 1 < lag_end {
             let s0 = self.cmnd[best_tau - 1] as f64;
             let s1 = self.cmnd[best_tau] as f64;
             let s2 = self.cmnd[best_tau + 1] as f64;
@@ -224,6 +307,57 @@ mod tests {
 
     fn detect(signal: &[f32]) -> PitchFeatures {
         PitchAnalyzer::new(SR).process(signal, false)
+    }
+
+    #[test]
+    fn fft_difference_matches_the_direct_sum() {
+        // The e(0) + e(τ) − 2·r(τ) expansion must reproduce the textbook double loop at every
+        // searched lag, including on a DC-biased, harmonically rich signal.
+        let x: Vec<f32> = saw(233.0, WINDOW)
+            .iter()
+            .zip(noise(WINDOW))
+            .map(|(s, n)| 0.3 + s + 0.1 * n)
+            .collect();
+        let mut a = PitchAnalyzer::new(SR);
+        a.difference(&x);
+        for tau in 0..a.lag_end {
+            let direct: f64 = (0..W).map(|j| f64::from(x[j] - x[j + tau]).powi(2)).sum();
+            let got = f64::from(a.diff[tau]);
+            assert!(
+                (got - direct).abs() <= 1e-4 * direct.max(1.0),
+                "τ={tau}: fft {got} vs direct {direct}"
+            );
+        }
+    }
+
+    #[test]
+    fn pure_dc_has_no_ac_energy() {
+        // The direct sum gave exactly 0 for a constant; the FFT expansion must too, or rounding
+        // residue slips past the silence/DC guard.
+        for c in [0.001f32, 0.1, 0.5, 1.0, 3.0] {
+            let mut a = PitchAnalyzer::new(SR);
+            a.difference(&vec![c; WINDOW]);
+            assert!(a.diff.iter().all(|&d| d == 0.0), "DC {c}");
+            assert_eq!(
+                PitchAnalyzer::new(SR)
+                    .process(&vec![c; WINDOW], false)
+                    .pitch_confidence,
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    fn lag_range_reaches_the_bottom_anchor_at_any_rate() {
+        for sr in [22_050.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let a = PitchAnalyzer::new(sr);
+            assert!(a.lag_end <= W);
+            assert!(
+                a.lag_end == W || (a.lag_end - 2) as f32 >= sr / PITCH_F_MIN,
+                "{sr} Hz: lag_end {} misses the 55 Hz period",
+                a.lag_end
+            );
+        }
     }
 
     #[test]

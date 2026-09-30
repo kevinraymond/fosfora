@@ -8,10 +8,12 @@ use std::thread;
 use std::time::Duration;
 
 use super::capture::RingBuffer;
+use super::downmix::Downmix;
+use super::pcm::convert_to_stereo_f32;
 use anyhow::Result;
 use windows::Win32::Media::Audio::{
     AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient,
-    IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEXTENSIBLE, eConsole, eRender,
+    IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eConsole, eRender,
 };
 use windows::Win32::Media::Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
@@ -88,12 +90,24 @@ fn get_device_name(device: &windows::Win32::Media::Audio::IMMDevice) -> String {
     inner(device).unwrap_or_else(|_| "Unknown Device".to_string())
 }
 
+/// Owns a `GetMixFormat` result and frees it with `CoTaskMemFree` on drop, so every exit
+/// path — including an early `?` — releases it (#71: the capture loop never freed it, and
+/// leaked one on every reconnect).
+struct MixFormat(*mut WAVEFORMATEX);
+
+impl Drop for MixFormat {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from IAudioClient::GetMixFormat, which allocates with
+        // CoTaskMemAlloc, and this guard is its only owner.
+        unsafe { CoTaskMemFree(Some(self.0.cast::<core::ffi::c_void>().cast_const())) }
+    }
+}
+
 /// Query device info (name, sample rate, channels, etc.) with COM initialized.
 /// Caller must have called CoInitializeEx before this.
 fn query_device_info() -> Result<(String, u32, u16, u16, u16)> {
     // SAFETY: Windows COM/WASAPI FFI calls. COM must be initialized before calling
-    // (ensured by caller via com_init()). We free the mix_format_ptr with CoTaskMemFree
-    // after reading its fields.
+    // (ensured by caller via com_init()). The mix format is read while its guard is alive.
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
@@ -101,8 +115,8 @@ fn query_device_info() -> Result<(String, u32, u16, u16, u16)> {
         let name = get_device_name(&device);
 
         let audio_client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-        let mix_format_ptr = audio_client.GetMixFormat()?;
-        let fmt = &*mix_format_ptr;
+        let mix_format = MixFormat(audio_client.GetMixFormat()?);
+        let fmt = &*mix_format.0;
 
         let sr = fmt.nSamplesPerSec;
         let ch = fmt.nChannels;
@@ -111,9 +125,6 @@ fn query_device_info() -> Result<(String, u32, u16, u16, u16)> {
 
         log::info!("WASAPI loopback: {name} ({sr}Hz, {ch}ch, {bps}bit, block_align={ba})");
 
-        CoTaskMemFree(Some(
-            mix_format_ptr.cast::<core::ffi::c_void>().cast_const(),
-        ));
         Ok((name, sr, ch, bps, ba))
     }
 }
@@ -252,14 +263,15 @@ fn wasapi_capture_loop(
     // SAFETY: All WASAPI/COM FFI calls within. COM is initialized by the caller
     // (wasapi_capture_thread). Buffer pointer from GetBuffer is valid for num_frames *
     // block_align bytes until ReleaseBuffer is called. We call ReleaseBuffer each iteration.
-    // mix_format_ptr is valid until we drop the audio_client.
+    // The mix format is owned by its guard, which outlives every read of it.
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
         let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
         let audio_client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
 
-        let mix_format_ptr = audio_client.GetMixFormat()?;
+        let mix_format = MixFormat(audio_client.GetMixFormat()?);
+        let mix_format_ptr = mix_format.0;
 
         // Initialize in shared mode with loopback flag
         audio_client.Initialize(
@@ -286,6 +298,19 @@ fn wasapi_capture_loop(
             } else {
                 fmt.wFormatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
             }
+        };
+
+        // #67: fold a surround mix format into L/R by its speaker mask, so loopback of a 5.1 or
+        // 7.1 endpoint keeps the centre channel (vocals, dialogue) instead of only FL/FR.
+        let downmix = {
+            let fmt = &*mix_format_ptr;
+            let mask = if fmt.cbSize >= 22 {
+                let ext = &*(mix_format_ptr as *const WAVEFORMATEXTENSIBLE);
+                std::ptr::addr_of!(ext.dwChannelMask).read_unaligned()
+            } else {
+                0
+            };
+            Downmix::from_channel_mask(channels, mask)
         };
 
         loop {
@@ -327,13 +352,18 @@ fn wasapi_capture_loop(
                     // AUDCLNT_BUFFERFLAGS_SILENT = 0x2
                     let is_silent = (flags & 0x2) != 0;
 
-                    if !is_silent && !buffer_ptr.is_null() {
+                    if is_silent {
+                        // The packet's contents are to be treated as silence, but its frames
+                        // still happened: skipping them stops the analysis sample clock, so the
+                        // beat tracker sees time jump when sound resumes (#69).
+                        ring.push(&vec![0.0; num_frames as usize * 2]);
+                    } else if !buffer_ptr.is_null() {
                         let total_bytes = num_frames as usize * block_align;
                         let raw_data = std::slice::from_raw_parts(buffer_ptr, total_bytes);
 
                         let stereo = convert_to_stereo_f32(
                             raw_data,
-                            channels,
+                            &downmix,
                             is_float,
                             bits_per_sample,
                             block_align,
@@ -349,82 +379,4 @@ fn wasapi_capture_loop(
         audio_client.Stop()?;
         Ok(())
     }
-}
-
-/// Decode one channel of one interleaved frame to f32. Out-of-range offsets read as 0.
-fn decode_sample(
-    data: &[u8],
-    frame_start: usize,
-    ch: usize,
-    is_float: bool,
-    bits_per_sample: u16,
-) -> f32 {
-    if is_float && bits_per_sample == 32 {
-        let offset = frame_start + ch * 4;
-        if offset + 4 <= data.len() {
-            f32::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-            ])
-        } else {
-            0.0
-        }
-    } else if bits_per_sample == 16 {
-        let offset = frame_start + ch * 2;
-        if offset + 2 <= data.len() {
-            i16::from_le_bytes([data[offset], data[offset + 1]]) as f32 / 32768.0
-        } else {
-            0.0
-        }
-    } else if bits_per_sample == 24 {
-        let offset = frame_start + ch * 3;
-        if offset + 3 <= data.len() {
-            let raw = (data[offset] as i32)
-                | ((data[offset + 1] as i32) << 8)
-                | ((data[offset + 2] as i32) << 16);
-            // Sign extend from 24 bits
-            let raw = if raw & 0x800000 != 0 {
-                raw | !0xFFFFFF
-            } else {
-                raw
-            };
-            raw as f32 / 8388608.0
-        } else {
-            0.0
-        }
-    } else {
-        0.0
-    }
-}
-
-/// Convert raw interleaved audio bytes to interleaved `L,R` stereo f32.
-///
-/// A13 (#1464): keep the front L/R pair (channels 0/1) rather than downmixing — the analysis thread
-/// derives the mono mix. A mono source is duplicated to both. Output is always even-length, upholding
-/// the capture ring's L/R parity invariant.
-fn convert_to_stereo_f32(
-    data: &[u8],
-    channels: usize,
-    is_float: bool,
-    bits_per_sample: u16,
-    frame_bytes: usize,
-) -> Vec<f32> {
-    let num_frames = data.len() / frame_bytes;
-    let mut stereo = Vec::with_capacity(num_frames * 2);
-
-    for i in 0..num_frames {
-        let frame_start = i * frame_bytes;
-        let l = decode_sample(data, frame_start, 0, is_float, bits_per_sample);
-        let r = if channels >= 2 {
-            decode_sample(data, frame_start, 1, is_float, bits_per_sample)
-        } else {
-            l
-        };
-        stereo.push(l);
-        stereo.push(r);
-    }
-
-    stereo
 }

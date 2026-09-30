@@ -13,10 +13,10 @@
 //!   consumed by A18 (#1469)
 //!
 //! Momentary/short-term loudness are *ungated* (BS.1770 gating applies only to the
-//! integrated program measurement, which we do not compute). The capture is a mono
-//! downmix, so this is single-channel loudness (channel weight 1.0) — an approximation
-//! of true program loudness, but device/content-independent and perceptually sane, which
-//! is all the visuals need.
+//! integrated program measurement, which we do not compute). Each of L and R is K-weighted
+//! separately and their mean squares summed (channel weight 1.0 each), as BS.1770 specifies
+//! for a stereo programme (#56). Measuring the `(L+R)/2` downmix instead read 3–6 dB low
+//! depending on L/R correlation, and read fully anti-phase content as silence.
 
 /// LUFS mapped to 0.0 at this level.
 const LUFS_MIN: f32 = -60.0;
@@ -38,9 +38,20 @@ pub const TREND_RANGE_LU: f32 = 8.0;
 /// LU as `(loudness_m - loudness_s) * LUFS_SPAN_LU` — the pre-clamp input this file divides
 /// by [`TREND_RANGE_LU`], which `loudness_trend` itself has thrown away.
 pub const LUFS_SPAN_LU: f32 = LUFS_MAX - LUFS_MIN;
-/// Momentary loudness below this (LUFS) counts as silence for gating (consumed by the
-/// onset detector, A6 #1457). −55 LUFS is well below any musical content.
-const SILENCE_GATE_LUFS: f32 = -55.0;
+/// The silence gate (consumed by the onset detector, A6 #1457) has hysteresis (#58): a
+/// single threshold made quiet line/mic input hovering near it flip the gate every few
+/// hops, zeroing energy features and, after ~350 ms of accumulated "silence", dropping
+/// the beat grid. The gate opens as soon as momentary loudness reaches
+/// [`SILENCE_GATE_OPEN_LUFS`], and closes only once it has stayed below
+/// [`SILENCE_GATE_CLOSE_LUFS`] for [`SILENCE_GATE_HOLD_SECS`]. −55 LUFS is well below any
+/// musical content.
+const SILENCE_GATE_OPEN_LUFS: f32 = -55.0;
+/// See [`SILENCE_GATE_OPEN_LUFS`]. 5 dB under the open threshold.
+const SILENCE_GATE_CLOSE_LUFS: f32 = -60.0;
+/// How long momentary loudness must stay under [`SILENCE_GATE_CLOSE_LUFS`] before the
+/// gate closes. The 400 ms momentary window already smooths the level; this rides out a
+/// quiet passage's dips without delaying a real stop by much.
+const SILENCE_GATE_HOLD_SECS: f32 = 0.25;
 
 /// A single biquad section in Direct Form I. Coefficients assume `a0 == 1`.
 #[derive(Clone, Copy)]
@@ -131,10 +142,32 @@ pub struct LoudnessResult {
     pub trend: f32,
 }
 
-pub struct LoudnessMeter {
+/// The BS.1770 K-weighting pre-filter for one channel.
+#[derive(Clone, Copy)]
+struct KWeight {
     shelf: Biquad,
     highpass: Biquad,
-    /// Ring of K-weighted squared samples, long enough for the short-term window.
+}
+
+impl KWeight {
+    fn new(fs: f32) -> Self {
+        Self {
+            shelf: k_weight_shelf(fs),
+            highpass: k_weight_highpass(fs),
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        self.highpass.process(self.shelf.process(x))
+    }
+}
+
+pub struct LoudnessMeter {
+    left: KWeight,
+    right: KWeight,
+    /// Ring of per-frame K-weighted power (`wL² + wR²`), long enough for the short-term
+    /// window.
     sq: Vec<f32>,
     write: usize,
     filled: usize,
@@ -144,8 +177,12 @@ pub struct LoudnessMeter {
     /// Running sums over the last `n_m` / `n_s` squared samples.
     sum_m: f64,
     sum_s: f64,
-    /// Most recent momentary loudness in LUFS (for the silence gate).
-    last_m_lufs: f32,
+    /// Silence gate state, with hysteresis (#58). Starts closed: no signal seen yet.
+    silent: bool,
+    /// Frames momentary loudness has spent below the close threshold while the gate is open.
+    below_close: usize,
+    /// [`SILENCE_GATE_HOLD_SECS`] in frames.
+    hold: usize,
 }
 
 impl LoudnessMeter {
@@ -158,8 +195,8 @@ impl LoudnessMeter {
         let n_m = (0.400 * sr) as usize;
         let n_s = (3.000 * sr) as usize;
         Self {
-            shelf: k_weight_shelf(sr),
-            highpass: k_weight_highpass(sr),
+            left: KWeight::new(sr),
+            right: KWeight::new(sr),
             sq: vec![0.0; n_s.max(1)],
             write: 0,
             filled: 0,
@@ -167,28 +204,52 @@ impl LoudnessMeter {
             n_s: n_s.max(1),
             sum_m: 0.0,
             sum_s: 0.0,
-            last_m_lufs: SILENCE_LUFS,
+            silent: true,
+            below_close: 0,
+            hold: (SILENCE_GATE_HOLD_SECS * sr) as usize,
         }
     }
 
-    /// Feed one hop of time-domain samples (each sample exactly once — pass the fresh
+    /// Feed one hop of interleaved L,R samples (each frame exactly once — pass the fresh
     /// block read from the capture ring, not the analyzer's overlapping window). Returns
     /// the loudness at the end of the block.
-    pub fn process(&mut self, samples: &[f32]) -> LoudnessResult {
-        for &x in samples {
-            let w = self.highpass.process(self.shelf.process(x));
-            self.push(w * w);
+    pub fn process(&mut self, stereo: &[f32]) -> LoudnessResult {
+        for f in stereo.chunks_exact(2) {
+            let l = self.left.process(f[0]);
+            let r = self.right.process(f[1]);
+            self.push(l * l + r * r);
         }
-        self.result()
+        let result = self.result();
+        self.update_gate(stereo.len() / 2);
+        result
     }
 
-    /// Momentary loudness is below the silence gate (−55 LUFS). Consumed by the onset
+    /// The silence gate is closed (see [`SILENCE_GATE_OPEN_LUFS`]). Consumed by the onset
     /// detector so all stages gate on the same perceptual threshold (A6 #1457).
     pub fn is_silent(&self) -> bool {
-        self.last_m_lufs < SILENCE_GATE_LUFS
+        self.silent
     }
 
-    /// Push one K-weighted squared sample, maintaining both sliding-window running sums.
+    /// Advance the gate by one block of `frames` frames, on the momentary loudness at its
+    /// end.
+    fn update_gate(&mut self, frames: usize) {
+        let m_lufs = lufs(self.sum_m, self.filled.min(self.n_m));
+        if self.silent {
+            if m_lufs >= SILENCE_GATE_OPEN_LUFS {
+                self.silent = false;
+                self.below_close = 0;
+            }
+        } else if m_lufs < SILENCE_GATE_CLOSE_LUFS {
+            self.below_close += frames;
+            if self.below_close >= self.hold {
+                self.silent = true;
+            }
+        } else {
+            self.below_close = 0;
+        }
+    }
+
+    /// Push one frame's K-weighted power, maintaining both sliding-window running sums.
     #[inline]
     fn push(&mut self, sq: f32) {
         // Evict the sample leaving the short-term window (the ring's oldest slot).
@@ -210,12 +271,11 @@ impl LoudnessMeter {
         }
     }
 
-    fn result(&mut self) -> LoudnessResult {
+    fn result(&self) -> LoudnessResult {
         let count_m = self.filled.min(self.n_m);
         let count_s = self.filled.min(self.n_s);
         let m_lufs = lufs(self.sum_m, count_m);
         let s_lufs = lufs(self.sum_s, count_s);
-        self.last_m_lufs = m_lufs;
 
         let trend = ((m_lufs - s_lufs).clamp(0.0, TREND_RANGE_LU) / TREND_RANGE_LU).clamp(0.0, 1.0);
         LoudnessResult {
@@ -247,26 +307,48 @@ fn norm_lufs(lufs: f32) -> f32 {
 mod tests {
     use super::*;
 
-    /// Feed `secs` seconds of a `freq`-Hz sine at `amp` and return the final result.
-    fn drive_sine(sr: f32, freq: f32, amp: f32, secs: f32) -> (LoudnessMeter, LoudnessResult) {
+    /// Interleave a mono block as L = `l_gain·x`, R = `r_gain·x`.
+    fn stereo(mono: &[f32], l_gain: f32, r_gain: f32) -> Vec<f32> {
+        mono.iter()
+            .flat_map(|&x| [l_gain * x, r_gain * x])
+            .collect()
+    }
+
+    /// Feed `secs` seconds of a `freq`-Hz sine at `amp` on L and `r_gain·amp` on R, in
+    /// ~10 ms hops to mimic the audio thread, and return the final result.
+    fn drive_sine_lr(
+        sr: f32,
+        freq: f32,
+        amp: f32,
+        r_gain: f32,
+        secs: f32,
+    ) -> (LoudnessMeter, LoudnessResult) {
         let mut m = LoudnessMeter::new(sr);
         let n = (secs * sr) as usize;
-        let mut buf = Vec::with_capacity(n);
-        for i in 0..n {
-            let t = i as f32 / sr;
-            buf.push(amp * (std::f32::consts::TAU * freq * t).sin());
-        }
-        // Feed in ~10 ms hops to mimic the audio thread.
+        let mono: Vec<f32> = (0..n)
+            .map(|i| amp * (std::f32::consts::TAU * freq * i as f32 / sr).sin())
+            .collect();
+        let buf = stereo(&mono, 1.0, r_gain);
         let hop = (0.010 * sr) as usize;
         let mut last = LoudnessResult {
             m: 0.0,
             s: 0.0,
             trend: 0.0,
         };
-        for chunk in buf.chunks(hop.max(1)) {
+        for chunk in buf.chunks(hop.max(1) * 2) {
             last = m.process(chunk);
         }
         (m, last)
+    }
+
+    /// The same sine on both channels.
+    fn drive_sine(sr: f32, freq: f32, amp: f32, secs: f32) -> (LoudnessMeter, LoudnessResult) {
+        drive_sine_lr(sr, freq, amp, 1.0, secs)
+    }
+
+    /// Normalized loudness back to LUFS, for comparisons in LU.
+    fn to_lufs(v: f32) -> f32 {
+        LUFS_MIN + v * (LUFS_MAX - LUFS_MIN)
     }
 
     #[test]
@@ -292,7 +374,7 @@ mod tests {
     fn silence_reads_zero_and_gates() {
         let mut m = LoudnessMeter::new(48000.0);
         for _ in 0..400 {
-            let r = m.process(&[0.0; 480]);
+            let r = m.process(&[0.0; 960]);
             assert_eq!(r.m, 0.0);
             assert_eq!(r.s, 0.0);
         }
@@ -307,17 +389,17 @@ mod tests {
         let mut m = LoudnessMeter::new(sr);
         let hop = (0.010 * sr) as usize;
         for _ in 0..300 {
-            m.process(&vec![0.0; hop]);
+            m.process(&vec![0.0; hop * 2]);
         }
         let mut phase = 0.0f32;
         let step = std::f32::consts::TAU * 1000.0 / sr;
-        let mut buf = vec![0.0f32; hop];
+        let mut buf = vec![0.0f32; hop * 2];
         // ~0.5 s into the tone: momentary (400 ms) has largely filled, short-term (3 s)
         // has not — trend should be positive.
         let mut trend = 0.0;
         for _ in 0..50 {
-            for s in &mut buf {
-                *s = 0.4 * phase.sin();
+            for f in buf.chunks_exact_mut(2) {
+                f.fill(0.4 * phase.sin());
                 phase += step;
             }
             trend = m.process(&buf).trend;
@@ -333,5 +415,98 @@ mod tests {
         // Non-standard device rate: coefficients must still be finite and the meter sane.
         let (_, r) = drive_sine(37913.0, 440.0, 0.3, 4.0);
         assert!(r.s.is_finite() && (0.0..=1.0).contains(&r.s));
+    }
+
+    #[test]
+    fn channels_sum_in_power() {
+        // BS.1770 sums channel mean squares: the same tone on both channels reads ~3 LU
+        // above it on one, and anti-phase reads exactly as loud as in-phase (#56).
+        let sr = 48000.0;
+        let (_, one) = drive_sine_lr(sr, 1000.0, 0.1, 0.0, 4.0);
+        let (_, both) = drive_sine_lr(sr, 1000.0, 0.1, 1.0, 4.0);
+        let (anti_m, anti) = drive_sine_lr(sr, 1000.0, 0.1, -1.0, 4.0);
+        let diff = to_lufs(both.s) - to_lufs(one.s);
+        assert!(
+            (diff - 3.01).abs() < 0.05,
+            "dual-mono over single channel: {diff} LU"
+        );
+        assert!(
+            (anti.s - both.s).abs() < 1e-4,
+            "anti-phase {} vs in-phase {}",
+            anti.s,
+            both.s
+        );
+        assert!(!anti_m.is_silent(), "anti-phase content is not silence");
+    }
+
+    #[test]
+    fn full_scale_sine_reads_at_its_reference_level() {
+        // BS.1770-4 calibration: a 0 dBFS 997 Hz sine on one channel reads −3.01 LUFS.
+        let (_, r) = drive_sine_lr(48000.0, 997.0, 1.0, 0.0, 4.0);
+        let got = to_lufs(r.s);
+        assert!(
+            (got + 3.01).abs() < 0.1,
+            "0 dBFS 997 Hz on one channel: {got} LUFS"
+        );
+    }
+
+    /// Feed `hops` 10 ms blocks of a 1 kHz sine at `amp` (both channels) into `m`.
+    fn feed(m: &mut LoudnessMeter, sr: f32, amp: f32, hops: usize, phase: &mut f32) {
+        let hop = (0.010 * sr) as usize;
+        let step = std::f32::consts::TAU * 1000.0 / sr;
+        let mut buf = vec![0.0f32; hop * 2];
+        for _ in 0..hops {
+            for f in buf.chunks_exact_mut(2) {
+                f.fill(amp * phase.sin());
+                *phase += step;
+            }
+            m.process(&buf);
+        }
+    }
+
+    /// Peak amplitude of a 1 kHz sine on both channels that reads `lufs` LUFS.
+    fn amp_for_lufs(lufs: f32) -> f32 {
+        // Dual-mono sine at peak `a`: 2·a²/2 = a² of power; K-weighting is ~+0.7 dB at
+        // 1 kHz, which the −0.691 offset cancels, so LUFS ≈ 20·log10(a).
+        10f32.powf(lufs / 20.0)
+    }
+
+    #[test]
+    fn gate_does_not_flutter_on_input_hovering_near_the_threshold() {
+        // Quiet input alternating a couple of dB either side of −55 LUFS: once open, the
+        // gate must stay open rather than flipping every few hundred ms (#58).
+        let sr = 48000.0;
+        let mut m = LoudnessMeter::new(sr);
+        let mut phase = 0.0;
+        feed(&mut m, sr, amp_for_lufs(-50.0), 100, &mut phase);
+        assert!(!m.is_silent(), "−50 LUFS opens the gate");
+        for _ in 0..6 {
+            feed(&mut m, sr, amp_for_lufs(-57.0), 60, &mut phase);
+            assert!(!m.is_silent(), "a dip to −57 LUFS must not close the gate");
+            feed(&mut m, sr, amp_for_lufs(-53.0), 60, &mut phase);
+            assert!(!m.is_silent());
+        }
+    }
+
+    #[test]
+    fn gate_closes_after_the_hold_and_reopens_at_the_open_threshold() {
+        let sr = 48000.0;
+        let mut m = LoudnessMeter::new(sr);
+        let mut phase = 0.0;
+        feed(&mut m, sr, amp_for_lufs(-30.0), 100, &mut phase);
+        assert!(!m.is_silent());
+        // Real silence: momentary drains over its 400 ms window, then the hold runs.
+        feed(&mut m, sr, 0.0, 40, &mut phase);
+        assert!(
+            !m.is_silent(),
+            "the hold keeps the gate open just after the drain"
+        );
+        feed(&mut m, sr, 0.0, 40, &mut phase);
+        assert!(m.is_silent(), "sustained silence closes the gate");
+        // Between the thresholds: stays closed.
+        feed(&mut m, sr, amp_for_lufs(-58.0), 100, &mut phase);
+        assert!(m.is_silent(), "−58 LUFS does not reopen a closed gate");
+        feed(&mut m, sr, amp_for_lufs(-52.0), 100, &mut phase);
+        assert!(!m.is_silent(), "−52 LUFS reopens it");
     }
 }

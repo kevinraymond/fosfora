@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use super::downmix::Downmix;
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, Stream};
@@ -276,6 +277,8 @@ impl AudioCapture {
         let ring = Arc::new(RingBuffer::new());
         let callback_count = Arc::new(AtomicU64::new(0));
         let capture_failed = Arc::new(AtomicBool::new(false));
+        // cpal exposes no channel map, so a surround device gets its platform's usual order.
+        let downmix = Downmix::host_default(channels);
 
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
@@ -284,10 +287,11 @@ impl AudioCapture {
             SampleFormat::I16 => {
                 let ring_clone = ring.clone();
                 let cb_clone = callback_count.clone();
+                let downmix = downmix.clone();
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        push_samples(&ring_clone, &cb_clone, data, channels);
+                        push_samples(&ring_clone, &cb_clone, data, channels, &downmix);
                     },
                     err_callback(capture_failed.clone()),
                     None,
@@ -296,10 +300,11 @@ impl AudioCapture {
             SampleFormat::I32 => {
                 let ring_clone = ring.clone();
                 let cb_clone = callback_count.clone();
+                let downmix = downmix.clone();
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        push_samples(&ring_clone, &cb_clone, data, channels);
+                        push_samples(&ring_clone, &cb_clone, data, channels, &downmix);
                     },
                     err_callback(capture_failed.clone()),
                     None,
@@ -308,10 +313,11 @@ impl AudioCapture {
             _ => {
                 let ring_clone = ring.clone();
                 let cb_clone = callback_count.clone();
+                let downmix = downmix.clone();
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        push_samples(&ring_clone, &cb_clone, data, channels);
+                        push_samples(&ring_clone, &cb_clone, data, channels, &downmix);
                     },
                     err_callback(capture_failed.clone()),
                     None,
@@ -354,15 +360,17 @@ impl AudioCapture {
 
 /// Convert any cpal sample type to f32 and push interleaved `L,R` stereo to the ring buffer.
 ///
-/// A13 (#1464): the ring carries native stereo (front L/R pair) so the analysis thread can measure
-/// pan/width/correlation; it derives the mono mix downstream. For >2 channels we take channels 0/1
-/// as L/R; a mono source is duplicated to both. The push is always even-length, which the ring's
-/// L/R parity invariant relies on (see [`RingBuffer::read`]).
+/// A13 (#1464): the ring carries native stereo so the analysis thread can measure
+/// pan/width/correlation; it derives the mono mix downstream. A >2-channel source is folded to
+/// L/R by `downmix` (#67: keeping only channels 0/1 lost the centre); a mono source is duplicated
+/// to both. The push is always even-length, which the ring's L/R parity invariant relies on (see
+/// [`RingBuffer::read`]).
 fn push_samples<T: Sample>(
     ring: &RingBuffer,
     callback_count: &AtomicU64,
     data: &[T],
     channels: usize,
+    downmix: &Downmix,
 ) where
     f32: cpal::FromSample<T>,
 {
@@ -378,10 +386,16 @@ fn push_samples<T: Sample>(
             stereo.push(v);
             stereo.push(v);
         }
-    } else {
-        for frame in data.chunks(channels) {
+    } else if channels == 2 {
+        for frame in data.chunks_exact(2) {
             stereo.push(conv(frame[0]));
             stereo.push(conv(frame[1]));
+        }
+    } else {
+        for frame in data.chunks_exact(channels) {
+            let (l, r) = downmix.frame(|ch| conv(frame[ch]));
+            stereo.push(l);
+            stereo.push(r);
         }
     }
     ring.push(&stereo);

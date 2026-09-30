@@ -3,6 +3,7 @@ pub mod beat;
 pub mod capture;
 pub mod chroma;
 pub mod downbeat;
+pub mod downmix;
 pub mod features;
 pub mod hop;
 pub mod hpss;
@@ -11,11 +12,14 @@ pub mod key;
 pub mod key_sidecar;
 pub mod loudness;
 pub mod normalizer;
+#[cfg(any(target_os = "windows", test))]
+pub mod pcm;
 pub mod pitch;
 #[cfg(target_os = "linux")]
 pub mod pulse_capture;
 pub mod ranging;
 pub mod reconnect;
+pub mod resample;
 pub mod schema;
 pub mod smoother;
 pub mod stereo;
@@ -286,6 +290,10 @@ pub struct AudioSystem {
     last_scan: Instant,
     /// Ring buffer mirroring audio samples for recording (written by audio thread).
     pub recording_ring: Arc<RingBuffer>,
+    /// Sample rate of what `recording_ring` carries, which is what a recording must encode at.
+    /// Follows the device, except across a switch made while a recording drains the ring: then
+    /// it holds and the new analysis thread resamples into it (#79).
+    pub recording_rate: u32,
     /// Audio sample rate in Hz.
     pub sample_rate: u32,
     /// How the analyzer scales the 7 bands (A1 #1452). Held so a device switch preserves it
@@ -383,6 +391,7 @@ impl AudioSystem {
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
             Arc::new(RingBuffer::new()),
+            None,
         );
         // Scanned just now, so drawing the picker starts no scan.
         sys.last_scan = Instant::now();
@@ -402,6 +411,7 @@ impl AudioSystem {
             tuning,
             tempo,
             Arc::new(RingBuffer::new()),
+            None,
         )
     }
 
@@ -438,6 +448,7 @@ impl AudioSystem {
             tuning,
             tempo,
             Arc::new(RingBuffer::new()),
+            None,
         );
         system.set_auto_reconnect(false);
         system
@@ -461,6 +472,7 @@ impl AudioSystem {
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
         recording_ring: Arc<RingBuffer>,
+        recording_rate: Option<u32>,
     ) -> Self {
         // A full queue evicts its oldest frame (#59): when the render side stalls, the
         // newest analysis is what it should see on catching up, not frames from before the
@@ -478,6 +490,7 @@ impl AudioSystem {
                 let ring = opened.ring.clone();
                 let sample_rate = opened.sample_rate;
                 let rec_ring = recording_ring.clone();
+                let recording_rate = recording_rate.unwrap_or(sample_rate as u32);
                 let beats = beat_counter.clone();
                 let downbeats = downbeat_counter.clone();
                 let drops = drop_counter.clone();
@@ -493,6 +506,7 @@ impl AudioSystem {
                             tx,
                             shutdown_flag,
                             rec_ring,
+                            recording_rate,
                             beats,
                             downbeats,
                             drops,
@@ -525,9 +539,10 @@ impl AudioSystem {
                     cached_devices: Arc::new(Mutex::new(Vec::new())),
                     scan_in_flight: Arc::new(AtomicBool::new(false)),
                     last_scan: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
+                    recording_rate,
                     sample_rate: sample_rate as u32,
                     band_scale,
                     tuning,
@@ -555,7 +570,7 @@ impl AudioSystem {
                     // rather than waiting out an interval first.
                     #[cfg(target_os = "linux")]
                     last_sink_poll: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                 }
             }
@@ -587,9 +602,10 @@ impl AudioSystem {
                     cached_devices: Arc::new(Mutex::new(Vec::new())),
                     scan_in_flight: Arc::new(AtomicBool::new(false)),
                     last_scan: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                     recording_ring,
+                    recording_rate: recording_rate.unwrap_or(44100),
                     sample_rate: 44100,
                     band_scale,
                     tuning,
@@ -615,7 +631,7 @@ impl AudioSystem {
                     sink_poll_in_flight: Arc::new(AtomicBool::new(false)),
                     #[cfg(target_os = "linux")]
                     last_sink_poll: Instant::now()
-                        .checked_sub(Duration::from_secs(60))
+                        .checked_sub(Duration::from_mins(1))
                         .expect("60s subtraction from now cannot underflow"),
                 }
             }
@@ -667,6 +683,12 @@ impl AudioSystem {
         // `self.tempo` are deliberately left unswapped below. Same for `recording_ring`
         // (A9 #1460): an in-progress recording holds a clone, so handing the fresh thread a
         // new ring would leave that recording's writer draining one nobody writes to.
+        // A recording in progress holds the only other clone of `recording_ring` (its writer
+        // thread's; the old analysis thread's went with the join above). Its encoder was told
+        // the rate at start, so keep the ring at that rate and have the new thread resample
+        // into it. With no other holder, the ring follows the new device (#79).
+        let recording_rate =
+            (Arc::strong_count(&self.recording_ring) > 1).then_some(self.recording_rate);
         let mut new = Self::from_opened(
             opened,
             requested,
@@ -674,6 +696,7 @@ impl AudioSystem {
             self.tuning.clone(),
             self.tempo.clone(),
             self.recording_ring.clone(),
+            recording_rate,
         );
         self.receiver = std::mem::replace(&mut new.receiver, crossbeam_channel::bounded(1).1);
         self.latest = None;
@@ -704,6 +727,7 @@ impl AudioSystem {
         // ours, so the new audio thread already writes to the same ring an in-progress
         // recording is draining.
         self.sample_rate = new.sample_rate;
+        self.recording_rate = new.recording_rate;
         self.beat_counter = std::mem::replace(&mut new.beat_counter, Arc::new(AtomicU32::new(0)));
         self.beats_seen = self.beat_counter.load(Ordering::Relaxed);
         self.downbeat_counter =
@@ -1265,6 +1289,7 @@ fn audio_thread(
     tx: DropOldestSender<AudioFrame>,
     shutdown: Arc<AtomicBool>,
     recording_ring: Arc<RingBuffer>,
+    recording_rate: u32,
     beat_counter: Arc<AtomicU32>,
     downbeat_counter: Arc<AtomicU32>,
     drop_counter: Arc<AtomicU32>,
@@ -1283,6 +1308,18 @@ fn audio_thread(
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
     let mut mono_scratch: Vec<f32> = Vec::with_capacity(read_buf.len() / 2);
+    // #79: set only when this device's rate differs from what the recording ring carries.
+    let mut recording_resampler = (recording_rate != sample_rate as u32)
+        .then(|| resample::LinearResampler::new(sample_rate as u32, recording_rate));
+    let mut recording_scratch: Vec<f32> = Vec::new();
+    if recording_resampler.is_some() {
+        log::info!(
+            "Recording audio resampled {} Hz -> {recording_rate} Hz",
+            sample_rate as u32
+        );
+        // Room for the largest read at the steepest common ratio (192 kHz ring, 44.1 kHz device).
+        recording_scratch.reserve(mono_scratch.capacity() * 5);
+    }
 
     // A5 (#1456): accumulate capture reads here and analyze exactly ANALYSIS_HOP samples at
     // a time. `samples_consumed` is a sample clock — each frame's timestamp is derived from
@@ -1328,7 +1365,13 @@ fn audio_thread(
         mono_scratch.extend(stereo.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5));
 
         // Mirror the mono mix to the recording ring (lock-free, no overhead if nobody reads).
-        recording_ring.push(&mono_scratch);
+        if let Some(resampler) = recording_resampler.as_mut() {
+            recording_scratch.clear();
+            resampler.process(&mono_scratch, &mut recording_scratch);
+            recording_ring.push(&recording_scratch);
+        } else {
+            recording_ring.push(&mono_scratch);
+        }
         // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
         fifo.extend_from_slice(&mono_scratch);
         fifo_stereo.extend_from_slice(stereo);
@@ -1463,6 +1506,7 @@ pub(crate) mod tests {
                         tx,
                         shutdown,
                         rec_ring,
+                        sample_rate as u32,
                         beats,
                         downbeats,
                         drops,
@@ -1568,6 +1612,13 @@ pub(crate) mod tests {
     /// chroma 33–44 and `dominant_chroma` (45) match the previous capture to the printed
     /// precision (≤ 1e-7 last-digit rounding — the visual path is untouched), and a few
     /// unrelated features wiggled ≤ 3e-6 from recompilation, well under tolerance.
+    /// Re-captured 2026-09-29 for the input-path fixes (#54, #55, #56, #58): loudness is the
+    /// L+R power sum, so `loudness_m`/`loudness_s` (46–47) read +3 LU (+0.05) on this
+    /// dual-channel signal; the coherent-gain correction lifts spectra 6 dB, moving
+    /// `mid`/`upper_mid`/`presence` (3–5), whose content here sits at the −60 dB band floor;
+    /// the DC blocker nudges the rest by ≤ 0.025; `beat_in_bar` (54) on hop 340 changes its
+    /// guess — this 4 s clip never gets a bar lock. The bench fixture's beat and downbeat
+    /// scores are unchanged.
     // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
     // re-capture diffs cleanly against this block.
     #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -1575,51 +1626,51 @@ pub(crate) mod tests {
         (
             40,
             [
-                0.1402550, 0.1409504, 0.6152689, 0.0273869, 0.0032776, 0.9150822, 0.6669799,
-                0.0565823, 0.0162813, 0.3557950, 0.0031548, 0.0127018, 0.0253166, 0.4415765,
-                0.0316777, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2710480,
-                0.6099700, 0.7785417, 0.7338346, 0.6270778, 0.5728501, 0.4557934, 0.3411926,
-                0.2735227, 0.2778622, 0.3016837, 0.3824752, 0.5378194, 0.6498345, 0.5876555,
-                0.3666991, 0.2351193, 0.0749365, 0.1863821, 0.1481298, 0.0841269, 0.3016749,
-                0.9999737, 0.2572653, 0.0411858, 0.8181818, 0.7539268, 0.7610285, 0.0000000,
-                0.7272727, 1.0000000, 0.0227454, 0.0000000, 0.0000000, 0.0000000, 0.3725280,
-                0.0194502, 0.9947178, 0.0000000, 0.2187360, 0.0000000, 0.1764498, 0.0577750,
-                0.9938284, 0.6009454, 0.9458100, 0.4127851, 0.9999694, 0.4485442, 0.4881186,
-                0.4763141, 0.4603752, 0.5333866, 0.1859571, 0.4986976, 0.4986970, 0.3528318,
-                0.4987956, 0.4993192, 0.4987761, 0.4986998, 0.0000000, 0.0000000,
+                0.1407876, 0.1420596, 0.6145152, 0.3154613, 0.0430347, 0.9350787, 0.6669751,
+                0.0566947, 0.0161380, 0.3560369, 0.0031109, 0.0127056, 0.0253217, 0.4416282,
+                0.0306153, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2709295,
+                0.6099496, 0.7784974, 0.7338392, 0.6270733, 0.5727628, 0.4557225, 0.3412039,
+                0.2734341, 0.2777484, 0.3016584, 0.3823771, 0.5377032, 0.6482748, 0.5863790,
+                0.3664406, 0.2348731, 0.0749160, 0.1860548, 0.1479038, 0.0841248, 0.3017020,
+                0.9999736, 0.2573203, 0.0413149, 0.8181818, 0.8052005, 0.8124636, 0.0000000,
+                0.7272727, 1.0000000, 0.0227470, 0.0000000, 0.0000000, 0.0000000, 0.3724320,
+                0.0194766, 0.9947287, 0.0000000, 0.2187184, 0.0000000, 0.1732833, 0.0598805,
+                0.9940155, 0.6009381, 0.9461797, 0.4126789, 0.9999693, 0.4485310, 0.4881209,
+                0.4763152, 0.4603756, 0.5333704, 0.1859715, 0.4986978, 0.4986971, 0.3528318,
+                0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000,
             ],
         ),
         (
             172,
             [
-                0.1102305, 0.1080646, 0.7951319, 0.6900175, 0.7611723, 0.9349542, 0.8690848,
-                0.2405550, 0.0345201, 0.3562543, 0.0132942, 0.0128849, 0.0226155, 0.4402158,
-                0.0327185, 0.1916304, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4169460,
-                0.4931196, 0.5987754, 0.5700685, 0.4939806, 0.4751821, 0.5056775, 0.4571940,
-                0.4102419, 0.4235835, 0.4410326, 0.4640032, 0.5007324, 0.6384187, 0.5775567,
-                0.3584087, 0.2244768, 0.0638255, 0.1732863, 0.1376667, 0.0723760, 0.3010190,
-                0.9999934, 0.2557099, 0.0375986, 0.8181818, 0.7369184, 0.7459379, 0.0210931,
-                0.7272727, 1.0000000, 0.0001375, 0.0000000, 0.0000000, 0.0000000, 0.3879263,
-                0.0197077, 0.9949676, 0.0000000, 0.4461716, 0.0000000, 0.3710368, 0.1154715,
-                0.9693277, 0.6012465, 0.9458582, 0.3652391, 0.9999987, 0.4890802, 0.5026366,
-                0.4690945, 0.4539475, 0.5269697, 0.0719555, 0.4999761, 0.5000186, 0.3531287,
-                0.5012279, 0.5197858, 0.5005888, 0.5000213, 0.0000000, 0.0000000,
+                0.1102263, 0.1081984, 0.7946914, 0.8267748, 0.7893429, 0.9627049, 0.8690839,
+                0.2188624, 0.0339859, 0.3564951, 0.0098162, 0.0128876, 0.0226174, 0.4402910,
+                0.0348674, 0.1681761, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4163287,
+                0.4930184, 0.5987619, 0.5700652, 0.4939170, 0.4750780, 0.5056299, 0.4571947,
+                0.4101900, 0.4235389, 0.4410454, 0.4640085, 0.5006856, 0.6367147, 0.5761620,
+                0.3581127, 0.2241911, 0.0637431, 0.1728067, 0.1373570, 0.0722338, 0.3008879,
+                0.9999934, 0.2556811, 0.0375539, 0.8181818, 0.7882963, 0.7974412, 0.0210354,
+                0.7272727, 1.0000000, 0.0001375, 0.0000000, 0.0000000, 0.0000000, 0.3876600,
+                0.0201893, 0.9947813, 0.0000000, 0.4442507, 0.0000000, 0.3679971, 0.1145830,
+                0.9699730, 0.6012337, 0.9462099, 0.3652980, 0.9999987, 0.4890743, 0.5026374,
+                0.4690950, 0.4539478, 0.5269762, 0.0719375, 0.4999769, 0.5000178, 0.3531286,
+                0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000,
             ],
         ),
         (
             340,
             [
-                0.1529431, 0.1500496, 0.7958474, 0.1752795, 0.0049733, 0.3086759, 0.5809356,
-                0.0749775, 0.0220335, 0.3558824, 0.0057794, 0.0126732, 0.0235602, 0.4388202,
-                0.0314818, 0.1036804, 0.0000000, 0.6510209, 0.0000000, 0.0013162, 0.4584618,
-                0.4586744, 0.5644562, 0.5216897, 0.4544979, 0.4381144, 0.5564201, 0.5299048,
-                0.4502555, 0.4357056, 0.4874449, 0.5473771, 0.4820934, 0.6577535, 0.5944610,
-                0.3687846, 0.2380634, 0.0745901, 0.1859395, 0.1465119, 0.0799341, 0.3005089,
-                0.9999670, 0.2597651, 0.0414844, 0.8181818, 0.7456166, 0.7435962, 0.0413094,
-                0.8181818, 1.0000000, 0.6746093, 0.0000000, 0.0000000, 0.7500000, 0.3741339,
-                0.0193157, 0.9973286, 0.0000000, 0.4420659, 0.0000000, 0.1658111, 0.1091703,
-                0.9934737, 0.6008735, 0.9454567, 0.3603241, 0.9999986, 0.4310346, 0.4896318,
-                0.4748428, 0.4592253, 0.5218554, 0.0867594, 0.5000032, 0.4999986, 0.3532110,
+                0.1530726, 0.1504618, 0.7956443, 0.5298309, 0.0604075, 0.5831037, 0.5809369,
+                0.0753485, 0.0203862, 0.3561243, 0.0057274, 0.0126783, 0.0238795, 0.4389419,
+                0.0304028, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574384,
+                0.4586743, 0.5644627, 0.5217401, 0.4544856, 0.4380917, 0.5563500, 0.5298984,
+                0.4502431, 0.4356842, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
+                0.3684024, 0.2376923, 0.0745927, 0.1856951, 0.1463016, 0.0798915, 0.3004525,
+                0.9999670, 0.2597559, 0.0414821, 0.8181818, 0.7969663, 0.7951008, 0.0411382,
+                0.8181818, 1.0000000, 0.6746101, 0.0000000, 0.0000000, 0.2500000, 0.3740249,
+                0.0193253, 0.9973397, 0.0000000, 0.4409111, 0.0000000, 0.1625745, 0.1114902,
+                0.9936647, 0.6007999, 0.9458395, 0.3599527, 0.9999986, 0.4310307, 0.4896301,
+                0.4748437, 0.4592255, 0.5218306, 0.0867677, 0.5000031, 0.4999986, 0.3532110,
                 0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000,
             ],
         ),

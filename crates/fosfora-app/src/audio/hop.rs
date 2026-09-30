@@ -29,6 +29,41 @@ use super::timbre::DeltaMfccAnalyzer;
 use super::{ANALYSIS_HOP, AudioFeatures, AudioFrame};
 use crate::settings::BandScale;
 
+/// Corner of the DC blocker in front of the analysis chain (#55). A DC offset from a cheap
+/// interface or a loopback path otherwise leaks into sub_bass and the lowest onset bands
+/// through the Hann window's main lobe, and flattens the zero-crossing rate. Any corner
+/// removes a steady offset completely; 5 Hz settles one in ~30 ms and costs the lowest band
+/// (20 Hz) only ~0.3 dB at its bottom edge. A 10 Hz corner shifted the phase of kick
+/// fundamentals enough to move beat-grid lock by a beat on the bench fixture; 5 Hz scores
+/// identically to no filter there.
+const DC_CUTOFF_HZ: f32 = 5.0;
+
+/// One-pole DC blocker: `y[n] = x[n] − x[n−1] + R·y[n−1]`.
+#[derive(Clone, Copy)]
+struct DcBlocker {
+    r: f32,
+    x1: f32,
+    y1: f32,
+}
+
+impl DcBlocker {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            r: (-std::f32::consts::TAU * DC_CUTOFF_HZ / sample_rate).exp(),
+            x1: 0.0,
+            y1: 0.0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        let y = x - self.x1 + self.r * self.y1;
+        self.x1 = x;
+        self.y1 = y;
+        y
+    }
+}
+
 /// One hop's worth of output: the frame to publish, plus the three 1-frame triggers pulled
 /// from the *pre-smoothing* features so the caller can counter-latch them (#1976). Reading
 /// them off the smoothed frame instead would couple the counters to smoothing policy.
@@ -59,6 +94,13 @@ pub struct HopOutput {
 /// Every stateful detector in the analysis chain, plus the fixed per-hop delta the
 /// time-constant smoothers run on.
 pub struct HopAnalyzer {
+    /// DC blockers for the mono feed and for L and R, applied before anything reads the
+    /// hop (#55), plus the scratch they filter into.
+    dc_mono: DcBlocker,
+    dc_left: DcBlocker,
+    dc_right: DcBlocker,
+    mono: Vec<f32>,
+    stereo: Vec<f32>,
     analyzer: FftAnalyzer,
     normalizer: FeatureNormalizer,
     beat_detector: BeatDetector,
@@ -83,6 +125,11 @@ pub struct HopAnalyzer {
 impl HopAnalyzer {
     pub fn new(sample_rate: f32, band_scale: BandScale, tempo_cfg: TempoConfig) -> Self {
         Self {
+            dc_mono: DcBlocker::new(sample_rate),
+            dc_left: DcBlocker::new(sample_rate),
+            dc_right: DcBlocker::new(sample_rate),
+            mono: Vec::with_capacity(ANALYSIS_HOP),
+            stereo: Vec::with_capacity(ANALYSIS_HOP * 2),
             analyzer: FftAnalyzer::new(sample_rate, band_scale),
             normalizer: FeatureNormalizer::new(),
             beat_detector: BeatDetector::new(sample_rate, tempo_cfg),
@@ -126,24 +173,35 @@ impl HopAnalyzer {
     ) -> HopOutput {
         let dt = self.dt;
 
+        // Strip DC before any stage sees the hop (#55).
+        self.mono.clear();
+        self.mono
+            .extend(hop.iter().map(|&x| self.dc_mono.process(x)));
+        self.stereo.clear();
+        for f in hop_stereo.chunks_exact(2) {
+            self.stereo.push(self.dc_left.process(f[0]));
+            self.stereo.push(self.dc_right.process(f[1]));
+        }
+        let (hop, hop_stereo) = (&self.mono[..], &self.stereo[..]);
+
         // Multi-resolution FFT + feature extraction. The analyzer shifts this hop into
         // its 4096-sample window, so consecutive hops overlap 87.5%.
         let mut raw = self.analyzer.analyze(hop);
 
-        // A10 (#1461): perceptual loudness on the fresh hop (each sample once). Fields
-        // are Passthrough, so — like the beat block — they survive normalize/smooth
-        // unrescaled.
-        let loud = self.loudness_meter.process(hop);
+        // A10 (#1461): perceptual loudness on the fresh hop (each frame once), summed over
+        // L and R per BS.1770 (#56). Fields are Passthrough, so — like the beat block — they
+        // survive normalize/smooth unrescaled.
+        let loud = self.loudness_meter.process(hop_stereo);
         raw.loudness_m = loud.m;
         raw.loudness_s = loud.s;
         raw.loudness_trend = loud.trend;
         // A6 (#1457): the onset detector gates on this perceptual silence flag.
         let loud_silent = self.loudness_meter.is_silent();
 
-        // A13 (#1464): stereo field over the rolling window. Gated inside the analyzer on total
-        // stereo energy — NOT the mono `loud_silent` flag, which a fully anti-phase (maximally
-        // wide) signal would trip by cancelling to mono silence. The fields are Passthrough, so
-        // they survive normalize()/smooth() unrescaled, like the loudness/key blocks below.
+        // A13 (#1464): stereo field over the rolling window. Gated inside the analyzer on its own
+        // total stereo energy rather than `loud_silent`, so the two gates stay independent. The
+        // fields are Passthrough, so they survive normalize()/smooth() unrescaled, like the
+        // loudness/key blocks below.
         let stereo_field = self.stereo_analyzer.process(hop_stereo);
         raw.pan = stereo_field.pan;
         raw.stereo_width = stereo_field.stereo_width;
@@ -341,6 +399,54 @@ impl HopAnalyzer {
             downbeat_fired,
             drop_fired,
             pre_norm,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Raw (pre-normalization) features after ~2.3 s of a 1 kHz tone riding on `offset`.
+    fn settled_features(offset: f32) -> AudioFeatures {
+        const SR: f32 = 44100.0;
+        let mut a = HopAnalyzer::new(SR, BandScale::Db, TempoConfig::default());
+        let mut last = AudioFeatures::default();
+        for h in 0..200 {
+            let mono: Vec<f32> = (0..ANALYSIS_HOP)
+                .map(|i| {
+                    let t = (h * ANALYSIS_HOP + i) as f32 / SR;
+                    offset + 0.2 * (std::f32::consts::TAU * 1000.0 * t).sin()
+                })
+                .collect();
+            let stereo: Vec<f32> = mono.iter().flat_map(|&x| [x, x]).collect();
+            let ts = ((h + 1) * ANALYSIS_HOP) as f64 / f64::from(SR);
+            let cfg = (StructureConfig::default(), TempoConfig::default());
+            last = a
+                .process_hop(&mono, &stereo, ts, cfg.0, cfg.1, Vec::new())
+                .pre_norm;
+        }
+        last
+    }
+
+    /// A DC offset larger than the tone it carries would leak into sub_bass through the Hann
+    /// main lobe and stop every zero crossing (#55). Once the blocker settles, the tone reads
+    /// exactly as it does with no offset.
+    #[test]
+    fn dc_offset_does_not_reach_the_features() {
+        let clean = settled_features(0.0);
+        let offset = settled_features(0.3);
+        assert!(clean.zcr > 0.0);
+        for (name, a, b) in [
+            ("sub_bass", clean.sub_bass, offset.sub_bass),
+            ("bass", clean.bass, offset.bass),
+            ("zcr", clean.zcr, offset.zcr),
+            ("rms", clean.rms, offset.rms),
+        ] {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "{name}: {a} clean vs {b} with a DC offset"
+            );
         }
     }
 }

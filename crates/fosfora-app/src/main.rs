@@ -54,6 +54,9 @@ struct FosforaApp {
     /// `App::new` failed: the event loop is told to exit, and `main` turns
     /// this into a non-zero exit status so a wrapper script can tell.
     init_failed: bool,
+    /// The GPU device was lost mid-run (driver reset, GPU removed). Same
+    /// treatment as `init_failed`: exit, then a non-zero status.
+    device_lost: bool,
 }
 
 impl FosforaApp {
@@ -65,6 +68,7 @@ impl FosforaApp {
             obstacle_dialog_rx: None,
             param_save_pending: None,
             init_failed: false,
+            device_lost: false,
         }
     }
 }
@@ -2082,7 +2086,7 @@ impl ApplicationHandler for FosforaApp {
                             let audio_source = if app.audio.active {
                                 Some(crate::recording::encoder::AudioSource {
                                     ring: app.audio.recording_ring.clone(),
-                                    sample_rate: app.audio.sample_rate,
+                                    sample_rate: app.audio.recording_rate,
                                 })
                             } else {
                                 None
@@ -4547,6 +4551,19 @@ impl ApplicationHandler for FosforaApp {
 
                 match app.render() {
                     Ok(()) => {}
+                    // Checked before the surface arms: a lost device reports `Lost` too, and
+                    // resizing on it rebuilt every texture on a dead device each frame (#96).
+                    // Rebuilding the whole GPU context in place isn't supported; exit once,
+                    // cleanly, and say why.
+                    Err(_) if app.gpu.is_device_lost() => {
+                        log::error!(
+                            "GPU device lost (driver reset or GPU removed); fosfora must be restarted"
+                        );
+                        app.binding_bus.flush();
+                        self.device_lost = true;
+                        event_loop.exit();
+                        return;
+                    }
                     Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                         let w = app.gpu.surface_config.width;
                         let h = app.gpu.surface_config.height;
@@ -5141,6 +5158,12 @@ fn main() -> Result<()> {
 
     let mut app = FosforaApp::new();
     event_loop.run_app(&mut app)?;
+    if app.device_lost {
+        eprintln!(
+            "fosfora: the GPU device was lost (driver reset or GPU removed); restart fosfora"
+        );
+        std::process::exit(1);
+    }
     if app.init_failed {
         std::process::exit(1);
     }
