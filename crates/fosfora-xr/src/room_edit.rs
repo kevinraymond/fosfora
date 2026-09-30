@@ -304,12 +304,19 @@ pub enum Cloud {
 }
 
 impl Cloud {
-    /// The cloud for the toggle `cloud`: off hides the effect whatever
-    /// Edit room and the editor's hit are (`edit_room` and `hit` are
-    /// kept for the explicit solo to come).
+    /// The cloud for the toggle `cloud`: off hides the effect, except
+    /// while Edit room is on, when the effect always shows: the embers
+    /// and sparks the editor paints on a surface are that effect's
+    /// particles, and a hidden effect made every tap look like nothing
+    /// (Kevin's seventh worn pass, Sep 30). `hit` is kept for the
+    /// explicit solo to come.
     pub fn of(cloud: bool, edit_room: bool, hit: Option<usize>) -> Self {
-        let _ = (edit_room, hit);
-        if cloud { Self::On } else { Self::Off }
+        let _ = hit;
+        if cloud || edit_room {
+            Self::On
+        } else {
+            Self::Off
+        }
     }
 
     /// Whether the eye pass draws the world effect (`Gfx::set_world_visible`):
@@ -715,9 +722,10 @@ mod tests {
         assert_eq!(Cloud::of(true, false, None), Cloud::On);
         assert_eq!(Cloud::of(true, true, Some(3)), Cloud::On);
         assert_eq!(Cloud::of(false, false, Some(3)), Cloud::Off);
-        // Off is off, whatever the editor is doing (the sixth worn pass).
-        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::Off);
-        assert_eq!(Cloud::of(false, true, None), Cloud::Off);
+        // Editing shows the effect whatever the toggle says (the seventh
+        // worn pass): the painted embers are the effect.
+        assert_eq!(Cloud::of(false, true, Some(3)), Cloud::On);
+        assert_eq!(Cloud::of(false, true, None), Cloud::On);
         let name = |k: usize| format!("desk {k}");
         assert_eq!(Cloud::On.describe(name), "cloud on");
         assert_eq!(

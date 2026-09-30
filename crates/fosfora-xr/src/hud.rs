@@ -1018,7 +1018,7 @@ fn panel_ui(
     });
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
-    block.push(cloud_row(controls.cloud));
+    block.push(cloud_row(controls.cloud, controls.edit_room));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1030,18 +1030,27 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, edit_status: &str, mut rows: 
     let block: [Control<'_>; grid::MENU_ROWS] = [
         menu_row(false, controls.pitcher),
         edit_row(controls.edit_room, edit_status),
-        cloud_row(controls.cloud),
+        cloud_row(controls.cloud, controls.edit_room),
     ];
     rows.block(ui, MENU_H, &block);
 }
 
 /// The cloud's row, the bottom row in both layouts: its toggle, the right
 /// cell empty (step 2c). The state is in the words, not a color.
-fn cloud_row(on: bool) -> Control<'static> {
+fn cloud_row(on: bool, editing: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleCloud,
-            if on { "Cloud: on" } else { "Cloud: off" },
+            // "Particles", not "cloud": the toggle hides every particle
+            // of the effect, the embers painted on a surface included, and
+            // the word cloud read as the ambient mass alone (Kevin, Sep 30).
+            match (on, editing) {
+                (true, _) => "Particles: on",
+                // Off, but Edit room shows the effect: the painted embers
+                // are its particles (`room_edit::Cloud::of`).
+                (false, true) => "Particles: off (shown: editing)",
+                (false, false) => "Particles: off",
+            },
         )),
         // Every surface to none in one press, for telling what a single
         // assignment does afterwards (board #3326).

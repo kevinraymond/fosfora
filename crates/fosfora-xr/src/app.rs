@@ -1630,6 +1630,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         cloud.describe(|k| crate::surfaces::friendly_name(k, &lane_boxes))
                     );
                 }
+                if world && cloud != cloud_ran && !controls.cloud && edit_on {
+                    info!("cloud off, but Edit room is on: the world effect shows while editing");
+                }
                 cloud_ran = cloud;
                 gfx.set_world_visible(cloud.visible());
                 for b in &input.room_boxes {

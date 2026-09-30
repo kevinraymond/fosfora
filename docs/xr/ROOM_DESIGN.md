@@ -573,3 +573,14 @@ volume emitter) and **Flock** (was Murmur XR World). Flux Cloud Coarse
 cycle (its file no longer matches `*_xr_world*`) and stays reachable by
 `debug.fosfora.effect`. MEASURED.md keeps the old names in its history.
 
+**Implemented, step 2g (Sep 30).** Kevin's seventh worn pass, on Embers:
+"Cloud: off to get rid of the default effect, room edit, only floor:
+ripple and wall: spectrum." The log showed the surfaces emitting (weight
+2.19, 120K particles alive from the tables he set) and all of it hidden
+by the toggle: the embers painted on a surface are the effect's own
+particles. So while Edit room is on the effect always shows, whatever
+the Cloud toggle says (its button now reads "Particles: on/off", and "Particles: off (shown:
+editing)" in that case: the word cloud read as the ambient mass alone),
+and on Embers the way to a quiet room is All: none, which since 2e
+spawns nothing.
+
