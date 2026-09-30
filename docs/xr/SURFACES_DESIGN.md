@@ -230,3 +230,18 @@ adb shell setprop debug.fosfora.surface "table=streamlines,floor=rings,wall=stre
 
 plus `ceiling=rings,frame=streamlines` for every face; `#<k>=<behavior>`
 lights one box, `clear` puts the defaults back.
+
+**Music row** (Kevin, worn, Sep 30: every worn run had been on the
+synthetic beat). A fourth hand-menu row, under Particles in both
+layouts, plays and stops the bundled clip (`ember_glow_excerpt.ogg`,
+the 140 BPM excerpt `debug.fosfora.audio file` loops) whatever the app
+launched with. Play does what `file` does: the clip on the speakers,
+the analysis on its tap. Stop ends the stream, and the analysis goes
+back to the launch source: the microphones, which stay open across a
+play, or the synthetic groove. `loop` keeps its analysis on the
+microphones either way. The first play decodes on a worker thread (the
+row reads "Music: stop" meanwhile). After that the clip is kept, and a
+play resumes where the stop left it. `debug.fosfora.music 1` plays it
+at launch for the unworn checks. `file` and `loop` start on "Music:
+stop" as before, and nothing is saved. `music.rs` holds the row's words
+and where each state puts the analysis.
