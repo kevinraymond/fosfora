@@ -51,7 +51,11 @@ pub const UNIFORM_ROWS: usize = 8 + MAX_RINGS;
 /// One ring: where and when it was born, and how bright.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ring {
+    /// The smoothed head's floor projection at birth (x, z).
     pub origin: Vec2,
+    /// The smoothed head at birth: the surfaces pass places the ring on
+    /// any face from it (`surface_fx::rings_origin`).
+    pub head: Vec3,
     pub born_s: f32,
     pub amp: f32,
 }
@@ -71,7 +75,8 @@ impl Ring {
 pub struct Ripple {
     pub speed: f32,
     pub gain: f32,
-    origin: Option<Vec2>,
+    /// The head low-passed; the origin is its floor projection.
+    head: Option<Vec3>,
     rings: [Option<Ring>; MAX_RINGS],
     glow: f32,
 }
@@ -87,7 +92,7 @@ impl Ripple {
         Self {
             speed,
             gain,
-            origin: None,
+            head: None,
             rings: [None; MAX_RINGS],
             glow: 0.0,
         }
@@ -97,10 +102,10 @@ impl Ripple {
     /// floor projection, add a ring when `beat` fired (amplitude from
     /// `low`, the low end 0..1), and set the glow from `bass`.
     pub fn update(&mut self, t: f32, dt: f32, head: Vec3, beat: bool, low: f32, bass: f32) {
-        let target = Vec2::new(head.x, head.z);
         let blend = 1.0 - (-dt.max(0.0) / ORIGIN_TAU_S).exp();
-        let origin = self.origin.map_or(target, |o| o + (target - o) * blend);
-        self.origin = Some(origin);
+        let smoothed = self.head.map_or(head, |h| h + (head - h) * blend);
+        self.head = Some(smoothed);
+        let origin = Vec2::new(smoothed.x, smoothed.z);
         self.glow = GLOW_LEVEL * bass.clamp(0.0, 1.0);
         for r in &mut self.rings {
             if r.is_some_and(|r| r.at(t, self.speed).is_none()) {
@@ -110,6 +115,7 @@ impl Ripple {
         if beat {
             let ring = Ring {
                 origin,
+                head: smoothed,
                 born_s: t,
                 amp: AMP_FLOOR + (1.0 - AMP_FLOOR) * low.clamp(0.0, 1.0),
             };
@@ -134,11 +140,28 @@ impl Ripple {
 
     /// The smoothed origin on the floor (x, z), once a head was seen.
     pub fn origin(&self) -> Option<Vec2> {
-        self.origin
+        self.head.map(|h| Vec2::new(h.x, h.z))
+    }
+
+    /// The smoothed head, once one was seen: the origin before its
+    /// projection onto a face.
+    pub fn head(&self) -> Option<Vec3> {
+        self.head
+    }
+
+    /// The resting glow's intensity (0 to `GLOW_LEVEL`, with the bass).
+    pub fn glow(&self) -> f32 {
+        self.glow
     }
 
     pub fn rings(&self) -> impl Iterator<Item = &Ring> {
         self.rings.iter().flatten()
+    }
+
+    /// The ring slots in order, empty ones `None`: the surfaces pass
+    /// writes one uniform row per slot.
+    pub fn slots(&self) -> &[Option<Ring>; MAX_RINGS] {
+        &self.rings
     }
 
     /// Light at floor point `p` (x, z) at time `t`, before the gain and
@@ -153,7 +176,7 @@ impl Ripple {
                 i * (-d * d).exp()
             })
             .sum();
-        let glow = self.origin.map_or(0.0, |o| {
+        let glow = self.origin().map_or(0.0, |o| {
             let d = p.distance(o) / GLOW_RADIUS_M;
             self.glow * (-d * d).exp()
         });
@@ -184,7 +207,7 @@ impl Ripple {
                 f.axes[1] * f.half[1],
             ),
             None => {
-                let o = self.origin?;
+                let o = self.origin()?;
                 let h = SYNTHETIC_QUAD_M * 0.5;
                 (Vec3::new(o.x, y, o.y), Vec3::X * h, Vec3::Z * h)
             }
@@ -219,7 +242,7 @@ impl Ripple {
         }
         rows[4] = [WIDTH_M, GLOW_RADIUS_M, self.glow, PEAK_ALPHA * self.gain];
         rows[5] = [COLOR[0], COLOR[1], COLOR[2], 0.0];
-        let o = self.origin.unwrap_or(Vec2::ZERO);
+        let o = self.origin().unwrap_or(Vec2::ZERO);
         rows[6] = [o.x, o.y, 0.0, 0.0];
         for (row, r) in rows[8..].iter_mut().zip(&self.rings) {
             if let Some((ring, (radius, i))) = r.and_then(|r| r.at(t, self.speed).map(|a| (r, a))) {
