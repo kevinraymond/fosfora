@@ -299,8 +299,9 @@ surface is selected.
 ### The behavior catalogue (the lane's values)
 
 0 none · 1 embers off the top face (Flux, today's table behavior) ·
-2 sparks up from the face with the bass (Flux, today's floor behavior) ·
-3 the spectrum canvas (walls) · 4 the ripple (floors) · 5 drips down the
+2 sparks up from the face with the bass (Flux, the floor's behavior
+until step 2d) · 3 the spectrum canvas (walls) · 4 the ripple (floors;
+their default since step 2d) · 5 drips down the
 face gathering at its bottom edge (walls, new) · 6 dust lifting off the
 face on the beat (any, new) · 7 a pool that embers settle into and glow
 (tables, new). The first pass ships 0 to 4, which exist as code, and
@@ -322,7 +323,11 @@ stage floor). `x` is the behavior id + 1, so a zero row means unset and
 the box runs its kind's default through the old kind gate: an upload
 without the block behaves exactly as before. The kind defaults are the
 old fixed rule (table embers, floor sparks, wall spectrum, the rest
-none), so with no file and no knob the room looks as it did. A set lane
+none), so with no file and no knob the room looks as it did. (Amended
+Sep 29, decision #3459, step 2d: the floor's default is now the ripple,
+and an unset lane runs its kind's default behavior through the same
+gate a set lane does, not the old kind gate; an unset table sheds
+embers as before, an unset floor spawns nothing.) A set lane
 gates the box's spawns by its behavior (embers on the beat gate, sparks
 on the bass gate, the rest closed) times its strength; the spawn stays
 on the upward face. The room id is FNV-1a 64 over the anchors' UUIDs
@@ -341,6 +346,9 @@ spectrum picks among the visible walls whose behavior is the spectrum
 (none: no canvas); the ripple goes to the largest floor on the ripple
 (the stage floor included), else the largest scene floor, else the
 stage floor, and pinning it to a floor turns that floor's sparks off.
+(Amended Sep 29, decision #3459, step 2d: the fallback is gone; only a
+floor on the ripple carries it, and with none there is no ripple. See
+step 2d below.)
 
 ### The interaction, hands-first
 
@@ -369,3 +377,239 @@ on the side wall, relaunch and find the room as left.
    room per space.)
 3. Does the pinch-hold keep cycling effects, or switch to room presets in
    C? (Deferred to C.)
+
+**Implemented, step 2 (Sep 29).** Kevin chose the pinch on the surface
+(question 1) and the pinch-hold as the class assignment on a surface,
+the effect cycle elsewhere (question 3, for the editor). "Edit room"
+is a second hand menu row under the pitcher and debug toggles, in both
+layouts, beside a status cell; it is off at launch and not saved. While
+it is on the right hand's gestures are the editor's (`room_edit.rs`):
+the ray is the throw's, from the head through the right far pinch point
+(the seated reach applies), cast up to 8 m against the room's boxes and
+the stage floor while the room has none; a tap cycles the pointed
+surface's behavior one step (none, embers, sparks, spectrum, ripple,
+none, from its effective behavior, so an unassigned table goes to
+sparks, its strength kept), a hold (0.7 s) moves every surface of its
+kind, and the kind default, one step past it at its strength (the class
+cycle: first built as "apply this surface's behavior to its kind", which
+did nothing visible when the kind already ran it, Kevin, worn). The right
+tap no longer throws or toggles the sprite size, the right hold no
+longer cycles the effect, the right drag no longer moves the anchor;
+the left hand, the lift and the pitcher are unchanged. While the panel
+is up its pinches are its own and the editor is frozen: the hit, the
+highlight and the status cell hold, the beam goes, nothing fires (first
+built with the hit clearing, so the status read "no surface" whenever
+the wearer turned the palm up to read it, Kevin, worn); a gesture
+without a ray or a hit changes nothing and is logged. The hit has
+hysteresis: another box counts after 0.15 s under the ray, the hit
+clears after 0.3 s off it, and the gestures act on the hit as shown.
+The assignments go through step 1's lanes, file and log unchanged. The
+look: a beam (4 mm, alpha 0.35) from the far pinch point to the hit,
+or at the held hit's distance through a short miss, else 3 m out; the
+hit face (`Face::across`, the box face across the hit normal) lifted
+1 cm and tinted in the ripple's warm white, a fill at alpha 0.10 under
+a 2.5 cm border at 0.30 (the border is what reads with one eye), drawn
+after the ripple and the canvas, behind hands and furniture, under the
+embers; a cycle pulses it once and a class assignment twice (+0.25,
+0.3 s each). The status cell names the surface in words, with the box
+index when two share a name ("table 3: embers", "wall 12: spectrum"),
+"no surface" or "edit room off". Knobs: `debug.fosfora.editroom 0|1`
+(the mode at launch) and `debug.fosfora.picktest <s>` (the ray from
+0.5 m ahead of the head along the view tilted 20 degrees down,
+untracked, a synthetic tap every `<s>` seconds; implies the mode).
+Logs: "edit room: pointing at wall 12 (WALL_FACE 8f7ada5c) at (x, y,
+z)", "edit room: no surface", "edit room: table 0 (TABLE dc83ba94) ->
+sparks" followed by the lanes' line, "edit room: every wall like ..."
+for a class, and the mode's changes. Worn gate (Kevin): point at the
+desk and turn its embers off and on, put the spectrum on the side wall,
+relaunch and find the room as left. Step 2b (Sep 29), after two worn
+passes: every tap and hold landed in the log, but most steps of the full
+catalogue looked the same on a given surface (a wall on embers, sparks,
+ripple or none shows nothing, a table on spectrum, ripple or none is
+dark) and the only naming of the result was the palm panel, which the
+wearer is not looking at while pointing, so "it's not very obvious that
+anything is happening on either tap or hold" (Kevin). Kevin chose to
+narrow the cycle now and to make every behavior render on every surface
+later (C). A tap and a hold now step through the kind's own catalogue
+(`SurfaceBehavior::catalogue`, `next_for`), what renders on it, `none`
+first: table, other and unlabeled anchors none, embers, sparks; floor
+none, sparks, ripple; wall none, spectrum; ceiling and frame none only.
+A behavior off it (a knob put the spectrum on a table) goes to the first
+entry after `none`; the knob still takes any behavior on any kind. After
+each action a label floats at the hit for 1.5 s, fading over its last
+0.4 s, naming the result: "desk: sparks", "all tables: none", "ceiling:
+nothing to change". It is white text on a dark rounded ground at alpha
+0.85 (the fade scales both; text on a ground, so it reads with one eye),
+egui into a 512 x 96 texture of its own, shown 0.28 m wide as a
+billboard 8 cm out along the face normal and 6 cm up from the hit,
+facing the head with the head's right, drawn with the panel's pipeline
+right after the panel (`label.rs`). And a quick, short right drag counts
+as a tap: of Kevin's right pinches, 16 in one pass and 2 in the next
+moved past the 2.5 cm drag radius before opening and did nothing, so a
+drag in Edit room that ends under 0.5 s from its start and under 10 cm
+from where it started is the editor's tap, logged "gesture: short drag
+right counts as a tap · edit room". Step 2c (Sep 29), after the third worn pass:
+the labels changed but "further away is just a blob of pixels", and "the
+actual effects are NOT cycling ... Half the time I don't even know
+what's happening because the giant particle cloud is everywhere"
+(Kevin). The log showed the edits landing; they were lost in the mass.
+In that pass the summed emitter weight was 1.85 with the floor on ripple,
+every table shedding into 160,000 particles a second, so a table going
+from embers to sparks to none moved where a share of them were born
+while 400K living sprites drifted on for their 12 s lifetime. Unworn
+earlier, with the headset on the desk, the sum was 0.99 with the floor
+at 0.5: the largest table sat outside the 1.5 m volume, and the tables
+in reach shared 0.49 as slivers of it. Three changes. The label's width
+now follows its distance from the head, 0.11 m per meter clamped to
+0.28..1.4 m, so it holds about 6 degrees across from the chair to the
+far wall (0.28 m up to 2.5 m away, 0.33 m at 3 m, 0.88 m at 8 m), from a
+1024 x 192 texture with the text starting at 88 px and shrinking to fit
+down to 40 px, so it is sharp up close too; the fade and the billboard
+are unchanged. The table weights are taken against the largest emitting
+table inside the volume, not the room's largest (`emitter_weights`), so
+the nearest big table weighs 1.0 and a room whose only emitting table is
+a side table gives it 1.0; other kinds follow the same reference, the
+floor keeps its own weight. And a third hand menu row, under Edit room
+in both layouts, "Cloud: on/off" (on at launch, not saved; knob
+`debug.fosfora.cloud 0|1`). Off, the world effect's emission goes to 0
+through the density path, the density kept so on restores it. Off with
+Edit room on, the pointed surface is soloed: the emission stays at the
+density, but the lane rows uploaded to the sim carry strength 0 for every
+box but the editor's hit (`room_edit::solo`, on a copy each frame, never
+on the lanes' rows or the file), so only that surface spawns, and with
+no hit nothing does; the wearer points at the desk and sees its embers,
+its sparks or nothing, alone, and the label names it. The wall spectrum,
+the ripple, the pitcher and the throw are unchanged. The particle system
+has no way to clear the living cloud without a core change, so turning
+the cloud off, or moving the solo, leaves what is alive to die over its
+lifetime (12 s for Flux XR Room). Logs: "cloud off: emission 0, the
+cloud fades over the lifetime", "cloud off, edit room: solo desk",
+"cloud off, edit room: solo, no surface (nothing spawns)", "cloud on",
+and the density line with "(cloud off)".
+
+**Implemented, step 2d (Sep 29, decision #3459).** Worn: "floor ripple
+kept rippling when I switch to embers or none" (Kevin). The ripple fell back to the largest floor whenever no floor
+was on it, and the floor's default was sparks, so a floor could not be
+left dark. Kevin chose: a floor's default is the ripple
+(`SurfaceBehavior::default_for`, `xr_kind_behavior`), and the ripple
+draws only on a floor whose behavior is the ripple, the largest scene
+floor on it, else the stage floor on it while the room has no scene
+floor (then the stage floor stands in, as its emitter flag and the
+editor's ray already take it; beside a scene floor it is out of the
+editor's reach, and its default would put the ripple back under a scene
+floor turned to none). With neither there is no ripple, logged "floor
+ripple: no floor on ripple". A floor sparks only when assigned, and
+none on a floor means nothing on it. In the sim an unset lane now runs
+its kind's default behavior through the behavior gate at full strength
+(`xr_box_gate`), the kind gate is gone: an unset table sheds embers as
+before, an unset floor, wall or other box spawns nothing (the old gate
+gave walls and other kinds a fixed 0.3, which the app never weighted).
+The floor's cycle is unchanged, none, sparks, ripple; its default is
+the last, so a tap from it goes to none, then sparks, then back to the
+ripple. The room file needs no migration, with one catch: every save
+writes all six kind defaults, so a room saved before 2d names "floor":
+"sparks" and keeps it, as a wearer's own assignment would; a room with
+no file takes the ripple. A hold on a floor (the class cycle from
+sparks) or the knob `floor=ripple` puts such a room on the new default.
+And the solo now runs at the full rate: with Cloud off in Edit room and
+a hit that spawns (embers or sparks), every other box's row goes to the
+sim as none at strength 0, not just strength 0, so the weights see one
+emitting box and every draw lands on it; in 2c the others kept their
+behaviors and so their share of the weight, and the pointed surface
+spawned about 1.0 / 1.85 of the rate in Kevin's room. With no hit, or a
+hit that spawns nothing (a floor on the ripple, a wall), the 2c rule
+stays (behaviors kept, strengths 0): turning every row to none there
+would leave no weight anywhere, and the sim would fall back to spawning
+through the whole volume.
+ An "All: none" button beside the Cloud toggle
+(both layouts) puts every kind default and every anchor, the stage floor
+too, on none in one save: the quiet room from which one assignment can be
+judged (Kevin's fourth pass, Sep 29).
+
+**Implemented, step 2e (Sep 29).** Worn, fifth pass: "The whole entire
+scene, clouds, glow, flock, whatever persist no matter what I'm trying"
+(Kevin). Two causes. "All: none" filled the room: the sim fell back to
+the volume emitter whenever no box carried weight (step 1's rule for a
+room with no anchors), and the weights follow the behaviors, so a room
+whose every surface was explicitly none spawned the full cloud from
+nowhere. And Cloud off only took the emission to 0: the sprites alive
+drew on until they died (12 s for Flux XR Room, 15 s for Murmur's
+birds), and the other world effects (Flux XR World, Coarse, Murmur)
+ignore the lanes anyway. Now Cloud off hides the world effect's draw at
+once, whatever the effect (`Gfx::set_world_visible`, from
+`Cloud::visible`): the eye pass skips it for both eyes while its sim
+steps on, so on is instant and the room is as it would have been. The
+depth occluders, the ripple, the wall spectrum, the highlight, the
+label, the beams and the panel still draw; the pitcher's pour and the
+throw's bursts are the world effect's particles and hide with it. The
+emission-0 path is gone, and the density path takes the density alone.
+Solo is unchanged, shown, and what was alive before a solo switch still
+fades over its lifetime (an instant kill needs a core method, a separate
+decision). In the sim, the volume fallback runs only when the
+surface-emit preset has no boxes at all: with boxes and no weight
+anywhere nothing spawns, so a room all on none is silent, and a run with
+no room at all keeps the volume cloud. The XR app always pushes the
+stage floor as a box in mr and world modes, and its default is the
+ripple, so a Flux XR Room run with no anchors now spawns nothing unless
+the stage floor's lane emits: the unworn cost sweeps set
+`debug.fosfora.surface "#0=sparks"`. Logs: "cloud off: the world effect
+is hidden", "cloud on".
+
+**Implemented, step 2f (Sep 30).** Kevin's sixth worn pass: "cloud: off,
+all: none, and still there are particles flying all around me." The log
+showed two things. The world effect was Flux XR World, the default in
+`mode world`, a volume emitter that ignores the lanes; the room editor
+steers only Flux XR Room. And Cloud off with Edit room on was the solo,
+which showed the effect. So Cloud off now hides the effect whatever Edit
+room is doing; the solo is not reachable from the toggle and returns as
+an explicit mode once the living particles can be cleared at once
+(board #3464).
+
+**Names (Sep 30).** The world effects carry the names the wearer sees:
+**Embers** (was Flux XR Room, the surface-born one the editor steers,
+now the default in `mode world`), **Flux Cloud** (was Flux XR World, the
+volume emitter) and **Flock** (was Murmur XR World). Flux Cloud Coarse
+(was Flux XR World Coarse, a sprite-size diagnostic) left the pinch-hold
+cycle (its file no longer matches `*_xr_world*`) and stays reachable by
+`debug.fosfora.effect`. MEASURED.md keeps the old names in its history.
+
+**Implemented, step 2g (Sep 30).** Kevin's seventh worn pass, on Embers:
+"Cloud: off to get rid of the default effect, room edit, only floor:
+ripple and wall: spectrum." The log showed the surfaces emitting (weight
+2.19, 120K particles alive from the tables he set) and all of it hidden
+by the toggle: the embers painted on a surface are the effect's own
+particles. So while Edit room is on the effect always shows, whatever
+the Cloud toggle says (its button now reads "Particles: on/off", and "Particles: off (shown:
+editing)" in that case: the word cloud read as the ambient mass alone),
+and on Embers the way to a quiet room is All: none, which since 2e
+spawns nothing.
+
+**Implemented, step 2h (Sep 30).** Kevin's eighth worn pass, two
+reports with two causes. "It's not obvious that the top and sides of
+table 14 are connected: I can highlight each surface separately, but they
+don't get effects separately": the behavior is one per box, but the
+highlight tinted whichever face the ray entered. Now it tints the face
+the behavior acts on, whichever face the ray entered
+(`surfaces::acting_face`): a volume's top face (a table, storage, the
+stage floor's slab; the face the sim spawns on) and a plane's face toward
+the head (a wall's room side, a floor's top, the ceiling's underside; a
+plane is a box with a half extent at `PLANE_HALF_THICKNESS_M`, 2 cm). The
+pick, its hysteresis and the label's placement at the hit are unchanged,
+and the log's "pointing at" line says "(top)" or "(face)". "Table 13
+worked for a pinch-hold but not a single pinch": the tap assigned it, but
+its top face lay outside Embers' volume, the cube of the preset's 1.5 m
+half extent around the anchor recentered on the wearer, so its emitter
+weight was 0 and a particle born there would respawn at once; the hold
+copied the behavior to every table, and table 14, inside the cube, lit.
+Now the surface-born effect's space fits the room (`space::fit_room`):
+the smallest cube around the anchor holding every room box's corners
+(the stage floor excluded, it is 20 m across) plus a 0.25 m margin,
+rounded up to the stepper's 0.25 m and clamped to its 0.5 to 6 m,
+applied whenever the boxes or the anchor change and no size was asked.
+The knob or the stepper still wins; the stepper shows the fit and steps
+from it. Flux Cloud and Flock keep their presets' sizes (the flock was
+tuned at 1.5 m). Log: "space fit to the room: 3.75 m half extent (17
+boxes)". And the label says when a tap or a hold leaves a surface on
+embers or sparks outside the volume, "table 13: sparks (outside the
+space)", by the reach test the weights use: rare with the fit, it stays
+for an asked size too small for the room.

@@ -66,12 +66,14 @@ pub struct Gfx {
     quad: Option<QuadBinding>,
     quad_layout: wgpu::BindGroupLayout,
     /// The debug panel: a posed, textured quad (`set_panel`, `set_panel_pose`).
-    panel: Option<QuadBinding>,
-    panel_visible: std::cell::Cell<bool>,
+    panel: PosedQuad,
+    /// The room editor's label (`set_label`, `set_label_pose`, `label.rs`):
+    /// another posed quad, drawn right after the panel.
+    label: PosedQuad,
     panel_pipeline: wgpu::RenderPipeline,
     panel_layout: wgpu::BindGroupLayout,
-    /// Beams (`set_beam`): the debug panel's pointer and one per hand for
-    /// the reach extension.
+    /// Beams (`set_beam`): the debug panel's pointer, one per hand for
+    /// the reach extension and the room editor's pick.
     beam: QuadBinding,
     beam_visible: std::cell::Cell<[bool; BEAM_SLOTS]>,
     beam_pipeline: wgpu::RenderPipeline,
@@ -85,6 +87,14 @@ pub struct Gfx {
     canvas: QuadBinding,
     canvas_visible: std::cell::Cell<bool>,
     canvas_pipeline: wgpu::RenderPipeline,
+    /// The room editor's highlight (`set_highlight`, `highlight.rs`): one
+    /// lit quad on the face the pick hit.
+    highlight: QuadBinding,
+    highlight_visible: std::cell::Cell<bool>,
+    highlight_pipeline: wgpu::RenderPipeline,
+    /// Whether the eye pass draws the world effect (`set_world_visible`;
+    /// the hand menu's Cloud row, board #3326).
+    world_visible: std::cell::Cell<bool>,
     /// Small sprites marking the virtual (reach-extended) hand joints.
     ghost: QuadBinding,
     ghost_count: std::cell::Cell<u32>,
@@ -107,10 +117,21 @@ struct QuadBinding {
     bind_group: wgpu::BindGroup,
 }
 
-/// Beam slots: the debug panel's pointer, and each hand's reach beam.
-pub const BEAM_SLOTS: usize = 3;
+/// A posed, textured quad the panel's pipeline draws (the hand menu, the
+/// room editor's label): hidden until it has a texture and a pose.
+#[derive(Default)]
+struct PosedQuad {
+    binding: Option<QuadBinding>,
+    visible: std::cell::Cell<bool>,
+}
+
+/// Beam slots: the debug panel's pointer, each hand's reach beam and the
+/// room editor's pick (board #3326). `BEAM_WGSL`'s array takes its length
+/// from this, as the uniform does.
+pub const BEAM_SLOTS: usize = 4;
 pub const BEAM_PANEL: usize = 0;
 pub const BEAM_REACH: [usize; 2] = [1, 2];
+pub const BEAM_PICK: usize = 3;
 /// Bytes per beam in the uniform: four corners and a color.
 const BEAM_BYTES: u64 = 80;
 /// Ghost sprites the uniform holds (both hands' 26 joints fit).
@@ -128,9 +149,10 @@ pub struct Beam {
     pub alpha: f32,
 }
 
-/// Where the debug panel sits this frame: its center and the vectors from
-/// the center to its right and top edges (reference space, meters). The
-/// texture's top-left corner is at `center - right + up`.
+/// Where the debug panel (or the room editor's label) sits this frame: its
+/// center and the vectors from the center to its right and top edges
+/// (reference space, meters). The texture's top-left corner is at
+/// `center - right + up`.
 #[derive(Debug, Clone, Copy)]
 pub struct PanelPose {
     pub center: [f32; 3],
@@ -399,13 +421,20 @@ impl Gfx {
             "xr-canvas",
             crate::canvas::UNIFORM_ROWS,
         );
+        let (highlight_pipeline, highlight) = build_surface_pipeline(
+            &device,
+            &eye_layout,
+            crate::highlight::HIGHLIGHT_WGSL,
+            "xr-highlight",
+            crate::highlight::UNIFORM_ROWS,
+        );
         info!("wgpu device ready");
 
         Ok(Self {
             quad: None,
             quad_layout,
-            panel: None,
-            panel_visible: std::cell::Cell::new(false),
+            panel: PosedQuad::default(),
+            label: PosedQuad::default(),
             panel_pipeline,
             panel_layout,
             beam,
@@ -417,6 +446,10 @@ impl Gfx {
             canvas,
             canvas_visible: std::cell::Cell::new(false),
             canvas_pipeline,
+            highlight,
+            highlight_visible: std::cell::Cell::new(false),
+            world_visible: std::cell::Cell::new(true),
+            highlight_pipeline,
             ghost,
             ghost_count: std::cell::Cell::new(0),
             ghost_pipeline,
@@ -495,20 +528,42 @@ impl Gfx {
     /// The texture the debug panel shows (premultiplied alpha). Hidden until
     /// [`Self::set_panel_pose`] places it.
     pub fn set_panel(&mut self, view: &wgpu::TextureView) {
+        self.panel.binding = Some(self.posed_binding("xr-panel", view));
+    }
+
+    /// Place the debug panel for this frame, or hide it with `None`.
+    pub fn set_panel_pose(&self, pose: Option<PanelPose>) {
+        self.place_posed(&self.panel, pose);
+    }
+
+    /// The texture the room editor's label shows (premultiplied alpha,
+    /// `label.rs`). Hidden until [`Self::set_label_pose`] places it.
+    pub fn set_label(&mut self, view: &wgpu::TextureView) {
+        self.label.binding = Some(self.posed_binding("xr-label", view));
+    }
+
+    /// Place the room editor's label for this frame, or hide it with
+    /// `None`.
+    pub fn set_label_pose(&self, pose: Option<PanelPose>) {
+        self.place_posed(&self.label, pose);
+    }
+
+    /// A posed quad's uniform and bind group for `view`, named `name`.
+    fn posed_binding(&self, name: &str, view: &wgpu::TextureView) -> QuadBinding {
         let uniform = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("xr-panel-uniform"),
+            label: Some(&format!("{name}-uniform")),
             size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("xr-panel-sampler"),
+            label: Some(&format!("{name}-sampler")),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("xr-panel"),
+            label: Some(name),
             layout: &self.panel_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -525,16 +580,16 @@ impl Gfx {
                 },
             ],
         });
-        self.panel = Some(QuadBinding {
+        QuadBinding {
             uniform,
             bind_group,
-        });
+        }
     }
 
-    /// Place the debug panel for this frame, or hide it with `None`.
-    pub fn set_panel_pose(&self, pose: Option<PanelPose>) {
-        let (Some(panel), Some(pose)) = (&self.panel, pose) else {
-            self.panel_visible.set(false);
+    /// Place a posed quad for this frame, or hide it with `None`.
+    fn place_posed(&self, quad: &PosedQuad, pose: Option<PanelPose>) {
+        let (Some(binding), Some(pose)) = (&quad.binding, pose) else {
+            quad.visible.set(false);
             return;
         };
         let (c, r, u) = (pose.center, pose.right, pose.up);
@@ -542,12 +597,12 @@ impl Gfx {
             c[0], c[1], c[2], pose.v_max, r[0], r[1], r[2], 0.0, u[0], u[1], u[2], 0.0,
         ];
         self.queue
-            .write_buffer(&panel.uniform, 0, bytemuck::bytes_of(&data));
-        self.panel_visible.set(true);
+            .write_buffer(&binding.uniform, 0, bytemuck::bytes_of(&data));
+        quad.visible.set(true);
     }
 
-    /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`) for this frame,
-    /// or hide it with `None`.
+    /// Place beam `slot` (`BEAM_PANEL`, `BEAM_REACH[h]`, `BEAM_PICK`) for
+    /// this frame, or hide it with `None`.
     pub fn set_beam(&self, slot: usize, beam: Option<Beam>) {
         let mut visible = self.beam_visible.get();
         // A hidden slot is a zero-area strip: it draws no fragments.
@@ -598,6 +653,28 @@ impl Gfx {
                 .write_buffer(&self.canvas.uniform, 0, bytemuck::cast_slice(rows));
         }
         self.canvas_visible.set(rows.is_some());
+    }
+
+    /// The room editor's highlight for this frame (`highlight::uniform`'s
+    /// rows), or hidden with `None`.
+    pub fn set_highlight(&self, rows: Option<&[[f32; 4]; crate::highlight::UNIFORM_ROWS]>) {
+        if let Some(rows) = rows {
+            self.queue
+                .write_buffer(&self.highlight.uniform, 0, bytemuck::cast_slice(rows));
+        }
+        self.highlight_visible.set(rows.is_some());
+    }
+
+    /// Whether the eye pass draws the world effect from this frame on
+    /// (`room_edit::Cloud::visible`; on at start). Hidden, `render` skips
+    /// its `prepare_world` and `draw_world` for every eye, but still
+    /// dispatches its sim, so showing it again is instant and the cloud
+    /// is as it would have been. Everything else still draws: the depth
+    /// occluders, the ripple, the canvas, the highlight, the beams, the
+    /// panel and the label. The pitcher's pour and the throw's bursts are
+    /// particles of the world effect, so they hide with it.
+    pub fn set_world_visible(&self, visible: bool) {
+        self.world_visible.set(visible);
     }
 
     /// The ghost sprites for this frame: xyz and radius per point (at most
@@ -830,8 +907,10 @@ impl Gfx {
         for (i, ((eye, target), cam)) in self.eyes.iter().zip(targets).zip(cameras).enumerate() {
             let depth = self.depth.get(i);
             // Pipeline and camera slot before the pass; the draw goes inside it.
+            // Neither while the world effect is hidden (`set_world_visible`).
             let world_draw = scene
                 .as_deref_mut()
+                .filter(|_| self.world_visible.get())
                 .and_then(|s| s.prepare_world(&self.device, cam));
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("xr-eye"),
@@ -894,6 +973,13 @@ impl Gfx {
                 pass.set_bind_group(1, &self.canvas.bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
+            // The room editor's highlight on the same terms, after both.
+            if self.highlight_visible.get() {
+                pass.set_pipeline(&self.highlight_pipeline);
+                pass.set_bind_group(0, &eye.bind_group, &[]);
+                pass.set_bind_group(1, &self.highlight.bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
             if let Some(p) = particles {
                 p.draw(&mut pass, i);
             }
@@ -915,12 +1001,15 @@ impl Gfx {
             }
             // Last, over the sprites (which write no depth), so the panel
             // reads cleanly through the cloud; depth-tested against the
-            // hand occluders, so a finger poking it shows in front.
-            if let Some(panel) = self.panel.as_ref().filter(|_| self.panel_visible.get()) {
-                pass.set_pipeline(&self.panel_pipeline);
-                pass.set_bind_group(0, &eye.bind_group, &[]);
-                pass.set_bind_group(1, &panel.bind_group, &[]);
-                pass.draw(0..6, 0..1);
+            // hand occluders, so a finger poking it shows in front. The
+            // room editor's label right after it, on the same terms.
+            for quad in [&self.panel, &self.label] {
+                if let Some(b) = quad.binding.as_ref().filter(|_| quad.visible.get()) {
+                    pass.set_pipeline(&self.panel_pipeline);
+                    pass.set_bind_group(0, &eye.bind_group, &[]);
+                    pass.set_bind_group(1, &b.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -1151,11 +1240,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 ";
 
+/// The beams' shader. `BEAM_SLOTS` in it is replaced by the constant's
+/// value when the pipeline is built, so the array and the uniform buffer
+/// are the same size.
 const BEAM_WGSL: &str = r"
 struct Eye { view_proj: mat4x4<f32> }
 struct Beam { corners: array<vec4<f32>, 4>, color: vec4<f32> }
 @group(0) @binding(0) var<uniform> eye: Eye;
-@group(1) @binding(0) var<uniform> beams: array<Beam, 3>;
+@group(1) @binding(0) var<uniform> beams: array<Beam, BEAM_SLOTS>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -1196,7 +1288,11 @@ fn build_beam_pipeline(
 ) -> (wgpu::RenderPipeline, QuadBinding) {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("xr-beam"),
-        source: wgpu::ShaderSource::Wgsl(BEAM_WGSL.into()),
+        source: wgpu::ShaderSource::Wgsl(
+            BEAM_WGSL
+                .replace("BEAM_SLOTS", &BEAM_SLOTS.to_string())
+                .into(),
+        ),
     });
     let beam_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("xr-beam"),
@@ -1275,12 +1371,13 @@ fn build_beam_pipeline(
 }
 
 /// A lit surface quad's pipeline and its uniform of `rows` vec4s: the
-/// floor ripple (`ripple.rs`) and the wall spectrum (`canvas.rs`). The
-/// beam's setup (premultiplied alpha, depth-tested, no depth write, no
-/// culling) plus a depth bias toward the camera. The surface's occluder
-/// writes depth at its face; the quad sits `LIFT_M` off it, and the bias
-/// keeps it in front at grazing angles, where the lift is worth little
-/// depth, the usual decal setup. `wgsl` has `vs_main` / `fs_main` with the
+/// floor ripple (`ripple.rs`), the wall spectrum (`canvas.rs`) and the
+/// room editor's highlight (`highlight.rs`). The beam's setup
+/// (premultiplied alpha, depth-tested, no depth write, no culling) plus a
+/// depth bias toward the camera. The surface's occluder writes depth at
+/// its face; the quad sits `LIFT_M` off it, and the bias keeps it in
+/// front at grazing angles, where the lift is worth little depth, the
+/// usual decal setup. `wgsl` has `vs_main` / `fs_main` with the
 /// eye camera at group 0 and the uniform at group 1.
 fn build_surface_pipeline(
     device: &wgpu::Device,
@@ -1507,8 +1604,9 @@ fn build_ghost_pipeline(
     )
 }
 
-/// The debug panel's pipeline: a posed quad, premultiplied alpha over the
-/// eye target, depth-tested and depth-writing.
+/// The debug panel's pipeline (the room editor's label's too): a posed
+/// quad, premultiplied alpha over the eye target, depth-tested and
+/// depth-writing.
 fn build_panel_pipeline(
     device: &wgpu::Device,
     eye_layout: &wgpu::BindGroupLayout,

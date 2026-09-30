@@ -1387,7 +1387,7 @@ fn room_aux(boxes: &[TestBox], lanes: &[Option<(SurfaceBehavior, f32)>]) -> Vec<
     aux
 }
 
-/// One frame of Flux XR Room over 20K dead slots, every one free to
+/// One frame of Embers over 20K dead slots, every one free to
 /// emit: the newborns, as spawned (a slot born this frame is written as
 /// the emitter made it, before any integration).
 fn newborns(aux: Vec<[f32; 4]>) -> Vec<Sample> {
@@ -1457,13 +1457,33 @@ fn is_ember(s: &Sample) -> bool {
     s.vel.y.abs() < 1e-6 && s.vel.length() <= 0.03 * std::f32::consts::SQRT_2 + 1e-6
 }
 
-/// Unset lanes run the kinds' defaults, as before the lanes: the table
-/// sheds embers and the floor sparks, each over half the draws with both
-/// gates open, and nothing is born anywhere else.
+/// Unset lanes run the kinds' defaults (step 2d, decision #3459): the
+/// table sheds embers as before the lanes, the floor's default is the
+/// ripple, which spawns nothing, so every newborn is an ember on the
+/// table's face and the floor's half of the draws spawns nothing. The
+/// floor waits for a lane.
 #[test]
 #[ignore = "requires a GPU/software adapter"]
-fn unset_lanes_emit_from_both_faces_by_kind() {
+fn unset_lanes_emit_from_the_table_alone_the_floor_waits_for_a_lane() {
     let born = newborns(room_aux(&[table_box(), floor_box()], &[]));
+    assert!(born.len() > SLOTS / 3, "{} born", born.len());
+    assert!(born.len() < SLOTS * 2 / 3, "{} born", born.len());
+    for s in &born {
+        assert_eq!(face_of(s.pos), Face::Table, "{s:?}");
+        assert!(is_ember(s), "{s:?}: not an ember");
+    }
+}
+
+/// The floor's lane set to sparks, the table's unset: both faces emit as
+/// before step 2d, the table embers and the floor sparks, each over half
+/// the draws with both gates open, and nothing is born anywhere else.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn a_floor_on_sparks_emits_beside_an_unset_table() {
+    let born = newborns(room_aux(
+        &[table_box(), floor_box()],
+        &[None, Some((SurfaceBehavior::Sparks, 1.0))],
+    ));
     let (table, floor) = (count(&born, Face::Table), count(&born, Face::Floor));
     assert_eq!(table + floor, born.len(), "a newborn off both faces");
     assert!(born.len() > SLOTS * 9 / 10, "{} born", born.len());
@@ -1539,20 +1559,100 @@ fn the_strength_scales_a_surface_share() {
     assert!(born.iter().all(is_ember), "a floor spark on embers");
 }
 
-/// A wall weighted 1: with its lane unset its kind's gate (0.3) lets it
-/// shed from its top edge, as before the lanes; on the spectrum nothing is
-/// born from it, and the table beside it keeps emitting.
+/// A wall weighted 1: on embers it sheds from its top edge; on the
+/// spectrum, or with its lane unset (its default, the spectrum, through
+/// the same gate since step 2d; a fixed 0.3 gate before), nothing is born
+/// from it, and the table beside it keeps emitting.
 #[test]
 #[ignore = "requires a GPU/software adapter"]
 fn a_wall_on_the_spectrum_emits_nothing() {
     let boxes = [table_box(), wall_box()];
-    let unset = newborns(room_aux(&boxes, &[]));
-    assert!(count(&unset, Face::WallTop) > SLOTS / 20, "the unset path");
-    let born = newborns(room_aux(
+    let embers = newborns(room_aux(
         &boxes,
-        &[None, Some((SurfaceBehavior::Spectrum, 1.0))],
+        &[None, Some((SurfaceBehavior::Embers, 1.0))],
     ));
-    assert_eq!(count(&born, Face::WallTop), 0);
-    assert!(count(&born, Face::Table) > SLOTS / 3, "{} born", born.len());
-    assert_eq!(count(&born, Face::Table), born.len());
+    assert!(
+        count(&embers, Face::WallTop) > SLOTS / 20,
+        "the wall's face"
+    );
+    for lanes in [&[None, Some((SurfaceBehavior::Spectrum, 1.0))][..], &[]] {
+        let born = newborns(room_aux(&boxes, lanes));
+        assert_eq!(count(&born, Face::WallTop), 0, "{lanes:?}");
+        assert!(count(&born, Face::Table) > SLOTS / 3, "{} born", born.len());
+        assert_eq!(count(&born, Face::Table), born.len());
+    }
+}
+
+/// `aux` with every box's emitter weight set to 0: the weights the XR app
+/// gives boxes none of which emits (`surfaces::emitter_weights` weighs
+/// only embers and sparks).
+fn unweighted(mut aux: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
+    for row in &mut aux[131..131 + SURFACE_LANE_ROWS] {
+        row[3] = 0.0;
+    }
+    aux
+}
+
+/// The living particles after each frame in `capture` of Embers
+/// over 20K dead slots, every one free to emit each frame, with `aux`
+/// throughout.
+fn alive_over(aux: Vec<[f32; 4]>, capture: &[u32]) -> Vec<usize> {
+    let setup = SimSetup {
+        particles: vec![(Vec3::new(0.0, 10.0, 0.0), Vec3::ZERO); SLOTS],
+        aux,
+        atlas: None,
+        every: 1,
+    };
+    let opts = SimOptions {
+        dead: true,
+        emit: SLOTS as u32,
+        surface: true,
+        ..SimOptions::default()
+    };
+    run_sim_with(&setup, &opts, capture)
+        .iter()
+        .map(|frame| frame.iter().filter(|s| s.life > 0.0).count())
+        .collect()
+}
+
+/// Every lane `none` with boxes present (Kevin's "All: none", step 2e):
+/// nothing is born over two seconds, whether the boxes carry the app's
+/// weights for it (all 0, which used to send every spawn into the volume)
+/// or a weight each (the gates alone close them). The stage floor alone on
+/// its default, the ripple, is as silent (a device run with no anchors);
+/// on sparks (the sweeps' `#0=sparks`) it spawns.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn every_lane_none_with_boxes_spawns_nothing() {
+    use SurfaceBehavior as B;
+    let capture = [1, 30, 60, 120];
+    let room = [table_box(), floor_box(), wall_box()];
+    let none = [Some((B::None, 1.0)); 3];
+    for aux in [
+        unweighted(room_aux(&room, &none)),
+        room_aux(&room, &none),
+        unweighted(room_aux(&[floor_box()], &[])),
+    ] {
+        assert_eq!(alive_over(aux, &capture), [0; 4]);
+    }
+    let sparks = newborns(room_aux(&[floor_box()], &[Some((B::Sparks, 1.0))]));
+    assert!(sparks.len() > SLOTS * 9 / 10, "{} born", sparks.len());
+    assert_eq!(count(&sparks, Face::Floor), sparks.len());
+}
+
+/// No boxes at all with surface emit on (a run with no room: no anchors,
+/// no stage floor): the volume path, as before step 2e. Every free slot is
+/// born, spread through the volume.
+#[test]
+#[ignore = "requires a GPU/software adapter"]
+fn no_boxes_spawns_in_the_volume() {
+    let born = newborns(room_aux(&[], &[]));
+    assert!(born.len() > SLOTS * 9 / 10, "{} born", born.len());
+    let (above, below) = (
+        born.iter().filter(|s| s.pos.y > 1.0).count(),
+        born.iter().filter(|s| s.pos.y < -1.0).count(),
+    );
+    for n in [above, below] {
+        assert!(n * 4 > born.len(), "above {above} below {below}");
+    }
 }

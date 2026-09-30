@@ -19,8 +19,7 @@ use log::info;
 
 use crate::gfx::SWAPCHAIN_FORMAT;
 use crate::surfaces::{
-    KIND_NONE, SURFACE_LANE_ROWS, SurfaceBehavior, SurfaceBox, SurfaceWeights, emitter_weights,
-    lane_behavior,
+    KIND_NONE, SURFACE_LANE_ROWS, SurfaceBehavior, SurfaceBox, SurfaceWeights, lane_emitter_weights,
 };
 
 /// Bytes per particle: `pos: vec3` + `life` + `vel: vec3` + `seed`.
@@ -173,9 +172,9 @@ impl ObstacleSet {
 
     /// Replace every box's emitter flag with its emitter weight for a world
     /// sim whose emitter cube is `cube_half` around the origin
-    /// (`surfaces::emitter_weights`), each box running the behavior its
-    /// row of `lanes` gives it (the rows the sim reads, so the weights and
-    /// the sim's gates agree). Call on the anchor-relative set
+    /// (`surfaces::lane_emitter_weights`), each box running the behavior
+    /// its row of `lanes` gives it (the rows the sim reads, so the weights
+    /// and the sim's gates agree). Call on the anchor-relative set
     /// ([`Self::relative_to`]), once per frame, so the weights follow the
     /// anchor.
     pub fn set_emitter_weights(
@@ -195,18 +194,18 @@ impl ObstacleSet {
         }; MAX_BOXES];
         for (k, b) in boxes[..n].iter_mut().enumerate() {
             let (c, h) = (self.box_center[k], self.box_half[k]);
-            let kind = c[3] as u32;
             *b = SurfaceBox {
-                kind,
+                kind: c[3] as u32,
                 emit: h[3],
-                behavior: lane_behavior(lanes[k], kind),
+                // Set from the lane row by `lane_emitter_weights`.
+                behavior: SurfaceBehavior::None,
                 center: glam::Vec3::new(c[0], c[1], c[2]),
                 rot: glam::Quat::from_array(self.box_rot[k]),
                 half: glam::Vec3::new(h[0], h[1], h[2]),
             };
         }
         let mut out = [0.0f32; MAX_BOXES];
-        emitter_weights(&boxes[..n], cube_half, weights, &mut out[..n]);
+        lane_emitter_weights(&mut boxes[..n], lanes, cube_half, weights, &mut out[..n]);
         for (h, w) in self.box_half[..n].iter_mut().zip(out) {
             h[3] = w;
         }

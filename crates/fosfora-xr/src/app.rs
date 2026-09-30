@@ -34,11 +34,16 @@ pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
 const DEFAULT_EFFECT: &str = "Flux";
 /// C3b: the world-layout effect `mode world` runs unless
 /// `debug.fosfora.effect` names another.
-const DEFAULT_WORLD_EFFECT: &str = "Flux XR World";
+/// The world effect a launch starts on: the surface-born one, the room
+/// editor's (Kevin, Sep 30; the names as the wearer sees them since then:
+/// Embers was Embers, Flux Cloud was Flux Cloud, Flock was
+/// Flock; Flux Cloud Coarse, a sprite-size diagnostic, left the
+/// pinch-hold cycle and stays reachable by `debug.fosfora.effect`).
+const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// The world effects that read the per-hand lanes (board #3314): there the
 /// hand's pose picks its behavior and its pad. The others keep one behavior
-/// for every hand (Flux XR World's worn-approved pad and kick).
-const POSE_EFFECTS: [&str; 1] = ["Murmur XR World"];
+/// for every hand (Flux Cloud's worn-approved pad and kick).
+const POSE_EFFECTS: [&str; 1] = ["Flock"];
 const NOMINAL_FPS: u32 = 72;
 /// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
 /// the particles sit in front of it and half behind (the depth gate).
@@ -70,7 +75,7 @@ const MR_RESTITUTION: f32 = 0.4;
 /// user stands inside the cube; near sprites are pure fill-rate cost).
 const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
-/// World-effect defaults (Flux XR World, board #3276): its 2-5 mm sprites
+/// World-effect defaults (Flux Cloud, board #3276): its 2-5 mm sprites
 /// are smaller and dimmer than the S5 test sim's, so the near fade starts
 /// closer (the cloud stays dense at hand distance), the hand pad is wider
 /// (a channel that reads) and the kick stronger. The settle drift is the
@@ -90,6 +95,14 @@ const REACH_GHOST_M: f32 = 0.03;
 const REACH_GHOST_RADIUS_M: f32 = 0.008;
 const REACH_GHOST_ALPHA: f32 = 0.5;
 const REACH_BEAM_ALPHA: f32 = 0.15;
+/// The room editor's pick beam (board #3326): as wide as the reach beam,
+/// brighter, since it is the thing aimed with.
+const PICK_BEAM_WIDTH_M: f32 = 0.004;
+const PICK_BEAM_ALPHA: f32 = 0.35;
+/// `debug.fosfora.picktest`: the ray's tilt below the view.
+const PICK_TEST_TILT_DEG: f32 = 20.0;
+/// The room editor's status while it is off.
+const EDIT_OFF: &str = "edit room off";
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +114,7 @@ enum Mode {
     /// S7: world-space particles over passthrough, hands and room as
     /// obstacles, no quad.
     Mixed,
-    /// C3b: a core effect's world-layout variant (Flux XR World) instead of
+    /// C3b: a core effect's world-layout variant (Flux Cloud) instead of
     /// the S5 test sim, over the same mixed-reality setup as `Mixed`.
     World,
 }
@@ -189,7 +202,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.quadpos "0,1.5,-1.5"     (where the static quad sits; diagnostic for the S7 quad finding)
     //   adb shell setprop debug.fosfora.depthtest 0              (sprites drawn with depth compare Always; diagnostic)
     //   adb shell setprop debug.fosfora.primer 0|1               (mr without the quad: keep a 1 mm depth-writing quad in the pass; default on)
-    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux XR World through render_world, over the mr setup;
+    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux Cloud through render_world, over the mr setup;
     //       count = particles (default: the preset's 300K), size = sprite radius multiplier, sim 0 = freeze after warmup,
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
@@ -208,10 +221,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
-    //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
+    //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
-    //       table gets this, the others by top-face area)
-    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat; default on in mr/world)
+    //       emitting table inside the volume gets this, the others by top-face area against it)
+    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat, on a floor whose behavior is the ripple, a floor's default; default on in mr/world)
     //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
     //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
     //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
@@ -227,6 +240,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
     //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
+    //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
+    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
+    //       none, embers, sparks; floor: none, sparks, ripple; wall: none, spectrum; ceiling, frame: none), a pinch-hold cycles every surface
+    //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
+    //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
+    //       pitcher's pour and the throw's bursts are its particles and hide with it), Edit room on or off; default 1, not saved)
+    //   adb shell setprop debug.fosfora.picktest 3               (diagnostic: the room editor's ray from 0.5 m ahead of the head along the view tilted
+    //       20 degrees down, untracked, with a synthetic right-hand tap every 3 s, for an unworn check; implies editroom 1)
     //   adb shell setprop debug.fosfora.throw 0|1                (Flux world effects: a pinch tap throws a burst where the far hand points; default on)
     //   adb shell setprop debug.fosfora.burstcount 6000          (particles a throw bursts into on impact)
     //   adb shell setprop debug.fosfora.lift 0|1                 (Flux world effects: an open far palm held still, facing down, lifts embers; default on)
@@ -416,7 +438,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let open_kick = knob("debug.fosfora.openkick", crate::pose::OPEN_KICK_M_S);
     let hold_radius = knob("debug.fosfora.holdradius", crate::pose::HOLD_RADIUS_M);
     // Board #3317: surfaces as emitters (only a world sim in surface mode,
-    // Flux XR Room, reads the weights).
+    // Embers, reads the weights).
     let surface_weights = {
         let d = SurfaceWeights::default();
         SurfaceWeights {
@@ -732,6 +754,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The space size: the knob's for every world effect, else the showing
     // preset's until the stepper moves (outside world mode it drives
     // nothing and shows the test sim's cube).
+    // Step 2h: the space size that fits the room's boxes around the
+    // anchor, with how many boxes (`None` before the room is in), set each
+    // frame; and the fit last applied, for the log.
+    let mut room_fit: Option<(f32, usize)> = None;
+    let mut fit_logged: Option<(f32, usize)> = None;
     let mut space = crate::space::SpaceControl::new(
         debug_prop("debug.fosfora.space").and_then(|v| v.parse::<f32>().ok()),
         scene
@@ -752,6 +779,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         pitcher_rate: crate::instruments::PITCHER_RATE,
         density: knob("debug.fosfora.density", 1.0).clamp(0.05, 1.0),
         space_half: space.shown(),
+        edit_room: false,
+        cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -870,6 +899,33 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             ""
         }
     );
+    // Board #3326: the room editor (`room_edit.rs`), off at launch unless a
+    // knob turns it on; the hand menu's "Edit room" toggles it. Its status
+    // for the panel, and whether it ran last frame (to clear its beam and
+    // highlight once when it goes off).
+    let pick_test_s = debug_prop("debug.fosfora.picktest")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|s| *s > 0.0);
+    controls.edit_room = pick_test_s.is_some() || toggle("debug.fosfora.editroom", false);
+    let mut editor = crate::room_edit::RoomEditor::default();
+    // Its label at the surface after each action (`label.rs`).
+    let mut label = crate::label::Label::default();
+    let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
+    let mut edit_was_on = false;
+    let mut edit_status = String::from(EDIT_OFF);
+    // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
+    // its changes; on at launch unless the knob turned it off.
+    let mut cloud_ran = crate::room_edit::Cloud::On;
+    let mut last_pick_test = 0.0f32;
+    info!(
+        "edit room {}{}",
+        if controls.edit_room { "on" } else { "off" },
+        if pick_test_s.is_some() {
+            " · test: picking ahead of the view"
+        } else {
+            ""
+        }
+    );
     // A tap this frame not taken by the hand menu (the throw needs the far
     // hand, computed below), and each hand's lift as last logged.
     let mut tapped: Option<usize> = None;
@@ -890,15 +946,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
     // Board #3326: each box's behavior (the room file and the `surface`
-    // knob), and the floor the ripple is on with why, for the log.
+    // knob), and the floor the ripple is on with why, for the log (`None`
+    // before the first frame, so the first pick is logged too).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
-    let mut ripple_floor: Option<(usize, &str)> = None;
+    let mut ripple_floor: Option<Option<(usize, &str)>> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
     let mut gestures = Gestures::default();
     let (mut anchor, mut anchor_half) = (cube_center, cube_half);
     let mut drag_total = glam::Vec3::ZERO;
+    // Board #3326: the right drag in Edit room, its start time and its
+    // travel so far, for the short-drag rule.
+    let mut edit_drag: Option<(f32, glam::Vec3)> = None;
+    // The panel's "All: none" this frame, applied once the frame's boxes
+    // are known.
+    let mut all_none = false;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -1050,8 +1113,43 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 point: input.hands.pinch_point[h],
             });
             let mut moved = false;
+            // Board #3326: with Edit room on, the right hand's gestures are
+            // the editor's (no throw, no size toggle, no anchor drag, no
+            // effect cycle); the left hand's are unchanged.
+            let edit_on = controls.edit_room;
+            let (mut edit_tap, mut edit_hold) = (false, false);
             for g in gestures.step(pinches, dt) {
                 match g {
+                    Gesture::Tap { hand: 1 } if edit_on => {
+                        edit_tap = true;
+                        info!("gesture: tap right · edit room");
+                    }
+                    Gesture::Hold { hand: 1 } if edit_on => {
+                        edit_hold = true;
+                        info!("gesture: hold right · edit room");
+                    }
+                    Gesture::DragStart { hand: 1 } if edit_on => {
+                        edit_drag = Some((t, glam::Vec3::ZERO));
+                        info!("gesture: drag right began · edit room: the anchor stays");
+                    }
+                    Gesture::Drag { hand: 1, delta } if edit_on => {
+                        if let Some((_, travel)) = edit_drag.as_mut() {
+                            *travel += glam::Vec3::from(delta);
+                        }
+                    }
+                    Gesture::DragEnd { hand: 1 } if edit_on => {
+                        // A quick, short drag is a tap that wobbled past
+                        // the drag radius (`room_edit::short_drag_is_tap`).
+                        match edit_drag.take() {
+                            Some((start, travel))
+                                if crate::room_edit::short_drag_is_tap(t - start, travel.length()) =>
+                            {
+                                edit_tap = true;
+                                info!("gesture: short drag right counts as a tap · edit room");
+                            }
+                            _ => info!("gesture: drag right ended · edit room"),
+                        }
+                    }
                     Gesture::Tap { hand } => {
                         // While the menu is up its pinches are its own.
                         if !panel_up {
@@ -1124,6 +1222,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         audio: &audio_source,
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
+                        edit_status: &edit_status,
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -1141,6 +1240,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             Action::RescanRoom => rescan = true,
                             Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                            Action::SetEditRoom(on) => info!(
+                                "edit room {}",
+                                if on {
+                                    "on: the right hand's pinches pick room surfaces"
+                                } else {
+                                    "off"
+                                }
+                            ),
+                            // Logged with the cloud's change, below.
+                            Action::SetCloud(_) => {}
+                            Action::AllNone => all_none = true,
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
                                 if on { "on" } else { "off" },
@@ -1151,6 +1261,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         }
                     }
                 }
+            }
+            if all_none {
+                all_none = false;
+                info!("edit room: every surface -> none (the panel)");
+                surface_lanes.all_none(&lane_boxes);
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
@@ -1174,6 +1289,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         s.set_anchor(anchor);
                     }
                 }
+                // The room fit for this frame's boxes and anchor (the
+                // stage floor is not a room box); applied after the frame.
+                room_fit = crate::space::fit_room(
+                    glam::Vec3::from(anchor),
+                    input.room_boxes.iter().map(|b| {
+                        (
+                            glam::Vec3::from(b.center),
+                            glam::Quat::from_array(b.rot),
+                            glam::Vec3::from(b.half),
+                        )
+                    }),
+                )
+                .map(|half| (half, input.room_boxes.len()));
                 // Seated reach: each hand's joint set moves out along the
                 // arm past a comfortable reach. Only the sim sees the far
                 // hand; occlusion (the skinned mesh), pinch gestures and the
@@ -1354,6 +1482,220 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         });
                     gfx.set_beam(crate::gfx::BEAM_REACH[h], beam);
                 }
+                // Board #3326: the room editor, on the throw's ray from the
+                // right far pinch point. Off, it runs once more to clear.
+                if edit_on || edit_was_on {
+                    let head = glam::Vec3::from(input.head);
+                    let pick_boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
+                    let mut tap = edit_tap && !panel_up;
+                    let ray = match pick_test_s {
+                        Some(every) if edit_on => {
+                            if t - last_pick_test >= every {
+                                last_pick_test = t;
+                                tap = true;
+                            }
+                            let rot = glam::Quat::from_array(input.head_rot)
+                                * glam::Quat::from_rotation_x(-PICK_TEST_TILT_DEG.to_radians());
+                            crate::room_edit::Ray::through(head, head + rot * glam::Vec3::NEG_Z * 0.5)
+                        }
+                        _ if panel_up || !input.hands.tracked[1] => None,
+                        _ => input.hands.pinch_point[1].and_then(|p| {
+                            crate::room_edit::Ray::through(head, glam::Vec3::from(p) + offsets[1])
+                        }),
+                    };
+                    let frame = editor.step(&crate::room_edit::EditInput {
+                        on: edit_on,
+                        ray,
+                        boxes: &pick_boxes,
+                        // The panel takes the right hand's pinches, and
+                        // the editor holds still, so the status cell can
+                        // be read for the surface under the beam.
+                        frozen: panel_up && pick_test_s.is_none(),
+                        tap,
+                        hold: edit_hold && !panel_up,
+                        dt,
+                    });
+                    // The pointed box as the log names it.
+                    let named = |k: usize| {
+                        let (label, uuid8) = lane_boxes
+                            .get(k)
+                            .map_or_else(|| ("?".to_owned(), "?".to_owned()), crate::lanes::box_label);
+                        format!("{} ({label} {uuid8})", crate::surfaces::friendly_name(k, &lane_boxes))
+                    };
+                    if frame.changed && edit_on {
+                        match frame.hit {
+                            // Which face is tinted (step 2h): a volume's
+                            // top, a plane's face toward the head.
+                            Some(h) => info!(
+                                "edit room: pointing at {} ({}) at ({:.2}, {:.2}, {:.2})",
+                                named(h.index),
+                                if crate::surfaces::is_plane(pick_boxes[h.index].half) {
+                                    "face"
+                                } else {
+                                    "top"
+                                },
+                                h.point.x,
+                                h.point.y,
+                                h.point.z
+                            ),
+                            None => info!("edit room: no surface"),
+                        }
+                    }
+                    if let Some(g) = frame.unaimed {
+                        info!("edit room: {g} with no surface under the beam, nothing changed");
+                    }
+                    let effective = |k: usize| surface_lanes.effective(k, &lane_boxes);
+                    // Step 2h: whether box `k`'s top face lies outside the
+                    // surface-born effect's volume, so it would weigh 0
+                    // and emit nothing whatever it runs.
+                    let space_half = scene
+                        .as_deref()
+                        .filter(|s| s.surface_born())
+                        .and_then(XrScene::emitter_half);
+                    let outside = |k: usize| {
+                        space_half.zip(pick_boxes.get(k)).is_some_and(|(half, b)| {
+                            !crate::surfaces::reaches(
+                                b.center - glam::Vec3::from(anchor),
+                                b.rot,
+                                b.half,
+                                half,
+                            )
+                        })
+                    };
+                    // The label's text, and a log line when the result
+                    // cannot emit there.
+                    let placed = |k: usize, text: String, after: crate::surfaces::SurfaceBehavior| {
+                        let out = outside(k);
+                        if out && after.emits() {
+                            info!(
+                                "edit room: {} is outside the space ({:.2} m half extent): its {} emit nothing",
+                                named(k),
+                                space_half.unwrap_or_default(),
+                                after.name()
+                            );
+                        }
+                        crate::label::space_text(text, after, out)
+                    };
+                    label.step(dt);
+                    // The label for an action: its text at the hit.
+                    let mut labeled = None;
+                    match frame.action {
+                        Some(crate::room_edit::EditAction::Cycle(k)) => {
+                            let before = effective(k).map(|(b, _)| b);
+                            if let Some(b) = before {
+                                let next = b.next_for(lane_boxes[k].kind);
+                                info!("edit room: {} -> {}", named(k), next.name());
+                            }
+                            match surface_lanes.cycle(k, &lane_boxes) {
+                                Ok(after) => {
+                                    let text = crate::label::cycle_text(
+                                        &crate::surfaces::friendly_name(k, &lane_boxes),
+                                        before.unwrap_or_default(),
+                                        after,
+                                    );
+                                    labeled = Some(placed(k, text, after));
+                                }
+                                Err(e) => log::warn!("edit room: {e}; nothing changed"),
+                            }
+                        }
+                        Some(crate::room_edit::EditAction::AssignKind(k)) => {
+                            let before = effective(k).map(|(b, _)| b);
+                            if let Some(b) = before {
+                                info!(
+                                    "edit room: every {} like {} -> {}",
+                                    crate::surfaces::kind_name(lane_boxes[k].kind),
+                                    named(k),
+                                    b.next_for(lane_boxes[k].kind).name()
+                                );
+                            }
+                            match surface_lanes.cycle_kind_of(k, &lane_boxes) {
+                                Ok(after) => {
+                                    let text = crate::label::class_text(
+                                        lane_boxes[k].kind,
+                                        before.unwrap_or_default(),
+                                        after,
+                                    );
+                                    labeled = Some(placed(k, text, after));
+                                }
+                                Err(e) => log::warn!("edit room: {e}; nothing changed"),
+                            }
+                        }
+                        None => {}
+                    }
+                    if let (Some(text), Some(h)) = (labeled, frame.hit) {
+                        label.show(text, h.point, h.normal);
+                    }
+                    if !edit_on {
+                        label.clear();
+                    }
+                    label_texture.show(
+                        &gfx,
+                        label.now().map(|l| {
+                            let pose = crate::label::billboard(
+                                l.point,
+                                l.normal,
+                                head,
+                                glam::Quat::from_array(input.head_rot),
+                            );
+                            (l.text, l.alpha, pose)
+                        }),
+                    );
+                    edit_status = if !edit_on {
+                        EDIT_OFF.to_owned()
+                    } else if let Some(h) = frame.hit {
+                        let behavior = surface_lanes
+                            .effective(h.index, &lane_boxes)
+                            .map_or("?", |(b, _)| b.name());
+                        format!(
+                            "{}: {behavior}",
+                            crate::surfaces::friendly_name(h.index, &lane_boxes)
+                        )
+                    } else {
+                        "no surface".to_owned()
+                    };
+                    gfx.set_beam(
+                        crate::gfx::BEAM_PICK,
+                        frame.beam.map(|(start, end)| crate::gfx::Beam {
+                            start: start.to_array(),
+                            end: end.to_array(),
+                            eye: input.head,
+                            width_m: PICK_BEAM_WIDTH_M,
+                            alpha: PICK_BEAM_ALPHA,
+                        }),
+                    );
+                    // Step 2h: the face the behavior acts on, whichever
+                    // face the ray entered (the pick and the label's
+                    // placement keep the hit's).
+                    let rows = frame.hit.map(|h| {
+                        let b = pick_boxes[h.index];
+                        crate::highlight::uniform(
+                            &crate::surfaces::acting_face(b.center, b.rot, b.half, head),
+                            frame.pulse,
+                        )
+                    });
+                    gfx.set_highlight(rows.as_ref());
+                    edit_was_on = edit_on;
+                }
+                // Step 2c/2e: the cloud toggle. Off hides the world
+                // effect's draw, Edit room or not, the sim stepping on.
+                // The pitcher's pour and the throw's bursts are that
+                // effect's particles, so they hide with it.
+                let cloud = crate::room_edit::Cloud::of(
+                    controls.cloud,
+                    edit_on,
+                    editor.hit().map(|h| h.index),
+                );
+                if world && cloud != cloud_ran {
+                    info!(
+                        "{}",
+                        cloud.describe(|k| crate::surfaces::friendly_name(k, &lane_boxes))
+                    );
+                }
+                if world && cloud != cloud_ran && !controls.cloud && edit_on {
+                    info!("cloud off, but Edit room is on: the world effect shows while editing");
+                }
+                cloud_ran = cloud;
+                gfx.set_world_visible(cloud.visible());
                 for b in &input.room_boxes {
                     set.push_box(b);
                 }
@@ -1387,23 +1729,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         throw = Some((1, Some(head + ahead * 0.5)));
                     }
                     if let Some((hand, pinch)) = throw {
-                        let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
-                            center: glam::Vec3::from(b.center),
-                            rot: glam::Quat::from_array(b.rot),
-                            half: glam::Vec3::from(b.half),
-                            kind: b.kind,
-                        };
-                        // The stage floor only while the room has no floor.
-                        let mut boxes: Vec<_> = input.room_boxes.iter().map(ray_box).collect();
-                        let room_n = boxes.len();
-                        if !input
-                            .room_boxes
-                            .iter()
-                            .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
-                            && let Some(f) = &floor_box
-                        {
-                            boxes.push(ray_box(f));
-                        }
+                        let boxes = ray_boxes(&input.room_boxes, floor_box.as_ref());
+                        let room_n = input.room_boxes.len();
                         let flight =
                             pinch.and_then(|p| crate::instruments::Flight::aim(head, p, &boxes));
                         match flight {
@@ -1518,7 +1845,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         &lanes,
                         &instrument_rows,
                         pour_row,
-                        surface_lanes.rows(),
+                        &cloud_ran.rows(surface_lanes.rows()),
                     );
                 }
                 if let Some(offset) = hand_mesh_test {
@@ -1578,50 +1905,56 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass.max(f.sub_bass),
                     f.bass,
                 );
-                // A floor on the ripple pins it (the largest of them, the
-                // stage floor too); else the largest scene floor, else the
-                // stage floor. The ripple never goes away.
+                // Only a floor whose behavior is the ripple carries it
+                // (step 2d, decision #3459): the largest scene floor on
+                // the ripple, else the stage floor on it while the room
+                // has no scene floor (then it stands in for one, as its
+                // emitter flag and the editor's ray take it; beside a
+                // scene floor it is out of the editor's reach, and its
+                // default would put the ripple back under a scene floor
+                // the wearer turned to none); with none, no ripple. The
+                // fallback to the largest scene floor is gone: "floor
+                // ripple kept rippling when I switch to embers or none"
+                // (Kevin, worn, Sep 29).
                 let ripple_of = |k: usize| {
                     surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Ripple
                 };
-                let largest = |pinned: bool| {
-                    input
+                let largest = input
+                    .room_boxes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(k, b)| b.kind == crate::surfaces::KIND_FLOOR && ripple_of(k))
+                    .map(|(k, b)| {
+                        (
+                            k,
+                            crate::surfaces::TopFace::of(
+                                glam::Vec3::from(b.center),
+                                glam::Quat::from_array(b.rot),
+                                glam::Vec3::from(b.half),
+                            ),
+                        )
+                    })
+                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()));
+                let stage_k = input.room_boxes.len();
+                let stage_ripples = floor_box.is_some()
+                    && !input
                         .room_boxes
                         .iter()
-                        .enumerate()
-                        .filter(|&(k, b)| {
-                            b.kind == crate::surfaces::KIND_FLOOR && (!pinned || ripple_of(k))
-                        })
-                        .map(|(k, b)| {
-                            (
-                                k,
-                                crate::surfaces::TopFace::of(
-                                    glam::Vec3::from(b.center),
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                ),
-                            )
-                        })
-                        .max_by(|a, b| a.1.area().total_cmp(&b.1.area()))
-                };
-                let stage_k = input.room_boxes.len();
-                let stage_pinned = floor_box.is_some() && ripple_of(stage_k);
-                let (scene_floor, pick) = match largest(true) {
-                    Some((k, f)) => (Some(f), Some((k, "pinned by its lane"))),
-                    None if stage_pinned => {
-                        (None, Some((stage_k, "the stage floor, pinned by its lane")))
+                        .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+                    && ripple_of(stage_k);
+                let (scene_floor, pick) = match largest {
+                    Some((k, f)) => (Some(f), Some((k, "a scene floor on the ripple"))),
+                    None if stage_ripples => {
+                        (None, Some((stage_k, "the stage floor on the ripple")))
                     }
-                    None => match largest(false) {
-                        Some((k, f)) => (Some(f), Some((k, "the largest scene floor"))),
-                        None => (None, floor_box.map(|_| (stage_k, "the stage floor"))),
-                    },
+                    None => (None, None),
                 };
-                if !ripple_ceiling && pick != ripple_floor {
+                if !ripple_ceiling && Some(pick) != ripple_floor {
                     match pick {
                         Some((k, why)) => info!("floor ripple: on box {k} ({why})"),
-                        None => info!("floor ripple: no floor"),
+                        None => info!("floor ripple: no floor on ripple"),
                     }
-                    ripple_floor = pick;
+                    ripple_floor = Some(pick);
                 }
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
                 let quad = if ripple_ceiling {
@@ -1640,8 +1973,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 center,
                             )
                         })
-                } else {
+                } else if pick.is_some() {
                     r.quad(scene_floor, stage_top)
+                } else {
+                    None
                 };
                 let rows = quad.map(|corners| r.uniform(t, corners));
                 gfx.set_ripple(rows.as_ref());
@@ -1767,7 +2102,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         }
         // The cloud density: the showing world effect's emission against
         // the rate `new_world` set, applied when it changes and when a
-        // pinch-hold swaps in an effect set for another.
+        // pinch-hold swaps in an effect set for another. The cloud toggle
+        // leaves it alone: off hides the effect (step 2e; 2c took the
+        // emission to 0 here).
         if world
             && let Some(s) = scene.as_mut()
             && let Some(base) = s.base_emit_rate()
@@ -1785,18 +2122,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The space size: the showing world effect's volume, applied when
-        // the stepper moves and when a pinch-hold swaps in an effect set
-        // for another; the stepper shows the size it runs at.
+        // the stepper moves, when a pinch-hold swaps in an effect set for
+        // another, and for the surface-born effect when the room fit
+        // changes (step 2h: the boxes or the anchor moved) while no size
+        // is asked; the stepper shows the size it runs at.
         if world
             && let Some(s) = scene.as_mut()
             && let Some((requested, preset)) = s.space()
-            && let Some(half) = space.update(&mut controls.space_half, requested, preset)
         {
-            s.set_space_half(half);
-            info!(
-                "space size: '{}' at {:.2} m half extent",
-                world_effects[world_index], controls.space_half
-            );
+            let fit = room_fit.filter(|_| s.surface_born());
+            if let Some(half) = space.update(
+                &mut controls.space_half,
+                requested,
+                preset,
+                fit.map(|f| f.0),
+            ) {
+                s.set_space_half(half);
+                info!(
+                    "space size: '{}' at {:.2} m half extent",
+                    world_effects[world_index], controls.space_half
+                );
+            }
+            let applied = fit.filter(|_| space.asked().is_none());
+            if let Some((half, boxes)) = applied
+                && applied != fit_logged
+            {
+                info!("space fit to the room: {half:.2} m half extent ({boxes} boxes)");
+            }
+            fit_logged = applied;
         }
         // The pitcher's last 10 s, while it is on or has poured.
         if frame_index.is_multiple_of(720) {
@@ -2138,6 +2491,25 @@ impl FrameStats {
         self.cpu_max = self.cpu_max.max(cpu);
         self.cpu_n += 1;
     }
+}
+
+/// The boxes a ray from a hand is cast against (the throw's and the room
+/// editor's): the room's, then the stage floor while the room has no
+/// floor, in the lanes' order.
+fn ray_boxes(room: &[ObstacleBox], floor: Option<&ObstacleBox>) -> Vec<crate::instruments::RayBox> {
+    let ray_box = |b: &ObstacleBox| crate::instruments::RayBox {
+        center: glam::Vec3::from(b.center),
+        rot: glam::Quat::from_array(b.rot),
+        half: glam::Vec3::from(b.half),
+        kind: b.kind,
+    };
+    let mut boxes: Vec<_> = room.iter().map(ray_box).collect();
+    if !room.iter().any(|b| b.kind == crate::surfaces::KIND_FLOOR)
+        && let Some(f) = floor
+    {
+        boxes.push(ray_box(f));
+    }
+    boxes
 }
 
 /// A pose for the log and the panel: `lost` for an untracked hand.

@@ -3,13 +3,15 @@
 //! it and turns the right hand's ray or fingertip into a pointer).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): for now a single
-//! row, the particle pitcher's on/off toggle and the debug panel's. With
-//! debug on the same quad grows upward into the debug panel (frame timing,
-//! the effect, hands, reach, anchor and audio, and controls for what can
-//! change without a restart), the toggles still its bottom row. The quad
-//! keeps its bottom edge when it resizes, so the toggles stay under the
-//! pointer either way.
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): three
+//! rows, the particle pitcher's on/off toggle and the debug panel's, under
+//! them the room editor's toggle beside its status ("desk: embers",
+//! board #3326), and under that the cloud's toggle (`room_edit::Cloud`).
+//! With debug on the same quad grows upward into the debug
+//! panel (frame timing, the effect, hands, reach, anchor and audio, and
+//! controls for what can change without a restart), the menu rows still
+//! at its bottom. The quad keeps its bottom edge when it resizes, so the
+//! toggles stay under the pointer either way.
 //!
 //! The controls are built for low precision (they must work without stereo
 //! depth perception, and a ray jitters): rows 1.7 cm tall at the bottom of
@@ -95,6 +97,14 @@ pub struct Controls {
     /// The world effect's space size: the half extent of the cube its
     /// particles live in (meters; board #3325).
     pub space_half: f32,
+    /// The room editor is on (the hand menu's Edit room toggle; not saved,
+    /// off at launch).
+    pub edit_room: bool,
+    /// The world effect's cloud is on (the hand menu's Cloud toggle; not
+    /// saved, on at launch): off, the effect is hidden, its sim stepping
+    /// on, or with `edit_room` on only the pointed surface spawns
+    /// (`room_edit::Cloud`).
+    pub cloud: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -110,6 +120,13 @@ pub enum Action {
     SetDebug(bool),
     /// The hand menu's pitcher toggle changed (not saved).
     SetPitcher(bool),
+    /// The hand menu's Edit room toggle changed (not saved).
+    SetEditRoom(bool),
+    /// The hand menu's Cloud toggle changed (not saved).
+    SetCloud(bool),
+    /// The "All: none" button: every room surface and every kind default
+    /// to none, saved (board #3326, Kevin's debug ask).
+    AllNone,
 }
 
 impl Controls {
@@ -138,6 +155,9 @@ enum Target {
     Rescan,
     ToggleDebug,
     TogglePitcher,
+    ToggleEdit,
+    ToggleCloud,
+    AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
 }
@@ -176,6 +196,9 @@ pub struct View<'a> {
     /// Each hand's pose and hold (Murmur), shown in place of "open" while
     /// the hand is not pinching.
     pub pose: &'a [String; 2],
+    /// The room editor's status: the pointed surface and its behavior
+    /// ("desk: embers"), "no surface" or "edit room off".
+    pub edit_status: &'a str,
 }
 
 pub struct Hud {
@@ -480,7 +503,7 @@ impl Hud {
                     if debug {
                         crowded = panel_ui(ui, view, &history, controls, rows);
                     } else {
-                        menu_ui(ui, controls, rows);
+                        menu_ui(ui, controls, view.edit_status, rows);
                     }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
@@ -540,6 +563,15 @@ impl Hud {
                 controls.pitcher = !controls.pitcher;
                 actions.push(Action::SetPitcher(controls.pitcher));
             }
+            Some(Target::ToggleEdit) => {
+                controls.edit_room = !controls.edit_room;
+                actions.push(Action::SetEditRoom(controls.edit_room));
+            }
+            Some(Target::ToggleCloud) => {
+                controls.cloud = !controls.cloud;
+                actions.push(Action::SetCloud(controls.cloud));
+            }
+            Some(Target::AllNone) => actions.push(Action::AllNone),
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 let v = controls.field(i);
@@ -631,6 +663,8 @@ enum Cell<'a> {
     },
     /// One action.
     Button(Target, &'a str),
+    /// Text only, no target: a status.
+    Label(&'a str),
 }
 
 impl Control<'_> {
@@ -642,6 +676,7 @@ impl Control<'_> {
             Self::Pair(cells) => match cells[hit.col].as_ref()? {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
                 Cell::Button(t, _) => Some(*t),
+                Cell::Label(_) => None,
             },
         }
     }
@@ -720,6 +755,7 @@ impl Rows<'_> {
                             Some(Cell::Button(t, label)) => {
                                 self.button(painter, area, *t, label, on.is_some());
                             }
+                            Some(Cell::Label(text)) => label(painter, area, text),
                             None => {}
                         }
                     }
@@ -807,6 +843,36 @@ impl Rows<'_> {
             );
         }
     }
+}
+
+/// A status cell: `text` on a dark ground with no outline (nothing to
+/// press), in the value font, or the label font when that does not fit.
+fn label(painter: &egui::Painter, area: grid::Rect, text: &str) {
+    let r = rect(area);
+    painter.rect_filled(r, 6.0, Color32::from_gray(26));
+    let fits = |size: f32| {
+        painter
+            .layout_no_wrap(
+                text.to_owned(),
+                egui::FontId::proportional(size),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+            <= r.width() - 8.0
+    };
+    let size = if fits(FONT_VALUE) {
+        FONT_VALUE
+    } else {
+        FONT_LABEL
+    };
+    painter.text(
+        r.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(size),
+        Color32::WHITE,
+    );
 }
 
 /// The debug panel: the header top down, the controls at the bottom.
@@ -951,18 +1017,64 @@ fn panel_ui(
         Control::Button(Target::Recenter, "Recenter the cloud")
     });
     block.push(menu_row(true, controls.pitcher));
+    block.push(edit_row(controls.edit_room, view.edit_status));
+    block.push(cloud_row(controls.cloud, controls.edit_room));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
 }
 
-/// The hand menu with the debug panel off: a title over its bottom row.
-fn menu_ui(ui: &mut egui::Ui, controls: &Controls, mut rows: Rows<'_>) {
+/// The hand menu with the debug panel off: a title over its rows.
+fn menu_ui(ui: &mut egui::Ui, controls: &Controls, edit_status: &str, mut rows: Rows<'_>) {
     ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
-    rows.block(ui, MENU_H, &[menu_row(false, controls.pitcher)]);
+    let block: [Control<'_>; grid::MENU_ROWS] = [
+        menu_row(false, controls.pitcher),
+        edit_row(controls.edit_room, edit_status),
+        cloud_row(controls.cloud, controls.edit_room),
+    ];
+    rows.block(ui, MENU_H, &block);
 }
 
-/// The bottom row in both layouts: the pitcher's toggle and the debug
+/// The cloud's row, the bottom row in both layouts: its toggle, the right
+/// cell empty (step 2c). The state is in the words, not a color.
+fn cloud_row(on: bool, editing: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::ToggleCloud,
+            // "Particles", not "cloud": the toggle hides every particle
+            // of the effect, the embers painted on a surface included, and
+            // the word cloud read as the ambient mass alone (Kevin, Sep 30).
+            match (on, editing) {
+                (true, _) => "Particles: on",
+                // Off, but Edit room shows the effect: the painted embers
+                // are its particles (`room_edit::Cloud::of`).
+                (false, true) => "Particles: off (shown: editing)",
+                (false, false) => "Particles: off",
+            },
+        )),
+        // Every surface to none in one press, for telling what a single
+        // assignment does afterwards (board #3326).
+        Some(Cell::Button(Target::AllNone, "All: none")),
+    ])
+}
+
+/// The room editor's row, over the cloud's in both layouts: its toggle and
+/// its status (board #3326). The state is in the words, not a color.
+fn edit_row(on: bool, status: &str) -> Control<'_> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::ToggleEdit,
+            if on {
+                "Edit room: on"
+            } else {
+                "Edit room: off"
+            },
+        )),
+        Some(Cell::Label(status)),
+    ])
+}
+
+/// The row over it in both layouts: the pitcher's toggle and the debug
 /// panel's. Their state is in the words, not a color.
 fn menu_row(debug: bool, pitcher: bool) -> Control<'static> {
     Control::Pair([

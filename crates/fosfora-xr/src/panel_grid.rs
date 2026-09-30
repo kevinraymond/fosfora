@@ -32,9 +32,13 @@ pub const ROW_GAP: f32 = 6.0;
 pub const COL_GAP: f32 = 6.0;
 /// The -/+ and Prev/Next boxes at a cell's or a row's ends.
 pub const END_BOX_W: f32 = 40.0;
+/// The hand menu's rows, in both layouts at the bottom of the block: the
+/// pitcher and debug toggles over the room editor's (board #3326), over
+/// the cloud's (step 2c).
+pub const MENU_ROWS: usize = 3;
 /// The hand menu's height (points): the top of the texture the quad shows
-/// with debug off, a title over the bottom row.
-pub const MENU_H: f32 = 84.0;
+/// with debug off, a title over the menu rows.
+pub const MENU_H: f32 = 84.0 + 2.0 * (ROW_H + ROW_GAP);
 /// Fonts (points): the title, a stepper's value and label, a button, the
 /// end boxes' glyphs, the graph's labels, and the smallest anywhere on the
 /// panel (legible at arm's length). The header lines are egui's body text
@@ -54,13 +58,19 @@ pub const HEADER_H: f32 = 320.0;
 /// the count), two to a row.
 pub const STEPPERS: usize = 10;
 /// The most rows the debug panel shows: Prev/Next, the steppers' pair
-/// rows, Recenter and Rescan, Pitcher and Debug.
-pub const DEBUG_ROWS: usize = 1 + STEPPERS.div_ceil(2) + 2;
+/// rows, Recenter and Rescan, then the menu rows (Pitcher and Debug, Edit
+/// room and its status, Cloud).
+pub const DEBUG_ROWS: usize = 1 + STEPPERS.div_ceil(2) + 1 + MENU_ROWS;
 
 // A stepper's label over its value in one row, and the menu's title over
 // its bottom row.
 const _: () = assert!(FONT_LABEL + FONT_VALUE <= ROW_H - 4.0);
-const _: () = assert!(MARGIN + FONT_TITLE * 1.4 + ROW_GAP + ROW_H + MARGIN <= MENU_H);
+const _: () =
+    assert!(MARGIN + FONT_TITLE * 1.4 + MENU_ROWS as f32 * (ROW_GAP + ROW_H) + MARGIN <= MENU_H);
+// The debug panel's header over its fullest control block.
+const _: () = assert!(
+    PANEL_H - MARGIN - DEBUG_ROWS as f32 * (ROW_H + ROW_GAP) + ROW_GAP * 0.5 >= MARGIN + HEADER_H
+);
 
 /// An axis-aligned rectangle in points.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -190,7 +200,7 @@ mod tests {
 
     #[test]
     fn the_rows_tile_the_block_bottom_up() {
-        for (bottom, n) in [(PANEL_H, DEBUG_ROWS), (MENU_H, 1)] {
+        for (bottom, n) in [(PANEL_H, DEBUG_ROWS), (MENU_H, MENU_ROWS)] {
             let top = block_top(bottom, n);
             let base = row(bottom, 0).max[1] + ROW_GAP * 0.5;
             assert!((base - (bottom - MARGIN + ROW_GAP * 0.5)).abs() < 1e-4);
@@ -287,9 +297,16 @@ mod tests {
         assert_close!(MIN_FONT, 12.0);
         // The debug panel: the header over the fullest control block, ten
         // steppers in five full pair rows (the space size filled the fifth
-        // row's empty cell, board #3325), so no taller than with nine.
-        assert_eq!(DEBUG_ROWS, 8);
+        // row's empty cell, board #3325), so no taller than with nine,
+        // the room editor's row under the menu's (board #3326) and the
+        // cloud's under that (step 2c).
+        assert_eq!(DEBUG_ROWS, 10);
         assert!(block_top(PANEL_H, DEBUG_ROWS) >= MARGIN + HEADER_H);
+        // The hand menu: a title over three rows, 40 points taller for
+        // each past the first.
+        assert_eq!(MENU_ROWS, 3);
+        assert_close!(MENU_H, 164.0);
+        assert!(block_top(MENU_H, MENU_ROWS) >= MARGIN + FONT_TITLE * 1.4);
         // The texture is unchanged: 640 x 1472 at 1.6 px per point.
         assert_eq!((PANEL_W, PANEL_H), (400.0, 920.0));
     }

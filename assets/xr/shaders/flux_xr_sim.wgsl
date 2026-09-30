@@ -58,7 +58,8 @@
 //                   Murmur ignores them)
 // All zero (nothing written yet, or a desktop test) means no obstacles, no
 // near fade, no instruments, no depth collide, no pour and every box on
-// its kind's behavior.
+// its kind's behavior; with no boxes, a surface-emit preset spawns in the
+// volume.
 //
 // Instrument rows (board #3327; crates/fosfora-xr/src/instruments.rs, the
 // hands as instruments):
@@ -140,9 +141,11 @@
 // nothing (every kind but tables and floors in the first pass, a surface
 // out of the volume, the stage floor when the room has its own). A preset
 // with param(6) > 0.5 (Flux XR Room's `surface_emit`) spawns on the top
-// faces of the weighted boxes instead of in the volume; with no weight
-// anywhere, or param(6) = 0 (every other preset: they have six inputs),
-// the volume path runs unchanged.
+// faces of the weighted boxes instead of in the volume; with boxes but no
+// weight anywhere (every surface on none, say) it spawns nothing (step
+// 2e: the volume fallback filled a room whose surfaces were all none);
+// with no boxes at all, or param(6) = 0 (every other preset: they have six
+// inputs), the volume path runs unchanged.
 //
 // Surface behavior lanes (board #3326; crates/fosfora-xr/src/lanes.rs and
 // surfaces.rs `lane_row`): what each box does, chosen per surface and
@@ -151,12 +154,16 @@
 //                  strength 0..1, z and w = two parameters (unused yet)
 // Behavior ids: 0 none, 1 embers, 2 sparks, 3 spectrum (the wall canvas),
 // 4 ripple (the floor ripple); 5 to 7 are reserved and run nothing here.
-// An unset lane runs the kind's default (table embers, floor sparks, wall
-// spectrum, the rest none) through xr_kind_gate, exactly as before the
-// lanes; a set one gates the box's spawns by its behavior (embers on the
-// table's beat gate, sparks on the floor's bass gate, anything else
-// closed) times its strength, and gives the newborn sparks' velocity for
-// sparks, the ember slide otherwise. The spawn stays on the upward face:
+// An unset lane runs the kind's default (xr_kind_behavior: table embers,
+// floor ripple, wall spectrum, the rest none) through the same behavior
+// gate at full strength, so an unset table sheds embers as before the
+// lanes and an unset floor, wall or other box spawns nothing (step 2d,
+// decision #3459: the floor's default was sparks, and every unset kind
+// but the table and the floor ran a fixed 0.3 gate). A set lane gates the
+// box's spawns by its behavior (embers on the table's beat gate, sparks
+// on the floor's bass gate, anything else closed) times its strength.
+// Either way the newborn gets the sparks' velocity for sparks, the ember
+// slide otherwise. The spawn stays on the upward face:
 // a wall on embers sheds along its top edge in this pass. The weight in
 // aux[131 + k].w is the XR app's, taken for the same behaviors.
 
@@ -504,19 +511,6 @@ fn xr_spark_gate() -> f32 {
     return 0.1 + 0.9 * u.bass;
 }
 
-// How open a surface kind's emission is this frame, 0..1, for a box whose
-// lane is unset: tables shed embers on the beat, floors spark with the
-// bass.
-fn xr_kind_gate(kind: u32) -> f32 {
-    if kind == XR_KIND_TABLE {
-        return xr_ember_gate();
-    }
-    if kind == XR_KIND_FLOOR {
-        return xr_spark_gate();
-    }
-    return 0.3;
-}
-
 // How open a behavior's emission is this frame, 0..1: the embers and the
 // sparks emit, nothing else does (the spectrum and the ripple draw
 // elsewhere).
@@ -530,13 +524,14 @@ fn xr_behavior_gate(behavior: u32) -> f32 {
     return 0.0;
 }
 
-// A kind's default behavior (surfaces.rs `SurfaceBehavior::default_for`).
+// A kind's default behavior (surfaces.rs `SurfaceBehavior::default_for`):
+// a floor carries the ripple, which spawns nothing here.
 fn xr_kind_behavior(kind: u32) -> u32 {
     if kind == XR_KIND_TABLE {
         return XR_BEHAVIOR_EMBERS;
     }
     if kind == XR_KIND_FLOOR {
-        return XR_BEHAVIOR_SPARKS;
+        return XR_BEHAVIOR_RIPPLE;
     }
     if kind == XR_KIND_WALL {
         return XR_BEHAVIOR_SPECTRUM;
@@ -563,11 +558,12 @@ fn xr_box_behavior(k: u32) -> u32 {
 }
 
 // How open box k's emission is this frame, 0..1: its lane's behavior times
-// the lane's strength, or with the lane unset its kind's gate.
+// the lane's strength, or with the lane unset its kind's default behavior
+// at full strength.
 fn xr_box_gate(k: u32) -> f32 {
     let code = xr_box_lane(k);
     if code == 0u {
-        return xr_kind_gate(xr_box_kind(k));
+        return xr_behavior_gate(xr_kind_behavior(xr_box_kind(k)));
     }
     return xr_behavior_gate(code - 1u) * clamp(aux[XR_AUX_SURFACE + k].home.y, 0.0, 1.0);
 }
@@ -620,9 +616,11 @@ fn xr_surface_point(k: u32, half: f32, r: vec3f) -> vec3f {
 }
 
 // Spawn a particle for slot idx: on a surface when this preset asks for it
-// and some box carries weight, otherwise in the volume (emit_particle,
-// unchanged). Surface spawns draw over the boxes' cumulative weight times
-// their gate (xr_box_gate: the lane's behavior and strength, or the kind's)
+// and some box carries weight; with boxes but no weight anywhere, nowhere
+// (returns false); in the volume when the preset does not ask for surfaces
+// or there are no boxes (emit_particle, unchanged). Surface spawns draw over the boxes' cumulative weight times
+// their gate (xr_box_gate: the lane's behavior and strength, or the kind's
+// default behavior)
 // against the ungated total, so a draw past the gated sum
 // spawns nothing: returns false and the slot stays dead this frame, and the
 // room's emission breathes with the music.
@@ -636,8 +634,19 @@ fn xr_emit(idx: u32, half: f32, out: ptr<function, Particle>) -> bool {
         }
     }
     if total <= 0.0 {
-        *out = emit_particle(idx, half);
-        return true;
+        // The volume only for a run with no room at all (no anchors, no
+        // stage floor): boxes that all weigh nothing are a room whose
+        // surfaces are all `none` (or spawn nothing, like the ripple and
+        // the spectrum), which is silent, not a cloud from nowhere (step
+        // 2e). The XR app pushes the stage floor as a box in mr and world
+        // modes, so a run with no anchors spawns nothing unless the stage
+        // floor's lane emits (its default is the ripple): the unworn cost
+        // sweeps set `debug.fosfora.surface "#0=sparks"`.
+        if box_count == 0u {
+            *out = emit_particle(idx, half);
+            return true;
+        }
+        return false;
     }
     let pick = xr_rand3(idx, 3u);
     let draw = pick.x * total;

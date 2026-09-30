@@ -18,6 +18,7 @@ use xr::sys;
 use xr::sys::Handle as _;
 
 use crate::particles3d::ObstacleBox;
+use crate::surfaces::PLANE_HALF_THICKNESS_M;
 
 /// Passthrough: a reconstruction layer that the frame loop submits under the
 /// projection layer. Created running, so the `openxr` crate's `start()`
@@ -60,9 +61,6 @@ pub enum Rescan {
     Query,
 }
 
-/// Half thickness given to a 2D scene plane so fast particles cannot tunnel
-/// through it in one step (meters).
-const PLANE_HALF_THICKNESS_M: f32 = 0.02;
 /// Anchors are static in the stage space; relocating them this often is
 /// plenty and keeps the per-frame cost at zero.
 const RELOCATE_EVERY: Duration = Duration::from_secs(1);
