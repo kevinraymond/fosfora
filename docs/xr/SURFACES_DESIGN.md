@@ -211,8 +211,8 @@ are the lines sparser. Each line
 is 6 mm wide with a 1.5 mm soft edge (or a pixel's footprint, farther
 away). Along the lines, streaks 8 cm long run with the flow at 0.15 m/s
 of the clock (two advection phases of 0.3 m cross-faded), over a base
-of 0.35. The alpha is up to 0.30 times the strength, times the rms with
-a floor of 0.4, faded over 5 cm toward the face's edges, in the kind's
+of 0.35. The alpha is up to 0.55 times the strength (0.30 read "too faint" worn), times the rms with
+a floor of 0.6, faded over 5 cm toward the face's edges, in the kind's
 palette color. The Rust twin of the field library backs the desktop
 tests (divergence at a few points, the analytic gradient, the density).
 
