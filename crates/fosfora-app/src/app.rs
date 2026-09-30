@@ -710,6 +710,34 @@ impl App {
         self.syphon.resize(&self.gpu.device, width, height);
     }
 
+    /// The full state snapshot web clients sync from.
+    fn web_full_state(&self) -> String {
+        let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
+        let layer_data: Vec<_> = self
+            .layer_stack
+            .layers
+            .iter()
+            .map(|l| {
+                (
+                    &l.param_store,
+                    l.effect_index(),
+                    l.blend_mode,
+                    l.opacity,
+                    l.enabled,
+                    l.locked,
+                )
+            })
+            .collect();
+        crate::web::state::build_full_state(
+            &self.effect_loader.effects,
+            &layer_infos,
+            self.layer_stack.active_layer,
+            &layer_data,
+            &self.preset_store,
+            self.post_process.enabled,
+        )
+    }
+
     pub fn update(&mut self) {
         // Surface sender-thread failures (dead NDI runtime, closed device) so the
         // status dot goes off instead of staying green with zero frames sent.
@@ -973,6 +1001,10 @@ impl App {
             }
         }
 
+        // Set when a preset load should reach web clients this frame rather
+        // than at the next 10 Hz state refresh.
+        let mut web_state_changed = false;
+
         // Drain WebSocket messages (runs after OSC — last-write-wins)
         if let Some(layer) = self.layer_stack.active_mut() {
             let locked = layer.locked;
@@ -1063,34 +1095,8 @@ impl App {
                 self.load_preset(preset_idx);
             }
 
-            // After preset load, broadcast full state so all clients update
-            if had_preset_loads && self.web.client_count > 0 {
-                let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-                let layer_data: Vec<_> = self
-                    .layer_stack
-                    .layers
-                    .iter()
-                    .map(|l| {
-                        (
-                            &l.param_store,
-                            l.effect_index(),
-                            l.blend_mode,
-                            l.opacity,
-                            l.enabled,
-                            l.locked,
-                        )
-                    })
-                    .collect();
-                let state_json = crate::web::state::build_full_state(
-                    &self.effect_loader.effects,
-                    &layer_infos,
-                    self.layer_stack.active_layer,
-                    &layer_data,
-                    &self.preset_store,
-                    self.post_process.enabled,
-                );
-                self.web.broadcast_json(&state_json);
-            }
+            // After preset load, push full state so all clients update
+            web_state_changed |= had_preset_loads;
         }
 
         // Evaluate binding bus (runs after MIDI/OSC/WS drain — bus overrides direct mappings)
@@ -1132,34 +1138,8 @@ impl App {
             let preset = result.preset;
             self.apply_preset_immediately(index, &preset, result.decoded_media);
 
-            // Broadcast full state to web clients after async preset load
-            if self.web.client_count > 0 {
-                let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-                let layer_data: Vec<_> = self
-                    .layer_stack
-                    .layers
-                    .iter()
-                    .map(|l| {
-                        (
-                            &l.param_store,
-                            l.effect_index(),
-                            l.blend_mode,
-                            l.opacity,
-                            l.enabled,
-                            l.locked,
-                        )
-                    })
-                    .collect();
-                let state_json = crate::web::state::build_full_state(
-                    &self.effect_loader.effects,
-                    &layer_infos,
-                    self.layer_stack.active_layer,
-                    &layer_data,
-                    &self.preset_store,
-                    self.post_process.enabled,
-                );
-                self.web.broadcast_json(&state_json);
-            }
+            // Push full state to web clients after async preset load
+            web_state_changed = true;
         }
 
         // Drain MIDI clock bytes into MidiClock
@@ -1286,33 +1266,12 @@ impl App {
             self.web.broadcast_audio(&features);
         }
 
-        // Web: update latest state for new client initial sync
-        if self.web.client_count > 0 || self.web.is_running() {
-            let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-            let layer_data: Vec<_> = self
-                .layer_stack
-                .layers
-                .iter()
-                .map(|l| {
-                    (
-                        &l.param_store,
-                        l.effect_index(),
-                        l.blend_mode,
-                        l.opacity,
-                        l.enabled,
-                        l.locked,
-                    )
-                })
-                .collect();
-            let state_json = crate::web::state::build_full_state(
-                &self.effect_loader.effects,
-                &layer_infos,
-                self.layer_stack.active_layer,
-                &layer_data,
-                &self.preset_store,
-                self.post_process.enabled,
-            );
-            self.web.update_latest_state(&state_json);
+        // Web: the one place full state is built — stored for new-client initial
+        // sync and broadcast to connected clients, at 10 Hz or at once after a
+        // preset load.
+        if self.web.state_due(web_state_changed) {
+            let state_json = self.web_full_state();
+            self.web.update_latest_state(state_json);
         }
 
         // Advance media playback + upload frames for media layers

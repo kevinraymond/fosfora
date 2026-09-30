@@ -30,7 +30,8 @@ pub struct WebSystem {
     pub client_count: usize,
     pub last_activity: Option<Instant>,
     last_audio_broadcast: Instant,
-    last_state_broadcast: Instant,
+    /// When full state was last stored/broadcast; `None` until the first time.
+    last_state_update: Option<Instant>,
     /// Accumulated binding data values from WebSocket clients.
     pub bind_values: std::collections::HashMap<String, f32>,
     /// Preview thumbnail JPEG data from bridge sources.
@@ -53,7 +54,7 @@ impl WebSystem {
             client_count: 0,
             last_activity: None,
             last_audio_broadcast: Instant::now(),
-            last_state_broadcast: Instant::now(),
+            last_state_update: None,
             bind_values: std::collections::HashMap::new(),
             preview_images: std::collections::HashMap::new(),
         }
@@ -325,17 +326,27 @@ impl WebSystem {
         self.broadcast_json(&json);
     }
 
-    /// Update the latest full state and broadcast to clients at 10Hz.
-    /// Stores state for initial sync on new connections, and periodically
-    /// broadcasts to existing clients so MIDI/OSC/egui changes are reflected.
-    pub fn update_latest_state(&mut self, state_json: &str) {
-        if let Ok(mut state) = self.latest_state.lock() {
-            *state = state_json.to_string();
+    /// Whether the caller should build full state this frame: the server is up
+    /// and either `changed` forces it or the 10 Hz refresh is due. Building it
+    /// serialises every layer's parameters, so it is not done every frame.
+    pub fn state_due(&self, changed: bool) -> bool {
+        (self.client_count > 0 || self.is_running())
+            && (changed
+                || self
+                    .last_state_update
+                    .is_none_or(|t| t.elapsed().as_millis() >= 100))
+    }
+
+    /// Store the latest full state for initial sync on new connections and
+    /// broadcast it to existing clients, so MIDI/OSC/egui changes are
+    /// reflected. Called when [`Self::state_due`] says so.
+    pub fn update_latest_state(&mut self, state_json: String) {
+        self.last_state_update = Some(Instant::now());
+        if self.client_count > 0 {
+            self.broadcast_json(&state_json);
         }
-        // Broadcast state at 10Hz so external changes (MIDI/OSC/egui) reach web clients
-        if self.client_count > 0 && self.last_state_broadcast.elapsed().as_millis() >= 100 {
-            self.last_state_broadcast = Instant::now();
-            self.broadcast_json(state_json);
+        if let Ok(mut state) = self.latest_state.lock() {
+            *state = state_json;
         }
     }
 
@@ -400,5 +411,22 @@ mod tests {
         web.inbound_tx.send(WsInMessage::LoadEffect { index: 8 });
         let r = web.update_triggers_only();
         assert_eq!(r.effect_load, Some(8));
+    }
+
+    /// Full state is built at 10 Hz or on a change, and never with no server.
+    #[test]
+    fn full_state_is_due_on_change_or_refresh_only() {
+        let mut web = WebSystem::offline();
+        assert!(!web.state_due(true), "no server, no state");
+
+        web.shutdown = Some(Arc::new(AtomicBool::new(false)));
+        assert!(web.state_due(false), "first state is due at once");
+        web.update_latest_state("{\"a\":1}".to_owned());
+        assert_eq!(*web.latest_state.lock().unwrap(), "{\"a\":1}");
+        assert!(!web.state_due(false), "refresh waits 100 ms");
+        assert!(web.state_due(true), "a change does not wait");
+
+        web.last_state_update = Instant::now().checked_sub(std::time::Duration::from_millis(100));
+        assert!(web.state_due(false));
     }
 }
