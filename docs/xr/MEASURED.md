@@ -1811,3 +1811,44 @@ in every mode.
 **Worn gate (Kevin):** point at the desk and turn its embers off and on;
 put the spectrum on the side wall; relaunch and find the room as left;
 the border and the status cell read with one eye.
+
+## Surfaces as effects, D1: the surfaces pass (board #3472)
+
+The first step of `SURFACES_DESIGN.md`: one render pass that draws a
+fragment effect on each room surface's acting face, one uniform slot per
+box and one shader switching on the surface's behavior; two shaders,
+**rings** (the floor ripple folded in, now on any face) and
+**streamlines** (lines of light flowing along a curl-noise field, the
+mockup's tabletop); a per-kind palette; the catalogue widened so tables and
+storage cycle none, embers, sparks, streamlines, floors none, sparks,
+rings, streamlines, walls none, spectrum, streamlines, rings.
+
+```
+adb shell setprop debug.fosfora.surface "table=streamlines,wall=streamlines,other=streamlines,ceiling=rings,frame=rings"
+```
+
+(The property holds 91 bytes: `floor=rings` is the default and `frame`
+can be left out to fit.)
+
+**Cost** (`ad9f850`, Quest 3 v207, `mode world`, Embers 400K with
+Particles off so the sprites do not draw, 72 Hz, unworn, 45 s runs at
+37-38 C, App GPU med / max ms):
+
+| Lit faces | App GPU med / max | long | stale |
+|---|---|---|---|
+| none (the stage floor's rings alone, no room) | 8.84 / 9.81 | 56 | 52 |
+| 1 (stage floor rings) | 8.77 / 9.70 | 47 | 54 |
+| 6 (5 tables streamlines, the floor rings; the room's 17 anchors) | 8.75 / 10.30 | 71 | 124 |
+| every face lit | not measured: the query returned 0 anchors in eight launches after the 6-face run |
+| none again | 8.97 / 10.05 | 27 | 21 |
+
+Six faces lit (five tabletops of streamlines and the room's floor of
+rings) cost nothing measurable against none: the pass is fill, and the
+tabletops are a small part of the eye buffer. The every-face number, with
+four walls and the ceiling covering most of the view, is the one the
+design's gate (under 2 ms) is about, and it needs the room's anchors,
+which the unworn headset stopped returning; it is taken worn, from the
+debug panel's GPU graph, or on the next unworn run that has them.
+
+**Look:** unworn screencaps show only the stage floor (no room), so the
+streamlines' look on a table is judged worn, first by Kevin.
