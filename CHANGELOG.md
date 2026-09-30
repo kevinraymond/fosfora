@@ -37,6 +37,7 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   and closing it no longer leaves the interface zoomed.
 - **Webcams stayed dark on macOS and no permission prompt appeared.** Fosfora now asks for
   camera access the first time a camera is added; allow it, then add the camera again.
+- **The app and window icon still showed the old Phosphor "P".** It is the Fosfora "F" now.
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
   Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
   HDR values and blend exactly as before everywhere else.
