@@ -1545,6 +1545,37 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         info!("edit room: {g} with no surface under the beam, nothing changed");
                     }
                     let effective = |k: usize| surface_lanes.effective(k, &lane_boxes);
+                    // Step 2h: whether box `k`'s top face lies outside the
+                    // surface-born effect's volume, so it would weigh 0
+                    // and emit nothing whatever it runs.
+                    let space_half = scene
+                        .as_deref()
+                        .filter(|s| s.surface_born())
+                        .and_then(XrScene::emitter_half);
+                    let outside = |k: usize| {
+                        space_half.zip(pick_boxes.get(k)).is_some_and(|(half, b)| {
+                            !crate::surfaces::reaches(
+                                b.center - glam::Vec3::from(anchor),
+                                b.rot,
+                                b.half,
+                                half,
+                            )
+                        })
+                    };
+                    // The label's text, and a log line when the result
+                    // cannot emit there.
+                    let placed = |k: usize, text: String, after: crate::surfaces::SurfaceBehavior| {
+                        let out = outside(k);
+                        if out && after.emits() {
+                            info!(
+                                "edit room: {} is outside the space ({:.2} m half extent): its {} emit nothing",
+                                named(k),
+                                space_half.unwrap_or_default(),
+                                after.name()
+                            );
+                        }
+                        crate::label::space_text(text, after, out)
+                    };
                     label.step(dt);
                     // The label for an action: its text at the hit.
                     let mut labeled = None;
@@ -1557,11 +1588,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             match surface_lanes.cycle(k, &lane_boxes) {
                                 Ok(after) => {
-                                    labeled = Some(crate::label::cycle_text(
+                                    let text = crate::label::cycle_text(
                                         &crate::surfaces::friendly_name(k, &lane_boxes),
                                         before.unwrap_or_default(),
                                         after,
-                                    ));
+                                    );
+                                    labeled = Some(placed(k, text, after));
                                 }
                                 Err(e) => log::warn!("edit room: {e}; nothing changed"),
                             }
@@ -1578,11 +1610,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                             match surface_lanes.cycle_kind_of(k, &lane_boxes) {
                                 Ok(after) => {
-                                    labeled = Some(crate::label::class_text(
+                                    let text = crate::label::class_text(
                                         lane_boxes[k].kind,
                                         before.unwrap_or_default(),
                                         after,
-                                    ));
+                                    );
+                                    labeled = Some(placed(k, text, after));
                                 }
                                 Err(e) => log::warn!("edit room: {e}; nothing changed"),
                             }

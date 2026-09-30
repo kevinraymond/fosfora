@@ -62,6 +62,21 @@ pub fn cycle_text(name: &str, before: SurfaceBehavior, after: SurfaceBehavior) -
     format!("{name}: {}", result(before, after))
 }
 
+/// A label's text for an action whose result `after` spawns particles
+/// (embers, sparks) on a surface whose top face is `outside` the volume
+/// the effect runs in (`surfaces::reaches`; its emitter weight is 0):
+/// "table 13: sparks (outside the space)". The room fit (step 2h) makes it
+/// rare; it stays for an asked space size too small for the surface.
+/// Without it the editor assigned a surface that could not emit and said
+/// nothing (Kevin, worn, Sep 30). Any other result, the text as it is.
+pub fn space_text(text: String, after: SurfaceBehavior, outside: bool) -> String {
+    if outside && after.emits() {
+        format!("{text} (outside the space)")
+    } else {
+        text
+    }
+}
+
 /// The label for a hold: every surface of `kind` and their new behavior,
 /// "all tables: none".
 pub fn class_text(kind: u32, before: SurfaceBehavior, after: SurfaceBehavior) -> String {
@@ -389,6 +404,26 @@ mod tests {
             cycle_text("ceiling", B::Embers, B::Embers.next_for(KIND_CEILING)),
             "ceiling: none"
         );
+    }
+
+    #[test]
+    fn the_text_says_when_a_surface_cannot_emit() {
+        let tapped = cycle_text("table 13", B::Embers, B::Sparks);
+        assert_eq!(
+            space_text(tapped.clone(), B::Sparks, true),
+            "table 13: sparks (outside the space)"
+        );
+        assert_eq!(space_text(tapped, B::Sparks, false), "table 13: sparks");
+        assert_eq!(
+            space_text(class_text(KIND_TABLE, B::None, B::Embers), B::Embers, true),
+            "all tables: embers (outside the space)"
+        );
+        // A result that spawns nothing is not "outside": it would not
+        // emit anywhere.
+        for after in [B::None, B::Spectrum, B::Ripple] {
+            let text = cycle_text("floor", B::Sparks, after);
+            assert_eq!(space_text(text.clone(), after, true), text);
+        }
     }
 
     #[test]

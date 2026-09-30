@@ -548,6 +548,13 @@ impl XrScene {
         self.world.as_ref().is_some_and(|w| w.surface_born)
     }
 
+    /// World mode: the half extent of the cube the sim runs in, floored
+    /// as the sim floors it: what a surface's top face must reach into to
+    /// emit (`surfaces::reaches`).
+    pub fn emitter_half(&self) -> Option<f32> {
+        self.world.as_ref().map(|w| w.emitter_half)
+    }
+
     /// World mode: the emission rate [`Self::new_world`] set (particles
     /// per second), the base the cloud density scales.
     pub fn base_emit_rate(&self) -> Option<f32> {
