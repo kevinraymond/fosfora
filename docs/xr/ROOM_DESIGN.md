@@ -584,3 +584,32 @@ editing)" in that case: the word cloud read as the ambient mass alone),
 and on Embers the way to a quiet room is All: none, which since 2e
 spawns nothing.
 
+**Implemented, step 2h (Sep 30).** Kevin's eighth worn pass, two
+reports with two causes. "It's not obvious that the top and sides of
+table 14 are connected: I can highlight each surface separately, but they
+don't get effects separately": the behavior is one per box, but the
+highlight tinted whichever face the ray entered. Now it tints the face
+the behavior acts on, whichever face the ray entered
+(`surfaces::acting_face`): a volume's top face (a table, storage, the
+stage floor's slab; the face the sim spawns on) and a plane's face toward
+the head (a wall's room side, a floor's top, the ceiling's underside; a
+plane is a box with a half extent at `PLANE_HALF_THICKNESS_M`, 2 cm). The
+pick, its hysteresis and the label's placement at the hit are unchanged,
+and the log's "pointing at" line says "(top)" or "(face)". "Table 13
+worked for a pinch-hold but not a single pinch": the tap assigned it, but
+its top face lay outside Embers' volume, the cube of the preset's 1.5 m
+half extent around the anchor recentered on the wearer, so its emitter
+weight was 0 and a particle born there would respawn at once; the hold
+copied the behavior to every table, and table 14, inside the cube, lit.
+Now the surface-born effect's space fits the room (`space::fit_room`):
+the smallest cube around the anchor holding every room box's corners
+(the stage floor excluded, it is 20 m across) plus a 0.25 m margin,
+rounded up to the stepper's 0.25 m and clamped to its 0.5 to 6 m,
+applied whenever the boxes or the anchor change and no size was asked.
+The knob or the stepper still wins; the stepper shows the fit and steps
+from it. Flux Cloud and Flock keep their presets' sizes (the flock was
+tuned at 1.5 m). Log: "space fit to the room: 3.75 m half extent (17
+boxes)". And the label says when a tap or a hold leaves a surface on
+embers or sparks outside the volume, "table 13: sparks (outside the
+space)", by the reach test the weights use: rare with the fit, it stays
+for an asked size too small for the room.
