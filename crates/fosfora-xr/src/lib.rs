@@ -36,6 +36,7 @@ pub mod instruments;
 pub mod label;
 pub mod lanes;
 pub mod math;
+pub mod music;
 pub mod palm_panel;
 pub mod panel_grid;
 #[cfg(target_os = "android")]

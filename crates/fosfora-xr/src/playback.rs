@@ -153,7 +153,8 @@ pub struct PlaybackOptions {
     /// and AAudio's default otherwise, `Some(0.0)` = AAudio's default.
     pub buffer_ms: Option<f32>,
     /// The clip frame the playhead starts on (wrapped to the clip's
-    /// length), so a clip can resume where it stopped. 0 = the top.
+    /// length): the hand menu's Music row resumes where it stopped
+    /// ([`Playback::resume_frame`]). 0 = the top.
     pub start_frame: usize,
 }
 
@@ -204,8 +205,8 @@ impl Playback {
     ///
     /// Nothing here is bound to a thread or to the session's state: the
     /// launch path calls it on `android_main`'s thread before the first
-    /// frame, and the frame loop runs on the same thread. It blocks while
-    /// AAudio opens and starts the stream.
+    /// frame, the Music row from the frame loop on the same thread. It
+    /// blocks while AAudio opens and starts the stream.
     pub fn start(clip: Arc<Clip>, tap: Arc<RingBuffer>, options: PlaybackOptions) -> Result<Self> {
         let requested_rate = clip.sample_rate;
         let clip_frames = clip.samples.len() / 2;
@@ -342,6 +343,24 @@ impl Playback {
     pub fn position_secs(&self) -> f32 {
         let pos = self.shared.pos.load(Ordering::Relaxed);
         (pos >> 32) as f32 / self.shared.clip.sample_rate as f32
+    }
+
+    /// The clip frame to start again from after this playback stops: the
+    /// playhead less the output latency (the frames handed to AAudio but
+    /// not yet played, which closing the stream discards), wrapped.
+    pub fn resume_frame(&self) -> usize {
+        let frames = self.shared.clip.samples.len() / 2;
+        if frames == 0 {
+            return 0;
+        }
+        let head = (self.shared.pos.load(Ordering::Relaxed) >> 32) as usize;
+        let behind = (self.latency_ms() / 1000.0 * self.shared.clip.sample_rate as f32) as usize;
+        (head + frames - behind % frames) % frames
+    }
+
+    /// The clip this plays.
+    pub fn clip(&self) -> &Arc<Clip> {
+        &self.shared.clip
     }
 
     /// Latest estimate of the output latency (handed to AAudio → speaker),
