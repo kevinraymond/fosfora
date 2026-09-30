@@ -512,6 +512,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         low_latency: debug_prop("debug.fosfora.playperf").as_deref() != Some("none"),
         tap_delay_ms: debug_prop("debug.fosfora.tapdelay").and_then(|v| v.parse::<f32>().ok()),
         buffer_ms: debug_prop("debug.fosfora.playbuf").and_then(|v| v.parse::<f32>().ok()),
+        start_frame: 0,
     };
     match audio_source.as_str() {
         "mic" => live_audio = Some(LiveAudio::mic()),
@@ -544,7 +545,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let unused_tap =
                     std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
                 playback = Some(
-                    Playback::start(clip, unused_tap, playback_options)
+                    Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
                         .context("starting playback")?,
                 );
             }
@@ -565,7 +566,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Clip::decode(&path)?
             };
             let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(clip, tap.clone(), playback_options)
+            let p = Playback::start(std::sync::Arc::new(clip), tap.clone(), playback_options)
                 .context("starting playback")?;
             live_audio = Some(LiveAudio::from_ring(
                 tap,
