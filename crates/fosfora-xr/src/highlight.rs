@@ -11,8 +11,10 @@
 //! only one eye's view, and a fill alone reads as a haze at no particular
 //! depth where an outline reads as the surface's edge. A pulse raises both
 //! by [`PULSE_ALPHA`] and decays over 0.3 s (`room_edit.rs`: once for a
-//! cycle, twice for a class assignment). The quad is the hit face
-//! (`surfaces::Face::across`) lifted [`LIFT_M`] toward the room.
+//! cycle, twice for a class assignment). The quad is the face the hit
+//! box's behavior acts on (`surfaces::acting_face`: a volume's top, a
+//! plane's face toward the head; step 2h, the face the ray entered
+//! before) lifted [`LIFT_M`] toward the room.
 
 use crate::surfaces::Face;
 

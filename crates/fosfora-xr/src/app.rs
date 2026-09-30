@@ -1506,9 +1506,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     };
                     if frame.changed && edit_on {
                         match frame.hit {
+                            // Which face is tinted (step 2h): a volume's
+                            // top, a plane's face toward the head.
                             Some(h) => info!(
-                                "edit room: pointing at {} at ({:.2}, {:.2}, {:.2})",
+                                "edit room: pointing at {} ({}) at ({:.2}, {:.2}, {:.2})",
                                 named(h.index),
+                                if crate::surfaces::is_plane(pick_boxes[h.index].half) {
+                                    "face"
+                                } else {
+                                    "top"
+                                },
                                 h.point.x,
                                 h.point.y,
                                 h.point.z
@@ -1605,10 +1612,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             alpha: PICK_BEAM_ALPHA,
                         }),
                     );
+                    // Step 2h: the face the behavior acts on, whichever
+                    // face the ray entered (the pick and the label's
+                    // placement keep the hit's).
                     let rows = frame.hit.map(|h| {
                         let b = pick_boxes[h.index];
                         crate::highlight::uniform(
-                            &crate::surfaces::Face::across(b.center, b.rot, b.half, h.normal),
+                            &crate::surfaces::acting_face(b.center, b.rot, b.half, head),
                             frame.pulse,
                         )
                     });

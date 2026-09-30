@@ -321,11 +321,54 @@ pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
     }
 }
 
+/// Half thickness `room.rs` gives a 2D scene plane (a wall, a floor, the
+/// ceiling, a door or window frame) so fast particles cannot tunnel
+/// through it in one step (m): a box with a half extent this thin is a
+/// plane, not a volume ([`is_plane`]).
+pub const PLANE_HALF_THICKNESS_M: f32 = 0.02;
+
+/// Whether a box of half extents `half` is a scene plane given
+/// [`PLANE_HALF_THICKNESS_M`], not a volume (a table, storage, a couch,
+/// the stage floor's 10 cm slab).
+pub fn is_plane(half: Vec3) -> bool {
+    half.min_element() <= PLANE_HALF_THICKNESS_M + 1e-4
+}
+
+/// The face of a box the behavior on it acts on, the room editor's
+/// highlight (step 2h): a volume's top face ([`Face::of`], the face the
+/// sim spawns on), a plane's face toward `head` ([`Face::facing`], a
+/// wall's room side, a floor's top, the ceiling's underside). The
+/// highlight tinted the face the ray entered ([`Face::across`]) before, so
+/// a table's side and its top lit as two surfaces while the behavior is
+/// one per box: "It's not obvious that the top and sides of table 14 are
+/// connected" (Kevin, worn, Sep 30).
+pub fn acting_face(center: Vec3, rot: Quat, half: Vec3, head: Vec3) -> Face {
+    if is_plane(half) {
+        Face::facing(center, rot, half, head)
+    } else {
+        Face::of(center, rot, half)
+    }
+}
+
+/// Whether the top face of a box (`center` relative to the anchor, `rot`
+/// box -> world, `half`) reaches into the emitter cube of half extent
+/// `cube_half` around the anchor, the volume the sim respawns out of: the
+/// face's point nearest the anchor is inside it. A box that does not gets
+/// no emitter weight ([`emitter_weights`]).
+pub fn reaches(center: Vec3, rot: Quat, half: Vec3, cube_half: f32) -> bool {
+    TopFace::of(center, rot, half)
+        .nearest(Vec3::ZERO)
+        .abs()
+        .max_element()
+        <= cube_half
+}
+
 /// One face of a box: its outward normal, the center of the face and its
 /// two in-plane axes (unit) with their half extents. [`Face::of`] is the
 /// upward face (the emitters', the ripple's), [`Face::facing`] a plane's
 /// face toward a point (the wall spectrum's), [`Face::across`] the face a
-/// ray entered (the room editor's highlight).
+/// ray entered, [`acting_face`] the one of those a behavior acts on (the
+/// room editor's highlight).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Face {
     pub normal: Vec3,
@@ -503,8 +546,7 @@ pub fn emitter_weights(
     let faces = || {
         boxes.iter().map(|b| {
             let face = TopFace::of(b.center, b.rot, b.half);
-            let inside = face.nearest(Vec3::ZERO).abs().max_element() <= cube_half;
-            (b, face, inside)
+            (b, face, reaches(b.center, b.rot, b.half, cube_half))
         })
     };
     let largest_table = faces()
@@ -706,6 +748,82 @@ mod tests {
             Vec3::new(-0.2, 0.9, 0.1),
         );
         assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+    }
+
+    #[test]
+    fn the_acting_face_is_a_volumes_top_and_a_planes_side_toward_the_head() {
+        use crate::instruments::{RayBox, cast};
+        // Step 2h: whichever face the ray entered, the tinted one is the
+        // face the behavior acts on.
+        let head = Vec3::new(0.0, 1.2, 0.0);
+        let acting = |b: RayBox, to: Vec3| {
+            let hit = cast(head, (to - head).normalize(), &[b], 8.0).expect("a hit");
+            (
+                Face::across(b.center, b.rot, b.half, hit.normal),
+                acting_face(b.center, b.rot, b.half, head),
+            )
+        };
+        // A table (local +Z up) hit on its near side from the chair: the
+        // ray entered the side, the top is tinted.
+        let t = table(Vec3::new(0.0, 0.4, -0.8), [0.6, 0.4]);
+        let rb = RayBox {
+            center: t.center,
+            rot: t.rot,
+            half: t.half,
+            kind: KIND_TABLE,
+        };
+        assert!(!is_plane(rb.half));
+        let (entered, f) = acting(rb, Vec3::new(0.0, 0.3, -0.4));
+        assert!(entered.normal.abs_diff_eq(Vec3::Z, 1e-5), "{entered:?}");
+        assert_eq!(f, TopFace::of(t.center, t.rot, t.half));
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+        assert!((f.center.y - 0.77).abs() < 1e-5);
+        // A wall plane at x = -2 (local +Z into the room): the room-facing
+        // side of the slab, not its top edge or its back.
+        let wall = RayBox {
+            center: Vec3::new(-2.0, 1.25, 0.0),
+            rot: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(2.0, 1.25, PLANE_HALF_THICKNESS_M),
+            kind: KIND_WALL,
+        };
+        assert!(is_plane(wall.half));
+        let (_, f) = acting(wall, Vec3::new(-2.0, 1.5, -1.2));
+        assert!(f.normal.abs_diff_eq(Vec3::X, 1e-5), "{:?}", f.normal);
+        assert!(f.center.abs_diff_eq(Vec3::new(-1.98, 1.25, 0.0), 1e-5));
+        // A scene floor plane (local +Z up) and the stage floor's 10 cm
+        // slab (a volume, +Y up): their tops.
+        let floor = RayBox {
+            center: Vec3::ZERO,
+            rot: Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+            half: Vec3::new(2.0, 1.5, PLANE_HALF_THICKNESS_M),
+            kind: KIND_FLOOR,
+        };
+        let (_, f) = acting(floor, Vec3::new(0.5, 0.0, -1.0));
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5), "{:?}", f.normal);
+        assert!((f.center.y - PLANE_HALF_THICKNESS_M).abs() < 1e-5);
+        let s = synthetic_floor(Vec3::ZERO, 1.0);
+        assert!(!is_plane(s.half));
+        let f = acting_face(s.center, s.rot, s.half, head);
+        assert!(f.normal.abs_diff_eq(Vec3::Y, 1e-5));
+        assert!(f.center.y.abs() < 1e-5);
+        // The ceiling plane (local +Z down) from below: its underside,
+        // the side the wearer sees.
+        let rot = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+        let half = Vec3::new(2.0, 2.0, PLANE_HALF_THICKNESS_M);
+        let f = acting_face(Vec3::new(0.0, 2.5, 0.0), rot, half, head);
+        assert!(f.normal.abs_diff_eq(Vec3::NEG_Y, 1e-5), "{:?}", f.normal);
+    }
+
+    #[test]
+    fn a_top_face_reaches_the_cube_by_its_point_nearest_the_anchor() {
+        let t = table(Vec3::new(1.9, -0.5, 0.0), [0.4, 0.4]);
+        // The top spans x 1.5..2.3: in at 1.5, out below.
+        assert!(reaches(t.center, t.rot, t.half, 1.5));
+        assert!(!reaches(t.center, t.rot, t.half, 1.49));
+        // The stage floor under an anchor 5 m from its center.
+        let s = synthetic_floor(Vec3::new(5.0, 1.0, 3.0), 1.0);
+        assert!(reaches(s.center, s.rot, s.half, 1.0));
+        assert!(!reaches(s.center, s.rot, s.half, 0.9));
     }
 
     #[test]
