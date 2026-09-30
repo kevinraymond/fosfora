@@ -190,8 +190,7 @@ with the output as a live preview beside them instead of behind two narrow side 
   when nothing enabled sits under it, instead of silently rendering nothing.
 - **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
   one's running total in a slot after your parameters, so a shader never has to multiply a
-  parameter by `u.time`; a period in seconds can be declared too. `scripts/audit_pfx_rates.py`
-  finds shaders that still multiply by `u.time`.
+  parameter by `u.time`; a period in seconds can be declared too.
 
 ### Changed
 - **Profiling builds time each pass of a multi-pass effect,** plus particle simulation,
@@ -399,14 +398,11 @@ with the output as a live preview beside them instead of behind two narrow side 
   and key-driven palettes settle in about 3 s.
 - **Beat and tempo tracking rebuilt.** Beats fired on every loud onset whenever tempo
   confidence dipped — 1.5-1.7× too many, spraying beat-bound strobes — and drifted
-  100+ ms late on misses; they now fire on a phase-locked grid (within ~10 ms on
-  synthetic kicks) and go quiet through breakdowns instead of spraying. The detected
-  tempo also commits to its level: double-kick and half-time-feel material no longer
-  flips the readout between 172/115/86-style relatives mid-track, and the BPM value
-  holds through breakdowns instead of blanking. EDM tempo accuracy rose 0.60 → 0.70
-  (past offline madmom), tempi between analysis bins like 175 BPM became representable
-  at all, and hard-stuck octave errors clear. Tracks now stay silent for the first few
-  seconds until the tempo locks; `/onset` and the kick stem keep firing throughout.
+  100+ ms late; they now fire on a phase-locked grid (within ~10 ms on synthetic kicks)
+  and go quiet through breakdowns. Tempo no longer flips between 172/115/86-style
+  relatives mid-track and holds through breakdowns; EDM tempo accuracy rose 0.60 → 0.70.
+  Tracks stay silent for the first few seconds until the tempo locks; `/onset` and the
+  kick stem keep firing throughout.
 - **Phosphor is now Fosfora, everywhere.** Your config directory moves over automatically
   on first launch (settings, presets, scenes and mappings all come along), OSC output now
   uses `/fosfora/...` — incoming `/phosphor/...` is still accepted, and a legacy TX
