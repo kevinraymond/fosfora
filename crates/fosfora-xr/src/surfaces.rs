@@ -18,9 +18,9 @@
 //! of by its kind: a lane of its own in the aux block, one row per box
 //! after the pour row ([`lane_row`]). A zero row is unset and the box runs
 //! its kind's default ([`SurfaceBehavior::default_for`]): what every box
-//! ran before the lanes, but for the floor, whose default is the ripple
-//! since step 2d, so an unset floor spawns nothing. An upload without the
-//! lanes (the core's tests, which use tables) changes nothing.
+//! ran before the lanes, but for the floor, whose default is the rings
+//! (the ripple) since step 2d, so an unset floor spawns nothing. An upload
+//! without the lanes (the core's tests, which use tables) changes nothing.
 
 use glam::{Quat, Vec3};
 
@@ -61,9 +61,11 @@ pub fn kind_from_name(name: &str) -> Option<u32> {
         .map(|(k, _)| *k)
 }
 
-/// What a surface does (board #3326): the value of its lane. The first
-/// pass ships the five behaviors that exist as code; ids 5 to 7 (drips,
-/// dust, pool: [`RESERVED_BEHAVIORS`]) are kept for the second.
+/// What a surface does (board #3326): the value of its lane. Ids 0 to 3
+/// are particle rules and the wall spectrum; 4 and 5 are the surface
+/// shaders of the surfaces pass (`surface_fx.rs`, board #3472): the rings
+/// (the floor ripple, renamed, any face) and the streamlines. Ids 6 and 7
+/// (curls, pulse: [`RESERVED_BEHAVIORS`]) are kept for step D2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceBehavior {
     /// Nothing: the surface is an obstacle only.
@@ -77,26 +79,36 @@ pub enum SurfaceBehavior {
     Sparks,
     /// The wall spectrum (`canvas.rs`; a wall's default).
     Spectrum,
-    /// The floor ripple (`ripple.rs`; a floor's default): only a floor
-    /// running it carries the ripple.
-    Ripple,
+    /// Rings of light spreading on the beat (`ripple.rs`, drawn by the
+    /// surfaces pass; a floor's default): the floor ripple until D1, now
+    /// on any face. The room file and the knob still read `ripple`.
+    Rings,
+    /// Lines of light flowing across the face along a curl-noise field
+    /// (`surface_fx.rs`, the mockup's tabletop).
+    Streamlines,
 }
 
-/// Behavior names the catalogue reserves for the second pass: the knob
-/// and the room file reject them instead of reading them as unknown.
-pub const RESERVED_BEHAVIORS: [&str; 3] = ["drips", "dust", "pool"];
+/// Behavior names the catalogue reserves for step D2: the knob and the
+/// room file reject them instead of reading them as unknown.
+pub const RESERVED_BEHAVIORS: [&str; 2] = ["curls", "pulse"];
+
+/// The old name of [`SurfaceBehavior::Rings`], still read (rooms saved
+/// before D1, the knob's habit); a save writes `rings`.
+pub const RINGS_ALIAS: &str = "ripple";
 
 impl SurfaceBehavior {
     /// Every behavior, in id order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::None,
         Self::Embers,
         Self::Sparks,
         Self::Spectrum,
-        Self::Ripple,
+        Self::Rings,
+        Self::Streamlines,
     ];
 
-    /// The catalogue id (`XR_BEHAVIOR_*` in `flux_xr_sim.wgsl`).
+    /// The catalogue id (`XR_BEHAVIOR_*` in `flux_xr_sim.wgsl`, `BEHAVIOR_*`
+    /// in `surface_fx::SURFACE_FX_WGSL`).
     pub fn id(self) -> u32 {
         self as u32
     }
@@ -114,21 +126,26 @@ impl SurfaceBehavior {
             Self::Embers => "embers",
             Self::Sparks => "sparks",
             Self::Spectrum => "spectrum",
-            Self::Ripple => "ripple",
+            Self::Rings => "rings",
+            Self::Streamlines => "streamlines",
         }
     }
 
-    /// The behavior called `name` (any case).
+    /// The behavior called `name` (any case), [`RINGS_ALIAS`] included.
     pub fn from_name(name: &str) -> Option<Self> {
         let name = name.trim();
+        if name.eq_ignore_ascii_case(RINGS_ALIAS) {
+            return Some(Self::Rings);
+        }
         Self::ALL
             .into_iter()
             .find(|b| b.name().eq_ignore_ascii_case(name))
     }
 
     /// The next behavior in the whole catalogue, wrapping: none, embers,
-    /// sparks, spectrum, ripple, none. The room editor steps through a
-    /// kind's own ([`Self::next_for`]); this one is for the knob's side.
+    /// sparks, spectrum, rings, streamlines, none. The room editor steps
+    /// through a kind's own ([`Self::next_for`]); this one is for the
+    /// knob's side.
     #[must_use]
     pub fn next(self) -> Self {
         Self::ALL[(self.id() as usize + 1) % Self::ALL.len()]
@@ -136,19 +153,19 @@ impl SurfaceBehavior {
 
     /// The behaviors that render on a surface of `kind`, in the room
     /// editor's cycle order, `none` first: a table, another kind or an
-    /// unlabeled anchor sheds embers or sparks off its top face; a floor
-    /// sparks or carries the ripple; a wall carries the spectrum; a
-    /// ceiling or a frame runs nothing that shows yet. Stepping through
-    /// the whole catalogue instead left most steps looking alike on a
-    /// given surface (a wall on embers, sparks, ripple or none emits
-    /// nothing; Kevin, worn, Sep 29). The knob still takes any behavior on
-    /// any kind.
+    /// unlabeled anchor sheds embers or sparks off its top face or carries
+    /// streamlines; a floor sparks, or carries rings or streamlines; a
+    /// wall carries the spectrum, streamlines or rings; a ceiling or a
+    /// frame rings or streamlines. Stepping through the whole catalogue
+    /// instead left most steps looking alike on a given surface (a wall on
+    /// embers, sparks or none emits nothing; Kevin, worn, Sep 29). The knob
+    /// still takes any behavior on any kind.
     pub fn catalogue(kind: u32) -> &'static [Self] {
         match kind {
-            KIND_FLOOR => &[Self::None, Self::Sparks, Self::Ripple],
-            KIND_WALL => &[Self::None, Self::Spectrum],
-            KIND_CEILING | KIND_FRAME => &[Self::None],
-            _ => &[Self::None, Self::Embers, Self::Sparks],
+            KIND_FLOOR => &[Self::None, Self::Sparks, Self::Rings, Self::Streamlines],
+            KIND_WALL => &[Self::None, Self::Spectrum, Self::Streamlines, Self::Rings],
+            KIND_CEILING | KIND_FRAME => &[Self::None, Self::Rings, Self::Streamlines],
+            _ => &[Self::None, Self::Embers, Self::Sparks, Self::Streamlines],
         }
     }
 
@@ -169,23 +186,55 @@ impl SurfaceBehavior {
         matches!(self, Self::Embers | Self::Sparks)
     }
 
+    /// Whether the surfaces pass draws a surface running it
+    /// (`surface_fx.rs`): the rings and the streamlines. Embers and sparks
+    /// are the cloud's, the spectrum is still the canvas's own draw.
+    pub fn draws_on_face(self) -> bool {
+        matches!(self, Self::Rings | Self::Streamlines)
+    }
+
     /// What a surface of `kind` runs with no assignment: tables shed
     /// embers and walls carry the spectrum, as the fixed rule per kind gave
-    /// them before the lanes; floors carry the ripple (step 2d, decision
-    /// #3459). The floor's default was sparks, with the ripple falling back
-    /// to the largest floor when none was on it, so "floor ripple kept
-    /// rippling when I switch to embers or none" (Kevin, worn, Sep 29): now
-    /// a floor sparks only when assigned and `none` leaves nothing on it.
-    /// The default is the last of the floor's [`Self::catalogue`], so a tap
-    /// from it goes to none, then sparks, then back to the ripple.
+    /// them before the lanes; floors carry the rings (step 2d, decision
+    /// #3459, as the ripple). The floor's default was sparks, with the
+    /// ripple falling back to the largest floor when none was on it, so
+    /// "floor ripple kept rippling when I switch to embers or none" (Kevin,
+    /// worn, Sep 29): now a floor sparks only when assigned and `none`
+    /// leaves nothing on it. A tap from the rings goes to the streamlines,
+    /// then none, then sparks, then back to the rings.
     pub fn default_for(kind: u32) -> Self {
         match kind {
             KIND_TABLE => Self::Embers,
-            KIND_FLOOR => Self::Ripple,
+            KIND_FLOOR => Self::Rings,
             KIND_WALL => Self::Spectrum,
             _ => Self::None,
         }
     }
+}
+
+/// The surfaces pass's color per kind (linear RGB, board #3472), the
+/// mockup's family: tables a clear blue, floors violet, walls the canvas's
+/// warm white, storage and other volumes green, frames and ceilings amber.
+/// In [`KIND_NAMES`]' order. The color is the surface's and the shape is
+/// the behavior's: two surfaces on the same behavior differ by color, two
+/// behaviors on one surface by shape, never by hue alone.
+pub const PALETTE: [(u32, [f32; 3]); 6] = [
+    (KIND_TABLE, [0.22, 0.52, 1.0]),
+    (KIND_FLOOR, [0.58, 0.32, 1.0]),
+    (KIND_WALL, [1.0, 0.86, 0.68]),
+    (KIND_CEILING, [1.0, 0.62, 0.18]),
+    (KIND_FRAME, [1.0, 0.62, 0.18]),
+    (KIND_OTHER, [0.3, 1.0, 0.5]),
+];
+
+/// The color of a surface of `kind` in the surfaces pass ([`PALETTE`]); an
+/// unlabeled anchor or an unknown kind takes other's green.
+pub fn palette(kind: u32) -> [f32; 3] {
+    PALETTE
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .or_else(|| PALETTE.iter().find(|(k, _)| *k == KIND_OTHER))
+        .map_or([1.0; 3], |(_, c)| *c)
 }
 
 /// Rows of the surface behavior lanes, one per obstacle box
@@ -311,7 +360,7 @@ fn base_name(b: &crate::lanes::LaneBox<'_>) -> String {
 
 /// The synthetic stage floor's emitter flag: 1 when the room returned no
 /// FLOOR box, else 0, so the floor never emits twice. The flag only lets
-/// the stage floor emit; its behavior decides whether it does: the ripple
+/// the stage floor emit; its behavior decides whether it does: the rings
 /// by default (no weight), sparks when assigned.
 pub fn synthetic_floor_emit(room_kinds: impl IntoIterator<Item = u32>) -> f32 {
     if room_kinds.into_iter().any(|k| k == KIND_FLOOR) {
@@ -365,10 +414,10 @@ pub fn reaches(center: Vec3, rot: Quat, half: Vec3, cube_half: f32) -> bool {
 
 /// One face of a box: its outward normal, the center of the face and its
 /// two in-plane axes (unit) with their half extents. [`Face::of`] is the
-/// upward face (the emitters', the ripple's), [`Face::facing`] a plane's
-/// face toward a point (the wall spectrum's), [`Face::across`] the face a
-/// ray entered, [`acting_face`] the one of those a behavior acts on (the
-/// room editor's highlight).
+/// upward face (the emitters'), [`Face::facing`] a plane's face toward a
+/// point (the wall spectrum's), [`Face::across`] the face a ray entered,
+/// [`acting_face`] the one of those a behavior acts on (the room editor's
+/// highlight, the surfaces pass).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Face {
     pub normal: Vec3,
@@ -606,7 +655,7 @@ mod tests {
         }
     }
 
-    /// The stage floor, assigned sparks (its default, the ripple, weighs
+    /// The stage floor, assigned sparks (its default, the rings, weighs
     /// nothing).
     fn synthetic_floor(anchor: Vec3, emit: f32) -> SurfaceBox {
         SurfaceBox {
@@ -1032,31 +1081,75 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_names_and_numbers_the_five_behaviors() {
-        for (id, b) in SurfaceBehavior::ALL.into_iter().enumerate() {
+    fn the_catalogue_names_and_numbers_the_six_behaviors() {
+        use SurfaceBehavior as B;
+        for (id, b) in B::ALL.into_iter().enumerate() {
             assert_eq!(b.id() as usize, id);
-            assert_eq!(SurfaceBehavior::from_id(b.id()), Some(b));
-            assert_eq!(SurfaceBehavior::from_name(b.name()), Some(b));
+            assert_eq!(B::from_id(b.id()), Some(b));
+            assert_eq!(B::from_name(b.name()), Some(b));
         }
+        let names: Vec<_> = B::ALL.into_iter().map(B::name).collect();
         assert_eq!(
-            SurfaceBehavior::from_name(" Embers "),
-            Some(SurfaceBehavior::Embers)
+            names,
+            [
+                "none",
+                "embers",
+                "sparks",
+                "spectrum",
+                "rings",
+                "streamlines"
+            ]
         );
-        // 5 to 7 are reserved for the second pass.
-        for id in 5..8 {
-            assert_eq!(SurfaceBehavior::from_id(id), None);
+        assert_eq!((B::Rings.id(), B::Streamlines.id()), (4, 5));
+        assert_eq!(B::from_name(" Embers "), Some(B::Embers));
+        // The ripple's old name reads as the rings; the name is the new one.
+        assert_eq!(B::from_name("ripple"), Some(B::Rings));
+        assert_eq!(B::from_name(" RIPPLE "), Some(B::Rings));
+        assert_eq!(B::Rings.name(), "rings");
+        // 6 and 7 are reserved for D2.
+        for id in 6..8 {
+            assert_eq!(B::from_id(id), None);
         }
         for name in RESERVED_BEHAVIORS {
-            assert_eq!(SurfaceBehavior::from_name(name), None);
+            assert_eq!(B::from_name(name), None);
         }
-        let emitting: Vec<_> = SurfaceBehavior::ALL
-            .into_iter()
-            .filter(|b| b.emits())
-            .collect();
-        assert_eq!(
-            emitting,
-            vec![SurfaceBehavior::Embers, SurfaceBehavior::Sparks]
-        );
+        assert_eq!(RESERVED_BEHAVIORS, ["curls", "pulse"]);
+        let emitting: Vec<_> = B::ALL.into_iter().filter(|b| b.emits()).collect();
+        assert_eq!(emitting, vec![B::Embers, B::Sparks]);
+        let drawn: Vec<_> = B::ALL.into_iter().filter(|b| b.draws_on_face()).collect();
+        assert_eq!(drawn, vec![B::Rings, B::Streamlines]);
+    }
+
+    #[test]
+    fn the_palette_has_a_color_per_kind() {
+        assert_eq!(PALETTE.len(), 6);
+        // One entry per named kind, in their order.
+        let kinds: Vec<u32> = PALETTE.iter().map(|(k, _)| *k).collect();
+        let named: Vec<u32> = KIND_NAMES.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, named);
+        for (kind, c) in PALETTE {
+            assert_close!(palette(kind), c);
+            assert!(c.iter().all(|v| (0.0..=1.0).contains(v)), "{c:?}");
+            assert!(
+                c.iter().copied().fold(0.0, f32::max) > 0.99,
+                "bright: {c:?}"
+            );
+        }
+        // Tables blue, floors violet, walls the canvas's warm white, other
+        // green, frames and ceilings amber.
+        let [r, g, b] = palette(KIND_TABLE);
+        assert!(b > g && g > r, "blue");
+        let [r, g, b] = palette(KIND_FLOOR);
+        assert!(b > r && r > g, "violet");
+        assert_close!(palette(KIND_WALL), crate::canvas::COLOR);
+        let [r, g, b] = palette(KIND_OTHER);
+        assert!(g > r && g > b, "green");
+        assert_close!(palette(KIND_CEILING), palette(KIND_FRAME));
+        let [r, g, b] = palette(KIND_FRAME);
+        assert!(r > g && g > b, "amber");
+        // Unlabeled or unknown: other's.
+        assert_close!(palette(KIND_NONE), palette(KIND_OTHER));
+        assert_close!(palette(99), palette(KIND_OTHER));
     }
 
     #[test]
@@ -1064,13 +1157,13 @@ mod tests {
         use SurfaceBehavior as B;
         // Every step of each kind's order, from none round to none.
         let orders: [(u32, &[B]); 7] = [
-            (KIND_TABLE, &[B::None, B::Embers, B::Sparks]),
-            (KIND_OTHER, &[B::None, B::Embers, B::Sparks]),
-            (KIND_NONE, &[B::None, B::Embers, B::Sparks]),
-            (KIND_FLOOR, &[B::None, B::Sparks, B::Ripple]),
-            (KIND_WALL, &[B::None, B::Spectrum]),
-            (KIND_CEILING, &[B::None]),
-            (KIND_FRAME, &[B::None]),
+            (KIND_TABLE, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
+            (KIND_OTHER, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
+            (KIND_NONE, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
+            (KIND_FLOOR, &[B::None, B::Sparks, B::Rings, B::Streamlines]),
+            (KIND_WALL, &[B::None, B::Spectrum, B::Streamlines, B::Rings]),
+            (KIND_CEILING, &[B::None, B::Rings, B::Streamlines]),
+            (KIND_FRAME, &[B::None, B::Rings, B::Streamlines]),
         ];
         for (kind, order) in orders {
             assert_eq!(B::catalogue(kind), order, "kind {kind}");
@@ -1085,15 +1178,18 @@ mod tests {
             assert_eq!(seen, expected, "kind {kind}");
         }
         // The defaults are on their kind's catalogue: an unassigned table
-        // goes to sparks, a wall to none, a floor (the ripple, the last of
-        // its catalogue) to none, then sparks, then back to the ripple.
+        // goes to sparks, a wall to the streamlines, a floor (the rings)
+        // to the streamlines, then none, sparks and back to the rings.
         assert_eq!(B::Embers.next_for(KIND_TABLE), B::Sparks);
-        assert_eq!(B::Spectrum.next_for(KIND_WALL), B::None);
+        assert_eq!(B::Spectrum.next_for(KIND_WALL), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..3 {
+        for _ in 0..4 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
-        assert_eq!(floor, [B::Ripple, B::None, B::Sparks, B::Ripple]);
+        assert_eq!(
+            floor,
+            [B::Rings, B::Streamlines, B::None, B::Sparks, B::Rings]
+        );
         for (kind, _) in KIND_NAMES {
             assert!(B::catalogue(kind).contains(&B::default_for(kind)));
         }
@@ -1102,24 +1198,24 @@ mod tests {
     #[test]
     fn off_the_catalogue_a_cycle_starts_after_none() {
         use SurfaceBehavior as B;
-        // The knob put the spectrum on a table, embers on a wall, the
-        // ripple on a couch, sparks on a ceiling.
+        // The knob put the spectrum on a table, the rings on a couch,
+        // embers on a wall or a floor, sparks on a ceiling.
         assert_eq!(B::Spectrum.next_for(KIND_TABLE), B::Embers);
-        assert_eq!(B::Ripple.next_for(KIND_OTHER), B::Embers);
+        assert_eq!(B::Rings.next_for(KIND_OTHER), B::Embers);
         assert_eq!(B::Embers.next_for(KIND_WALL), B::Spectrum);
         assert_eq!(B::Embers.next_for(KIND_FLOOR), B::Sparks);
-        assert_eq!(B::Sparks.next_for(KIND_CEILING), B::None);
-        // A ceiling or a frame on none stays none.
-        assert_eq!(B::None.next_for(KIND_CEILING), B::None);
-        assert_eq!(B::None.next_for(KIND_FRAME), B::None);
+        assert_eq!(B::Sparks.next_for(KIND_CEILING), B::Rings);
+        // A ceiling or a frame on none goes to the rings.
+        assert_eq!(B::None.next_for(KIND_CEILING), B::Rings);
+        assert_eq!(B::None.next_for(KIND_FRAME), B::Rings);
     }
 
     #[test]
     fn the_kind_defaults_are_the_fixed_rule_but_the_floor_ripples() {
         use SurfaceBehavior as B;
         assert_eq!(B::default_for(KIND_TABLE), B::Embers);
-        // Step 2d (decision #3459): the ripple, not sparks.
-        assert_eq!(B::default_for(KIND_FLOOR), B::Ripple);
+        // Step 2d (decision #3459): the rings (the ripple), not sparks.
+        assert_eq!(B::default_for(KIND_FLOOR), B::Rings);
         assert_eq!(B::default_for(KIND_WALL), B::Spectrum);
         for kind in [KIND_NONE, KIND_CEILING, KIND_FRAME, KIND_OTHER, 99] {
             assert_eq!(B::default_for(kind), B::None, "kind {kind}");
@@ -1154,7 +1250,8 @@ mod tests {
         );
         // The strength is clamped; a reserved id runs nothing.
         assert_close!(lane_row(B::Embers, 3.0, [0.0; 2])[1], 1.0);
-        assert_eq!(lane_behavior([6.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(lane_behavior([7.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(lane_behavior([8.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
     }
 
     #[test]
@@ -1177,8 +1274,9 @@ mod tests {
             1.5,
         );
         assert_close!(w, [0.0, 1.0, 0.5]);
-        // The floor on ripple (or none): its sparks are off.
-        for b in [B::Ripple, B::None, B::Spectrum] {
+        // The floor on the rings, the streamlines or none: its sparks are
+        // off.
+        for b in [B::Rings, B::Streamlines, B::None, B::Spectrum] {
             let w = weights_of(
                 &[
                     desk,
@@ -1212,7 +1310,7 @@ mod tests {
 
     #[test]
     fn an_unset_floor_weighs_nothing_and_one_on_sparks_its_weight() {
-        // Step 2d: a floor with no assignment runs the ripple, which spawns
+        // Step 2d: a floor with no assignment runs the rings, which spawn
         // nothing; assigned sparks it weighs `weights.floor`, the stage
         // floor as a scene floor.
         let desk = table(Vec3::new(0.0, -0.5, -0.5), [0.8, 0.4]);
@@ -1228,7 +1326,7 @@ mod tests {
                 behavior: lane_behavior([0.0; 4], KIND_FLOOR),
                 ..floor
             };
-            assert_eq!(unset.behavior, SurfaceBehavior::Ripple);
+            assert_eq!(unset.behavior, SurfaceBehavior::Rings);
             assert_close!(weights_of(&[desk, unset], 1.5), [1.0, 0.0]);
             let sparks = SurfaceBox {
                 behavior: lane_behavior(

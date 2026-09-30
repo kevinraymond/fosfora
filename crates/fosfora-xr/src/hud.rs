@@ -3,10 +3,11 @@
 //! it and turns the right hand's ray or fingertip into a pointer).
 //!
 //! Turning the left palm toward the face always shows the hand menu (a palm
-//! turned more to the ceiling is a hold instead, `palm_panel.rs`): three
+//! turned more to the ceiling is a hold instead, `palm_panel.rs`): four
 //! rows, the particle pitcher's on/off toggle and the debug panel's, under
 //! them the room editor's toggle beside its status ("desk: embers",
-//! board #3326), and under that the cloud's toggle (`room_edit::Cloud`).
+//! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
+//! at the bottom the music's play/stop (`music.rs`, board #3472).
 //! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
@@ -105,6 +106,10 @@ pub struct Controls {
     /// on, or with `edit_room` on only the pointed surface spawns
     /// (`room_edit::Cloud`).
     pub cloud: bool,
+    /// The bundled clip plays, the analysis on its tap (the hand menu's
+    /// Music row; not saved, off at launch unless the launch source or
+    /// `debug.fosfora.music` plays it; `music.rs`).
+    pub music: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -124,6 +129,8 @@ pub enum Action {
     SetEditRoom(bool),
     /// The hand menu's Cloud toggle changed (not saved).
     SetCloud(bool),
+    /// The hand menu's Music row changed: play or stop (not saved).
+    SetMusic(bool),
     /// The "All: none" button: every room surface and every kind default
     /// to none, saved (board #3326, Kevin's debug ask).
     AllNone,
@@ -157,6 +164,7 @@ enum Target {
     TogglePitcher,
     ToggleEdit,
     ToggleCloud,
+    ToggleMusic,
     AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
@@ -570,6 +578,10 @@ impl Hud {
             Some(Target::ToggleCloud) => {
                 controls.cloud = !controls.cloud;
                 actions.push(Action::SetCloud(controls.cloud));
+            }
+            Some(Target::ToggleMusic) => {
+                controls.music = !controls.music;
+                actions.push(Action::SetMusic(controls.music));
             }
             Some(Target::AllNone) => actions.push(Action::AllNone),
             Some(Target::Step(i, up)) => {
@@ -1019,6 +1031,7 @@ fn panel_ui(
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
     block.push(cloud_row(controls.cloud, controls.edit_room));
+    block.push(music_row(controls.music));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1031,12 +1044,26 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, edit_status: &str, mut rows: 
         menu_row(false, controls.pitcher),
         edit_row(controls.edit_room, edit_status),
         cloud_row(controls.cloud, controls.edit_room),
+        music_row(controls.music),
     ];
     rows.block(ui, MENU_H, &block);
 }
 
-/// The cloud's row, the bottom row in both layouts: its toggle, the right
-/// cell empty (step 2c). The state is in the words, not a color.
+/// The music's row, the bottom row in both layouts: play or stop, the
+/// right cell empty (board #3472). The state is in the words, not a color.
+fn music_row(playing: bool) -> Control<'static> {
+    Control::Pair([
+        Some(Cell::Button(
+            Target::ToggleMusic,
+            crate::music::label(playing),
+        )),
+        None,
+    ])
+}
+
+/// The cloud's row, over the music's in both layouts: its toggle, and
+/// every surface to none (step 2c). The state is in the words, not a
+/// color.
 fn cloud_row(on: bool, editing: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(

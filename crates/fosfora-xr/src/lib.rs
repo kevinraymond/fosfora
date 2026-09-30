@@ -36,6 +36,7 @@ pub mod instruments;
 pub mod label;
 pub mod lanes;
 pub mod math;
+pub mod music;
 pub mod palm_panel;
 pub mod panel_grid;
 #[cfg(target_os = "android")]
@@ -54,6 +55,7 @@ pub mod room_file;
 #[cfg(target_os = "android")]
 mod scene;
 pub mod space;
+pub mod surface_fx;
 pub mod surfaces;
 #[cfg(target_os = "android")]
 mod xr;

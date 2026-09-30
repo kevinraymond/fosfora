@@ -170,6 +170,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.tapdelay <ms>  (fixed delay of the analysis tap behind the frames
     //       handed to AAudio; default: estimated from the stream's DAC timestamps, minus the detection time,
     //       so beats land on the sound; 0 = the S6 behavior that flashed 115 ms early)
+    //   adb shell setprop debug.fosfora.music 0|1               (board #3472: the bundled clip playing at launch, as the hand menu's Music row
+    //       plays it: on the speakers, the analysis on its tap; the row's stop puts the analysis back on the launch source, synth or
+    //       the microphones, and a play resumes where it stopped; default 0, file and loop play from launch anyway; not saved)
     //   adb shell setprop debug.fosfora.quality low|medium|high|ultra|max
     //   adb shell setprop debug.fosfora.scene 1280x720
     //   adb shell setprop debug.fosfora.effect "Flux"            (mode quad; any effect)
@@ -224,25 +227,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
-    //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat, on a floor whose behavior is the ripple, a floor's default; default on in mr/world)
-    //   adb shell setprop debug.fosfora.ripplegain 1             (ripple brightness multiplier; 1 = peak alpha 0.25)
-    //   adb shell setprop debug.fosfora.ripplespeed 2.5          (ripple ring speed, m/s)
-    //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the ripple under the room's CEILING anchor instead of on
-    //       the floor, lifted toward the room, for an unworn screencap from a headset lying face up)
+    //   adb shell setprop debug.fosfora.ripple 0|1               (the rings, the floor ripple until D1: rings on each beat on every surface whose
+    //       behavior is the rings, a floor's default, from under the head on a floor, from the face's point nearest the head elsewhere;
+    //       off, no surface shows rings; default on in mr/world)
+    //   adb shell setprop debug.fosfora.ripplegain 1             (rings brightness multiplier; 1 = peak alpha 0.25)
+    //   adb shell setprop debug.fosfora.ripplespeed 2.5          (rings speed, m/s)
+    //   adb shell setprop debug.fosfora.rippletest ceiling       (diagnostic: the rings on every CEILING anchor for the run, the room file untouched,
+    //       for an unworn screencap from a headset lying face up)
     //   adb shell setprop debug.fosfora.canvas 0|1               (the wall spectrum: mel bars on the wall the wearer faces; default on in mr/world)
     //   adb shell setprop debug.fosfora.canvasgain 1             (wall spectrum brightness multiplier; 1 = peak alpha 0.25)
     //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
-    //   adb shell setprop debug.fosfora.surface "wall=none,#3=ripple,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
+    //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
+    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, strength 0..1 (default 1); "clear" drops
+    //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
-    //       none, embers, sparks; floor: none, sparks, ripple; wall: none, spectrum; ceiling, frame: none), a pinch-hold cycles every surface
+    //       none, embers, sparks, streamlines; floor: none, sparks, rings, streamlines; wall: none, spectrum, streamlines, rings; ceiling,
+    //       frame: none, rings, streamlines), a pinch-hold cycles every surface
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
@@ -502,13 +509,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         session.request_refresh_rate(hz);
     }
 
+    // The launch source's analysis (the microphones; none = the synthetic
+    // groove), kept open across the Music row's plays so a stop is instant.
     let mut live_audio = None;
-    let mut playback = None;
     let playback_options = PlaybackOptions {
         low_latency: debug_prop("debug.fosfora.playperf").as_deref() != Some("none"),
         tap_delay_ms: debug_prop("debug.fosfora.tapdelay").and_then(|v| v.parse::<f32>().ok()),
         buffer_ms: debug_prop("debug.fosfora.playbuf").and_then(|v| v.parse::<f32>().ok()),
+        start_frame: 0,
     };
+    // Board #3472: the clip on the speakers, the `file` and `loop` sources'
+    // from launch, the hand menu's Music row's at runtime.
+    let bundled_clip = dirs.assets.join("audio").join(crate::music::CLIP);
+    let mut music = Music::new(bundled_clip.clone(), &audio_source, playback_options);
     match audio_source.as_str() {
         "mic" => live_audio = Some(LiveAudio::mic()),
         "micxr" => {
@@ -536,19 +549,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             live_audio =
                 Some(LiveAudio::mic_aaudio(preset, rate, low_latency).context("AAudio mic")?);
             if audio_source == "loop" {
-                let clip = Clip::decode(&dirs.assets.join("audio").join("ember_glow_excerpt.ogg"))?;
+                let clip = Clip::decode(&bundled_clip)?;
                 let unused_tap =
                     std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-                playback = Some(
-                    Playback::start(clip, unused_tap, playback_options)
-                        .context("starting playback")?,
-                );
+                let p = Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
+                    .context("starting playback")?;
+                music.adopt(p, None, crate::music::CLIP.to_owned());
             }
         }
         "file" => {
             let path = debug_prop("debug.fosfora.file")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| dirs.assets.join("audio").join("ember_glow_excerpt.ogg"));
+                .map_or_else(|| bundled_clip.clone(), std::path::PathBuf::from);
+            let name = path
+                .file_name()
+                .map_or_else(|| path.display().to_string(), |n| n.display().to_string());
             let clip = if let Some(bpm) = path
                 .to_str()
                 .and_then(|p| p.strip_prefix("click"))
@@ -561,16 +575,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 Clip::decode(&path)?
             };
             let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-            let p = Playback::start(clip, tap.clone(), playback_options)
+            let p = Playback::start(std::sync::Arc::new(clip), tap.clone(), playback_options)
                 .context("starting playback")?;
-            live_audio = Some(LiveAudio::from_ring(
-                tap,
-                p.output_rate(),
-                p.callback_count(),
-            ));
-            playback = Some(p);
+            let analysis = LiveAudio::from_ring(tap, p.output_rate(), p.callback_count());
+            music.adopt(p, Some(analysis), name);
         }
         _ => {}
+    }
+    // `debug.fosfora.music 1`: the Music row's play at launch, over any
+    // source (the clip decodes in the background; the frame loop starts
+    // it).
+    if crate::music::plays_at_launch(&audio_source, toggle("debug.fosfora.music", false))
+        && !music.wanted()
+    {
+        music.set(true);
     }
     // The world effects a pinch-hold cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
@@ -781,6 +799,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         space_half: space.shown(),
         edit_room: false,
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
+        music: music.wanted(),
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -803,7 +822,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut pose_text = [String::from("open"), String::from("open")];
     let mut pose_label = String::from("-");
     let (mut last_rms, mut last_bass) = (0.0f32, 0.0f32);
-    // Board #3317: the floor ripple, on the scene floor or the stage floor.
+    // Board #3317: the floor ripple's state, the rings of the surfaces pass
+    // since D1 (board #3472), on every face whose behavior is the rings.
     let ripple_ceiling = debug_prop("debug.fosfora.rippletest").as_deref() == Some("ceiling");
     let mut ripple = toggle("debug.fosfora.ripple", mixed).then(|| {
         crate::ripple::Ripple::new(
@@ -812,11 +832,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         )
     });
     info!(
-        "floor ripple {} · surface weights table {} floor {}",
+        "rings {}{} · surface weights table {} floor {}",
         ripple.as_ref().map_or("off".to_owned(), |r| format!(
             "on (speed {} m/s, gain {})",
             r.speed, r.gain
         )),
+        if ripple_ceiling {
+            " · test: on the ceiling"
+        } else {
+            ""
+        },
         surface_weights.table,
         surface_weights.floor
     );
@@ -946,10 +971,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         uuid: crate::room_file::STAGE_FLOOR_UUID,
     });
     // Board #3326: each box's behavior (the room file and the `surface`
-    // knob), and the floor the ripple is on with why, for the log (`None`
-    // before the first frame, so the first pick is logged too).
+    // knob).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
-    let mut ripple_floor: Option<Option<(usize, &str)>> = None;
+    // Board #3472: the surfaces pass's clock and its lit faces by shader
+    // (rings, streamlines), for the log (`None` before the first frame, so
+    // the first count is logged too).
+    let mut surface_clock = crate::surface_fx::Clock::default();
+    let mut surfaces_lit: Option<[usize; 2]> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1219,7 +1247,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         rms: last_rms,
                         bass: last_bass,
                         beat: beat_env,
-                        audio: &audio_source,
+                        audio: crate::music::header(music.playing(), &audio_source),
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
                         edit_status: &edit_status,
@@ -1251,6 +1279,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // Logged with the cloud's change, below.
                             Action::SetCloud(_) => {}
                             Action::AllNone => all_none = true,
+                            Action::SetMusic(on) => music.set(on),
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
                                 if on { "on" } else { "off" },
@@ -1871,9 +1900,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     input.hands.mesh_ready,
                 );
             }
-            // This frame's audio: the headset microphones or the
-            // synthetic 120 BPM groove.
-            let hop = match live_audio.as_mut() {
+            // The Music row: a decode that finished starts the clip; a
+            // failed decode or start turns the row back to "Music: play".
+            music.poll();
+            controls.music = music.wanted();
+            // This frame's audio: the music's tap, the headset microphones
+            // or the synthetic 120 BPM groove.
+            let hop = match music.analysis.as_mut().or(live_audio.as_mut()) {
                 Some(a) => a.frame(dt, f64::from(t)),
                 None => synth_hop_for(frame_index, t),
             };
@@ -1884,7 +1917,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 if flash {
                     flash_frames = 2;
                 }
-                if let Some(p) = &playback {
+                if let Some(p) = &music.playback {
                     // Beat timing evidence (S6): where in the clip the
                     // beat fired, against the track's known 140 BPM grid.
                     info!(
@@ -1896,6 +1929,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
+            surface_clock.advance(dt, beat_env);
             if let Some(r) = ripple.as_mut() {
                 r.update(
                     t,
@@ -1905,81 +1939,83 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass.max(f.sub_bass),
                     f.bass,
                 );
-                // Only a floor whose behavior is the ripple carries it
-                // (step 2d, decision #3459): the largest scene floor on
-                // the ripple, else the stage floor on it while the room
-                // has no scene floor (then it stands in for one, as its
-                // emitter flag and the editor's ray take it; beside a
-                // scene floor it is out of the editor's reach, and its
-                // default would put the ripple back under a scene floor
-                // the wearer turned to none); with none, no ripple. The
-                // fallback to the largest scene floor is gone: "floor
-                // ripple kept rippling when I switch to embers or none"
-                // (Kevin, worn, Sep 29).
-                let ripple_of = |k: usize| {
-                    surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Ripple
-                };
-                let largest = input
-                    .room_boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(k, b)| b.kind == crate::surfaces::KIND_FLOOR && ripple_of(k))
-                    .map(|(k, b)| {
-                        (
-                            k,
-                            crate::surfaces::TopFace::of(
-                                glam::Vec3::from(b.center),
-                                glam::Quat::from_array(b.rot),
-                                glam::Vec3::from(b.half),
-                            ),
-                        )
-                    })
-                    .max_by(|a, b| a.1.area().total_cmp(&b.1.area()));
+            }
+            // Board #3472, D1: the surfaces pass. Every box whose behavior
+            // is a surface shader (the rings, the streamlines) is lit on
+            // the face the behavior acts on, the stage floor too while the
+            // room has no scene floor (then it stands in for one, as its
+            // emitter flag and the editor's ray take it; beside a scene
+            // floor it would double it, step 2d); a hidden wall never. A
+            // floor's face is leveled and kept above the stage floor, as
+            // the ripple's quad was. The rings need the ripple state
+            // (`debug.fosfora.ripple`); `rippletest ceiling` puts them on
+            // every ceiling for the run, the room file untouched.
+            {
+                use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
+                let head = glam::Vec3::from(input.head);
                 let stage_k = input.room_boxes.len();
-                let stage_ripples = floor_box.is_some()
-                    && !input
-                        .room_boxes
-                        .iter()
-                        .any(|b| b.kind == crate::surfaces::KIND_FLOOR)
-                    && ripple_of(stage_k);
-                let (scene_floor, pick) = match largest {
-                    Some((k, f)) => (Some(f), Some((k, "a scene floor on the ripple"))),
-                    None if stage_ripples => {
-                        (None, Some((stage_k, "the stage floor on the ripple")))
-                    }
-                    None => (None, None),
-                };
-                if !ripple_ceiling && Some(pick) != ripple_floor {
-                    match pick {
-                        Some((k, why)) => info!("floor ripple: on box {k} ({why})"),
-                        None => info!("floor ripple: no floor on ripple"),
-                    }
-                    ripple_floor = Some(pick);
-                }
+                let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
-                let quad = if ripple_ceiling {
-                    input
-                        .room_boxes
-                        .iter()
-                        .find(|b| b.kind == crate::surfaces::KIND_CEILING)
-                        .map(|b| {
-                            let center = glam::Vec3::from(b.center);
-                            crate::ripple::Ripple::quad_under(
-                                crate::surfaces::TopFace::of(
-                                    center,
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                ),
-                                center,
-                            )
-                        })
-                } else if pick.is_some() {
-                    r.quad(scene_floor, stage_top)
-                } else {
-                    None
+                let audio = crate::surface_fx::Audio {
+                    rms: f.rms,
+                    bass: f.bass,
+                    beat: beat_env,
+                    clock: surface_clock.seconds(),
                 };
-                let rows = quad.map(|corners| r.uniform(t, corners));
-                gfx.set_ripple(rows.as_ref());
+                let mut counts = [0usize; 2];
+                let mut faces = Vec::new();
+                for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
+                    let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
+                        (SurfaceBehavior::Rings, 1.0)
+                    } else {
+                        (
+                            surface_lanes.behavior(k),
+                            surface_lanes.rows().get(k).map_or(1.0, |r| r[1]),
+                        )
+                    };
+                    if !behavior.draws_on_face()
+                        || b.hidden
+                        || (k == stage_k && scene_floor)
+                        || (behavior == SurfaceBehavior::Rings && ripple.is_none())
+                    {
+                        continue;
+                    }
+                    let mut face = crate::surfaces::acting_face(
+                        glam::Vec3::from(b.center),
+                        glam::Quat::from_array(b.rot),
+                        glam::Vec3::from(b.half),
+                        head,
+                    );
+                    if b.kind == KIND_FLOOR {
+                        face = crate::surface_fx::level_floor(face, stage_top);
+                    }
+                    let slot = crate::surface_fx::Slot {
+                        face,
+                        kind: b.kind,
+                        behavior,
+                        strength,
+                    };
+                    counts[usize::from(behavior == SurfaceBehavior::Streamlines)] += 1;
+                    faces.push(crate::surface_fx::rows(&slot, audio, ripple.as_ref(), t));
+                }
+                if Some(counts) != surfaces_lit {
+                    let dropped = faces
+                        .len()
+                        .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                    info!(
+                        "surfaces: {} lit (rings {}, streamlines {}){}",
+                        faces.len(),
+                        counts[0],
+                        counts[1],
+                        if dropped > 0 {
+                            format!(", {dropped} past the pass's slots not drawn")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    surfaces_lit = Some(counts);
+                }
+                gfx.set_surfaces(&faces);
             }
             if let Some(c) = canvas.as_mut() {
                 c.update(dt, &hop.frame.mel);
@@ -2040,7 +2076,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 gfx.set_canvas(rows.as_ref());
             }
             if let Some(scene) = scene {
-                match live_audio.as_mut() {
+                match music.analysis.as_mut().or(live_audio.as_mut()) {
                     Some(a) => scene.step(f64::from(t), dt, &hop, a.waveform()),
                     None => {
                         let hop = scene.synth(f64::from(t));
@@ -2296,7 +2332,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
                 tip_min = [f32::MAX; 2];
             }
-            if let Some(p) = &playback {
+            if let Some(p) = &music.playback {
                 info!(
                     "playback: {:.1} s into the clip · {} frames played at {} Hz · out latency {:.0} ms · tap delay {:.0} ms · xruns {}",
                     p.position_secs(),
@@ -2314,7 +2350,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     drop(hud);
     drop(scene);
     drop(parked);
-    drop(playback);
+    drop(music);
     drop(live_audio);
     drop(particles);
     drop(static_quad);
@@ -2373,6 +2409,165 @@ fn static_quad_texture(
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+/// The clip on the speakers (board #3472): the `file` and `loop` sources'
+/// from launch, the hand menu's Music row's at runtime (`music.rs` has the
+/// row's words and where the analysis goes).
+///
+/// The bundled clip is decoded on a worker thread at the first play (45 s
+/// of Vorbis would stall the frame loop) and kept, and every stopped
+/// playback hands its clip back, so a play after a stop starts at once, at
+/// the frame the stop left it on. The stop drops the output stream and the
+/// tap's analysis; the launch source's analysis (`live_audio` in `run`)
+/// was never closed, so it takes over the next frame.
+struct Music {
+    /// What a first play decodes: the bundled clip.
+    path: std::path::PathBuf,
+    /// The launch `debug.fosfora.audio` (where a stop puts the analysis).
+    source: String,
+    options: PlaybackOptions,
+    /// The clip's file name, for the log.
+    name: String,
+    /// The clip, decoded or handed back by a stopped playback, kept for the
+    /// next play.
+    clip: Option<std::sync::Arc<Clip>>,
+    decoding: Option<std::thread::JoinHandle<Result<Clip>>>,
+    /// Declared before `analysis` so the stream stops feeding the tap
+    /// before its analysis thread is joined.
+    playback: Option<Playback>,
+    /// The analysis on the tap (`None` with `loop`, whose analysis stays
+    /// on the microphones).
+    analysis: Option<LiveAudio>,
+    /// Where the next play starts, in clip frames.
+    resume: usize,
+    /// The row's state: play asked for (the clip may still be decoding).
+    want: bool,
+}
+
+impl Music {
+    fn new(path: std::path::PathBuf, source: &str, options: PlaybackOptions) -> Self {
+        Self {
+            path,
+            source: source.to_owned(),
+            options,
+            name: crate::music::CLIP.to_owned(),
+            clip: None,
+            decoding: None,
+            playback: None,
+            analysis: None,
+            resume: 0,
+            want: false,
+        }
+    }
+
+    /// Take over a playback the launch source started (with its tap's
+    /// analysis, if any): the row starts on "Music: stop".
+    fn adopt(&mut self, playback: Playback, analysis: Option<LiveAudio>, name: String) {
+        self.name = name;
+        self.playback = Some(playback);
+        self.analysis = analysis;
+        self.want = true;
+        info!("{}", crate::music::log_line(true, &self.source, &self.name));
+    }
+
+    /// Whether play is asked for (the row's state).
+    fn wanted(&self) -> bool {
+        self.want
+    }
+
+    /// Whether the clip is on the speakers.
+    fn playing(&self) -> bool {
+        self.playback.is_some()
+    }
+
+    /// The Music row's press: play (from the cached clip at once, else
+    /// after the decode, `poll`) or stop.
+    fn set(&mut self, on: bool) {
+        self.want = on;
+        if on {
+            if self.playback.is_some() {
+                return;
+            }
+            if self.clip.is_some() {
+                self.start();
+            } else if self.decoding.is_none() {
+                info!("music: decoding {}", self.path.display());
+                let path = self.path.clone();
+                self.decoding = std::thread::Builder::new()
+                    .name("fosfora-music-decode".to_owned())
+                    .spawn(move || Clip::decode(&path))
+                    .map_err(|e| error!("music: decode thread: {e}"))
+                    .ok();
+                if self.decoding.is_none() {
+                    self.want = false;
+                }
+            }
+        } else {
+            if let Some(p) = self.playback.take() {
+                self.resume = p.resume_frame();
+                self.clip = Some(p.clip().clone());
+            }
+            self.analysis = None;
+            info!(
+                "{}",
+                crate::music::log_line(false, &self.source, &self.name)
+            );
+        }
+    }
+
+    /// Once per frame: collect a finished decode and start the clip if play
+    /// is still asked for. A failed decode or start turns play back off
+    /// (`wanted`), which the row shows.
+    fn poll(&mut self) {
+        let Some(decoding) = self.decoding.take_if(|d| d.is_finished()) else {
+            return;
+        };
+        match decoding.join() {
+            Ok(Ok(clip)) => {
+                self.name = crate::music::CLIP.to_owned();
+                self.clip = Some(std::sync::Arc::new(clip));
+            }
+            Ok(Err(e)) => error!("music: decoding {}: {e:#}", self.path.display()),
+            Err(_) => error!("music: the decode thread panicked"),
+        }
+        if self.want {
+            if self.clip.is_some() {
+                self.start();
+            } else {
+                self.want = false;
+            }
+        }
+    }
+
+    /// Start the kept clip where the last stop left it, the analysis on its
+    /// tap (as the `file` source does at launch).
+    fn start(&mut self) {
+        let Some(clip) = self.clip.clone() else {
+            return;
+        };
+        let tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
+        let options = PlaybackOptions {
+            start_frame: self.resume,
+            ..self.options
+        };
+        match Playback::start(clip, tap.clone(), options) {
+            Ok(p) => {
+                info!(
+                    "music: from {:.1} s into the clip",
+                    self.resume as f32 / p.clip().sample_rate.max(1) as f32
+                );
+                self.analysis = crate::music::tap_analyzed(&self.source)
+                    .then(|| LiveAudio::from_ring(tap, p.output_rate(), p.callback_count()));
+                self.playback = Some(p);
+                info!("{}", crate::music::log_line(true, &self.source, &self.name));
+            }
+            Err(e) => {
+                error!("music: starting playback: {e:#}");
+                self.want = false;
+            }
+        }
+    }
 }
 
 /// The S4 synthetic groove as a hop, for the particles mode without a

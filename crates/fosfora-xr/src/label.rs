@@ -46,8 +46,7 @@ pub const UP_M: f32 = 0.06;
 pub const GROUND_ALPHA: f32 = 0.85;
 
 /// What an editor action came to: `after`, or "nothing to change" when it
-/// is what the surface already ran (a kind whose catalogue is only `none`,
-/// a ceiling, on `none`).
+/// is what the surface already ran.
 fn result(before: SurfaceBehavior, after: SurfaceBehavior) -> &'static str {
     if before == after {
         "nothing to change"
@@ -389,20 +388,22 @@ mod tests {
             class_text(KIND_NONE, B::None, B::Embers),
             "all unlabeled surfaces: embers"
         );
-        // A kind with nothing to cycle.
+        // The surface shaders by name (D1).
         let after = B::None.next_for(KIND_CEILING);
+        assert_eq!(cycle_text("ceiling", B::None, after), "ceiling: rings");
         assert_eq!(
-            cycle_text("ceiling", B::None, after),
+            class_text(KIND_FRAME, B::Rings, B::Rings.next_for(KIND_FRAME)),
+            "all frames: streamlines"
+        );
+        // Nothing changed: an action that lands on what the surface ran.
+        assert_eq!(
+            cycle_text("ceiling", B::Rings, B::Rings),
             "ceiling: nothing to change"
         );
-        assert_eq!(
-            class_text(KIND_FRAME, B::None, B::None.next_for(KIND_FRAME)),
-            "all frames: nothing to change"
-        );
-        // A ceiling the knob put on embers does change.
+        // A ceiling the knob put on embers goes to the first after none.
         assert_eq!(
             cycle_text("ceiling", B::Embers, B::Embers.next_for(KIND_CEILING)),
-            "ceiling: none"
+            "ceiling: rings"
         );
     }
 
@@ -420,7 +421,7 @@ mod tests {
         );
         // A result that spawns nothing is not "outside": it would not
         // emit anywhere.
-        for after in [B::None, B::Spectrum, B::Ripple] {
+        for after in [B::None, B::Spectrum, B::Rings, B::Streamlines] {
             let text = cycle_text("floor", B::Sparks, after);
             assert_eq!(space_text(text.clone(), after, true), text);
         }

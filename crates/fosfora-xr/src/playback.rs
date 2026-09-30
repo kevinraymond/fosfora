@@ -152,10 +152,16 @@ pub struct PlaybackOptions {
     /// stream's capacity); `None` = `TARGET_OUTPUT_MS` in low-latency mode
     /// and AAudio's default otherwise, `Some(0.0)` = AAudio's default.
     pub buffer_ms: Option<f32>,
+    /// The clip frame the playhead starts on (wrapped to the clip's
+    /// length): the hand menu's Music row resumes where it stopped
+    /// ([`Playback::resume_frame`]). 0 = the top.
+    pub start_frame: usize,
 }
 
 struct Shared {
-    clip: Clip,
+    /// Shared with the caller, so a stopped clip is kept without a copy
+    /// and started again without a decode.
+    clip: Arc<Clip>,
     /// The rate the output stream opened with (set before it starts).
     output_rate: AtomicU32,
     /// Deliveries into the tap, for the analysis watchdog.
@@ -192,19 +198,30 @@ pub struct Playback {
 }
 
 impl Playback {
-    /// Start looping `clip` on the default output device. `tap` receives the
-    /// played stereo frames at the output rate, `options.tap_delay_ms` or
-    /// the estimated output latency (less `ANALYSIS_TO_PHOTON_MS`) behind the
-    /// speaker.
-    pub fn start(clip: Clip, tap: Arc<RingBuffer>, options: PlaybackOptions) -> Result<Self> {
+    /// Start looping `clip` on the default output device from
+    /// `options.start_frame`. `tap` receives the played stereo frames at
+    /// the output rate, `options.tap_delay_ms` or the estimated output
+    /// latency (less `ANALYSIS_TO_PHOTON_MS`) behind the speaker.
+    ///
+    /// Nothing here is bound to a thread or to the session's state: the
+    /// launch path calls it on `android_main`'s thread before the first
+    /// frame, the Music row from the frame loop on the same thread. It
+    /// blocks while AAudio opens and starts the stream.
+    pub fn start(clip: Arc<Clip>, tap: Arc<RingBuffer>, options: PlaybackOptions) -> Result<Self> {
         let requested_rate = clip.sample_rate;
+        let clip_frames = clip.samples.len() / 2;
+        let start = if clip_frames > 0 {
+            options.start_frame % clip_frames
+        } else {
+            0
+        };
         let shared = Arc::new(Shared {
             clip,
             output_rate: AtomicU32::new(requested_rate),
             callback_count: Arc::new(AtomicU64::new(0)),
             frames_since_estimate: AtomicUsize::new(ESTIMATE_EVERY_FRAMES),
             frames_since_step: AtomicUsize::new(STEP_INTERVAL_FRAMES),
-            pos: AtomicU64::new(0),
+            pos: AtomicU64::new((start as u64) << 32),
             frames_played: AtomicUsize::new(0),
             tap,
             latency_cms: AtomicU32::new(0),
@@ -326,6 +343,24 @@ impl Playback {
     pub fn position_secs(&self) -> f32 {
         let pos = self.shared.pos.load(Ordering::Relaxed);
         (pos >> 32) as f32 / self.shared.clip.sample_rate as f32
+    }
+
+    /// The clip frame to start again from after this playback stops: the
+    /// playhead less the output latency (the frames handed to AAudio but
+    /// not yet played, which closing the stream discards), wrapped.
+    pub fn resume_frame(&self) -> usize {
+        let frames = self.shared.clip.samples.len() / 2;
+        if frames == 0 {
+            return 0;
+        }
+        let head = (self.shared.pos.load(Ordering::Relaxed) >> 32) as usize;
+        let behind = (self.latency_ms() / 1000.0 * self.shared.clip.sample_rate as f32) as usize;
+        (head + frames - behind % frames) % frames
+    }
+
+    /// The clip this plays.
+    pub fn clip(&self) -> &Arc<Clip> {
+        &self.shared.clip
     }
 
     /// Latest estimate of the output latency (handed to AAudio → speaker),

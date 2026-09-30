@@ -142,3 +142,106 @@ this pass as the rings and the spectrum shaders.
    room-wide toggle, or both?
 3. Whether the desktop effects should get "surface" presets later (B), or
    whether the surface catalogue is its own thing for good.
+
+## D1 as built (Sep 30, board #3472)
+
+**The catalogue.** Ids 0 none, 1 embers, 2 sparks, 3 spectrum, 4 rings
+(the floor ripple, renamed), 5 streamlines; 6 and 7 stay reserved (curls,
+pulse, D2). The room file and the `surface` knob read `ripple` as the
+rings and write `rings`, so the file kept version 1. The editor's cycle
+per kind: table, other and unlabeled none, embers, sparks, streamlines;
+floor none, sparks, rings, streamlines; wall none, spectrum, streamlines,
+rings; ceiling and frame none, rings, streamlines. The kind defaults are
+unchanged (table embers, floor rings, wall spectrum, else none). A
+per-kind palette (`surfaces::palette`, linear RGB): tables blue, floors
+violet, walls the canvas's warm white, other green, frames and ceilings
+amber. The sim is untouched (its gates read ids 1 and 2 only, and its
+constant for id 4 keeps the name `XR_BEHAVIOR_RIPPLE`).
+
+**The pass** (`surface_fx.rs`, `gfx.rs`). One pipeline with the ripple's
+setup (premultiplied over passthrough, depth-tested, no depth write, the
+bias), 32 uniform slots (one per box, a buffer and bind group each), one
+draw per lit face, right after the occluders where the ripple drew:
+before the canvas, the highlight and the sprites. A slot is 17 rows
+(272 bytes): the four corners (the acting face lifted 2 cm); `face` (the
+two half extents, the lift, the behavior id); `params` (strength, color
+index = the kind, audio band = 0 for the rms, speed); `color` (the color,
+the peak alpha); `audio` (rms, bass, beat envelope, the clock); `shape`
+(the rings' origin u, v and glow; the streamlines' feature size), a row
+the brief did not list; then 8 ring rows (origin u, v, radius,
+intensity). Positions are in the face's (u, v), meters from its center
+along its axes, which the vertex stage hands the fragment. The clock runs
+at 1 + the beat envelope (integrated in f64), so the flow doubles on the
+beat without jumping back as the envelope decays. Every box whose
+behavior is the rings or the streamlines is lit on its acting face, the
+stage floor only while the room has no scene floor (step 2d's rule, so
+the two floors never double), a hidden wall never; a floor's face is
+leveled and kept above the stage floor's top, as the ripple's quad was.
+Logged once per change: "surfaces: 3 lit (rings 1, streamlines 2)".
+
+**Rings** (id 4): the ripple's look, exactly, in face (u, v): the 0.15 m
+ring width, the glow (0.6 m, 0.3 at full bass), the peak alpha 0.25
+times `ripplegain` times the strength, 2.5 m/s (`ripplespeed`). One
+`Ripple` state is kept; each ring now also keeps the smoothed head it
+was born under, and its row is placed per face: on a floor the head
+projected onto it (as before), elsewhere the face's point nearest the
+head (a table's edge nearest the chair). On a floor they keep the
+ripple's warm white, so the floor looks the same; on any other face the
+kind's palette color. The one visible change on a floor: over the stage
+floor the rings now cover its whole face instead of a 6 m square around
+the head, so a ring fades out rather than ending at the square's edge.
+`debug.fosfora.ripple 0` turns the rings off everywhere; `rippletest
+ceiling` puts the rings on every ceiling for the run (the room file
+untouched), in the ceiling's amber.
+
+**Streamlines** (id 5): the contours of a stream function ψ, two octaves
+of quintic value noise (0.35 m features, 0.7 m on a floor, the second
+octave at twice the frequency and a quarter of the amplitude, each
+drifting 0.04 cells per second of the clock); the flow is ψ's curl,
+divergence-free by construction, and ψ's contours are its streamlines,
+so a still frame shows thin, curving, directional lines. A contour every
+0.1 in ψ (in meters) gives a median of about 10.5 lines per meter, but
+the density follows the field's speed (3 to 23 between the tenth and the
+ninetieth percentile over a table's field), so the contours come in
+tiers: every other line thins out from 12 to 20 lines per meter, a line
+between each pair fills in from 7 down to 4. That gives a median of 10
+and 6.5 to 13.2 from the tenth to the ninety-fifth percentile; only
+around the field's stagnation points, where the contours ring a point,
+are the lines sparser. Each line
+is 6 mm wide with a 1.5 mm soft edge (or a pixel's footprint, farther
+away). Along the lines, streaks 8 cm long run with the flow at 0.15 m/s
+of the clock (two advection phases of 0.3 m cross-faded), over a base
+of 0.35. The alpha is up to 0.55 times the strength (0.30 read "too faint" worn), times the rms with
+a floor of 0.6, faded over 5 cm toward the face's edges, in the kind's
+palette color. The Rust twin of the field library backs the desktop
+tests (divergence at a few points, the analytic gradient, the density).
+
+**Folded in, and not yet.** The floor ripple is the rings: its pipeline,
+`set_ripple`, its quad and its shader are gone. The canvas (the wall
+spectrum) is not folded in: it keeps its own pipeline and draw after the
+pass, and a wall on the spectrum is skipped by the pass. The highlight
+stays its own quad on top.
+
+**The sweep.** The cost at 1, 4 and every face lit (reviewer, unworn):
+
+```
+adb shell setprop debug.fosfora.surface "table=streamlines,floor=rings,wall=streamlines,other=streamlines"
+```
+
+plus `ceiling=rings,frame=streamlines` for every face; `#<k>=<behavior>`
+lights one box, `clear` puts the defaults back.
+
+**Music row** (Kevin, worn, Sep 30: every worn run had been on the
+synthetic beat). A fourth hand-menu row, under Particles in both
+layouts, plays and stops the bundled clip (`ember_glow_excerpt.ogg`,
+the 140 BPM excerpt `debug.fosfora.audio file` loops) whatever the app
+launched with. Play does what `file` does: the clip on the speakers,
+the analysis on its tap. Stop ends the stream, and the analysis goes
+back to the launch source: the microphones, which stay open across a
+play, or the synthetic groove. `loop` keeps its analysis on the
+microphones either way. The first play decodes on a worker thread (the
+row reads "Music: stop" meanwhile). After that the clip is kept, and a
+play resumes where the stop left it. `debug.fosfora.music 1` plays it
+at launch for the unworn checks. `file` and `loop` start on "Music:
+stop" as before, and nothing is saved. `music.rs` holds the row's words
+and where each state puts the analysis.
