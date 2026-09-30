@@ -234,15 +234,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.canvasbars 24            (wall spectrum bar count, 1..64; fewer when the mel spectrum is shorter)
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
-    //   adb shell setprop debug.fosfora.surface "wall=none,#3=ripple,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
+    //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, ripple, strength 0..1 (default 1); "clear" drops every assignment; live: polled once a
+    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, strength 0..1 (default 1); "clear" drops
+    //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
-    //       none, embers, sparks; floor: none, sparks, ripple; wall: none, spectrum; ceiling, frame: none), a pinch-hold cycles every surface
+    //       none, embers, sparks, streamlines; floor: none, sparks, rings, streamlines; wall: none, spectrum, streamlines, rings; ceiling,
+    //       frame: none, rings, streamlines), a pinch-hold cycles every surface
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
@@ -1917,7 +1919,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 // ripple kept rippling when I switch to embers or none"
                 // (Kevin, worn, Sep 29).
                 let ripple_of = |k: usize| {
-                    surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Ripple
+                    surface_lanes.behavior(k) == crate::surfaces::SurfaceBehavior::Rings
                 };
                 let largest = input
                     .room_boxes

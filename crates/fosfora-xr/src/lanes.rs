@@ -1,7 +1,7 @@
 //! The surface lanes (board #3326): each obstacle box's behavior, from the
 //! room file and the boxes of the frame, as the rows the Flux sim reads
 //! after the pour row (`surfaces::lane_row`) and the behavior per box the
-//! weights, the wall spectrum and the floor ripple follow. Plain data, so
+//! weights, the wall spectrum and the surfaces pass follow. Plain data, so
 //! it builds and tests on the desktop; `app.rs` feeds it the frame's
 //! boxes, the `debug.fosfora.surface` knob and the room editor's pinches
 //! (`room_edit.rs`), which go through the same typed calls the knob does
@@ -20,7 +20,8 @@
 //! 8 unique among the room's anchors), a box index `#<k>` (this frame's
 //! order, the stage floor too) or a kind name (the class assignment: the
 //! kind's default and every anchor of that kind); the behavior one of
-//! `none embers sparks spectrum ripple`; the strength 0..1, 1 by default.
+//! `none embers sparks spectrum rings streamlines` (`ripple` reads as
+//! `rings`); the strength 0..1, 1 by default.
 //! `clear` alone drops every entry and puts the kind defaults back. A bad
 //! value applies nothing.
 
@@ -108,9 +109,9 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
             .iter()
             .any(|r| r.eq_ignore_ascii_case(behavior))
         {
-            format!("'{behavior}' is reserved for the second pass")
+            format!("'{behavior}' is reserved for step D2")
         } else {
-            format!("unknown behavior '{behavior}' (none embers sparks spectrum ripple)")
+            format!("unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines)")
         }
     })?;
     let strength = match strength {
@@ -629,9 +630,17 @@ mod tests {
                 0.5
             )]))
         );
+        // The ripple's old name is the rings.
         assert_eq!(
             parse_knob("#3=ripple"),
-            Ok(Knob::Assign(vec![assign(Target::Index(3), B::Ripple, 1.0)]))
+            Ok(Knob::Assign(vec![assign(Target::Index(3), B::Rings, 1.0)]))
+        );
+        assert_eq!(
+            parse_knob("#3=rings,table=Streamlines@0.5"),
+            Ok(Knob::Assign(vec![
+                assign(Target::Index(3), B::Rings, 1.0),
+                assign(Target::Kind(KIND_TABLE), B::Streamlines, 0.5),
+            ]))
         );
         assert_eq!(
             parse_knob(" wall = spectrum @ 0 , table=sparks,#0=none@1 "),
@@ -654,6 +663,7 @@ mod tests {
             "table=",
             "table=glitter",
             "wall=drips",
+            "wall=pulse",
             "table=embers@1.5",
             "table=embers@-0.1",
             "table=embers@NaN",
@@ -671,7 +681,7 @@ mod tests {
             assert!(parse_knob(bad).is_err(), "'{bad}' parsed");
         }
         assert!(
-            parse_knob("floor=dust").unwrap_err().contains("reserved"),
+            parse_knob("floor=curls").unwrap_err().contains("reserved"),
             "the reserved names say so"
         );
     }
@@ -719,14 +729,14 @@ mod tests {
     fn without_a_file_the_lanes_are_the_kind_defaults() {
         let boxes = room();
         let (rows, behaviors) = lane_rows(&RoomFile::default(), &boxes);
-        // The floors, scene and stage, on the ripple (step 2d).
+        // The floors, scene and stage, on the rings (step 2d).
         let expected = [
             B::Embers,
             B::Spectrum,
             B::Spectrum,
-            B::Ripple,
+            B::Rings,
             B::None,
-            B::Ripple,
+            B::Rings,
         ];
         assert_eq!(&behaviors[..6], &expected);
         for (row, b) in rows.iter().zip(expected) {
@@ -758,9 +768,9 @@ mod tests {
         assert_eq!(lanes.behavior(0), B::None);
         assert_eq!(lanes.behavior(1), B::None);
         assert_eq!(lanes.behavior(2), B::None);
-        assert_eq!(lanes.behavior(3), B::Ripple, "the floor's default");
-        assert_eq!(lanes.behavior(5), B::Ripple);
-        assert_close!(lanes.rows()[5], lane_row(B::Ripple, 0.5, [0.0; 2]));
+        assert_eq!(lanes.behavior(3), B::Rings, "the floor's default");
+        assert_eq!(lanes.behavior(5), B::Rings);
+        assert_close!(lanes.rows()[5], lane_row(B::Rings, 0.5, [0.0; 2]));
         // The same value again applies nothing.
         assert!(!lanes.poll_knob(Some(&value), false, &boxes));
         let path = room_path(&dir, id.unwrap());
@@ -772,8 +782,8 @@ mod tests {
         let mut again = RoomLanes::new(dir.clone());
         assert!(again.update(room_of(&shuffled), &shuffled));
         assert_eq!(again.behavior(3), B::None, "the desk");
-        assert_eq!(again.behavior(0), B::Ripple, "the floor");
-        assert_eq!(again.behavior(5), B::Ripple, "the stage floor");
+        assert_eq!(again.behavior(0), B::Rings, "the floor");
+        assert_eq!(again.behavior(5), B::Rings, "the stage floor");
         // A bad value changes nothing, in memory or on disk.
         let before = std::fs::read_to_string(&path).unwrap();
         assert!(!again.poll_knob(Some("table=embers,#9=none"), false, &shuffled));
@@ -798,21 +808,22 @@ mod tests {
         assert_eq!(B::None.next(), B::Embers);
         assert_eq!(B::Embers.next(), B::Sparks);
         assert_eq!(B::Sparks.next(), B::Spectrum);
-        assert_eq!(B::Spectrum.next(), B::Ripple);
-        assert_eq!(B::Ripple.next(), B::None);
+        assert_eq!(B::Spectrum.next(), B::Rings);
+        assert_eq!(B::Rings.next(), B::Streamlines);
+        assert_eq!(B::Streamlines.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The couch (other, default none): three pinches go round its
+        // The couch (other, default none): four pinches go round its
         // kind's catalogue once.
         let mut seen = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             seen.push(lanes.cycle(4, &boxes).unwrap());
         }
-        assert_eq!(seen, [B::Embers, B::Sparks, B::None]);
+        assert_eq!(seen, [B::Embers, B::Sparks, B::Streamlines, B::None]);
         lanes.update(id, &boxes);
         assert_eq!(lanes.behavior(4), B::None);
         // Past the boxes: refused, nothing written.
@@ -832,22 +843,23 @@ mod tests {
         // not embers (the step after none).
         assert_eq!(lanes.effective(0, &boxes), Some((B::Embers, 1.0)));
         assert_eq!(lanes.cycle(0, &boxes), Ok(B::Sparks));
-        // A wall on the spectrum by default goes to none (a wall's
-        // catalogue is none and the spectrum).
-        assert_eq!(lanes.cycle(1, &boxes), Ok(B::None));
+        // A wall on the spectrum by default goes to the streamlines (a
+        // wall's catalogue is none, the spectrum, the streamlines, the
+        // rings).
+        assert_eq!(lanes.cycle(1, &boxes), Ok(B::Streamlines));
         // A strength set by the knob is kept across a cycle.
         assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
-        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Ripple));
-        assert_eq!(lanes.effective(3, &boxes), Some((B::Ripple, 0.4)));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
+        assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
         lanes.update(id, &boxes);
-        assert_close!(lanes.rows()[3], lane_row(B::Ripple, 0.4, [0.0; 2]));
+        assert_close!(lanes.rows()[3], lane_row(B::Rings, 0.4, [0.0; 2]));
         assert_eq!(lanes.behavior(0), B::Sparks);
-        assert_eq!(lanes.behavior(1), B::None);
+        assert_eq!(lanes.behavior(1), B::Streamlines);
         // Saved: a relaunch finds them.
         let mut again = RoomLanes::new(dir.clone());
         again.update(id, &boxes);
         assert_eq!(again.behavior(0), B::Sparks);
-        assert_eq!(again.behavior(3), B::Ripple);
+        assert_eq!(again.behavior(3), B::Rings);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -904,10 +916,10 @@ mod tests {
         assert_eq!(lanes.effective(5, &more).map(|e| e.0), Some(B::None));
         // The stage floor's class is the floor kind: the scene floor too.
         lanes
-            .assign(&Target::Index(5), B::Ripple, 1.0, &boxes)
+            .assign(&Target::Index(5), B::Rings, 1.0, &boxes)
             .unwrap();
         lanes.assign_kind_of(5, &boxes).unwrap();
-        assert_eq!(lanes.effective(3, &boxes), Some((B::Ripple, 1.0)));
+        assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 1.0)));
         assert!(lanes.assign_kind_of(9, &boxes).is_err());
         // The class cycle: one step past the surface, for the whole kind,
         // so a hold always changes something.
@@ -931,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cycle_follows_the_kind_and_a_ceiling_goes_to_none() {
+    fn a_cycle_follows_the_kind_and_a_ceiling_gets_the_rings() {
         use crate::surfaces::KIND_CEILING;
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-kinds-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -947,24 +959,25 @@ mod tests {
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The ceiling runs none and has nothing else: it stays none.
-        assert_eq!(lanes.cycle(5, &boxes), Ok(B::None));
-        assert_eq!(lanes.cycle_kind_of(5, &boxes), Ok(B::None));
-        // Put on embers by the knob, it cycles back to none.
+        // The ceiling runs none: a pinch puts the rings on it (D1), a
+        // hold the streamlines on every ceiling.
+        assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
+        assert_eq!(lanes.cycle_kind_of(5, &boxes), Ok(B::Streamlines));
+        // Put on embers by the knob, it cycles to the first after none.
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
-        assert_eq!(lanes.cycle(5, &boxes), Ok(B::None));
-        // The floor: the ripple by default (step 2d), then none, sparks,
-        // the ripple.
-        let floor: Vec<_> = (0..3).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
-        assert_eq!(floor, [B::None, B::Sparks, B::Ripple]);
+        assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
+        // The floor: the rings by default (step 2d), then the streamlines,
+        // none, sparks, the rings.
+        let floor: Vec<_> = (0..4).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        assert_eq!(floor, [B::Streamlines, B::None, B::Sparks, B::Rings]);
         // A table the knob put on the spectrum: the first after none.
         assert!(lanes.poll_knob(Some("#0=spectrum"), false, &boxes));
         assert_eq!(lanes.cycle(0, &boxes), Ok(B::Embers));
-        // The class cycle from a wall: none, then back to the spectrum,
+        // The class cycle from a wall: the streamlines, then the rings,
         // for both walls.
-        assert_eq!(lanes.cycle_kind_of(1, &boxes), Ok(B::None));
-        assert_eq!(lanes.cycle_kind_of(2, &boxes), Ok(B::Spectrum));
-        assert_eq!(lanes.effective(1, &boxes).unwrap().0, B::Spectrum);
+        assert_eq!(lanes.cycle_kind_of(1, &boxes), Ok(B::Streamlines));
+        assert_eq!(lanes.cycle_kind_of(2, &boxes), Ok(B::Rings));
+        assert_eq!(lanes.effective(1, &boxes).unwrap().0, B::Rings);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1000,7 +1013,7 @@ mod tests {
         assert!(lanes.update(None, stage));
         assert!(lanes.poll_knob(Some("floor=ripple"), false, stage));
         assert!(lanes.update(None, stage));
-        assert_eq!(lanes.behavior(0), B::Ripple);
+        assert_eq!(lanes.behavior(0), B::Rings);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -405,7 +405,9 @@ fn the_sim_reads_the_depth_rows_after_the_instruments() {
         ("XR_BEHAVIOR_EMBERS", SurfaceBehavior::Embers),
         ("XR_BEHAVIOR_SPARKS", SurfaceBehavior::Sparks),
         ("XR_BEHAVIOR_SPECTRUM", SurfaceBehavior::Spectrum),
-        ("XR_BEHAVIOR_RIPPLE", SurfaceBehavior::Ripple),
+        // The sim keeps the rings' old name (board #3472 left the sim
+        // alone); the id is what it reads.
+        ("XR_BEHAVIOR_RIPPLE", SurfaceBehavior::Rings),
     ] {
         assert_eq!(get(name), b.id(), "{name}");
     }

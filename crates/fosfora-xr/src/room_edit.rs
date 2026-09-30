@@ -359,13 +359,14 @@ impl Cloud {
 /// on it, so it spawns at the full rate (step 2d; 2c kept the others'
 /// behaviors, so the hit spawned only its share of the room's weight,
 /// about 1.0 / 1.85 in Kevin's room). With no hit, or a hit that spawns
-/// nothing (the ripple, the spectrum, `none`, an unset row), every other
-/// row keeps its behavior at strength 0 (2c's rule): the weights stay on
-/// the boxes that emit, a draw that lands on one spawns nothing (the sim
-/// multiplies a box's gate by its lane's strength). That kept the sim off
-/// its volume fallback, which ran whenever no box weighed anything; since
-/// step 2e it runs only with no boxes at all, so turning every row to none
-/// there would now be silent too, but the rule stands. An unset row there (all zero: the sim would run its kind's default at
+/// nothing (the rings, the streamlines, the spectrum, `none`, an unset
+/// row), every other row keeps its behavior at strength 0 (2c's rule): the
+/// weights stay on the boxes that emit, a draw that lands on one spawns
+/// nothing (the sim multiplies a box's gate by its lane's strength). That
+/// kept the sim off its volume fallback, which ran whenever no box weighed
+/// anything; since step 2e it runs only with no boxes at all, so turning
+/// every row to none there would now be silent too, but the rule stands.
+/// An unset row there (all zero: the sim would run its kind's default at
 /// full, whatever the strength) becomes `none` at 0.
 pub fn solo(
     rows: &[[f32; 4]; SURFACE_LANE_ROWS],
@@ -814,7 +815,7 @@ mod tests {
         // The weights as `ObstacleSet::set_emitter_weights` takes them from
         // the uploaded rows: a desk, a side table half its top, a scene
         // floor on sparks, a wall on the spectrum and the stage floor (its
-        // flag off beside a scene floor) on its default, the ripple.
+        // flag off beside a scene floor) on its default, the rings.
         let up = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
         let flat = |kind, center: Vec3, half: Vec3, emit| SurfaceBox {
             kind,
@@ -863,7 +864,7 @@ mod tests {
             },
         ];
         let mut rows = [[0.0; 4]; SURFACE_LANE_ROWS];
-        for (k, b) in [B::Embers, B::Embers, B::Sparks, B::Spectrum, B::Ripple]
+        for (k, b) in [B::Embers, B::Embers, B::Sparks, B::Spectrum, B::Rings]
             .into_iter()
             .enumerate()
         {
