@@ -34,11 +34,16 @@ pub const QUAD_CENTER: [f32; 3] = [0.0, 1.5, -1.5];
 const DEFAULT_EFFECT: &str = "Flux";
 /// C3b: the world-layout effect `mode world` runs unless
 /// `debug.fosfora.effect` names another.
-const DEFAULT_WORLD_EFFECT: &str = "Flux XR World";
+/// The world effect a launch starts on: the surface-born one, the room
+/// editor's (Kevin, Sep 30; the names as the wearer sees them since then:
+/// Embers was Embers, Flux Cloud was Flux Cloud, Flock was
+/// Flock; Flux Cloud Coarse, a sprite-size diagnostic, left the
+/// pinch-hold cycle and stays reachable by `debug.fosfora.effect`).
+const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// The world effects that read the per-hand lanes (board #3314): there the
 /// hand's pose picks its behavior and its pad. The others keep one behavior
-/// for every hand (Flux XR World's worn-approved pad and kick).
-const POSE_EFFECTS: [&str; 1] = ["Murmur XR World"];
+/// for every hand (Flux Cloud's worn-approved pad and kick).
+const POSE_EFFECTS: [&str; 1] = ["Flock"];
 const NOMINAL_FPS: u32 = 72;
 /// S5 defaults: the test sim fills a 2 m cube centered on the quad, so half
 /// the particles sit in front of it and half behind (the depth gate).
@@ -70,7 +75,7 @@ const MR_RESTITUTION: f32 = 0.4;
 /// user stands inside the cube; near sprites are pure fill-rate cost).
 const MR_NEAR_CULL_M: f32 = 0.3;
 const PINCH_SIZE_BOOST: f32 = 3.0;
-/// World-effect defaults (Flux XR World, board #3276): its 2-5 mm sprites
+/// World-effect defaults (Flux Cloud, board #3276): its 2-5 mm sprites
 /// are smaller and dimmer than the S5 test sim's, so the near fade starts
 /// closer (the cloud stays dense at hand distance), the hand pad is wider
 /// (a channel that reads) and the kick stronger. The settle drift is the
@@ -109,7 +114,7 @@ enum Mode {
     /// S7: world-space particles over passthrough, hands and room as
     /// obstacles, no quad.
     Mixed,
-    /// C3b: a core effect's world-layout variant (Flux XR World) instead of
+    /// C3b: a core effect's world-layout variant (Flux Cloud) instead of
     /// the S5 test sim, over the same mixed-reality setup as `Mixed`.
     World,
 }
@@ -197,7 +202,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.quadpos "0,1.5,-1.5"     (where the static quad sits; diagnostic for the S7 quad finding)
     //   adb shell setprop debug.fosfora.depthtest 0              (sprites drawn with depth compare Always; diagnostic)
     //   adb shell setprop debug.fosfora.primer 0|1               (mr without the quad: keep a 1 mm depth-writing quad in the pass; default on)
-    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux XR World through render_world, over the mr setup;
+    //   adb shell setprop debug.fosfora.mode world               (C3b: Flux Cloud through render_world, over the mr setup;
     //       count = particles (default: the preset's 300K), size = sprite radius multiplier, sim 0 = freeze after warmup,
     //       effect = another world-layout preset, cube = anchor x,y,z (half edge ignored: the preset sets the volume),
     //       nearcull = near-fade radius around the head (default 0.15 here), handpad 0.10 and handkick 0.4 by default,
@@ -216,7 +221,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
     //       as a pinch-hold does; for measuring the switch unworn)
-    //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Flux XR Room: the floor's emitter weight, 0..1)
+    //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
     //   adb shell setprop debug.fosfora.ripple 0|1               (the floor ripple: rings from under the head on each beat, on a floor whose behavior is the ripple, a floor's default; default on in mr/world)
@@ -433,7 +438,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let open_kick = knob("debug.fosfora.openkick", crate::pose::OPEN_KICK_M_S);
     let hold_radius = knob("debug.fosfora.holdradius", crate::pose::HOLD_RADIUS_M);
     // Board #3317: surfaces as emitters (only a world sim in surface mode,
-    // Flux XR Room, reads the weights).
+    // Embers, reads the weights).
     let surface_weights = {
         let d = SurfaceWeights::default();
         SurfaceWeights {

@@ -565,3 +565,11 @@ room is doing; the solo is not reachable from the toggle and returns as
 an explicit mode once the living particles can be cleared at once
 (board #3464).
 
+**Names (Sep 30).** The world effects carry the names the wearer sees:
+**Embers** (was Flux XR Room, the surface-born one the editor steers,
+now the default in `mode world`), **Flux Cloud** (was Flux XR World, the
+volume emitter) and **Flock** (was Murmur XR World). Flux Cloud Coarse
+(was Flux XR World Coarse, a sprite-size diagnostic) left the pinch-hold
+cycle (its file no longer matches `*_xr_world*`) and stays reachable by
+`debug.fosfora.effect`. MEASURED.md keeps the old names in its history.
+

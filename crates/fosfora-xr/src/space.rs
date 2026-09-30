@@ -99,7 +99,7 @@ mod tests {
         let mut c = SpaceControl::new(None, 1.5);
         let mut panel = c.shown();
         assert_close!(panel, 1.5);
-        // Flux XR Room at its preset's 1.5: nothing to set.
+        // Embers at its preset's 1.5: nothing to set.
         assert_eq!(c.update(&mut panel, 0.0, 1.5), None);
         assert_close!(panel, 1.5);
         // A pinch-hold swaps in an effect with a 1 m preset: still its own.

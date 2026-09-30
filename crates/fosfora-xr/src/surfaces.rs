@@ -69,10 +69,10 @@ pub enum SurfaceBehavior {
     /// Nothing: the surface is an obstacle only.
     #[default]
     None,
-    /// Embers shed off the top face on the beat (Flux XR Room; a table's
+    /// Embers shed off the top face on the beat (Embers; a table's
     /// default).
     Embers,
-    /// Sparks up off the top face with the bass (Flux XR Room; a floor's
+    /// Sparks up off the top face with the bass (Embers; a floor's
     /// default until step 2d).
     Sparks,
     /// The wall spectrum (`canvas.rs`; a wall's default).

@@ -592,7 +592,7 @@ pub fn rows(burst: Option<Burst>, lift: Option<Lift>, anchor: Vec3) -> [[f32; 4]
 
 /// The fraction of living particles the sim respawns at a burst of `count`
 /// this frame, besides the dead slots it claims first: a sim near its
-/// particle count (Flux XR World settles close to it) has only the few
+/// particle count (Flux Cloud settles close to it) has only the few
 /// hundred slots that die each frame. `alive` and `max` are the alive
 /// count as last read back and the particle count. At most [`MAX_STEAL`].
 pub fn steal_fraction(count: u32, alive: u32, max: u32) -> f32 {

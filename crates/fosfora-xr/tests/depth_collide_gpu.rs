@@ -1387,7 +1387,7 @@ fn room_aux(boxes: &[TestBox], lanes: &[Option<(SurfaceBehavior, f32)>]) -> Vec<
     aux
 }
 
-/// One frame of Flux XR Room over 20K dead slots, every one free to
+/// One frame of Embers over 20K dead slots, every one free to
 /// emit: the newborns, as spawned (a slot born this frame is written as
 /// the emitter made it, before any integration).
 fn newborns(aux: Vec<[f32; 4]>) -> Vec<Sample> {
@@ -1593,7 +1593,7 @@ fn unweighted(mut aux: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
     aux
 }
 
-/// The living particles after each frame in `capture` of Flux XR Room
+/// The living particles after each frame in `capture` of Embers
 /// over 20K dead slots, every one free to emit each frame, with `aux`
 /// throughout.
 fn alive_over(aux: Vec<[f32; 4]>, capture: &[u32]) -> Vec<usize> {

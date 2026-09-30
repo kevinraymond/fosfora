@@ -46,7 +46,7 @@
 //! wearer sees its embers, its sparks or nothing, alone. The particle
 //! system offers no way to clear the living cloud without a core change,
 //! so moving the solo to another surface, or into it from on, leaves what
-//! is alive to die over its lifetime (12 s for Flux XR Room). Kevin,
+//! is alive to die over its lifetime (12 s for Embers). Kevin,
 //! worn, Sep 29: "Half the time I don't even know what's happening
 //! because the giant particle cloud is everywhere"; with every table
 //! shedding into 400K living sprites, one table's change was lost in the
@@ -314,7 +314,7 @@ impl Cloud {
 
     /// Whether the eye pass draws the world effect (`Gfx::set_world_visible`):
     /// not while off. The emission and the lane rows do not hide it, so
-    /// the effects that ignore the lanes (Flux XR World, Coarse, Murmur)
+    /// the effects that ignore the lanes (Flux Cloud, Coarse, Murmur)
     /// hide as well, and what is alive goes at once.
     pub fn visible(self) -> bool {
         !matches!(self, Self::Off)

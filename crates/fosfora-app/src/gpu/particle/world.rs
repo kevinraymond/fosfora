@@ -426,7 +426,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     fn flux_xr_preset_is_a_hidden_world_variant() {
         let pfx = xr_flux_preset();
-        assert_eq!(pfx.name, "Flux XR World");
+        assert_eq!(pfx.name, "Flux Cloud");
         assert!(
             pfx.hidden,
             "an XR preset must stay out of the desktop library"
@@ -491,13 +491,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("Cue.json"),
-            r#"{"layers":[{"effect_name":"Flux XR World"}]}"#,
+            r#"{"layers":[{"effect_name":"Flux Cloud"}]}"#,
         )
         .unwrap();
         std::fs::write(
             dir.join("_scene.json"),
-            r#"{"version":1,"name":"XR Flux XR World","loop_mode":false,"advance_mode":"Manual",
-               "cues":[{"preset_name":"Cue","transition":"Cut","label":"Flux XR World"}]}"#,
+            r#"{"version":1,"name":"XR Flux Cloud","loop_mode":false,"advance_mode":"Manual",
+               "cues":[{"preset_name":"Cue","transition":"Cut","label":"Flux Cloud"}]}"#,
         )
         .unwrap();
 
@@ -729,7 +729,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     const XR_FLUX_ROOM_PRESET: &str =
         include_str!("../../../../../assets/xr/effects/flux_xr_world_room.pfx");
     const XR_FLUX_COARSE_PRESET: &str =
-        include_str!("../../../../../assets/xr/effects/flux_xr_world_coarse.pfx");
+        include_str!("../../../../../assets/xr/effects/flux_xr_coarse.pfx");
 
     fn xr_flux_room_preset() -> crate::effect::format::PfxEffect {
         serde_json::from_str(XR_FLUX_ROOM_PRESET).expect("flux_xr_world_room.pfx parses")
@@ -744,7 +744,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
         use crate::params::types::ParamDef;
         let room = xr_flux_room_preset();
         let world = xr_flux_preset();
-        assert_eq!(room.name, "Flux XR Room");
+        assert_eq!(room.name, "Embers");
         assert!(
             room.hidden,
             "an XR preset must stay out of the desktop library"
@@ -1364,7 +1364,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     #[test]
     fn murmur_xr_preset_is_a_hidden_world_variant() {
         let pfx = xr_murmur_preset();
-        assert_eq!(pfx.name, "Murmur XR World");
+        assert_eq!(pfx.name, "Flock");
         assert!(
             pfx.hidden,
             "an XR preset must stay out of the desktop library"
@@ -1589,7 +1589,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
             std::env::set_current_dir(&repo).unwrap();
         }
         let dir = std::env::temp_dir().join(format!("fosfora_murmur_xr_world_{count}"));
-        write_world_scene(&dir, "Murmur XR World");
+        write_world_scene(&dir, "Flock");
 
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut sr = SceneRenderer::new(
