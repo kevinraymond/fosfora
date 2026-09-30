@@ -113,6 +113,10 @@ struct World {
     emitter_half: f32,
     /// The preset's `emitter.radius` (meters).
     preset_radius: f32,
+    /// Whether the preset spawns on the room's surfaces (it has the
+    /// `surface_emit` input on, as Embers does): its space size follows
+    /// the room (`space::fit_room`).
+    surface_born: bool,
     /// The space size asked for ([`XrScene::set_space_half`]), 0 = the
     /// preset's: re-applied should the particle system's def lose it
     /// (board #3325).
@@ -200,6 +204,7 @@ impl XrScene {
         let mut preset_radius = 0.0;
         let mut max_count = 0;
         let mut base_emit_rate = 0.0;
+        let mut surface_born = false;
         // `count` is the particle count itself, so no quality scaling.
         let mut renderer = start_renderer(
             device,
@@ -232,6 +237,7 @@ impl XrScene {
                     particles.max_scaled_count = 0;
                 }
                 preset_radius = particles.emitter.radius;
+                surface_born = has_surface_emit(&pfx.inputs);
                 max_count = particles.max_count;
                 base_emit_rate = particles.emit_rate;
                 particles.initial_size *= options.size_scale;
@@ -282,6 +288,7 @@ impl XrScene {
                 // `max(u.emitter_radius, 0.05)` in flux_xr_sim.wgsl.
                 emitter_half: crate::space::emitter_half(preset_radius),
                 preset_radius,
+                surface_born,
                 space_half: 0.0,
                 emitter_weight: 0.0,
                 max_count,
@@ -534,6 +541,13 @@ impl XrScene {
         self.world.as_ref().map(|w| (w.space_half, w.preset_radius))
     }
 
+    /// World mode: whether the effect spawns on the room's surfaces (its
+    /// preset has `surface_emit` on; Embers): the one whose space size
+    /// follows the room and whose surfaces the room editor steers.
+    pub fn surface_born(&self) -> bool {
+        self.world.as_ref().is_some_and(|w| w.surface_born)
+    }
+
     /// World mode: the emission rate [`Self::new_world`] set (particles
     /// per second), the base the cloud density scales.
     pub fn base_emit_rate(&self) -> Option<f32> {
@@ -648,6 +662,17 @@ fn start_renderer(
         log::warn!("scene renderer: {w}");
     }
     Ok(renderer)
+}
+
+/// Whether a preset's inputs turn on the surface emitter: a `surface_emit`
+/// float defaulting on, the slot `flux_xr_sim.wgsl` reads
+/// (`XR_SURFACE_PARAM`; the core's `flux_xr_room_preset_turns_on_surface_emission`
+/// pins it for Embers).
+fn has_surface_emit(inputs: &[fosfora_app::params::types::ParamDef]) -> bool {
+    inputs.iter().any(|p| {
+        matches!(p, fosfora_app::params::types::ParamDef::Float { name, default, .. }
+            if name == "surface_emit" && *default > 0.5)
+    })
 }
 
 /// The first effect layer's particle system.

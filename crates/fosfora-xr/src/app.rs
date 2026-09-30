@@ -754,6 +754,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The space size: the knob's for every world effect, else the showing
     // preset's until the stepper moves (outside world mode it drives
     // nothing and shows the test sim's cube).
+    // Step 2h: the space size that fits the room's boxes around the
+    // anchor, with how many boxes (`None` before the room is in), set each
+    // frame; and the fit last applied, for the log.
+    let mut room_fit: Option<(f32, usize)> = None;
+    let mut fit_logged: Option<(f32, usize)> = None;
     let mut space = crate::space::SpaceControl::new(
         debug_prop("debug.fosfora.space").and_then(|v| v.parse::<f32>().ok()),
         scene
@@ -1284,6 +1289,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         s.set_anchor(anchor);
                     }
                 }
+                // The room fit for this frame's boxes and anchor (the
+                // stage floor is not a room box); applied after the frame.
+                room_fit = crate::space::fit_room(
+                    glam::Vec3::from(anchor),
+                    input.room_boxes.iter().map(|b| {
+                        (
+                            glam::Vec3::from(b.center),
+                            glam::Quat::from_array(b.rot),
+                            glam::Vec3::from(b.half),
+                        )
+                    }),
+                )
+                .map(|half| (half, input.room_boxes.len()));
                 // Seated reach: each hand's joint set moves out along the
                 // arm past a comfortable reach. Only the sim sees the far
                 // hand; occlusion (the skinned mesh), pinch gestures and the
@@ -2071,18 +2089,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The space size: the showing world effect's volume, applied when
-        // the stepper moves and when a pinch-hold swaps in an effect set
-        // for another; the stepper shows the size it runs at.
+        // the stepper moves, when a pinch-hold swaps in an effect set for
+        // another, and for the surface-born effect when the room fit
+        // changes (step 2h: the boxes or the anchor moved) while no size
+        // is asked; the stepper shows the size it runs at.
         if world
             && let Some(s) = scene.as_mut()
             && let Some((requested, preset)) = s.space()
-            && let Some(half) = space.update(&mut controls.space_half, requested, preset)
         {
-            s.set_space_half(half);
-            info!(
-                "space size: '{}' at {:.2} m half extent",
-                world_effects[world_index], controls.space_half
-            );
+            let fit = room_fit.filter(|_| s.surface_born());
+            if let Some(half) = space.update(
+                &mut controls.space_half,
+                requested,
+                preset,
+                fit.map(|f| f.0),
+            ) {
+                s.set_space_half(half);
+                info!(
+                    "space size: '{}' at {:.2} m half extent",
+                    world_effects[world_index], controls.space_half
+                );
+            }
+            let applied = fit.filter(|_| space.asked().is_none());
+            if let Some((half, boxes)) = applied
+                && applied != fit_logged
+            {
+                info!("space fit to the room: {half:.2} m half extent ({boxes} boxes)");
+            }
+            fit_logged = applied;
         }
         // The pitcher's last 10 s, while it is on or has poured.
         if frame_index.is_multiple_of(720) {
