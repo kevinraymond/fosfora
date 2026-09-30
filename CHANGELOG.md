@@ -27,6 +27,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   the bottom of the `pitch` range, now reads as no pitch: the last value holds at zero confidence.
 - **Building from source needs Rust 1.97**, the toolchain the repository pins and tests; the
   declared minimum of 1.90 was never tested.
+- **Fosfora no longer links OpenSSL.** Downloads already used the built-in TLS, so the
+  Linux binary no longer needs the system OpenSSL library, and building from source no longer
+  needs `libssl-dev`.
 
 ### Fixed
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
