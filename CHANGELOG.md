@@ -5,15 +5,20 @@
 
 ## Unreleased
 
-Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
+## v2.0.1 — 2026-09-30
+
+Fixes for 2.0: the second output window and webcams work on macOS, the audio analysis reads
+true levels, and a run of crashes and remote-control bugs are gone. Two changes may need a
+look: OSC and the web remote answer only this computer until you allow other devices, and
+loudness reads about 3 LU higher.
 
 ### Added
 - **A photosensitivity flash limiter, on by default.** Large-area flashing is held to at most
   three flashes a second, the WCAG and broadcast threshold, on screen and in every live output
   and recording; bright hits beyond that are dimmed. Offline loop and scene renders are not
-  limited. Set it under Setup ▸ General: Strict allows
-  one a second, and Auto goes Strict when the system asks for reduced motion, which also
-  stops interface animation. Strobe-heavy looks are throttled; Off restores them.
+  limited. Set it under Setup ▸ General: Strict allows one a second, and Auto goes Strict
+  when the system asks for reduced motion, which also stops interface animation.
+  Strobe-heavy looks are throttled; Off restores them.
 
 ### Changed
 - **OSC input and the web remote now listen on this computer only.** A phone, a controller
@@ -38,6 +43,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
 - **Webcams stayed dark on macOS and no permission prompt appeared.** Fosfora now asks for
   camera access the first time a camera is added, and adds it once you allow it.
 - **The app and window icon still showed the old Phosphor "P".** It is the Fosfora "F" now.
+- **Murmur, Symbiosis and Genesis flocked on the wrong neighbors**: each bird, cell and seed
+  read the particles of the grid cell next to its own, and below High particle quality the
+  neighbor grid was the wrong size. Flocks now cohere and split where the sim says they should.
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
   Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
   HDR values and blend exactly as before everywhere else.
@@ -97,9 +105,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   are unchanged.
 - **Windows loopback capture was silent on 32-bit integer devices**, paused the beat clock
   through silent stretches, and leaked memory on every reconnect. All three are fixed.
-- **Surround devices lost their centre channel**, so vocals and dialogue from a 5.1 or 7.1
+- **Surround devices lost their center channel**, so vocals and dialogue from a 5.1 or 7.1
   input or Windows loopback barely reached the visuals. Extra channels are now folded into
-  stereo, centre and surrounds at −3 dB, LFE left out.
+  stereo, center and surrounds at −3 dB, LFE left out.
 - **Switching audio device mid-recording** to one with a different sample rate pitch-shifted
   the rest of the recording's audio and let it drift from the picture. The new device's audio
   is now converted to the recording's rate.

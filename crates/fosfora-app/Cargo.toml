@@ -1,6 +1,6 @@
 [package]
 name = "fosfora-app"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 # The pinned toolchain in rust-toolchain.toml, the only compiler anything checks.
 # `publish = false`, so no downstream resolver reads this; bump the two together.
