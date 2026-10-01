@@ -15,8 +15,10 @@
 //! color, the peak alpha); `audio` (rms, bass, the beat envelope, the
 //! surfaces' clock); `audio2` (mid, high, the downbeat envelope, the bar
 //! phase); `shape` (the rings' origin u, v and glow, the streamlines' and
-//! the curls' feature size); then the rings, one row per ring slot
-//! (origin u, v, radius, intensity). Every position is in the face's
+//! the curls' feature size, the spectrum's sign, bar count, glow and bar
+//! fill); the rings, one row per ring slot (origin u, v, radius,
+//! intensity); then the spectrum's bar heights, four to a row (zeros on
+//! any other face). Every position is in the face's
 //! (u, v): meters along its two axes from its center, which the vertex
 //! stage hands the fragment, so one shader works on any face at any
 //! orientation. The audio band ([`BAND_RMS`] to [`BAND_HIGH`]) is the
@@ -62,6 +64,15 @@
 //! with a bright rim. The same peak alpha and band floor as the
 //! streamlines.
 //!
+//! **Spectrum** (id 3): the wall spectrum (`canvas.rs`, which keeps the
+//! bars and the wall pick), folded into the pass in D2: the canvas's own
+//! pipeline and draw are gone. Only the wall `canvas::WallPick` chooses is
+//! a spectrum slot; its face is oriented by `canvas::spectrum_face` (v up
+//! the wall, the bars along u times the sign in `shape.x`, low bands on
+//! the wearer's left). The look is the canvas's: warm white with the
+//! color index 0 whatever the kind, the cap line, the base glow, peak
+//! alpha 0.25 times `canvasgain`.
+//!
 //! **Pulse** (id 7): a whole-face glow for frames, lamps and anything
 //! small: a radial falloff from the face's center ([`pulse_radial`], 1 at
 //! the center, [`PULSE_EDGE`] at the edges, the 5 cm edge fade kept) times
@@ -76,6 +87,7 @@
 
 use glam::{Vec2, Vec3};
 
+use crate::canvas::{Canvas, MAX_BARS};
 use crate::ripple::{MAX_RINGS, Ripple};
 use crate::surfaces::{Face, KIND_FLOOR, SurfaceBehavior, surface_color};
 
@@ -85,11 +97,12 @@ pub const MAX_SLOTS: usize = crate::surfaces::SURFACE_LANE_ROWS;
 /// the ripple's, as the surface's occluder writes depth at the face.
 pub const LIFT_M: f32 = crate::ripple::LIFT_M;
 /// Rows of [`rows`], `struct SurfaceFx` in [`SURFACE_FX_WGSL`]: the
-/// corners, `face`, `params`, `color`, `audio`, `audio2`, `shape`, then
-/// the rings.
-pub const UNIFORM_ROWS: usize = 10 + MAX_RINGS;
-/// The row of the first ring.
+/// corners, `face`, `params`, `color`, `audio`, `audio2`, `shape`, the
+/// rings, then the spectrum's bars.
+pub const UNIFORM_ROWS: usize = BARS_ROW + MAX_BARS / 4;
+/// The row of the first ring and of the first four bars.
 const RINGS_ROW: usize = 10;
+const BARS_ROW: usize = RINGS_ROW + MAX_RINGS;
 /// The streamlines' alpha at full strength and full rms.
 // 0.30 read "too faint" on the real desk (Kevin, worn, Sep 30).
 pub const STREAM_PEAK_ALPHA: f32 = 0.55;
@@ -209,6 +222,14 @@ pub struct Slot {
     pub band: u32,
 }
 
+/// What a spectrum slot draws: the bars ([`Canvas`]) and the sign of its
+/// face's `u` (`canvas::spectrum_face`).
+#[derive(Debug, Clone, Copy)]
+pub struct Spectrum<'a> {
+    pub canvas: &'a Canvas,
+    pub sign: f32,
+}
+
 /// `p`'s (u, v) on `face`: meters along its two axes from its center, the
 /// coordinates the fragment works in.
 pub fn face_uv(face: &Face, p: Vec3) -> Vec2 {
@@ -248,23 +269,25 @@ pub fn level_floor(face: Face, stage_top: Option<f32>) -> Face {
 
 /// The color a slot draws in: its color index's (`surfaces::surface_color`,
 /// `key` the key's tint), but with index 0 the rings on a floor keep the
-/// ripple's warm white, so the floor looks as it did.
+/// ripple's warm white, so the floor looks as it did, and the spectrum the
+/// canvas's on any face.
 pub fn color_of(kind: u32, behavior: SurfaceBehavior, color: u32, key: [f32; 3]) -> [f32; 3] {
-    if color == 0 && behavior == SurfaceBehavior::Rings && kind == KIND_FLOOR {
-        crate::ripple::COLOR
-    } else {
-        surface_color(color, kind, key)
+    match behavior {
+        SurfaceBehavior::Rings if color == 0 && kind == KIND_FLOOR => crate::ripple::COLOR,
+        SurfaceBehavior::Spectrum if color == 0 => crate::canvas::COLOR,
+        _ => surface_color(color, kind, key),
     }
 }
 
 /// The uniform rows of `slot` at time `t` (`struct SurfaceFx` in
 /// [`SURFACE_FX_WGSL`], the layout in the module docs). `ripple` is the
-/// rings' state; without it a rings slot draws nothing (no rings, no
-/// glow).
+/// rings' state and `spectrum` the bars; without them a rings or a
+/// spectrum slot draws nothing.
 pub fn rows(
     slot: &Slot,
     audio: Audio,
     ripple: Option<&Ripple>,
+    spectrum: Option<Spectrum<'_>>,
     t: f32,
 ) -> [[f32; 4]; UNIFORM_ROWS] {
     let mut rows = [[0.0f32; 4]; UNIFORM_ROWS];
@@ -286,6 +309,10 @@ pub fn rows(
         ),
         SurfaceBehavior::Curls => (CURL_SPEED_M_S, CURL_PEAK_ALPHA),
         SurfaceBehavior::Pulse => (0.0, PULSE_PEAK_ALPHA),
+        SurfaceBehavior::Spectrum => (
+            0.0,
+            crate::canvas::PEAK_ALPHA * spectrum.map_or(0.0, |s| s.canvas.gain),
+        ),
         _ => (STREAM_SPEED_M_S, STREAM_PEAK_ALPHA),
     };
     rows[5] = [
@@ -322,6 +349,20 @@ pub fn rows(
                 CURL_FEATURE_M
             };
             rows[9] = [0.0, 0.0, 0.0, feature];
+        }
+        SurfaceBehavior::Spectrum => {
+            if let Some(s) = spectrum {
+                let heights = s.canvas.heights();
+                rows[9] = [
+                    s.sign,
+                    heights.len() as f32,
+                    s.canvas.glow(),
+                    crate::canvas::BAR_FILL,
+                ];
+                for (i, h) in heights.iter().take(MAX_BARS).enumerate() {
+                    rows[BARS_ROW + i / 4][i % 4] = *h;
+                }
+            }
         }
         SurfaceBehavior::Pulse => {}
         _ => {
@@ -484,14 +525,18 @@ struct SurfaceFx {
     // x mid, y high, z the downbeat envelope, w the bar phase
     audio2: vec4<f32>,
     // rings: x, y their origin (m), z the glow; streamlines and curls: w
-    // the feature size (m)
+    // the feature size (m); spectrum: x the sign of u toward the wearer's
+    // right, y the bar count, z the bottom glow, w the bar fill
     shape: vec4<f32>,
     // origin u, v (m), radius (m), intensity; 0 intensity for an empty slot
     rings: array<vec4<f32>, 8>,
+    // the spectrum's bar heights 0..1, four per row, from the wearer's left
+    bars: array<vec4<f32>, 16>,
 }
 @group(0) @binding(0) var<uniform> eye: Eye;
 @group(1) @binding(0) var<uniform> fx: SurfaceFx;
 
+const BEHAVIOR_SPECTRUM: u32 = 3u;
 const BEHAVIOR_RINGS: u32 = 4u;
 const BEHAVIOR_STREAMLINES: u32 = 5u;
 const BEHAVIOR_CURLS: u32 = 6u;
@@ -527,6 +572,13 @@ const CURL_FILL_SOFT: f32 = 0.25;
 // band's level).
 const PULSE_EDGE: f32 = 0.35;
 const PULSE_FLOOR: f32 = 0.15;
+// The spectrum's (the canvas's): the softness of a bar's sides (fraction
+// of its slot) and of its top and cap (fraction of the wall's height),
+// and the bottom glow's height.
+const SIDE_SOFT: f32 = 0.12;
+const TOP_SOFT: f32 = 0.015;
+const CAP_WIDTH: f32 = 0.012;
+const GLOW_HEIGHT: f32 = 0.03;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -724,6 +776,30 @@ fn pulse_light(uv: vec2<f32>) -> f32 {
     return radial * env * edge_fade(uv);
 }
 
+// The wall spectrum: bars of light climbing the face, the bar index along
+// u times the sign (low bands on the wearer's left), the height along v,
+// brightest at the bar's top with a cap line, over a glow along the
+// bottom.
+fn spectrum_light(uv: vec2<f32>) -> f32 {
+    let n = max(fx.shape.y, 1.0);
+    let across = 0.5 + 0.5 * fx.shape.x * uv.x / max(fx.face.x, 1e-4);
+    let v = 0.5 + 0.5 * uv.y / max(fx.face.y, 1e-4);
+    let x = clamp(across, 0.0, 0.99999) * n;
+    let i = min(u32(x), u32(n) - 1u);
+    let f = fract(x);
+    let gap = (1.0 - fx.shape.w) * 0.5;
+    let side = smoothstep(gap, gap + SIDE_SOFT, f)
+        * (1.0 - smoothstep(1.0 - gap - SIDE_SOFT, 1.0 - gap, f));
+    let h = fx.bars[i / 4u][i % 4u];
+    // Below the top, brighter toward it: light climbing the wall.
+    let below = 1.0 - smoothstep(h - TOP_SOFT, h, v);
+    let grad = mix(0.2, 1.0, clamp(v / max(h, 1e-3), 0.0, 1.0));
+    let c = (v - h) / CAP_WIDTH;
+    let cap = exp(-c * c) * smoothstep(0.0, 0.02, h);
+    let light = side * (0.7 * below * grad + 0.6 * cap) + fx.shape.z * exp(-v / GLOW_HEIGHT);
+    return clamp(light, 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The pixel's footprint on the face (m), for the lines' antialiasing:
@@ -739,6 +815,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         light = curls_light(in.uv, px);
     } else if id == BEHAVIOR_PULSE {
         light = pulse_light(in.uv);
+    } else if id == BEHAVIOR_SPECTRUM {
+        light = spectrum_light(in.uv);
     }
     let a = fx.color.w * clamp(fx.params.x, 0.0, 1.0) * clamp(light, 0.0, 1.0);
     return vec4<f32>(fx.color.rgb * a, a);
@@ -822,12 +900,14 @@ mod tests {
         };
         assert_eq!(span as usize, UNIFORM_ROWS * 16);
         assert_eq!(MAX_RINGS, 8, "rings: array<vec4<f32>, 8>");
+        assert_eq!(MAX_BARS, 16 * 4, "bars: array<vec4<f32>, 16>");
         let pairs = [
             ("BEHAVIOR_RINGS", SurfaceBehavior::Rings.id() as f32),
             (
                 "BEHAVIOR_STREAMLINES",
                 SurfaceBehavior::Streamlines.id() as f32,
             ),
+            ("BEHAVIOR_SPECTRUM", SurfaceBehavior::Spectrum.id() as f32),
             ("BEHAVIOR_CURLS", SurfaceBehavior::Curls.id() as f32),
             ("BEHAVIOR_PULSE", SurfaceBehavior::Pulse.id() as f32),
             ("BAND_BASS", BAND_BASS as f32),
@@ -853,6 +933,10 @@ mod tests {
             ("CURL_FILL_SOFT", CURL_FILL_SOFT),
             ("PULSE_EDGE", PULSE_EDGE),
             ("PULSE_FLOOR", PULSE_FLOOR),
+            ("SIDE_SOFT", crate::canvas::SIDE_SOFT),
+            ("TOP_SOFT", crate::canvas::TOP_SOFT),
+            ("CAP_WIDTH", crate::canvas::CAP_WIDTH),
+            ("GLOW_HEIGHT", crate::canvas::GLOW_HEIGHT),
         ];
         for (name, value) in pairs {
             assert_close!(wgsl_const(&module, name), value);
@@ -882,7 +966,7 @@ mod tests {
             strength: 0.7,
             ..slot(face, KIND_TABLE, SurfaceBehavior::Streamlines)
         };
-        let rows = rows(&s, audio, None, 0.0);
+        let rows = rows(&s, audio, None, None, 0.0);
         // The corners: the table's top (0.75 m) lifted, in order around it.
         for (row, c) in rows.iter().zip(face.corners(LIFT_M)) {
             assert_close!(*row, [c.x, c.y, c.z, 1.0]);
@@ -916,7 +1000,7 @@ mod tests {
             strength: 3.0,
             ..slot(floor(), KIND_FLOOR, SurfaceBehavior::Streamlines)
         };
-        let rows = super::rows(&s, audio, None, 0.0);
+        let rows = super::rows(&s, audio, None, None, 0.0);
         assert_close!(rows[5][0], 1.0);
         assert_close!(rows[9][3], STREAM_FLOOR_FEATURE_M);
         assert_close!(rows[6][..3], crate::surfaces::palette(KIND_FLOOR));
@@ -942,7 +1026,7 @@ mod tests {
             strength: 0.8,
             ..slot(face, KIND_OTHER, SurfaceBehavior::Curls)
         };
-        let rows = rows(&s, audio, None, 0.0);
+        let rows = rows(&s, audio, None, None, 0.0);
         for (row, c) in rows.iter().zip(face.corners(LIFT_M)) {
             assert_close!(*row, [c.x, c.y, c.z, 1.0]);
         }
@@ -953,32 +1037,104 @@ mod tests {
         assert_close!(rows[7], [0.3, 0.6, 0.5, 12.5]);
         assert_close!(rows[8], [0.2, 0.1, 0.7, 0.25]);
         assert_close!(rows[9], [0.0, 0.0, 0.0, CURL_FEATURE_M]);
-        assert_close!(rows[RINGS_ROW..], [[0.0f32; 4]; MAX_RINGS]);
+        assert_close!(rows[RINGS_ROW..], [[0.0f32; 4]; UNIFORM_ROWS - RINGS_ROW]);
         // On a floor the curls are larger; the band is the lane's, up to
         // the high.
         let s = Slot {
             band: BAND_MID,
             ..slot(floor(), KIND_FLOOR, SurfaceBehavior::Curls)
         };
-        let rows = super::rows(&s, audio, None, 0.0);
+        let rows = super::rows(&s, audio, None, None, 0.0);
         assert_close!(rows[9][3], CURL_FLOOR_FEATURE_M);
         assert_close!(rows[5][2], BAND_MID as f32);
         let s = Slot {
             band: 9,
             ..slot(floor(), KIND_FLOOR, SurfaceBehavior::Curls)
         };
-        assert_close!(super::rows(&s, audio, None, 0.0)[5][2], BAND_HIGH as f32);
+        assert_close!(
+            super::rows(&s, audio, None, None, 0.0)[5][2],
+            BAND_HIGH as f32
+        );
         // The pulse on a frame: the bass by default, no speed, no shape,
         // the frame's amber at the pulse's peak alpha.
         let s = slot(face, KIND_FRAME, SurfaceBehavior::Pulse);
-        let rows = super::rows(&s, audio, None, 0.0);
+        let rows = super::rows(&s, audio, None, None, 0.0);
         assert_close!(rows[4][3], 7.0);
         assert_close!(rows[5], [1.0, 0.0, BAND_BASS as f32, 0.0]);
         let amber = palette(KIND_FRAME);
         assert_close!(rows[6], [amber[0], amber[1], amber[2], PULSE_PEAK_ALPHA]);
         assert_close!(rows[8], [0.2, 0.1, 0.7, 0.25]);
         assert_close!(rows[9], [0.0; 4]);
-        assert_close!(rows[RINGS_ROW..], [[0.0f32; 4]; MAX_RINGS]);
+        assert_close!(rows[RINGS_ROW..], [[0.0f32; 4]; UNIFORM_ROWS - RINGS_ROW]);
+    }
+
+    #[test]
+    fn the_spectrum_rows_carry_the_bars_the_sign_and_the_canvas_look() {
+        use crate::canvas::{BAR_FILL, Canvas, spectrum_face};
+        let mut c = Canvas::new(6, 0.5);
+        let mel: Vec<f32> = (0..6).map(|i| 0.4 + 0.08 * i as f32).collect();
+        c.update(1.0 / 72.0, &mel);
+        // A wall 2 m ahead whose local X runs to the wearer's left.
+        let wall = acting_face(
+            Vec3::new(0.0, 1.25, -2.0),
+            Quat::from_rotation_z(std::f32::consts::PI),
+            Vec3::new(2.0, 1.25, 0.02),
+            HEAD,
+        );
+        let (face, sign) = spectrum_face(wall);
+        assert_close!(sign, -1.0);
+        let s = slot(face, KIND_WALL, SurfaceBehavior::Spectrum);
+        let audio = Audio {
+            rms: 0.3,
+            ..Audio::default()
+        };
+        let rows = rows(&s, audio, None, Some(Spectrum { canvas: &c, sign }), 0.0);
+        for (row, p) in rows.iter().zip(face.corners(LIFT_M)) {
+            assert_close!(*row, [p.x, p.y, p.z, 1.0]);
+        }
+        assert_close!(rows[4], [2.0, 1.25, LIFT_M, 3.0]);
+        assert_close!(rows[5], [1.0, 0.0, BAND_RMS as f32, 0.0]);
+        // The canvas's warm white at its peak alpha times the gain.
+        let w = crate::canvas::COLOR;
+        assert_close!(rows[6], [w[0], w[1], w[2], crate::canvas::PEAK_ALPHA * 0.5]);
+        assert_close!(rows[7], [0.3, 0.0, 0.0, 0.0]);
+        assert_close!(rows[9], [-1.0, 6.0, c.glow(), BAR_FILL]);
+        assert!(c.glow() > 0.0);
+        assert_close!(rows[RINGS_ROW..BARS_ROW], [[0.0f32; 4]; MAX_RINGS]);
+        let bars: Vec<f32> = rows[BARS_ROW..].iter().flatten().copied().collect();
+        assert_close!(bars[..6], c.heights());
+        assert_close!(bars[6..], [0.0f32; MAX_BARS - 6]);
+        // The loudest bar reaches the top, the others below it in order.
+        assert!(bars[5] > 0.999, "{bars:?}");
+        // Bar 0, the lowest band, is at the wearer's left: +u here.
+        let left = face.center - Vec3::X * 1.9;
+        let u = face_uv(&face, left).x;
+        assert!(u > 0.0, "{u}");
+        assert_eq!(crate::canvas::spectrum_bar(u, 2.0, sign, 6), 0);
+        // Another kind (the ceiling test) keeps the warm white; a color
+        // index paints it.
+        let s = slot(face, KIND_CEILING, SurfaceBehavior::Spectrum);
+        let spectrum = Some(Spectrum {
+            canvas: &c,
+            sign: 1.0,
+        });
+        assert_close!(rows_of(&s, spectrum)[6][..3], w);
+        let s = Slot { color: 6, ..s };
+        assert_close!(
+            rows_of(&s, spectrum)[6][..3],
+            crate::surfaces::SURFACE_PALETTE[5]
+        );
+        // Without the canvas (`debug.fosfora.canvas 0`): nothing lit, no
+        // bars, no other slot carries any.
+        let off = rows_of(&s, None);
+        assert_close!(off[6][3], 0.0);
+        assert_close!(off[BARS_ROW..], [[0.0f32; 4]; MAX_BARS / 4]);
+        let other = rows_of(&slot(face, KIND_WALL, SurfaceBehavior::Pulse), spectrum);
+        assert_close!(other[BARS_ROW..], [[0.0f32; 4]; MAX_BARS / 4]);
+    }
+
+    fn rows_of(s: &Slot, spectrum: Option<Spectrum<'_>>) -> [[f32; 4]; UNIFORM_ROWS] {
+        rows(s, Audio::default(), None, spectrum, 0.0)
     }
 
     #[test]
@@ -999,7 +1155,7 @@ mod tests {
                     color,
                     ..slot(face, kind, behavior)
                 };
-                let rows = rows(&s, audio, None, 0.0);
+                let rows = rows(&s, audio, None, None, 0.0);
                 assert_close!(rows[5][1], color as f32);
                 let expect = match color {
                     // Index 0: the kind's color, the rings on a floor the
@@ -1019,7 +1175,7 @@ mod tests {
             color: 6,
             ..slot(floor(), KIND_FLOOR, SurfaceBehavior::Rings)
         };
-        assert_close!(rows(&s, audio, None, 0.0)[6][..3], SURFACE_PALETTE[5]);
+        assert_close!(rows(&s, audio, None, None, 0.0)[6][..3], SURFACE_PALETTE[5]);
     }
 
     #[test]
@@ -1201,6 +1357,7 @@ mod tests {
             &slot(face, KIND_FLOOR, SurfaceBehavior::Rings),
             Audio::default(),
             Some(&r),
+            None,
             0.5,
         );
         assert_close!(rows[4][3], 4.0);
@@ -1261,6 +1418,7 @@ mod tests {
             &slot(face, KIND_FLOOR, SurfaceBehavior::Rings),
             Audio::default(),
             None,
+            None,
             0.5,
         )
     }
@@ -1283,6 +1441,7 @@ mod tests {
             &slot(face, KIND_TABLE, SurfaceBehavior::Rings),
             Audio::default(),
             Some(&r),
+            None,
             0.2,
         );
         assert_close!([rows[9][0], rows[9][1]], [o.x, o.y]);

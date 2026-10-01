@@ -232,10 +232,11 @@ impl SurfaceBehavior {
         matches!(self, Self::Embers | Self::Sparks)
     }
 
-    /// Whether the surfaces pass draws a surface running it
+    /// Whether the surfaces pass draws every surface running it
     /// (`surface_fx.rs`): the rings, the streamlines, the curls and the
-    /// pulse. Embers and sparks are the cloud's, the spectrum is still the
-    /// canvas's own draw.
+    /// pulse. Embers and sparks are the cloud's; the spectrum is drawn by
+    /// the pass too since D2, but on the one wall `canvas::WallPick`
+    /// chooses, not on every surface running it.
     pub fn draws_on_face(self) -> bool {
         matches!(
             self,

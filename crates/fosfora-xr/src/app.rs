@@ -977,11 +977,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // knob).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
     // Board #3472: the surfaces pass's clock and its lit faces by shader
-    // (rings, streamlines, curls, pulse) and the faces past its slots, for
+    // (rings, streamlines, curls, pulse, spectrum) and the faces past its slots, for
     // the log (`None` before the first frame, so the first count is logged
     // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<([usize; 4], usize)> = None;
+    let mut surfaces_lit: Option<([usize; 5], usize)> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1948,17 +1948,84 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass,
                 );
             }
+            // Board #3327: the wall spectrum's bars and its wall. Among the
+            // room's walls whose lane says spectrum (by default every
+            // wall), less the ones the runtime hides, the one the wearer
+            // faces, with the pick's hysteresis (decision #3449);
+            // `canvastest ceiling` puts it on the room's ceiling instead.
+            // Since D2 (board #3488) it draws as a slot of the surfaces
+            // pass below, on that one box.
+            let spectrum_box = match canvas.as_mut() {
+                Some(c) => {
+                    c.update(dt, &hop.frame.mel);
+                    canvas_mel = hop.frame.mel.len();
+                    let head = glam::Vec3::from(input.head);
+                    let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                    let face_of = |b: &ObstacleBox| {
+                        crate::canvas::WallFace::of(
+                            glam::Vec3::from(b.center),
+                            glam::Quat::from_array(b.rot),
+                            glam::Vec3::from(b.half),
+                            head,
+                        )
+                    };
+                    let walls: Vec<(usize, crate::canvas::WallFace)> = input
+                        .room_boxes
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, b)| {
+                            let spectrum = crate::surfaces::SurfaceBehavior::Spectrum;
+                            b.kind == crate::surfaces::KIND_WALL
+                                && !b.hidden
+                                && surface_lanes.behavior(i) == spectrum
+                        })
+                        .map(|(i, b)| (i, face_of(b)))
+                        .collect();
+                    let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
+                    let picked = wall_pick
+                        .update(head, forward, &faces, dt)
+                        .map(|k| walls[k]);
+                    let face = if canvas_ceiling {
+                        input
+                            .room_boxes
+                            .iter()
+                            .enumerate()
+                            .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
+                            .map(|(i, b)| (i, face_of(b)))
+                    } else {
+                        picked
+                    };
+                    let now = face.map(|(i, f)| (i, f.center));
+                    if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
+                        match now {
+                            Some((i, c)) => info!(
+                                "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
+                                walls.len(),
+                                c.x,
+                                c.y,
+                                c.z
+                            ),
+                            None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
+                        }
+                    }
+                    canvas_wall = now;
+                    now.map(|w| w.0)
+                }
+                None => None,
+            };
             // Board #3472, D1: the surfaces pass. Every box whose behavior
             // is a surface shader (the rings, the streamlines, and since D2,
-            // board #3488, the curls and the pulse) is lit on
-            // the face the behavior acts on, the stage floor too while the
-            // room has no scene floor (then it stands in for one, as its
-            // emitter flag and the editor's ray take it; beside a scene
-            // floor it would double it, step 2d); a hidden wall never. A
-            // floor's face is leveled and kept above the stage floor, as
-            // the ripple's quad was. The rings need the ripple state
-            // (`debug.fosfora.ripple`); `rippletest ceiling` puts them on
-            // every ceiling for the run, the room file untouched.
+            // board #3488, the curls and the pulse) is lit on the face the
+            // behavior acts on, the stage floor too while the room has no
+            // scene floor (then it stands in for one, as its emitter flag
+            // and the editor's ray take it; beside a scene floor it would
+            // double it, step 2d); a hidden wall never. A floor's face is
+            // leveled and kept above the stage floor, as the ripple's quad
+            // was. The rings need the ripple state (`debug.fosfora.ripple`);
+            // `rippletest ceiling` puts them on every ceiling for the run,
+            // the room file untouched. The spectrum is lit on the one box
+            // picked above (`debug.fosfora.canvas 0`: none), on its face
+            // oriented for the bars; another box on the spectrum is dark.
             {
                 use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
                 let head = glam::Vec3::from(input.head);
@@ -1976,25 +2043,33 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     bar_phase: f.bar_phase,
                     key_tint: [1.0; 3],
                 };
-                let mut counts = [0usize; 4];
+                let mut counts = [0usize; 5];
                 let mut slots = Vec::new();
+                let mut spectrum_sign = 1.0;
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     // The lane's behavior, strength, color index and band
                     // (board #3488; a box past the lanes' rows: the
                     // defaults).
                     let row = surface_lanes.rows().get(k).copied();
-                    let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
+                    let lane = surface_lanes.behavior(k);
+                    let test_rings = ripple_ceiling && b.kind == KIND_CEILING;
+                    let (behavior, strength) = if spectrum_box == Some(k) {
+                        let strength = row
+                            .filter(|_| lane == SurfaceBehavior::Spectrum)
+                            .map_or(1.0, |r| r[1]);
+                        (SurfaceBehavior::Spectrum, strength)
+                    } else if test_rings {
                         (SurfaceBehavior::Rings, 1.0)
                     } else {
-                        (surface_lanes.behavior(k), row.map_or(1.0, |r| r[1]))
+                        (lane, row.map_or(1.0, |r| r[1]))
                     };
                     let (color, band) = match row {
-                        Some(r) if !(ripple_ceiling && b.kind == KIND_CEILING) => {
-                            crate::surfaces::lane_params(r, behavior)
-                        }
+                        Some(r) if behavior == lane => crate::surfaces::lane_params(r, behavior),
                         _ => (0, behavior.default_band()),
                     };
-                    if !behavior.draws_on_face()
+                    let spectrum = behavior == SurfaceBehavior::Spectrum;
+                    if spectrum != (spectrum_box == Some(k))
+                        || (!spectrum && !behavior.draws_on_face())
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
@@ -2007,14 +2082,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         glam::Vec3::from(b.half),
                         head,
                     );
-                    if b.kind == KIND_FLOOR {
+                    if spectrum {
+                        (face, spectrum_sign) = crate::canvas::spectrum_face(face);
+                    } else if b.kind == KIND_FLOOR {
                         face = crate::surface_fx::level_floor(face, stage_top);
                     }
                     match behavior {
                         SurfaceBehavior::Rings => counts[0] += 1,
                         SurfaceBehavior::Streamlines => counts[1] += 1,
                         SurfaceBehavior::Curls => counts[2] += 1,
-                        _ => counts[3] += 1,
+                        SurfaceBehavior::Pulse => counts[3] += 1,
+                        _ => counts[4] += 1,
                     }
                     slots.push(crate::surface_fx::Slot {
                         face,
@@ -2034,21 +2112,26 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
                 }
+                let spectrum = canvas.as_ref().map(|c| crate::surface_fx::Spectrum {
+                    canvas: c,
+                    sign: spectrum_sign,
+                });
                 let faces: Vec<_> = slots
                     .iter()
-                    .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), t))
+                    .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
                     .collect();
                 let dropped = faces
                     .len()
                     .saturating_sub(crate::surface_fx::MAX_SLOTS);
                 if Some((counts, dropped)) != surfaces_lit {
                     info!(
-                        "surfaces: {} lit (rings {}, streamlines {}, curls {}, pulse {})",
+                        "surfaces: {} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {})",
                         faces.len(),
                         counts[0],
                         counts[1],
                         counts[2],
-                        counts[3]
+                        counts[3],
+                        counts[4]
                     );
                     if dropped > 0 {
                         info!(
@@ -2059,64 +2142,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     surfaces_lit = Some((counts, dropped));
                 }
                 gfx.set_surfaces(&faces);
-            }
-            if let Some(c) = canvas.as_mut() {
-                c.update(dt, &hop.frame.mel);
-                canvas_mel = hop.frame.mel.len();
-                let head = glam::Vec3::from(input.head);
-                let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                let face_of = |b: &ObstacleBox| {
-                    crate::canvas::WallFace::of(
-                        glam::Vec3::from(b.center),
-                        glam::Quat::from_array(b.rot),
-                        glam::Vec3::from(b.half),
-                        head,
-                    )
-                };
-                // The room's walls on the spectrum (by default every wall),
-                // less the ones the runtime hides.
-                let walls: Vec<(usize, crate::canvas::WallFace)> = input
-                    .room_boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, b)| {
-                        let spectrum = crate::surfaces::SurfaceBehavior::Spectrum;
-                        b.kind == crate::surfaces::KIND_WALL
-                            && !b.hidden
-                            && surface_lanes.behavior(i) == spectrum
-                    })
-                    .map(|(i, b)| (i, face_of(b)))
-                    .collect();
-                let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
-                let picked = wall_pick
-                    .update(head, forward, &faces, dt)
-                    .map(|k| walls[k]);
-                let face = if canvas_ceiling {
-                    input
-                        .room_boxes
-                        .iter()
-                        .enumerate()
-                        .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
-                        .map(|(i, b)| (i, face_of(b)))
-                } else {
-                    picked
-                };
-                let now = face.map(|(i, f)| (i, f.center));
-                if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
-                    match now {
-                        Some((i, c)) => info!(
-                            "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
-                            walls.len(),
-                            c.x,
-                            c.y,
-                            c.z
-                        ),
-                        None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
-                    }
-                }
-                canvas_wall = now;
-                let rows = face.map(|(_, f)| c.uniform(f.corners()));
-                gfx.set_canvas(rows.as_ref());
             }
             if let Some(scene) = scene {
                 match music.analysis.as_mut().or(live_audio.as_mut()) {
