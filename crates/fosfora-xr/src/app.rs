@@ -939,6 +939,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Its label at the surface after each action (`label.rs`).
     let mut label = crate::label::Label::default();
     let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
+    // Board #3488: the room scan's state on the same label while the
+    // editor's shows nothing.
+    let mut scan_label = crate::label::ScanLabel::default();
+    let mut scan_logged: Option<crate::label::ScanState> = None;
     let mut edit_was_on = false;
     let mut edit_status = String::from(EDIT_OFF);
     // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
@@ -1090,6 +1094,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let scene_mut = scene.as_mut();
         let frames_window = stats.last;
         let has_room = session.has_room();
+        let scan_state = session.scan_state();
+        if scan_state != scan_logged {
+            if let Some(state) = scan_state {
+                info!(
+                    "room scan: {:?}, the label reads \"{}\"",
+                    state,
+                    crate::label::scan_text(state)
+                );
+            }
+            scan_logged = scan_state;
+        }
         // The hand menu's rescan, carried out of the frame closure (the
         // session is borrowed inside it).
         let mut rescan = false;
@@ -1664,18 +1679,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     if !edit_on {
                         label.clear();
                     }
-                    label_texture.show(
-                        &gfx,
-                        label.now().map(|l| {
-                            let pose = crate::label::billboard(
-                                l.point,
-                                l.normal,
-                                head,
-                                glam::Quat::from_array(input.head_rot),
-                            );
-                            (l.text, l.alpha, pose)
-                        }),
-                    );
                     edit_status = if !edit_on {
                         EDIT_OFF.to_owned()
                     } else if let Some(h) = frame.hit {
@@ -1906,6 +1909,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     input.hands.tracked,
                     input.hands.mesh_ready,
                 );
+            }
+            // The label: the room editor's after an action at its hit,
+            // else the room scan's (board #3488), held in front of the
+            // head: "Scanning the room…" until the query returns anchors,
+            // "Room: 17 surfaces" when it does, "No room found..." when
+            // the retries give up.
+            scan_label.step(scan_state, dt);
+            {
+                let head = glam::Vec3::from(input.head);
+                let head_rot = glam::Quat::from_array(input.head_rot);
+                let shown = label
+                    .now()
+                    .map(|l| {
+                        let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
+                        (l.text, l.alpha, pose)
+                    })
+                    .or_else(|| {
+                        scan_label.now().map(|(text, alpha)| {
+                            (text, alpha, crate::label::scan_billboard(head, head_rot))
+                        })
+                    });
+                label_texture.show(&gfx, shown);
             }
             // The Music row: a decode that finished starts the clip; a
             // failed decode or start turns the row back to "Music: play".

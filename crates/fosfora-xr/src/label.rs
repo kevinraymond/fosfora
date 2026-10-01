@@ -22,6 +22,18 @@
 //! along the face normal and [`UP_M`] up, facing the head, its right the
 //! head's right projected onto the plane across the line of sight to it
 //! (so it rolls with the head and never mirrors), its up from those two.
+//!
+//! **The scan label** (board #3488). A launch whose scene query has not
+//! returned anchors was silent in the headset (the log said "scene: no
+//! anchors yet, retrying"; 0 anchors on eight launches in a row, Sep 30).
+//! The same label, with no hit, says where the room scan is
+//! ([`ScanLabel`], from `room.rs`'s [`ScanState`]): "Scanning the room…"
+//! held while the query has not returned anchors, "Room: 17 surfaces" for
+//! [`SCAN_FOUND_S`] when it does, "No room found. Rescan from the hand
+//! menu" for [`SCAN_NONE_S`] when the retries give up, each fading over
+//! [`FADE_S`]; re-posed every frame [`SCAN_DISTANCE_M`] in front of the
+//! head at eye height ([`scan_billboard`]). The editor's label, while one
+//! shows, takes its place.
 
 use glam::{Quat, Vec3};
 
@@ -121,7 +133,23 @@ pub struct Billboard {
 /// seen from `head` turned by `head_rot`, [`label_w_m`] wide for its
 /// center's distance from the head.
 pub fn billboard(point: Vec3, normal: Vec3, head: Vec3, head_rot: Quat) -> Billboard {
-    let center = point + normal.normalize_or_zero() * OUT_M + Vec3::Y * UP_M;
+    facing(
+        point + normal.normalize_or_zero() * OUT_M + Vec3::Y * UP_M,
+        head,
+        head_rot,
+    )
+}
+
+/// The scan label's pose: [`SCAN_DISTANCE_M`] in front of `head` along its
+/// view turned level, at eye height, facing the head.
+pub fn scan_billboard(head: Vec3, head_rot: Quat) -> Billboard {
+    let ahead = head_rot * Vec3::NEG_Z;
+    let level = Vec3::new(ahead.x, 0.0, ahead.z).normalize_or(Vec3::NEG_Z);
+    facing(head + level * SCAN_DISTANCE_M, head, head_rot)
+}
+
+/// A label centered at `center` facing `head` turned by `head_rot`.
+fn facing(center: Vec3, head: Vec3, head_rot: Quat) -> Billboard {
     let view = (center - head).normalize_or(head_rot * Vec3::NEG_Z);
     let head_right = head_rot * Vec3::X;
     // The head's right across the line of sight; with the label nearly
@@ -190,6 +218,73 @@ impl Label {
                 point: *point,
                 normal: *normal,
             })
+    }
+}
+
+/// How long the scan label names the room once found, and says none was
+/// found (s), before its fade; how far in front of the head it floats (m).
+pub const SCAN_FOUND_S: f32 = 3.0;
+pub const SCAN_NONE_S: f32 = 6.0;
+pub const SCAN_DISTANCE_M: f32 = 1.2;
+
+/// Where the room's scene query is (`Room::scan_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanState {
+    /// No query has returned anchors yet (the first, its retries, Space
+    /// Setup and the query after it).
+    Scanning,
+    /// The last query that returned anchors returned this many.
+    Found(usize),
+    /// The retries gave up with no anchors.
+    None,
+}
+
+/// The scan label's words for `state`.
+pub fn scan_text(state: ScanState) -> String {
+    match state {
+        ScanState::Scanning => "Scanning the room\u{2026}".to_owned(),
+        ScanState::Found(1) => "Room: 1 surface".to_owned(),
+        ScanState::Found(n) => format!("Room: {n} surfaces"),
+        ScanState::None => "No room found. Rescan from the hand menu".to_owned(),
+    }
+}
+
+/// The scan label's alpha `age` seconds into `state`: held while
+/// scanning; full for [`SCAN_FOUND_S`] or [`SCAN_NONE_S`], then linearly
+/// to 0 over [`FADE_S`].
+pub fn scan_fade(state: ScanState, age: f32) -> f32 {
+    let hold = match state {
+        ScanState::Scanning => return 1.0,
+        ScanState::Found(_) => SCAN_FOUND_S,
+        ScanState::None => SCAN_NONE_S,
+    };
+    ((hold + FADE_S - age) / FADE_S).clamp(0.0, 1.0)
+}
+
+/// The scan label across frames: the state it last saw, its words and how
+/// long it has been in it. A change of state (another anchor count too)
+/// starts it over; the same state ages it.
+#[derive(Debug, Clone, Default)]
+pub struct ScanLabel {
+    shown: Option<(ScanState, String, f32)>,
+}
+
+impl ScanLabel {
+    /// This frame's scan `state` (`None` without a room: nothing shows),
+    /// `dt` seconds after the last.
+    pub fn step(&mut self, state: Option<ScanState>, dt: f32) {
+        match (state, self.shown.as_mut()) {
+            (Some(s), Some((was, _, age))) if *was == s => *age += dt.max(0.0),
+            (Some(s), _) => self.shown = Some((s, scan_text(s), 0.0)),
+            (None, _) => self.shown = None,
+        }
+    }
+
+    /// The label's words and alpha now, `None` when it shows nothing.
+    pub fn now(&self) -> Option<(&str, f32)> {
+        let (state, text, age) = self.shown.as_ref()?;
+        let alpha = scan_fade(*state, *age);
+        (alpha > 0.0).then_some((text.as_str(), alpha))
     }
 }
 
@@ -540,6 +635,86 @@ mod tests {
         assert!((b.center.distance(head) - 8.0).abs() < 1e-4, "{b:?}");
         assert!((b.half_w - 0.44).abs() < 1e-4, "{b:?}");
         assert!((b.half_h - 0.44 * 192.0 / 1024.0).abs() < 1e-5, "{b:?}");
+    }
+
+    #[test]
+    fn the_scan_label_says_where_the_room_scan_is() {
+        assert_eq!(scan_text(ScanState::Scanning), "Scanning the room\u{2026}");
+        assert_eq!(scan_text(ScanState::Found(17)), "Room: 17 surfaces");
+        assert_eq!(scan_text(ScanState::Found(1)), "Room: 1 surface");
+        assert_eq!(
+            scan_text(ScanState::None),
+            "No room found. Rescan from the hand menu"
+        );
+        // Scanning holds however long; found shows 3 s then fades; none
+        // 6 s.
+        assert_close!(scan_fade(ScanState::Scanning, 600.0), 1.0);
+        for (state, hold) in [
+            (ScanState::Found(17), SCAN_FOUND_S),
+            (ScanState::None, SCAN_NONE_S),
+        ] {
+            assert_close!(scan_fade(state, 0.0), 1.0);
+            assert_close!(scan_fade(state, hold), 1.0);
+            assert_close!(scan_fade(state, hold + 0.5 * FADE_S), 0.5);
+            assert_close!(scan_fade(state, hold + FADE_S), 0.0);
+        }
+        let dt = 1.0 / 72.0;
+        let run = |l: &mut ScanLabel, state, s: f32| {
+            for _ in 0..(s / dt).round() as usize {
+                l.step(state, dt);
+            }
+        };
+        let mut l = ScanLabel::default();
+        assert_eq!(l.now(), None);
+        // Eight retries' worth of scanning: held at full.
+        run(&mut l, Some(ScanState::Scanning), 24.0);
+        assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
+        // Found: named, then gone after 3 s and its fade.
+        run(&mut l, Some(ScanState::Found(17)), 2.9);
+        assert_eq!(l.now(), Some(("Room: 17 surfaces", 1.0)));
+        run(&mut l, Some(ScanState::Found(17)), 0.6);
+        assert_eq!(l.now(), None);
+        // A requery that returns the same count says nothing again;
+        // another count is news.
+        run(&mut l, Some(ScanState::Found(17)), 10.0);
+        assert_eq!(l.now(), None);
+        l.step(Some(ScanState::Found(18)), dt);
+        assert_eq!(l.now().map(|n| n.0), Some("Room: 18 surfaces"));
+        // None: 6 s, then gone.
+        let mut l = ScanLabel::default();
+        run(&mut l, Some(ScanState::None), 5.9);
+        assert_eq!(
+            l.now().map(|n| n.0),
+            Some("No room found. Rescan from the hand menu")
+        );
+        run(&mut l, Some(ScanState::None), 0.6);
+        assert_eq!(l.now(), None);
+        // A rescan scans again: held; without a room, nothing.
+        l.step(Some(ScanState::Scanning), dt);
+        assert!(l.now().is_some());
+        l.step(None, dt);
+        assert_eq!(l.now(), None);
+    }
+
+    #[test]
+    fn the_scan_label_floats_ahead_at_eye_height_facing_the_head() {
+        let head = Vec3::new(0.3, 1.2, -0.4);
+        // Looking down at the desk and turned: still level, 1.2 m ahead.
+        let rot = Quat::from_rotation_y(0.7) * Quat::from_rotation_x(-0.8);
+        let b = scan_billboard(head, rot);
+        assert_close!(b.center.y, head.y);
+        assert!((b.center.distance(head) - SCAN_DISTANCE_M).abs() < 1e-5);
+        let ahead = rot * Vec3::NEG_Z;
+        let level = Vec3::new(ahead.x, 0.0, ahead.z).normalize();
+        assert!((b.center - head).normalize().abs_diff_eq(level, 1e-5));
+        assert_orthonormal_and_facing(&b, head);
+        // The narrowest label at 1.2 m.
+        assert_close!(b.half_w, 0.5 * LABEL_W_MIN_M);
+        // Straight down: ahead is the view's level fallback.
+        let down = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let b = scan_billboard(head, down);
+        assert!((b.center.distance(head) - SCAN_DISTANCE_M).abs() < 1e-4);
+        assert!(b.center.y.is_finite() && (b.center.y - head.y).abs() < 1e-5);
     }
 
     #[test]
