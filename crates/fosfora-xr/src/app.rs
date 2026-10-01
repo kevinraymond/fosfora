@@ -243,7 +243,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, strength 0..1 (default 1); "clear" drops
+    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, curls, pulse, strength 0..1 (default 1); "clear" drops
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
@@ -974,10 +974,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // knob).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
     // Board #3472: the surfaces pass's clock and its lit faces by shader
-    // (rings, streamlines), for the log (`None` before the first frame, so
-    // the first count is logged too).
+    // (rings, streamlines, curls, pulse) and the faces past its slots, for
+    // the log (`None` before the first frame, so the first count is logged
+    // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<[usize; 2]> = None;
+    let mut surfaces_lit: Option<([usize; 4], usize)> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1010,6 +1011,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut last_t = 0.0f32;
     let mut frame_index = 0u64;
     let mut beat_env = 0.0f32;
+    // Board #3488: 1 on the downbeat, decaying with a 0.6 s time constant
+    // (`surface_fx::downbeat_step`): the pulse's envelope.
+    let mut downbeat_env = 0.0f32;
     let flash = debug_prop("debug.fosfora.flash").as_deref() == Some("1");
     let mut flash_frames = 0u32;
 
@@ -1929,6 +1933,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
+            downbeat_env = crate::surface_fx::downbeat_step(downbeat_env, hop.downbeat_fired, dt);
             surface_clock.advance(dt, beat_env);
             if let Some(r) = ripple.as_mut() {
                 r.update(
@@ -1941,7 +1946,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 );
             }
             // Board #3472, D1: the surfaces pass. Every box whose behavior
-            // is a surface shader (the rings, the streamlines) is lit on
+            // is a surface shader (the rings, the streamlines, and since D2,
+            // board #3488, the curls and the pulse) is lit on
             // the face the behavior acts on, the stage floor too while the
             // room has no scene floor (then it stands in for one, as its
             // emitter flag and the editor's ray take it; beside a scene
@@ -1961,8 +1967,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     bass: f.bass,
                     beat: beat_env,
                     clock: surface_clock.seconds(),
+                    mid: f.mid,
+                    high: f.presence.max(f.brilliance),
+                    downbeat: downbeat_env,
+                    bar_phase: f.bar_phase,
                 };
-                let mut counts = [0usize; 2];
+                let mut counts = [0usize; 4];
                 let mut faces = Vec::new();
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
@@ -1994,26 +2004,35 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         kind: b.kind,
                         behavior,
                         strength,
+                        band: behavior.default_band(),
                     };
-                    counts[usize::from(behavior == SurfaceBehavior::Streamlines)] += 1;
+                    match behavior {
+                        SurfaceBehavior::Rings => counts[0] += 1,
+                        SurfaceBehavior::Streamlines => counts[1] += 1,
+                        SurfaceBehavior::Curls => counts[2] += 1,
+                        _ => counts[3] += 1,
+                    }
                     faces.push(crate::surface_fx::rows(&slot, audio, ripple.as_ref(), t));
                 }
-                if Some(counts) != surfaces_lit {
-                    let dropped = faces
-                        .len()
-                        .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                let dropped = faces
+                    .len()
+                    .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                if Some((counts, dropped)) != surfaces_lit {
                     info!(
-                        "surfaces: {} lit (rings {}, streamlines {}){}",
+                        "surfaces: {} lit (rings {}, streamlines {}, curls {}, pulse {})",
                         faces.len(),
                         counts[0],
                         counts[1],
-                        if dropped > 0 {
-                            format!(", {dropped} past the pass's slots not drawn")
-                        } else {
-                            String::new()
-                        }
+                        counts[2],
+                        counts[3]
                     );
-                    surfaces_lit = Some(counts);
+                    if dropped > 0 {
+                        info!(
+                            "surfaces: dropped {dropped} (the pass holds {})",
+                            crate::surface_fx::MAX_SLOTS
+                        );
+                    }
+                    surfaces_lit = Some((counts, dropped));
                 }
                 gfx.set_surfaces(&faces);
             }

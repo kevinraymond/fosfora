@@ -565,9 +565,9 @@ mod tests {
         let text = format!(
             r#"{{ "version": 1,
                 "kind_defaults": {{ "table": "glitter", "wall": "none", "sofa": "embers",
-                                    "floor": "pulse" }},
+                                    "floor": "pulses" }},
                 "anchors": [
-                  {{ "uuid": "{}", "kind": "table", "behavior": "curls" }},
+                  {{ "uuid": "{}", "kind": "table", "behavior": "drips" }},
                   {{ "uuid": "nope", "kind": "table", "behavior": "embers" }},
                   {{ "uuid": "{}", "kind": "other", "behavior": "SPARKS" }}
                 ] }}"#,
@@ -577,11 +577,11 @@ mod tests {
         let (file, skipped) = RoomFile::from_json(&text).expect("reads");
         assert_eq!(skipped.len(), 5, "{skipped:?}");
         // The unknown table default stays built-in, the known wall one
-        // takes; the reserved floor one is unset: the built-in rings.
+        // takes; the unknown floor one is unset: the built-in rings.
         assert_eq!(file.kind_default(KIND_TABLE), B::Embers);
         assert_eq!(file.kind_default(KIND_WALL), B::None);
         assert_eq!(file.kind_default(KIND_FLOOR), B::Rings);
-        // The entry with a reserved behavior is dropped: its kind default.
+        // The entry with an unknown behavior is dropped: its kind default.
         assert_eq!(file.entry(&uuid(1)), None);
         // A missing strength is full.
         assert_eq!(

@@ -62,10 +62,10 @@ pub fn kind_from_name(name: &str) -> Option<u32> {
 }
 
 /// What a surface does (board #3326): the value of its lane. Ids 0 to 3
-/// are particle rules and the wall spectrum; 4 and 5 are the surface
+/// are particle rules and the wall spectrum; 4 to 7 are the surface
 /// shaders of the surfaces pass (`surface_fx.rs`, board #3472): the rings
-/// (the floor ripple, renamed, any face) and the streamlines. Ids 6 and 7
-/// (curls, pulse: [`RESERVED_BEHAVIORS`]) are kept for step D2.
+/// (the floor ripple, renamed, any face), the streamlines (D1), the curls
+/// and the pulse (D2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurfaceBehavior {
     /// Nothing: the surface is an obstacle only.
@@ -86,11 +86,18 @@ pub enum SurfaceBehavior {
     /// Lines of light flowing across the face along a curl-noise field
     /// (`surface_fx.rs`, the mockup's tabletop).
     Streamlines,
+    /// The streamlines' field tighter and faster, read as swirls: closed
+    /// curls with a faint fill (`surface_fx.rs`, the mockup's chairs).
+    Curls,
+    /// A whole-face glow that jumps on the downbeat and breathes with the
+    /// bar (`surface_fx.rs`, for frames, lamps and anything small).
+    Pulse,
 }
 
-/// Behavior names the catalogue reserves for step D2: the knob and the
-/// room file reject them instead of reading them as unknown.
-pub const RESERVED_BEHAVIORS: [&str; 2] = ["curls", "pulse"];
+/// Behavior names the catalogue reserves for a later step: the knob and
+/// the room file reject them instead of reading them as unknown. Empty
+/// since D2 made curls and pulse real.
+pub const RESERVED_BEHAVIORS: [&str; 0] = [];
 
 /// The old name of [`SurfaceBehavior::Rings`], still read (rooms saved
 /// before D1, the knob's habit); a save writes `rings`.
@@ -98,13 +105,15 @@ pub const RINGS_ALIAS: &str = "ripple";
 
 impl SurfaceBehavior {
     /// Every behavior, in id order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::None,
         Self::Embers,
         Self::Sparks,
         Self::Spectrum,
         Self::Rings,
         Self::Streamlines,
+        Self::Curls,
+        Self::Pulse,
     ];
 
     /// The catalogue id (`XR_BEHAVIOR_*` in `flux_xr_sim.wgsl`, `BEHAVIOR_*`
@@ -128,6 +137,8 @@ impl SurfaceBehavior {
             Self::Spectrum => "spectrum",
             Self::Rings => "rings",
             Self::Streamlines => "streamlines",
+            Self::Curls => "curls",
+            Self::Pulse => "pulse",
         }
     }
 
@@ -143,7 +154,7 @@ impl SurfaceBehavior {
     }
 
     /// The next behavior in the whole catalogue, wrapping: none, embers,
-    /// sparks, spectrum, rings, streamlines, none. The room editor steps
+    /// sparks, spectrum, rings, streamlines, curls, pulse, none. The room editor steps
     /// through a kind's own ([`Self::next_for`]); this one is for the
     /// knob's side.
     #[must_use]
@@ -187,10 +198,25 @@ impl SurfaceBehavior {
     }
 
     /// Whether the surfaces pass draws a surface running it
-    /// (`surface_fx.rs`): the rings and the streamlines. Embers and sparks
-    /// are the cloud's, the spectrum is still the canvas's own draw.
+    /// (`surface_fx.rs`): the rings, the streamlines, the curls and the
+    /// pulse. Embers and sparks are the cloud's, the spectrum is still the
+    /// canvas's own draw.
     pub fn draws_on_face(self) -> bool {
-        matches!(self, Self::Rings | Self::Streamlines)
+        matches!(
+            self,
+            Self::Rings | Self::Streamlines | Self::Curls | Self::Pulse
+        )
+    }
+
+    /// The audio band a surface running it follows when its lane does not
+    /// name one (`surface_fx::BAND_*`): the bass for the rings and the
+    /// pulse, which hit with the kick; the rms for the rest, whose flow
+    /// wants the whole mix.
+    pub fn default_band(self) -> u32 {
+        match self {
+            Self::Rings | Self::Pulse => crate::surface_fx::BAND_BASS,
+            _ => crate::surface_fx::BAND_RMS,
+        }
     }
 
     /// What a surface of `kind` runs with no assignment: tables shed
@@ -1081,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_names_and_numbers_the_six_behaviors() {
+    fn the_catalogue_names_and_numbers_the_eight_behaviors() {
         use SurfaceBehavior as B;
         for (id, b) in B::ALL.into_iter().enumerate() {
             assert_eq!(b.id() as usize, id);
@@ -1097,27 +1123,39 @@ mod tests {
                 "sparks",
                 "spectrum",
                 "rings",
-                "streamlines"
+                "streamlines",
+                "curls",
+                "pulse"
             ]
         );
         assert_eq!((B::Rings.id(), B::Streamlines.id()), (4, 5));
+        assert_eq!((B::Curls.id(), B::Pulse.id()), (6, 7));
         assert_eq!(B::from_name(" Embers "), Some(B::Embers));
         // The ripple's old name reads as the rings; the name is the new one.
         assert_eq!(B::from_name("ripple"), Some(B::Rings));
         assert_eq!(B::from_name(" RIPPLE "), Some(B::Rings));
         assert_eq!(B::Rings.name(), "rings");
-        // 6 and 7 are reserved for D2.
-        for id in 6..8 {
+        // D2 made 6 and 7 real: nothing is reserved, 8 on is unknown.
+        assert!(RESERVED_BEHAVIORS.is_empty());
+        assert_eq!(B::from_name("Curls"), Some(B::Curls));
+        assert_eq!(B::from_name(" PULSE "), Some(B::Pulse));
+        for id in 8..16 {
             assert_eq!(B::from_id(id), None);
         }
-        for name in RESERVED_BEHAVIORS {
-            assert_eq!(B::from_name(name), None);
-        }
-        assert_eq!(RESERVED_BEHAVIORS, ["curls", "pulse"]);
         let emitting: Vec<_> = B::ALL.into_iter().filter(|b| b.emits()).collect();
         assert_eq!(emitting, vec![B::Embers, B::Sparks]);
         let drawn: Vec<_> = B::ALL.into_iter().filter(|b| b.draws_on_face()).collect();
-        assert_eq!(drawn, vec![B::Rings, B::Streamlines]);
+        assert_eq!(drawn, vec![B::Rings, B::Streamlines, B::Curls, B::Pulse]);
+        // The rings and the pulse hit with the bass; the flows follow the
+        // whole mix.
+        let bass: Vec<_> = B::ALL
+            .into_iter()
+            .filter(|b| b.default_band() == crate::surface_fx::BAND_BASS)
+            .collect();
+        assert_eq!(bass, vec![B::Rings, B::Pulse]);
+        for b in B::ALL {
+            assert!(b.default_band() < crate::surface_fx::BANDS);
+        }
     }
 
     #[test]
@@ -1250,8 +1288,9 @@ mod tests {
         );
         // The strength is clamped; a reserved id runs nothing.
         assert_close!(lane_row(B::Embers, 3.0, [0.0; 2])[1], 1.0);
-        assert_eq!(lane_behavior([7.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
-        assert_eq!(lane_behavior([8.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
+        assert_eq!(lane_behavior([7.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Curls);
+        assert_eq!(lane_behavior([8.0, 1.0, 0.0, 0.0], KIND_TABLE), B::Pulse);
+        assert_eq!(lane_behavior([9.0, 1.0, 0.0, 0.0], KIND_TABLE), B::None);
     }
 
     #[test]

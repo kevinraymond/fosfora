@@ -20,8 +20,8 @@
 //! 8 unique among the room's anchors), a box index `#<k>` (this frame's
 //! order, the stage floor too) or a kind name (the class assignment: the
 //! kind's default and every anchor of that kind); the behavior one of
-//! `none embers sparks spectrum rings streamlines` (`ripple` reads as
-//! `rings`); the strength 0..1, 1 by default.
+//! `none embers sparks spectrum rings streamlines curls pulse` (`ripple`
+//! reads as `rings`); the strength 0..1, 1 by default.
 //! `clear` alone drops every entry and puts the kind defaults back. A bad
 //! value applies nothing.
 
@@ -109,9 +109,11 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
             .iter()
             .any(|r| r.eq_ignore_ascii_case(behavior))
         {
-            format!("'{behavior}' is reserved for step D2")
+            format!("'{behavior}' is reserved for a later step")
         } else {
-            format!("unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines)")
+            format!(
+                "unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines curls pulse)"
+            )
         }
     })?;
     let strength = match strength {
@@ -663,7 +665,7 @@ mod tests {
             "table=",
             "table=glitter",
             "wall=drips",
-            "wall=pulse",
+            "wall=pulses",
             "table=embers@1.5",
             "table=embers@-0.1",
             "table=embers@NaN",
@@ -680,9 +682,13 @@ mod tests {
         ] {
             assert!(parse_knob(bad).is_err(), "'{bad}' parsed");
         }
-        assert!(
-            parse_knob("floor=curls").unwrap_err().contains("reserved"),
-            "the reserved names say so"
+        // D2's names read.
+        assert_eq!(
+            parse_knob("floor=curls,frame=Pulse@0.5"),
+            Ok(Knob::Assign(vec![
+                assign(Target::Kind(crate::surfaces::KIND_FLOOR), B::Curls, 1.0),
+                assign(Target::Kind(crate::surfaces::KIND_FRAME), B::Pulse, 0.5),
+            ]))
         );
     }
 
@@ -810,7 +816,9 @@ mod tests {
         assert_eq!(B::Sparks.next(), B::Spectrum);
         assert_eq!(B::Spectrum.next(), B::Rings);
         assert_eq!(B::Rings.next(), B::Streamlines);
-        assert_eq!(B::Streamlines.next(), B::None);
+        assert_eq!(B::Streamlines.next(), B::Curls);
+        assert_eq!(B::Curls.next(), B::Pulse);
+        assert_eq!(B::Pulse.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
