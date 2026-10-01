@@ -240,10 +240,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
     //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
-    //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
+    //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, curls, pulse, strength 0..1 (default 1); "clear" drops
+    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, curls, pulse, strength 0..1 (default 1); board #3488:
+    //       an optional ":<color>[:<band>]" after the behavior, color 0..8 (0 the kind's own, 1 blue, 2 violet, 3 warm white, 4 amber,
+    //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
@@ -1963,7 +1965,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let stage_k = input.room_boxes.len();
                 let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
-                let audio = crate::surface_fx::Audio {
+                let mut audio = crate::surface_fx::Audio {
                     rms: f.rms,
                     bass: f.bass,
                     beat: beat_env,
@@ -1972,17 +1974,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     high: f.presence.max(f.brilliance),
                     downbeat: downbeat_env,
                     bar_phase: f.bar_phase,
+                    key_tint: [1.0; 3],
                 };
                 let mut counts = [0usize; 4];
-                let mut faces = Vec::new();
+                let mut slots = Vec::new();
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
+                    // The lane's behavior, strength, color index and band
+                    // (board #3488; a box past the lanes' rows: the
+                    // defaults).
+                    let row = surface_lanes.rows().get(k).copied();
                     let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
                         (SurfaceBehavior::Rings, 1.0)
                     } else {
-                        (
-                            surface_lanes.behavior(k),
-                            surface_lanes.rows().get(k).map_or(1.0, |r| r[1]),
-                        )
+                        (surface_lanes.behavior(k), row.map_or(1.0, |r| r[1]))
+                    };
+                    let (color, band) = match row {
+                        Some(r) if !(ripple_ceiling && b.kind == KIND_CEILING) => {
+                            crate::surfaces::lane_params(r, behavior)
+                        }
+                        _ => (0, behavior.default_band()),
                     };
                     if !behavior.draws_on_face()
                         || b.hidden
@@ -2000,21 +2010,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     if b.kind == KIND_FLOOR {
                         face = crate::surface_fx::level_floor(face, stage_top);
                     }
-                    let slot = crate::surface_fx::Slot {
-                        face,
-                        kind: b.kind,
-                        behavior,
-                        strength,
-                        band: behavior.default_band(),
-                    };
                     match behavior {
                         SurfaceBehavior::Rings => counts[0] += 1,
                         SurfaceBehavior::Streamlines => counts[1] += 1,
                         SurfaceBehavior::Curls => counts[2] += 1,
                         _ => counts[3] += 1,
                     }
-                    faces.push(crate::surface_fx::rows(&slot, audio, ripple.as_ref(), t));
+                    slots.push(crate::surface_fx::Slot {
+                        face,
+                        kind: b.kind,
+                        behavior,
+                        strength,
+                        color,
+                        band,
+                    });
                 }
+                // The key's tint only when a lit face asks for it: the
+                // desktop's key hue from core's binding sources, which
+                // builds a map of every source.
+                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY) {
+                    let hue = fosfora_app::bindings::sources::collect_audio(&f)
+                        .get("audio.key_hue")
+                        .map_or(0.5, |v| v.0);
+                    audio.key_tint = crate::surfaces::key_tint(hue);
+                }
+                let faces: Vec<_> = slots
+                    .iter()
+                    .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), t))
+                    .collect();
                 let dropped = faces
                     .len()
                     .saturating_sub(crate::surface_fx::MAX_SLOTS);

@@ -277,19 +277,30 @@ impl SurfaceBehavior {
     }
 }
 
-/// The surfaces pass's color per kind (linear RGB, board #3472), the
-/// mockup's family: tables a clear blue, floors violet, walls the canvas's
-/// warm white, storage and other volumes green, frames and ceilings amber.
-/// In [`KIND_NAMES`]' order. The color is the surface's and the shape is
-/// the behavior's: two surfaces on the same behavior differ by color, two
-/// behaviors on one surface by shape, never by hue alone.
+/// The surface palette's colors (linear RGB): the mockup's family, each
+/// bright, so on the dark passthrough it reads as light.
+pub const BLUE: [f32; 3] = [0.22, 0.52, 1.0];
+pub const VIOLET: [f32; 3] = [0.58, 0.32, 1.0];
+pub const WARM_WHITE: [f32; 3] = [1.0, 0.86, 0.68];
+pub const AMBER: [f32; 3] = [1.0, 0.62, 0.18];
+pub const GREEN: [f32; 3] = [0.3, 1.0, 0.5];
+pub const TEAL: [f32; 3] = [0.15, 1.0, 0.85];
+pub const ROSE: [f32; 3] = [1.0, 0.38, 0.6];
+
+/// The surfaces pass's color per kind (board #3472), the mockup's family:
+/// tables a clear blue, floors violet, walls the canvas's warm white,
+/// storage and other volumes green, frames and ceilings amber. In
+/// [`KIND_NAMES`]' order. The color is the surface's and the shape is the
+/// behavior's: two surfaces on the same behavior differ by color, two
+/// behaviors on one surface by shape, never by hue alone. A lane's color
+/// index 0 is this ([`surface_color`]).
 pub const PALETTE: [(u32, [f32; 3]); 6] = [
-    (KIND_TABLE, [0.22, 0.52, 1.0]),
-    (KIND_FLOOR, [0.58, 0.32, 1.0]),
-    (KIND_WALL, [1.0, 0.86, 0.68]),
-    (KIND_CEILING, [1.0, 0.62, 0.18]),
-    (KIND_FRAME, [1.0, 0.62, 0.18]),
-    (KIND_OTHER, [0.3, 1.0, 0.5]),
+    (KIND_TABLE, BLUE),
+    (KIND_FLOOR, VIOLET),
+    (KIND_WALL, WARM_WHITE),
+    (KIND_CEILING, AMBER),
+    (KIND_FRAME, AMBER),
+    (KIND_OTHER, GREEN),
 ];
 
 /// The color of a surface of `kind` in the surfaces pass ([`PALETTE`]); an
@@ -302,13 +313,64 @@ pub fn palette(kind: u32) -> [f32; 3] {
         .map_or([1.0; 3], |(_, c)| *c)
 }
 
+/// The surface palette a lane's color index (`z`, board #3488) picks from
+/// 1 on: blue, violet, warm white, amber, green, teal, rose; index
+/// [`COLOR_KEY`] is the key's tint ([`key_tint`]) and 0 the kind's own
+/// color ([`palette`]).
+pub const SURFACE_PALETTE: [[f32; 3]; 7] = [BLUE, VIOLET, WARM_WHITE, AMBER, GREEN, TEAL, ROSE];
+/// The color index of the key's tint, the last one.
+pub const COLOR_KEY: u32 = 8;
+/// How saturated the key's tint is: a little short of the pure hue, so
+/// the light keeps some white in it as the rest of the palette does.
+pub const KEY_TINT_SATURATION: f32 = 0.8;
+
+/// The color of color index `index` on a surface of `kind` while the key's
+/// tint is `key`: 0 (or anything past [`COLOR_KEY`]) the kind's own
+/// ([`palette`]), 1 to 7 [`SURFACE_PALETTE`], [`COLOR_KEY`] the key's.
+pub fn surface_color(index: u32, kind: u32, key: [f32; 3]) -> [f32; 3] {
+    match index {
+        COLOR_KEY => key,
+        i @ 1..COLOR_KEY => SURFACE_PALETTE[i as usize - 1],
+        _ => palette(kind),
+    }
+}
+
+/// The key's tint: the desktop's key-locked hue (`audio.key_hue`, the
+/// circle of fifths, eased toward 0.5 as the key's confidence falls; core's
+/// `bindings::sources`) as a color at full value, [`KEY_TINT_SATURATION`]
+/// saturated. The hexcone's HSV to RGB.
+pub fn key_tint(hue: f32) -> [f32; 3] {
+    let h = hue.rem_euclid(1.0) * 6.0;
+    let channel = |n: f32| {
+        let k = (n + h) % 6.0;
+        1.0 - KEY_TINT_SATURATION * k.min(4.0 - k).clamp(0.0, 1.0)
+    };
+    [channel(5.0), channel(3.0), channel(1.0)]
+}
+
+/// A lane row's color index and audio band (its `z` and `w`, as the room
+/// file's `params` set them) for a surface running `behavior`: whole
+/// numbers in range, else the defaults (the kind's color, the behavior's
+/// band, [`SurfaceBehavior::default_band`]).
+pub fn lane_params(row: [f32; 4], behavior: SurfaceBehavior) -> (u32, u32) {
+    let whole = |v: f32, max: u32| {
+        let r = v.round();
+        ((v - r).abs() < 1e-3 && (0.0..=max as f32).contains(&r)).then_some(r as u32)
+    };
+    (
+        whole(row[2], COLOR_KEY).unwrap_or(0),
+        whole(row[3], crate::surface_fx::BANDS - 1).unwrap_or_else(|| behavior.default_band()),
+    )
+}
+
 /// Rows of the surface behavior lanes, one per obstacle box
 /// (`XR_AUX_SURFACE_ROWS` in `flux_xr_sim.wgsl`, `MAX_BOXES`).
 pub const SURFACE_LANE_ROWS: usize = 32;
 
 /// A box's lane: `x` the behavior's id + 1, so the zero row stays
 /// "unset", `y` the strength 0..1 (the sim scales the behavior's gate by
-/// it), `z` and `w` two parameters (unused in this pass).
+/// it), `z` the color index and `w` the audio band of the surfaces pass
+/// ([`lane_params`]; the sim reads neither).
 pub fn lane_row(behavior: SurfaceBehavior, strength: f32, params: [f32; 2]) -> [f32; 4] {
     [
         (behavior.id() + 1) as f32,
@@ -1228,6 +1290,63 @@ mod tests {
         // Unlabeled or unknown: other's.
         assert_close!(palette(KIND_NONE), palette(KIND_OTHER));
         assert_close!(palette(99), palette(KIND_OTHER));
+    }
+
+    #[test]
+    fn the_surface_palette_and_the_keys_tint() {
+        // Index 0 the kind's color; 1 to 7 the palette; 8 the key's tint;
+        // past it the kind's color again.
+        let key = [0.1, 0.2, 0.3];
+        assert_close!(surface_color(0, KIND_TABLE, key), palette(KIND_TABLE));
+        assert_close!(surface_color(0, KIND_FRAME, key), AMBER);
+        for (i, c) in SURFACE_PALETTE.iter().enumerate() {
+            assert_close!(surface_color(i as u32 + 1, KIND_WALL, key), *c);
+            assert!(c.iter().all(|v| (0.0..=1.0).contains(v)), "{c:?}");
+            assert!(c.iter().copied().fold(0.0, f32::max) > 0.99, "{c:?}");
+        }
+        assert_close!(surface_color(COLOR_KEY, KIND_WALL, key), key);
+        assert_close!(surface_color(COLOR_KEY + 1, KIND_WALL, key), WARM_WHITE);
+        // The palette's names: the kinds' colors first, then teal, rose.
+        assert_close!(
+            SURFACE_PALETTE[..5],
+            [BLUE, VIOLET, WARM_WHITE, AMBER, GREEN]
+        );
+        let [r, g, b] = TEAL;
+        assert!(g > r && b > r, "teal");
+        let [r, g, b] = ROSE;
+        assert!(r > b && b > g, "rose");
+        // The key's tint: the hue around the hexcone, full value, a white
+        // floor of 1 - saturation.
+        let floor = 1.0 - KEY_TINT_SATURATION;
+        assert_close!(key_tint(0.0), [1.0, floor, floor]);
+        assert_close!(key_tint(1.0 / 3.0), [floor, 1.0, floor]);
+        assert_close!(key_tint(2.0 / 3.0), [floor, floor, 1.0]);
+        assert_close!(key_tint(1.0 / 6.0), [1.0, 1.0, floor]);
+        assert_close!(key_tint(1.25), key_tint(0.25));
+        for i in 0..60 {
+            let c = key_tint(i as f32 / 60.0);
+            assert!((c.iter().copied().fold(0.0, f32::max) - 1.0).abs() < 1e-6);
+            assert!(c.iter().all(|v| *v >= floor - 1e-6), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn a_lane_row_carries_its_color_and_band() {
+        use SurfaceBehavior as B;
+        assert_eq!(
+            lane_params(lane_row(B::Curls, 1.0, [5.0, 2.0]), B::Curls),
+            (5, 2)
+        );
+        assert_eq!(
+            lane_params(lane_row(B::Pulse, 1.0, [8.0, 3.0]), B::Pulse),
+            (8, 3)
+        );
+        // Out of range or not whole: the defaults (the kind's color, the
+        // behavior's band).
+        for bad in [[9.0, 4.0], [-1.0, -1.0], [2.5, 1.5], [f32::NAN, f32::NAN]] {
+            assert_eq!(lane_params(lane_row(B::Rings, 1.0, bad), B::Rings), (0, 1));
+            assert_eq!(lane_params(lane_row(B::Curls, 1.0, bad), B::Curls), (0, 0));
+        }
     }
 
     #[test]

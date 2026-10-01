@@ -77,7 +77,7 @@
 use glam::{Vec2, Vec3};
 
 use crate::ripple::{MAX_RINGS, Ripple};
-use crate::surfaces::{Face, KIND_FLOOR, SurfaceBehavior, palette};
+use crate::surfaces::{Face, KIND_FLOOR, SurfaceBehavior, surface_color};
 
 /// Lit faces the pass holds, one per obstacle box.
 pub const MAX_SLOTS: usize = crate::surfaces::SURFACE_LANE_ROWS;
@@ -156,7 +156,8 @@ pub const BANDS: u32 = 4;
 /// The audio a slot carries: the rms, the bass, the mid and the high
 /// (0..1), the beat envelope (1 on the beat, decaying), the surfaces'
 /// [`Clock`], the downbeat envelope ([`downbeat_step`]) and the bar phase
-/// (0..1 over the bar).
+/// (0..1 over the bar); and the key's tint (`surfaces::key_tint`), the
+/// color of index `surfaces::COLOR_KEY`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Audio {
     pub rms: f32,
@@ -167,6 +168,7 @@ pub struct Audio {
     pub high: f32,
     pub downbeat: f32,
     pub bar_phase: f32,
+    pub key_tint: [f32; 3],
 }
 
 /// The downbeat envelope after `dt` seconds from `env`: 1 when the
@@ -192,15 +194,18 @@ impl Clock {
     }
 }
 
-/// One lit face: the face the behavior acts on, the surface's kind (its
-/// color), its lane's behavior and strength, and the audio band it follows
-/// ([`BAND_RMS`] to [`BAND_HIGH`]).
+/// One lit face: the face the behavior acts on, the surface's kind, its
+/// lane's behavior and strength, and the lane's color index and audio band
+/// (`surfaces::lane_params`): the color 0 the kind's own, 1 to 7 the
+/// surface palette, 8 the key's tint (`surfaces::surface_color`); the band
+/// [`BAND_RMS`] to [`BAND_HIGH`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Slot {
     pub face: Face,
     pub kind: u32,
     pub behavior: SurfaceBehavior,
     pub strength: f32,
+    pub color: u32,
     pub band: u32,
 }
 
@@ -241,13 +246,14 @@ pub fn level_floor(face: Face, stage_top: Option<f32>) -> Face {
     }
 }
 
-/// The color a slot draws in: the surface's palette color, but the rings
-/// on a floor keep the ripple's warm white, so the floor looks as it did.
-pub fn color_of(kind: u32, behavior: SurfaceBehavior) -> [f32; 3] {
-    if behavior == SurfaceBehavior::Rings && kind == KIND_FLOOR {
+/// The color a slot draws in: its color index's (`surfaces::surface_color`,
+/// `key` the key's tint), but with index 0 the rings on a floor keep the
+/// ripple's warm white, so the floor looks as it did.
+pub fn color_of(kind: u32, behavior: SurfaceBehavior, color: u32, key: [f32; 3]) -> [f32; 3] {
+    if color == 0 && behavior == SurfaceBehavior::Rings && kind == KIND_FLOOR {
         crate::ripple::COLOR
     } else {
-        palette(kind)
+        surface_color(color, kind, key)
     }
 }
 
@@ -272,7 +278,7 @@ pub fn rows(
         LIFT_M,
         slot.behavior.id() as f32,
     ];
-    let color = color_of(slot.kind, slot.behavior);
+    let color = color_of(slot.kind, slot.behavior, slot.color, audio.key_tint);
     let (speed, peak) = match slot.behavior {
         SurfaceBehavior::Rings => (
             ripple.map_or(crate::ripple::SPEED_M_S, |r| r.speed),
@@ -284,7 +290,7 @@ pub fn rows(
     };
     rows[5] = [
         slot.strength.clamp(0.0, 1.0),
-        slot.kind as f32,
+        slot.color as f32,
         slot.band.min(BANDS - 1) as f32,
         speed,
     ];
@@ -742,7 +748,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surfaces::{KIND_CEILING, KIND_TABLE, KIND_WALL, acting_face};
+    use crate::surfaces::{KIND_CEILING, KIND_TABLE, KIND_WALL, acting_face, palette};
     use glam::Quat;
 
     const HEAD: Vec3 = Vec3::new(0.3, 1.2, 0.4);
@@ -773,6 +779,7 @@ mod tests {
             kind,
             behavior,
             strength: 1.0,
+            color: 0,
             band: behavior.default_band(),
         }
     }
@@ -869,6 +876,7 @@ mod tests {
             high: 0.1,
             downbeat: 0.7,
             bar_phase: 0.25,
+            key_tint: [0.9, 0.2, 0.4],
         };
         let s = Slot {
             strength: 0.7,
@@ -888,7 +896,7 @@ mod tests {
         half.sort_by(f32::total_cmp);
         assert_close!(half, [0.4, 0.6]);
         assert_close!(rows[4][2..], [LIFT_M, 5.0]);
-        assert_close!(rows[5], [0.7, KIND_TABLE as f32, 0.0, STREAM_SPEED_M_S]);
+        assert_close!(rows[5], [0.7, 0.0, 0.0, STREAM_SPEED_M_S]);
         let blue = crate::surfaces::palette(KIND_TABLE);
         assert_close!(rows[6], [blue[0], blue[1], blue[2], STREAM_PEAK_ALPHA]);
         assert_close!(rows[7], [0.3, 0.6, 0.5, 12.5]);
@@ -926,6 +934,7 @@ mod tests {
             high: 0.1,
             downbeat: 0.7,
             bar_phase: 0.25,
+            key_tint: [0.9, 0.2, 0.4],
         };
         // Curls on a chair (a volume, other): its top, the rms by default.
         let face = table();
@@ -938,10 +947,7 @@ mod tests {
             assert_close!(*row, [c.x, c.y, c.z, 1.0]);
         }
         assert_close!(rows[4], [face.half[0], face.half[1], LIFT_M, 6.0]);
-        assert_close!(
-            rows[5],
-            [0.8, KIND_OTHER as f32, BAND_RMS as f32, CURL_SPEED_M_S]
-        );
+        assert_close!(rows[5], [0.8, 0.0, BAND_RMS as f32, CURL_SPEED_M_S]);
         let green = palette(KIND_OTHER);
         assert_close!(rows[6], [green[0], green[1], green[2], CURL_PEAK_ALPHA]);
         assert_close!(rows[7], [0.3, 0.6, 0.5, 12.5]);
@@ -967,12 +973,53 @@ mod tests {
         let s = slot(face, KIND_FRAME, SurfaceBehavior::Pulse);
         let rows = super::rows(&s, audio, None, 0.0);
         assert_close!(rows[4][3], 7.0);
-        assert_close!(rows[5], [1.0, KIND_FRAME as f32, BAND_BASS as f32, 0.0]);
+        assert_close!(rows[5], [1.0, 0.0, BAND_BASS as f32, 0.0]);
         let amber = palette(KIND_FRAME);
         assert_close!(rows[6], [amber[0], amber[1], amber[2], PULSE_PEAK_ALPHA]);
         assert_close!(rows[8], [0.2, 0.1, 0.7, 0.25]);
         assert_close!(rows[9], [0.0; 4]);
         assert_close!(rows[RINGS_ROW..], [[0.0f32; 4]; MAX_RINGS]);
+    }
+
+    #[test]
+    fn the_color_index_picks_the_kinds_the_palettes_or_the_keys_color() {
+        use crate::surfaces::{COLOR_KEY, KIND_OTHER, SURFACE_PALETTE};
+        let audio = Audio {
+            key_tint: [0.9, 0.2, 0.4],
+            ..Audio::default()
+        };
+        let face = table();
+        for (behavior, kind) in [
+            (SurfaceBehavior::Curls, KIND_OTHER),
+            (SurfaceBehavior::Streamlines, KIND_TABLE),
+            (SurfaceBehavior::Rings, KIND_FLOOR),
+        ] {
+            for color in 0..=COLOR_KEY + 1 {
+                let s = Slot {
+                    color,
+                    ..slot(face, kind, behavior)
+                };
+                let rows = rows(&s, audio, None, 0.0);
+                assert_close!(rows[5][1], color as f32);
+                let expect = match color {
+                    // Index 0: the kind's color, the rings on a floor the
+                    // ripple's warm white.
+                    0 if behavior == SurfaceBehavior::Rings => crate::ripple::COLOR,
+                    0 => palette(kind),
+                    COLOR_KEY => audio.key_tint,
+                    c if c < COLOR_KEY => SURFACE_PALETTE[c as usize - 1],
+                    // Past the palette: the kind's own.
+                    _ => palette(kind),
+                };
+                assert_close!(rows[6][..3], expect);
+            }
+        }
+        // The rings on a floor take a palette color when one is asked for.
+        let s = Slot {
+            color: 6,
+            ..slot(floor(), KIND_FLOOR, SurfaceBehavior::Rings)
+        };
+        assert_close!(rows(&s, audio, None, 0.0)[6][..3], SURFACE_PALETTE[5]);
     }
 
     #[test]

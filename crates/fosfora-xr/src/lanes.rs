@@ -15,15 +15,21 @@
 //! returned another anchor set) and saved on every change, never on load;
 //! one that does not read is left alone until the next change.
 //!
-//! The knob, comma-separated assignments `<target>=<behavior>[@<strength>]`
-//! ([`parse_knob`]): the target is a UUID (32 hex, or a prefix of at least
-//! 8 unique among the room's anchors), a box index `#<k>` (this frame's
-//! order, the stage floor too) or a kind name (the class assignment: the
-//! kind's default and every anchor of that kind); the behavior one of
-//! `none embers sparks spectrum rings streamlines curls pulse` (`ripple`
-//! reads as `rings`); the strength 0..1, 1 by default.
-//! `clear` alone drops every entry and puts the kind defaults back. A bad
-//! value applies nothing.
+//! The knob, comma-separated assignments
+//! `<target>=<behavior>[:<color>[:<band>]][@<strength>]` ([`parse_knob`]):
+//! the target is a UUID (32 hex, or a prefix of at least 8 unique among
+//! the room's anchors), a box index `#<k>` (this frame's order, the stage
+//! floor too) or a kind name (the class assignment: the kind's default and
+//! every anchor of that kind); the behavior one of `none embers sparks
+//! spectrum rings streamlines curls pulse` (`ripple` reads as `rings`); the
+//! color index 0 to 8 (0 the kind's own color, 1 to 7 the surface palette:
+//! blue, violet, warm white, amber, green, teal, rose; 8 the key's tint)
+//! and the audio band 0 to 3 (rms, bass, mid, high), board #3488, written
+//! to the entries' `params` (a color alone keeps the band they have; with
+//! neither, the params are left as they are; a kind's default carries no
+//! params, so an anchor of the kind that the room gains later runs the
+//! defaults); the strength 0..1, 1 by default. `clear` alone drops every
+//! entry and puts the kind defaults back. A bad value applies nothing.
 
 use std::path::PathBuf;
 
@@ -59,12 +65,17 @@ pub enum Target {
     Kind(u32),
 }
 
-/// One `<target>=<behavior>[@<strength>]`.
+/// One `<target>=<behavior>[:<color>[:<band>]][@<strength>]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Assignment {
     pub target: Target,
     pub behavior: SurfaceBehavior,
     pub strength: f32,
+    /// The color index (0..=`surfaces::COLOR_KEY`), when given.
+    pub color: Option<u32>,
+    /// The audio band (0..`surface_fx::BANDS`), when given (only after a
+    /// color).
+    pub band: Option<u32>,
 }
 
 /// A parsed `debug.fosfora.surface` value.
@@ -95,15 +106,27 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
     if part.eq_ignore_ascii_case("clear") {
         return Err("'clear' stands alone".to_owned());
     }
-    let (target, rhs) = part
-        .split_once('=')
-        .ok_or_else(|| format!("'{part}': expected <target>=<behavior>[@<strength>]"))?;
-    let (behavior, strength) = match rhs.split_once('@') {
+    let (target, rhs) = part.split_once('=').ok_or_else(|| {
+        format!("'{part}': expected <target>=<behavior>[:<color>[:<band>]][@<strength>]")
+    })?;
+    let (spec, strength) = match rhs.split_once('@') {
         Some((b, s)) => (b, Some(s)),
         None => (rhs, None),
     };
     let target = parse_target(target.trim())?;
-    let behavior = behavior.trim();
+    let mut fields = spec.split(':');
+    let behavior = fields.next().unwrap_or("").trim();
+    let color = fields
+        .next()
+        .map(|c| parse_index(c, crate::surfaces::COLOR_KEY, "color"))
+        .transpose()?;
+    let band = fields
+        .next()
+        .map(|b| parse_index(b, crate::surface_fx::BANDS - 1, "band"))
+        .transpose()?;
+    if fields.next().is_some() {
+        return Err(format!("'{spec}': at most <behavior>:<color>:<band>"));
+    }
     let behavior = SurfaceBehavior::from_name(behavior).ok_or_else(|| {
         if RESERVED_BEHAVIORS
             .iter()
@@ -129,7 +152,18 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
         target,
         behavior,
         strength,
+        color,
+        band,
     })
+}
+
+/// A color index or a band: a whole number from 0 to `max`.
+fn parse_index(v: &str, max: u32, what: &str) -> Result<u32, String> {
+    let v = v.trim();
+    v.parse::<u32>()
+        .ok()
+        .filter(|n| *n <= max)
+        .ok_or_else(|| format!("{what} '{v}' is not a whole number from 0 to {max}"))
 }
 
 fn parse_target(t: &str) -> Result<Target, String> {
@@ -349,6 +383,8 @@ impl RoomLanes {
             target: target.clone(),
             behavior,
             strength,
+            color: None,
+            band: None,
         };
         let lines = self.write(&a, &hits, boxes);
         self.commit(&lines);
@@ -438,10 +474,29 @@ impl RoomLanes {
     /// Write one assignment to the file for the boxes `hits` it resolved
     /// to; the log lines it makes (without the save suffix).
     fn write(&mut self, a: &Assignment, hits: &[usize], boxes: &[LaneBox<'_>]) -> Vec<String> {
-        let what = format!("{}@{:.2}", a.behavior.name(), a.strength);
+        let params = match (a.color, a.band) {
+            (Some(c), Some(b)) => format!(" color {c} band {b}"),
+            (Some(c), None) => format!(" color {c}"),
+            _ => String::new(),
+        };
+        let what = format!("{}@{:.2}{params}", a.behavior.name(), a.strength);
         if let Target::Kind(kind) = a.target {
-            let live = hits.iter().map(|&k| boxes[k].uuid);
-            let n = self.file.assign_kind(kind, a.behavior, a.strength, live);
+            let live: Vec<[u8; 16]> = hits.iter().map(|&k| boxes[k].uuid).collect();
+            let n = self
+                .file
+                .assign_kind(kind, a.behavior, a.strength, live.iter().copied());
+            if let Some(color) = a.color {
+                let of_kind: Vec<[u8; 16]> = self
+                    .file
+                    .anchors
+                    .iter()
+                    .filter(|e| e.kind == kind)
+                    .map(|e| e.uuid)
+                    .collect();
+                for uuid in of_kind {
+                    self.file.set_color(uuid, color, a.band);
+                }
+            }
             return vec![format!(
                 "every {} ({} in the room, {n} entries, the kind default) -> {what}",
                 kind_name(kind),
@@ -452,6 +507,9 @@ impl RoomLanes {
             .map(|&k| {
                 let b = &boxes[k];
                 self.file.assign(b.uuid, b.kind, a.behavior, a.strength);
+                if let Some(color) = a.color {
+                    self.file.set_color(b.uuid, color, a.band);
+                }
                 let (label, uuid8) = box_label(b);
                 format!("{label} {uuid8} ({}) -> {what}", kind_name(b.kind))
             })
@@ -557,7 +615,7 @@ impl RoomLanes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::room_file::room_id;
+    use crate::room_file::{default_params, room_id};
     use crate::surfaces::{KIND_FLOOR, KIND_OTHER, KIND_TABLE, KIND_WALL};
     use SurfaceBehavior as B;
 
@@ -610,6 +668,8 @@ mod tests {
             target,
             behavior,
             strength,
+            color: None,
+            band: None,
         }
     }
 
@@ -693,6 +753,86 @@ mod tests {
     }
 
     #[test]
+    fn the_knob_takes_a_color_and_a_band() {
+        let with = |target, behavior, strength, color, band| Assignment {
+            color,
+            band,
+            ..assign(target, behavior, strength)
+        };
+        assert_eq!(
+            parse_knob("table=curls:5:2"),
+            Ok(Knob::Assign(vec![with(
+                Target::Kind(KIND_TABLE),
+                B::Curls,
+                1.0,
+                Some(5),
+                Some(2)
+            )]))
+        );
+        assert_eq!(
+            parse_knob(" #3 = pulse : 8 @0.5, wall=spectrum:0:0,floor=rings "),
+            Ok(Knob::Assign(vec![
+                with(Target::Index(3), B::Pulse, 0.5, Some(8), None),
+                with(Target::Kind(KIND_WALL), B::Spectrum, 1.0, Some(0), Some(0)),
+                assign(Target::Kind(KIND_FLOOR), B::Rings, 1.0),
+            ]))
+        );
+        // Out of range, not whole, empty, too many: refused whole.
+        for bad in [
+            "table=curls:9",
+            "table=curls:5:4",
+            "table=curls:-1",
+            "table=curls:1.5",
+            "table=curls:5:2.0",
+            "table=curls:",
+            "table=curls::2",
+            "table=curls:5:2:1",
+            "table=curls:teal",
+            "table=curls:5:2,wall=pulse:12",
+        ] {
+            assert!(parse_knob(bad).is_err(), "'{bad}' parsed");
+        }
+        assert!(parse_knob("table=curls:9").unwrap_err().contains("0 to 8"));
+        // Applied: the entries carry the params, the rows their color and
+        // band; a refused value changes nothing.
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-params-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        // Unset: the kind's color and the behavior's band.
+        assert_close!(lanes.rows()[0][2..], [0.0, 0.0]);
+        assert_close!(lanes.rows()[3][2..], [0.0, 1.0]);
+        assert!(lanes.poll_knob(Some("table=curls:5:2,#3=rings:7"), false, &boxes));
+        lanes.update(id, &boxes);
+        assert_close!(lanes.rows()[0], lane_row(B::Curls, 1.0, [5.0, 2.0]));
+        // A color alone keeps the band: the rings' bass.
+        assert_close!(lanes.rows()[3], lane_row(B::Rings, 1.0, [7.0, 1.0]));
+        assert_eq!(
+            crate::surfaces::lane_params(lanes.rows()[0], B::Curls),
+            (5, 2)
+        );
+        // A cycle keeps them; the next knob value without a suffix too.
+        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Pulse));
+        assert!(lanes.poll_knob(Some("#3=streamlines@0.5"), false, &boxes));
+        lanes.update(id, &boxes);
+        assert_close!(lanes.rows()[0][2..], [5.0, 2.0]);
+        assert_close!(lanes.rows()[3], lane_row(B::Streamlines, 0.5, [7.0, 1.0]));
+        let path = room_path(&dir, id.unwrap());
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(!lanes.poll_knob(Some("table=curls:5:9"), false, &boxes));
+        assert!(!lanes.update(id, &boxes));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // A relaunch reads them back.
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_close!(again.rows()[0][2..], [5.0, 2.0]);
+        assert_close!(again.rows()[3][2..], [7.0, 1.0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn targets_resolve_against_the_frames_boxes() {
         let boxes = room();
         let hex = |n| uuid_hex(&uuid(n));
@@ -748,7 +888,7 @@ mod tests {
         ];
         assert_eq!(&behaviors[..6], &expected);
         for (row, b) in rows.iter().zip(expected) {
-            assert_close!(*row, lane_row(b, 1.0, [0.0; 2]));
+            assert_close!(*row, lane_row(b, 1.0, default_params(b)));
             // What the sim reads back is what the lanes meant.
             assert_eq!(crate::surfaces::lane_behavior(*row, KIND_TABLE), b);
         }
@@ -778,7 +918,10 @@ mod tests {
         assert_eq!(lanes.behavior(2), B::None);
         assert_eq!(lanes.behavior(3), B::Rings, "the floor's default");
         assert_eq!(lanes.behavior(5), B::Rings);
-        assert_close!(lanes.rows()[5], lane_row(B::Rings, 0.5, [0.0; 2]));
+        assert_close!(
+            lanes.rows()[5],
+            lane_row(B::Rings, 0.5, default_params(B::Rings))
+        );
         // The same value again applies nothing.
         assert!(!lanes.poll_knob(Some(&value), false, &boxes));
         let path = room_path(&dir, id.unwrap());
@@ -866,7 +1009,10 @@ mod tests {
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
         assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
         lanes.update(id, &boxes);
-        assert_close!(lanes.rows()[3], lane_row(B::Rings, 0.4, [0.0; 2]));
+        assert_close!(
+            lanes.rows()[3],
+            lane_row(B::Rings, 0.4, default_params(B::Rings))
+        );
         assert_eq!(lanes.behavior(0), B::Curls);
         assert_eq!(lanes.behavior(1), B::Streamlines);
         // Saved: a relaunch finds them.

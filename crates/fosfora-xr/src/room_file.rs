@@ -21,8 +21,11 @@
 //! ([`SurfaceBehavior::default_for`]: the mockup's room since D2, board
 //! #3488). A file keeps the kind defaults it was saved with: every save
 //! writes all of them. An entry's `kind` is informational (the kind at
-//! save time); its `params` (the lane's two spare values) are written only
-//! once something set them, and an entry without them runs the defaults.
+//! save time); its `params` are the lane's two spare values, the color
+//! index and the audio band of the surfaces pass (board #3488: color 0 the
+//! kind's own, 1 to 7 the surface palette, 8 the key's tint; band 0 the
+//! rms, 1 the bass, 2 the mid, 3 the high), written only once something
+//! set them; an entry without them runs the defaults ([`default_params`]).
 //! Behaviors are by name: `ripple`, the rings' name before D1, still reads
 //! as `rings`, and a save writes `rings`.
 //!
@@ -180,13 +183,19 @@ impl RoomFile {
     }
 
     /// What the surface `uuid` of `kind` runs: its entry's behavior,
-    /// strength and parameters, else its kind's default at full strength;
-    /// parameters nothing set are 0.
+    /// strength and parameters, else its kind's default at full strength.
+    /// Parameters nothing set are the defaults ([`default_params`]).
     pub fn resolve(&self, uuid: &[u8; 16], kind: u32) -> (SurfaceBehavior, f32, [f32; 2]) {
-        self.entry(uuid)
-            .map_or((self.kind_default(kind), 1.0, [0.0; 2]), |e| {
-                (e.behavior, e.strength, e.params.unwrap_or_default())
-            })
+        let (behavior, strength, params) = self
+            .entry(uuid)
+            .map_or((self.kind_default(kind), 1.0, None), |e| {
+                (e.behavior, e.strength, e.params)
+            });
+        (
+            behavior,
+            strength,
+            params.unwrap_or_else(|| default_params(behavior)),
+        )
     }
 
     /// Assign `behavior` at `strength` (clamped to 0..1) to the surface
@@ -243,6 +252,16 @@ impl RoomFile {
     pub fn set_params(&mut self, uuid: [u8; 16], params: [f32; 2]) {
         if let Some(e) = self.anchors.iter_mut().find(|e| e.uuid == uuid) {
             e.params = Some(params);
+        }
+    }
+
+    /// Set the color index of `uuid`'s entry and its band, or with `band`
+    /// `None` keep the band it has (its behavior's default when nothing set
+    /// one); nothing without an entry.
+    pub fn set_color(&mut self, uuid: [u8; 16], color: u32, band: Option<u32>) {
+        if let Some(e) = self.anchors.iter_mut().find(|e| e.uuid == uuid) {
+            let kept = e.params.unwrap_or_else(|| default_params(e.behavior))[1];
+            e.params = Some([color as f32, band.map_or(kept, |b| b as f32)]);
         }
     }
 
@@ -385,6 +404,14 @@ impl RoomFile {
     }
 }
 
+/// The parameters of a surface running `behavior` that nothing set: the
+/// kind's own color (index 0) and the behavior's band
+/// ([`SurfaceBehavior::default_band`]): the bass for the rings and the
+/// pulse, the rms for the rest.
+pub fn default_params(behavior: SurfaceBehavior) -> [f32; 2] {
+    [0.0, behavior.default_band() as f32]
+}
+
 /// An entry's `params` from the file: two finite numbers.
 fn params_of(v: &Value) -> Option<[f32; 2]> {
     match v.as_array()?.as_slice() {
@@ -478,7 +505,8 @@ mod tests {
         file.assign(STAGE_FLOOR_UUID, KIND_FLOOR, B::Rings, 0.5);
         assert_eq!(
             file.resolve(&STAGE_FLOOR_UUID, KIND_FLOOR),
-            (B::Rings, 0.5, [0.0; 2])
+            (B::Rings, 0.5, [0.0, 1.0]),
+            "the rings' default band is the bass"
         );
         file.clear();
         assert_eq!(file, RoomFile::default());
@@ -600,7 +628,7 @@ mod tests {
         assert_eq!(file.kind_default(crate::surfaces::KIND_CEILING), B::Rings);
         assert_eq!(
             file.resolve(&uuid(1), KIND_FLOOR),
-            (B::Rings, 0.5, [0.0; 2])
+            (B::Rings, 0.5, default_params(B::Rings))
         );
         assert_eq!(file.resolve(&uuid(2), KIND_TABLE).0, B::Streamlines);
         // Written back under the new names, and read back the same.
