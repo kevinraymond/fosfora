@@ -9,25 +9,34 @@
 //! `rooms/<room id>.json` under the app's config dir:
 //!
 //! ```json
-//! { "version": 1,
-//!   "kind_defaults": { "table": "embers", "floor": "rings", "wall": "spectrum",
-//!                      "ceiling": "none", "frame": "none", "other": "none" },
-//!   "anchors": [ { "uuid": "<32 hex>", "kind": "table", "behavior": "embers",
-//!                  "strength": 1.0, "params": [0.0, 0.0] } ] }
+//! { "version": 2,
+//!   "kind_defaults": { "table": "streamlines", "floor": "rings", "wall": "spectrum",
+//!                      "ceiling": "none", "frame": "pulse", "other": "curls" },
+//!   "anchors": [ { "uuid": "<32 hex>", "kind": "table", "behavior": "curls",
+//!                  "strength": 1.0, "params": [5.0, 2.0] } ] }
 //! ```
 //!
 //! An anchor with an entry runs the entry; one without runs its kind's
 //! default; a room without a file runs the built-in defaults
-//! ([`SurfaceBehavior::default_for`]: the fixed rule per kind the sims
-//! used before the lanes, but the floor on the rings since step 2d). A
-//! file keeps the kind defaults it was saved with: every save writes all
-//! of them, so one saved while the floor's built-in was sparks keeps the
-//! floor on sparks. An entry's `kind` is informational (the kind
-//! at save time). Behaviors are by name, so the D1 catalogue (board #3472)
-//! needed no new version: `ripple`, the rings' name before it, still reads
-//! as `rings`, and a save writes `rings`. The synthetic stage floor has no anchor: an assignment
-//! to it is kept under the all-zero UUID, which no anchor has, and never
-//! counts toward the room id.
+//! ([`SurfaceBehavior::default_for`]: the mockup's room since D2, board
+//! #3488). A file keeps the kind defaults it was saved with: every save
+//! writes all of them. An entry's `kind` is informational (the kind at
+//! save time); its `params` (the lane's two spare values) are written only
+//! once something set them, and an entry without them runs the defaults.
+//! Behaviors are by name: `ripple`, the rings' name before D1, still reads
+//! as `rings`, and a save writes `rings`.
+//!
+//! **Version 2** (D2). Every save before D2 wrote all six kind defaults,
+//! table embers and frame none among them, which would have kept a room
+//! saved then on the old defaults for good. So a version 1 file keeps its
+//! `anchors` entries (behavior and strength; the `params` it wrote were
+//! never defined and are dropped) and its `kind_defaults` give way to the
+//! built-ins; the next save writes version 2 with the full set. A version
+//! 2 file loads as it was saved.
+//!
+//! The synthetic stage floor has no anchor: an assignment to it is kept
+//! under the all-zero UUID, which no anchor has, and never counts toward
+//! the room id.
 
 use std::path::{Path, PathBuf};
 
@@ -35,8 +44,11 @@ use serde_json::{Map, Value, json};
 
 use crate::surfaces::{KIND_NAMES, SurfaceBehavior, kind_from_name, kind_name};
 
-/// The room file's format version.
-pub const VERSION: u64 = 1;
+/// The room file's format version: 2 since D2 (board #3488), which reads
+/// a version 1 file without its kind defaults.
+pub const VERSION: u64 = 2;
+/// The version before D2's defaults.
+pub const VERSION_1: u64 = 1;
 /// The directory under the config dir that holds one file per room.
 pub const ROOMS_DIR: &str = "rooms";
 /// The UUID the synthetic stage floor's entry is kept under.
@@ -108,8 +120,9 @@ pub struct AnchorEntry {
     pub behavior: SurfaceBehavior,
     /// 0..1: the sim scales the behavior's gate by it.
     pub strength: f32,
-    /// Two parameters per surface, for the second pass (0 for now).
-    pub params: [f32; 2],
+    /// The lane's two spare parameters (`z`, `w`) when something set them;
+    /// `None` runs the defaults.
+    pub params: Option<[f32; 2]>,
 }
 
 /// A room's assignments: a default per kind and an entry per assigned
@@ -167,11 +180,12 @@ impl RoomFile {
     }
 
     /// What the surface `uuid` of `kind` runs: its entry's behavior,
-    /// strength and parameters, else its kind's default at full strength.
+    /// strength and parameters, else its kind's default at full strength;
+    /// parameters nothing set are 0.
     pub fn resolve(&self, uuid: &[u8; 16], kind: u32) -> (SurfaceBehavior, f32, [f32; 2]) {
         self.entry(uuid)
             .map_or((self.kind_default(kind), 1.0, [0.0; 2]), |e| {
-                (e.behavior, e.strength, e.params)
+                (e.behavior, e.strength, e.params.unwrap_or_default())
             })
     }
 
@@ -191,7 +205,7 @@ impl RoomFile {
                 kind,
                 behavior,
                 strength,
-                params: [0.0; 2],
+                params: None,
             }),
         }
     }
@@ -225,12 +239,20 @@ impl RoomFile {
         written
     }
 
+    /// Set the parameters of `uuid`'s entry; nothing without one.
+    pub fn set_params(&mut self, uuid: [u8; 16], params: [f32; 2]) {
+        if let Some(e) = self.anchors.iter_mut().find(|e| e.uuid == uuid) {
+            e.params = Some(params);
+        }
+    }
+
     /// Drop every entry and put the kind defaults back to the built-ins.
     pub fn clear(&mut self) {
         *self = Self::default();
     }
 
-    /// The file's JSON (version 1), entries in UUID order.
+    /// The file's JSON ([`VERSION`]), every kind default, entries in UUID
+    /// order, an entry's `params` only when set.
     pub fn to_json(&self) -> String {
         let defaults: Map<String, Value> = KIND_NAMES
             .iter()
@@ -241,13 +263,16 @@ impl RoomFile {
         let anchors: Vec<Value> = anchors
             .iter()
             .map(|e| {
-                json!({
+                let mut entry = json!({
                     "uuid": uuid_hex(&e.uuid),
                     "kind": kind_name(e.kind),
                     "behavior": e.behavior.name(),
                     "strength": e.strength,
-                    "params": e.params,
-                })
+                });
+                if let (Some(p), Some(obj)) = (e.params, entry.as_object_mut()) {
+                    obj.insert("params".to_owned(), json!(p));
+                }
+                entry
             })
             .collect();
         let file = json!({
@@ -261,14 +286,21 @@ impl RoomFile {
     /// A room file from its JSON, and what in it was skipped: an unknown
     /// or reserved behavior name (`ripple` is known: the rings) leaves
     /// that default or entry unset (the kind's built-in default), as does
-    /// a bad UUID. `Err` for text that is not a version 1 room file.
+    /// a bad UUID; a version 1 file's kind defaults give way to the
+    /// built-ins and its entries' parameters are dropped (the module
+    /// docs), which the list says once. `Err` for text that is not a
+    /// version 1 or 2 room file.
     pub fn from_json(text: &str) -> Result<(Self, Vec<String>), String> {
         let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let obj = v.as_object().ok_or("not a JSON object")?;
-        match obj.get("version").and_then(Value::as_u64) {
-            Some(VERSION) => {}
-            other => return Err(format!("version {other:?}, expected {VERSION}")),
-        }
+        let version = match obj.get("version").and_then(Value::as_u64) {
+            Some(n @ (VERSION_1 | VERSION)) => n,
+            other => {
+                return Err(format!(
+                    "version {other:?}, expected {VERSION_1} or {VERSION}"
+                ));
+            }
+        };
         let mut file = Self::default();
         let mut skipped = Vec::new();
         let behavior = |v: Option<&Value>, what: &str, skipped: &mut Vec<String>| {
@@ -279,7 +311,14 @@ impl RoomFile {
             }
             b
         };
-        if let Some(defaults) = obj.get("kind_defaults").and_then(Value::as_object) {
+        let defaults = obj.get("kind_defaults").and_then(Value::as_object);
+        if version == VERSION_1 {
+            if defaults.is_some_and(|d| !d.is_empty()) {
+                skipped.push(format!(
+                    "version {VERSION_1}: its kind defaults give way to the built-ins (the next save writes version {VERSION})"
+                ));
+            }
+        } else if let Some(defaults) = defaults {
             for (name, v) in defaults {
                 let Some(kind) = kind_from_name(name) else {
                     skipped.push(format!("kind_defaults: unknown kind '{name}'"));
@@ -312,11 +351,13 @@ impl RoomFile {
                 .unwrap_or(crate::surfaces::KIND_NONE);
             let strength = a.get("strength").and_then(Value::as_f64).unwrap_or(1.0) as f32;
             file.assign(uuid, kind, b, strength);
-            if let Some(p) = a.get("params").and_then(Value::as_array)
-                && let Some(e) = file.anchors.iter_mut().find(|e| e.uuid == uuid)
-            {
-                for (slot, v) in e.params.iter_mut().zip(p) {
-                    *slot = v.as_f64().unwrap_or(0.0) as f32;
+            let params = a.get("params").filter(|_| version == VERSION);
+            if let Some(p) = params {
+                match params_of(p) {
+                    Some(p) => file.set_params(uuid, p),
+                    None => skipped.push(format!(
+                        "{what}: params {p} are not two numbers, left unset"
+                    )),
                 }
             }
         }
@@ -341,6 +382,17 @@ impl RoomFile {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(path, self.to_json())
+    }
+}
+
+/// An entry's `params` from the file: two finite numbers.
+fn params_of(v: &Value) -> Option<[f32; 2]> {
+    match v.as_array()?.as_slice() {
+        [a, b] => {
+            let p = [a.as_f64()? as f32, b.as_f64()? as f32];
+            p.iter().all(|x| x.is_finite()).then_some(p)
+        }
+        _ => None,
     }
 }
 
@@ -403,17 +455,17 @@ mod tests {
         let mut file = RoomFile::default();
         assert_eq!(
             file.resolve(&uuid(9), KIND_TABLE),
-            (B::Embers, 1.0, [0.0; 2])
+            (B::Streamlines, 1.0, [0.0; 2])
         );
         assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Rings);
         assert_eq!(file.resolve(&uuid(9), KIND_WALL).0, B::Spectrum);
-        assert_eq!(file.resolve(&uuid(9), KIND_OTHER).0, B::None);
+        assert_eq!(file.resolve(&uuid(9), KIND_OTHER).0, B::Curls);
         file.assign(uuid(1), KIND_TABLE, B::None, 1.0);
         file.set_kind_default(KIND_WALL, B::None);
         // The entry wins for its anchor; the other table and every wall
         // take the defaults.
         assert_eq!(file.resolve(&uuid(1), KIND_TABLE).0, B::None);
-        assert_eq!(file.resolve(&uuid(2), KIND_TABLE).0, B::Embers);
+        assert_eq!(file.resolve(&uuid(2), KIND_TABLE).0, B::Streamlines);
         assert_eq!(file.resolve(&uuid(3), KIND_WALL).0, B::None);
         // Assigning again replaces the entry; the strength is clamped.
         file.assign(uuid(1), KIND_TABLE, B::Sparks, 1.5);
@@ -436,16 +488,15 @@ mod tests {
     fn a_file_keeps_the_floor_default_it_names_and_one_without_takes_the_rings() {
         use SurfaceBehavior as B;
         // Step 2d: the floor's built-in default is the rings (the ripple).
-        // A file that names the floor's default keeps it (every save
-        // before 2d wrote "sparks", the built-in then); one that does not
-        // takes the rings.
-        let with = r#"{ "version": 1, "kind_defaults": { "table": "embers", "floor": "sparks" },
+        // A file that names the floor's default keeps it; one that does
+        // not takes the rings.
+        let with = r#"{ "version": 2, "kind_defaults": { "table": "embers", "floor": "sparks" },
                         "anchors": [] }"#;
         let (file, skipped) = RoomFile::from_json(with).expect("reads");
         assert!(skipped.is_empty(), "{skipped:?}");
         assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Sparks);
         assert_eq!(file.resolve(&STAGE_FLOOR_UUID, KIND_FLOOR).0, B::Sparks);
-        let without = r#"{ "version": 1, "kind_defaults": { "table": "embers" }, "anchors": [] }"#;
+        let without = r#"{ "version": 2, "kind_defaults": { "table": "embers" }, "anchors": [] }"#;
         let (file, _) = RoomFile::from_json(without).expect("reads");
         assert_eq!(file.resolve(&uuid(9), KIND_FLOOR).0, B::Rings);
         // What a save writes now.
@@ -477,7 +528,7 @@ mod tests {
         );
         // Another kind's entry and default are untouched.
         assert_eq!(file.resolve(&uuid(3), KIND_TABLE).0, B::None);
-        assert_eq!(file.kind_default(KIND_TABLE), B::Embers);
+        assert_eq!(file.kind_default(KIND_TABLE), B::Streamlines);
     }
 
     #[test]
@@ -487,7 +538,7 @@ mod tests {
         file.assign(uuid(2), KIND_WALL, B::Spectrum, 0.25);
         file.assign(uuid(1), KIND_TABLE, B::None, 1.0);
         file.assign(STAGE_FLOOR_UUID, KIND_FLOOR, B::Rings, 1.0);
-        file.anchors[0].params = [0.5, -2.0];
+        file.set_params(uuid(2), [0.5, -2.0]);
         file.set_kind_default(KIND_FLOOR, B::Sparks);
         let text = file.to_json();
         let (back, skipped) = RoomFile::from_json(&text).expect("reads");
@@ -498,15 +549,19 @@ mod tests {
         assert_eq!(back, expected);
         // The shape the design names.
         let v: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["version"], 1);
+        assert_eq!(v["version"], 2);
         assert_eq!(v["kind_defaults"]["floor"], "sparks");
-        assert_eq!(v["kind_defaults"]["table"], "embers");
+        assert_eq!(v["kind_defaults"]["table"], "streamlines");
+        assert_eq!(v["kind_defaults"]["frame"], "pulse");
+        assert_eq!(v["kind_defaults"]["other"], "curls");
         assert_eq!(v["kind_defaults"].as_object().unwrap().len(), 6);
         let a = &v["anchors"][2];
         assert_eq!(a["uuid"], uuid_hex(&uuid(2)));
         assert_eq!(a["kind"], "wall");
         assert_eq!(a["behavior"], "spectrum");
         assert_eq!(a["params"], json!([0.5, -2.0]));
+        // Parameters nothing set are not written.
+        assert!(v["anchors"][1].get("params").is_none(), "{text}");
         // On disk, into a directory that does not exist yet.
         let dir = std::env::temp_dir().join(format!("fosfora-room-file-{}", std::process::id()));
         let path = room_path(&dir, 0xabc);
@@ -530,7 +585,7 @@ mod tests {
         use SurfaceBehavior as B;
         // Board #3472: `ripple` was the rings' name until D1.
         let text = format!(
-            r#"{{ "version": 1,
+            r#"{{ "version": 2,
                 "kind_defaults": {{ "floor": "ripple", "ceiling": "Ripple" }},
                 "anchors": [
                   {{ "uuid": "{}", "kind": "floor", "behavior": "ripple", "strength": 0.5 }},
@@ -563,7 +618,7 @@ mod tests {
     fn unknown_names_are_left_unset_and_bad_files_refused() {
         use SurfaceBehavior as B;
         let text = format!(
-            r#"{{ "version": 1,
+            r#"{{ "version": 2,
                 "kind_defaults": {{ "table": "glitter", "wall": "none", "sofa": "embers",
                                     "floor": "pulses" }},
                 "anchors": [
@@ -578,7 +633,7 @@ mod tests {
         assert_eq!(skipped.len(), 5, "{skipped:?}");
         // The unknown table default stays built-in, the known wall one
         // takes; the unknown floor one is unset: the built-in rings.
-        assert_eq!(file.kind_default(KIND_TABLE), B::Embers);
+        assert_eq!(file.kind_default(KIND_TABLE), B::Streamlines);
         assert_eq!(file.kind_default(KIND_WALL), B::None);
         assert_eq!(file.kind_default(KIND_FLOOR), B::Rings);
         // The entry with an unknown behavior is dropped: its kind default.
@@ -588,9 +643,107 @@ mod tests {
             file.resolve(&uuid(2), KIND_OTHER),
             (B::Sparks, 1.0, [0.0; 2])
         );
-        assert!(RoomFile::from_json(r#"{ "version": 2 }"#).is_err());
+        assert!(RoomFile::from_json(r#"{ "version": 3 }"#).is_err());
+        assert!(RoomFile::from_json(r#"{ "version": 0 }"#).is_err());
         assert!(RoomFile::from_json(r#"{ "anchors": [] }"#).is_err());
         assert!(RoomFile::from_json("[1]").is_err());
         assert!(RoomFile::from_json("").is_err());
+    }
+
+    #[test]
+    fn a_version_1_room_keeps_its_anchors_and_takes_the_new_defaults() {
+        use SurfaceBehavior as B;
+        // What every save before D2 wrote: all six kind defaults (table
+        // embers, frame none), an entry per assigned anchor with params
+        // [0, 0], and the ripple's old name.
+        let text = format!(
+            r#"{{ "version": 1,
+                "kind_defaults": {{ "table": "embers", "floor": "rings", "wall": "spectrum",
+                                    "ceiling": "none", "frame": "none", "other": "none" }},
+                "anchors": [
+                  {{ "uuid": "{}", "kind": "table", "behavior": "sparks", "strength": 0.5,
+                     "params": [0.0, 0.0] }},
+                  {{ "uuid": "{}", "kind": "wall", "behavior": "none", "strength": 1.0,
+                     "params": [3.0, 1.0] }},
+                  {{ "uuid": "{}", "kind": "floor", "behavior": "ripple" }}
+                ] }}"#,
+            uuid_hex(&uuid(1)),
+            uuid_hex(&uuid(2)),
+            uuid_hex(&STAGE_FLOOR_UUID)
+        );
+        let (file, skipped) = RoomFile::from_json(&text).expect("reads");
+        // One line says the kind defaults gave way.
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
+        assert!(skipped[0].contains("built-ins"), "{skipped:?}");
+        // The built-in defaults: the mockup's room.
+        let built_in = RoomFile::default();
+        for (kind, _) in KIND_NAMES {
+            assert_eq!(file.kind_default(kind), built_in.kind_default(kind));
+        }
+        assert_eq!(file.kind_default(KIND_TABLE), B::Streamlines);
+        assert_eq!(file.kind_default(crate::surfaces::KIND_FRAME), B::Pulse);
+        // The entries kept, without the params version 1 never defined.
+        assert_eq!(file.anchors.len(), 3);
+        assert_eq!(
+            file.resolve(&uuid(1), KIND_TABLE),
+            (B::Sparks, 0.5, [0.0; 2])
+        );
+        assert_eq!(file.resolve(&uuid(2), KIND_WALL), (B::None, 1.0, [0.0; 2]));
+        assert!(file.anchors.iter().all(|e| e.params.is_none()));
+        assert_eq!(file.resolve(&STAGE_FLOOR_UUID, KIND_FLOOR).0, B::Rings);
+        // An anchor the file never named runs the new default.
+        assert_eq!(file.resolve(&uuid(7), KIND_TABLE).0, B::Streamlines);
+        // A save writes version 2 with the full set, and it reads back the
+        // same with nothing skipped.
+        let out = file.to_json();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["version"], 2);
+        assert_eq!(v["kind_defaults"].as_object().unwrap().len(), 6);
+        assert_eq!(v["kind_defaults"]["table"], "streamlines");
+        let (back, skipped) = RoomFile::from_json(&out).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let mut expected = file.clone();
+        expected.anchors.sort_by_key(|e| e.uuid);
+        assert_eq!(back, expected);
+        // A version 1 file without kind defaults says nothing about them.
+        let (_, skipped) =
+            RoomFile::from_json(r#"{ "version": 1, "anchors": [] }"#).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+    }
+
+    #[test]
+    fn a_version_2_room_round_trips_its_defaults_and_params() {
+        use SurfaceBehavior as B;
+        let mut file = RoomFile::default();
+        file.set_kind_default(KIND_TABLE, B::Embers);
+        file.set_kind_default(crate::surfaces::KIND_FRAME, B::None);
+        file.assign(uuid(1), KIND_TABLE, B::Curls, 0.75);
+        file.set_params(uuid(1), [5.0, 2.0]);
+        file.assign(uuid(2), KIND_OTHER, B::Pulse, 1.0);
+        // No entry, no params: nothing set.
+        file.set_params(uuid(9), [1.0, 1.0]);
+        assert_eq!(file.anchors.len(), 2);
+        let (back, skipped) = RoomFile::from_json(&file.to_json()).expect("reads");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(back, file);
+        // A version 2 file keeps the defaults it names, table embers too.
+        assert_eq!(back.kind_default(KIND_TABLE), B::Embers);
+        assert_eq!(
+            back.resolve(&uuid(1), KIND_TABLE),
+            (B::Curls, 0.75, [5.0, 2.0])
+        );
+        assert_eq!(back.entry(&uuid(2)).unwrap().params, None);
+        // Params that are not two numbers are left unset, said once.
+        let text = format!(
+            r#"{{ "version": 2, "anchors": [
+                  {{ "uuid": "{}", "behavior": "pulse", "params": [1.0] }},
+                  {{ "uuid": "{}", "behavior": "pulse", "params": "teal" }} ] }}"#,
+            uuid_hex(&uuid(1)),
+            uuid_hex(&uuid(2))
+        );
+        let (bad, skipped) = RoomFile::from_json(&text).expect("reads");
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(bad.anchors.iter().all(|e| e.params.is_none()));
+        assert_eq!(bad.anchors.len(), 2);
     }
 }

@@ -247,9 +247,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
-    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
-    //       none, embers, sparks, streamlines; floor: none, sparks, rings, streamlines; wall: none, spectrum, streamlines, rings; ceiling,
-    //       frame: none, rings, streamlines), a pinch-hold cycles every surface
+    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
+    //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
+    //       sparks; wall none, spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings,
+    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold cycles every surface
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the

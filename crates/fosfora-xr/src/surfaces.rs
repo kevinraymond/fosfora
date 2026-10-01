@@ -16,11 +16,13 @@
 //!
 //! Each box also runs a behavior (board #3326), chosen per surface instead
 //! of by its kind: a lane of its own in the aux block, one row per box
-//! after the pour row ([`lane_row`]). A zero row is unset and the box runs
-//! its kind's default ([`SurfaceBehavior::default_for`]): what every box
-//! ran before the lanes, but for the floor, whose default is the rings
-//! (the ripple) since step 2d, so an unset floor spawns nothing. An upload
-//! without the lanes (the core's tests, which use tables) changes nothing.
+//! after the pour row ([`lane_row`]). The app writes every box's row from
+//! the room file (`lanes::lane_rows`), its kind's default
+//! ([`SurfaceBehavior::default_for`]) when the file has no entry for it,
+//! so the sim never sees an unset row for a box. A zero row is unset and
+//! the sim runs its own kind default (`xr_kind_behavior`), the rule from
+//! before D2 (a table sheds embers, a floor the rings): an upload without
+//! the lanes (the core's tests, which use tables) changes nothing.
 
 use glam::{Quat, Vec3};
 
@@ -163,20 +165,53 @@ impl SurfaceBehavior {
     }
 
     /// The behaviors that render on a surface of `kind`, in the room
-    /// editor's cycle order, `none` first: a table, another kind or an
-    /// unlabeled anchor sheds embers or sparks off its top face or carries
-    /// streamlines; a floor sparks, or carries rings or streamlines; a
-    /// wall carries the spectrum, streamlines or rings; a ceiling or a
-    /// frame rings or streamlines. Stepping through the whole catalogue
-    /// instead left most steps looking alike on a given surface (a wall on
-    /// embers, sparks or none emits nothing; Kevin, worn, Sep 29). The knob
-    /// still takes any behavior on any kind.
+    /// editor's cycle order, `none` first and the kind's default
+    /// ([`Self::default_for`]) next, so one tap from the default goes to
+    /// the next look of that kind (board #3488, the mockup's room): a
+    /// table none, streamlines, curls, pulse, embers, sparks; a floor
+    /// none, rings, streamlines, curls, sparks; a wall none, spectrum,
+    /// streamlines, rings, pulse; a ceiling none, rings, pulse,
+    /// streamlines; a frame none, pulse, rings, streamlines; any other
+    /// kind and an unlabeled anchor none, curls, streamlines, pulse,
+    /// embers. Embers and sparks stay on the lists of the volumes they
+    /// fall off: the cloud comes back per surface (decision #3474).
+    /// Stepping through the whole catalogue instead left most steps looking
+    /// alike on a given surface (a wall on embers, sparks or none emits
+    /// nothing; Kevin, worn, Sep 29). The knob still takes any behavior on
+    /// any kind.
     pub fn catalogue(kind: u32) -> &'static [Self] {
         match kind {
-            KIND_FLOOR => &[Self::None, Self::Sparks, Self::Rings, Self::Streamlines],
-            KIND_WALL => &[Self::None, Self::Spectrum, Self::Streamlines, Self::Rings],
-            KIND_CEILING | KIND_FRAME => &[Self::None, Self::Rings, Self::Streamlines],
-            _ => &[Self::None, Self::Embers, Self::Sparks, Self::Streamlines],
+            KIND_TABLE => &[
+                Self::None,
+                Self::Streamlines,
+                Self::Curls,
+                Self::Pulse,
+                Self::Embers,
+                Self::Sparks,
+            ],
+            KIND_FLOOR => &[
+                Self::None,
+                Self::Rings,
+                Self::Streamlines,
+                Self::Curls,
+                Self::Sparks,
+            ],
+            KIND_WALL => &[
+                Self::None,
+                Self::Spectrum,
+                Self::Streamlines,
+                Self::Rings,
+                Self::Pulse,
+            ],
+            KIND_CEILING => &[Self::None, Self::Rings, Self::Pulse, Self::Streamlines],
+            KIND_FRAME => &[Self::None, Self::Pulse, Self::Rings, Self::Streamlines],
+            _ => &[
+                Self::None,
+                Self::Curls,
+                Self::Streamlines,
+                Self::Pulse,
+                Self::Embers,
+            ],
         }
     }
 
@@ -219,20 +254,24 @@ impl SurfaceBehavior {
         }
     }
 
-    /// What a surface of `kind` runs with no assignment: tables shed
-    /// embers and walls carry the spectrum, as the fixed rule per kind gave
-    /// them before the lanes; floors carry the rings (step 2d, decision
-    /// #3459, as the ripple). The floor's default was sparks, with the
-    /// ripple falling back to the largest floor when none was on it, so
-    /// "floor ripple kept rippling when I switch to embers or none" (Kevin,
-    /// worn, Sep 29): now a floor sparks only when assigned and `none`
-    /// leaves nothing on it. A tap from the rings goes to the streamlines,
-    /// then none, then sparks, then back to the rings.
+    /// What a surface of `kind` runs with no assignment: the mockup's
+    /// room (board #3488): tables the streamlines, floors the rings (the
+    /// ripple, step 2d, decision #3459), walls the spectrum, frames the
+    /// pulse, any other labeled surface (storage, a couch, a screen, a
+    /// lamp, a plant) the curls; ceilings and unlabeled anchors nothing.
+    /// Nothing emits by default: the cloud comes back on a surface by
+    /// assigning it embers or sparks (decision #3474). Each default but
+    /// none is the first entry after `none` in the kind's
+    /// [`Self::catalogue`], so a fresh room is the mockup and one tap goes
+    /// to the next look of that kind. Until D2 tables shed embers and
+    /// frames and other surfaces ran nothing.
     pub fn default_for(kind: u32) -> Self {
         match kind {
-            KIND_TABLE => Self::Embers,
+            KIND_TABLE => Self::Streamlines,
             KIND_FLOOR => Self::Rings,
             KIND_WALL => Self::Spectrum,
+            KIND_FRAME => Self::Pulse,
+            KIND_OTHER => Self::Curls,
             _ => Self::None,
         }
     }
@@ -280,8 +319,9 @@ pub fn lane_row(behavior: SurfaceBehavior, strength: f32, params: [f32; 2]) -> [
 }
 
 /// The behavior a box of `kind` runs with lane `row`: the lane's when set,
-/// else the kind's default, as the sim reads it (`xr_box_behavior`). A
-/// reserved id runs nothing.
+/// else the kind's default (the sim's `xr_box_behavior` reads a set row
+/// the same way; for an unset one it keeps the pre-D2 kind rule, which
+/// only an upload without the lanes sees). An unknown id runs nothing.
 pub fn lane_behavior(row: [f32; 4], kind: u32) -> SurfaceBehavior {
     let code = (row[0].max(0.0) + 0.5) as u32;
     if code == 0 {
@@ -1194,14 +1234,31 @@ mod tests {
     fn each_kind_cycles_through_what_renders_on_it_and_wraps() {
         use SurfaceBehavior as B;
         // Every step of each kind's order, from none round to none.
+        let other: &[B] = &[B::None, B::Curls, B::Streamlines, B::Pulse, B::Embers];
         let orders: [(u32, &[B]); 7] = [
-            (KIND_TABLE, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
-            (KIND_OTHER, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
-            (KIND_NONE, &[B::None, B::Embers, B::Sparks, B::Streamlines]),
-            (KIND_FLOOR, &[B::None, B::Sparks, B::Rings, B::Streamlines]),
-            (KIND_WALL, &[B::None, B::Spectrum, B::Streamlines, B::Rings]),
-            (KIND_CEILING, &[B::None, B::Rings, B::Streamlines]),
-            (KIND_FRAME, &[B::None, B::Rings, B::Streamlines]),
+            (
+                KIND_TABLE,
+                &[
+                    B::None,
+                    B::Streamlines,
+                    B::Curls,
+                    B::Pulse,
+                    B::Embers,
+                    B::Sparks,
+                ],
+            ),
+            (KIND_OTHER, other),
+            (KIND_NONE, other),
+            (
+                KIND_FLOOR,
+                &[B::None, B::Rings, B::Streamlines, B::Curls, B::Sparks],
+            ),
+            (
+                KIND_WALL,
+                &[B::None, B::Spectrum, B::Streamlines, B::Rings, B::Pulse],
+            ),
+            (KIND_CEILING, &[B::None, B::Rings, B::Pulse, B::Streamlines]),
+            (KIND_FRAME, &[B::None, B::Pulse, B::Rings, B::Streamlines]),
         ];
         for (kind, order) in orders {
             assert_eq!(B::catalogue(kind), order, "kind {kind}");
@@ -1214,22 +1271,57 @@ mod tests {
             let mut expected = order[1..].to_vec();
             expected.push(B::None);
             assert_eq!(seen, expected, "kind {kind}");
+            // Each behavior once.
+            for (i, x) in order.iter().enumerate() {
+                assert!(!order[i + 1..].contains(x), "kind {kind}: {x:?} twice");
+            }
         }
-        // The defaults are on their kind's catalogue: an unassigned table
-        // goes to sparks, a wall to the streamlines, a floor (the rings)
-        // to the streamlines, then none, sparks and back to the rings.
-        assert_eq!(B::Embers.next_for(KIND_TABLE), B::Sparks);
+        // One tap from each default goes to the next look of its kind.
+        assert_eq!(B::Streamlines.next_for(KIND_TABLE), B::Curls);
         assert_eq!(B::Spectrum.next_for(KIND_WALL), B::Streamlines);
+        assert_eq!(B::Pulse.next_for(KIND_FRAME), B::Rings);
+        assert_eq!(B::Curls.next_for(KIND_OTHER), B::Streamlines);
         let mut floor = vec![B::default_for(KIND_FLOOR)];
-        for _ in 0..4 {
+        for _ in 0..5 {
             floor.push(floor.last().unwrap().next_for(KIND_FLOOR));
         }
         assert_eq!(
             floor,
-            [B::Rings, B::Streamlines, B::None, B::Sparks, B::Rings]
+            [
+                B::Rings,
+                B::Streamlines,
+                B::Curls,
+                B::Sparks,
+                B::None,
+                B::Rings
+            ]
         );
-        for (kind, _) in KIND_NAMES {
-            assert!(B::catalogue(kind).contains(&B::default_for(kind)));
+    }
+
+    #[test]
+    fn every_default_is_the_first_entry_after_none_in_its_kinds_cycle() {
+        use SurfaceBehavior as B;
+        // A fresh room is the mockup and one tap goes to the next look.
+        // Ceilings and unlabeled anchors default to none (the brief's
+        // defaults), so theirs is the cycle's start: a tap lights them.
+        for kind in [
+            KIND_TABLE,
+            KIND_FLOOR,
+            KIND_WALL,
+            KIND_FRAME,
+            KIND_OTHER,
+            KIND_CEILING,
+            KIND_NONE,
+        ] {
+            let order = B::catalogue(kind);
+            assert_eq!(order[0], B::None, "kind {kind}");
+            match B::default_for(kind) {
+                B::None => {
+                    assert!(matches!(kind, KIND_CEILING | KIND_NONE), "kind {kind}");
+                    assert_eq!(B::None.next_for(kind), order[1]);
+                }
+                d => assert_eq!(order[1], d, "kind {kind}"),
+            }
         }
     }
 
@@ -1238,25 +1330,33 @@ mod tests {
         use SurfaceBehavior as B;
         // The knob put the spectrum on a table, the rings on a couch,
         // embers on a wall or a floor, sparks on a ceiling.
-        assert_eq!(B::Spectrum.next_for(KIND_TABLE), B::Embers);
-        assert_eq!(B::Rings.next_for(KIND_OTHER), B::Embers);
+        assert_eq!(B::Spectrum.next_for(KIND_TABLE), B::Streamlines);
+        assert_eq!(B::Rings.next_for(KIND_OTHER), B::Curls);
         assert_eq!(B::Embers.next_for(KIND_WALL), B::Spectrum);
-        assert_eq!(B::Embers.next_for(KIND_FLOOR), B::Sparks);
+        assert_eq!(B::Embers.next_for(KIND_FLOOR), B::Rings);
         assert_eq!(B::Sparks.next_for(KIND_CEILING), B::Rings);
-        // A ceiling or a frame on none goes to the rings.
+        // A ceiling on none goes to the rings, a frame to the pulse.
         assert_eq!(B::None.next_for(KIND_CEILING), B::Rings);
-        assert_eq!(B::None.next_for(KIND_FRAME), B::Rings);
+        assert_eq!(B::None.next_for(KIND_FRAME), B::Pulse);
     }
 
     #[test]
-    fn the_kind_defaults_are_the_fixed_rule_but_the_floor_ripples() {
+    fn the_kind_defaults_are_the_mockups_room() {
         use SurfaceBehavior as B;
-        assert_eq!(B::default_for(KIND_TABLE), B::Embers);
-        // Step 2d (decision #3459): the rings (the ripple), not sparks.
+        // Board #3488: streamlines on the table, rings on the floor (step
+        // 2d, decision #3459), the spectrum on the walls, the pulse on the
+        // frames, curls on everything else labeled.
+        assert_eq!(B::default_for(KIND_TABLE), B::Streamlines);
         assert_eq!(B::default_for(KIND_FLOOR), B::Rings);
         assert_eq!(B::default_for(KIND_WALL), B::Spectrum);
-        for kind in [KIND_NONE, KIND_CEILING, KIND_FRAME, KIND_OTHER, 99] {
+        assert_eq!(B::default_for(KIND_FRAME), B::Pulse);
+        assert_eq!(B::default_for(KIND_OTHER), B::Curls);
+        for kind in [KIND_NONE, KIND_CEILING, 99] {
             assert_eq!(B::default_for(kind), B::None, "kind {kind}");
+        }
+        // Nothing emits by default: the cloud comes back per surface.
+        for kind in 0..8 {
+            assert!(!B::default_for(kind).emits(), "kind {kind}");
         }
         for (kind, name) in KIND_NAMES {
             assert_eq!(kind_name(kind), name);

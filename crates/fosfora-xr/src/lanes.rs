@@ -735,13 +735,15 @@ mod tests {
     fn without_a_file_the_lanes_are_the_kind_defaults() {
         let boxes = room();
         let (rows, behaviors) = lane_rows(&RoomFile::default(), &boxes);
-        // The floors, scene and stage, on the rings (step 2d).
+        // The mockup's room (board #3488): the desk on the streamlines, the
+        // walls on the spectrum, the floors, scene and stage, on the rings
+        // (step 2d), the couch on the curls.
         let expected = [
-            B::Embers,
+            B::Streamlines,
             B::Spectrum,
             B::Spectrum,
             B::Rings,
-            B::None,
+            B::Curls,
             B::Rings,
         ];
         assert_eq!(&behaviors[..6], &expected);
@@ -764,7 +766,7 @@ mod tests {
         assert!(lanes.update(id, &boxes));
         // Steady: no rebuild.
         assert!(!lanes.update(id, &boxes));
-        assert_eq!(lanes.behavior(0), B::Embers);
+        assert_eq!(lanes.behavior(0), B::Streamlines);
         // While the room has no anchors yet, the knob waits.
         let desk = uuid_hex(&uuid(1))[..8].to_owned();
         let value = format!("{desk}=none,#5=ripple@0.5,wall=none");
@@ -798,7 +800,7 @@ mod tests {
         // Clear: the built-in defaults, saved.
         assert!(again.poll_knob(Some("clear"), false, &shuffled));
         assert!(again.update(room_of(&shuffled), &shuffled));
-        assert_eq!(again.behavior(3), B::Embers);
+        assert_eq!(again.behavior(3), B::Streamlines);
         match RoomFile::load(&path) {
             Loaded::File(f, _) => assert_eq!(f, RoomFile::default()),
             other => panic!("{other:?}"),
@@ -825,15 +827,18 @@ mod tests {
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The couch (other, default none): four pinches go round its
+        // The couch (other, default the curls): five pinches go round its
         // kind's catalogue once.
         let mut seen = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             seen.push(lanes.cycle(4, &boxes).unwrap());
         }
-        assert_eq!(seen, [B::Embers, B::Sparks, B::Streamlines, B::None]);
+        assert_eq!(
+            seen,
+            [B::Streamlines, B::Pulse, B::Embers, B::None, B::Curls]
+        );
         lanes.update(id, &boxes);
-        assert_eq!(lanes.behavior(4), B::None);
+        assert_eq!(lanes.behavior(4), B::Curls);
         // Past the boxes: refused, nothing written.
         assert!(lanes.cycle(6, &boxes).is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -847,26 +852,27 @@ mod tests {
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The desk runs embers with no entry: its first pinch is sparks,
-        // not embers (the step after none).
-        assert_eq!(lanes.effective(0, &boxes), Some((B::Embers, 1.0)));
-        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Sparks));
+        // The desk runs the streamlines with no entry: its first pinch is
+        // the curls, not the streamlines (the step after none).
+        assert_eq!(lanes.effective(0, &boxes), Some((B::Streamlines, 1.0)));
+        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Curls));
         // A wall on the spectrum by default goes to the streamlines (a
         // wall's catalogue is none, the spectrum, the streamlines, the
-        // rings).
+        // rings, the pulse).
         assert_eq!(lanes.cycle(1, &boxes), Ok(B::Streamlines));
         // A strength set by the knob is kept across a cycle.
         assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::None));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
         assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
         lanes.update(id, &boxes);
         assert_close!(lanes.rows()[3], lane_row(B::Rings, 0.4, [0.0; 2]));
-        assert_eq!(lanes.behavior(0), B::Sparks);
+        assert_eq!(lanes.behavior(0), B::Curls);
         assert_eq!(lanes.behavior(1), B::Streamlines);
         // Saved: a relaunch finds them.
         let mut again = RoomLanes::new(dir.clone());
         again.update(id, &boxes);
-        assert_eq!(again.behavior(0), B::Sparks);
+        assert_eq!(again.behavior(0), B::Curls);
         assert_eq!(again.behavior(3), B::Rings);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -968,19 +974,22 @@ mod tests {
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
         // The ceiling runs none: a pinch puts the rings on it (D1), a
-        // hold the streamlines on every ceiling.
+        // hold the pulse on every ceiling.
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
-        assert_eq!(lanes.cycle_kind_of(5, &boxes), Ok(B::Streamlines));
+        assert_eq!(lanes.cycle_kind_of(5, &boxes), Ok(B::Pulse));
         // Put on embers by the knob, it cycles to the first after none.
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
-        // The floor: the rings by default (step 2d), then the streamlines,
-        // none, sparks, the rings.
-        let floor: Vec<_> = (0..4).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
-        assert_eq!(floor, [B::Streamlines, B::None, B::Sparks, B::Rings]);
+        // The floor: the rings by default (step 2d), then the
+        // streamlines, the curls, sparks, none, the rings.
+        let floor: Vec<_> = (0..5).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        assert_eq!(
+            floor,
+            [B::Streamlines, B::Curls, B::Sparks, B::None, B::Rings]
+        );
         // A table the knob put on the spectrum: the first after none.
         assert!(lanes.poll_knob(Some("#0=spectrum"), false, &boxes));
-        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Embers));
+        assert_eq!(lanes.cycle(0, &boxes), Ok(B::Streamlines));
         // The class cycle from a wall: the streamlines, then the rings,
         // for both walls.
         assert_eq!(lanes.cycle_kind_of(1, &boxes), Ok(B::Streamlines));
@@ -999,7 +1008,7 @@ mod tests {
         std::fs::write(room_path(&dir, id), "{ broken").unwrap();
         let mut lanes = RoomLanes::new(dir.clone());
         assert!(lanes.update(Some(id), &boxes));
-        assert_eq!(lanes.behavior(0), B::Embers, "the defaults");
+        assert_eq!(lanes.behavior(0), B::Streamlines, "the defaults");
         assert_eq!(
             std::fs::read_to_string(room_path(&dir, id)).unwrap(),
             "{ broken",
