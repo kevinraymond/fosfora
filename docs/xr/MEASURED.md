@@ -1852,3 +1852,57 @@ debug panel's GPU graph, or on the next unworn run that has them.
 
 **Look:** unworn screencaps show only the stage floor (no room), so the
 streamlines' look on a table is judged worn, first by Kevin.
+
+## Surfaces as effects, D2a: the catalogue (board #3488)
+
+The catalogue grown to curls (6) and pulse (7), the wall spectrum folded
+into the surfaces pass as shader 3, the mockup's room as the per-kind
+defaults, the lane's spare parameters as color and band, the room file at
+version 2, a scan label. The slot is 34 rows (544 bytes), 32 slots.
+
+**Per shader on the stage floor alone** (`0074f9d`, Quest 3 v207, `mode
+world`, Embers 400K with the cloud off, `room 0` so the synthetic stage
+floor is the only surface and fills the lower half of the view from the
+desk, music on, 72 Hz, unworn, 30 s runs, 28 to 38 C rising through the
+list, App GPU med / max ms):
+
+| Stage floor | App GPU med / max | over none |
+|---|---|---|
+| none | 4.88 / 4.99 | |
+| rings | 5.65 / 5.75 | 0.8 |
+| streamlines | 6.58 / 6.75 | 1.7 |
+| curls | 7.17 / 7.34 | 2.3 |
+| pulse | 5.41 / 5.60 | 0.5 |
+
+The stage floor from the desk is the largest face the pass will ever
+draw, so these are per-shader worst cases for one face, in the order the
+shaders' per-pixel work predicts (curls: three noise octaves, the streaks
+and the fill; streamlines: two octaves and the streaks; rings: eight
+gaussians; pulse: one falloff). Curls over a full view costs more than the
+design's 2 ms room budget on its own; on a chair seat it covers a few
+thousand pixels. All five runs held 72 fps with 0 long and 0 stale frames.
+
+**Every face lit** (`bca4618`, the same setup with `room 1`, 45 s runs,
+30 to 35 C, after Kevin wore the headset for a minute so the room's 17
+anchors came back; App GPU med / max ms):
+
+| Room | lit | App GPU med / max | stale |
+|---|---|---|---|
+| 17 anchors, every kind none | 0 | 7.36 / 7.60 | 32 |
+| 17 anchors, every kind on a shader (`table=streamlines,floor=rings,wall=spectrum,other=curls,frame=pulse,ceiling=rings`) | 14 (rings 2, streamlines 5, curls 5, pulse 1, spectrum 1) | 8.36 / 8.67 | 61 |
+| 0 anchors (the query flaked again), every kind none | 0 | 7.03 / 7.32 | 57 |
+
+Fourteen faces lit, five of them curls, cost **1.0 ms** over the same room
+with nothing lit: inside the design's 2 ms gate. The 17 anchors as
+occluders and depth cost about 2 ms over no room (7.36 against 5.21),
+which is the room's known price, not the pass's. The three earlier
+no-anchor runs (5.21, 5.31, 5.42) say the pass costs nothing with no
+face to draw. The version 1 room file loaded with its kind defaults
+dropped, as logged ("version 1: its kind defaults give way to the
+built-ins").
+
+**Look (unworn screencaps, stage floor):** the streamlines as D1; curls
+draw as a violet wash of small closed loops with the fill between them;
+the rings as the ripple, faint; the pulse reads as a flat violet rectangle
+over the whole floor, paint rather than light, which on a frame-sized face
+may be right and on a floor is not. Judged worn.

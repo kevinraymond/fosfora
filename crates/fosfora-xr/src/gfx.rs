@@ -82,11 +82,6 @@ pub struct Gfx {
     surfaces: Vec<QuadBinding>,
     surface_count: std::cell::Cell<usize>,
     surface_pipeline: wgpu::RenderPipeline,
-    /// The wall spectrum (`set_canvas`, `canvas.rs`): one lit quad on the
-    /// wall the wearer faces.
-    canvas: QuadBinding,
-    canvas_visible: std::cell::Cell<bool>,
-    canvas_pipeline: wgpu::RenderPipeline,
     /// The room editor's highlight (`set_highlight`, `highlight.rs`): one
     /// lit quad on the face the pick hit.
     highlight: QuadBinding,
@@ -415,13 +410,6 @@ impl Gfx {
             crate::surface_fx::UNIFORM_ROWS,
             crate::surface_fx::MAX_SLOTS,
         );
-        let (canvas_pipeline, canvas) = build_surface_pipeline(
-            &device,
-            &eye_layout,
-            crate::canvas::CANVAS_WGSL,
-            "xr-canvas",
-            crate::canvas::UNIFORM_ROWS,
-        );
         let (highlight_pipeline, highlight) = build_surface_pipeline(
             &device,
             &eye_layout,
@@ -444,9 +432,6 @@ impl Gfx {
             surfaces,
             surface_count: std::cell::Cell::new(0),
             surface_pipeline,
-            canvas,
-            canvas_visible: std::cell::Cell::new(false),
-            canvas_pipeline,
             highlight,
             highlight_visible: std::cell::Cell::new(false),
             world_visible: std::cell::Cell::new(true),
@@ -649,16 +634,6 @@ impl Gfx {
         self.surface_count.set(n);
     }
 
-    /// The wall spectrum for this frame (`Canvas::uniform`'s rows), or
-    /// hidden with `None`.
-    pub fn set_canvas(&self, rows: Option<&[[f32; 4]; crate::canvas::UNIFORM_ROWS]>) {
-        if let Some(rows) = rows {
-            self.queue
-                .write_buffer(&self.canvas.uniform, 0, bytemuck::cast_slice(rows));
-        }
-        self.canvas_visible.set(rows.is_some());
-    }
-
     /// The room editor's highlight for this frame (`highlight::uniform`'s
     /// rows), or hidden with `None`.
     pub fn set_highlight(&self, rows: Option<&[[f32; 4]; crate::highlight::UNIFORM_ROWS]>) {
@@ -674,7 +649,7 @@ impl Gfx {
     /// its `prepare_world` and `draw_world` for every eye, but still
     /// dispatches its sim, so showing it again is instant and the cloud
     /// is as it would have been. Everything else still draws: the depth
-    /// occluders, the surfaces pass, the canvas, the highlight, the beams,
+    /// occluders, the surfaces pass (the wall spectrum in it), the highlight, the beams,
     /// the panel and the label. The pitcher's pour and the throw's bursts
     /// are particles of the world effect, so they hide with it.
     pub fn set_world_visible(&self, visible: bool) {
@@ -964,7 +939,8 @@ impl Gfx {
             // in front of a surface hides its light, and before the
             // sprites, so embers on a surface draw over it: one draw per
             // lit face, its slot bound (board #3472; the floor ripple drew
-            // here before it became the rings).
+            // here before it became the rings, and the wall spectrum right
+            // after until D2 folded it in as a slot, board #3488).
             let lit = self.surface_count.get();
             if lit > 0 {
                 pass.set_pipeline(&self.surface_pipeline);
@@ -974,15 +950,7 @@ impl Gfx {
                     pass.draw(0..6, 0..1);
                 }
             }
-            // The wall spectrum right after, on the same terms: behind a
-            // hand or a chair in front of the wall, under the embers.
-            if self.canvas_visible.get() {
-                pass.set_pipeline(&self.canvas_pipeline);
-                pass.set_bind_group(0, &eye.bind_group, &[]);
-                pass.set_bind_group(1, &self.canvas.bind_group, &[]);
-                pass.draw(0..6, 0..1);
-            }
-            // The room editor's highlight on the same terms, after both.
+            // The room editor's highlight on the same terms, after it.
             if self.highlight_visible.get() {
                 pass.set_pipeline(&self.highlight_pipeline);
                 pass.set_bind_group(0, &eye.bind_group, &[]);
@@ -1380,8 +1348,8 @@ fn build_beam_pipeline(
 }
 
 /// A lit surface quad's pipeline and its uniform of `rows` vec4s: the
-/// wall spectrum (`canvas.rs`) and the room editor's highlight
-/// (`highlight.rs`); [`build_surface_slots`] with one slot. The beam's setup
+/// room editor's highlight (`highlight.rs`); [`build_surface_slots`] with
+/// one slot. The beam's setup
 /// (premultiplied alpha, depth-tested, no depth write, no culling) plus a
 /// depth bias toward the camera. The surface's occluder writes depth at
 /// its face; the quad sits `LIFT_M` off it, and the bias keeps it in

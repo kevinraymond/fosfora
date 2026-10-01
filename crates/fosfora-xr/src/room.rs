@@ -17,6 +17,7 @@ use openxr as xr;
 use xr::sys;
 use xr::sys::Handle as _;
 
+use crate::label::ScanState;
 use crate::particles3d::ObstacleBox;
 use crate::surfaces::PLANE_HALF_THICKNESS_M;
 
@@ -713,6 +714,27 @@ impl Room {
                 "scene: {located}/{} anchors located this pass",
                 self.anchors.len()
             );
+        }
+    }
+
+    /// Where the scene query is, for the scan label (`label::ScanLabel`,
+    /// board #3488): the anchors the last query that returned any
+    /// returned; `None` once nothing is pending (no query, Space Setup or
+    /// retry) and there are none, the retries having given up (or a query
+    /// whose results all failed to read); else still scanning (before the
+    /// first query, while one or Space Setup runs, between retries).
+    pub fn scan_state(&self) -> ScanState {
+        if !self.anchors.is_empty() {
+            ScanState::Found(self.anchors.len())
+        } else if self.started
+            && self.request.is_none()
+            && self.capture.is_none()
+            && self.retry_at.is_none()
+            && (self.empty_results >= EMPTY_RESULTS_BEFORE_CAPTURE || self.returned > 0)
+        {
+            ScanState::None
+        } else {
+            ScanState::Scanning
         }
     }
 

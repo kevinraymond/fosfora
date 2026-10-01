@@ -305,7 +305,10 @@ their default since step 2d) · 5 drips down the
 face gathering at its bottom edge (walls, new) · 6 dust lifting off the
 face on the beat (any, new) · 7 a pool that embers settle into and glow
 (tables, new). The first pass ships 0 to 4, which exist as code, and
-proves the plumbing; 5 to 7 come with C.
+proves the plumbing; 5 to 7 come with C. (Amended Oct 1: the surfaces
+design took 4 to 7 for its shaders, 4 the rings (the ripple), 5 the
+streamlines, 6 the curls, 7 the pulse; see "D2a" at the end and
+`SURFACES_DESIGN.md`.)
 
 ### The data model
 
@@ -434,6 +437,8 @@ later (C). A tap and a hold now step through the kind's own catalogue
 (`SurfaceBehavior::catalogue`, `next_for`), what renders on it, `none`
 first: table, other and unlabeled anchors none, embers, sparks; floor
 none, sparks, ripple; wall none, spectrum; ceiling and frame none only.
+(These lists grew with the surface shaders in D1 and were redone in D2a
+with each kind's default first after none; see "D2a" at the end.)
 A behavior off it (a knob put the spectrum on a table) goes to the first
 entry after `none`; the knob still takes any behavior on any kind. After
 each action a label floats at the hit for 1.5 s, fading over its last
@@ -613,3 +618,24 @@ boxes)". And the label says when a tap or a hold leaves a surface on
 embers or sparks outside the volume, "table 13: sparks (outside the
 space)", by the reach test the weights use: rare with the fit, it stays
 for an asked size too small for the room.
+
+**Amended, D2a (Oct 1, board #3488).** The surfaces design
+(`SURFACES_DESIGN.md`, "D2a as built") changed what this editor cycles
+through and what a room runs with no file. The kind defaults are the
+mockup's room: tables the streamlines, floors the rings, walls the
+spectrum, frames the pulse, any other labeled surface the curls,
+ceilings and unlabeled anchors none; nothing emits by default, and
+embers or sparks on a surface brings the cloud back there (decision
+#3474). Each kind's cycle puts its default first after none: table none,
+streamlines, curls, pulse, embers, sparks; floor none, rings,
+streamlines, curls, sparks; wall none, spectrum, streamlines, rings,
+pulse; ceiling none, rings, pulse, streamlines; frame none, pulse,
+rings, streamlines; other and unlabeled none, curls, streamlines, pulse,
+embers. The room file is version 2: a version 1 file keeps its anchor
+entries and its kind defaults give way to the built-ins (every save
+before wrote all six, table embers among them), and an entry's `params`
+are the lane's color index and audio band, written only once set. The
+knob takes `<target>=<behavior>[:<color>[:<band>]][@<strength>]`. The
+sim's own default for an unset lane (`xr_kind_behavior`, a table on
+embers) is unchanged; the app writes every box's row, so only an upload
+without the lanes sees it.

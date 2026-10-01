@@ -240,16 +240,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.canvastest ceiling       (diagnostic: the wall spectrum on the room's CEILING anchor instead of a wall,
     //       for an unworn screencap from a headset lying face up)
     //   adb shell setprop debug.fosfora.surface "wall=none,#3=rings,1a2b3c4d=embers@0.5"   (board #3326: each room surface's behavior,
-    //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[@<strength>], target = an
+    //       saved per room in rooms/<room id>.json under the config dir; comma-separated <target>=<behavior>[:<color>[:<band>]][@<strength>], target = an
     //       anchor UUID (32 hex, or a prefix of 8 or more unique in the room), #<k> a box by index (the log's "room <id>:" lane table;
     //       the stage floor too) or a kind (table, floor, wall, ceiling, frame, other: its default and every anchor of it), behavior =
-    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, strength 0..1 (default 1); "clear" drops
+    //       none, embers, sparks, spectrum, rings (or its old name, ripple), streamlines, curls, pulse, strength 0..1 (default 1); board #3488:
+    //       an optional ":<color>[:<band>]" after the behavior, color 0..8 (0 the kind's own, 1 blue, 2 violet, 3 warm white, 4 amber,
+    //       5 green, 6 teal, 7 rose, 8 the key's tint), band 0..3 (rms, bass, mid, high), e.g. "table=curls:5:2@0.8"; "clear" drops
     //       every assignment; live: polled once a
     //       second and applied when it changes, a bad value applies nothing; unset, each room keeps its file)
     //   adb shell setprop debug.fosfora.editroom 0|1             (board #3326: the room editor on at launch, as the hand menu's "Edit room" turns it on:
-    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (table, other:
-    //       none, embers, sparks, streamlines; floor: none, sparks, rings, streamlines; wall: none, spectrum, streamlines, rings; ceiling,
-    //       frame: none, rings, streamlines), a pinch-hold cycles every surface
+    //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
+    //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
+    //       sparks; wall none, spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings,
+    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold cycles every surface
     //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
@@ -936,6 +939,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Its label at the surface after each action (`label.rs`).
     let mut label = crate::label::Label::default();
     let mut label_texture = crate::label::LabelTexture::new(&mut gfx);
+    // Board #3488: the room scan's state on the same label while the
+    // editor's shows nothing.
+    let mut scan_label = crate::label::ScanLabel::default();
+    let mut scan_logged: Option<crate::label::ScanState> = None;
     let mut edit_was_on = false;
     let mut edit_status = String::from(EDIT_OFF);
     // Step 2c: what the cloud ran last frame (`room_edit::Cloud`), to log
@@ -974,10 +981,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // knob).
     let mut surface_lanes = crate::lanes::RoomLanes::new(dirs.config.clone());
     // Board #3472: the surfaces pass's clock and its lit faces by shader
-    // (rings, streamlines), for the log (`None` before the first frame, so
-    // the first count is logged too).
+    // (rings, streamlines, curls, pulse, spectrum) and the faces past its slots, for
+    // the log (`None` before the first frame, so the first count is logged
+    // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<[usize; 2]> = None;
+    let mut surfaces_lit: Option<([usize; 5], usize)> = None;
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -1010,6 +1018,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mut last_t = 0.0f32;
     let mut frame_index = 0u64;
     let mut beat_env = 0.0f32;
+    // Board #3488: 1 on the downbeat, decaying with a 0.6 s time constant
+    // (`surface_fx::downbeat_step`): the pulse's envelope.
+    let mut downbeat_env = 0.0f32;
     let flash = debug_prop("debug.fosfora.flash").as_deref() == Some("1");
     let mut flash_frames = 0u32;
 
@@ -1083,6 +1094,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let scene_mut = scene.as_mut();
         let frames_window = stats.last;
         let has_room = session.has_room();
+        let scan_state = session.scan_state();
+        if scan_state != scan_logged {
+            if let Some(state) = scan_state {
+                info!(
+                    "room scan: {:?}, the label reads \"{}\"",
+                    state,
+                    crate::label::scan_text(state)
+                );
+            }
+            scan_logged = scan_state;
+        }
         // The hand menu's rescan, carried out of the frame closure (the
         // session is borrowed inside it).
         let mut rescan = false;
@@ -1657,18 +1679,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     if !edit_on {
                         label.clear();
                     }
-                    label_texture.show(
-                        &gfx,
-                        label.now().map(|l| {
-                            let pose = crate::label::billboard(
-                                l.point,
-                                l.normal,
-                                head,
-                                glam::Quat::from_array(input.head_rot),
-                            );
-                            (l.text, l.alpha, pose)
-                        }),
-                    );
                     edit_status = if !edit_on {
                         EDIT_OFF.to_owned()
                     } else if let Some(h) = frame.hit {
@@ -1900,6 +1910,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     input.hands.mesh_ready,
                 );
             }
+            // The label: the room editor's after an action at its hit,
+            // else the room scan's (board #3488), held in front of the
+            // head: "Scanning the room…" until the query returns anchors,
+            // "Room: 17 surfaces" when it does, "No room found..." when
+            // the retries give up.
+            scan_label.step(scan_state, dt);
+            {
+                let head = glam::Vec3::from(input.head);
+                let head_rot = glam::Quat::from_array(input.head_rot);
+                let shown = label
+                    .now()
+                    .map(|l| {
+                        let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
+                        (l.text, l.alpha, pose)
+                    })
+                    .or_else(|| {
+                        scan_label.now().map(|(text, alpha)| {
+                            (text, alpha, crate::label::scan_billboard(head, head_rot))
+                        })
+                    });
+                label_texture.show(&gfx, shown);
+            }
             // The Music row: a decode that finished starts the clip; a
             // failed decode or start turns the row back to "Music: play".
             music.poll();
@@ -1929,6 +1961,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 }
             }
             beat_env *= (-dt * 6.0).exp();
+            downbeat_env = crate::surface_fx::downbeat_step(downbeat_env, hop.downbeat_fired, dt);
             surface_clock.advance(dt, beat_env);
             if let Some(r) = ripple.as_mut() {
                 r.update(
@@ -1940,40 +1973,128 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     f.bass,
                 );
             }
+            // Board #3327: the wall spectrum's bars and its wall. Among the
+            // room's walls whose lane says spectrum (by default every
+            // wall), less the ones the runtime hides, the one the wearer
+            // faces, with the pick's hysteresis (decision #3449);
+            // `canvastest ceiling` puts it on the room's ceiling instead.
+            // Since D2 (board #3488) it draws as a slot of the surfaces
+            // pass below, on that one box.
+            let spectrum_box = match canvas.as_mut() {
+                Some(c) => {
+                    c.update(dt, &hop.frame.mel);
+                    canvas_mel = hop.frame.mel.len();
+                    let head = glam::Vec3::from(input.head);
+                    let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                    let face_of = |b: &ObstacleBox| {
+                        crate::canvas::WallFace::of(
+                            glam::Vec3::from(b.center),
+                            glam::Quat::from_array(b.rot),
+                            glam::Vec3::from(b.half),
+                            head,
+                        )
+                    };
+                    let walls: Vec<(usize, crate::canvas::WallFace)> = input
+                        .room_boxes
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, b)| {
+                            let spectrum = crate::surfaces::SurfaceBehavior::Spectrum;
+                            b.kind == crate::surfaces::KIND_WALL
+                                && !b.hidden
+                                && surface_lanes.behavior(i) == spectrum
+                        })
+                        .map(|(i, b)| (i, face_of(b)))
+                        .collect();
+                    let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
+                    let picked = wall_pick
+                        .update(head, forward, &faces, dt)
+                        .map(|k| walls[k]);
+                    let face = if canvas_ceiling {
+                        input
+                            .room_boxes
+                            .iter()
+                            .enumerate()
+                            .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
+                            .map(|(i, b)| (i, face_of(b)))
+                    } else {
+                        picked
+                    };
+                    let now = face.map(|(i, f)| (i, f.center));
+                    if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
+                        match now {
+                            Some((i, c)) => info!(
+                                "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
+                                walls.len(),
+                                c.x,
+                                c.y,
+                                c.z
+                            ),
+                            None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
+                        }
+                    }
+                    canvas_wall = now;
+                    now.map(|w| w.0)
+                }
+                None => None,
+            };
             // Board #3472, D1: the surfaces pass. Every box whose behavior
-            // is a surface shader (the rings, the streamlines) is lit on
-            // the face the behavior acts on, the stage floor too while the
-            // room has no scene floor (then it stands in for one, as its
-            // emitter flag and the editor's ray take it; beside a scene
-            // floor it would double it, step 2d); a hidden wall never. A
-            // floor's face is leveled and kept above the stage floor, as
-            // the ripple's quad was. The rings need the ripple state
-            // (`debug.fosfora.ripple`); `rippletest ceiling` puts them on
-            // every ceiling for the run, the room file untouched.
+            // is a surface shader (the rings, the streamlines, and since D2,
+            // board #3488, the curls and the pulse) is lit on the face the
+            // behavior acts on, the stage floor too while the room has no
+            // scene floor (then it stands in for one, as its emitter flag
+            // and the editor's ray take it; beside a scene floor it would
+            // double it, step 2d); a hidden wall never. A floor's face is
+            // leveled and kept above the stage floor, as the ripple's quad
+            // was. The rings need the ripple state (`debug.fosfora.ripple`);
+            // `rippletest ceiling` puts them on every ceiling for the run,
+            // the room file untouched. The spectrum is lit on the one box
+            // picked above (`debug.fosfora.canvas 0`: none), on its face
+            // oriented for the bars; another box on the spectrum is dark.
             {
                 use crate::surfaces::{KIND_CEILING, KIND_FLOOR, SurfaceBehavior};
                 let head = glam::Vec3::from(input.head);
                 let stage_k = input.room_boxes.len();
                 let scene_floor = input.room_boxes.iter().any(|b| b.kind == KIND_FLOOR);
                 let stage_top = floor_box.map(|b| b.center[1] + b.half[1]);
-                let audio = crate::surface_fx::Audio {
+                let mut audio = crate::surface_fx::Audio {
                     rms: f.rms,
                     bass: f.bass,
                     beat: beat_env,
                     clock: surface_clock.seconds(),
+                    mid: f.mid,
+                    high: f.presence.max(f.brilliance),
+                    downbeat: downbeat_env,
+                    bar_phase: f.bar_phase,
+                    key_tint: [1.0; 3],
                 };
-                let mut counts = [0usize; 2];
-                let mut faces = Vec::new();
+                let mut counts = [0usize; 5];
+                let mut slots = Vec::new();
+                let mut spectrum_sign = 1.0;
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
-                    let (behavior, strength) = if ripple_ceiling && b.kind == KIND_CEILING {
+                    // The lane's behavior, strength, color index and band
+                    // (board #3488; a box past the lanes' rows: the
+                    // defaults).
+                    let row = surface_lanes.rows().get(k).copied();
+                    let lane = surface_lanes.behavior(k);
+                    let test_rings = ripple_ceiling && b.kind == KIND_CEILING;
+                    let (behavior, strength) = if spectrum_box == Some(k) {
+                        let strength = row
+                            .filter(|_| lane == SurfaceBehavior::Spectrum)
+                            .map_or(1.0, |r| r[1]);
+                        (SurfaceBehavior::Spectrum, strength)
+                    } else if test_rings {
                         (SurfaceBehavior::Rings, 1.0)
                     } else {
-                        (
-                            surface_lanes.behavior(k),
-                            surface_lanes.rows().get(k).map_or(1.0, |r| r[1]),
-                        )
+                        (lane, row.map_or(1.0, |r| r[1]))
                     };
-                    if !behavior.draws_on_face()
+                    let (color, band) = match row {
+                        Some(r) if behavior == lane => crate::surfaces::lane_params(r, behavior),
+                        _ => (0, behavior.default_band()),
+                    };
+                    let spectrum = behavior == SurfaceBehavior::Spectrum;
+                    if spectrum != (spectrum_box == Some(k))
+                        || (!spectrum && !behavior.draws_on_face())
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
@@ -1986,94 +2107,66 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         glam::Vec3::from(b.half),
                         head,
                     );
-                    if b.kind == KIND_FLOOR {
+                    if spectrum {
+                        (face, spectrum_sign) = crate::canvas::spectrum_face(face);
+                    } else if b.kind == KIND_FLOOR {
                         face = crate::surface_fx::level_floor(face, stage_top);
                     }
-                    let slot = crate::surface_fx::Slot {
+                    match behavior {
+                        SurfaceBehavior::Rings => counts[0] += 1,
+                        SurfaceBehavior::Streamlines => counts[1] += 1,
+                        SurfaceBehavior::Curls => counts[2] += 1,
+                        SurfaceBehavior::Pulse => counts[3] += 1,
+                        _ => counts[4] += 1,
+                    }
+                    slots.push(crate::surface_fx::Slot {
                         face,
                         kind: b.kind,
                         behavior,
                         strength,
-                    };
-                    counts[usize::from(behavior == SurfaceBehavior::Streamlines)] += 1;
-                    faces.push(crate::surface_fx::rows(&slot, audio, ripple.as_ref(), t));
+                        color,
+                        band,
+                    });
                 }
-                if Some(counts) != surfaces_lit {
-                    let dropped = faces
-                        .len()
-                        .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                // The key's tint only when a lit face asks for it: the
+                // desktop's key hue from core's binding sources, which
+                // builds a map of every source.
+                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY) {
+                    let hue = fosfora_app::bindings::sources::collect_audio(&f)
+                        .get("audio.key_hue")
+                        .map_or(0.5, |v| v.0);
+                    audio.key_tint = crate::surfaces::key_tint(hue);
+                }
+                let spectrum = canvas.as_ref().map(|c| crate::surface_fx::Spectrum {
+                    canvas: c,
+                    sign: spectrum_sign,
+                });
+                let faces: Vec<_> = slots
+                    .iter()
+                    .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
+                    .collect();
+                let dropped = faces
+                    .len()
+                    .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                if Some((counts, dropped)) != surfaces_lit {
                     info!(
-                        "surfaces: {} lit (rings {}, streamlines {}){}",
+                        "surfaces: {} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {})",
                         faces.len(),
                         counts[0],
                         counts[1],
-                        if dropped > 0 {
-                            format!(", {dropped} past the pass's slots not drawn")
-                        } else {
-                            String::new()
-                        }
+                        counts[2],
+                        counts[3],
+                        counts[4]
                     );
-                    surfaces_lit = Some(counts);
+                    if dropped > 0 {
+                        info!(
+                            "surfaces: dropped {dropped} (the pass holds {})",
+                            crate::surface_fx::MAX_SLOTS
+                        );
+                    }
+                    surfaces_lit = Some((counts, dropped));
                 }
                 gfx.set_surfaces(&faces);
-            }
-            if let Some(c) = canvas.as_mut() {
-                c.update(dt, &hop.frame.mel);
-                canvas_mel = hop.frame.mel.len();
-                let head = glam::Vec3::from(input.head);
-                let forward = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                let face_of = |b: &ObstacleBox| {
-                    crate::canvas::WallFace::of(
-                        glam::Vec3::from(b.center),
-                        glam::Quat::from_array(b.rot),
-                        glam::Vec3::from(b.half),
-                        head,
-                    )
-                };
-                // The room's walls on the spectrum (by default every wall),
-                // less the ones the runtime hides.
-                let walls: Vec<(usize, crate::canvas::WallFace)> = input
-                    .room_boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, b)| {
-                        let spectrum = crate::surfaces::SurfaceBehavior::Spectrum;
-                        b.kind == crate::surfaces::KIND_WALL
-                            && !b.hidden
-                            && surface_lanes.behavior(i) == spectrum
-                    })
-                    .map(|(i, b)| (i, face_of(b)))
-                    .collect();
-                let faces: Vec<_> = walls.iter().map(|w| w.1).collect();
-                let picked = wall_pick
-                    .update(head, forward, &faces, dt)
-                    .map(|k| walls[k]);
-                let face = if canvas_ceiling {
-                    input
-                        .room_boxes
-                        .iter()
-                        .enumerate()
-                        .find(|(_, b)| b.kind == crate::surfaces::KIND_CEILING)
-                        .map(|(i, b)| (i, face_of(b)))
-                } else {
-                    picked
-                };
-                let now = face.map(|(i, f)| (i, f.center));
-                if now.map(|w| w.0) != canvas_wall.map(|w| w.0) {
-                    match now {
-                        Some((i, c)) => info!(
-                            "wall spectrum: on box {i} ({} walls) at ({:.2}, {:.2}, {:.2})",
-                            walls.len(),
-                            c.x,
-                            c.y,
-                            c.z
-                        ),
-                        None => info!("wall spectrum: no wall in front ({} walls)", walls.len()),
-                    }
-                }
-                canvas_wall = now;
-                let rows = face.map(|(_, f)| c.uniform(f.corners()));
-                gfx.set_canvas(rows.as_ref());
             }
             if let Some(scene) = scene {
                 match music.analysis.as_mut().or(live_audio.as_mut()) {

@@ -649,6 +649,12 @@ impl XrSession {
         self.room.is_some()
     }
 
+    /// Where the room's scene query is (`Room::scan_state`); `None`
+    /// without a room.
+    pub fn scan_state(&self) -> Option<crate::label::ScanState> {
+        self.room.as_ref().map(Room::scan_state)
+    }
+
     /// The runtime's hand meshes (left, right), when hands are on and
     /// `XR_FB_hand_tracking_mesh` delivered them.
     pub fn hand_meshes(&self) -> [Option<&HandMeshData>; 2] {
