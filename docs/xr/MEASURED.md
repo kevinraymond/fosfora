@@ -1852,3 +1852,46 @@ debug panel's GPU graph, or on the next unworn run that has them.
 
 **Look:** unworn screencaps show only the stage floor (no room), so the
 streamlines' look on a table is judged worn, first by Kevin.
+
+## Surfaces as effects, D2a: the catalogue (board #3488)
+
+The catalogue grown to curls (6) and pulse (7), the wall spectrum folded
+into the surfaces pass as shader 3, the mockup's room as the per-kind
+defaults, the lane's spare parameters as color and band, the room file at
+version 2, a scan label. The slot is 34 rows (544 bytes), 32 slots.
+
+**Per shader on the stage floor alone** (`0074f9d`, Quest 3 v207, `mode
+world`, Embers 400K with the cloud off, `room 0` so the synthetic stage
+floor is the only surface and fills the lower half of the view from the
+desk, music on, 72 Hz, unworn, 30 s runs, 28 to 38 C rising through the
+list, App GPU med / max ms):
+
+| Stage floor | App GPU med / max | over none |
+|---|---|---|
+| none | 4.88 / 4.99 | |
+| rings | 5.65 / 5.75 | 0.8 |
+| streamlines | 6.58 / 6.75 | 1.7 |
+| curls | 7.17 / 7.34 | 2.3 |
+| pulse | 5.41 / 5.60 | 0.5 |
+
+The stage floor from the desk is the largest face the pass will ever
+draw, so these are per-shader worst cases for one face, in the order the
+shaders' per-pixel work predicts (curls: three noise octaves, the streaks
+and the fill; streamlines: two octaves and the streaks; rings: eight
+gaussians; pulse: one falloff). Curls over a full view costs more than the
+design's 2 ms room budget on its own; on a chair seat it covers a few
+thousand pixels. All five runs held 72 fps with 0 long and 0 stale frames.
+
+**Every face lit:** not measured. The scene query returned 0 anchors in
+every retry of three 45 s runs right after a reboot (the known unworn
+state); the room runs with `room 1` and every kind on a shader gave
+5.21 / 5.32 (none), 5.31 / 5.47 (every kind lit) and 5.42 / 5.50 (none
+again) with no surface in the room to light, which is the no-room cost of
+the pass itself: nothing. The every-face number is taken on the next run
+that locates the room's anchors.
+
+**Look (unworn screencaps, stage floor):** the streamlines as D1; curls
+draw as a violet wash of small closed loops with the fill between them;
+the rings as the ripple, faint; the pulse reads as a flat violet rectangle
+over the whole floor, paint rather than light, which on a frame-sized face
+may be right and on a floor is not. Judged worn.
