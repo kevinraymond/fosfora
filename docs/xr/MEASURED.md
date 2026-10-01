@@ -1882,13 +1882,24 @@ gaussians; pulse: one falloff). Curls over a full view costs more than the
 design's 2 ms room budget on its own; on a chair seat it covers a few
 thousand pixels. All five runs held 72 fps with 0 long and 0 stale frames.
 
-**Every face lit:** not measured. The scene query returned 0 anchors in
-every retry of three 45 s runs right after a reboot (the known unworn
-state); the room runs with `room 1` and every kind on a shader gave
-5.21 / 5.32 (none), 5.31 / 5.47 (every kind lit) and 5.42 / 5.50 (none
-again) with no surface in the room to light, which is the no-room cost of
-the pass itself: nothing. The every-face number is taken on the next run
-that locates the room's anchors.
+**Every face lit** (`bca4618`, the same setup with `room 1`, 45 s runs,
+30 to 35 C, after Kevin wore the headset for a minute so the room's 17
+anchors came back; App GPU med / max ms):
+
+| Room | lit | App GPU med / max | stale |
+|---|---|---|---|
+| 17 anchors, every kind none | 0 | 7.36 / 7.60 | 32 |
+| 17 anchors, every kind on a shader (`table=streamlines,floor=rings,wall=spectrum,other=curls,frame=pulse,ceiling=rings`) | 14 (rings 2, streamlines 5, curls 5, pulse 1, spectrum 1) | 8.36 / 8.67 | 61 |
+| 0 anchors (the query flaked again), every kind none | 0 | 7.03 / 7.32 | 57 |
+
+Fourteen faces lit, five of them curls, cost **1.0 ms** over the same room
+with nothing lit: inside the design's 2 ms gate. The 17 anchors as
+occluders and depth cost about 2 ms over no room (7.36 against 5.21),
+which is the room's known price, not the pass's. The three earlier
+no-anchor runs (5.21, 5.31, 5.42) say the pass costs nothing with no
+face to draw. The version 1 room file loaded with its kind defaults
+dropped, as logged ("version 1: its kind defaults give way to the
+built-ins").
 
 **Look (unworn screencaps, stage floor):** the streamlines as D1; curls
 draw as a violet wash of small closed loops with the fill between them;
