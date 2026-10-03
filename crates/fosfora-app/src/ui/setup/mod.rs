@@ -11,6 +11,8 @@ mod audio;
 mod control;
 pub mod kit;
 mod more;
+#[cfg(feature = "webcam")]
+pub use more::StreamStatuses;
 mod outputs;
 
 use egui::{Context, RichText, ScrollArea, Sense, Ui, Vec2};

@@ -50,6 +50,52 @@ pub struct RetiringStack {
     pub volumetric_params: crate::gpu::volumetric::VolumetricParams,
 }
 
+/// The index of the default camera in a device list: the camera saved by
+/// name if it is connected, else the saved index if the list has it, else
+/// the first camera. A saved index alone goes stale, since the OS renumbers
+/// cameras as they come and go; one that named no camera left "+ Webcam"
+/// failing with nothing to pick another from.
+#[cfg(feature = "webcam")]
+fn resolve_default_webcam(
+    devices: &[(u32, String)],
+    saved_name: Option<&str>,
+    saved_index: Option<u32>,
+) -> u32 {
+    let by_name = saved_name.and_then(|name| devices.iter().find(|(_, n)| n == name));
+    let by_index = || saved_index.and_then(|index| devices.iter().find(|(i, _)| *i == index));
+    by_name
+        .or_else(by_index)
+        .or(devices.first())
+        .map_or(0, |(index, _)| *index)
+}
+
+/// The cameras to pick from: the connected ones as the active backend lists
+/// them, then the network streams switched on in settings. Also returns the
+/// names among them that are streams.
+#[cfg(feature = "webcam")]
+fn list_webcam_devices(
+    use_ffmpeg: bool,
+    streams: &[crate::settings::RtmpStream],
+) -> (Vec<(u32, String)>, Vec<String>) {
+    let mut devices = if use_ffmpeg {
+        crate::media::webcam_ffmpeg::list_devices().unwrap_or_default()
+    } else {
+        crate::media::webcam::list_devices().unwrap_or_default()
+    };
+    let cameras: Vec<&str> = devices.iter().map(|(_, name)| name.as_str()).collect();
+    let stream_names: Vec<String> = crate::settings::stream_names(streams, &cameras)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let first_free = devices
+        .iter()
+        .map(|(index, _)| index + 1)
+        .max()
+        .unwrap_or(0);
+    devices.extend((first_free..).zip(stream_names.iter().cloned()));
+    (devices, stream_names)
+}
+
 pub struct App {
     pub gpu: GpuContext,
     pub start_time: Instant,
@@ -202,10 +248,17 @@ pub struct App {
     // Transient status error (displayed in status bar, auto-clears)
     pub status_error: Option<(String, Instant)>,
     // Webcam capture (feature-gated)
+    /// One running capture per camera in use, shared by every layer that
+    /// shows that camera.
     #[cfg(feature = "webcam")]
-    pub webcam_capture: Option<WebcamBackend>,
+    pub webcam_captures: Vec<WebcamBackend>,
     #[cfg(feature = "webcam")]
     pub webcam_devices: Vec<(u32, String)>,
+    /// The entries of `webcam_devices` that are network streams.
+    #[cfg(feature = "webcam")]
+    webcam_stream_names: Vec<String>,
+    /// The default camera, as an index into `webcam_devices`: what a
+    /// particle source, an obstacle and the first camera layer use.
     #[cfg(feature = "webcam")]
     pub webcam_device_index: u32,
     #[cfg(feature = "webcam")]
@@ -213,7 +266,7 @@ pub struct App {
     /// A camera layer waiting on the macOS camera prompt: the answer, and the
     /// device to add once it is yes (GH #212).
     #[cfg(all(target_os = "macos", feature = "webcam"))]
-    webcam_access_pending: Option<(crossbeam_channel::Receiver<bool>, u32)>,
+    webcam_access_pending: Option<(crossbeam_channel::Receiver<bool>, String)>,
     // Particle source loader (background image/video decode)
     pub particle_source_loader: crate::gpu::particle::ParticleSourceLoader,
     /// Background Gaussian-splat scene loader (#1800): decodes .ply/.splat off
@@ -476,9 +529,16 @@ impl App {
         let shader_compiler = ShaderCompiler::new();
         let settings = SettingsConfig::load();
         #[cfg(feature = "webcam")]
-        let webcam_device_from_settings = settings.webcam_device.unwrap_or(0);
-        #[cfg(feature = "webcam")]
         let use_ffmpeg_webcam = settings.use_ffmpeg_webcam;
+        #[cfg(feature = "webcam")]
+        let (webcam_devices, webcam_stream_names) =
+            list_webcam_devices(use_ffmpeg_webcam, &settings.rtmp_streams);
+        #[cfg(feature = "webcam")]
+        let webcam_device_from_settings = resolve_default_webcam(
+            &webcam_devices,
+            settings.webcam_device_name.as_deref(),
+            settings.webcam_device,
+        );
         let mut audio = AudioSystem::new_with_device(
             settings.audio_device.as_deref(),
             settings.band_scale,
@@ -639,13 +699,11 @@ impl App {
             quit_requested: false,
             status_error: None,
             #[cfg(feature = "webcam")]
-            webcam_capture: None,
+            webcam_captures: Vec::new(),
             #[cfg(feature = "webcam")]
-            webcam_devices: if use_ffmpeg_webcam {
-                crate::media::webcam_ffmpeg::list_devices().unwrap_or_default()
-            } else {
-                crate::media::webcam::list_devices().unwrap_or_default()
-            },
+            webcam_devices,
+            #[cfg(feature = "webcam")]
+            webcam_stream_names,
             #[cfg(feature = "webcam")]
             webcam_device_index: webcam_device_from_settings,
             #[cfg(feature = "webcam")]
@@ -809,13 +867,13 @@ impl App {
 
         // The macOS camera prompt was answered: add the layer that waited on it.
         #[cfg(all(target_os = "macos", feature = "webcam"))]
-        if let Some((answer, device_index)) = &self.webcam_access_pending {
-            let device_index = *device_index;
+        if let Some((answer, device_name)) = &self.webcam_access_pending {
+            let device_name = device_name.clone();
             match answer.try_recv() {
                 Ok(true) => {
                     log::info!("Camera access granted at the prompt; adding the camera layer");
                     self.webcam_access_pending = None;
-                    self.add_webcam_layer(device_index);
+                    self.add_webcam_layer(&device_name);
                 }
                 Ok(false) => {
                     self.webcam_access_pending = None;
@@ -1332,6 +1390,9 @@ impl App {
                 self.active_transition = None;
                 // Frees the outgoing preset's GPU resources.
                 self.retiring = None;
+                // And the cameras only it was showing.
+                #[cfg(feature = "webcam")]
+                self.cleanup_webcam_if_unused();
             }
         }
 
@@ -1386,67 +1447,7 @@ impl App {
 
         // Drain webcam frames into live media layers; detect dead capture thread
         #[cfg(feature = "webcam")]
-        {
-            let webcam_dead = self
-                .webcam_capture
-                .as_ref()
-                .map_or(false, |c| !c.is_running());
-            if webcam_dead {
-                log::warn!("Webcam capture thread died unexpectedly");
-                self.status_error =
-                    Some(("Webcam capture stopped unexpectedly".into(), Instant::now()));
-                self.webcam_capture = None;
-            }
-            if let Some(ref capture) = self.webcam_capture {
-                if let Some(frame) = capture.try_recv_frame() {
-                    // Feed media layers
-                    for layer in &mut self.layer_stack.layers {
-                        if let LayerContent::Media(ref mut m) = layer.content {
-                            if m.is_live() {
-                                m.set_live_frame(frame.data.clone());
-                                m.upload_frame(&self.gpu.queue);
-                            }
-                        }
-                    }
-                    // Feed particle systems with webcam source
-                    for layer in &mut self.layer_stack.layers {
-                        if let LayerContent::Effect(ref mut e) = layer.content {
-                            if let Some(ref mut ps) = e.pass_executor.particle_system {
-                                if ps.source.is_webcam() {
-                                    ps.update_webcam_frame(
-                                        &self.gpu.queue,
-                                        &frame.data,
-                                        frame.width,
-                                        frame.height,
-                                    );
-                                }
-                                // Feed obstacle with webcam frames
-                                if ps.obstacle_enabled && ps.obstacle_source == "webcam" {
-                                    ps.update_obstacle_webcam(
-                                        &self.gpu.device,
-                                        &self.gpu.queue,
-                                        &frame.data,
-                                        frame.width,
-                                        frame.height,
-                                    );
-                                }
-                                // Send webcam frame to depth thread for depth-based obstacle
-                                #[cfg(feature = "depth")]
-                                if ps.obstacle_enabled && ps.obstacle_source == "depth" {
-                                    if let Some(ref depth) = self.depth_thread {
-                                        depth.send_frame(
-                                            frame.data.clone(),
-                                            frame.width,
-                                            frame.height,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        self.pump_webcams();
 
         // Drain depth estimation results → update obstacle texture
         #[cfg(feature = "depth")]
@@ -2306,9 +2307,10 @@ impl App {
         log::info!("Added media layer: {}", file_name);
     }
 
-    /// Add a webcam layer. Starts capture if not already running.
+    /// Add a layer showing the named camera. Starts its capture if it is
+    /// not already running; cameras already running keep running.
     #[cfg(feature = "webcam")]
-    pub fn add_webcam_layer(&mut self, device_index: u32) {
+    pub fn add_webcam_layer(&mut self, device_name: &str) {
         let num = self.layer_stack.layers.len();
         if num >= crate::bindings::catalog::MAX_LAYERS {
             log::warn!(
@@ -2321,8 +2323,9 @@ impl App {
         // On macOS, ask for the camera first. While the prompt is up the
         // layer waits in `webcam_access_pending` and `update` adds it on a
         // yes, so the user does not have to add the camera a second time.
+        // A network stream is not a camera to macOS.
         #[cfg(target_os = "macos")]
-        if self.webcam_capture.is_none() {
+        if self.stream_for(device_name).is_none() {
             use crate::media::webcam::{CAMERA_DENIED, CameraAccess, request_camera_access};
             match request_camera_access() {
                 CameraAccess::Granted => {}
@@ -2331,7 +2334,7 @@ impl App {
                     return;
                 }
                 CameraAccess::Asking(answer) => {
-                    self.webcam_access_pending = Some((answer, device_index));
+                    self.webcam_access_pending = Some((answer, device_name.to_string()));
                     self.status_error = Some((
                         "Allow Fosfora to use the camera when macOS asks; the camera layer \
                          appears once you do."
@@ -2343,41 +2346,16 @@ impl App {
             }
         }
 
-        // Start capture if not already running
-        if self.webcam_capture.is_none() {
-            match self.start_webcam(device_index, Some((1280, 720))) {
-                Ok(capture) => {
-                    self.webcam_capture = Some(capture);
-                }
-                Err(e) => {
-                    log::error!("Failed to start webcam: {e}");
-                    self.status_error = Some((format!("Webcam failed: {e}"), Instant::now()));
-                    return;
-                }
+        let resolution = match self.ensure_webcam(device_name) {
+            Ok(resolution) => resolution,
+            Err(e) => {
+                log::error!("Failed to start webcam: {e}");
+                self.status_error = Some((format!("Webcam failed: {e}"), Instant::now()));
+                return;
             }
-        }
-
-        let capture = self
-            .webcam_capture
-            .as_ref()
-            .expect("webcam_capture set above or returned");
-        let (w, h) = capture.resolution();
-        let device_name = capture.device_name().to_string();
-
-        let source = crate::media::decoder::MediaSource::Live {
-            width: w,
-            height: h,
         };
-        let hdr_format = GpuContext::hdr_format();
-        let media_layer = MediaLayer::new(
-            &self.gpu.device,
-            &self.gpu.queue,
-            hdr_format,
-            self.gpu.surface_config.width,
-            self.gpu.surface_config.height,
-            source,
-            std::path::PathBuf::from(&device_name),
-        );
+
+        let media_layer = self.new_webcam_media_layer(device_name, resolution);
         let name = format!("Layer {}", num + 1);
         self.layer_stack
             .layers
@@ -2387,58 +2365,373 @@ impl App {
         log::info!("Added webcam layer: {device_name}");
     }
 
-    /// Stop webcam capture if no live webcam layers or obstacle sources need it.
+    /// A live media layer for the named camera, black until its first frame.
     #[cfg(feature = "webcam")]
-    pub fn cleanup_webcam_if_unused(&mut self) {
-        let has_live = self
+    fn new_webcam_media_layer(&self, device_name: &str, (width, height): (u32, u32)) -> MediaLayer {
+        let mut media_layer = MediaLayer::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            GpuContext::hdr_format(),
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+            crate::media::decoder::MediaSource::Live { width, height },
+            std::path::PathBuf::from(device_name),
+        );
+        // The whole name, where a path's last component would be taken.
+        media_layer.set_live_device(device_name);
+        media_layer
+    }
+
+    /// The name a listed camera goes by.
+    #[cfg(feature = "webcam")]
+    pub fn webcam_device_name(&self, device_index: u32) -> Option<String> {
+        self.webcam_devices
+            .iter()
+            .find(|(idx, _)| *idx == device_index)
+            .map(|(_, name)| name.clone())
+    }
+
+    /// Where a camera is in the device list, if it is connected.
+    #[cfg(feature = "webcam")]
+    pub fn webcam_device_index_of(&self, device_name: &str) -> Option<u32> {
+        self.webcam_devices
+            .iter()
+            .find(|(_, name)| name == device_name)
+            .map(|(idx, _)| *idx)
+    }
+
+    /// The default camera: the one last picked, or the first listed.
+    #[cfg(feature = "webcam")]
+    pub fn default_webcam_name(&self) -> Option<String> {
+        self.webcam_device_name(self.webcam_device_index)
+            .or_else(|| self.webcam_devices.first().map(|(_, name)| name.clone()))
+    }
+
+    /// Make a listed camera the default, and remember it.
+    #[cfg(feature = "webcam")]
+    pub fn set_default_webcam(&mut self, device_index: u32) {
+        self.webcam_device_index = device_index;
+        self.settings.webcam_device = Some(device_index);
+        self.settings.webcam_device_name = self.webcam_device_name(device_index);
+        self.settings.save();
+    }
+
+    /// The camera a new camera layer shows: the default, or once a layer
+    /// already shows that one, the first camera no layer shows yet.
+    #[cfg(feature = "webcam")]
+    pub fn webcam_for_new_layer(&self) -> Option<String> {
+        let shown: Vec<&str> = self
             .layer_stack
             .layers
             .iter()
-            .any(|l| l.as_media().map_or(false, |m| m.is_live()));
-        let obstacle_uses_cam = self.layer_stack.layers.iter().any(|l| {
+            .filter_map(|l| l.as_media().and_then(|m| m.live_device()))
+            .collect();
+        let default = self.default_webcam_name()?;
+        std::iter::once(&default)
+            .chain(self.webcam_devices.iter().map(|(_, name)| name))
+            .find(|name| !shown.contains(&name.as_str()))
+            .cloned()
+            .or(Some(default))
+    }
+
+    /// The running capture of a camera.
+    #[cfg(feature = "webcam")]
+    pub fn webcam_capture(&self, device_name: &str) -> Option<&WebcamBackend> {
+        self.webcam_captures
+            .iter()
+            .find(|c| c.device_name() == device_name)
+    }
+
+    /// The settings of the network stream listed under this name, if the
+    /// name is a stream's.
+    #[cfg(feature = "webcam")]
+    fn stream_for(&self, device_name: &str) -> Option<&crate::settings::RtmpStream> {
+        self.webcam_stream_names
+            .iter()
+            .any(|name| name == device_name)
+            .then(|| {
+                self.settings
+                    .rtmp_streams
+                    .iter()
+                    .find(|s| s.is_usable() && s.name == device_name)
+            })
+            .flatten()
+    }
+
+    /// Replace the network streams offered as cameras, and remember them.
+    /// A stream on screen whose settings changed is opened again with the new
+    /// ones; one that was removed or switched off stops.
+    #[cfg(feature = "webcam")]
+    pub fn set_rtmp_streams(&mut self, streams: Vec<crate::settings::RtmpStream>) {
+        self.settings.rtmp_streams = streams;
+        self.settings.save();
+        self.refresh_webcam_devices();
+        let current: Vec<bool> = self
+            .webcam_captures
+            .iter()
+            .map(|c| {
+                c.stream_config()
+                    .is_none_or(|config| self.stream_for(&config.name) == Some(config))
+            })
+            .collect();
+        let mut current = current.into_iter();
+        self.webcam_captures
+            .retain(|_| current.next().unwrap_or(true));
+        self.start_rtmp_streams();
+    }
+
+    /// Open every network stream switched on in settings. They run for as
+    /// long as they are switched on, shown or not, so a sender can connect
+    /// before anything uses its stream and a layer picks it up live.
+    #[cfg(feature = "webcam")]
+    pub fn start_rtmp_streams(&mut self) {
+        for name in self.webcam_stream_names.clone() {
+            if let Err(e) = self.ensure_webcam(&name) {
+                log::error!("Failed to open stream '{name}': {e}");
+                self.status_error = Some((format!("Stream failed: {e}"), Instant::now()));
+            }
+        }
+    }
+
+    /// Make sure the named camera is capturing. Returns its frame size.
+    #[cfg(feature = "webcam")]
+    pub fn ensure_webcam(&mut self, device_name: &str) -> Result<(u32, u32), String> {
+        if let Some(capture) = self.webcam_capture(device_name) {
+            if capture.is_running() {
+                return Ok(capture.resolution());
+            }
+        }
+        self.webcam_captures
+            .retain(|c| c.device_name() != device_name);
+        let capture = if let Some(stream) = self.stream_for(device_name) {
+            WebcamBackend::start_stream(stream)
+        } else if self.use_ffmpeg_webcam {
+            WebcamBackend::start_ffmpeg(device_name, Some((1280, 720)))
+        } else {
+            WebcamBackend::start_native(device_name, Some((1280, 720)))
+        }?;
+        let resolution = capture.resolution();
+        self.webcam_captures.push(capture);
+        Ok(resolution)
+    }
+
+    /// Make sure the default camera is capturing. Returns its frame size.
+    #[cfg(feature = "webcam")]
+    pub fn ensure_default_webcam(&mut self) -> Result<(u32, u32), String> {
+        if self.default_webcam_name().is_none() {
+            self.refresh_webcam_devices();
+        }
+        let name = self
+            .default_webcam_name()
+            .ok_or_else(|| "No camera found".to_string())?;
+        self.ensure_webcam(&name)
+    }
+
+    /// Every layer on screen: the live stack and, during a live Dissolve,
+    /// the outgoing preset's.
+    #[cfg(feature = "webcam")]
+    fn layers_on_screen(&self) -> impl Iterator<Item = &Layer> {
+        self.layer_stack
+            .layers
+            .iter()
+            .chain(self.retiring.iter().flat_map(|r| r.stack.layers.iter()))
+    }
+
+    /// Whether a particle source or an obstacle is fed by the default camera.
+    #[cfg(feature = "webcam")]
+    pub fn default_webcam_in_use(&self) -> bool {
+        self.layers_on_screen().any(|l| {
             l.as_effect()
                 .and_then(|e| e.pass_executor.particle_system.as_ref())
                 .map_or(false, |ps| {
-                    matches!(ps.obstacle_source.as_str(), "webcam" | "depth")
+                    (ps.source.is_webcam() && ps.webcam_device.is_none())
+                        || matches!(ps.obstacle_source.as_str(), "webcam" | "depth")
                 })
-        });
-        if !has_live && !obstacle_uses_cam {
-            if self.webcam_capture.is_some() {
-                log::info!("No live webcam layers or obstacle sources remain, stopping capture");
-            }
-            self.webcam_capture = None;
-        }
+        })
     }
 
-    /// Start webcam capture using the active backend (native or ffmpeg).
+    /// The camera a preset's particle source names, or `None` (the default
+    /// camera) where that camera is not connected here.
     #[cfg(feature = "webcam")]
-    pub fn start_webcam(
-        &self,
-        device_index: u32,
-        resolution: Option<(u32, u32)>,
-    ) -> Result<WebcamBackend, String> {
-        if self.use_ffmpeg_webcam {
-            // For ffmpeg, resolve device index to device name
-            let device_name = self
-                .webcam_devices
-                .iter()
-                .find(|(idx, _)| *idx == device_index)
-                .map(|(_, name)| name.clone())
-                .unwrap_or_else(|| format!("Camera {device_index}"));
-            WebcamBackend::start_ffmpeg(&device_name, resolution)
-        } else {
-            WebcamBackend::start_native(device_index, resolution)
+    pub fn particle_webcam_or_default(&self, saved: Option<&str>) -> Option<String> {
+        let saved = saved?;
+        if self.webcam_device_index_of(saved).is_some() {
+            return Some(saved.to_string());
+        }
+        log::warn!(
+            "Particle source wants camera '{saved}', which is not connected; using the default"
+        );
+        None
+    }
+
+    /// Make the camera `device` (the default one for `None`) the particle
+    /// source of a layer, starting its capture if need be.
+    #[cfg(feature = "webcam")]
+    pub fn set_particle_webcam(
+        &mut self,
+        layer: usize,
+        device: Option<String>,
+    ) -> Result<(), String> {
+        let (w, h) = match device.as_deref() {
+            Some(name) => self.ensure_webcam(name),
+            None => self.ensure_default_webcam(),
+        }?;
+        if let Some(ps) = self
+            .layer_stack
+            .layers
+            .get_mut(layer)
+            .and_then(|l| l.as_effect_mut())
+            .and_then(|e| e.pass_executor.particle_system.as_mut())
+        {
+            ps.set_webcam_source(&self.gpu.queue, w, h);
+            ps.webcam_device = device;
+        }
+        Ok(())
+    }
+
+    /// Every camera something on screen is fed by, and every network stream:
+    /// those stay open whether shown or not.
+    #[cfg(feature = "webcam")]
+    fn webcams_needed(&self) -> Vec<String> {
+        let particle_systems = self.layers_on_screen().filter_map(|l| {
+            l.as_effect()
+                .and_then(|e| e.pass_executor.particle_system.as_ref())
+        });
+        let mut needed: Vec<String> = self
+            .layers_on_screen()
+            .filter_map(|l| l.as_media().and_then(|m| m.live_device()))
+            .map(str::to_string)
+            .chain(
+                particle_systems
+                    .filter(|ps| ps.source.is_webcam())
+                    .filter_map(|ps| ps.webcam_device.clone()),
+            )
+            .collect();
+        if self.default_webcam_in_use() {
+            needed.extend(self.default_webcam_name());
+        }
+        needed.extend(self.webcam_stream_names.iter().cloned());
+        needed
+    }
+
+    /// Stop the capture of every camera nothing shows any more. Network
+    /// streams are left running.
+    #[cfg(feature = "webcam")]
+    pub fn cleanup_webcam_if_unused(&mut self) {
+        let needed = self.webcams_needed();
+        self.webcam_captures.retain(|c| {
+            let keep = needed.iter().any(|n| n == c.device_name());
+            if !keep {
+                log::info!(
+                    "Camera '{}' is no longer shown, stopping capture",
+                    c.device_name()
+                );
+            }
+            keep
+        });
+    }
+
+    /// Hand each camera's newest frame to the layers showing that camera
+    /// and the particle sources naming it, and the default camera's to the
+    /// other particle sources and to obstacles.
+    #[cfg(feature = "webcam")]
+    fn pump_webcams(&mut self) {
+        if self.webcam_captures.is_empty() {
+            return;
+        }
+        if let Some(dead) = self.webcam_captures.iter().position(|c| !c.is_running()) {
+            let capture = self.webcam_captures.remove(dead);
+            log::warn!(
+                "Capture of camera '{}' died unexpectedly",
+                capture.device_name()
+            );
+            self.status_error = Some((
+                format!("Camera '{}' stopped unexpectedly", capture.device_name()),
+                Instant::now(),
+            ));
+        }
+        let default = self.default_webcam_name();
+        for capture in &self.webcam_captures {
+            let Some(frame) = capture.try_recv_frame() else {
+                continue;
+            };
+            let device_name = capture.device_name();
+            let is_default = default.as_deref() == Some(device_name);
+            let layers = self.layer_stack.layers.iter_mut().chain(
+                self.retiring
+                    .iter_mut()
+                    .flat_map(|r| r.stack.layers.iter_mut()),
+            );
+            for layer in layers {
+                match layer.content {
+                    LayerContent::Media(ref mut m) => {
+                        if m.live_device() == Some(device_name) {
+                            m.set_live_frame(
+                                &self.gpu.device,
+                                &self.gpu.queue,
+                                frame.data.clone(),
+                                frame.width,
+                                frame.height,
+                            );
+                            m.upload_frame(&self.gpu.queue);
+                        }
+                    }
+                    LayerContent::Effect(ref mut e) => {
+                        let Some(ref mut ps) = e.pass_executor.particle_system else {
+                            continue;
+                        };
+                        let is_source = ps
+                            .webcam_device
+                            .as_deref()
+                            .map_or(is_default, |d| d == device_name);
+                        if ps.source.is_webcam() && is_source {
+                            ps.update_webcam_frame(
+                                &self.gpu.queue,
+                                &frame.data,
+                                frame.width,
+                                frame.height,
+                            );
+                        }
+                        if !is_default {
+                            continue;
+                        }
+                        // Feed obstacle with webcam frames
+                        if ps.obstacle_enabled && ps.obstacle_source == "webcam" {
+                            ps.update_obstacle_webcam(
+                                &self.gpu.device,
+                                &self.gpu.queue,
+                                &frame.data,
+                                frame.width,
+                                frame.height,
+                            );
+                        }
+                        // Send webcam frame to depth thread for depth-based obstacle
+                        #[cfg(feature = "depth")]
+                        if ps.obstacle_enabled && ps.obstacle_source == "depth" {
+                            if let Some(ref depth) = self.depth_thread {
+                                depth.send_frame(frame.data.clone(), frame.width, frame.height);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// Refresh the webcam device list using the active backend.
+    /// Refresh the webcam device list using the active backend. The default
+    /// camera stays the same camera, wherever it is listed now.
     #[cfg(feature = "webcam")]
     pub fn refresh_webcam_devices(&mut self) {
-        self.webcam_devices = if self.use_ffmpeg_webcam {
-            crate::media::webcam_ffmpeg::list_devices().unwrap_or_default()
-        } else {
-            crate::media::webcam::list_devices().unwrap_or_default()
-        };
+        let default = self
+            .webcam_device_name(self.webcam_device_index)
+            .or_else(|| self.settings.webcam_device_name.clone());
+        (self.webcam_devices, self.webcam_stream_names) =
+            list_webcam_devices(self.use_ffmpeg_webcam, &self.settings.rtmp_streams);
+        self.webcam_device_index = resolve_default_webcam(
+            &self.webcam_devices,
+            default.as_deref(),
+            Some(self.webcam_device_index),
+        );
     }
 
     /// Replace active layer content with media from a file path.
@@ -2590,6 +2883,12 @@ impl App {
                 let particle_video_speed = source_fields.video_speed;
                 let particle_video_looping = source_fields.video_looping;
                 let particle_webcam = source_fields.webcam;
+                #[cfg(feature = "webcam")]
+                let particle_webcam_device = ps_ref
+                    .filter(|ps| ps.source.is_webcam())
+                    .and_then(|ps| ps.webcam_device.clone());
+                #[cfg(not(feature = "webcam"))]
+                let particle_webcam_device = None;
                 let particle_image_path = source_fields.image_path.clone();
                 let particle_model_path = source_fields.model_path.clone();
                 let is_model_source = source_fields.model_path.is_some();
@@ -2673,6 +2972,7 @@ impl App {
                     particle_video_speed,
                     particle_video_looping,
                     particle_webcam,
+                    particle_webcam_device,
                     particle_image_path,
                     particle_model_path,
                     particle_model_pose,
@@ -3084,6 +3384,18 @@ impl App {
         preset: &crate::preset::Preset,
         mut decoded_media: std::collections::HashMap<usize, MediaDecodeResult>,
     ) {
+        // A camera the preset names may have been connected (or a virtual
+        // camera started) since the devices were last listed.
+        #[cfg(feature = "webcam")]
+        if preset.layers.iter().any(|lp| {
+            [&lp.webcam_device, &lp.particle_webcam_device]
+                .into_iter()
+                .flatten()
+                .any(|name| self.webcam_device_index_of(name).is_none())
+        }) {
+            self.refresh_webcam_devices();
+        }
+
         // Remove extra layers or add missing ones to match preset
         while self.layer_stack.layers.len() > preset.layers.len()
             && self.layer_stack.layers.len() > 1
@@ -3118,51 +3430,41 @@ impl App {
             let is_webcam_layer = lp.webcam_device.is_some();
 
             #[cfg(feature = "webcam")]
-            if is_webcam_layer {
-                // Resolve saved device name to current device index
-                let device_idx = lp
-                    .webcam_device
-                    .as_ref()
-                    .and_then(|name| {
-                        self.webcam_devices
-                            .iter()
-                            .find(|(_, n)| n == name)
-                            .map(|(idx, _)| *idx)
-                    })
-                    .unwrap_or(self.webcam_device_index);
-                // Start webcam capture if not already running
-                if self.webcam_capture.is_none() {
-                    match self.start_webcam(device_idx, Some((1280, 720))) {
-                        Ok(capture) => {
-                            self.webcam_capture = Some(capture);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to start webcam for preset layer {i}: {e}");
-                            self.status_error =
-                                Some((format!("Webcam failed: {e}"), Instant::now()));
-                        }
-                    }
-                }
-                if let Some(ref capture) = self.webcam_capture {
-                    let (w, h) = capture.resolution();
-                    let source = crate::media::decoder::MediaSource::Live {
-                        width: w,
-                        height: h,
-                    };
-                    let hdr_format = GpuContext::hdr_format();
-                    let media_layer = MediaLayer::new(
-                        &self.gpu.device,
-                        &self.gpu.queue,
-                        hdr_format,
-                        self.gpu.surface_config.width,
-                        self.gpu.surface_config.height,
-                        source,
-                        std::path::PathBuf::from(capture.device_name()),
+            if let Some(saved) = lp.webcam_device.as_deref() {
+                // The camera the preset names; the default one where that
+                // camera is not connected here.
+                let device_name = if self.webcam_device_index_of(saved).is_some() {
+                    saved.to_string()
+                } else {
+                    let fallback = self.default_webcam_name();
+                    log::warn!(
+                        "Preset layer {i} wants camera '{saved}', which is not connected; \
+                         using {fallback:?}"
                     );
-                    let layer = &mut self.layer_stack.layers[i];
-                    layer.content = LayerContent::Media(Box::new(media_layer));
-                    layer.param_store = ParamStore::new();
+                    fallback.unwrap_or_else(|| saved.to_string())
+                };
+                // Each camera has its own capture, so layers naming
+                // different cameras each get their own picture.
+                let resolution = match self.ensure_webcam(&device_name) {
+                    Ok(resolution) => resolution,
+                    Err(e) => {
+                        log::error!("Failed to start webcam for preset layer {i}: {e}");
+                        self.status_error = Some((format!("Webcam failed: {e}"), Instant::now()));
+                        // The layer is still the camera's, dark until it is back.
+                        (1280, 720)
+                    }
+                };
+                // A layer already showing this camera keeps its picture
+                // instead of going black until the next frame.
+                let already_showing = self.layer_stack.layers[i]
+                    .as_media()
+                    .and_then(|m| m.live_device())
+                    == Some(device_name.as_str());
+                if !already_showing {
+                    let media_layer = self.new_webcam_media_layer(&device_name, resolution);
+                    self.layer_stack.layers[i].content = LayerContent::Media(Box::new(media_layer));
                 }
+                self.layer_stack.layers[i].param_store = ParamStore::new();
             }
 
             if !is_webcam_layer {
@@ -3347,30 +3649,16 @@ impl App {
                 Some(crate::gpu::particle::SourceSpec::Webcam) => {
                     #[cfg(feature = "webcam")]
                     {
-                        // Start webcam capture if not already running
-                        if self.webcam_capture.is_none() {
-                            match self.start_webcam(self.webcam_device_index, Some((1280, 720))) {
-                                Ok(capture) => {
-                                    self.webcam_capture = Some(capture);
-                                }
-                                Err(e) => {
-                                    log::error!("Failed to start webcam for particle source: {e}");
-                                    self.status_error =
-                                        Some((format!("Webcam failed: {e}"), Instant::now()));
-                                }
-                            }
-                        }
-                        if let Some(ref capture) = self.webcam_capture {
-                            let (w, h) = capture.resolution();
-                            if let Some(ps) = self
-                                .layer_stack
-                                .layers
-                                .get_mut(i)
-                                .and_then(|l| l.as_effect_mut())
-                                .and_then(|e| e.pass_executor.particle_system.as_mut())
-                            {
-                                ps.set_webcam_source(&self.gpu.queue, w, h);
-                                log::info!("Restored particle webcam source for layer {i}");
+                        // The camera the preset names, started if it is
+                        // not already running.
+                        let device =
+                            self.particle_webcam_or_default(lp.particle_webcam_device.as_deref());
+                        match self.set_particle_webcam(i, device) {
+                            Ok(()) => log::info!("Restored particle webcam source for layer {i}"),
+                            Err(e) => {
+                                log::error!("Failed to start webcam for particle source: {e}");
+                                self.status_error =
+                                    Some((format!("Webcam failed: {e}"), Instant::now()));
                             }
                         }
                     }
@@ -3541,17 +3829,8 @@ impl App {
                 if crate::depth::model::model_exists() {
                     // Start webcam if needed
                     #[cfg(feature = "webcam")]
-                    if self.webcam_capture.is_none() {
-                        match self.start_webcam(self.webcam_device_index, Some((1280, 720))) {
-                            Ok(capture) => {
-                                self.webcam_capture = Some(capture);
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "Failed to start webcam for depth obstacle restore: {e}"
-                                );
-                            }
-                        }
+                    if let Err(e) = self.ensure_default_webcam() {
+                        log::error!("Failed to start webcam for depth obstacle restore: {e}");
                     }
                     // Start depth thread if needed
                     if self.depth_thread.is_none() {
@@ -3712,6 +3991,9 @@ impl App {
                 );
             }
         }
+        // Cameras the previous preset showed and this one does not.
+        #[cfg(feature = "webcam")]
+        self.cleanup_webcam_if_unused();
         if let Some((name, _)) = self.preset_store.presets.get(index) {
             log::info!("Loaded preset '{}'", name);
         }
@@ -4614,6 +4896,23 @@ pub struct MediaLoad {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved camera index that names no camera (one was unplugged, or a
+    /// virtual camera quit) made every "+ Webcam" fail.
+    #[cfg(feature = "webcam")]
+    #[test]
+    fn default_webcam_survives_renumbering() {
+        let devices = vec![(0, "Virtual".to_string()), (1, "FaceTime".to_string())];
+        // By name, wherever it is listed now.
+        assert_eq!(
+            resolve_default_webcam(&devices, Some("FaceTime"), Some(0)),
+            1
+        );
+        // A stale index falls back to a camera that exists.
+        assert_eq!(resolve_default_webcam(&devices, None, Some(2)), 0);
+        assert_eq!(resolve_default_webcam(&devices, Some("Gone"), Some(1)), 1);
+        assert_eq!(resolve_default_webcam(&[], Some("Gone"), Some(2)), 0);
+    }
     use crate::effect::format::PfxEffect;
     use std::path::PathBuf;
 

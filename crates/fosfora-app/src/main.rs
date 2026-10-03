@@ -74,6 +74,16 @@ impl FosforaApp {
 }
 
 impl ApplicationHandler for FosforaApp {
+    /// Captures are stopped here rather than left to drop: on macOS a quit
+    /// can end the process without unwinding, which left their ffmpeg
+    /// processes running and holding the stream's port.
+    #[cfg(feature = "webcam")]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(app) = self.app.as_mut() {
+            app.webcam_captures.clear();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -127,7 +137,9 @@ impl ApplicationHandler for FosforaApp {
         self.window = Some(window.clone());
 
         match App::new(window) {
-            Ok(app) => {
+            Ok(mut app) => {
+                #[cfg(feature = "webcam")]
+                app.start_rtmp_streams();
                 self.app = Some(app);
                 log::info!("Fosfora initialized");
             }
@@ -418,6 +430,18 @@ impl ApplicationHandler for FosforaApp {
                                     || ps.def.emitter.shape == "image",
                                 source_kind,
                                 source_name,
+                                #[cfg(feature = "webcam")]
+                                webcam_devices: app.webcam_devices.clone(),
+                                #[cfg(not(feature = "webcam"))]
+                                webcam_devices: vec![],
+                                #[cfg(feature = "webcam")]
+                                webcam_device: ps
+                                    .webcam_device
+                                    .clone()
+                                    .or_else(|| app.default_webcam_name())
+                                    .unwrap_or_default(),
+                                #[cfg(not(feature = "webcam"))]
+                                webcam_device: String::new(),
                                 video_playing,
                                 video_looping,
                                 video_speed,
@@ -771,14 +795,17 @@ impl ApplicationHandler for FosforaApp {
                                 available_devices: app.webcam_devices.clone(),
                                 #[cfg(not(feature = "webcam"))]
                                 available_devices: vec![],
+                                // This layer's camera, not the default one:
+                                // layers can show different cameras.
                                 #[cfg(feature = "webcam")]
-                                device_index: app.webcam_device_index,
+                                device_index: app
+                                    .webcam_device_index_of(&m.file_name)
+                                    .unwrap_or(u32::MAX),
                                 #[cfg(not(feature = "webcam"))]
                                 device_index: 0,
                                 #[cfg(feature = "webcam")]
                                 capture_running: app
-                                    .webcam_capture
-                                    .as_ref()
+                                    .webcam_capture(&m.file_name)
                                     .map_or(false, |c| c.is_running()),
                                 #[cfg(not(feature = "webcam"))]
                                 capture_running: false,
@@ -1784,12 +1811,13 @@ impl ApplicationHandler for FosforaApp {
                             ));
                         } else {
                             // Stop any active capture
-                            app.webcam_capture = None;
+                            app.webcam_captures.clear();
                             app.use_ffmpeg_webcam = use_ffmpeg;
                             app.settings.use_ffmpeg_webcam = use_ffmpeg;
                             app.settings.save();
                             // Refresh device list with new backend
                             app.refresh_webcam_devices();
+                            app.start_rtmp_streams();
                             let backend = if use_ffmpeg { "FFmpeg" } else { "native" };
                             let device_count = app.webcam_devices.len();
                             log::info!(
@@ -1802,6 +1830,26 @@ impl ApplicationHandler for FosforaApp {
                                 std::time::Instant::now(),
                             ));
                         }
+                    }
+                }
+
+                #[cfg(feature = "webcam")]
+                {
+                    // Where each stream in use stands, for the settings page.
+                    let status: crate::ui::setup::StreamStatuses = app
+                        .webcam_captures
+                        .iter()
+                        .filter_map(|c| Some((c.device_name().to_string(), c.stream_status()?)))
+                        .collect();
+                    app.egui_overlay.context().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("rtmp_stream_status"), status);
+                    });
+                    let streams: Option<Vec<crate::settings::RtmpStream>> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("set_rtmp_streams")));
+                    if let Some(streams) = streams {
+                        app.set_rtmp_streams(streams);
                     }
                 }
 
@@ -2745,8 +2793,7 @@ impl ApplicationHandler for FosforaApp {
                                             // Start webcam capture if not already running
                                             #[cfg(feature = "webcam")]
                                             {
-                                                obstacle_start_webcam =
-                                                    app.webcam_capture.is_none();
+                                                obstacle_start_webcam = true;
                                                 ps.obstacle_enabled = true;
                                                 ps.obstacle_source = "webcam".to_string();
                                                 ps.obstacle_image_path = None;
@@ -2840,29 +2887,19 @@ impl ApplicationHandler for FosforaApp {
                     // Deferred webcam/depth starts (outside mutable layer_stack borrow)
                     #[cfg(feature = "webcam")]
                     if obstacle_start_webcam {
-                        if app.webcam_capture.is_none() {
-                            match app.start_webcam(app.webcam_device_index, Some((1280, 720))) {
-                                Ok(capture) => {
-                                    app.webcam_capture = Some(capture);
-                                }
-                                Err(e) => {
-                                    log::error!("Failed to start webcam for obstacle: {e}");
-                                }
-                            }
+                        if let Err(e) = app.ensure_default_webcam() {
+                            log::error!("Failed to start webcam for obstacle: {e}");
+                            app.status_error =
+                                Some((format!("Webcam failed: {e}"), std::time::Instant::now()));
                         }
                     }
                     #[cfg(feature = "depth")]
                     if obstacle_start_depth {
                         #[cfg(feature = "webcam")]
-                        if app.webcam_capture.is_none() {
-                            match app.start_webcam(app.webcam_device_index, Some((1280, 720))) {
-                                Ok(capture) => {
-                                    app.webcam_capture = Some(capture);
-                                }
-                                Err(e) => {
-                                    log::error!("Failed to start webcam for depth obstacle: {e}");
-                                }
-                            }
+                        if let Err(e) = app.ensure_default_webcam() {
+                            log::error!("Failed to start webcam for depth obstacle: {e}");
+                            app.status_error =
+                                Some((format!("Webcam failed: {e}"), std::time::Instant::now()));
                         }
                         if app.depth_thread.is_none() {
                             let model_path = crate::depth::model::model_path();
@@ -2886,14 +2923,17 @@ impl ApplicationHandler for FosforaApp {
                         d.remove_temp(egui::Id::new("switch_obstacle_webcam_device"))
                     });
                     if let Some(new_idx) = switch_obs_device {
-                        let old_idx = app.webcam_device_index;
-                        app.webcam_capture = None;
-                        match app.start_webcam(new_idx, Some((1280, 720))) {
-                            Ok(capture) => {
-                                app.webcam_capture = Some(capture);
-                                app.webcam_device_index = new_idx;
-                                app.settings.webcam_device = Some(new_idx);
-                                app.settings.save();
+                        // The previous camera keeps running until the new
+                        // one is, so a camera that fails to open changes
+                        // nothing.
+                        let started = app
+                            .webcam_device_name(new_idx)
+                            .ok_or_else(|| "Camera is no longer connected".to_string())
+                            .and_then(|name| app.ensure_webcam(&name));
+                        match started {
+                            Ok(_) => {
+                                app.set_default_webcam(new_idx);
+                                app.cleanup_webcam_if_unused();
                             }
                             Err(e) => {
                                 log::error!("Failed to switch obstacle webcam device: {e}");
@@ -2901,15 +2941,7 @@ impl ApplicationHandler for FosforaApp {
                                     format!("Camera failed: {e}"),
                                     std::time::Instant::now(),
                                 ));
-                                // Restore previous capture
-                                match app.start_webcam(old_idx, Some((1280, 720))) {
-                                    Ok(capture) => {
-                                        app.webcam_capture = Some(capture);
-                                    }
-                                    Err(e2) => {
-                                        log::error!("Failed to restore previous webcam: {e2}");
-                                    }
-                                }
+                                app.refresh_webcam_devices();
                             }
                         }
                     }
@@ -3129,39 +3161,51 @@ impl ApplicationHandler for FosforaApp {
                         .egui_overlay
                         .context()
                         .data_mut(|d| d.remove_temp(egui::Id::new("add_webcam_layer")));
-                    if let Some(device_idx) = add_webcam {
-                        app.webcam_device_index = device_idx;
-                        app.add_webcam_layer(device_idx);
-                        app.preset_store.mark_dirty();
+                    if add_webcam.is_some() {
+                        // Listed afresh, so a camera plugged in (or a virtual
+                        // camera started) since launch can be added.
+                        app.refresh_webcam_devices();
+                        match app.webcam_for_new_layer() {
+                            Some(name) => {
+                                app.add_webcam_layer(&name);
+                                app.preset_store.mark_dirty();
+                            }
+                            None => {
+                                app.status_error =
+                                    Some(("No camera found".into(), std::time::Instant::now()));
+                            }
+                        }
                     }
 
-                    // Switch webcam device for active webcam layer
+                    // Switch the camera the active webcam layer shows. Other
+                    // layers keep theirs: each camera has its own capture.
                     let switch_device: Option<u32> = app
                         .egui_overlay
                         .context()
                         .data_mut(|d| d.remove_temp(egui::Id::new("switch_webcam_device")));
                     if let Some(new_idx) = switch_device {
-                        let old_idx = app.webcam_device_index;
-                        // Stop old capture first (release device)
-                        app.webcam_capture = None;
-                        match app.start_webcam(new_idx, Some((1280, 720))) {
-                            Ok(capture) => {
-                                let (w, h) = capture.resolution();
-                                let device_name = capture.device_name().to_string();
-                                app.webcam_capture = Some(capture);
-                                app.webcam_device_index = new_idx;
-                                app.settings.webcam_device = Some(new_idx);
-                                app.settings.save();
-                                // Update active webcam layer
-                                if let Some(layer) = app.layer_stack.active_mut() {
-                                    if let Some(m) = layer.as_media_mut() {
-                                        if m.is_live() {
-                                            m.file_name = device_name;
-                                            m.media_width = w;
-                                            m.media_height = h;
-                                        }
-                                    }
+                        let started = app
+                            .webcam_device_name(new_idx)
+                            .ok_or_else(|| "Camera is no longer connected".to_string())
+                            .and_then(|name| app.ensure_webcam(&name).map(|_| name));
+                        match started {
+                            Ok(device_name) => {
+                                if let Some(m) = app
+                                    .layer_stack
+                                    .active_mut()
+                                    .and_then(|l| l.as_media_mut())
+                                    .filter(|m| m.is_live())
+                                {
+                                    m.set_live_device(&device_name);
                                 }
+                                // The pick becomes the default camera too,
+                                // unless that would move a particle source
+                                // or an obstacle to another camera.
+                                if !app.default_webcam_in_use() {
+                                    app.set_default_webcam(new_idx);
+                                }
+                                app.cleanup_webcam_if_unused();
+                                app.preset_store.mark_dirty();
                             }
                             Err(e) => {
                                 log::error!("Failed to switch webcam device: {e}");
@@ -3169,15 +3213,7 @@ impl ApplicationHandler for FosforaApp {
                                     format!("Camera failed: {e}"),
                                     std::time::Instant::now(),
                                 ));
-                                // Restore previous capture
-                                match app.start_webcam(old_idx, Some((1280, 720))) {
-                                    Ok(capture) => {
-                                        app.webcam_capture = Some(capture);
-                                    }
-                                    Err(e2) => {
-                                        log::error!("Failed to restore previous webcam: {e2}");
-                                    }
-                                }
+                                app.refresh_webcam_devices();
                             }
                         }
                     }
@@ -3199,11 +3235,12 @@ impl ApplicationHandler for FosforaApp {
                         .context()
                         .data_mut(|d| d.remove_temp(egui::Id::new("webcam_disconnect")));
                     if webcam_disconnect.is_some() {
-                        // Stop capture and remove the active webcam layer
-                        app.webcam_capture = None;
+                        // Remove the active webcam layer; its camera stops
+                        // unless another layer shows it too.
                         let active = app.layer_stack.active_layer;
                         app.remove_layer(active);
                         app.sync_active_layer();
+                        app.cleanup_webcam_if_unused();
                         app.preset_store.mark_dirty();
                     }
                 }
@@ -3563,33 +3600,20 @@ impl ApplicationHandler for FosforaApp {
                     {
                         let use_webcam: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_webcam")));
-                        if use_webcam.is_some() {
-                            if app.webcam_capture.is_none() {
-                                match app.start_webcam(app.webcam_device_index, Some((1280, 720))) {
-                                    Ok(capture) => {
-                                        app.webcam_capture = Some(capture);
-                                    }
-                                    Err(e) => {
-                                        log::error!("Failed to start webcam: {e}");
-                                        app.status_error = Some((
-                                            format!("Webcam failed: {e}"),
-                                            std::time::Instant::now(),
-                                        ));
-                                    }
-                                }
+                        // A camera picked by name for the source; the button
+                        // alone means the default camera.
+                        let device: Option<String> = ctx
+                            .data_mut(|d| d.remove_temp(egui::Id::new("particle_webcam_device")));
+                        if use_webcam.is_some() || device.is_some() {
+                            let layer = app.layer_stack.active_layer;
+                            if let Err(e) = app.set_particle_webcam(layer, device) {
+                                log::error!("Failed to start webcam: {e}");
+                                app.status_error = Some((
+                                    format!("Webcam failed: {e}"),
+                                    std::time::Instant::now(),
+                                ));
                             }
-                            if let Some(ref capture) = app.webcam_capture {
-                                let (w, h) = capture.resolution();
-                                if let Some(layer) = app.layer_stack.active_mut() {
-                                    if let Some(effect) = layer.as_effect_mut() {
-                                        if let Some(ps) =
-                                            effect.pass_executor.particle_system.as_mut()
-                                        {
-                                            ps.set_webcam_source(&app.gpu.queue, w, h);
-                                        }
-                                    }
-                                }
-                            }
+                            app.cleanup_webcam_if_unused();
                             app.preset_store.mark_dirty();
                         }
                     }
@@ -4238,11 +4262,9 @@ impl ApplicationHandler for FosforaApp {
                     .context()
                     .data_mut(|d| d.remove_temp(egui::Id::new("clear_all_layers")));
                 if clear_all.is_some() {
-                    #[cfg(feature = "webcam")]
-                    {
-                        app.webcam_capture = None;
-                    }
                     app.clear_all_layers();
+                    #[cfg(feature = "webcam")]
+                    app.cleanup_webcam_if_unused();
                     app.preset_store.mark_dirty();
                 }
 

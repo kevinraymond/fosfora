@@ -149,6 +149,42 @@ impl FlashLimit {
     }
 }
 
+/// A network video stream offered as a camera: RTMP, or anything else
+/// FFmpeg opens by URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtmpStream {
+    /// What the camera lists and presets know the stream by.
+    pub name: String,
+    pub url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Wait at `url` for the sender to connect, rather than connecting to a
+    /// server there.
+    #[serde(default)]
+    pub listen: bool,
+}
+
+impl RtmpStream {
+    /// Whether it is listed as a camera: switched on, named and addressed.
+    pub fn is_usable(&self) -> bool {
+        self.enabled && !self.name.trim().is_empty() && !self.url.trim().is_empty()
+    }
+}
+
+/// The names the usable `streams` are listed under, in order. A stream
+/// named like an entry of `taken` (the connected cameras) or like an earlier
+/// stream is left out: a name has to mean one source.
+pub fn stream_names<'a>(streams: &'a [RtmpStream], taken: &[&str]) -> Vec<&'a str> {
+    let mut names: Vec<&str> = Vec::new();
+    for stream in streams.iter().filter(|s| s.is_usable()) {
+        let name = stream.name.as_str();
+        if !taken.contains(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsConfig {
     pub version: u32,
@@ -161,8 +197,15 @@ pub struct SettingsConfig {
     pub particle_quality: ParticleQuality,
     #[serde(default)]
     pub webcam_device: Option<u32>,
+    /// The default camera by name. Preferred over `webcam_device`: the OS
+    /// renumbers cameras as they come and go, so a saved index goes stale.
+    #[serde(default)]
+    pub webcam_device_name: Option<String>,
     #[serde(default)]
     pub use_ffmpeg_webcam: bool,
+    /// Network streams listed among the cameras.
+    #[serde(default)]
+    pub rtmp_streams: Vec<RtmpStream>,
     /// A18 structure-detector tuning (#1510). `#[serde(default)]` so older settings files
     /// without this key load with the built-in defaults.
     #[serde(default)]
@@ -253,7 +296,9 @@ impl Default for SettingsConfig {
             band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
+            webcam_device_name: None,
             use_ffmpeg_webcam: false,
+            rtmp_streams: Vec::new(),
             structure_tuning: StructureConfig::default(),
             tempo: TempoConfig::default(),
             auto_reconnect: true,
@@ -388,6 +433,34 @@ mod tests {
         let json = r#"{"version":1,"theme":"Dark","classic_layout":true}"#;
         let c: SettingsConfig = serde_json::from_str(json).unwrap();
         assert!(c.classic_layout);
+    }
+
+    #[test]
+    fn streams_are_listed_under_names_of_their_own() {
+        let stream = |name: &str, url: &str, enabled| RtmpStream {
+            name: name.into(),
+            url: url.into(),
+            enabled,
+            listen: false,
+        };
+        let streams = [
+            stream("Stage", "rtmp://a/live/1", true),
+            stream("Off", "rtmp://a/live/2", false),
+            stream("FaceTime", "rtmp://a/live/3", true),
+            stream("Stage", "rtmp://a/live/4", true),
+            stream("No address", " ", true),
+            stream("Crowd", "rtmp://a/live/5", true),
+        ];
+        assert_eq!(stream_names(&streams, &["FaceTime"]), ["Stage", "Crowd"]);
+
+        // A stream saved without the later fields is on and connects out.
+        let json =
+            r#"{"version":1,"theme":"Dark","rtmp_streams":[{"name":"A","url":"rtmp://a/b"}]}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(c.rtmp_streams[0].enabled && !c.rtmp_streams[0].listen);
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(c.rtmp_streams.is_empty());
     }
 
     #[test]

@@ -77,6 +77,10 @@ pub struct LayerPreset {
     /// True if particle source is webcam.
     #[serde(default)]
     pub particle_webcam: Option<bool>,
+    /// The camera or stream the webcam source is fed by, by name. Absent
+    /// for the default camera.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub particle_webcam_device: Option<String>,
     /// Absolute path to static image used as particle source. A renamed
     /// built-in image is read by its new name.
     #[serde(default, deserialize_with = "de_image_path")]
@@ -745,6 +749,7 @@ mod tests {
                 particle_video_speed: None,
                 particle_video_looping: None,
                 particle_webcam: None,
+                particle_webcam_device: None,
                 particle_image_path: None,
                 particle_model_path: None,
                 particle_model_pose: None,
@@ -979,6 +984,7 @@ mod tests {
             particle_video_speed: None,
             particle_video_looping: None,
             particle_webcam: None,
+            particle_webcam_device: None,
             particle_image_path: None,
             particle_model_path: None,
             particle_model_pose: None,

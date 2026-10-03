@@ -7,6 +7,8 @@
 
 ### Added
 - **Transitions when switching presets.** Clicking a preset, Next/Prev Preset and the web remote can now dissolve or morph instead of cutting: pick Cut, Dissolve or Morph and a length in the new Switch row at the top of the Presets panel (left side of Perform, and Build's left column), or over OSC with `/fosfora/preset/transition` and `/fosfora/preset/transition_secs`. The default stays Cut. Suggested by @Marvo2011.
+- **Several cameras in one preset.** Each camera layer now has its own camera: a second camera layer takes a camera not yet in use, the Camera menu changes only the selected layer, and a preset brings back every layer's camera. Before, all camera layers showed the same one. A webcam particle source has a Camera menu of its own too, saved with the preset. Obstacles still use the default camera.
+- **RTMP streams as cameras.** Setup ▸ General ▸ Cameras has a new Network streams list: give a stream a name and an address and switch it on, and it is listed with the cameras for webcam layers and webcam particle sources. A stream either connects to a server or, with Listen ticked, waits for a phone or encoder to publish straight to Fosfora. Streams switched on are open from launch, with a status light each (red not listening, yellow waiting, green connected), and a stream that drops comes back by itself. Needs FFmpeg on PATH.
 
 ### Changed
 - **Dissolves keep the outgoing preset moving.** It used to freeze for the length of the fade. Both presets render during a Dissolve, so if that stutters on your machine, untick **Keep moving** next to Dissolve in the Switch row or the cue editor. Presets with a trama chain or a locked layer still fade from a still.
@@ -15,6 +17,10 @@
 ### Fixed
 - **Changing your mind while a preset with a video was loading** switched back to that preset seconds later, when its video finished decoding; the later choice now sticks.
 - **A scene cue dissolving into a preset with a video** faded into the old preset and then hard-cut to the new one once the video loaded, about 13 s later for a typical clip. The dissolve now starts when the video is ready.
+- **Virtual cameras would not open with the FFmpeg webcam option**, which asked every camera for 1280x720 and gave up on one that only offers another size. It now takes the nearest size the camera has. On macOS its camera list also showed microphones.
+- **"+ Webcam" failed, or opened the wrong camera, after a camera was plugged in or unplugged or a virtual camera started.** Cameras are now remembered by name rather than by position, and the list is read again when you add one. Two cameras of the same model are listed separately.
+- **Switching a camera layer to a camera with a different resolution crashed**, and removing or switching a camera that had stopped sending pictures froze the app.
+- **Cameras stayed on after switching to a preset without them**, and a particle source lost its camera when a camera layer was removed.
 
 ## v2.0.1 — 2026-09-30
 
