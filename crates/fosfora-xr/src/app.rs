@@ -190,6 +190,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 1           (no room anchors: launch Space Setup, then requery)
     //   adb shell setprop debug.fosfora.rescan 1|query           (once the room is in: launch Space Setup and requery (1), or requery alone (query), replacing the anchors; the hand menu's "Rescan the room" over adb)
+    //   adb shell setprop debug.fosfora.anchors replay           (board #3536, a measurement aid for unworn runs: a scene query that finds no anchors
+    //       replays the last located room, saved on every launch to debug/anchors.json under the config dir when its located set changes,
+    //       as static boxes, until a query returns live anchors; unset or any other value off; read at launch)
     //   adb shell setprop debug.fosfora.floor 0|1                (the stage floor as an obstacle; default on in mr)
     //   adb shell setprop debug.fosfora.gravity 0.5              (downward settle drift m/s; default 0.5 in mr and world, 0 otherwise)
     //   adb shell setprop debug.fosfora.handpad 0.06             (m added to each hand joint's obstacle radius)
@@ -386,6 +389,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             Some("query") => crate::room::Rescan::Query,
             _ => crate::room::Rescan::Off,
         },
+        anchor_replay: crate::anchor_replay::replay_knob(
+            debug_prop("debug.fosfora.anchors").as_deref(),
+        ),
         env_depth,
     };
     let floor = toggle("debug.fosfora.floor", mixed);
@@ -507,7 +513,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         cube_center[0], cube_center[1], cube_center[2]
     );
 
-    let mut session = XrSession::new(&xr, &mut gfx, eye_scale, mr)?;
+    let mut session = XrSession::new(&xr, &mut gfx, eye_scale, mr, &dirs.config)?;
     if let Some(hz) = hz {
         session.request_refresh_rate(hz);
     }

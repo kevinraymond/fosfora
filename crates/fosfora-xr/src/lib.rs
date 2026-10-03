@@ -16,6 +16,7 @@
 #[macro_use]
 mod test_util;
 
+pub mod anchor_replay;
 #[cfg(target_os = "android")]
 mod app;
 #[cfg(target_os = "android")]

@@ -8,6 +8,7 @@
 //! `XrResult`; the anchor `XrSpace` handles are destroyed on drop.
 
 use std::ffi::{CStr, c_char};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use openxr as xr;
 use xr::sys;
 use xr::sys::Handle as _;
 
+use crate::anchor_replay::{Replay, SaveRule, SavedAnchor, SavedRoom};
 use crate::label::ScanState;
 use crate::particles3d::ObstacleBox;
 use crate::surfaces::PLANE_HALF_THICKNESS_M;
@@ -134,6 +136,13 @@ pub struct Room {
     /// Triangle count of the room's global mesh, if the runtime reports one
     /// (evidence only; the mesh is not an obstacle in the spike).
     pub mesh_triangles: Option<u32>,
+    /// Board #3536: `debug/anchors.json` under the config dir, the last
+    /// located room, written when the located set changes.
+    replay_path: PathBuf,
+    save_rule: SaveRule,
+    /// `debug.fosfora.anchors replay`: an empty query brings the saved room
+    /// back as static boxes until live anchors arrive.
+    replay: Replay,
 }
 
 impl Room {
@@ -144,12 +153,16 @@ impl Room {
     /// `allow_capture`, an empty result launches Space Setup
     /// (`XR_FB_scene_capture`) and the query reruns when it completes.
     /// With `rescan_at_start`, the first query that returns anchors is
-    /// followed by a [`Self::rescan`] or a [`Self::requery`].
+    /// followed by a [`Self::rescan`] or a [`Self::requery`]. The located
+    /// room is saved under `config` (`anchor_replay::path`); with
+    /// `replay`, a query that finds no anchors replays it.
     pub fn new(
         session: &xr::Session<xr::Vulkan>,
         base: &xr::Space,
         allow_capture: bool,
         rescan_at_start: Rescan,
+        config: &Path,
+        replay: bool,
     ) -> Result<Self> {
         let instance = session.instance().clone();
         let exts = instance.exts();
@@ -183,6 +196,9 @@ impl Room {
             boxes: Vec::new(),
             labels: std::sync::Arc::default(),
             mesh_triangles: None,
+            replay_path: crate::anchor_replay::path(config),
+            save_rule: SaveRule::default(),
+            replay: Replay::new(replay),
         };
         Ok(room)
     }
@@ -311,6 +327,9 @@ impl Room {
                     .count()
             );
             self.request = None;
+            if self.returned == 0 && self.replay.should_load(self.anchors.len()) {
+                self.load_replay();
+            }
             match rescan_now {
                 Some(Rescan::Capture) => {
                     self.rescan_at_start = Rescan::Off;
@@ -637,9 +656,72 @@ impl Room {
             );
             self.id = id;
         }
+        if !self.anchors.is_empty() && self.replay.live_anchors() {
+            info!(
+                "room: live anchors found; the replay of {} saved anchors dropped",
+                self.boxes.len()
+            );
+            self.boxes.clear();
+            self.labels = std::sync::Arc::default();
+        }
         // Locate right away so the first frame after the query has boxes.
         self.last_locate = None;
         Ok(())
+    }
+
+    /// Board #3536: present the saved room as the located anchors are
+    /// presented, with static poses. A missing or refused file leaves no
+    /// room, as before.
+    fn load_replay(&mut self) {
+        let saved = match SavedRoom::load(&self.replay_path) {
+            Ok(saved) => saved,
+            Err(e) => {
+                warn!("room: debug.fosfora.anchors replay: nothing to replay ({e}); no room");
+                return;
+            }
+        };
+        self.boxes = saved.anchors.iter().map(replay_box).collect();
+        self.labels = saved.anchors.iter().map(|a| a.label.clone()).collect();
+        self.id = saved.room_id();
+        self.replay.loaded();
+        info!(
+            "room: replaying {} saved anchors (debug.fosfora.anchors replay)",
+            saved.anchors.len()
+        );
+        info!(
+            "scene: room id {} ({} anchors, replayed)",
+            self.id
+                .map_or("none".to_owned(), crate::room_file::room_id_hex),
+            saved.anchors.len()
+        );
+    }
+
+    /// Board #3536: write the located boxes for a later replay.
+    fn save_replay(&self) {
+        let saved = SavedRoom {
+            anchors: self
+                .boxes
+                .iter()
+                .zip(self.labels.iter())
+                .map(|(b, label)| SavedAnchor {
+                    uuid: b.uuid,
+                    label: label.clone(),
+                    center: b.center,
+                    rotation: b.rot,
+                    half_extents: b.half,
+                })
+                .collect(),
+        };
+        match saved.save(&self.replay_path) {
+            Ok(()) => info!(
+                "room: saved {} anchors for replay (debug/anchors.json)",
+                saved.anchors.len()
+            ),
+            Err(e) => warn!(
+                "room: saving {} for replay: {e}",
+                self.replay_path.display()
+            ),
+        }
     }
 
     /// Relocate the anchors (rate limited) and rebuild `boxes`; also fires
@@ -715,6 +797,15 @@ impl Room {
                 self.anchors.len()
             );
         }
+        let located_set = crate::room_file::room_id(self.boxes.iter().map(|b| b.uuid));
+        if self.save_rule.observe(
+            located_set,
+            self.boxes.len() == self.anchors.len(),
+            self.replay.active(),
+            now,
+        ) {
+            self.save_replay();
+        }
     }
 
     /// Where the scene query is, for the scan label (`label::ScanLabel`,
@@ -726,6 +817,8 @@ impl Room {
     pub fn scan_state(&self) -> ScanState {
         if !self.anchors.is_empty() {
             ScanState::Found(self.anchors.len())
+        } else if self.replay.active() {
+            ScanState::Found(self.boxes.len())
         } else if self.started
             && self.request.is_none()
             && self.capture.is_none()
@@ -746,6 +839,9 @@ impl Room {
     }
 
     pub fn anchor_summary(&self) -> String {
+        if self.anchors.is_empty() && self.replay.active() {
+            return format!("{} (replayed)", self.labels.join(","));
+        }
         self.anchors
             .iter()
             .map(|a| a.label.as_str())
@@ -844,6 +940,19 @@ fn mesh_triangle_count(mesh: &xr::raw::SpatialEntityMeshMETA, space: sys::Space)
     check(unsafe { (mesh.get_space_triangle_mesh)(space, &info, &mut out) })
         .context("xrGetSpaceTriangleMeshMETA (count)")?;
     Ok(out.index_count_output / 3)
+}
+
+/// A saved anchor as the obstacle box its live anchor was (`to_box`).
+fn replay_box(a: &SavedAnchor) -> ObstacleBox {
+    ObstacleBox {
+        center: a.center,
+        rot: a.rotation,
+        half: a.half_extents,
+        kind: a.kind(),
+        emit: 1.0,
+        hidden: a.hidden(),
+        uuid: a.uuid,
+    }
 }
 
 /// An anchor's bounding shape in the base space as an oriented box of the

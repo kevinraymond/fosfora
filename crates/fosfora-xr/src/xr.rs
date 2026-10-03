@@ -52,6 +52,9 @@ pub struct MrOptions {
     /// Rescan (or only requery) the room once the first query has
     /// returned anchors (`debug.fosfora.rescan 1|query`).
     pub rescan_at_start: crate::room::Rescan,
+    /// Replay the saved room when the query finds no anchors
+    /// (`debug.fosfora.anchors replay`, board #3536).
+    pub anchor_replay: bool,
     /// The live environment depth as an occluder or its diagnostic
     /// (`debug.fosfora.envdepth*`); `None` creates no provider at all.
     pub env_depth: Option<EnvDepthOptions>,
@@ -300,7 +303,14 @@ pub struct XrSession {
 impl XrSession {
     /// `eye_scale` scales the runtime's recommended per-eye swapchain size
     /// (1.0 = recommended); the compositor resamples to the display.
-    pub fn new(ctx: &XrContext, gfx: &mut Gfx, eye_scale: f32, mr: MrOptions) -> Result<Self> {
+    /// `config` is the app's config dir (the room's saved anchors).
+    pub fn new(
+        ctx: &XrContext,
+        gfx: &mut Gfx,
+        eye_scale: f32,
+        mr: MrOptions,
+        config: &std::path::Path,
+    ) -> Result<Self> {
         // SAFETY: every handle comes from `Gfx`, which created the instance and
         // device through XR_KHR_vulkan_enable2 for this system and keeps them
         // alive longer than the session (drop order in `app::run_inner`). The
@@ -420,7 +430,14 @@ impl XrSession {
         };
         let room = if mr.room {
             if ctx.has_scene {
-                match Room::new(&session, &space, mr.scene_capture, mr.rescan_at_start) {
+                match Room::new(
+                    &session,
+                    &space,
+                    mr.scene_capture,
+                    mr.rescan_at_start,
+                    config,
+                    mr.anchor_replay,
+                ) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         warn!("scene query failed to start: {e:#}");

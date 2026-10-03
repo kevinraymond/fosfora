@@ -312,6 +312,26 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   `xrRequestSceneCaptureFB` launches Space Setup when
   `debug.fosfora.scenecapture 1`, and the query reruns on
   `SCENE_CAPTURE_COMPLETE_FB`. The global mesh is counted, not used.
+- **Anchor replay (board #3536), a measurement aid, not a product
+  feature.** Unworn on a desk the runtime mostly answers the query with no
+  anchors, so unworn sweeps could not light the room's surfaces. The room
+  saves its located boxes to `debug/anchors.json` under the config dir
+  (`files/config/` in the app's data) whenever the located set changes: at
+  once when every anchor is located, after 2 s when a partial set holds.
+  Per anchor: UUID, label as the runtime gave it, center, rotation and
+  half extents in the base space; plus a version and the room id. Log:
+  "room: saved N anchors for replay (debug/anchors.json)". Knob
+  `debug.fosfora.anchors replay` (read at launch; unset or any other value
+  is off): the first query that completes with no anchors reads the file
+  once and its boxes become the room, static, with the same kinds,
+  hidden walls and UUIDs, so the room id and `rooms/<id>.json` resolve as
+  live and the scan label reads "Room: n surfaces". Log: "room: replaying
+  N saved anchors (debug.fosfora.anchors replay)". The retries keep
+  running; a query or rescan that returns live anchors drops the replay.
+  A missing or refused file is logged and the run has no room. A replayed
+  room is never saved back. Off, only the save differs from before. The
+  boxes are only as good as the stage space: a changed boundary moves
+  them, so a worn launch refreshes the file.
 - **Sim.** An obstacle uniform block (64 spheres, 32 boxes, restitution,
   margin) read by `collide()` after integration: push out along the sphere
   normal or the nearest box face, reflect the inward velocity (restitution
