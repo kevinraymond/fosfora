@@ -60,6 +60,12 @@ naga = { version = "27", features = ["wgsl-in"] }
 wgpu = "27"
 pollster = "0.4"
 bytemuck = "1"
+# The core, for the desktop tests of the ported surface effects
+# (`surface_port.rs`): its loader, parameter packing and uniform, as the
+# Android build links them. A dev-dependency, so the desktop library still
+# compiles to the plain-number modules alone; no features, so a workspace
+# test or clippy run builds the core exactly as it did without this line.
+fosfora-app = { path = "../fosfora-app", default-features = false }
 
 [lints]
 workspace = true
