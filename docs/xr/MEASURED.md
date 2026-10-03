@@ -1954,11 +1954,52 @@ fenestra 2.2, the range of the streamlines (1.7) and the curls (2.3):
 the same order as the purpose-built shaders, as fill should be. Every
 run held 72 fps with 0 long frames (1 in the last none).
 
-**Every kind on ported effects, the room on:** not measured. The scene
-query returned 0 anchors in five 45 s runs, and by then the headset sat
-at 41 to 43 C with 24 to 74 long frames a run on every row, the none
-rows included (7.75, 7.92, 8.20), so the numbers say nothing about the
-pass. Taken on a cool headset that has the room's anchors.
+**Every kind on ported effects, the room on** (`1e8a3ba`, the room's 17
+anchors replayed with `debug.fosfora.anchors replay`, board #3536; the
+same setup, 45 s runs, App GPU med / max ms). Set one is
+`table=shards,floor=tessera,wall=aurora,other=reticle,frame=bezel,ceiling=astrolabe`,
+set two `table=prism,floor=astrolabe,wall=fenestra,other=tessera,frame=reticle,ceiling=aurora`;
+both light all 17 faces.
+
+After a reboot and ten minutes idle, 37 to 41 C:
+
+| Run | lit | App GPU med / max | fps | long | stale |
+|---|---|---|---|---|---|
+| none | 0 | 5.81 / 5.89 | 72 | 0 | 0 |
+| set two | 17 | 9.21 / 9.94 | 72 | 0 | 0 |
+| none | 0 | 6.71 / 6.98 | 72 | 0 | 0 |
+| floor astrolabe alone | 1 | 5.68 / 5.93 | 72 | 0 | 0 |
+| none | 0 | 6.46 / 6.62 | 72 | 0 | 0 |
+| set one | 17 | 9.57 / 10.23 | 72 | 0 | 3 |
+| none | 0 | 6.77 / 7.37 | 72 | 0 | 3 |
+
+Every face of the room on a ported effect costs **about 2.9 ms** over the
+room with nothing lit (9.2 to 9.6 against 6.3 to 6.6 between its
+neighbors): over the design's 2 ms figure, inside the frame (9.6 of
+13.9 ms with the cloud off, 72 fps, no long frames). The none rows wander
+by 1 ms on their own as the headset warms, so the deltas are good to
+about half a millisecond.
+
+The same runs on a hot headset (43 to 47 C, an hour of sweeps, before the
+reboot):
+
+| Run | lit | App GPU med / max | fps | long | stale |
+|---|---|---|---|---|---|
+| none | 0 | 9.61 / 10.22 | 72 | 11 | 11 |
+| set one | 17 | 10.04 / 10.71 | 71.9 | 71 | 22 |
+| none | 0 | 9.61 / 10.18 | 72 | 3 | 3 |
+| set two | 17 | 14.63 / 17.46 | 53.9 | 447 | 886 |
+| none | 0 | 9.48 / 10.14 | 72 | 0 | 0 |
+| the D2a defaults, ceiling on rings | 14 | 9.77 / 10.62 | 72 | 10 | 8 |
+| none | 0 | 9.91 / 10.44 | 72 | 0 | 0 |
+
+Hot, the baseline sits 3 ms above its cool value and a full room of
+ports can miss the frame: set two fell to 54 fps in one run, and
+`floor=astrolabe` alone gave 11.13 ms at 65.6 fps in an isolation run
+that the cool headset did not reproduce (5.68, the same as none). The
+hot rows are throttling, not the effects' cost; they say that a room
+with every face on a ported effect has no thermal margin at 45 C, where
+the D2a defaults (14 faces, 0.2 ms over none in the same hour) do.
 
 **Look:** unworn, the headset lay low with the stage floor mostly behind
 the live depth occluder; aurora, prism, shards and tessera show as light
