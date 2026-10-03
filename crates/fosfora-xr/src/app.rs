@@ -2098,6 +2098,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
+                        // A ported desktop effect (board #3489) has no
+                        // shader in `SURFACE_FX_WGSL`: its own slots draw
+                        // it, not these.
+                        || behavior.port().is_some()
                     {
                         continue;
                     }

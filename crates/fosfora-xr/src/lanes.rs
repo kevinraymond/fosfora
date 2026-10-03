@@ -135,7 +135,8 @@ fn parse_assignment(part: &str) -> Result<Assignment, String> {
             format!("'{behavior}' is reserved for a later step")
         } else {
             format!(
-                "unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines curls pulse)"
+                "unknown behavior '{behavior}' (none embers sparks spectrum rings streamlines curls pulse \
+                 aurora prism shards astrolabe bezel fenestra reticle tessera)"
             )
         }
     })?;
@@ -717,6 +718,62 @@ mod tests {
     }
 
     #[test]
+    fn the_knob_takes_every_ported_effect_on_any_kind() {
+        use crate::surfaces::{KIND_NAMES, kind_from_name};
+        // Each of the eight by its `.pfx` name, on every kind, whatever
+        // the kind's cycle list holds.
+        for port in &crate::surface_port::PORTS {
+            let b = B::from_name(port.name).expect("a port's name");
+            for (kind, name) in KIND_NAMES {
+                assert_eq!(
+                    parse_knob(&format!("{name}={}@0.5", port.name)),
+                    Ok(Knob::Assign(vec![assign(Target::Kind(kind), b, 0.5)]))
+                );
+            }
+            assert_eq!(
+                parse_knob(&format!("#2={}", port.name.to_uppercase())),
+                Ok(Knob::Assign(vec![assign(Target::Index(2), b, 1.0)]))
+            );
+        }
+        // The sweep's two values: every kind on a ported effect of its own
+        // list, all eight between them, each within the 91 bytes a system
+        // property's value holds.
+        let sweeps = [
+            "table=shards,floor=tessera,wall=aurora,other=reticle,frame=bezel,ceiling=astrolabe",
+            "table=prism,floor=astrolabe,wall=fenestra,other=tessera,frame=reticle,ceiling=aurora",
+        ];
+        let mut seen = Vec::new();
+        for value in sweeps {
+            assert!(value.len() <= 91, "{} bytes", value.len());
+            let Ok(Knob::Assign(list)) = parse_knob(value) else {
+                panic!("{value}");
+            };
+            assert_eq!(list.len(), KIND_NAMES.len());
+            for a in list {
+                let Target::Kind(kind) = a.target else {
+                    panic!("{value}");
+                };
+                assert!(B::catalogue(kind).contains(&a.behavior), "{value}");
+                assert!(a.behavior.port().is_some());
+                seen.push(a.behavior);
+            }
+        }
+        for port in &crate::surface_port::PORTS {
+            assert!(seen.contains(&B::from_name(port.name).unwrap()));
+        }
+        assert_eq!(
+            kind_from_name("ceiling"),
+            Some(crate::surfaces::KIND_CEILING)
+        );
+        // An unknown name still refuses the value and lists the catalogue.
+        let e = parse_knob("table=auroras").unwrap_err();
+        assert!(
+            e.contains("unknown behavior") && e.contains("tessera"),
+            "{e}"
+        );
+    }
+
+    #[test]
     fn a_bad_knob_value_is_refused_whole() {
         for bad in [
             "",
@@ -963,22 +1020,32 @@ mod tests {
         assert_eq!(B::Rings.next(), B::Streamlines);
         assert_eq!(B::Streamlines.next(), B::Curls);
         assert_eq!(B::Curls.next(), B::Pulse);
-        assert_eq!(B::Pulse.next(), B::None);
+        assert_eq!(B::Pulse.next(), B::Aurora);
+        assert_eq!(B::Tessera.next(), B::None);
         let dir = std::env::temp_dir().join(format!("fosfora-lanes-cycle-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let boxes = room();
         let id = room_of(&boxes);
         let mut lanes = RoomLanes::new(dir.clone());
         lanes.update(id, &boxes);
-        // The couch (other, default the curls): five pinches go round its
-        // kind's catalogue once.
+        // The couch (other, default the curls): eight pinches go round
+        // its kind's catalogue once, the ported effects after its own.
         let mut seen = Vec::new();
-        for _ in 0..5 {
+        for _ in 0..8 {
             seen.push(lanes.cycle(4, &boxes).unwrap());
         }
         assert_eq!(
             seen,
-            [B::Streamlines, B::Pulse, B::Embers, B::None, B::Curls]
+            [
+                B::Streamlines,
+                B::Pulse,
+                B::Embers,
+                B::Shards,
+                B::Reticle,
+                B::Tessera,
+                B::None,
+                B::Curls
+            ]
         );
         lanes.update(id, &boxes);
         assert_eq!(lanes.behavior(4), B::Curls);
@@ -1005,6 +1072,9 @@ mod tests {
         assert_eq!(lanes.cycle(1, &boxes), Ok(B::Streamlines));
         // A strength set by the knob is kept across a cycle.
         assert!(lanes.poll_knob(Some("#3=sparks@0.4"), false, &boxes));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Tessera));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Prism));
+        assert_eq!(lanes.cycle(3, &boxes), Ok(B::Astrolabe));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::None));
         assert_eq!(lanes.cycle(3, &boxes), Ok(B::Rings));
         assert_eq!(lanes.effective(3, &boxes), Some((B::Rings, 0.4)));
@@ -1127,11 +1197,21 @@ mod tests {
         assert!(lanes.poll_knob(Some("#5=embers"), false, &boxes));
         assert_eq!(lanes.cycle(5, &boxes), Ok(B::Rings));
         // The floor: the rings by default (step 2d), then the
-        // streamlines, the curls, sparks, none, the rings.
-        let floor: Vec<_> = (0..5).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
+        // streamlines, the curls, sparks, its three ported effects, none,
+        // the rings.
+        let floor: Vec<_> = (0..8).map(|_| lanes.cycle(3, &boxes).unwrap()).collect();
         assert_eq!(
             floor,
-            [B::Streamlines, B::Curls, B::Sparks, B::None, B::Rings]
+            [
+                B::Streamlines,
+                B::Curls,
+                B::Sparks,
+                B::Tessera,
+                B::Prism,
+                B::Astrolabe,
+                B::None,
+                B::Rings
+            ]
         );
         // A table the knob put on the spectrum: the first after none.
         assert!(lanes.poll_knob(Some("#0=spectrum"), false, &boxes));
