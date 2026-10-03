@@ -1906,3 +1906,62 @@ draw as a violet wash of small closed loops with the fill between them;
 the rings as the ripple, faint; the pulse reads as a flat violet rectangle
 over the whole floor, paint rather than light, which on a frame-sized face
 may be right and on a floor is not. Judged worn.
+
+## Surfaces as effects, D2b: the desktop's fragment effects on faces (board #3489)
+
+Eight single-pass desktop effects (aurora, prism, shards, astrolabe,
+bezel, fenestra, reticle, tessera; ids 8 to 15) composed through the
+core loader's preamble with their fragment entry wrapped for a face, one
+pipeline each, drawn by the surfaces pass.
+
+**On the device** (`98b1deb`, Quest 3 v207, right after a reboot): the
+eight pipelines validate and compile on the Adreno 740 with group 0 as
+the uniform alone, "surface ports: 8 pipelines in 339 ms" at launch, and
+each draws ("surfaces: 1 lit (… ports 1)").
+
+**Per effect on the stage floor alone** (`mode world`, Embers 400K with
+the cloud off, `room 0`, music on, 72 Hz, unworn, 30 s runs, App GPU med
+ms). The first pass ran the eight in a row from a cold headset (28 C):
+
+| Stage floor | App GPU med | over the opening none (4.75) |
+|---|---|---|
+| aurora | 6.22 | 1.5 |
+| prism | 6.07 | 1.3 |
+| shards | 5.98 | 1.2 |
+| astrolabe | 6.44 | 1.7 |
+| bezel | 6.41 | 1.7 |
+| fenestra | 8.94 | (drift, see below) |
+| reticle | 7.28 | (drift) |
+| tessera | 6.10 | (drift) |
+| none again | 6.46 | |
+
+The closing none was 1.7 ms above the opening one (36 C by then, stale
+frames from 0 to 64): the baseline stepped up partway through, so the
+last rows were rerun interleaved with baselines at 36 to 40 C:
+
+| Run | App GPU med | over its neighbors' none |
+|---|---|---|
+| none | 6.70 | |
+| fenestra | 9.00 | 2.2 |
+| none | 6.88 | |
+| reticle | 8.11 | 1.2 |
+| none | 6.90 | |
+| aurora | 8.23 | 1.2 |
+| none | 7.18 | |
+
+So a ported effect costs 1.2 to 1.7 ms over a full-view face and
+fenestra 2.2, the range of the streamlines (1.7) and the curls (2.3):
+the same order as the purpose-built shaders, as fill should be. Every
+run held 72 fps with 0 long frames (1 in the last none).
+
+**Every kind on ported effects, the room on:** not measured. The scene
+query returned 0 anchors in five 45 s runs, and by then the headset sat
+at 41 to 43 C with 24 to 74 long frames a run on every row, the none
+rows included (7.75, 7.92, 8.20), so the numbers say nothing about the
+pass. Taken on a cool headset that has the room's anchors.
+
+**Look:** unworn, the headset lay low with the stage floor mostly behind
+the live depth occluder; aurora, prism, shards and tessera show as light
+on the strip of floor in view with the real floor showing through their
+dark parts, bezel and reticle (drawn at the face's edges and center) are
+out of the view. Judged worn.
