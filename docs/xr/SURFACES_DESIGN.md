@@ -376,3 +376,155 @@ or `frame=pulse:8` (the key's tint on the bass).
 to 15). The color and band from the panel, and params on a kind's
 default (D3). The worn gate and the cost rows in `MEASURED.md` (the
 reviewer's, on the device).
+
+## D2b as built (Oct 3, board #3489)
+
+**The eight.** Catalogue ids 8 to 15 are desktop effects, drawn on the
+face by the surfaces pass, each named by its `.pfx`: 8 aurora, 9 prism,
+10 shards, 11 astrolabe, 12 bezel, 13 fenestra, 14 reticle, 15 tessera.
+All are a single fragment pass with no feedback and no texture read.
+The core is unchanged and nothing is copied out of it: `surface_port.rs`
+reads each shader and `.pfx` from `assets/` with `include_str!` and
+goes through the core's public API (`EffectLoader::prepend_library`,
+`ParamStore`, `effect::rates`, `mirror_audio_features`). The knob and
+the room file take the names on any kind; the sim never sees them (its
+gates read ids 1 and 2).
+
+**The composition.** The effect's fragment entry becomes a plain
+function: its header, `@fragment fn fs_main(@builtin(position)
+frag_coord: vec4f) -> @location(0) vec4f {`, which the eight share to
+the character, is replaced by `fn effect_main(frag_coord: vec4f) ->
+vec4f {`, and the load fails unless that hits exactly once and no other
+`fs_main` is left. The core's loader prepends the uniform block and the
+libraries, and the wrapper is appended. Each composed module validates
+under naga with one vertex and one fragment entry, and the fragment
+entry reads two globals, `u` and the port block: of the desktop's seven
+bindings in group 0 only the uniform is used, so the layout has binding
+0 alone and nothing stands in for the previous frame or the audio
+textures. A desktop GPU test builds the eight pipelines on those layouts
+and draws them (`cargo test -p fosfora-xr --lib surface_port --
+--ignored`).
+
+**The wrapper** (`WRAPPER_WGSL`). Group 0 binding 0 is the effect's
+uniform, one buffer per lit face. Group 1 is the eye camera (binding 0)
+and the port block (binding 1), 8 rows: the four corners, `face` (the
+half extents, the lift, the behavior id), `params` (the strength),
+`color` (the peak alpha, 0.5), `mode` (x 1 for an overlay). The vertex
+stage is the surfaces pass's. The fragment maps the face to the effect's
+frame: 0..1 across the face from the (u, v) in meters, v flipped (a
+frame's y runs down, the face's v up), times `u.resolution`. An overlay
+effect (`alpha: true` in its `.pfx`, read from the parsed file:
+astrolabe, bezel, fenestra, reticle, tessera) keeps its own
+premultiplied coverage; an opaque one (aurora, prism, shards) is covered
+by its luminance, so its blacks are the real surface and its highlights
+glow. Either way the light is the effect's own color, clipped at 1,
+times the peak alpha, the lane's strength and the pass's 5 cm edge fade.
+The lane's color index and band are not read (D3 may tint).
+
+Two things differ from the brief here. It listed tessera as opaque; its
+`.pfx` says overlay, and the flag is the file's. And its formula for an
+opaque effect multiplied the color by the luminance a second time, which
+put a 0.3 mid-tone at 0.09 of the peak: shards' cells and prism's body
+all but vanished in the desktop renders. The color is written as it is
+and only the coverage is the luminance, which is also what the overlay
+branch does with its alpha.
+
+**Which way is up.** On a wall (a face steeper than 45°) the frame's up
+is the wall's in-plane axis closest to up and its left is the wearer's
+left, from the side the wearer is on. A level face keeps the box's own
+axes, so the frame does not turn as the wearer walks around a table,
+with u signed so the frame is not mirrored seen from above (or from
+below, for a ceiling). Checked on the desktop GPU with a probe effect
+that writes its uv (the frame's top left lands on the face's -u +v
+corner) and with bezel, whose sweep arc sits at the top center of its
+frame and lands at the top of an upright face.
+
+**The uniform fill.** One `ShaderUniforms` (448 bytes) per lit ported
+face per frame: this frame's `AudioFeatures` through
+`mirror_audio_features`, as the desktop fills it; `time` the surfaces'
+clock (so the motion runs faster on the beat, like the other surface
+shaders); `delta_time` the frame's dt; `frame_index` the frame;
+`resolution` the face's extents at 512 virtual pixels per meter, each
+axis clamped to 256..2048, so the effect's aspect is the face's and a
+2 m table runs at 1024 across; `params` the `.pfx` defaults as
+`ParamStore` packs them, once at startup, with the rates integrated into
+the slots after them every frame (aurora's curtain speed in slot 3,
+prism's rotation in slot 7; the other six have none). One rate state
+per effect, advanced every frame whatever is lit: two walls on aurora
+drift in step. Everything else is zero.
+
+One input does not run at its `.pfx` default: tessera's `scrim` is 0.
+The scrim is a black cover at 0.85 over every tile not yet revealed,
+which on the desktop hides the layer beneath and on a table would darken
+the real surface under a rectangle. Without it tessera is its tiles'
+strokes and embers, and the opening in the middle is the surface.
+
+**The draw.** A pipeline per effect, built once at launch after the
+assets are unpacked, with the surfaces pass's state (depth-tested, no
+depth write, the bias, premultiplied over), and 32 slots shared by the
+eight: per slot the effect's uniform, the port block and a group 1 bind
+group per eye. Ported faces draw right after the pass's own faces and
+count against the same 32. If the pipelines do not validate on the
+device the ports stay off (logged) and a surface on one draws nothing,
+since an invalid pipeline in the eye pass would cost the whole frame.
+
+**The mapping.** Chosen by looking at each of the eight rendered through
+the wrapper on the desktop GPU, on a 1.2 by 0.8 m face over a dim gray,
+at four points of a bar on the synthetic features
+(`FOSFORA_PORT_DUMP=<dir>` with the test above writes the frames). Each
+effect is on two kinds' lists (other and unlabeled share one), no list
+passes 8 entries, and the D2a entries keep their order in front, so the
+defaults and the first taps are unchanged:
+
+| kind | cycle |
+| --- | --- |
+| table | none, streamlines, curls, pulse, embers, sparks, shards, prism |
+| floor | none, rings, streamlines, curls, sparks, tessera, prism, astrolabe |
+| wall | none, spectrum, streamlines, rings, pulse, aurora, fenestra, bezel |
+| ceiling | none, rings, pulse, streamlines, aurora, astrolabe |
+| frame | none, pulse, rings, streamlines, bezel, reticle, fenestra |
+| other, unlabeled | none, curls, streamlines, pulse, embers, shards, reticle, tessera |
+
+- **aurora** (wall, ceiling): horizontal curtains stacked by band; they
+  want an upright or overhead expanse wider than it is tall.
+- **prism** (table, floor): a kaleidoscope about the face's center; it
+  reads the same from every side of a level face.
+- **shards** (table, other): Voronoi cells that fill a face of any size
+  and aspect, with no up.
+- **astrolabe** (floor, ceiling): one dial assembling ring by ring out to
+  half the face's height; it needs room around the center.
+- **bezel** (frame, wall): chrome along the face's edges, for what has
+  edges worth framing. Its outer brackets sit 3.5 % of the face's height
+  in from the edge, so on a face under 1.4 m high they fall inside the
+  5 cm edge fade and dim (at 0.8 m to about 0.6 of their light).
+- **fenestra** (wall, frame): panels with a header bar along their top;
+  the one effect that needs an up.
+- **reticle** (frame, other): small marks that take a new place every
+  bar; they read on a small face.
+- **tessera** (floor, other): a grid of tiles opening from the center; a
+  floor's tiles.
+
+The knob puts any of the eight on any kind.
+
+**Excluded.** `iris` and `beam` read the previous frame; `limn` needs
+the backdrop under it; `intarsia` is two passes; every other effect is
+multi-pass or a particle system. None fits one draw on a face with the
+uniform alone.
+
+**Logs.** "surface ports: 8 pipelines in N ms" at launch (or "surface
+ports: off: ..." with the reason); "surfaces: N lit (rings a,
+streamlines b, curls c, pulse d, spectrum e, ports f)" on every change.
+
+**The sweep** (reviewer). Every kind on a ported effect of its own list,
+all eight between the two values, each within the 91 bytes a property
+holds:
+
+```
+adb shell setprop debug.fosfora.surface "table=shards,floor=tessera,wall=aurora,other=reticle,frame=bezel,ceiling=astrolabe"
+adb shell setprop debug.fosfora.surface "table=prism,floor=astrolabe,wall=fenestra,other=tessera,frame=reticle,ceiling=aurora"
+```
+
+**Not yet.** The device: the launch time of the eight pipelines, the
+cost rows in `MEASURED.md` and the worn gate are the reviewer's. A
+tint from the lane's color index, and the effects' parameters from the
+panel (D3).

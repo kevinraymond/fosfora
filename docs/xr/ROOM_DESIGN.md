@@ -639,3 +639,12 @@ knob takes `<target>=<behavior>[:<color>[:<band>]][@<strength>]`. The
 sim's own default for an unset lane (`xr_kind_behavior`, a table on
 embers) is unchanged; the app writes every box's row, so only an upload
 without the lanes sees it.
+
+**Amended, D2b (Oct 3, board #3489).** Eight desktop effects join the
+catalogue as ids 8 to 15 (`SURFACES_DESIGN.md`, "D2b as built"), and
+each kind's cycle gains the ones that suit it after its own entries, so
+the defaults and the first taps above are unchanged: a table adds
+shards and prism; a floor tessera, prism and astrolabe; a wall aurora,
+fenestra and bezel; a ceiling aurora and astrolabe; a frame bezel,
+reticle and fenestra; other and unlabeled shards, reticle and tessera.
+The knob and the room file take the eight names on any kind.
