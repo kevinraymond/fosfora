@@ -161,6 +161,10 @@ pub struct SettingsConfig {
     pub particle_quality: ParticleQuality,
     #[serde(default)]
     pub webcam_device: Option<u32>,
+    /// The default camera by name. Preferred over `webcam_device`: the OS
+    /// renumbers cameras as they come and go, so a saved index goes stale.
+    #[serde(default)]
+    pub webcam_device_name: Option<String>,
     #[serde(default)]
     pub use_ffmpeg_webcam: bool,
     /// A18 structure-detector tuning (#1510). `#[serde(default)]` so older settings files
@@ -253,6 +257,7 @@ impl Default for SettingsConfig {
             band_scale: BandScale::default(),
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
+            webcam_device_name: None,
             use_ffmpeg_webcam: false,
             structure_tuning: StructureConfig::default(),
             tempo: TempoConfig::default(),

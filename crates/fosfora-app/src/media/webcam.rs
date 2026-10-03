@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::{Receiver, Sender};
 use nokhwa::Camera;
 use nokhwa::pixel_format::RgbAFormat;
-use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType, Resolution};
+use nokhwa::utils::{
+    ApiBackend, CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
+    Resolution,
+};
 
 /// A single decoded webcam frame (RGBA).
 pub struct WebcamFrame {
@@ -22,82 +25,108 @@ pub struct WebcamCapture {
     pub resolution: (u32, u32),
 }
 
-fn requested_format(resolution: Option<(u32, u32)>) -> RequestedFormat<'static> {
-    match resolution {
-        Some((w, h)) => RequestedFormat::new::<RgbAFormat>(RequestedFormatType::Closest(
-            nokhwa::utils::CameraFormat::new(
-                Resolution::new(w, h),
-                nokhwa::utils::FrameFormat::MJPEG,
-                30,
-            ),
-        )),
-        None => RequestedFormat::new::<RgbAFormat>(RequestedFormatType::AbsoluteHighestResolution),
-    }
-}
+/// How long a camera gets to open before the caller gives up on it.
+const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long stopping waits for the capture thread to release the device.
+const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Try to open a camera with MJPEG preference, falling back to any supported format.
-/// Many Windows webcams only support raw formats (YUYV/NV12), not MJPEG.
-fn open_camera_with_fallback(
-    device_index: u32,
-    resolution: Option<(u32, u32)>,
-) -> Result<Camera, String> {
-    let try_open = |fmt| -> Result<Camera, String> {
-        let mut c =
-            Camera::new(CameraIndex::Index(device_index), fmt).map_err(|e| e.to_string())?;
-        c.open_stream().map_err(|e| e.to_string())?;
-        Ok(c)
-    };
-
-    try_open(requested_format(resolution)).or_else(|first_err| {
-        log::warn!("Preferred webcam format failed ({first_err}), trying fallback...");
-        try_open(RequestedFormat::new::<RgbAFormat>(
-            RequestedFormatType::AbsoluteHighestResolution,
-        ))
-        .map_err(|_| camera_error_message(device_index, &first_err))
+/// The format closest to the wanted resolution, then closest to 30 fps,
+/// then compressed before raw (raw at this size is often frame-rate limited
+/// by USB bandwidth).
+fn pick_format(formats: &[CameraFormat], (w, h): (u32, u32)) -> Option<CameraFormat> {
+    formats.iter().copied().min_by_key(|f| {
+        let dx = i64::from(f.resolution().width()) - i64::from(w);
+        let dy = i64::from(f.resolution().height()) - i64::from(h);
+        let raw = f.format() != FrameFormat::MJPEG;
+        (dx * dx + dy * dy, f.frame_rate().abs_diff(30), raw)
     })
 }
 
+/// Open a camera at the format it offers nearest the requested resolution.
+///
+/// Chosen here from the camera's own list: asking the library for the
+/// closest format fails unless the camera has that exact resolution in that
+/// exact pixel layout, which left cameras without it (most virtual cameras,
+/// and every camera on macOS) running at their largest size instead.
+fn open_camera_with_fallback(
+    device_name: &str,
+    index: &CameraIndex,
+    resolution: Option<(u32, u32)>,
+) -> Result<Camera, String> {
+    let new_camera = |kind| {
+        Camera::new(index.clone(), RequestedFormat::new::<RgbAFormat>(kind))
+            .map_err(|e| camera_error_message(device_name, &e.to_string()))
+    };
+
+    let mut camera = new_camera(RequestedFormatType::AbsoluteHighestResolution)?;
+    let nearest = resolution.and_then(|want| {
+        let formats = camera.compatible_camera_formats().unwrap_or_default();
+        let format = if formats.is_empty() {
+            // AVFoundation lists none; the wanted size is simply tried, in
+            // the pixel layout the camera is already in.
+            Some(CameraFormat::new(
+                Resolution::new(want.0, want.1),
+                camera.frame_format(),
+                30,
+            ))
+        } else {
+            pick_format(&formats, want)
+        };
+        format.filter(|f| *f != camera.camera_format())
+    });
+    if let Some(format) = nearest {
+        // Released before it is opened again; V4L2 allows one owner.
+        drop(camera);
+        camera = match new_camera(RequestedFormatType::Exact(format)) {
+            Ok(c) => c,
+            Err(e) => {
+                log::info!("{e} (at {format}); using the camera's largest format");
+                new_camera(RequestedFormatType::AbsoluteHighestResolution)?
+            }
+        };
+    }
+    camera
+        .open_stream()
+        .map_err(|e| camera_error_message(device_name, &e.to_string()))?;
+    Ok(camera)
+}
+
 impl WebcamCapture {
-    /// Start capturing from the given camera index at the requested resolution.
-    /// Validates the camera can be opened before spawning the capture thread.
-    pub fn start(device_index: u32, resolution: Option<(u32, u32)>) -> Result<Self, String> {
+    /// Start capturing from the camera with this name (as `list_devices`
+    /// names it) at the requested resolution. Returns once the camera is
+    /// open, or with the reason it could not be opened.
+    pub fn start(device_name: &str, resolution: Option<(u32, u32)>) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         ensure_camera_access()?;
 
+        // Looked up now rather than by a remembered index: the OS renumbers
+        // cameras whenever one is plugged in or a virtual camera starts.
+        let index = enumerate()?
+            .into_iter()
+            .find(|d| d.name == device_name)
+            .map(|d| d.open)
+            .ok_or_else(|| format!("Camera '{device_name}' is not connected"))?;
+
         let (frame_tx, frame_rx) = crossbeam_channel::bounded(2);
+        let (opened_tx, opened_rx) = crossbeam_channel::bounded(1);
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
+        let name = device_name.to_string();
 
-        // Probe device name on main thread first
-        let devices = list_devices().unwrap_or_default();
-        let device_name = devices
-            .iter()
-            .find(|(idx, _)| *idx == device_index)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| format!("Camera {device_index}"));
-
-        // Validate camera access on calling thread (Camera is !Send so we can't move it).
-        // Open, check it works, then close so the capture thread can reopen it.
-        let actual_res = {
-            let mut camera = open_camera_with_fallback(device_index, resolution)?;
-            let r = camera.resolution();
-            let res = (r.width(), r.height());
-            let _ = camera.stop_stream();
-            drop(camera);
-            res
-        };
-
-        log::info!(
-            "Webcam validated: {}x{} on device {device_index}",
-            actual_res.0,
-            actual_res.1
-        );
-
+        // The camera is opened on the capture thread (it is !Send) and the
+        // result reported back, so the device is opened only once.
         let handle = std::thread::Builder::new()
             .name("webcam-capture".into())
             .spawn(move || {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    capture_thread(device_index, resolution, frame_tx, shutdown_clone);
+                    capture_thread(
+                        &name,
+                        &index,
+                        resolution,
+                        &opened_tx,
+                        &frame_tx,
+                        &shutdown_clone,
+                    );
                 })) {
                     Ok(()) => {}
                     Err(e) => {
@@ -114,12 +143,23 @@ impl WebcamCapture {
             })
             .map_err(|e| format!("Failed to spawn webcam thread: {e}"))?;
 
+        let resolution = match opened_rx.recv_timeout(OPEN_TIMEOUT) {
+            Ok(Ok(res)) => res,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                // Still opening (or it panicked): the thread closes the
+                // camera as soon as it sees the flag.
+                shutdown.store(true, Ordering::Relaxed);
+                return Err(format!("Camera '{device_name}' did not respond"));
+            }
+        };
+
         Ok(Self {
             frame_rx,
             shutdown,
             thread: Some(handle),
-            device_name,
-            resolution: actual_res,
+            device_name: device_name.to_string(),
+            resolution,
         })
     }
 
@@ -133,11 +173,22 @@ impl WebcamCapture {
         latest
     }
 
-    /// Stop capture and join the thread.
+    /// Stop capture and release the camera.
+    ///
+    /// Waits only briefly for the thread: it sits in the driver until the
+    /// next frame, and a camera that has stopped delivering them (a virtual
+    /// camera whose source went away) would otherwise hang the app here.
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+            if wait_finished(&handle, STOP_TIMEOUT) {
+                let _ = handle.join();
+            } else {
+                log::warn!(
+                    "Camera '{}' is not delivering frames; leaving its capture thread to exit on its own",
+                    self.device_name
+                );
+            }
         }
     }
 
@@ -160,27 +211,89 @@ impl Drop for WebcamCapture {
     }
 }
 
-/// List available webcam devices. Returns Vec of (index, human_name).
-///
-/// Deduplicates by name (keeps lowest index per name) since Linux V4L2 exposes
-/// multiple device nodes per physical camera (main, metadata, IR, etc.).
-pub fn list_devices() -> Result<Vec<(u32, String)>, String> {
+/// Wait for a thread to finish, up to `timeout`. True if it did.
+pub(super) fn wait_finished(
+    handle: &std::thread::JoinHandle<()>,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while !handle.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    true
+}
+
+/// A camera as the OS lists it right now.
+struct ListedCamera {
+    index: u32,
+    name: String,
+    /// What the backend opens it by.
+    open: CameraIndex,
+}
+
+fn enumerate() -> Result<Vec<ListedCamera>, String> {
     let cameras =
         nokhwa::query(ApiBackend::Auto).map_err(|e| format!("Failed to query cameras: {e}"))?;
+    let found = cameras
+        .iter()
+        .enumerate()
+        .map(|(position, info)| {
+            let index = match info.index() {
+                CameraIndex::Index(i) => *i,
+                CameraIndex::String(_) => position as u32,
+            };
+            // On macOS the index is only a position in a list that is
+            // queried again on open; the unique ID names the same camera
+            // however that list is ordered by then.
+            #[cfg(target_os = "macos")]
+            let open = CameraIndex::String(info.misc());
+            #[cfg(not(target_os = "macos"))]
+            let open = info.index().clone();
+            (index, info.human_name(), open)
+        })
+        .collect();
+    Ok(label_devices(found, cfg!(target_os = "linux"))
+        .into_iter()
+        .map(|(index, name, open)| ListedCamera { index, name, open })
+        .collect())
+}
+
+/// Give every camera a name of its own, since the name is what a layer and
+/// a preset know a camera by.
+///
+/// With `merge_same_name`, cameras sharing a name become one, the lowest
+/// index: Linux V4L2 exposes several device nodes per physical camera (main,
+/// metadata, IR). Elsewhere two cameras of the same model are two cameras,
+/// and the later ones are numbered: "Cam", "Cam (2)".
+fn label_devices<T>(
+    mut found: Vec<(u32, String, T)>,
+    merge_same_name: bool,
+) -> Vec<(u32, String, T)> {
+    found.sort_by_key(|(index, _, _)| *index);
     let mut seen = std::collections::HashMap::<String, u32>::new();
-    for info in &cameras {
-        let idx = match info.index() {
-            CameraIndex::Index(i) => *i,
-            CameraIndex::String(_) => 0,
-        };
-        let name = info.human_name().clone();
-        seen.entry(name)
-            .and_modify(|existing| *existing = (*existing).min(idx))
-            .or_insert(idx);
+    let mut result = Vec::with_capacity(found.len());
+    for (index, name, open) in found {
+        let count = seen.entry(name.clone()).or_insert(0);
+        *count += 1;
+        match *count {
+            1 => result.push((index, name, open)),
+            _ if merge_same_name => {}
+            n => result.push((index, format!("{name} ({n})"), open)),
+        }
     }
-    let mut result: Vec<(u32, String)> = seen.into_iter().map(|(name, idx)| (idx, name)).collect();
-    result.sort_by_key(|(idx, _)| *idx);
-    Ok(result)
+    result
+}
+
+/// List available webcam devices. Returns Vec of (index, name). The name is
+/// the camera's identity; the index is only good until the next listing.
+pub fn list_devices() -> Result<Vec<(u32, String)>, String> {
+    Ok(enumerate()?
+        .into_iter()
+        .map(|d| (d.index, d.name))
+        .collect())
 }
 
 /// Check if any webcam is available. Cached via OnceLock.
@@ -252,37 +365,41 @@ fn ensure_camera_access() -> Result<(), String> {
 }
 
 /// Format a user-friendly camera error message.
-fn camera_error_message(device_index: u32, err: &str) -> String {
+fn camera_error_message(device_name: &str, err: &str) -> String {
     if err.contains("Device or resource busy") {
         format!(
-            "Camera {device_index} is in use by another application. \
+            "Camera '{device_name}' is in use by another application. \
              If OBS is running, right-click the webcam source and Deactivate it to release the device."
         )
     } else {
-        format!("Failed to open camera {device_index}: {err}")
+        format!("Failed to open camera '{device_name}': {err}")
     }
 }
 
 fn capture_thread(
-    device_index: u32,
+    device_name: &str,
+    index: &CameraIndex,
     resolution: Option<(u32, u32)>,
-    frame_tx: Sender<WebcamFrame>,
-    shutdown: Arc<AtomicBool>,
+    opened_tx: &Sender<Result<(u32, u32), String>>,
+    frame_tx: &Sender<WebcamFrame>,
+    shutdown: &AtomicBool,
 ) {
-    let mut camera = match open_camera_with_fallback(device_index, resolution) {
+    let mut camera = match open_camera_with_fallback(device_name, index, resolution) {
         Ok(c) => c,
         Err(e) => {
             log::error!("{e}");
+            let _ = opened_tx.send(Err(e));
             return;
         }
     };
 
     let res = camera.resolution();
     log::info!(
-        "Webcam capture started: {}x{} on device {device_index}",
+        "Webcam capture started: {}x{} on '{device_name}'",
         res.width(),
         res.height()
     );
+    let _ = opened_tx.send(Ok((res.width(), res.height())));
 
     let mut consecutive_panics: u32 = 0;
     const MAX_CONSECUTIVE_PANICS: u32 = 10;
@@ -290,7 +407,6 @@ fn capture_thread(
     while !shutdown.load(Ordering::Relaxed) {
         match camera.frame() {
             Ok(buffer) => {
-                let res = buffer.resolution();
                 // decode_image can panic on corrupted MJPEG frames (libjpeg fatal error).
                 // Catch the panic so one bad frame doesn't kill the capture thread.
                 let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -299,10 +415,13 @@ fn capture_thread(
                 match decoded {
                     Ok(Ok(img)) => {
                         consecutive_panics = 0;
+                        // The decoded size, not the negotiated one: it is
+                        // what the pixel data actually measures.
+                        let (width, height) = img.dimensions();
                         let frame = WebcamFrame {
                             data: img.into_raw(),
-                            width: res.width(),
-                            height: res.height(),
+                            width,
+                            height,
                         };
                         // try_send: drop frame if consumer is behind
                         let _ = frame_tx.try_send(frame);
@@ -335,5 +454,63 @@ fn capture_thread(
     }
 
     let _ = camera.stop_stream();
-    log::info!("Webcam capture stopped");
+    log::info!("Webcam capture stopped: '{device_name}'");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{label_devices, pick_format};
+    use nokhwa::utils::{CameraFormat, FrameFormat, Resolution};
+
+    fn names(found: Vec<(u32, &str)>, merge: bool) -> Vec<(u32, String)> {
+        let found = found
+            .into_iter()
+            .map(|(i, n)| (i, n.to_string(), ()))
+            .collect();
+        label_devices(found, merge)
+            .into_iter()
+            .map(|(i, n, ())| (i, n))
+            .collect()
+    }
+
+    /// Two cameras of one model were listed as a single camera, so the
+    /// second could never be picked.
+    #[test]
+    fn same_model_cameras_stay_separate() {
+        assert_eq!(
+            names(vec![(1, "C920"), (0, "FaceTime"), (2, "C920")], false),
+            vec![
+                (0, "FaceTime".to_string()),
+                (1, "C920".to_string()),
+                (2, "C920 (2)".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn picks_the_format_nearest_the_wanted_size() {
+        let fmt = |w, h, layout, fps| CameraFormat::new(Resolution::new(w, h), layout, fps);
+        let formats = [
+            fmt(3840, 2160, FrameFormat::MJPEG, 30),
+            fmt(1280, 720, FrameFormat::YUYV, 10),
+            fmt(1280, 720, FrameFormat::MJPEG, 30),
+            fmt(640, 480, FrameFormat::YUYV, 30),
+        ];
+        assert_eq!(
+            pick_format(&formats, (1280, 720)),
+            Some(fmt(1280, 720, FrameFormat::MJPEG, 30))
+        );
+        // A camera with one size only (a virtual camera) still opens.
+        let only = [fmt(1920, 1080, FrameFormat::YUYV, 30)];
+        assert_eq!(pick_format(&only, (1280, 720)), Some(only[0]));
+        assert_eq!(pick_format(&[], (1280, 720)), None);
+    }
+
+    #[test]
+    fn linux_device_nodes_of_one_camera_merge() {
+        assert_eq!(
+            names(vec![(0, "C920"), (1, "C920"), (2, "Loopback")], true),
+            vec![(0, "C920".to_string()), (2, "Loopback".to_string())]
+        );
+    }
 }

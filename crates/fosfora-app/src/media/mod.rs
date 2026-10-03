@@ -55,8 +55,8 @@ impl WebcamBackend {
     }
 
     /// Start capture using the native (nokhwa) backend.
-    pub fn start_native(device_index: u32, resolution: Option<(u32, u32)>) -> Result<Self, String> {
-        webcam::WebcamCapture::start(device_index, resolution).map(Self::Native)
+    pub fn start_native(device_name: &str, resolution: Option<(u32, u32)>) -> Result<Self, String> {
+        webcam::WebcamCapture::start(device_name, resolution).map(Self::Native)
     }
 
     /// Start capture using the ffmpeg backend.
@@ -120,6 +120,31 @@ pub struct MediaLayer {
     pub mirror: bool,
 }
 
+/// The texture a layer's frames are uploaded to (sRGB for auto-conversion
+/// on sample).
+fn create_frame_texture(
+    device: &Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("media-frame"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 impl MediaLayer {
     pub fn new(
         device: &Device,
@@ -153,22 +178,7 @@ impl MediaLayer {
             ..Default::default()
         };
 
-        // Create frame texture (sRGB for auto-conversion on sample)
-        let frame_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("media-frame"),
-            size: wgpu::Extent3d {
-                width: media_width,
-                height: media_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let frame_view = frame_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let (frame_texture, frame_view) = create_frame_texture(device, media_width, media_height);
         let frame_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("media-sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -512,6 +522,10 @@ impl MediaLayer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
         // Rebuild bind group (output_target view changed but frame texture/sampler/uniform didn't)
+        self.rebuild_bind_group(device);
+    }
+
+    fn rebuild_bind_group(&mut self, device: &Device) {
         self.bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("media-blit-bg"),
             layout: &self.bind_group_layout,
@@ -558,9 +572,47 @@ impl MediaLayer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Set live frame data from webcam capture thread.
+    /// The camera a live layer shows, by the name it is listed under.
     #[cfg(feature = "webcam")]
-    pub fn set_live_frame(&mut self, data: Vec<u8>) {
+    pub fn live_device(&self) -> Option<&str> {
+        self.is_live().then_some(self.file_name.as_str())
+    }
+
+    /// Point a live layer at another camera. Its frames arrive through
+    /// `set_live_frame`, which takes up whatever size they have.
+    #[cfg(feature = "webcam")]
+    pub fn set_live_device(&mut self, device_name: &str) {
+        self.file_name = device_name.to_string();
+        self.file_path = PathBuf::from(device_name);
+    }
+
+    /// Set live frame data from webcam capture thread.
+    ///
+    /// The frame's size is taken as it comes: the camera behind a layer can
+    /// change, and one camera can change its size mid-stream. Writing a frame
+    /// into a texture of another size is a validation error that ends the app.
+    #[cfg(feature = "webcam")]
+    pub fn set_live_frame(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    ) {
+        if width == 0 || height == 0 || data.len() != (width as usize) * (height as usize) * 4 {
+            return;
+        }
+        if (width, height) != (self.media_width, self.media_height) {
+            let (texture, view) = create_frame_texture(device, width, height);
+            self.frame_texture = texture;
+            self.frame_view = view;
+            self.media_width = width;
+            self.media_height = height;
+            self.source = MediaSource::Live { width, height };
+            self.set_mirror(queue, self.mirror);
+            self.rebuild_bind_group(device);
+        }
         self.live_frame_data = Some(data);
         self.needs_upload = true;
     }
@@ -648,5 +700,48 @@ fn compute_media_uniforms(
         offset: [offset_x, offset_y],
         mirror: mirror as u32,
         _pad: 0,
+    }
+}
+
+#[cfg(all(test, feature = "webcam"))]
+mod tests {
+    use super::*;
+
+    /// A camera layer switched to a camera of another resolution wrote the
+    /// new frames into the old-sized texture, a validation error that ends
+    /// the app.
+    #[test]
+    #[ignore = "requires a wgpu adapter"]
+    fn live_layer_takes_frames_of_another_size() {
+        let _gpu = crate::gpu::test_gpu::gpu_guard();
+        let (device, queue) = crate::gpu::test_gpu::test_gpu();
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let mut layer = MediaLayer::new(
+            &device,
+            &queue,
+            crate::gpu::context::GpuContext::hdr_format(),
+            640,
+            360,
+            MediaSource::Live {
+                width: 1280,
+                height: 720,
+            },
+            PathBuf::from("Cam A"),
+        );
+        layer.set_live_device("Cam B");
+        layer.set_live_frame(&device, &queue, vec![255; 1920 * 1080 * 4], 1920, 1080);
+        layer.upload_frame(&queue);
+        assert_eq!((layer.media_width, layer.media_height), (1920, 1080));
+        assert_eq!(layer.live_device(), Some("Cam B"));
+
+        // A frame whose data does not match its stated size is dropped.
+        layer.set_live_frame(&device, &queue, vec![255; 16], 640, 480);
+        layer.upload_frame(&queue);
+        assert_eq!((layer.media_width, layer.media_height), (1920, 1080));
+
+        queue.submit([]);
+        let error = pollster::block_on(device.pop_error_scope());
+        assert!(error.is_none(), "validation error: {error:?}");
     }
 }
