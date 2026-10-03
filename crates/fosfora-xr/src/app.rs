@@ -985,7 +985,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // the log (`None` before the first frame, so the first count is logged
     // too).
     let mut surface_clock = crate::surface_fx::Clock::default();
-    let mut surfaces_lit: Option<([usize; 5], usize)> = None;
+    let mut surfaces_lit: Option<([usize; 6], usize)> = None;
+    // Board #3489, D2b: the desktop's single-pass fragment effects on
+    // surfaces (`surface_port.rs`). The eight are composed with the
+    // libraries the assets carry and their pipelines built here, once;
+    // `None` when that failed, and a surface on one draws nothing.
+    let mut surface_ports = {
+        let started = Instant::now();
+        let loader = fosfora_app::effect::EffectLoader::new();
+        match crate::surface_port::load(&loader) {
+            Ok(effects) => {
+                let sources: Vec<&str> = effects.iter().map(|e| e.source.as_str()).collect();
+                if gfx.build_surface_ports(&sources, crate::surface_fx::MAX_SLOTS) {
+                    info!(
+                        "surface ports: {} pipelines in {:.0} ms",
+                        effects.len(),
+                        started.elapsed().as_secs_f64() * 1e3
+                    );
+                    Some(effects)
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                log::warn!("surface ports: off: {e:#}");
+                None
+            }
+        }
+    };
     // I5 gestures: a pinch-drag moves the cube and the world anchor with
     // the hand, a tap toggles the S5 sprite size, a hold cycles the world
     // effects.
@@ -2039,8 +2066,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 None => None,
             };
             // Board #3472, D1: the surfaces pass. Every box whose behavior
-            // is a surface shader (the rings, the streamlines, and since D2,
-            // board #3488, the curls and the pulse) is lit on the face the
+            // is a surface shader (the rings, the streamlines, since D2,
+            // board #3488, the curls and the pulse, and since D2b, board
+            // #3489, the ported desktop effects) is lit on the face the
             // behavior acts on, the stage floor too while the room has no
             // scene floor (then it stands in for one, as its emitter flag
             // and the editor's ray take it; beside a scene floor it would
@@ -2068,8 +2096,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     bar_phase: f.bar_phase,
                     key_tint: [1.0; 3],
                 };
-                let mut counts = [0usize; 5];
+                let mut counts = [0usize; 6];
                 let mut slots = Vec::new();
+                // The ported effects' rates integrate every frame, lit or
+                // not, one state per effect: two walls on aurora drift in
+                // step, and an effect picks up where the clock is.
+                for e in surface_ports.iter_mut().flatten() {
+                    e.advance(dt);
+                }
+                let mut port_faces = Vec::new();
                 let mut spectrum_sign = 1.0;
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     // The lane's behavior, strength, color index and band
@@ -2098,10 +2133,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         || b.hidden
                         || (k == stage_k && scene_floor)
                         || (behavior == SurfaceBehavior::Rings && ripple.is_none())
-                        // A ported desktop effect (board #3489) has no
-                        // shader in `SURFACE_FX_WGSL`: its own slots draw
-                        // it, not these.
-                        || behavior.port().is_some()
+                        || (behavior.port().is_some() && surface_ports.is_none())
                     {
                         continue;
                     }
@@ -2115,6 +2147,33 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         (face, spectrum_sign) = crate::canvas::spectrum_face(face);
                     } else if b.kind == KIND_FLOOR {
                         face = crate::surface_fx::level_floor(face, stage_top);
+                    }
+                    // A ported desktop effect (board #3489): its own
+                    // slot, the face turned upright for its frame, the
+                    // effect's uniform for this face's size. The lane's
+                    // color and band are not read: its colors are its own.
+                    if let (Some(i), Some(effects)) = (behavior.port(), surface_ports.as_ref()) {
+                        let face = crate::surface_port::port_face(face);
+                        let effect = &effects[i];
+                        counts[5] += 1;
+                        port_faces.push(crate::gfx::PortFace {
+                            effect: i,
+                            uniforms: crate::surface_port::uniforms(
+                                &f,
+                                audio.clock,
+                                dt,
+                                frame_index,
+                                face.half,
+                                effect.params(),
+                            ),
+                            rows: crate::surface_port::rows(
+                                &face,
+                                strength,
+                                effect.overlay,
+                                behavior.id(),
+                            ),
+                        });
+                        continue;
                     }
                     match behavior {
                         SurfaceBehavior::Rings => counts[0] += 1,
@@ -2149,18 +2208,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     .iter()
                     .map(|slot| crate::surface_fx::rows(slot, audio, ripple.as_ref(), spectrum, t))
                     .collect();
-                let dropped = faces
-                    .len()
-                    .saturating_sub(crate::surface_fx::MAX_SLOTS);
+                // One budget: a ported face and a `SurfaceFx` face both
+                // count against the pass's slots, the ported ones last.
+                let max = crate::surface_fx::MAX_SLOTS;
+                let lit = faces.len() + port_faces.len();
+                let dropped = lit.saturating_sub(max);
+                port_faces.truncate(max.saturating_sub(faces.len()));
                 if Some((counts, dropped)) != surfaces_lit {
                     info!(
-                        "surfaces: {} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {})",
-                        faces.len(),
+                        "surfaces: {lit} lit (rings {}, streamlines {}, curls {}, pulse {}, spectrum {}, ports {})",
                         counts[0],
                         counts[1],
                         counts[2],
                         counts[3],
-                        counts[4]
+                        counts[4],
+                        counts[5]
                     );
                     if dropped > 0 {
                         info!(
@@ -2171,6 +2233,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     surfaces_lit = Some((counts, dropped));
                 }
                 gfx.set_surfaces(&faces);
+                gfx.set_surface_ports(&port_faces);
             }
             if let Some(scene) = scene {
                 match music.analysis.as_mut().or(live_audio.as_mut()) {
