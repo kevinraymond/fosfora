@@ -72,7 +72,7 @@ fn select(ctx: &egui::Context, info: &SceneInfo, cue: Option<usize>) {
 /// typed in: the app applies a change a frame later, and reading the old
 /// value back each frame made a drag stutter. Returns the new value when it
 /// changed.
-fn live_drag<T>(
+pub(crate) fn live_drag<T>(
     ui: &mut Ui,
     id: Id,
     current: T,
@@ -894,6 +894,16 @@ fn edit_row(ui: &mut Ui, info: &SceneInfo, tl: &TimelineInfo) {
                 },
             ) {
                 send(&ctx, "scene_set_cue_transition_secs", (i, v));
+            }
+        }
+        if cue.transition == TransitionType::Dissolve {
+            // The global setting, published with the preset Switch row's.
+            if let Some((kind, secs, keep)) = ctx
+                .data(|d| d.get_temp::<(TransitionType, f32, bool)>(Id::new("preset_transition")))
+            {
+                crate::ui::panels::preset_panel::keep_moving_checkbox(ui, keep, |k| {
+                    send(&ctx, "set_preset_transition", (kind, secs, k));
+                });
             }
         }
 

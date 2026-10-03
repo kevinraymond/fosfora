@@ -1,5 +1,6 @@
 pub mod cueing;
 pub mod store;
+pub mod switch;
 pub mod timeline;
 pub mod transition;
 pub mod types;

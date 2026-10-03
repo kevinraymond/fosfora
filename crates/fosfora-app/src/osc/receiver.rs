@@ -309,6 +309,17 @@ fn parse_osc_message(msg: &OscMessage) -> Option<OscInMessage> {
             }
         }
 
+        // /fosfora/preset/transition i (0=Cut, 1=Dissolve, 2=Morph)
+        // /fosfora/preset/transition_secs f
+        "preset" if parts.len() >= 4 && parts[3] == "transition" => {
+            let value = first_float(&msg.args)?;
+            Some(OscInMessage::PresetTransition(value.max(0.0) as u8))
+        }
+        "preset" if parts.len() >= 4 && parts[3] == "transition_secs" => {
+            let value = first_float(&msg.args)?;
+            Some(OscInMessage::PresetTransitionSecs(value))
+        }
+
         // Unknown /fosfora/... address — capture as Raw
         _ => {
             let value = raw_value(&msg.args)?;
@@ -747,6 +758,26 @@ mod tests {
     }
 
     // ---- Scene control parse tests ----
+
+    #[test]
+    fn parse_preset_transition() {
+        let msg = OscMessage {
+            addr: "/fosfora/preset/transition".into(),
+            args: vec![OscType::Int(1)],
+        };
+        match parse_osc_message(&msg) {
+            Some(OscInMessage::PresetTransition(kind)) => assert_eq!(kind, 1),
+            other => panic!("expected PresetTransition, got {:?}", other),
+        }
+        let msg = OscMessage {
+            addr: "/fosfora/preset/transition_secs".into(),
+            args: vec![OscType::Float(2.5)],
+        };
+        match parse_osc_message(&msg) {
+            Some(OscInMessage::PresetTransitionSecs(secs)) => assert_eq!(secs, 2.5),
+            other => panic!("expected PresetTransitionSecs, got {:?}", other),
+        }
+    }
 
     #[test]
     fn parse_scene_goto_cue() {

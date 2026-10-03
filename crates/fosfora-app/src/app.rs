@@ -42,6 +42,14 @@ use crate::ui::EguiOverlay;
 use crate::ui::panels::shader_editor::ShaderEditorState;
 use crate::web::WebSystem;
 
+/// The outgoing preset of a live Dissolve, with the volumetric settings it
+/// rendered with (the incoming preset's load replaces App's).
+pub struct RetiringStack {
+    pub stack: LayerStack,
+    pub volumetric_enabled: bool,
+    pub volumetric_params: crate::gpu::volumetric::VolumetricParams,
+}
+
 pub struct App {
     pub gpu: GpuContext,
     pub start_time: Instant,
@@ -146,14 +154,27 @@ pub struct App {
     pub scene_store: SceneStore,
     pub timeline: Timeline,
     pub transition_renderer: Option<TransitionRenderer>,
-    /// When a dissolve begins, render() captures the outgoing frame then loads
-    /// this `(preset index, cue index)` — the cue rides along so its
-    /// `param_overrides` apply to the deferred load too.
-    pub dissolve_capture_pending: Option<(usize, usize)>,
+    /// A preset switch waiting for its media to decode or for render() to
+    /// capture the outgoing frame (`scene::switch`). Cues and plain switches
+    /// both stage here.
+    pub staged_switch: Option<crate::scene::switch::StagedSwitch>,
+    /// The switch in flight: the frame crossfade and the param morph read
+    /// their progress from it, whether a cue or a preset click started it.
+    pub active_transition: Option<crate::scene::switch::ActiveTransition>,
+    /// The outgoing preset of a live Dissolve, still animating until the fade
+    /// ends ("Keep moving"). Its own field so OSC, bindings, the web remote
+    /// and the UI, which all address layers by index, only ever reach the
+    /// live stack.
+    pub retiring: Option<RetiringStack>,
+    /// Composites `retiring`. A second compositor, not the live one reused:
+    /// each composite writes its blend uniforms with `queue.write_buffer`,
+    /// and two composites through one compositor in a frame would both read
+    /// the last write. Made on the first live fade and kept.
+    pub retire_compositor: Option<Compositor>,
     /// Cue whose `param_overrides` apply after the next preset finishes
     /// loading. Consumed at the END of `apply_preset_immediately`, which is the
     /// one point every load path funnels through — the sync fast path, the
-    /// async media-decode completion, and the dissolve deferred load. Applying
+    /// async media-decode completion, and a staged switch (`apply_staged_switch`). Applying
     /// eagerly at the timeline event instead would be clobbered by the async
     /// path, whose decode lands whole frames later.
     pub pending_cue_overrides: Option<usize>,
@@ -166,9 +187,6 @@ pub struct App {
     pub midi_clock_was_playing: bool,
     /// Whether a MIDI clock beat boundary was crossed this frame.
     pub midi_clock_beat_crossed: bool,
-    /// Morph transition state: the param/opacity endpoints per layer.
-    pub morph_from: Option<crate::scene::cueing::MorphSnapshot>,
-    pub morph_to: Option<crate::scene::cueing::MorphSnapshot>,
     // Shader editor
     pub shader_editor: ShaderEditorState,
     // Trama node-graph system (M0) — graph, registry, executor, canvas state
@@ -192,6 +210,10 @@ pub struct App {
     pub webcam_device_index: u32,
     #[cfg(feature = "webcam")]
     pub use_ffmpeg_webcam: bool,
+    /// A camera layer waiting on the macOS camera prompt: the answer, and the
+    /// device to add once it is yes (GH #212).
+    #[cfg(all(target_os = "macos", feature = "webcam"))]
+    webcam_access_pending: Option<(crossbeam_channel::Receiver<bool>, u32)>,
     // Particle source loader (background image/video decode)
     pub particle_source_loader: crate::gpu::particle::ParticleSourceLoader,
     /// Background Gaussian-splat scene loader (#1800): decodes .ply/.splat off
@@ -570,14 +592,15 @@ impl App {
             scene_store,
             timeline: Timeline::new(Vec::new(), false, AdvanceMode::Manual),
             transition_renderer: None,
-            dissolve_capture_pending: None,
+            staged_switch: None,
+            active_transition: None,
+            retiring: None,
+            retire_compositor: None,
             pending_cue_overrides: None,
             media_loads: Vec::new(),
             midi_clock: MidiClock::new(),
             midi_clock_was_playing: false,
             midi_clock_beat_crossed: false,
-            morph_from: None,
-            morph_to: None,
             settings,
             reduce_motion,
             custom_themes,
@@ -627,6 +650,8 @@ impl App {
             webcam_device_index: webcam_device_from_settings,
             #[cfg(feature = "webcam")]
             use_ffmpeg_webcam,
+            #[cfg(all(target_os = "macos", feature = "webcam"))]
+            webcam_access_pending: None,
             particle_source_loader: crate::gpu::particle::ParticleSourceLoader::new(),
             splat_loader: crate::gpu::particle::SplatSceneLoader::new(),
             splat_demo_download: None,
@@ -657,6 +682,19 @@ impl App {
         if width == 0 || height == 0 {
             return;
         }
+        // A fade's pictures are the old size: the snapshot is reallocated
+        // below, and the outgoing stack would need a full resize for a second
+        // at most. End the fade. (A lost surface "resizes" to the same size;
+        // that keeps it.)
+        if (width, height)
+            != (
+                self.gpu.surface_config.width,
+                self.gpu.surface_config.height,
+            )
+        {
+            self.active_transition = None;
+            self.retiring = None;
+        }
         self.gpu.resize(width, height);
         for layer in &mut self.layer_stack.layers {
             layer.resize(
@@ -670,6 +708,9 @@ impl App {
             layer.resize_media(&self.gpu.device, &self.gpu.queue, width, height);
         }
         self.compositor.resize(&self.gpu.device, width, height);
+        if let Some(c) = self.retire_compositor.as_mut() {
+            c.resize(&self.gpu.device, width, height);
+        }
         // The compositor just recreated the @backdrop texture; every executor
         // holds a cloned handle to the OLD one. Refresh + rebind (set_backdrop
         // rebuilds bind groups only for layers that actually sample it).
@@ -710,6 +751,34 @@ impl App {
         self.syphon.resize(&self.gpu.device, width, height);
     }
 
+    /// The full state snapshot web clients sync from.
+    fn web_full_state(&self) -> String {
+        let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
+        let layer_data: Vec<_> = self
+            .layer_stack
+            .layers
+            .iter()
+            .map(|l| {
+                (
+                    &l.param_store,
+                    l.effect_index(),
+                    l.blend_mode,
+                    l.opacity,
+                    l.enabled,
+                    l.locked,
+                )
+            })
+            .collect();
+        crate::web::state::build_full_state(
+            &self.effect_loader.effects,
+            &layer_infos,
+            self.layer_stack.active_layer,
+            &layer_data,
+            &self.preset_store,
+            self.post_process.enabled,
+        )
+    }
+
     pub fn update(&mut self) {
         // Surface sender-thread failures (dead NDI runtime, closed device) so the
         // status dot goes off instead of staying green with zero frames sent.
@@ -736,6 +805,28 @@ impl App {
         // so the six seconds start when there is a window to show them in.
         if let Some(msg) = self.shader_watcher.take_degraded_notice() {
             self.status_error = Some((msg, now));
+        }
+
+        // The macOS camera prompt was answered: add the layer that waited on it.
+        #[cfg(all(target_os = "macos", feature = "webcam"))]
+        if let Some((answer, device_index)) = &self.webcam_access_pending {
+            let device_index = *device_index;
+            match answer.try_recv() {
+                Ok(true) => {
+                    log::info!("Camera access granted at the prompt; adding the camera layer");
+                    self.webcam_access_pending = None;
+                    self.add_webcam_layer(device_index);
+                }
+                Ok(false) => {
+                    self.webcam_access_pending = None;
+                    self.status_error =
+                        Some((crate::media::webcam::CAMERA_DENIED.into(), Instant::now()));
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.webcam_access_pending = None;
+                }
+            }
         }
 
         // Auto-clear status error after 6 seconds
@@ -971,7 +1062,21 @@ impl App {
                 };
                 self.autosave_scene();
             }
+            if osc_result.preset_transition.is_some() || osc_result.preset_transition_secs.is_some()
+            {
+                use crate::scene::types::TransitionType;
+                let kind = osc_result.preset_transition.map(|k| match k {
+                    0 => TransitionType::Cut,
+                    1 => TransitionType::Dissolve,
+                    _ => TransitionType::ParamMorph,
+                });
+                self.set_preset_transition(kind, osc_result.preset_transition_secs, None);
+            }
         }
+
+        // Set when a preset load should reach web clients this frame rather
+        // than at the next 10 Hz state refresh.
+        let mut web_state_changed = false;
 
         // Drain WebSocket messages (runs after OSC — last-write-wins)
         if let Some(layer) = self.layer_stack.active_mut() {
@@ -1057,40 +1162,16 @@ impl App {
                 }
             }
 
-            // Handle preset load from web (coalesced to the last one this frame)
+            // Handle preset load from web (coalesced to the last one this frame).
+            // A switch with a transition applies a frame or more later; the
+            // staged apply below marks web state changed when it does.
             let had_preset_loads = web_result.preset_load.is_some();
             if let Some(preset_idx) = web_result.preset_load {
-                self.load_preset(preset_idx);
+                self.switch_preset(preset_idx);
             }
 
-            // After preset load, broadcast full state so all clients update
-            if had_preset_loads && self.web.client_count > 0 {
-                let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-                let layer_data: Vec<_> = self
-                    .layer_stack
-                    .layers
-                    .iter()
-                    .map(|l| {
-                        (
-                            &l.param_store,
-                            l.effect_index(),
-                            l.blend_mode,
-                            l.opacity,
-                            l.enabled,
-                            l.locked,
-                        )
-                    })
-                    .collect();
-                let state_json = crate::web::state::build_full_state(
-                    &self.effect_loader.effects,
-                    &layer_infos,
-                    self.layer_stack.active_layer,
-                    &layer_data,
-                    &self.preset_store,
-                    self.post_process.enabled,
-                );
-                self.web.broadcast_json(&state_json);
-            }
+            // After preset load, push full state so all clients update
+            web_state_changed |= had_preset_loads;
         }
 
         // Evaluate binding bus (runs after MIDI/OSC/WS drain — bus overrides direct mappings)
@@ -1128,37 +1209,27 @@ impl App {
                 "Async preset decode complete, applying preset index {}",
                 result.preset_index
             );
-            let index = result.preset_index;
-            let preset = result.preset;
-            self.apply_preset_immediately(index, &preset, result.decoded_media);
-
-            // Broadcast full state to web clients after async preset load
-            if self.web.client_count > 0 {
-                let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-                let layer_data: Vec<_> = self
-                    .layer_stack
-                    .layers
-                    .iter()
-                    .map(|l| {
-                        (
-                            &l.param_store,
-                            l.effect_index(),
-                            l.blend_mode,
-                            l.opacity,
-                            l.enabled,
-                            l.locked,
-                        )
-                    })
-                    .collect();
-                let state_json = crate::web::state::build_full_state(
-                    &self.effect_loader.effects,
-                    &layer_infos,
-                    self.layer_stack.active_layer,
-                    &layer_data,
-                    &self.preset_store,
-                    self.post_process.enabled,
-                );
-                self.web.broadcast_json(&state_json);
+            match self.staged_switch.as_mut() {
+                // A switch with a transition: its fade starts from the frame
+                // on screen now, not from when it was asked for.
+                Some(staged) if staged.stage == crate::scene::switch::Stage::Decoding => {
+                    staged.decode_landed(result);
+                }
+                _ => {
+                    let index = result.preset_index;
+                    let preset = result.preset;
+                    self.apply_preset_immediately(index, &preset, result.decoded_media);
+                    // Push full state to web clients after async preset load
+                    web_state_changed = true;
+                }
+            }
+        }
+        // A staged switch applies once its frame is captured (see
+        // `scene::switch` for the stages).
+        if let Some(captured) = self.staged_switch.as_mut().and_then(|s| s.poll()) {
+            if let Some(staged) = self.staged_switch.take() {
+                self.apply_staged_switch(staged, captured);
+                web_state_changed = true;
             }
         }
 
@@ -1203,8 +1274,11 @@ impl App {
         }
         self.midi_clock_was_playing = self.midi_clock.playing();
 
-        // Advance timeline (scene system)
-        if self.timeline.active {
+        // Advance timeline (scene system). Held while a cue's switch is
+        // staged: its media may take seconds to decode, and the cue's hold
+        // time must not run out before the cue is even on screen.
+        let cue_staged = self.staged_switch.as_ref().is_some_and(|s| s.cue.is_some());
+        if self.timeline.active && !cue_staged {
             // Tempo for transition_beats resolution. From latest_audio, not
             // uniforms.bpm: a `uniform.bpm` binding evaluated above can have
             // overwritten the uniform mirror by now, and a binding must not be
@@ -1235,21 +1309,29 @@ impl App {
             // Tick for timer-based advance
             let tick_event = self.timeline.tick(dt);
             self.process_timeline_event(tick_event);
+        }
 
-            // Apply morph interpolation during ParamMorph transitions
-            if let crate::scene::timeline::PlaybackState::Transitioning {
-                progress,
-                transition_type: crate::scene::types::TransitionType::ParamMorph,
-                ..
-            } = &self.timeline.state
-            {
-                self.apply_morph_interpolation(*progress);
-                // Morph interpolation sets params every frame via param_store.set(),
-                // which marks changed=true. Reset it — this is timeline playback,
-                // not a user edit, so it should not mark the preset dirty.
-                for layer in &mut self.layer_stack.layers {
-                    layer.param_store.changed = false;
-                }
+        // The switch in flight, a cue's or a preset click's: the morph runs
+        // here, the frame crossfade in render().
+        if let Some(t) = self.active_transition.as_mut() {
+            let finished = t.advance(dt);
+            if let Some((from, to)) = t.morph() {
+                // `apply_morph` resets `changed`: a transition is not a user
+                // edit and must not mark the preset dirty.
+                crate::scene::cueing::apply_morph(
+                    from,
+                    to,
+                    t.progress(),
+                    self.layer_stack
+                        .layers
+                        .iter_mut()
+                        .map(|l| (&mut l.param_store, &mut l.opacity)),
+                );
+            }
+            if finished {
+                self.active_transition = None;
+                // Frees the outgoing preset's GPU resources.
+                self.retiring = None;
             }
         }
 
@@ -1286,33 +1368,12 @@ impl App {
             self.web.broadcast_audio(&features);
         }
 
-        // Web: update latest state for new client initial sync
-        if self.web.client_count > 0 || self.web.is_running() {
-            let layer_infos = self.layer_stack.layer_infos(&self.effect_loader.effects);
-            let layer_data: Vec<_> = self
-                .layer_stack
-                .layers
-                .iter()
-                .map(|l| {
-                    (
-                        &l.param_store,
-                        l.effect_index(),
-                        l.blend_mode,
-                        l.opacity,
-                        l.enabled,
-                        l.locked,
-                    )
-                })
-                .collect();
-            let state_json = crate::web::state::build_full_state(
-                &self.effect_loader.effects,
-                &layer_infos,
-                self.layer_stack.active_layer,
-                &layer_data,
-                &self.preset_store,
-                self.post_process.enabled,
-            );
-            self.web.update_latest_state(&state_json);
+        // Web: the one place full state is built — stored for new-client initial
+        // sync and broadcast to connected clients, at 10 Hz or at once after a
+        // preset load.
+        if self.web.state_due(web_state_changed) {
+            let state_json = self.web_full_state();
+            self.web.update_latest_state(state_json);
         }
 
         // Advance media playback + upload frames for media layers
@@ -1468,6 +1529,39 @@ impl App {
             self.volumetric_enabled,
             self.volumetric_params,
         );
+        // The outgoing preset of a live Dissolve keeps animating: the same
+        // per-frame work as the live stack's media, particle sources and
+        // uniforms above. Its bindings were replaced at the switch, so values
+        // they drove hold; audio and time still move it.
+        if let Some(r) = self.retiring.as_mut() {
+            for layer in &mut r.stack.layers {
+                match layer.content {
+                    LayerContent::Media(ref mut m) => {
+                        m.advance(dt);
+                        m.upload_frame(&self.gpu.queue);
+                    }
+                    LayerContent::Effect(ref mut e) => {
+                        if let Some(ref mut ps) = e.pass_executor.particle_system {
+                            ps.update_source(&self.gpu.queue, dt as f64);
+                            if ps.source_transition.is_some() {
+                                ps.advance_transition(&self.gpu.queue, dt);
+                            }
+                        }
+                    }
+                }
+            }
+            crate::gpu::frame_prep::prepare_effect_layers(
+                &mut r.stack.layers,
+                &self.uniforms,
+                &self.latest_audio.unwrap_or_default(),
+                dt,
+                &self.gpu.device,
+                &self.gpu.queue,
+                r.stack.active_layer,
+                r.volumetric_enabled,
+                r.volumetric_params,
+            );
+        }
 
         // Apply completed background shader compilations
         for result in self.shader_compiler.drain_results() {
@@ -2224,6 +2318,31 @@ impl App {
             return;
         }
 
+        // On macOS, ask for the camera first. While the prompt is up the
+        // layer waits in `webcam_access_pending` and `update` adds it on a
+        // yes, so the user does not have to add the camera a second time.
+        #[cfg(target_os = "macos")]
+        if self.webcam_capture.is_none() {
+            use crate::media::webcam::{CAMERA_DENIED, CameraAccess, request_camera_access};
+            match request_camera_access() {
+                CameraAccess::Granted => {}
+                CameraAccess::Denied => {
+                    self.status_error = Some((CAMERA_DENIED.into(), Instant::now()));
+                    return;
+                }
+                CameraAccess::Asking(answer) => {
+                    self.webcam_access_pending = Some((answer, device_index));
+                    self.status_error = Some((
+                        "Allow Fosfora to use the camera when macOS asks; the camera layer \
+                         appears once you do."
+                            .into(),
+                        Instant::now(),
+                    ));
+                    return;
+                }
+            }
+        }
+
         // Start capture if not already running
         if self.webcam_capture.is_none() {
             match self.start_webcam(device_index, Some((1280, 720))) {
@@ -2611,11 +2730,68 @@ impl App {
         }
     }
 
+    /// Switch to a preset the way a plain switch does (a click, Next/Prev
+    /// Preset, the web remote): with the default transition from Settings
+    /// (#217).
+    pub fn switch_preset(&mut self, index: usize) {
+        let style = crate::scene::switch::TransitionStyle {
+            kind: self.settings.preset_transition,
+            secs: self.settings.preset_transition_secs,
+        };
+        self.begin_switch(index, None, style);
+    }
+
+    /// Change the default preset-switch transition, and whether a Dissolve
+    /// keeps the outgoing preset moving, saving them if they moved. The length
+    /// is held to the cue editor's 0.1–30 s.
+    pub fn set_preset_transition(
+        &mut self,
+        kind: Option<crate::scene::types::TransitionType>,
+        secs: Option<f32>,
+        keep_moving: Option<bool>,
+    ) {
+        let mut changed = false;
+        if let Some(keep) = keep_moving.filter(|k| *k != self.settings.dissolve_keeps_moving) {
+            self.settings.dissolve_keeps_moving = keep;
+            changed = true;
+        }
+        if let Some(kind) = kind.filter(|k| *k != self.settings.preset_transition) {
+            self.settings.preset_transition = kind;
+            changed = true;
+        }
+        if let Some(secs) = secs.filter(|v| v.is_finite()).map(|v| v.clamp(0.1, 30.0)) {
+            #[expect(
+                clippy::float_cmp,
+                reason = "change detection: any edit, however small, is stored"
+            )]
+            if secs != self.settings.preset_transition_secs {
+                self.settings.preset_transition_secs = secs;
+                changed = true;
+            }
+        }
+        if changed {
+            self.settings.save();
+        }
+    }
+
+    /// The preset being switched to, or else the current one. Next/Prev
+    /// Preset step from here, so a second press while a switch is still
+    /// staged moves on instead of asking for the same preset again.
+    pub fn target_preset(&self) -> Option<usize> {
+        self.staged_switch
+            .as_ref()
+            .map(|s| s.preset)
+            .or(self.preset_store.current_preset)
+    }
+
+    /// Load a preset with a cut: no transition, and any transition in flight
+    /// or staged ends here.
     pub fn load_preset(&mut self, index: usize) {
         // A plain preset load (UI click, OSC) is not a cue: cancel any override
         // still pending from an earlier cue whose async media never finished,
         // or the stale overrides would apply to this unrelated preset.
         self.pending_cue_overrides = None;
+        self.end_transitions();
         self.load_preset_inner(index);
     }
 
@@ -2623,32 +2799,227 @@ impl App {
     /// `param_overrides` apply once the load completes (see
     /// `pending_cue_overrides` for why application is deferred).
     pub fn load_preset_for_cue(&mut self, index: usize, cue_index: usize) {
+        self.end_transitions();
         self.pending_cue_overrides = Some(cue_index);
         self.load_preset_inner(index);
     }
 
-    fn load_preset_inner(&mut self, index: usize) {
-        self.cancel_media_loads();
-        let preset = match self.preset_store.load(index) {
-            Some(p) => p.clone(),
-            None => return,
-        };
+    /// Drop the staged switch and the transition in flight, if any.
+    fn end_transitions(&mut self) {
+        self.staged_switch = None;
+        self.active_transition = None;
+        self.retiring = None;
+    }
 
-        let preset_name = self
-            .preset_store
+    /// Start switching to a preset with a transition. A Cut loads at once;
+    /// anything else is staged (`scene::switch`) and applies once its media
+    /// has decoded and the frame on screen has been captured.
+    fn begin_switch(
+        &mut self,
+        index: usize,
+        cue: Option<usize>,
+        style: crate::scene::switch::TransitionStyle,
+    ) {
+        if style.is_cut() {
+            match cue {
+                Some(cue_index) => self.load_preset_for_cue(index, cue_index),
+                None => self.load_preset(index),
+            }
+            return;
+        }
+        let Some(preset) = self.preset_store.load(index).cloned() else {
+            return;
+        };
+        self.cancel_media_loads();
+        // A decode an earlier switch started is for a preset no longer wanted.
+        self.preset_loader.cancel();
+        self.pending_cue_overrides = None;
+        let media_jobs = self.preset_media_jobs(&preset);
+        let decoding = !media_jobs.is_empty();
+        if decoding {
+            let name = self.preset_name(index);
+            log::info!(
+                "Preset '{}' has {} media layer(s), decoding before its transition",
+                name,
+                media_jobs.len()
+            );
+            self.preset_loader
+                .request_load(index, preset, media_jobs, name);
+        }
+        // Targets now, so the capture in render() needs only shared access.
+        let (w, h) = (
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        );
+        let tr = self.transition_renderer.get_or_insert_with(|| {
+            TransitionRenderer::new(&self.gpu.device, GpuContext::hdr_format())
+        });
+        tr.ensure_targets(&self.gpu.device, w, h, GpuContext::hdr_format());
+        self.staged_switch = Some(crate::scene::switch::StagedSwitch::new(
+            index, cue, style, decoding,
+        ));
+    }
+
+    /// Apply a staged switch and start its transition. `captured` says the
+    /// snapshot holds the frame shown just before, so a dissolve may start
+    /// from it.
+    fn apply_staged_switch(&mut self, staged: crate::scene::switch::StagedSwitch, captured: bool) {
+        use crate::scene::cueing::MorphSnapshot;
+        use crate::scene::switch::{ActiveTransition, dissolves_frame, keep_changed_layers_still};
+        use crate::scene::types::TransitionType;
+
+        // A live fade already running is superseded: this switch fades from
+        // the still captured of it (`Outgoing::fade_running_live`).
+        let fade_running_live = self.retiring.take().is_some();
+        let live = crate::scene::switch::keeps_outgoing_moving(
+            staged.style.kind,
+            self.settings.dissolve_keeps_moving,
+            crate::scene::switch::Outgoing {
+                has_chains: self.trama.master_live()
+                    || self.layer_stack.layers.iter().any(|l| l.chain.is_some()),
+                has_locked: self.layer_stack.layers.iter().any(|l| l.locked),
+                fade_running_live,
+            },
+        );
+        if live {
+            self.retire_live_stack();
+        }
+
+        let before = self.layer_keys();
+        let mut from = MorphSnapshot::capture(
+            self.layer_stack
+                .layers
+                .iter()
+                .map(|l| (&l.param_store.values, l.opacity)),
+        );
+        let (preset, decoded_media) = match staged.decoded {
+            Some(result) => (result.preset, result.decoded_media),
+            None => match self.preset_store.load(staged.preset) {
+                Some(p) => (p.clone(), std::collections::HashMap::new()),
+                None => return,
+            },
+        };
+        let name = self.preset_name(staged.preset);
+        self.load_preset_scope_bindings(&name, &preset);
+        // Applied inside the load, before the `to` snapshot below, so a morph
+        // lands ON the cue's overridden values rather than the preset's.
+        self.pending_cue_overrides = staged.cue;
+        self.apply_preset_immediately(staged.preset, &preset, decoded_media);
+
+        let after = self.layer_keys();
+        let kind = staged.style.kind;
+        let morph = (kind == TransitionType::ParamMorph).then(|| {
+            keep_changed_layers_still(&mut from, &before, &after);
+            let to = MorphSnapshot::capture(
+                self.layer_stack
+                    .layers
+                    .iter()
+                    .map(|l| (&l.param_store.values, l.opacity)),
+            );
+            (from, to)
+        });
+        let dissolve_frame = live || (captured && dissolves_frame(kind, &before, &after));
+        log::info!(
+            "Preset switch: {} over {:.1} s (frame dissolve: {}, outgoing: {}, param morph: {}{})",
+            kind,
+            staged.style.secs,
+            dissolve_frame,
+            if live { "moving" } else { "still" },
+            morph.is_some(),
+            if captured || live {
+                ""
+            } else {
+                ", no frame was captured"
+            },
+        );
+        self.active_transition = Some(ActiveTransition::new(
+            staged.style.secs,
+            dissolve_frame,
+            morph,
+        ));
+    }
+
+    /// Move the live layers aside to keep animating through a Dissolve, and
+    /// leave an empty stack for the incoming preset to build fresh layers in
+    /// (a reused layer could not be in both pictures).
+    fn retire_live_stack(&mut self) {
+        let (w, h) = (
+            self.gpu.surface_config.width,
+            self.gpu.surface_config.height,
+        );
+        let compositor = self.retire_compositor.get_or_insert_with(|| {
+            Compositor::new(&self.gpu.device, GpuContext::hdr_format(), w, h)
+        });
+        let mut stack = std::mem::replace(&mut self.layer_stack, LayerStack::new());
+        // Their executors sample the live compositor's @backdrop; the
+        // outgoing picture composites through its own.
+        for layer in &mut stack.layers {
+            if let Some(e) = layer.as_effect_mut() {
+                e.pass_executor.set_backdrop(
+                    Some((
+                        compositor.backdrop.view.clone(),
+                        compositor.backdrop.sampler.clone(),
+                    )),
+                    &self.gpu.device,
+                    &e.uniform_buffer,
+                    &self.placeholder,
+                    &self.audio_textures,
+                );
+            }
+        }
+        self.retiring = Some(RetiringStack {
+            stack,
+            volumetric_enabled: self.volumetric_enabled,
+            volumetric_params: self.volumetric_params,
+        });
+    }
+
+    /// What each layer shows, for deciding whether a Morph must also dissolve.
+    fn layer_keys(&self) -> Vec<crate::scene::switch::LayerKey> {
+        use crate::scene::switch::{ContentKey, LayerKey};
+        self.layer_stack
+            .layers
+            .iter()
+            .map(|l| LayerKey {
+                content: match &l.content {
+                    LayerContent::Effect(_) => ContentKey::Effect(l.effect_index()),
+                    LayerContent::Media(m) => {
+                        ContentKey::Media(m.file_path.clone(), m.current_frame)
+                    }
+                },
+                blend: l.blend_mode,
+                chain: l.chain.as_deref().map(|c| {
+                    (
+                        c.graph.nodes().iter().map(|n| n.kind.clone()).collect(),
+                        c.graph.wires().len(),
+                    )
+                }),
+            })
+            .collect()
+    }
+
+    fn preset_name(&self, index: usize) -> String {
+        self.preset_store
             .presets
             .get(index)
             .map(|(n, _)| n.clone())
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
 
-        // Load preset-scoped bindings and migrate old 3-part targets to 4-part format
-        self.binding_bus.load_preset_bindings(&preset_name);
+    /// Load the preset's own bindings, upgrading legacy targets.
+    fn load_preset_scope_bindings(&mut self, name: &str, preset: &crate::preset::Preset) {
+        self.binding_bus.load_preset_bindings(name);
         // Freshly loaded bindings match disk — clear any stale unsaved flag.
         self.binding_bus.preset_scope_dirty = false;
-        crate::bindings::apply::upgrade_legacy_targets(&mut self.binding_bus, &preset);
+        crate::bindings::apply::upgrade_legacy_targets(&mut self.binding_bus, preset);
+    }
 
-        // Scan for media layers that need decoding (skip locked, skip missing files)
-        let mut media_jobs: Vec<(usize, std::path::PathBuf)> = Vec::new();
+    /// Media layers that need decoding (skip locked, skip missing files).
+    fn preset_media_jobs(
+        &self,
+        preset: &crate::preset::Preset,
+    ) -> Vec<(usize, std::path::PathBuf)> {
+        let mut media_jobs = Vec::new();
         for (i, lp) in preset.layers.iter().enumerate() {
             // Skip locked layers
             if let Some(layer) = self.layer_stack.layers.get(i) {
@@ -2669,6 +3040,25 @@ impl App {
                 }
             }
         }
+        media_jobs
+    }
+
+    fn load_preset_inner(&mut self, index: usize) {
+        self.cancel_media_loads();
+        // A decode still running for an earlier load must not land on top of
+        // this one. (The async path below starts a new generation anyway.)
+        self.preset_loader.cancel();
+        let preset = match self.preset_store.load(index) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let preset_name = self.preset_name(index);
+
+        // Load preset-scoped bindings and migrate old 3-part targets to 4-part format
+        self.load_preset_scope_bindings(&preset_name, &preset);
+
+        let media_jobs = self.preset_media_jobs(&preset);
 
         if media_jobs.is_empty() {
             // Fast path: no media to decode, apply immediately
@@ -3309,7 +3699,7 @@ impl App {
         }
         // If this load came from a cue, apply the cue's param_overrides on top
         // of the preset values — this is the one funnel every load path exits
-        // through, so sync, async-media, and dissolve-deferred loads all get
+        // through, so sync, async-media, and staged-switch loads all get
         // them (see the field's doc for the clobbering hazard this avoids).
         if let Some(cue_idx) = self.pending_cue_overrides.take() {
             if let Some(cue) = self.timeline.cues.get(cue_idx).cloned() {
@@ -3518,97 +3908,31 @@ impl App {
                 from_cue: _,
                 to_cue,
                 transition_type,
-                duration: _,
+                duration,
             } => {
-                match transition_type {
-                    crate::scene::types::TransitionType::Dissolve => {
-                        // Ensure TransitionRenderer exists
-                        if self.transition_renderer.is_none() {
-                            self.transition_renderer = Some(TransitionRenderer::new(
-                                &self.gpu.device,
-                                GpuContext::hdr_format(),
-                            ));
-                        }
-                        // Defer preset load until render() captures the outgoing frame.
-                        // render() will: capture snapshot → load preset → crossfade.
-                        // The cue index rides along so its param_overrides apply
-                        // to that deferred load.
-                        let preset_idx = self.timeline.cues.get(to_cue).and_then(|cue| {
-                            self.preset_store
-                                .presets
-                                .iter()
-                                .position(|(name, _)| name == &cue.preset_name)
-                        });
-                        self.dissolve_capture_pending = preset_idx.map(|p| (p, to_cue));
-                    }
-                    crate::scene::types::TransitionType::ParamMorph => {
-                        use crate::scene::cueing::MorphSnapshot;
-
-                        // Snapshot current (outgoing) params
-                        self.morph_from = Some(MorphSnapshot::capture(
-                            self.layer_stack
-                                .layers
-                                .iter()
-                                .map(|l| (&l.param_store.values, l.opacity)),
-                        ));
-
-                        // Load target preset. The cue-aware load applies the
-                        // cue's param_overrides before the `to` snapshot below,
-                        // so the morph lands ON the overridden values rather
-                        // than the preset's saved ones.
-                        if let Some(cue) = self.timeline.cues.get(to_cue) {
-                            let preset_name = cue.preset_name.clone();
-                            let preset_idx = self
-                                .preset_store
-                                .presets
-                                .iter()
-                                .position(|(name, _)| name == &preset_name);
-                            if let Some(idx) = preset_idx {
-                                self.load_preset_for_cue(idx, to_cue);
-                            }
-                        }
-
-                        // Snapshot target (incoming) params after preset load
-                        self.morph_to = Some(MorphSnapshot::capture(
-                            self.layer_stack
-                                .layers
-                                .iter()
-                                .map(|l| (&l.param_store.values, l.opacity)),
-                        ));
-                    }
-                    crate::scene::types::TransitionType::Cut => {
-                        // Handled by LoadCue
-                    }
+                let preset_idx = self.timeline.cues.get(to_cue).and_then(|cue| {
+                    self.preset_store
+                        .presets
+                        .iter()
+                        .position(|(name, _)| name == &cue.preset_name)
+                });
+                match preset_idx {
+                    Some(idx) => self.begin_switch(
+                        idx,
+                        Some(to_cue),
+                        crate::scene::switch::TransitionStyle {
+                            kind: transition_type,
+                            secs: duration,
+                        },
+                    ),
+                    None => log::warn!("Preset not found for cue {}", to_cue),
                 }
             }
-            TimelineEvent::TransitionProgress { .. } => {
-                // Morph interpolation handled in update() loop
-                // Dissolve crossfade handled in render() loop
-            }
-            TimelineEvent::TransitionComplete { cue_index: _ } => {
-                // Clear morph state
-                self.morph_from = None;
-                self.morph_to = None;
+            // The transition runs on `active_transition`'s clock: the morph
+            // in update(), the crossfade in render().
+            TimelineEvent::TransitionProgress { .. } | TimelineEvent::TransitionComplete { .. } => {
             }
         }
-    }
-
-    /// Apply morph interpolation between saved from/to snapshots. The math
-    /// lives in `scene::cueing` so the headless renderer runs the identical
-    /// interpolation.
-    fn apply_morph_interpolation(&mut self, progress: f32) {
-        let (Some(from), Some(to)) = (&self.morph_from, &self.morph_to) else {
-            return;
-        };
-        crate::scene::cueing::apply_morph(
-            from,
-            to,
-            progress,
-            self.layer_stack
-                .layers
-                .iter_mut()
-                .map(|l| (&mut l.param_store, &mut l.opacity)),
-        );
     }
 
     /// Build SceneInfo snapshot for UI.
@@ -3796,8 +4120,6 @@ impl App {
         // only runs the trama executor in Trama mode, which would leave the
         // canvas thumbnails frozen while building a patch before switching
         // over. Opt-in by the open canvas; the output target goes unused.
-        // (Skipped on the dissolve re-render below — previews pause during a
-        // dissolve.)
         // Cfg-free profiler handle for the render paths (no-op without the
         // `profiling` feature). Built from the field so `&mut self.trama`
         // below stays a disjoint borrow.
@@ -3823,7 +4145,7 @@ impl App {
         let tap_thumbs = !self.settings.classic_layout && self.egui_overlay.visible;
 
         // Compute the HDR source from layer execution + compositing — shared
-        // with the dissolve re-render below and the headless renderer.
+        // with the headless renderer.
         let postprocess = self.master_postprocess.clone();
         let source = crate::gpu::frame_graph::execute_and_composite(
             &self.layer_stack,
@@ -3837,258 +4159,58 @@ impl App {
             profiler,
         );
 
-        // Dissolve capture: on the first frame of a dissolve, capture outgoing then load incoming.
-        // We must: (1) capture the snapshot from this frame's render, (2) submit those commands,
-        // (3) load the new preset (mutates self), (4) re-render layers for the incoming scene.
-        if let Some((preset_idx, cue_idx)) = self.dissolve_capture_pending.take() {
-            if let Some(ref mut tr) = self.transition_renderer {
-                tr.capture_snapshot(&self.gpu.device, &self.gpu.queue, &mut encoder, source);
-            }
-            // Submit capture commands so snapshot texture is filled
-            self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-            // Load the incoming preset (needs &mut self, no outstanding borrows
-            // now). Cue-aware so the cue's param_overrides land on it.
-            self.load_preset_for_cue(preset_idx, cue_idx);
-
-            // Create fresh encoder and re-render layers for crossfade
-            encoder = self
-                .gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("fosfora-encoder-dissolve"),
-                });
-            // Fresh handle: `load_preset_for_cue` above took `&mut self`,
-            // ending the outer one's field borrow.
-            #[cfg(feature = "profiling")]
-            let profiler = crate::gpu::profiler::ProfilerHandle::some(&self.gpu_profiler.inner);
-            #[cfg(not(feature = "profiling"))]
-            let profiler = crate::gpu::profiler::ProfilerHandle::none();
-            // The preset load above replaced the layer stack, so the first
-            // pass's sync is stale: chains went away with their layers and the
-            // new ones have no targets yet.
-            let master_live = self.trama.master_live();
-            let (targets, trama) = (&mut self.chain_targets, &mut self.trama);
-            targets.sync(&self.gpu.device, &self.layer_stack, master_live, |chain| {
-                trama.drop_chain(chain);
-            });
-            // The preset just loaded set Master's post-processing.
-            let new_pp = self.master_postprocess.clone();
-            let new_source = crate::gpu::frame_graph::execute_and_composite(
-                &self.layer_stack,
-                &mut self.compositor,
-                Some(&mut self.trama),
-                &self.chain_targets,
-                tap_thumbs.then_some(&self.layer_thumbs),
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                profiler,
-            );
-            // Crossfade snapshot (outgoing) + new_source (incoming)
-            let source = if let Some(ref tr) = self.transition_renderer {
-                if tr.has_snapshot() {
-                    if let crate::scene::timeline::PlaybackState::Transitioning {
-                        progress, ..
-                    } = &self.timeline.state
-                    {
-                        tr.crossfade(
+        // Dissolve crossfade while a switch that dissolves is in flight: from
+        // the outgoing preset still animating ("Keep moving"), or else from
+        // the still captured of it. The outgoing stack composites through its
+        // own compositor with no chains (it has none), no layer pictures (they
+        // are keyed by live layer index) and no profiler scopes.
+        let source = match (&self.active_transition, &self.transition_renderer) {
+            (Some(t), Some(tr)) if t.dissolve_frame => {
+                let outgoing = match (&self.retiring, self.retire_compositor.as_mut()) {
+                    (Some(r), Some(compositor)) => {
+                        Some(crate::gpu::frame_graph::execute_and_composite(
+                            &r.stack,
+                            compositor,
+                            None,
+                            &self.chain_targets,
+                            None,
                             &self.gpu.device,
                             &self.gpu.queue,
                             &mut encoder,
-                            new_source,
-                            *progress,
-                        )
-                        .unwrap_or(new_source)
-                    } else {
-                        new_source
+                            crate::gpu::profiler::ProfilerHandle::none(),
+                        ))
                     }
-                } else {
-                    new_source
-                }
-            } else {
-                new_source
-            };
-            // Post-process → display target, then blit that to the window (#3122)
-            self.post_process.render(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                source,
-                &self.display.view,
-                self.uniforms.time,
-                self.uniforms.rms,
-                self.uniforms.onset,
-                self.uniforms.flatness,
-                &new_pp,
-                alpha_mode,
-            );
-            Self::present_display(
-                &self.gpu.device,
-                &self.post_process,
-                &self.display,
-                &mut encoder,
-                &surface_view,
-                self.settings.classic_layout || !self.egui_overlay.visible,
-                self.egui_overlay.palette.bg,
-            );
-            if tap_thumbs {
-                self.layer_thumbs.tap(
-                    &self.gpu.device,
-                    &mut encoder,
-                    &self.display.view,
-                    crate::gpu::layer_thumbs::ThumbKind::Master,
-                    0,
-                );
-            }
-            // Second output window: the same finished frame, full-window, with
-            // no interface over it (#3122).
-            if let Some((ref frame, ref view)) = output_frame {
-                self.post_process.blit_target_letterboxed(
-                    &self.gpu.device,
-                    &mut encoder,
-                    &self.display,
-                    view,
-                    frame.texture.width(),
-                    frame.texture.height(),
-                );
-            }
-
-            // NDI capture
-            #[cfg(feature = "ndi")]
-            if self.ndi.is_running() {
-                self.ndi
-                    .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
-            }
-
-            // v4l2 capture
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            if self.v4l2.is_running() {
-                self.v4l2
-                    .capture_frame(&self.gpu.device, &mut encoder, &self.post_process, source);
-            }
-
-            // Spout capture
-            #[cfg(all(target_os = "windows", feature = "spout"))]
-            if self.spout.is_running() {
-                self.spout.capture_frame(
-                    &self.gpu.device,
-                    &mut encoder,
-                    &self.post_process,
-                    source,
-                );
-            }
-
-            // Syphon capture
-            #[cfg(all(target_os = "macos", feature = "syphon"))]
-            if self.syphon.is_running() {
-                self.syphon.capture_frame(
-                    &self.gpu.device,
-                    &mut encoder,
-                    &self.post_process,
-                    source,
-                );
-            }
-
-            // Recording capture
-            if self.recording.is_recording() {
-                self.recording.capture_frame(
-                    &self.gpu.device,
-                    &mut encoder,
-                    &self.post_process,
-                    source,
-                );
-            }
-
-            // Flip ping-pong for all layers
-            for layer in &mut self.layer_stack.layers {
-                layer.flip();
-            }
-            self.frame_count = self.frame_count.wrapping_add(1);
-
-            // egui overlay
-            self.egui_overlay.render(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &mut encoder,
-                &surface_view,
-            );
-
-            #[cfg(feature = "profiling")]
-            self.gpu_profiler.inner.resolve_queries(&mut encoder);
-
-            self.gpu.queue.submit(std::iter::once(encoder.finish()));
-
-            #[cfg(feature = "profiling")]
-            self.gpu_profiler.end_frame(&self.gpu.queue);
-
-            // Request particle counter readback (async, read next frame)
-            for layer in &self.layer_stack.layers {
-                if let Some(effect) = layer.as_effect() {
-                    if let Some(ps) = &effect.pass_executor.particle_system {
-                        ps.request_counter_readback();
-                        ps.request_lattice_population_readback();
-                    }
-                }
-            }
-
-            #[cfg(feature = "ndi")]
-            if self.ndi.is_running() {
-                self.ndi.post_submit();
-            }
-
-            #[cfg(all(target_os = "linux", feature = "v4l2"))]
-            if self.v4l2.is_running() {
-                self.v4l2.post_submit();
-            }
-
-            #[cfg(all(target_os = "windows", feature = "spout"))]
-            if self.spout.is_running() {
-                self.spout.post_submit();
-            }
-
-            #[cfg(all(target_os = "macos", feature = "syphon"))]
-            if self.syphon.is_running() {
-                self.syphon.post_submit();
-            }
-
-            if self.recording.is_recording() {
-                self.recording.post_submit();
-            }
-
-            output.present();
-            if let Some((frame, _)) = output_frame {
-                frame.present();
-            }
-            return Ok(());
-        }
-
-        // Dissolve crossfade: if transitioning with dissolve, blend snapshot + current
-        let source = if let crate::scene::timeline::PlaybackState::Transitioning {
-            transition_type: crate::scene::types::TransitionType::Dissolve,
-            progress,
-            ..
-        } = &self.timeline.state
-        {
-            if let Some(ref tr) = self.transition_renderer {
-                if tr.has_snapshot() {
-                    tr.crossfade(
+                    _ => None,
+                };
+                match outgoing {
+                    Some(outgoing) => tr.blend(
+                        &self.gpu.device,
+                        &self.gpu.queue,
+                        &mut encoder,
+                        outgoing,
+                        source,
+                        t.progress(),
+                    ),
+                    None => tr.crossfade(
                         &self.gpu.device,
                         &self.gpu.queue,
                         &mut encoder,
                         source,
-                        *progress,
-                    )
-                    .unwrap_or(source)
-                } else {
-                    source
+                        t.progress(),
+                    ),
                 }
-            } else {
-                source
+                .unwrap_or(source)
             }
-        } else {
-            source
+            _ => source,
         };
+        // A staged switch captures the frame shown now, crossfade included,
+        // so switching again mid-transition starts from what is on screen.
+        if let (Some(staged), Some(tr)) = (self.staged_switch.as_mut(), &self.transition_renderer) {
+            if staged.wants_capture() && tr.capture_snapshot(&self.gpu.device, &mut encoder, source)
+            {
+                staged.captured();
+            }
+        }
 
         // Post-process → display target, then blit that to the window (#3122).
         // Both are scoped so the profiler reports the indirection's own cost:
@@ -4191,9 +4313,14 @@ impl App {
             );
         }
 
-        // Flip ping-pong for all layers
+        // Flip ping-pong for all layers, the outgoing preset's included
         for layer in &mut self.layer_stack.layers {
             layer.flip();
+        }
+        if let Some(r) = self.retiring.as_mut() {
+            for layer in &mut r.stack.layers {
+                layer.flip();
+            }
         }
         self.frame_count = self.frame_count.wrapping_add(1);
 
@@ -4216,8 +4343,8 @@ impl App {
         self.gpu_profiler.end_frame(&self.gpu.queue);
 
         // Request particle counter + lattice population readback (async, read next
-        // frame). The lattice request was previously issued ONLY on the dissolve-
-        // transition path above, so on every normal frame the population map was
+        // frame). The lattice request was once issued ONLY on a since-removed
+        // dissolve-transition path, so on every normal frame the population map was
         // never requested — the auto-reseed then read a perpetually-None population
         // and never fired, so growth rules just filled the domain and parked on a
         // sphere. Requesting it here (alongside the counter) is what makes the

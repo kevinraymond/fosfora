@@ -1,5 +1,9 @@
 # Alpha-survival audit (overlay foundations, P0.2)
 
+> **Historical.** A point-in-time audit from v1.31.0, kept for the reasoning behind the
+> alpha pipeline. It does not describe current code; for today's rules see
+> [alpha.md](alpha.md).
+
 Where the alpha channel lives and dies between an effect writing `rgba != (r,g,b,1)`
 and the bytes a sink receives. Audited at v1.31.0 (2026-07-31), pre-remediation;
 the **Remediation** section records what changed. File:line references are to that

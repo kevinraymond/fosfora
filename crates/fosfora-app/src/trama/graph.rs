@@ -10,8 +10,8 @@
 //! executor keys its plan on `version()`, which is what makes "rewire updates
 //! the output next frame" fall out for free.
 
-use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::sync::OnceLock;
 
 use crate::params::{ParamDef, ParamStore};
 
@@ -82,13 +82,15 @@ pub struct NodeGraph {
     wires: Vec<Wire>,
     output: NodeId,
     next_id: u64,
-    /// Cached Kahn order over all nodes; `None` after any structural edit.
+    /// Cached Kahn order over all nodes; reset by any structural edit.
     ///
-    /// Interior-mutable so the whole read side of the graph is reachable
-    /// through a shared borrow: a chain's graph lives on its `Layer` and the
+    /// Filled through a shared borrow so the whole read side of the graph is
+    /// reachable from `&self`: a chain's graph lives on its `Layer` and the
     /// frame graph plans it out of `&LayerStack`, which it holds for the whole
-    /// frame while `layer_outputs` accumulates.
-    topo: RefCell<Option<Vec<NodeId>>>,
+    /// frame while `layer_outputs` accumulates. A `OnceLock` rather than a
+    /// `RefCell` so the order can be lent out as a slice and the graph stays
+    /// `Sync`.
+    topo: OnceLock<Vec<NodeId>>,
     /// Bumped by every structural edit (including bypass toggles — they change
     /// the execution plan). The executor replans when this moves.
     version: u64,
@@ -111,7 +113,7 @@ impl NodeGraph {
             wires: Vec::new(),
             output,
             next_id: 1,
-            topo: RefCell::new(None),
+            topo: OnceLock::new(),
             version: 0,
         }
     }
@@ -143,7 +145,7 @@ impl NodeGraph {
             wires,
             output,
             next_id,
-            topo: RefCell::new(None),
+            topo: OnceLock::new(),
             version: 0,
         };
         graph.validate()?;
@@ -232,8 +234,7 @@ impl NodeGraph {
 
     fn touch(&mut self) {
         self.version += 1;
-        // `&mut self` here, so no runtime borrow is needed.
-        *self.topo.get_mut() = None;
+        self.topo = OnceLock::new();
     }
 
     pub fn version(&self) -> u64 {
@@ -444,11 +445,10 @@ impl NodeGraph {
     /// don't count (I9): a Feedback node orders as a source — its consumers
     /// read the buffer written last frame, so no same-frame dependency exists.
     ///
-    /// Takes `&self` and hands back an owned copy: both callers
-    /// (`build_plan`, `live_set`) are replan-only paths, so the copy never
-    /// lands in a steady-state frame (I8).
-    pub fn topo_order(&self) -> Vec<NodeId> {
-        if self.topo.borrow().is_none() {
+    /// Takes `&self` and lends the cached order; nothing is copied once it is
+    /// filled.
+    pub fn topo_order(&self) -> &[NodeId] {
+        self.topo.get_or_init(|| {
             let mut indegree: Vec<usize> = self
                 .nodes
                 .iter()
@@ -485,9 +485,8 @@ impl NodeGraph {
             // `connect` refuses cycles, so a partial order here would mean a
             // broken invariant, not user input.
             debug_assert_eq!(order.len(), self.nodes.len(), "cycle in wire graph");
-            *self.topo.borrow_mut() = Some(order);
-        }
-        self.topo.borrow().clone().expect("just filled")
+            order
+        })
     }
 
     /// The nodes that actually feed the Output, in topological order. Orphan
@@ -505,7 +504,8 @@ impl NodeGraph {
             }
         }
         self.topo_order()
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|id| live.contains(id))
             .collect()
     }
@@ -611,7 +611,7 @@ impl NodeGraph {
 
     #[cfg(test)]
     fn topo_cached(&self) -> bool {
-        self.topo.borrow().is_some()
+        self.topo.get().is_some()
     }
 }
 
@@ -716,7 +716,7 @@ mod tests {
         g.validate().unwrap();
         // Every node topo-sorts (the loop is broken by the delay edge), and
         // the feedback node's OUTPUT edge is real: consumers order after it.
-        let order: Vec<NodeId> = g.topo_order();
+        let order = g.topo_order();
         assert_eq!(order.len(), 5, "all nodes ordered, no cycle leftover");
         let pos = |id| order.iter().position(|&n| n == id).unwrap();
         assert!(pos(s) < pos(mix));
@@ -934,11 +934,17 @@ mod tests {
         let out = g.output_node();
         g.connect(s, out, 0).unwrap();
         assert!(!g.topo_cached());
-        let first: Vec<NodeId> = g.topo_order();
+        let first: Vec<NodeId> = g.topo_order().to_vec();
         assert!(g.topo_cached());
         assert_eq!(g.topo_order(), first);
         g.disconnect(out, 0);
         assert!(!g.topo_cached());
+    }
+
+    #[test]
+    fn node_graph_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<NodeGraph>();
     }
 
     fn any_modulation() -> Modulation {

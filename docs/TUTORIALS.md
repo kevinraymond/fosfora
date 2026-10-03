@@ -716,7 +716,7 @@ Presets save and restore your entire visual setup: all layers, effects, paramete
 ### Quick Start
 
 1. Set up your layers and effects how you like them
-2. In the **Presets** panel (left sidebar), type a name
+2. In the **Presets** panel (on the left in Perform, and in Build's left column), type a name
 3. Click **Save**
 4. To recall, click any preset in the list
 5. Saving with an existing name overwrites it (standard VJ workflow)
@@ -742,6 +742,12 @@ A preset captures:
 - **Copy**: Right-click a preset to duplicate it
 - **MIDI cycling**: Map NextPreset/PrevPreset triggers to MIDI buttons
 - **Dirty indicator**: An asterisk (*) appears when the current preset has unsaved changes
+
+### Switch Transition
+
+The **Switch** row at the top of the Presets panel (on the left in the Perform workspace, and in Build's left column, where the Presets section starts closed) sets how the picture changes when you switch presets by clicking one, with Next/Prev Preset, or from the web remote: **Cut**, **Dissolve** or **Morph**, plus a length in seconds. It works the same way as a cue's transition (see [Transitions](#transitions)) and is saved with your settings. Scene cues keep their own transitions. A preset with a video starts its transition once the video has finished loading, so the fade never runs ahead of the picture.
+
+With **Dissolve** picked, a **Keep moving** checkbox appears next to it. On (the default), the outgoing preset keeps animating through the fade. Off, the fade starts from a still of the outgoing frame. Keeping it moving renders both presets every frame of the fade, so turn it off if dissolves stutter on your machine. The setting covers every Dissolve, scene cues included, and also shows in the cue editor when a cue uses Dissolve. A preset with a trama chain or a locked layer always fades from a still.
 
 ### Locked Layers
 
@@ -784,9 +790,9 @@ Cues can be reordered, edited, and deleted from the scene panel. Changes are aut
 |------|-------------|
 | **Cut** | Instant switch: no transition, immediately loads the next preset |
 | **Dissolve** | GPU crossfade between outgoing and incoming visuals over the transition duration |
-| **Morph** | Interpolates all parameters and layer opacities smoothly over the transition duration |
+| **Morph** | Interpolates all parameters and layer opacities smoothly over the transition duration, adding a crossfade when a layer changes effect |
 
-**Dissolve** creates a true visual crossfade: both the old and new states render simultaneously and blend together. **Morph** keeps the current effects running and smoothly slides their parameters toward the target preset's values, which works best when consecutive cues use the same effects with different parameter settings.
+**Dissolve** fades the outgoing preset into the new one, both still animating; with **Keep moving** off it fades from a still of the outgoing frame instead (see [Switch Transition](#switch-transition)). **Morph** keeps the current effects running and smoothly slides their parameters toward the target preset's values. When a layer changes to a different effect, blend mode or chain, parameters cannot carry it across, so Morph crossfades the frame as well, and only the layers that kept their effect morph.
 
 ### Advance Modes
 
@@ -821,6 +827,8 @@ Scenes can be controlled via OSC (default RX port 9000):
 | `/fosfora/scene/load` | int | Load a scene by index (0-based) |
 | `/fosfora/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
 | `/fosfora/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
+| `/fosfora/preset/transition` | int | Switch transition for presets: 0 = Cut, 1 = Dissolve, 2 = Morph |
+| `/fosfora/preset/transition_secs` | float | Its length in seconds (0.1 to 30) |
 
 **Trigger actions** (via `/fosfora/trigger/{action}`):
 - `scene_go_next`: advance to the next cue
@@ -1142,6 +1150,8 @@ Trigger action names: `next_effect`, `prev_effect`, `toggle_postprocess`, `toggl
 | `/fosfora/scene/load` | string/int | Load scene by name or index |
 | `/fosfora/scene/loop_mode` | float | Set loop mode (> 0.5 = on) |
 | `/fosfora/scene/advance_mode` | int | 0 = Manual, 1 = Timer, 2 = Beat Sync |
+| `/fosfora/preset/transition` | int | Switch transition for presets: 0 = Cut, 1 = Dissolve, 2 = Morph |
+| `/fosfora/preset/transition_secs` | float | Its length in seconds (0.1 to 30) |
 
 ### OSC Learn
 

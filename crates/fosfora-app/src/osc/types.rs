@@ -56,6 +56,11 @@ pub enum OscInMessage {
     SceneLoopMode(bool),
     /// Set advance mode: /fosfora/scene/advance_mode (0=Manual, 1=Timer, 2=BeatSync)
     SceneAdvanceMode(u8),
+    /// Default transition for a plain preset switch: /fosfora/preset/transition
+    /// (0=Cut, 1=Dissolve, 2=Morph)
+    PresetTransition(u8),
+    /// Its length in seconds: /fosfora/preset/transition_secs
+    PresetTransitionSecs(f32),
     /// Unrecognized address (captured for learn mode)
     Raw { address: String, value: f32 },
 }

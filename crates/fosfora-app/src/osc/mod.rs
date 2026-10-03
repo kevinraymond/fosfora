@@ -40,6 +40,9 @@ pub struct OscFrameResult {
     pub scene_load_name: Option<String>,
     pub scene_loop_mode: Option<bool>,
     pub scene_advance_mode: Option<u8>,
+    // Default preset-switch transition (#217)
+    pub preset_transition: Option<u8>,
+    pub preset_transition_secs: Option<f32>,
 }
 
 impl OscFrameResult {
@@ -64,6 +67,8 @@ impl OscFrameResult {
             scene_load_name: None,
             scene_loop_mode: None,
             scene_advance_mode: None,
+            preset_transition: None,
+            preset_transition_secs: None,
         }
     }
 }
@@ -349,6 +354,12 @@ impl OscSystem {
                 OscInMessage::SceneAdvanceMode(mode) => {
                     result.scene_advance_mode = Some(mode);
                 }
+                OscInMessage::PresetTransition(kind) => {
+                    result.preset_transition = Some(kind);
+                }
+                OscInMessage::PresetTransitionSecs(secs) => {
+                    result.preset_transition_secs = Some(secs);
+                }
                 OscInMessage::Raw { ref address, value } => {
                     // Accumulate for binding bus
                     self.last_raw_values.insert(address.clone(), value);
@@ -473,6 +484,12 @@ impl OscSystem {
                 OscInMessage::SceneAdvanceMode(mode) => {
                     result.scene_advance_mode = Some(mode);
                 }
+                OscInMessage::PresetTransition(kind) => {
+                    result.preset_transition = Some(kind);
+                }
+                OscInMessage::PresetTransitionSecs(secs) => {
+                    result.preset_transition_secs = Some(secs);
+                }
                 OscInMessage::Raw { ref address, value } => {
                     if let Some(action) = self.config.find_trigger(address) {
                         if value > 0.5 {
@@ -549,7 +566,8 @@ fn msg_value(msg: &OscInMessage) -> Option<f32> {
         | OscInMessage::VolumetricEnabled(value)
         | OscInMessage::SceneLoopMode(value) => Some(if *value { 1.0 } else { 0.0 }),
         OscInMessage::SceneGotoCue(v) | OscInMessage::SceneLoadIndex(v) => Some(*v as f32),
-        OscInMessage::SceneAdvanceMode(v) => Some(*v as f32),
+        OscInMessage::SceneAdvanceMode(v) | OscInMessage::PresetTransition(v) => Some(*v as f32),
+        OscInMessage::PresetTransitionSecs(v) => Some(*v),
         OscInMessage::Trigger(_) | OscInMessage::SceneLoadName(_) => None,
     }
 }
@@ -586,6 +604,8 @@ fn msg_address(msg: &OscInMessage) -> String {
         OscInMessage::SceneLoadName(_) => "/fosfora/scene/load".to_string(),
         OscInMessage::SceneLoopMode(_) => "/fosfora/scene/loop_mode".to_string(),
         OscInMessage::SceneAdvanceMode(_) => "/fosfora/scene/advance_mode".to_string(),
+        OscInMessage::PresetTransition(_) => "/fosfora/preset/transition".to_string(),
+        OscInMessage::PresetTransitionSecs(_) => "/fosfora/preset/transition_secs".to_string(),
         OscInMessage::Raw { address, .. } => address.clone(),
     }
 }

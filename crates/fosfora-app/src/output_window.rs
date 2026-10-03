@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{Window, WindowAttributes, WindowId};
 
 use crate::gpu::context::GpuContext;
 
@@ -65,6 +65,29 @@ pub fn displays(event_loop: &ActiveEventLoop) -> Vec<DisplayInfo> {
         .collect()
 }
 
+/// Lift the output window over the menu bar and the Dock, which otherwise
+/// draw across the top and edge of the display it covers.
+#[cfg(target_os = "macos")]
+fn raise_above_menu_bar(window: &Window) {
+    use objc2_app_kit::{NSStatusWindowLevel, NSView};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: an AppKit window handle's `ns_view` is the window's content
+    // NSView, which stays alive as long as `window` does and so outlives this
+    // borrow. We are on the main thread, where winit creates windows and
+    // where NSView may be used.
+    let view: &NSView = unsafe { handle.ns_view.cast().as_ref() };
+    if let Some(ns_window) = view.window() {
+        ns_window.setLevel(NSStatusWindowLevel);
+    }
+}
+
 pub struct OutputWindow {
     pub window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -93,10 +116,31 @@ impl OutputWindow {
 
         let attrs = WindowAttributes::default()
             .with_title("Fosfora Output")
-            .with_decorations(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+            .with_decorations(false);
+
+        // On macOS a borderless window covering the display, not a full-screen
+        // one: winit's borderless full screen is the native kind, which gives
+        // the window a Space of its own. That animates in, hides the window
+        // whenever another Space is shown on its display, and blanks every
+        // other display when "Displays have separate Spaces" is off, taking
+        // the interface with it (GH #212). Logical units, because winit places
+        // a physical position using the main display's scale factor.
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            let scale = monitor.scale_factor();
+            attrs
+                .with_position(monitor.position().to_logical::<f64>(scale))
+                .with_inner_size(monitor.size().to_logical::<f64>(scale))
+                .with_resizable(false)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let attrs =
+            attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(monitor))));
+
         let window = Arc::new(event_loop.create_window(attrs)?);
         window.set_cursor_visible(false);
+        #[cfg(target_os = "macos")]
+        raise_above_menu_bar(&window);
 
         let surface = gpu.instance.create_surface(window.clone())?;
         let capabilities = surface.get_capabilities(&gpu.adapter);

@@ -99,7 +99,7 @@ impl ChainView {
         let out = graph.output_node();
         snarl.insert_node(saved(out).unwrap_or(egui::pos2(480.0, 200.0)), out);
         let mut y = 200.0;
-        for id in graph.topo_order() {
+        for &id in graph.topo_order() {
             if id == out {
                 continue;
             }

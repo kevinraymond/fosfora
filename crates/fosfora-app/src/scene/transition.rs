@@ -131,7 +131,16 @@ impl TransitionRenderer {
     }
 
     /// Ensure snapshot and output targets are allocated at the given size.
-    fn ensure_targets(&mut self, device: &Device, width: u32, height: u32, format: TextureFormat) {
+    /// Called when a switch is staged, so the capture in `render` needs only
+    /// shared access: by then the frame on screen may be this renderer's own
+    /// crossfade output.
+    pub fn ensure_targets(
+        &mut self,
+        device: &Device,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+    ) {
         let needs = |t: &Option<RenderTarget>| {
             t.as_ref()
                 .map_or(true, |r| r.width != width || r.height != height)
@@ -158,28 +167,22 @@ impl TransitionRenderer {
         }
     }
 
-    /// Capture the current compositor output to our snapshot texture.
-    /// Uses the crossfade pipeline with progress=0 (blit A only).
+    /// Copy `source` (the frame about to be shown) into the snapshot. Draws
+    /// the crossfade with `source` on both inputs, which yields `source` at
+    /// any progress, so it never writes the progress uniform: the frame's
+    /// own crossfade, encoded earlier into the same submission, still reads
+    /// its value. The pass samples by UV, so a `source` smaller than the
+    /// window (an effect's own target, on the single-layer path) scales up.
+    /// Returns false when `ensure_targets` has not run yet.
     pub fn capture_snapshot(
-        &mut self,
+        &self,
         device: &Device,
-        queue: &Queue,
         encoder: &mut CommandEncoder,
         source: &RenderTarget,
-    ) {
-        self.ensure_targets(device, source.width, source.height, source.format);
-        let snapshot = self
-            .snapshot
-            .as_ref()
-            .expect("snapshot allocated by ensure_targets above");
-
-        // Blit source to snapshot using crossfade at progress=0
-        // (mix(A, B, 0) = A, so B can be anything — we use source for both)
-        queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[0.0f32, 0.0f32, 0.0f32, 0.0f32]),
-        );
+    ) -> bool {
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return false;
+        };
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("crossfade_capture_bg"),
@@ -225,6 +228,7 @@ impl TransitionRenderer {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
+        true
     }
 
     /// Render crossfade between snapshot (outgoing) and incoming target.
@@ -238,6 +242,20 @@ impl TransitionRenderer {
         progress: f32,
     ) -> Option<&'a RenderTarget> {
         let snapshot = self.snapshot.as_ref()?;
+        self.blend(device, queue, encoder, snapshot, incoming, progress)
+    }
+
+    /// Render `mix(outgoing, incoming, progress)`: the crossfade with a live
+    /// outgoing picture instead of the snapshot.
+    pub fn blend<'a>(
+        &'a self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        outgoing: &RenderTarget,
+        incoming: &RenderTarget,
+        progress: f32,
+    ) -> Option<&'a RenderTarget> {
         let output = self.output.as_ref()?;
 
         // Upload progress
@@ -254,7 +272,7 @@ impl TransitionRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&snapshot.view),
+                    resource: wgpu::BindingResource::TextureView(&outgoing.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,

@@ -79,6 +79,17 @@ impl ApplicationHandler for FosforaApp {
             return;
         }
 
+        // macOS merges a new window into an existing one as a tab when the
+        // system tab preference allows it, and it did so with the output
+        // window: the output took the main window's frame, the interface went
+        // behind it as a hidden tab, and the pair moved to the output display
+        // together (GH #212). Fosfora has no document windows to tab.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            event_loop.set_allows_automatic_window_tabbing(false);
+        }
+
         let mut attrs = WindowAttributes::default()
             .with_title("Fosfora")
             .with_inner_size(winit::dpi::LogicalSize::new(1920, 1080));
@@ -170,6 +181,15 @@ impl ApplicationHandler for FosforaApp {
                 } => app.close_output_window(),
                 _ => {}
             }
+            return;
+        }
+
+        // Anything else that is not the main window belongs to an output
+        // window that has already closed: macOS keeps delivering a closed
+        // full-screen window's exit resizes after the window is dropped. Taken
+        // as the main window's, they resized its surface to the output
+        // display's size and left the interface zoomed (GH #212).
+        if window_id != app.window.id() {
             return;
         }
 
@@ -924,8 +944,14 @@ impl ApplicationHandler for FosforaApp {
                     // Store preset loading state in egui temp data for UI panels
                     {
                         let loading_state = app.preset_loader.state.clone();
+                        let transition = (
+                            app.settings.preset_transition,
+                            app.settings.preset_transition_secs,
+                            app.settings.dissolve_keeps_moving,
+                        );
                         ctx.data_mut(|d| {
                             d.insert_temp(egui::Id::new("preset_loading_state"), loading_state);
+                            d.insert_temp(egui::Id::new("preset_transition"), transition);
                         });
                     }
 
@@ -2224,7 +2250,14 @@ impl ApplicationHandler for FosforaApp {
                     .context()
                     .data_mut(|d| d.remove_temp(egui::Id::new("pending_preset")));
                 if let Some(idx) = pending_preset {
-                    app.load_preset(idx);
+                    app.switch_preset(idx);
+                }
+                let set_transition: Option<(crate::scene::types::TransitionType, f32, bool)> = app
+                    .egui_overlay
+                    .context()
+                    .data_mut(|d| d.remove_temp(egui::Id::new("set_preset_transition")));
+                if let Some((kind, secs, keep_moving)) = set_transition {
+                    app.set_preset_transition(Some(kind), Some(secs), Some(keep_moving));
                 }
                 let save_preset: Option<String> = app
                     .egui_overlay
@@ -4497,13 +4530,13 @@ impl ApplicationHandler for FosforaApp {
                         }
                         TriggerAction::NextPreset if !app.preset_store.presets.is_empty() => {
                             let num = app.preset_store.presets.len();
-                            let current = app.preset_store.current_preset.unwrap_or(0);
-                            app.load_preset((current + 1) % num);
+                            let current = app.target_preset().unwrap_or(0);
+                            app.switch_preset((current + 1) % num);
                         }
                         TriggerAction::PrevPreset if !app.preset_store.presets.is_empty() => {
                             let num = app.preset_store.presets.len();
-                            let current = app.preset_store.current_preset.unwrap_or(0);
-                            app.load_preset(if current == 0 { num - 1 } else { current - 1 });
+                            let current = app.target_preset().unwrap_or(0);
+                            app.switch_preset(if current == 0 { num - 1 } else { current - 1 });
                         }
                         TriggerAction::NextLayer if app.layer_stack.layers.len() > 1 => {
                             let num = app.layer_stack.layers.len();

@@ -1,10 +1,11 @@
 //! Layer execution + compositing for one frame, in one place.
 //!
 //! Extracted from `App::render`, which carried this block **twice** — once for
-//! the normal path and a near-verbatim copy inside the dissolve re-render. The
-//! copies had already begun to drift in whitespace and were one bugfix away
-//! from drifting in behavior; the headless scene renderer (#2027) would have
-//! been a third copy. All three call this.
+//! the normal path and a near-verbatim copy inside the dissolve re-render (since
+//! removed: a switch now applies between frames, #217). The copies had already
+//! begun to drift in whitespace and were one bugfix away from drifting in
+//! behavior; the headless scene renderer (#2027) would have been a third copy.
+//! Both remaining paths call this.
 
 use wgpu::{CommandEncoder, Device, Queue};
 

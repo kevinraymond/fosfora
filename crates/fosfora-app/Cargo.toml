@@ -1,6 +1,6 @@
 [package]
 name = "fosfora-app"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 # The pinned toolchain in rust-toolchain.toml, the only compiler anything checks.
 # `publish = false`, so no downstream resolver reads this; bump the two together.
@@ -101,9 +101,9 @@ ort = { version = "=2.0.0-rc.11", optional = true, default-features = false, fea
 # HTTP client for downloads (depth model + runtime, splat demo scene #1800).
 # On in every desktop build (the `desktop` feature, which is default): a feature-gated
 # one-click demo for the flagship Splat effect would silently vanish in default builds —
-# worse than the ~100s-KB size cost. Off only for non-desktop (XR) lib builds, where
-# native-tls does not build.
-ureq = { version = "3", features = ["native-tls"], optional = true }
+# worse than the ~100s-KB size cost. Off for non-desktop (XR) lib builds only because
+# nothing there downloads yet; ureq's default rustls + ring TLS builds on Android.
+ureq = { version = "3", optional = true }
 # Every download is checked against a pinned SHA-256 before it is used.
 sha2 = { version = "0.10", optional = true }
 # Archive extraction for ONNX Runtime download (tgz on Linux/macOS, zip on Windows)
@@ -152,9 +152,13 @@ windows = { version = "0.61", features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 # NSWorkspace.accessibilityDisplayShouldReduceMotion (reduced-motion detection).
 # The accessor lives in the NSAccessibility module gated on its own feature.
+# NSResponder/NSView/NSWindow: the output window's level (output_window.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSWorkspace",
     "NSAccessibility",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
 ] }
 # Syphon output (GH #4). Syphon.framework itself is dlopen'd at runtime (it
 # ships inside the release app bundle), so only Metal/Foundation — system

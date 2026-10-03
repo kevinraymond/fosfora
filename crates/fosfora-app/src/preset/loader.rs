@@ -110,6 +110,16 @@ impl PresetLoader {
         }
     }
 
+    /// Drop whatever decode is in flight: its result, when it lands, is
+    /// discarded as stale. A load that skips the decoder (no media, or a cut
+    /// taking over from a pending switch) calls this, or the abandoned
+    /// decode would land seconds later and replace the preset the user chose
+    /// since.
+    pub fn cancel(&mut self) {
+        self.generation += 1;
+        self.state = PresetLoadingState::Idle;
+    }
+
     /// Poll for a completed decode result. Returns Some if a result matching
     /// the current generation is available.
     pub fn try_recv(&mut self) -> Option<PresetDecodeResult> {
@@ -308,6 +318,25 @@ mod tests {
         assert_eq!(result.preset_index, 0);
         assert!(result.decoded_media.is_empty());
         assert!(matches!(loader.state, PresetLoadingState::Idle));
+    }
+
+    #[test]
+    fn cancelled_load_never_delivers() {
+        let mut loader = PresetLoader::new();
+        let preset = Preset {
+            layers: vec![],
+            active_layer: 0,
+            postprocess: Default::default(),
+            volumetric: None,
+            master_chain: None,
+        };
+
+        loader.request_load(0, preset, vec![], "Abandoned".into());
+        loader.cancel();
+        assert!(matches!(loader.state, PresetLoadingState::Idle));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(loader.try_recv().is_none());
     }
 
     #[test]

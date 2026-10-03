@@ -5,15 +5,31 @@
 
 ## Unreleased
 
-Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell and seed read the particles of the grid cell next to its own, and at any particle quality other than High the neighbor grid was the wrong size altogether. Both are fixed, so flocks cohere and split where the sim says they should.
+### Added
+- **Transitions when switching presets.** Clicking a preset, Next/Prev Preset and the web remote can now dissolve or morph instead of cutting: pick Cut, Dissolve or Morph and a length in the new Switch row at the top of the Presets panel (left side of Perform, and Build's left column), or over OSC with `/fosfora/preset/transition` and `/fosfora/preset/transition_secs`. The default stays Cut. Suggested by @Marvo2011.
+
+### Changed
+- **Dissolves keep the outgoing preset moving.** It used to freeze for the length of the fade. Both presets render during a Dissolve, so if that stutters on your machine, untick **Keep moving** next to Dissolve in the Switch row or the cue editor. Presets with a trama chain or a locked layer still fade from a still.
+- **Morph crossfades layers that change effect.** A Morph between presets or scene cues with different effects used to land as a cut; those layers now crossfade while the rest morph.
+
+### Fixed
+- **Changing your mind while a preset with a video was loading** switched back to that preset seconds later, when its video finished decoding; the later choice now sticks.
+- **A scene cue dissolving into a preset with a video** faded into the old preset and then hard-cut to the new one once the video loaded, about 13 s later for a typical clip. The dissolve now starts when the video is ready.
+
+## v2.0.1 — 2026-09-30
+
+Fixes for 2.0: the second output window and webcams work on macOS, the audio analysis reads
+true levels, and a run of crashes and remote-control bugs are gone. Two changes may need a
+look: OSC and the web remote answer only this computer until you allow other devices, and
+loudness reads about 3 LU higher.
 
 ### Added
 - **A photosensitivity flash limiter, on by default.** Large-area flashing is held to at most
   three flashes a second, the WCAG and broadcast threshold, on screen and in every live output
   and recording; bright hits beyond that are dimmed. Offline loop and scene renders are not
-  limited. Set it under Setup ▸ General: Strict allows
-  one a second, and Auto goes Strict when the system asks for reduced motion, which also
-  stops interface animation. Strobe-heavy looks are throttled; Off restores them.
+  limited. Set it under Setup ▸ General: Strict allows one a second, and Auto goes Strict
+  when the system asks for reduced motion, which also stops interface animation.
+  Strobe-heavy looks are throttled; Off restores them.
 
 ### Changed
 - **OSC input and the web remote now listen on this computer only.** A phone, a controller
@@ -27,8 +43,20 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   the bottom of the `pitch` range, now reads as no pitch: the last value holds at zero confidence.
 - **Building from source needs Rust 1.97**, the toolchain the repository pins and tests; the
   declared minimum of 1.90 was never tested.
+- **Fosfora no longer links OpenSSL.** Downloads already used the built-in TLS, so the
+  Linux binary no longer needs the system OpenSSL library, and building from source no longer
+  needs `libssl-dev`.
 
 ### Fixed
+- **On macOS the second output window stayed black, or took the interface with it.** It now
+  opens as a plain borderless window on its display, with the interface left live on the other,
+  and closing it no longer leaves the interface zoomed.
+- **Webcams stayed dark on macOS and no permission prompt appeared.** Fosfora now asks for
+  camera access the first time a camera is added, and adds it once you allow it.
+- **The app and window icon still showed the old Phosphor "P".** It is the Fosfora "F" now.
+- **Murmur, Symbiosis and Genesis flocked on the wrong neighbors**: each bird, cell and seed
+  read the particles of the grid cell next to its own, and below High particle quality the
+  neighbor grid was the wrong size. Flocks now cohere and split where the sim says they should.
 - **Screen turned bloomed highlights black** where two bright layers overlapped, and
   Exclusion could go negative. Screen, Overlay, Hard Light and Exclusion now stay bright on
   HDR values and blend exactly as before everywhere else.
@@ -88,9 +116,9 @@ Murmur, Symbiosis and Genesis flocked on the wrong neighbors: each bird, cell an
   are unchanged.
 - **Windows loopback capture was silent on 32-bit integer devices**, paused the beat clock
   through silent stretches, and leaked memory on every reconnect. All three are fixed.
-- **Surround devices lost their centre channel**, so vocals and dialogue from a 5.1 or 7.1
+- **Surround devices lost their center channel**, so vocals and dialogue from a 5.1 or 7.1
   input or Windows loopback barely reached the visuals. Extra channels are now folded into
-  stereo, centre and surrounds at −3 dB, LFE left out.
+  stereo, center and surrounds at −3 dB, LFE left out.
 - **Switching audio device mid-recording** to one with a different sample rate pitch-shifted
   the rest of the recording's audio and let it drift from the picture. The new device's audio
   is now converted to the recording's rate.
@@ -187,8 +215,7 @@ with the output as a live preview beside them instead of behind two narrow side 
   when nothing enabled sits under it, instead of silently rendering nothing.
 - **Custom `.pfx` effects can list speed parameters under `"rates"`.** Fosfora keeps each
   one's running total in a slot after your parameters, so a shader never has to multiply a
-  parameter by `u.time`; a period in seconds can be declared too. `scripts/audit_pfx_rates.py`
-  finds shaders that still multiply by `u.time`.
+  parameter by `u.time`; a period in seconds can be declared too.
 
 ### Changed
 - **Profiling builds time each pass of a multi-pass effect,** plus particle simulation,
@@ -396,14 +423,11 @@ with the output as a live preview beside them instead of behind two narrow side 
   and key-driven palettes settle in about 3 s.
 - **Beat and tempo tracking rebuilt.** Beats fired on every loud onset whenever tempo
   confidence dipped — 1.5-1.7× too many, spraying beat-bound strobes — and drifted
-  100+ ms late on misses; they now fire on a phase-locked grid (within ~10 ms on
-  synthetic kicks) and go quiet through breakdowns instead of spraying. The detected
-  tempo also commits to its level: double-kick and half-time-feel material no longer
-  flips the readout between 172/115/86-style relatives mid-track, and the BPM value
-  holds through breakdowns instead of blanking. EDM tempo accuracy rose 0.60 → 0.70
-  (past offline madmom), tempi between analysis bins like 175 BPM became representable
-  at all, and hard-stuck octave errors clear. Tracks now stay silent for the first few
-  seconds until the tempo locks; `/onset` and the kick stem keep firing throughout.
+  100+ ms late; they now fire on a phase-locked grid (within ~10 ms on synthetic kicks)
+  and go quiet through breakdowns. Tempo no longer flips between 172/115/86-style
+  relatives mid-track and holds through breakdowns; EDM tempo accuracy rose 0.60 → 0.70.
+  Tracks stay silent for the first few seconds until the tempo locks; `/onset` and the
+  kick stem keep firing throughout.
 - **Phosphor is now Fosfora, everywhere.** Your config directory moves over automatically
   on first launch (settings, presets, scenes and mappings all come along), OSC output now
   uses `/fosfora/...` — incoming `/phosphor/...` is still accepted, and a legacy TX

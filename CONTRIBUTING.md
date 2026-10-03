@@ -7,12 +7,18 @@ Thanks for your interest in contributing! Fosfora is a live VJ engine built with
 **Prerequisites:**
 - Rust 1.97+ (pinned via `rust-toolchain.toml`; install via [rustup](https://rustup.rs))
 - Audio input device (built-in mic works)
-- Vulkan-capable GPU
+- A GPU with Vulkan, Metal or DirectX 12 (wgpu picks the backend)
+- Linux: `libasound2-dev` and `libudev-dev` (ALSA and udev headers)
+- Python 3.10+ for the repo checks; [uv](https://docs.astral.sh/uv/) for the few scripts
+  that declare dependencies (`#!/usr/bin/env -S uv run` shebang)
 
 **Setup:**
 ```bash
-git config core.hooksPath .githooks   # enable pre-commit checks (fmt + clippy)
+git config core.hooksPath .githooks   # enable pre-commit checks
 ```
+
+The pre-commit hook runs the changelog, docs and shader-rate checks, then `cargo fmt` and
+`cargo clippy -D warnings` (see [Repo checks](#repo-checks)).
 
 **Commands:**
 ```bash
@@ -71,6 +77,34 @@ Two rules the scaffold already follows:
   every *change* in that parameter by the app's uptime, so a modulated speed strobes instead
   of speeding up. List the parameter under `"rates"` in the manifest and its slot arrives as
   the engine-integrated phase. A unit test refuses the pattern in shipped nodes.
+
+## Testing
+
+```bash
+cargo test                                   # unit and integration tests, default features
+cargo test --features video                  # feature-gated code has its own tests; CI runs
+                                             # video, webcam, depth, analyze, link and
+                                             # "ndi,v4l2,spout,syphon" separately
+cargo test -p fosfora-app -- --ignored       # GPU tests (see below)
+```
+
+Tests that need a GPU adapter — rendering, the headless loop and the chain editor — are
+`#[ignore]`d with a reason, because CI runners have none. Run them with `--ignored` on a
+machine with a GPU, or with lavapipe (Mesa's software Vulkan) installed; some are slow in
+debug and say `--release` in their doc comment. Filter by name to run one:
+`cargo test -p fosfora-app -- --ignored golden_loop`.
+
+### Repo checks
+
+Plain-Python scripts under `scripts/` guard things a release depends on. The pre-commit
+hook runs the first three and CI runs all four on every PR:
+
+```bash
+scripts/check_changelog.py          # CHANGELOG headers and entry rules (see CLAUDE.md)
+scripts/check_docs.py               # gallery, effect count, relative links and anchors
+scripts/audit_pfx_rates.py --check  # .pfx shaders that multiply a parameter by u.time
+scripts/test_scenelib.py            # unit tests for the scene generator library
+```
 
 ## Reporting Bugs
 

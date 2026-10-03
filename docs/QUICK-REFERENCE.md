@@ -59,6 +59,8 @@ Up to **8 layers** (0-7), composited bottom-to-top. Each layer has:
 ### Presets
 Save/load named presets. Dirty indicator shows unsaved changes. Cycle via MIDI/OSC triggers (NextPreset / PrevPreset).
 
+**Switch** (top row of the Presets panel, on the left of Perform and in Build's left column): how switching presets changes the picture, Cut, Dissolve or Morph, plus a length in seconds. Applies to clicks, NextPreset / PrevPreset and the web remote; scene cues keep their own transitions. **Keep moving** (shown with Dissolve, on by default) keeps the outgoing preset animating through every Dissolve, cues included; turn it off if two presets at once is too much for your GPU.
+
 ### Scenes
 Cue timeline with per-cue preset, transition type, and duration. Advance modes: Manual, Timer (auto-advance after hold), BeatSync (advance every N beats). Loop toggle.
 
@@ -195,6 +197,8 @@ Default ports: **RX 9000**, **TX 9001**
 | `/fosfora/scene/load`              | int/s | Load scene by index or name  |
 | `/fosfora/scene/loop_mode`         | bool  | Set loop mode                |
 | `/fosfora/scene/advance_mode`      | int   | Manual(0)/Timer(1)/Beat(2)   |
+| `/fosfora/preset/transition`       | int   | Cut(0)/Dissolve(1)/Morph(2)  |
+| `/fosfora/preset/transition_secs`  | float | Switch length, 0.1-30 s      |
 
 ### Transmit (audio data at 30 Hz)
 

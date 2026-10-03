@@ -212,6 +212,26 @@ pub struct SettingsConfig {
     /// existed loads as Auto, so the limit is on for upgrading installs too.
     #[serde(default)]
     pub flash_limit: FlashLimit,
+    /// How a plain preset switch (a click, Next/Prev Preset, the web remote)
+    /// changes the picture (#217). Cue switches use their own cue's
+    /// transition. Cut by default, which is how every switch behaved before.
+    #[serde(default)]
+    pub preset_transition: crate::scene::types::TransitionType,
+    /// Length of [`Self::preset_transition`] in seconds.
+    #[serde(default = "default_preset_transition_secs")]
+    pub preset_transition_secs: f32,
+    /// Keep the outgoing preset animating through a Dissolve (preset switch
+    /// or cue) instead of fading from a still of it. On by default; off for a
+    /// rig that cannot render two presets at once, since both run every frame
+    /// of the fade.
+    #[serde(default = "default_true")]
+    pub dissolve_keeps_moving: bool,
+}
+
+/// Serde default for [`SettingsConfig::preset_transition_secs`], matching a
+/// new cue's transition length.
+fn default_preset_transition_secs() -> f32 {
+    1.0
 }
 
 /// Serde default for [`SettingsConfig::ui_scale`]: `f32`'s `Default` is 0.
@@ -244,6 +264,9 @@ impl Default for SettingsConfig {
             ui_scale: 1.0,
             tours_done: Vec::new(),
             flash_limit: FlashLimit::Auto,
+            preset_transition: crate::scene::types::TransitionType::Cut,
+            preset_transition_secs: default_preset_transition_secs(),
+            dissolve_keeps_moving: true,
         }
     }
 }
@@ -338,6 +361,20 @@ mod tests {
         let json = r#"{"version":1,"theme":"Dark"}"#;
         let c: SettingsConfig = serde_json::from_str(json).unwrap();
         assert!(c.favorite_effects.is_empty());
+    }
+
+    #[test]
+    fn an_older_settings_file_keeps_cutting_between_presets() {
+        // Before #217 every preset switch was a cut; a settings file from then
+        // must keep that, with a sensible length ready if the user picks one.
+        let json = r#"{"version":1,"theme":"Dark"}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            c.preset_transition,
+            crate::scene::types::TransitionType::Cut
+        );
+        assert_eq!(c.preset_transition_secs, 1.0);
+        assert!(c.dissolve_keeps_moving);
     }
 
     #[test]

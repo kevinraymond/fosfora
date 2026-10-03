@@ -13,7 +13,9 @@ pub enum TransitionType {
     Cut,
     /// GPU crossfade between outgoing and incoming.
     Dissolve,
-    /// Interpolate all params, opacities, and blend modes each frame.
+    /// Interpolate params and opacities each frame; when a layer changes
+    /// what it shows (another effect, blend mode or chain), also crossfade
+    /// the frame, since params cannot morph one effect into another.
     ParamMorph,
 }
 
