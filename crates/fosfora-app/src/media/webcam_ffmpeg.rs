@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Receiver;
 
@@ -12,8 +12,28 @@ pub struct FfmpegCapture {
     frame_rx: Receiver<WebcamFrame>,
     shutdown: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// The running ffmpeg, kept so stopping can end it: the capture thread
+    /// sits in a read that only returns when ffmpeg writes or exits.
+    child: Arc<Mutex<Option<Child>>>,
     pub device_name: String,
     pub resolution: (u32, u32),
+}
+
+/// What a camera is opened with: frame size and frame rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CaptureMode {
+    size: (u32, u32),
+    fps: f64,
+}
+
+impl CaptureMode {
+    fn size_arg(&self) -> String {
+        format!("{}x{}", self.size.0, self.size.1)
+    }
+
+    fn fps_arg(&self) -> String {
+        format!("{}", self.fps)
+    }
 }
 
 /// Check if ffmpeg is available on PATH.
@@ -118,14 +138,17 @@ impl FfmpegCapture {
         let shutdown_clone = shutdown.clone();
         let name = device_name.to_string();
         let name_clone = name.clone();
+        let child = Arc::new(Mutex::new(None));
+        let child_clone = child.clone();
 
-        // Probe actual resolution by starting ffmpeg briefly
-        let actual_res = probe_resolution(&name, res)?;
+        // Find a mode the camera accepts by starting ffmpeg briefly
+        let mode = probe_mode(&name, res)?;
+        let actual_res = mode.size;
 
         let handle = std::thread::Builder::new()
             .name("ffmpeg-webcam".into())
             .spawn(move || {
-                capture_thread(&name_clone, actual_res, frame_tx, shutdown_clone);
+                capture_thread(&name_clone, mode, frame_tx, shutdown_clone, child_clone);
             })
             .map_err(|e| format!("Failed to spawn ffmpeg capture thread: {e}"))?;
 
@@ -140,6 +163,7 @@ impl FfmpegCapture {
             frame_rx,
             shutdown,
             thread: Some(handle),
+            child,
             device_name: name,
             resolution: actual_res,
         })
@@ -154,11 +178,18 @@ impl FfmpegCapture {
         latest
     }
 
-    /// Stop capture and join the thread.
+    /// Stop capture: end ffmpeg, which releases the camera and wakes the
+    /// thread out of its read.
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(mut child) = self.child.lock().ok().and_then(|mut c| c.take()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
         if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
+            if super::webcam::wait_finished(&handle, std::time::Duration::from_millis(500)) {
+                let _ = handle.join();
+            }
         }
     }
 
@@ -192,7 +223,7 @@ fn platform_capture_args() -> (&'static str, &'static str) {
     }
     #[cfg(target_os = "macos")]
     {
-        ("avfoundation", "\"\"")
+        ("avfoundation", "")
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
@@ -218,20 +249,67 @@ fn device_input_arg(device_name: &str) -> String {
     }
 }
 
-/// Probe the actual capture resolution by running a short ffmpeg and reading stderr.
-/// Falls back to the requested resolution if probing fails.
-fn probe_resolution(device_name: &str, requested: (u32, u32)) -> Result<(u32, u32), String> {
+/// Find a mode the camera accepts, starting from the requested resolution
+/// at 30 fps.
+///
+/// A camera that refuses it says which modes it has (a virtual camera often
+/// has exactly one, and not 1280x720); the nearest of those is tried next.
+fn probe_mode(device_name: &str, requested: (u32, u32)) -> Result<CaptureMode, String> {
+    let wanted = CaptureMode {
+        size: requested,
+        fps: 30.0,
+    };
+    let stderr = match probe_one_frame(device_name, wanted)? {
+        Ok(()) => return Ok(wanted),
+        Err(stderr) => stderr,
+    };
+    if let Some(mode) = nearest_mode(&parse_supported_modes(&stderr), wanted) {
+        if mode != wanted {
+            log::info!(
+                "Camera '{device_name}' has no {} mode, trying {} at {} fps",
+                wanted.size_arg(),
+                mode.size_arg(),
+                mode.fps_arg()
+            );
+            return match probe_one_frame(device_name, mode)? {
+                Ok(()) => Ok(mode),
+                Err(stderr) => Err(open_error(device_name, &stderr)),
+            };
+        }
+    }
+    if stderr.contains("Could not") || stderr.contains("Error") {
+        Err(open_error(device_name, &stderr))
+    } else {
+        // Probe failed but not fatally — use requested resolution
+        Ok(wanted)
+    }
+}
+
+fn open_error(device_name: &str, stderr: &str) -> String {
+    // The first line that is ffmpeg's own; macOS puts framework notices
+    // ahead of it.
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with('[') || l.contains("Error") || l.contains("Could not"))
+        .or_else(|| stderr.lines().next())
+        .unwrap_or_default();
+    format!("FFmpeg could not open camera '{device_name}': {line}")
+}
+
+/// Read one frame from the camera in this mode. `Ok(Err(stderr))` when
+/// ffmpeg ran but delivered no frame.
+fn probe_one_frame(device_name: &str, mode: CaptureMode) -> Result<Result<(), String>, String> {
     let (format_flag, _) = platform_capture_args();
     let input = device_input_arg(device_name);
-    let size = format!("{}x{}", requested.0, requested.1);
 
-    // Try to start ffmpeg with requested resolution and grab one frame
     let mut child = Command::new("ffmpeg")
         .args([
             "-f",
             format_flag,
             "-video_size",
-            &size,
+            &mode.size_arg(),
+            "-framerate",
+            &mode.fps_arg(),
             "-i",
             &input,
             "-frames:v",
@@ -249,35 +327,60 @@ fn probe_resolution(device_name: &str, requested: (u32, u32)) -> Result<(u32, u3
         .spawn()
         .map_err(|e| format!("Failed to probe camera with ffmpeg: {e}"))?;
 
-    let expected_bytes = (requested.0 as usize) * (requested.1 as usize) * 4;
+    let expected_bytes = (mode.size.0 as usize) * (mode.size.1 as usize) * 4;
     let mut buf = vec![0u8; expected_bytes];
     let stdout = child.stdout.as_mut().ok_or("No stdout from ffmpeg")?;
 
-    match read_exact_timeout(stdout, &mut buf, std::time::Duration::from_secs(10)) {
+    let read = read_exact_timeout(stdout, &mut buf, std::time::Duration::from_secs(10));
+    let _ = child.kill();
+    match read {
         Ok(()) => {
-            let _ = child.kill();
             let _ = child.wait();
-            Ok(requested)
+            Ok(Ok(()))
         }
-        Err(_) => {
-            let _ = child.kill();
-            let stderr_output = child.wait_with_output().ok();
-            let err_msg = stderr_output
-                .as_ref()
-                .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
-                .unwrap_or_default();
-            if err_msg.contains("Could not") || err_msg.contains("Error") {
-                Err(format!(
-                    "FFmpeg could not open camera '{}': {}",
-                    device_name,
-                    err_msg.lines().next().unwrap_or(&err_msg)
-                ))
-            } else {
-                // Probe failed but not fatally — use requested resolution
-                Ok(requested)
-            }
-        }
+        Err(_) => Ok(Err(child
+            .wait_with_output()
+            .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+            .unwrap_or_default())),
     }
+}
+
+/// The modes ffmpeg lists when a camera refuses the one asked for, as
+/// (width, height, min fps, max fps). avfoundation prints them as
+/// `1920x1080@[15.000000 30.000000]fps`.
+fn parse_supported_modes(stderr: &str) -> Vec<(u32, u32, f64, f64)> {
+    stderr
+        .lines()
+        .filter_map(|line| {
+            let (size, rates) = line.split_once("@[")?;
+            let size = size.rsplit(' ').next()?;
+            let (w, h) = size.split_once('x')?;
+            let (min, max) = rates.split_once(']')?.0.split_once(' ')?;
+            Some((
+                w.parse().ok()?,
+                h.parse().ok()?,
+                min.parse().ok()?,
+                max.parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// The listed mode nearest the wanted size, at the frame rate nearest the
+/// wanted one that the mode allows.
+fn nearest_mode(modes: &[(u32, u32, f64, f64)], wanted: CaptureMode) -> Option<CaptureMode> {
+    let distance = |&&(w, h, _, _): &&(u32, u32, f64, f64)| {
+        let dx = i64::from(w) - i64::from(wanted.size.0);
+        let dy = i64::from(h) - i64::from(wanted.size.1);
+        dx * dx + dy * dy
+    };
+    modes
+        .iter()
+        .min_by_key(distance)
+        .map(|&(w, h, min, max)| CaptureMode {
+            size: (w, h),
+            fps: wanted.fps.clamp(min.min(max), max),
+        })
 }
 
 fn read_exact_timeout(
@@ -301,17 +404,19 @@ fn read_exact_timeout(
     Ok(())
 }
 
+#[allow(clippy::needless_pass_by_value)] // owned by the thread it runs on
 fn capture_thread(
     device_name: &str,
-    resolution: (u32, u32),
+    mode: CaptureMode,
     frame_tx: crossbeam_channel::Sender<WebcamFrame>,
     shutdown: Arc<AtomicBool>,
+    child_slot: Arc<Mutex<Option<Child>>>,
 ) {
     let (format_flag, _) = platform_capture_args();
     let input = device_input_arg(device_name);
-    let size = format!("{}x{}", resolution.0, resolution.1);
+    let resolution = mode.size;
 
-    let mut child = match spawn_ffmpeg(format_flag, &input, &size) {
+    let mut child = match spawn_ffmpeg(format_flag, &input, mode) {
         Ok(c) => c,
         Err(e) => {
             log::error!("Failed to start ffmpeg capture: {e}");
@@ -329,6 +434,20 @@ fn capture_thread(
             return;
         }
     };
+    // Handed over so `stop` can end it while this thread is in a read.
+    let end_child = || {
+        if let Some(mut child) = child_slot.lock().ok().and_then(|mut c| c.take()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    };
+    if let Ok(mut slot) = child_slot.lock() {
+        *slot = Some(child);
+    }
+    if shutdown.load(Ordering::Relaxed) {
+        end_child();
+        return;
+    }
 
     log::info!(
         "FFmpeg capture thread started: {}x{} on '{}'",
@@ -346,7 +465,9 @@ fn capture_thread(
             }
             match stdout.read(&mut buf[filled..]) {
                 Ok(0) => {
-                    log::warn!("FFmpeg process closed stdout (EOF)");
+                    if !shutdown.load(Ordering::Relaxed) {
+                        log::warn!("FFmpeg process closed stdout (EOF)");
+                    }
                     failed = true;
                     break;
                 }
@@ -372,22 +493,25 @@ fn capture_thread(
         let _ = frame_tx.try_send(frame);
     }
 
-    let _ = child.kill();
-    let _ = child.wait();
+    end_child();
     log::info!("FFmpeg capture thread stopped");
 }
 
-fn spawn_ffmpeg(format_flag: &str, input: &str, size: &str) -> Result<Child, String> {
+fn spawn_ffmpeg(format_flag: &str, input: &str, mode: CaptureMode) -> Result<Child, String> {
     Command::new("ffmpeg")
         .args([
             "-f",
             format_flag,
             "-video_size",
-            size,
+            &mode.size_arg(),
             "-framerate",
-            "30",
+            &mode.fps_arg(),
             "-i",
             input,
+            // One frame per captured frame: left alone, ffmpeg repeats
+            // frames up to the device's nominal clock rate.
+            "-r",
+            &mode.fps_arg(),
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -431,11 +555,11 @@ fn parse_device_list(stderr: &str) -> Result<Vec<(u32, String)>, String> {
     {
         // Parse avfoundation output: [AVFoundation ...] [0] Device Name
         for line in stderr.lines() {
+            // The audio devices follow the video ones, numbered from 0 again.
+            if line.contains("AVFoundation audio devices") {
+                break;
+            }
             if line.contains("AVFoundation") && line.contains("] [") {
-                // Check this is before audio devices section
-                if line.contains("audio") {
-                    break;
-                }
                 if let Some(bracket_start) = line.rfind("] [") {
                     let after = &line[bracket_start + 3..];
                     if let Some(bracket_end) = after.find(']') {
@@ -478,6 +602,69 @@ mod tests {
         assert_eq!(devices.len(), 2);
         assert_eq!(devices[0], (0, "Integrated Camera".to_string()));
         assert_eq!(devices[1], (1, "Irium Webcam".to_string()));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn avfoundation_list_stops_at_the_audio_devices() {
+        let stderr = "[AVFoundation indev @ 0x1] AVFoundation video devices:\n\
+[AVFoundation indev @ 0x1] [0] RTMP Virtual Camera\n\
+[AVFoundation indev @ 0x1] [1] FaceTime HD-Kamera\n\
+[AVFoundation indev @ 0x1] AVFoundation audio devices:\n\
+[AVFoundation indev @ 0x1] [0] MacBook Pro-Mikrofon\n";
+        assert_eq!(
+            parse_device_list(stderr).unwrap(),
+            vec![
+                (0, "RTMP Virtual Camera".to_string()),
+                (1, "FaceTime HD-Kamera".to_string()),
+            ]
+        );
+    }
+
+    /// A virtual camera with one mode refused the fixed 1280x720 request
+    /// and never opened.
+    #[test]
+    fn falls_back_to_a_mode_the_camera_lists() {
+        let stderr = "[in#0 @ 0x1] Selected video size (1280x720) is not supported by the device.\n\
+[in#0 @ 0x1] Supported modes:\n\
+[in#0 @ 0x1]   1920x1080@[30.000000 30.000000]fps\n\
+[in#0 @ 0x1]   640x480@[15.000000 60.000000]fps\n\
+Error opening input: Input/output error\n";
+        let modes = parse_supported_modes(stderr);
+        assert_eq!(
+            modes,
+            vec![(1920, 1080, 30.0, 30.0), (640, 480, 15.0, 60.0)]
+        );
+        let wanted = CaptureMode {
+            size: (1280, 720),
+            fps: 30.0,
+        };
+        // The one mode a virtual camera has, whatever its size.
+        assert_eq!(
+            nearest_mode(&modes[..1], wanted),
+            Some(CaptureMode {
+                size: (1920, 1080),
+                fps: 30.0
+            })
+        );
+        assert_eq!(
+            nearest_mode(&modes, wanted),
+            Some(CaptureMode {
+                size: (640, 480),
+                fps: 30.0
+            })
+        );
+        // A mode that cannot do 30 fps runs as fast as it can.
+        assert_eq!(
+            nearest_mode(&[(1280, 720, 5.0, 24.0)], wanted),
+            Some(CaptureMode {
+                size: (1280, 720),
+                fps: 24.0
+            })
+        );
+        assert_eq!(nearest_mode(&[], wanted), None);
+        assert_eq!(wanted.size_arg(), "1280x720");
+        assert_eq!(wanted.fps_arg(), "30");
     }
 
     #[test]
