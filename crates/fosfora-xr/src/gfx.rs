@@ -82,6 +82,10 @@ pub struct Gfx {
     surfaces: Vec<QuadBinding>,
     surface_count: std::cell::Cell<usize>,
     surface_pipeline: wgpu::RenderPipeline,
+    /// The ported desktop effects of the surfaces pass
+    /// (`build_surface_ports`, `set_surface_ports`, `surface_port.rs`,
+    /// board #3489); `None` until they are built, or when they failed.
+    ports: Option<SurfacePorts>,
     /// The room editor's highlight (`set_highlight`, `highlight.rs`): one
     /// lit quad on the face the pick hit.
     highlight: QuadBinding,
@@ -104,6 +108,35 @@ pub struct Gfx {
     _instance: wgpu::Instance,
     pub raw: RawHandles,
     pub swapchain_vk_format: vk::Format,
+}
+
+/// The ported desktop effects (`surface_port.rs`): a pipeline per effect
+/// on the two layouts of `surface_port::layouts`, and the slots they
+/// share, one per lit face.
+struct SurfacePorts {
+    pipelines: Vec<wgpu::RenderPipeline>,
+    slots: Vec<PortSlot>,
+    /// The effect (an index into `pipelines`) of each lit slot, in order.
+    lit: std::cell::RefCell<Vec<usize>>,
+}
+
+/// One lit face of a ported effect: the effect's uniform (the core's
+/// `ShaderUniforms`, group 0), the port block, and group 1 per eye (the
+/// eye's camera with the block).
+struct PortSlot {
+    uniform: wgpu::Buffer,
+    effect_group: wgpu::BindGroup,
+    block: wgpu::Buffer,
+    eye_groups: Vec<wgpu::BindGroup>,
+}
+
+/// One lit face of a ported effect for a frame (`Gfx::set_surface_ports`):
+/// the effect's index in `surface_port::PORTS`, its uniform
+/// (`surface_port::uniforms`) and the port block (`surface_port::rows`).
+pub struct PortFace {
+    pub effect: usize,
+    pub uniforms: fosfora_app::gpu::uniforms::ShaderUniforms,
+    pub rows: [[f32; 4]; crate::surface_port::UNIFORM_ROWS],
 }
 
 /// The world-locked quad: its placement uniform plus the texture it shows.
@@ -432,6 +465,7 @@ impl Gfx {
             surfaces,
             surface_count: std::cell::Cell::new(0),
             surface_pipeline,
+            ports: None,
             highlight,
             highlight_visible: std::cell::Cell::new(false),
             world_visible: std::cell::Cell::new(true),
@@ -632,6 +666,123 @@ impl Gfx {
                 .write_buffer(&slot.uniform, 0, bytemuck::cast_slice(rows));
         }
         self.surface_count.set(n);
+    }
+
+    /// Build the ported desktop effects' pipelines, one per composed
+    /// source (`surface_port::load`, in `surface_port::PORTS`' order), and
+    /// their `slots` slots. The pipeline state is the surfaces pass's
+    /// (depth-tested, no depth write, the bias, premultiplied over). Group
+    /// 0 is the effect's uniform alone: the eight read none of the
+    /// desktop's textures. Returns whether they are ready; on a
+    /// validation error (logged) the ports stay off and a surface on one
+    /// draws nothing, as an invalid pipeline in the eye pass would lose
+    /// the whole frame.
+    pub fn build_surface_ports(&mut self, sources: &[&str], slots: usize) -> bool {
+        let device = &self.device;
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let layouts = crate::surface_port::layouts(device);
+        let pipelines = sources
+            .iter()
+            .zip(&crate::surface_port::PORTS)
+            .map(|(source, port)| {
+                crate::surface_port::pipeline(
+                    device,
+                    &layouts,
+                    port.name,
+                    source,
+                    SWAPCHAIN_FORMAT,
+                    Some(surface_depth_state()),
+                )
+            })
+            .collect();
+        let buffer = |label, size: usize| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: size as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let slots = (0..slots)
+            .map(|_| {
+                let uniform = buffer(
+                    "xr-port-effect",
+                    size_of::<fosfora_app::gpu::uniforms::ShaderUniforms>(),
+                );
+                let block = buffer("xr-port", 16 * crate::surface_port::UNIFORM_ROWS);
+                let effect_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("xr-port-effect"),
+                    layout: &layouts[0],
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    }],
+                });
+                let eye_groups = self
+                    .eyes
+                    .iter()
+                    .map(|eye| {
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("xr-port"),
+                            layout: &layouts[1],
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: eye.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: block.as_entire_binding(),
+                                },
+                            ],
+                        })
+                    })
+                    .collect();
+                PortSlot {
+                    uniform,
+                    effect_group,
+                    block,
+                    eye_groups,
+                }
+            })
+            .collect();
+        // wgpu's native futures are ready on the first poll.
+        let scope = std::pin::pin!(device.pop_error_scope());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(scope, &mut cx) {
+            std::task::Poll::Ready(None) => {}
+            std::task::Poll::Ready(Some(e)) => {
+                error!("surface ports: off, the pipelines did not validate: {e}");
+                return false;
+            }
+            std::task::Poll::Pending => warn!("surface ports: the error scope did not answer"),
+        }
+        self.ports = Some(SurfacePorts {
+            pipelines,
+            slots,
+            lit: std::cell::RefCell::new(Vec::new()),
+        });
+        true
+    }
+
+    /// The ported effects' faces for this frame, each into its own slot
+    /// and drawn in order after the surfaces pass's own (`set_surfaces`);
+    /// the faces past the slots are dropped. Empty hides them. Nothing
+    /// without `build_surface_ports`.
+    pub fn set_surface_ports(&self, faces: &[PortFace]) {
+        let Some(ports) = &self.ports else {
+            return;
+        };
+        let mut lit = ports.lit.borrow_mut();
+        lit.clear();
+        let known = faces.iter().filter(|f| f.effect < ports.pipelines.len());
+        for (slot, face) in ports.slots.iter().zip(known) {
+            self.queue
+                .write_buffer(&slot.uniform, 0, bytemuck::bytes_of(&face.uniforms));
+            self.queue
+                .write_buffer(&slot.block, 0, bytemuck::cast_slice(&face.rows));
+            lit.push(face.effect);
+        }
     }
 
     /// The room editor's highlight for this frame (`highlight::uniform`'s
@@ -947,6 +1098,18 @@ impl Gfx {
                 pass.set_bind_group(0, &eye.bind_group, &[]);
                 for slot in &self.surfaces[..lit] {
                     pass.set_bind_group(1, &slot.bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
+            }
+            // The ported desktop effects on the same terms, after them:
+            // each lit face its effect's pipeline, the effect's uniform at
+            // group 0 and this eye's camera with the port block at group 1
+            // (board #3489).
+            if let Some(ports) = &self.ports {
+                for (slot, &effect) in ports.slots.iter().zip(ports.lit.borrow().iter()) {
+                    pass.set_pipeline(&ports.pipelines[effect]);
+                    pass.set_bind_group(0, &slot.effect_group, &[]);
+                    pass.set_bind_group(1, &slot.eye_groups[i], &[]);
                     pass.draw(0..6, 0..1);
                 }
             }
@@ -1437,17 +1600,7 @@ fn build_surface_slots(
             cull_mode: None,
             ..wgpu::PrimitiveState::default()
         },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: wgpu::StencilState::default(),
-            bias: wgpu::DepthBiasState {
-                constant: SURFACE_DEPTH_BIAS,
-                slope_scale: SURFACE_DEPTH_SLOPE_BIAS,
-                clamp: 0.0,
-            },
-        }),
+        depth_stencil: Some(surface_depth_state()),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -1463,6 +1616,23 @@ fn build_surface_slots(
         cache: None,
     });
     (pipeline, bindings)
+}
+
+/// The surface quads' depth state: tested against the occluders, not
+/// written, biased toward the camera ([`build_surface_pipeline`]). The
+/// surfaces pass, the highlight and the ported effects share it.
+fn surface_depth_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: DEPTH_FORMAT,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState {
+            constant: SURFACE_DEPTH_BIAS,
+            slope_scale: SURFACE_DEPTH_SLOPE_BIAS,
+            clamp: 0.0,
+        },
+    }
 }
 
 /// The surface quads' depth bias toward the camera (negative: nearer), in

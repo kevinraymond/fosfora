@@ -568,6 +568,8 @@ mod tests {
         file.assign(STAGE_FLOOR_UUID, KIND_FLOOR, B::Rings, 1.0);
         file.set_params(uuid(2), [0.5, -2.0]);
         file.set_kind_default(KIND_FLOOR, B::Sparks);
+        // A ported desktop effect (D2b) is saved by its name like the rest.
+        file.assign(uuid(0), KIND_OTHER, B::Tessera, 0.5);
         let text = file.to_json();
         let (back, skipped) = RoomFile::from_json(&text).expect("reads");
         assert!(skipped.is_empty(), "{skipped:?}");
@@ -583,13 +585,14 @@ mod tests {
         assert_eq!(v["kind_defaults"]["frame"], "pulse");
         assert_eq!(v["kind_defaults"]["other"], "curls");
         assert_eq!(v["kind_defaults"].as_object().unwrap().len(), 6);
-        let a = &v["anchors"][2];
+        assert_eq!(v["anchors"][1]["behavior"], "tessera");
+        let a = &v["anchors"][3];
         assert_eq!(a["uuid"], uuid_hex(&uuid(2)));
         assert_eq!(a["kind"], "wall");
         assert_eq!(a["behavior"], "spectrum");
         assert_eq!(a["params"], json!([0.5, -2.0]));
         // Parameters nothing set are not written.
-        assert!(v["anchors"][1].get("params").is_none(), "{text}");
+        assert!(v["anchors"][2].get("params").is_none(), "{text}");
         // On disk, into a directory that does not exist yet.
         let dir = std::env::temp_dir().join(format!("fosfora-room-file-{}", std::process::id()));
         let path = room_path(&dir, 0xabc);

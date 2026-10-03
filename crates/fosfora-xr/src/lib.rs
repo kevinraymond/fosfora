@@ -56,6 +56,7 @@ pub mod room_file;
 mod scene;
 pub mod space;
 pub mod surface_fx;
+pub mod surface_port;
 pub mod surfaces;
 #[cfg(target_os = "android")]
 mod xr;
