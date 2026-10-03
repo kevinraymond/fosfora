@@ -1,4 +1,6 @@
 pub mod decoder;
+#[cfg(feature = "webcam")]
+pub mod stream;
 pub mod types;
 #[cfg(feature = "video")]
 pub mod video;
@@ -9,11 +11,13 @@ pub mod webcam_ffmpeg;
 
 use std::path::PathBuf;
 
-/// Unified webcam backend that wraps either nokhwa (native) or ffmpeg capture.
+/// Unified webcam backend that wraps nokhwa (native) capture, ffmpeg capture
+/// or a network stream.
 #[cfg(feature = "webcam")]
 pub enum WebcamBackend {
     Native(webcam::WebcamCapture),
     Ffmpeg(webcam_ffmpeg::FfmpegCapture),
+    Stream(stream::StreamCapture),
 }
 
 #[cfg(feature = "webcam")]
@@ -22,6 +26,7 @@ impl WebcamBackend {
         match self {
             Self::Native(c) => c.try_recv_frame(),
             Self::Ffmpeg(c) => c.try_recv_frame(),
+            Self::Stream(c) => c.try_recv_frame(),
         }
     }
 
@@ -30,6 +35,7 @@ impl WebcamBackend {
         match self {
             Self::Native(c) => c.stop(),
             Self::Ffmpeg(c) => c.stop(),
+            Self::Stream(c) => c.stop(),
         }
     }
 
@@ -37,6 +43,7 @@ impl WebcamBackend {
         match self {
             Self::Native(c) => c.is_running(),
             Self::Ffmpeg(c) => c.is_running(),
+            Self::Stream(c) => c.is_running(),
         }
     }
 
@@ -44,6 +51,7 @@ impl WebcamBackend {
         match self {
             Self::Native(c) => &c.device_name,
             Self::Ffmpeg(c) => &c.device_name,
+            Self::Stream(c) => &c.device_name,
         }
     }
 
@@ -51,12 +59,34 @@ impl WebcamBackend {
         match self {
             Self::Native(c) => c.resolution,
             Self::Ffmpeg(c) => c.resolution,
+            Self::Stream(c) => c.resolution(),
+        }
+    }
+
+    /// The settings a stream's capture was started with; `None` for a camera.
+    pub fn stream_config(&self) -> Option<&crate::settings::RtmpStream> {
+        match self {
+            Self::Stream(c) => Some(&c.config),
+            Self::Native(_) | Self::Ffmpeg(_) => None,
         }
     }
 
     /// Start capture using the native (nokhwa) backend.
     pub fn start_native(device_name: &str, resolution: Option<(u32, u32)>) -> Result<Self, String> {
         webcam::WebcamCapture::start(device_name, resolution).map(Self::Native)
+    }
+
+    /// Where a stream stands, as a light and in words; `None` for a camera.
+    pub fn stream_status(&self) -> Option<(stream::StreamLight, String)> {
+        match self {
+            Self::Stream(c) => Some(c.status()),
+            Self::Native(_) | Self::Ffmpeg(_) => None,
+        }
+    }
+
+    /// Start reading a network stream. Returns at once, live or not.
+    pub fn start_stream(config: &crate::settings::RtmpStream) -> Result<Self, String> {
+        stream::StreamCapture::start(config).map(Self::Stream)
     }
 
     /// Start capture using the ffmpeg backend.

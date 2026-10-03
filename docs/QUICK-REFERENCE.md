@@ -82,7 +82,7 @@ Sliders with **M** (MIDI) and **O** (OSC) learn badges. Color pickers, Point2D c
 File info, video playback controls (play/pause/seek).
 
 ### Webcam (webcam layers)
-Device selector, mirror toggle, disconnect.
+Device selector (cameras, and the network streams set up in Setup ▸ General ▸ Cameras), mirror toggle, disconnect.
 
 ### Particles (effect layers)
 Alive/max count, quality level, image source selector, morph target controls.

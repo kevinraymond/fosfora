@@ -394,6 +394,9 @@ pub struct ParticleSystem {
     /// left both set and the panel named the model while showing the picture.
     /// Change it only through [`ParticleSystem::set_source`].
     pub source: ParticleSource,
+    /// The camera a webcam source is fed by, as the camera list names it;
+    /// `None` for the default camera. Read only while the source is a webcam.
+    pub webcam_device: Option<String>,
     pub source_transition: Option<SourceTransition>,
     pub sample_def: ImageSampleDef,
     /// Pose/shading the current model was sampled at. Kept so the panel's sliders
@@ -1579,6 +1582,7 @@ impl ParticleSystem {
             def: def.clone(),
             current_compute_source: compute_source.to_string(),
             source: ParticleSource::None,
+            webcam_device: None,
             source_transition: None,
             sample_def: def.image_sample.clone().unwrap_or(ImageSampleDef {
                 mode: "grid".to_string(),

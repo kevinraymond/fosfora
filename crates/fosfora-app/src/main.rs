@@ -74,6 +74,16 @@ impl FosforaApp {
 }
 
 impl ApplicationHandler for FosforaApp {
+    /// Captures are stopped here rather than left to drop: on macOS a quit
+    /// can end the process without unwinding, which left their ffmpeg
+    /// processes running and holding the stream's port.
+    #[cfg(feature = "webcam")]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(app) = self.app.as_mut() {
+            app.webcam_captures.clear();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -127,7 +137,9 @@ impl ApplicationHandler for FosforaApp {
         self.window = Some(window.clone());
 
         match App::new(window) {
-            Ok(app) => {
+            Ok(mut app) => {
+                #[cfg(feature = "webcam")]
+                app.start_rtmp_streams();
                 self.app = Some(app);
                 log::info!("Fosfora initialized");
             }
@@ -418,6 +430,18 @@ impl ApplicationHandler for FosforaApp {
                                     || ps.def.emitter.shape == "image",
                                 source_kind,
                                 source_name,
+                                #[cfg(feature = "webcam")]
+                                webcam_devices: app.webcam_devices.clone(),
+                                #[cfg(not(feature = "webcam"))]
+                                webcam_devices: vec![],
+                                #[cfg(feature = "webcam")]
+                                webcam_device: ps
+                                    .webcam_device
+                                    .clone()
+                                    .or_else(|| app.default_webcam_name())
+                                    .unwrap_or_default(),
+                                #[cfg(not(feature = "webcam"))]
+                                webcam_device: String::new(),
                                 video_playing,
                                 video_looping,
                                 video_speed,
@@ -1793,6 +1817,7 @@ impl ApplicationHandler for FosforaApp {
                             app.settings.save();
                             // Refresh device list with new backend
                             app.refresh_webcam_devices();
+                            app.start_rtmp_streams();
                             let backend = if use_ffmpeg { "FFmpeg" } else { "native" };
                             let device_count = app.webcam_devices.len();
                             log::info!(
@@ -1805,6 +1830,26 @@ impl ApplicationHandler for FosforaApp {
                                 std::time::Instant::now(),
                             ));
                         }
+                    }
+                }
+
+                #[cfg(feature = "webcam")]
+                {
+                    // Where each stream in use stands, for the settings page.
+                    let status: crate::ui::setup::StreamStatuses = app
+                        .webcam_captures
+                        .iter()
+                        .filter_map(|c| Some((c.device_name().to_string(), c.stream_status()?)))
+                        .collect();
+                    app.egui_overlay.context().data_mut(|d| {
+                        d.insert_temp(egui::Id::new("rtmp_stream_status"), status);
+                    });
+                    let streams: Option<Vec<crate::settings::RtmpStream>> = app
+                        .egui_overlay
+                        .context()
+                        .data_mut(|d| d.remove_temp(egui::Id::new("set_rtmp_streams")));
+                    if let Some(streams) = streams {
+                        app.set_rtmp_streams(streams);
                     }
                 }
 
@@ -3555,26 +3600,20 @@ impl ApplicationHandler for FosforaApp {
                     {
                         let use_webcam: Option<bool> =
                             ctx.data_mut(|d| d.remove_temp(egui::Id::new("particle_webcam")));
-                        if use_webcam.is_some() {
-                            let started = app.ensure_default_webcam();
-                            if let Err(ref e) = started {
+                        // A camera picked by name for the source; the button
+                        // alone means the default camera.
+                        let device: Option<String> = ctx
+                            .data_mut(|d| d.remove_temp(egui::Id::new("particle_webcam_device")));
+                        if use_webcam.is_some() || device.is_some() {
+                            let layer = app.layer_stack.active_layer;
+                            if let Err(e) = app.set_particle_webcam(layer, device) {
                                 log::error!("Failed to start webcam: {e}");
                                 app.status_error = Some((
                                     format!("Webcam failed: {e}"),
                                     std::time::Instant::now(),
                                 ));
                             }
-                            if let Ok((w, h)) = started {
-                                if let Some(layer) = app.layer_stack.active_mut() {
-                                    if let Some(effect) = layer.as_effect_mut() {
-                                        if let Some(ps) =
-                                            effect.pass_executor.particle_system.as_mut()
-                                        {
-                                            ps.set_webcam_source(&app.gpu.queue, w, h);
-                                        }
-                                    }
-                                }
-                            }
+                            app.cleanup_webcam_if_unused();
                             app.preset_store.mark_dirty();
                         }
                     }
