@@ -137,9 +137,15 @@ impl ApplicationHandler for FosforaApp {
         self.window = Some(window.clone());
 
         match App::new(window) {
-            Ok(mut app) => {
+            Ok(app) => {
+                // Mutable only where there are streams to open: an unused
+                // `mut` fails clippy in builds without the webcam feature.
                 #[cfg(feature = "webcam")]
-                app.start_rtmp_streams();
+                let app = {
+                    let mut app = app;
+                    app.start_rtmp_streams();
+                    app
+                };
                 self.app = Some(app);
                 log::info!("Fosfora initialized");
             }
