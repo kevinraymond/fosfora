@@ -827,6 +827,32 @@ impl App {
                 )
             })
             .collect();
+        // Every stream switched on, with the light the settings page shows.
+        #[cfg(feature = "webcam")]
+        let streams = self
+            .settings
+            .rtmp_streams
+            .iter()
+            .filter(|s| s.is_usable())
+            .map(|s| {
+                use crate::media::stream::StreamLight;
+                let light = self
+                    .webcam_captures
+                    .iter()
+                    .filter(|c| c.device_name() == s.name)
+                    .find_map(|c| c.stream_status());
+                crate::web::state::StreamInfo {
+                    name: s.name.clone(),
+                    light: match light {
+                        Some((StreamLight::Connected, _)) => "connected",
+                        Some((StreamLight::Waiting, _)) => "waiting",
+                        Some((StreamLight::Down, _)) | None => "down",
+                    },
+                }
+            })
+            .collect();
+        #[cfg(not(feature = "webcam"))]
+        let streams = Vec::new();
         crate::web::state::build_full_state(
             &self.effect_loader.effects,
             &layer_infos,
@@ -834,6 +860,7 @@ impl App {
             &layer_data,
             &self.preset_store,
             self.post_process.enabled,
+            streams,
         )
     }
 

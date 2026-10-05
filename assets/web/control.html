@@ -24,7 +24,17 @@ body { display: flex; flex-direction: column; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; transition: background 0.15s; }
 .status-dot.connected { background: var(--green); }
 .status-dot.beat { background: var(--beat); }
-.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text2); }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text2); min-width: 0; }
+#bpmDisplay { white-space: nowrap; }
+/* Network streams: the settings page's lights, grey while Fosfora is unreachable */
+.streams { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
+.streams:not(:empty) { margin-right: 14px; }
+.stream { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.stream-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stream .status-dot.down { background: #e5484d; }
+.stream .status-dot.waiting { background: #f5c518; }
+.stream .status-dot.connected { background: #3fc35f; }
+.streams.offline .status-dot { background: #555; }
 
 /* Audio bars — labeled, 60px tall */
 .audio-section { background: var(--surface); padding: 6px 12px 8px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
@@ -117,6 +127,7 @@ body { display: flex; flex-direction: column; }
   <div class="status-dot" id="statusDot"></div>
   <h1>Fosfora</h1>
   <div class="header-right">
+    <div class="streams offline" id="streams"></div>
     <span id="bpmDisplay"></span>
     <div class="status-dot" id="beatDot"></div>
   </div>
@@ -198,6 +209,8 @@ body { display: flex; flex-direction: column; }
   const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const beatDot = document.getElementById('beatDot');
   const bpmDisplay = document.getElementById('bpmDisplay');
+  const streamsEl = document.getElementById('streams');
+  let streamsKey = '';
   const effectsGrid = document.getElementById('effectsGrid');
   const paramsContainer = document.getElementById('paramsContainer');
   const layersContainer = document.getElementById('layersContainer');
@@ -255,12 +268,14 @@ body { display: flex; flex-direction: column; }
 
     ws.onopen = () => {
       statusDot.classList.add('connected');
+      streamsEl.classList.remove('offline');
       keyHint.style.display = 'none';
       reconnectDelay = 1000;
     };
 
     ws.onclose = () => {
       statusDot.classList.remove('connected');
+      streamsEl.classList.add('offline');
       if (!accessKey && !isLocal) keyHint.style.display = 'block';
       ws = null;
       reconnectTimer = setTimeout(connect, reconnectDelay);
@@ -298,6 +313,7 @@ body { display: flex; flex-direction: column; }
       case 'state':
         state = msg;
         renderAll();
+        renderStreams(msg.streams || []);
         break;
       case 'audio':
         updateAudio(msg);
@@ -508,6 +524,26 @@ body { display: flex; flex-direction: column; }
       send({ type: 'load_preset', index: p.index });
     });
     return btn;
+  }
+
+  // Full state arrives at 10 Hz; rebuild the lights only when one changed.
+  function renderStreams(streams) {
+    var key = JSON.stringify(streams);
+    if (key === streamsKey) return;
+    streamsKey = key;
+    streamsEl.textContent = '';
+    streams.forEach(function(s) {
+      var el = document.createElement('div');
+      el.className = 'stream';
+      var dot = document.createElement('div');
+      dot.className = 'status-dot ' + s.light;
+      var name = document.createElement('span');
+      name.className = 'stream-name';
+      name.textContent = s.name;
+      el.appendChild(name);
+      el.appendChild(dot);
+      streamsEl.appendChild(el);
+    });
   }
 
   function updatePP() {
