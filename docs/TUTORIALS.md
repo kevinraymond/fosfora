@@ -55,11 +55,11 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **56 built-in effects**, plus 2 hidden ones (the signature **Fosfora**
+Fosfora ships with **58 built-in effects**, plus 2 hidden ones (the signature **Fosfora**
 intro visual you see at startup, and a rasterizer stress test).
 
-**Shaders** (11): pure fragment shaders, no particles.
-Aurora · Beam · Drift · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
+**Shaders** (13): pure fragment shaders, no particles.
+Aurora · Beam · Drift · Frost · Iris · Plateau · Prism · Pulse · Shards · Storm · Strand · Strata · Tunnel
 
 **Particle simulations** (20): GPU compute, from a few thousand particles to two million:
 Accretion · Array · Cascade · Chaos · Cleave · Cymatics · Flux · Genesis · Morph · Murmur ·

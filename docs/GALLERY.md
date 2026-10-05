@@ -8,9 +8,9 @@ Effects respond to what they hear, so what you see here is a starting point, not
 Change the music and they change with it; every parameter is also a slider, and can be driven
 by MIDI, OSC, a phone or a webcam.
 
-**56 effects.**
+**58 effects.**
 
-## Shaders (23)
+## Shaders (25)
 
 Pure fragment shaders — no particles, just math evaluated per pixel, every frame.
 
@@ -37,22 +37,27 @@ Pure fragment shaders — no particles, just math evaluated per pixel, every fra
 </tr>
 <tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/lumen.webp" width="100%" alt="Lumen"><br><b>Lumen</b><br><sub>Real-time global illumination by radiance cascades — a swarm of coloured fireflies lights a soft breathing silhouette, and every light casts long soft-edged…</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/plateau.webp" width="100%" alt="Plateau"><br><b>Plateau</b><br><sub>The motion aftereffect: a spiral turns while the kick plays and stops dead when a breakdown takes it away, and the still picture seems to flow backward on its own</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/prism.webp" width="100%" alt="Prism"><br><b>Prism</b><br><sub>Kaleidoscopic N-fold mirror symmetry over FBM and geometric patterns</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/protea.webp" width="100%" alt="Protea"><br><b>Protea</b><br><sub>A mass-conserving Flow Lenia ecosystem — three species of amoebae with membranes and organelles that hunt, merge, and divide, fed by the music itself. Loudness…</sub></td>
 </tr>
 <tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/protea.webp" width="100%" alt="Protea"><br><b>Protea</b><br><sub>A mass-conserving Flow Lenia ecosystem — three species of amoebae with membranes and organelles that hunt, merge, and divide, fed by the music itself. Loudness…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/pulse.webp" width="100%" alt="Pulse"><br><b>Pulse</b><br><sub>Concentric expanding rings synced to beat with light feedback trails</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/reticle.webp" width="100%" alt="Reticle"><br><b>Reticle</b><br><sub>Crosshairs acquiring targets: each reticle re-positions every bar and locks on with a contracting bracket keyed to the beat. Snap between targets or glide.</sub></td>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/shards.webp" width="100%" alt="Shards"><br><b>Shards</b><br><sub>Animated Voronoi cells with glowing fracture edges</sub></td>
 </tr>
 <tr>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/shards.webp" width="100%" alt="Shards"><br><b>Shards</b><br><sub>Animated Voronoi cells with glowing fracture edges</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/storm.webp" width="100%" alt="Storm"><br><b>Storm</b><br><sub>Billowing dark clouds lit from within by flashes of lightning</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/strand.webp" width="100%" alt="Strand"><br><b>Strand</b><br><sub>Helices of hollow boxes drawn with no depth, so you cannot tell which way they turn and they flip as you watch; the drums put the depth back and lock the spin</sub></td>
+</tr>
+<tr>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/strata.webp" width="100%" alt="Strata"><br><b>Strata</b><br><sub>Spectral canyon — a heightfield flythrough over the last ~8 seconds of the mel-spectrogram. Ridges are loud moments, chasms are quiet ones; the terrain scrolls…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/sumi.webp" width="100%" alt="Sumi"><br><b>Sumi</b><br><sub>Ink drops bloom in water on every onset — a real incompressible fluid (advection, a Jacobi pressure solve, vorticity confinement) whose twelve dye colours are…</sub></td>
+<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tessera.webp" width="100%" alt="Tessera"><br><b>Tessera</b><br><sub>A grid of tiles revealing in beat-locked waves — hash scatter, row sweep, or center-out. In punch mode a dark scrim covers the frame and revealed tiles knock…</sub></td>
 </tr>
 <tr>
-<td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tessera.webp" width="100%" alt="Tessera"><br><b>Tessera</b><br><sub>A grid of tiles revealing in beat-locked waves — hash scatter, row sweep, or center-out. In punch mode a dark scrim covers the frame and revealed tiles knock…</sub></td>
 <td width="33%"><img src="https://github.com/kevinraymond/fosfora/releases/download/demo-assets/tunnel.webp" width="100%" alt="Tunnel"><br><b>Tunnel</b><br><sub>Raymarched infinite cylindrical flythrough with twist, ribs, and glow</sub></td>
+<td width="33%"></td>
 <td width="33%"></td>
 </tr>
 </table>

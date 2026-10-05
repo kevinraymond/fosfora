@@ -5,6 +5,11 @@
 
 ## Unreleased
 
+### Added
+- **Strand**, an optical illusion: helices of hollow boxes drawn without depth, so you cannot tell which way they spin and they flip as you watch. When the kick drum comes in the boxes gain depth and the spin locks; in a breakdown it turns ambiguous again.
+- **Plateau**, the motion aftereffect: a spiral, rings or falling bars drift while the kick plays and stop dead in a breakdown, and the still picture seems to flow backward for a few seconds. Switch off `drift` to stop it by hand, or `follow_kick` to keep it moving.
+- **Illusions**, a new tab in the effect catalog, holding both.
+
 ### Fixed
 - **`kick` fired on bass notes and kept firing through passages with no kick drum**, so kick-bound visuals flickered on basslines and never rested in a breakdown. It is now decided by a small model trained on Creative Commons music; on test tracks with known kick times, detections that really were kicks went from about 4 in 10 to 6 or 7 in 10, while it still finds about as many of the real ones. Bindings, shaders and OSC see the same 0–1 value, so nothing needs changing.
 

@@ -247,6 +247,11 @@ xdotool windowactivate --sync "$WIN"; sleep 0.6
 # straight into the same handler the keyboard would have.
 oscsend localhost 9000 /fosfora/overlay/visible f 0.0; sleep 1.5   # a SET, not a toggle — see capture_advanced.sh
 
+# A fresh config opens the launch stack: an empty Layer 1 (index 0, active, where next_effect
+# lands) over the launch effect's "F" (index 1). An opaque effect hides the F, but one that
+# leaves its background transparent, like Strand, films it through. Switch that layer off.
+oscsend localhost 9000 /fosfora/layer/1/enabled f 0.0; sleep 0.5
+
 step() { oscsend localhost 9000 /fosfora/trigger/next_effect f 1.0; }
 
 # Step to Aurora before measuring. Motion detection needs something that animates edge to edge:
