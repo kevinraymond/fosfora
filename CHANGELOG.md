@@ -3,7 +3,10 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
-## Unreleased
+## v2.2.0 — 2026-10-04
+
+Two optical-illusion effects in a new Illusions tab of the catalog, and a `kick` that no longer
+fires on bass notes.
 
 ### Added
 - **Strand**, an optical illusion: helices of hollow boxes drawn without depth, so you cannot tell which way they spin and they flip as you watch. When the kick drum comes in the boxes gain depth and the spin locks; in a breakdown it turns ambiguous again.
