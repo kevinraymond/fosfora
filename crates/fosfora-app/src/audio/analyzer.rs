@@ -3,7 +3,7 @@ use rustfft::num_complex::Complex;
 
 use super::chroma::CqtChroma;
 use super::features::AudioFeatures;
-use super::ranging::PercentileWindow;
+use super::kick_model::{KickDetector, kick_from_probability};
 use crate::settings::BandScale;
 
 /// FFT sizes for multi-resolution analysis.
@@ -15,12 +15,6 @@ const FFT_SMALL: usize = 512; // 86 Hz/bin — presence, brilliance
 const N_MELS: usize = 26;
 const N_MFCC: usize = 13;
 const N_CHROMA: usize = 12;
-
-/// A3 (#1454): the kick envelope normalizes its log-flux against this many recent frames'
-/// P95 (~10 s at the fixed 512-sample hop / 44.1 kHz). Long enough that the P95 tracks the
-/// prevailing kick level rather than a single hit, and it freezes across silence (the
-/// perceptual gate skips the push), so a kick after a quiet passage isn't over-scaled.
-const KICK_WINDOW: usize = 860;
 
 /// A4 (#1455): the `centroid` feature maps a power-weighted mean of log2(frequency) onto
 /// 0..1 across this musical range, so it reads as a perceptual brightness fader instead
@@ -169,28 +163,6 @@ impl FftResolution {
         }
         flux / count as f32
     }
-
-    /// Half-wave rectified spectral flux in a frequency range, on **log** magnitude and
-    /// per-bin-mean (A3 #1454). Same level-invariant form as the SuperFlux onset detector:
-    /// a bass *change* registers regardless of absolute level, so the kick no longer
-    /// saturates on loud material or vanishes on quiet material. Magnitudes are floored
-    /// (`FLUX_FLOOR`) before the log so sub-signal bins — e.g. the near-silent 30–120 Hz
-    /// bins under a bassless lead — read a constant zero instead of jittering into false
-    /// kicks (a real, loud kick sits well above the floor and is unaffected).
-    fn spectral_flux_range_log(&self, lo_hz: f32, hi_hz: f32) -> f32 {
-        let (lo, hi) = self.bin_range(lo_hz, hi_hz);
-        let hi = hi.min(self.num_bins);
-        let count = hi.saturating_sub(lo).max(1);
-        let mut flux = 0.0f32;
-        for i in lo..hi {
-            let diff = self.magnitude[i].max(FLUX_FLOOR).ln()
-                - self.prev_magnitude[i].max(FLUX_FLOOR).ln();
-            if diff > 0.0 {
-                flux += diff;
-            }
-        }
-        flux / count as f32
-    }
 }
 
 /// Sparse mel filterbank: for each mel band, stores (bin_index, weight) pairs.
@@ -270,11 +242,10 @@ pub struct FftAnalyzer {
     // A1 (#1452): how the 7 bands are scaled (unified dB vs legacy linear/dB split).
     band_scale: BandScale,
 
-    // A3 (#1454): kick detection. `kick_flux` is the latest 30-120 Hz log-flux from
-    // `extract_features`; `kick_window` is the single detector-owned P95 normalizer,
-    // applied (and gated) by `kick_envelope` once the perceptual silence flag is known.
-    kick_flux: f32,
-    kick_window: PercentileWindow,
+    // Kick detection (#3624): the tree ensemble scores every hop in `extract_features`;
+    // `kick_envelope` maps the score onto `kick` once the silence flag is known.
+    kick_detector: KickDetector,
+    kick_probability: f32,
 
     // MFCC precomputed data
     mel_filters: MelFilter,              // N_MELS sparse triangular filters
@@ -362,8 +333,8 @@ impl FftAnalyzer {
             time_domain: vec![0.0; FFT_LARGE],
             sample_rate,
             band_scale,
-            kick_flux: 0.0,
-            kick_window: PercentileWindow::new(KICK_WINDOW),
+            kick_detector: KickDetector::new(sample_rate, FFT_LARGE, FFT_MED),
+            kick_probability: 0.0,
             mel_filters,
             dct_matrix,
             spectrogram_mel,
@@ -505,24 +476,15 @@ impl FftAnalyzer {
         ]
     }
 
-    /// A3 (#1454): the kick envelope for the 30-120 Hz log-flux captured this frame,
-    /// normalized once against its own long-term P95 (a single detector-owned AGC — no
-    /// second pass in the feature normalizer, where `kick` is now Passthrough). Gated on
-    /// the A10 perceptual silence flag: during silence it returns 0 and skips the window
-    /// push, so noise-floor log-flux can't populate the P95 or manufacture kicks, and the
-    /// P95 is frozen for the next active passage. Call once per hop after silence is known.
+    /// The kick envelope for this hop (#3624): the ensemble's probability, scored in
+    /// `extract_features`, mapped so 0.5 means a kick. Gated on the A10 perceptual silence
+    /// flag, so the noise floor can't read as a kick. Call once per hop after silence is
+    /// known.
     pub fn kick_envelope(&mut self, loud_silent: bool) -> f32 {
         if loud_silent {
             return 0.0;
         }
-        let flux = self.kick_flux;
-        self.kick_window.push(flux);
-        let p95 = self.kick_window.percentile(0.95);
-        if p95 < 1e-6 {
-            0.0
-        } else {
-            (flux / p95).clamp(0.0, 1.0)
-        }
+        kick_from_probability(self.kick_probability)
     }
 
     /// A17 (#1468): log-frequency-resampled magnitude spectrum for the `audio_spectrum`
@@ -626,12 +588,16 @@ impl FftAnalyzer {
         let sum_sq: f32 = self.time_domain[td_start..].iter().map(|s| s * s).sum();
         let rms = (sum_sq / 2048.0).sqrt();
 
-        // A3 (#1454): kick = 30-120 Hz log-magnitude half-wave flux. Only the raw flux is
-        // captured here; the single detector-owned P95 normalization (and its silence gate)
-        // runs in `kick_envelope` once the audio thread knows the perceptual silence flag,
-        // so log-flux of the noise floor can't manufacture kicks. `kick` is left 0 in the
-        // struct below and filled from `kick_envelope`.
-        self.kick_flux = self.large.spectral_flux_range_log(30.0, 120.0);
+        // Kick (#3624): score this hop now, every hop, so the detector's history stays
+        // aligned; the silence gate and the mapping onto `kick` run in `kick_envelope`.
+        // `kick` is left 0 in the struct below and filled from `kick_envelope`.
+        self.kick_probability = self.kick_detector.process(
+            &self.large.magnitude,
+            &self.large.prev_magnitude,
+            &self.medium.magnitude,
+            &self.medium.prev_magnitude,
+            FLUX_FLOOR,
+        );
 
         // Spectral features (from large FFT for best frequency resolution). `centroid_hz`
         // is the power-weighted arithmetic centroid in Hz, used as the centre for the
@@ -1065,8 +1031,8 @@ mod tests {
         a.kick_envelope(loud_silent)
     }
 
-    /// A3 (#1454): the perceptual silence gate forces the kick to 0 even on a loud bass
-    /// onset, and skips the P95 window push so the noise floor can't manufacture kicks.
+    /// The perceptual silence gate forces the kick to 0 whatever the detector scores, so
+    /// the noise floor can't read as a kick.
     #[test]
     fn kick_gated_to_zero_on_silence() {
         let mut a = FftAnalyzer::new(SR, BandScale::Db);
@@ -1075,37 +1041,76 @@ mod tests {
         assert_eq!(feed_kick_block(&mut a, 60.0, 0.8, &mut phase, true), 0.0);
     }
 
-    /// A3 (#1454): the kick fires on a bass *onset* but decays on a *sustained* tone —
-    /// the level-invariant log-flux + single P95 normalizer no longer saturate on loud
-    /// material (the old double-AGC did).
-    #[test]
-    fn kick_fires_on_onset_not_sustain() {
+    /// A synthetic kick drum: a 155 -> 45 Hz pitch drop decaying over ~180 ms, plus a 4 ms
+    /// click (a deterministic 4 -> 1 kHz chirp stands in for the beater noise).
+    fn synth_kick(n: usize) -> Vec<f32> {
+        let (mut body_phase, mut click_phase) = (0.0f32, 0.0f32);
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                body_phase += 2.0 * std::f32::consts::PI * (45.0 + 110.0 * (-t / 0.03).exp()) / SR;
+                click_phase +=
+                    2.0 * std::f32::consts::PI * (1000.0 + 3000.0 * (-t / 0.004).exp()) / SR;
+                0.8 * (body_phase.sin() * (-t / 0.18).exp()
+                    + 0.3 * click_phase.sin() * (-t / 0.004).exp())
+            })
+            .collect()
+    }
+
+    /// A bass note: 10 ms attack into a sustained fundamental plus second harmonic.
+    fn synth_bass_note(n: usize, freq: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / SR;
+                let w = 2.0 * std::f32::consts::PI * freq * t;
+                0.6 * (t / 0.01).min(1.0) * (w.sin() + 0.3 * (2.0 * w).sin())
+            })
+            .collect()
+    }
+
+    /// Feed `signal` one 512-sample hop at a time, as the audio thread does, and count the
+    /// kicks a consumer would see through the 0.5 / 0.3 hysteresis.
+    fn count_kicks(signal: &[f32]) -> usize {
         let mut a = FftAnalyzer::new(SR, BandScale::Db);
-        let mut phase = 0.0f32;
-        // Prime with a few silent (zero) frames so the window starts from quiet.
-        for _ in 0..3 {
-            let z = vec![0.0f32; FFT_LARGE];
-            a.analyze(&z);
-            a.kick_envelope(false);
+        let (mut armed, mut kicks) = (true, 0);
+        for hop in signal.chunks_exact(512) {
+            a.analyze(hop);
+            let k = a.kick_envelope(false);
+            if k < 0.3 {
+                armed = true;
+            } else if armed && k >= 0.5 {
+                armed = false;
+                kicks += 1;
+            }
         }
-        // Bass onset: jump from silence into a loud 60 Hz tone.
-        let onset = feed_kick_block(&mut a, 60.0, 0.8, &mut phase, false);
-        // Sustain the same tone; frame-to-frame change collapses → kick falls.
-        let mut sustain = onset;
-        for _ in 0..6 {
-            sustain = feed_kick_block(&mut a, 60.0, 0.8, &mut phase, false);
+        kicks
+    }
+
+    /// Sixteen events half a second apart, each `make(i)` samples long, after 0.5 s quiet.
+    fn pattern(make: impl Fn(usize, usize) -> Vec<f32>) -> Vec<f32> {
+        let period = (0.5 * SR) as usize;
+        let mut x = vec![0.0f32; period * 17];
+        for i in 0..16 {
+            let start = period * (i + 1);
+            x[start..start + period].copy_from_slice(&make(i, period));
         }
+        x
+    }
+
+    /// #3624: the kick fires on kick drums and not on bass notes. The old 30-120 Hz flux
+    /// fired on both (a bass note is a rise in that band too), which is the bug.
+    #[test]
+    fn kick_fires_on_kick_drums_not_on_bass_notes() {
+        let drums = count_kicks(&pattern(|_, n| synth_kick(n)));
+        let notes = [55.0, 41.2, 49.0, 61.7];
+        let bass = count_kicks(&pattern(|i, n| synth_bass_note(n, notes[i % 4])));
         assert!(
-            onset > 0.5,
-            "kick should fire on the bass onset, got {onset}"
+            drums >= 13,
+            "16 kick drums should read as kicks, got {drums}"
         );
         assert!(
-            sustain < onset,
-            "kick should decay on a sustained tone (onset={onset}, sustain={sustain})"
-        );
-        assert!(
-            sustain < 0.5,
-            "sustained bass must not saturate the kick, got {sustain}"
+            bass <= 1,
+            "16 bass notes must not read as kicks, got {bass}"
         );
     }
 

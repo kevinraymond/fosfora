@@ -3,6 +3,11 @@
 <!-- Release workflow extracts notes between ## vX.Y.Z headers via awk. -->
 <!-- Keep the "## vX.Y.Z — date" format for automatic release notes. -->
 
+## Unreleased
+
+### Fixed
+- **`kick` fired on bass notes and kept firing through passages with no kick drum**, so kick-bound visuals flickered on basslines and never rested in a breakdown. It is now decided by a small model trained on Creative Commons music; on test tracks with known kick times, detections that really were kicks went from about 4 in 10 to 6 or 7 in 10, while it still finds about as many of the real ones. Bindings, shaders and OSC see the same 0–1 value, so nothing needs changing.
+
 ## v2.1.0 — 2026-10-03
 
 Several cameras in one preset, RTMP streams from phones and action cameras as camera input, and

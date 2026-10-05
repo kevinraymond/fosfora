@@ -43,7 +43,7 @@ Fosfora listens to your audio and turns it into 83 numbers, updated every 512 sa
 | I want the visual to… | Use | Why this one |
 |---|---|---|
 | Flash on every drum hit | `onset` | Fires on any attack, from any instrument |
-| Flash only on the kick | `kick` | Deaf to everything above 120 Hz |
+| Flash only on the kick | `kick` | Ignores bass notes, snares and hats |
 | Stay locked to the groove | `beat_phase` | Smooth 0→1 ramp, one per beat |
 | Know where the bar starts | `downbeat`, `bar_phase` | Bar-level clock, not just beats |
 | Change color with the mood | `centroid` | How bright the music sounds |
@@ -131,9 +131,9 @@ Source: Standard descriptor — [librosa's `zero_crossing_rate`](https://librosa
 
 ## Rhythm, Beats and Tempo
 
-**`kick`** — the kick drum, and nothing else. It listens only between 30 and 120 Hz and reports the moment energy arrives there, so a hi-hat or vocal cannot trigger it. When you want a visual that thumps with the kick specifically rather than with any drum, this is the one.
+**`kick`** — the kick drum, and nothing else. It reads 0.5 or more on a kick and falls back toward 0 between hits. It judges each moment by how the whole spectrum changes, not just the low end, so a bass note, a tom, a snare or a hi-hat does not count, and a passage with no kick drum stays quiet. When you want a visual that thumps with the kick specifically rather than with any drum, this is the one.
 
-Source: Fosfora-specific — a narrow-band version of the same level-independent measure `onset` uses, with its own automatic gain so it stays usable across tracks. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — a small gradient-boosted tree model over per-band change and the shape of the low-end spectrum, trained on Creative Commons electronic music from the Free Music Archive with kicks labeled from separated drum tracks. See [`audio/kick_model.rs`](../crates/fosfora-app/src/audio/kick_model.rs) and [`scripts/kick_model/`](../scripts/kick_model/).
 
 **`onset`** — something just got hit. It spikes the instant a new sound starts — a kick, a snare, a plucked string, a vocal entry — and falls back toward 0 between hits. Unlike `beat`, it does not care about tempo, so it fires on every attack including the off-beat ones.
 
