@@ -8,6 +8,9 @@
 ### Added
 - **Network stream status in the web remote.** The header shows each stream that is switched on, next to the BPM, so you can check every stream is live before loading a preset. A filled dot means connected, a ring means waiting for the sender and a cross means down; hover for the settings page's words. Contributed by @Marvo2011.
 
+### Fixed
+- **Web remote buttons often ignored taps.** Effect, layer, parameter and preset controls were rebuilt ten times a second, so a tap that spanned a rebuild did nothing and sliders let go mid-drag. Presets now sit in the same three-column grid as the effects. Contributed by @Marvo2011.
+
 ## v2.2.0 — 2026-10-04
 
 Two optical-illusion effects in a new Illusions tab of the catalog, and a `kick` that no longer
