@@ -10,4 +10,5 @@
 
 - [ ] Tested on at least one platform
 - [ ] `cargo clippy` is clean
+- [ ] `CHANGELOG.md` has an entry under `## Unreleased` (if users will notice the change)
 - [ ] New effects include both the `.wgsl` shader and `.pfx` definition (if applicable)
