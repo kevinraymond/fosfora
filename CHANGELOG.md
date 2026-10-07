@@ -9,6 +9,7 @@
 - **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
 
 ### Fixed
+- **Audio capture could drop out when the system was short on memory.** The capture callback allocated memory each time the device delivered audio, which can stall the realtime audio thread. It now writes straight into the capture buffer, and that buffer is no longer shared between threads unsoundly.
 - **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
 
 ## v2.3.0 — 2026-10-06

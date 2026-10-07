@@ -198,6 +198,29 @@ jobs:
       - name: Test (output sinks)
         run: cargo test --features "ndi,v4l2,spout,syphon"
 
+  # The capture ring is shared lock-free between the audio callback and the analysis and
+  # render threads; Miri is what catches an unsound slot access there (#49). Default
+  # features only, filtered to the ring's tests: Miri interprets every test it runs.
+  # Nightly is pinned by date for the same reason rust-toolchain.toml pins stable.
+  miri:
+    name: Miri (capture ring)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system deps
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-07
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Miri
+        run: cargo +nightly-2026-10-07 miri test -p fosfora-app --lib audio::capture
+
   bench-fixture:
     name: Bench fixture
     runs-on: ubuntu-latest

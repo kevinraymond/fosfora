@@ -95,8 +95,14 @@ const RING_SIZE: usize = 65536;
 const RING_MASK: u32 = (RING_SIZE - 1) as u32;
 
 /// Lock-free single-producer single-consumer ring buffer for audio samples.
+///
+/// Slots are `AtomicU32` holding `f32::to_bits` (#49): the producer writes through `&self`
+/// while consumers read the same slots from other threads, which plain `f32` storage cannot
+/// express soundly. Relaxed slot accesses compile to ordinary loads/stores; the
+/// Release/Acquire pair on `write_pos` is what publishes a push to readers. A consumer that
+/// races a lapping producer reads a mix of old and new samples, never undefined behaviour.
 pub struct RingBuffer {
-    data: Box<[f32]>,
+    data: Box<[AtomicU32]>,
     write_pos: AtomicU32,
     read_pos: AtomicU32,
 }
@@ -104,29 +110,34 @@ pub struct RingBuffer {
 impl RingBuffer {
     pub fn new() -> Self {
         Self {
-            data: vec![0.0; RING_SIZE].into_boxed_slice(),
+            data: (0..RING_SIZE).map(|_| AtomicU32::new(0)).collect(),
             write_pos: AtomicU32::new(0),
             read_pos: AtomicU32::new(0),
         }
     }
 
-    /// Push samples (called from cpal callback thread).
-    /// Safety: Only one thread should call push at a time (the cpal callback).
+    /// Push samples (called from the capture callback/thread).
+    ///
+    /// Single producer: two threads pushing at once cannot corrupt memory, but they would
+    /// interleave samples and lose one another's `write_pos` update.
     pub fn push(&self, samples: &[f32]) {
+        self.push_iter(samples.iter().copied());
+    }
+
+    /// Push samples from an iterator, so a realtime callback can convert/downmix straight
+    /// into the ring without staging them in a heap buffer (#50). Same single-producer rule
+    /// as [`push`](Self::push); `write_pos` is published once, after the last sample.
+    pub fn push_iter(&self, samples: impl IntoIterator<Item = f32>) {
         let mut wp = self.write_pos.load(Ordering::Relaxed);
-        for &sample in samples {
-            // Safety: we're the only writer, and RING_SIZE is a power of 2
-            let idx = (wp & RING_MASK) as usize;
-            // SAFETY: Single-producer guarantee: only one thread calls push() (the audio
-            // callback). The write position is updated atomically with Release ordering
-            // after all writes. Readers tolerate momentarily stale data gracefully.
-            unsafe {
-                let ptr = self.data.as_ptr().cast_mut();
-                *ptr.add(idx) = sample;
-            }
+        for sample in samples {
+            self.data[(wp & RING_MASK) as usize].store(sample.to_bits(), Ordering::Relaxed);
             wp = wp.wrapping_add(1);
         }
         self.write_pos.store(wp, Ordering::Release);
+    }
+
+    fn slot(&self, pos: u32) -> f32 {
+        f32::from_bits(self.data[(pos & RING_MASK) as usize].load(Ordering::Relaxed))
     }
 
     /// Read available samples into dst. Returns number of samples read.
@@ -143,9 +154,8 @@ impl RingBuffer {
         let available = raw.min(RING_SIZE);
         let to_read = available.min(dst.len());
 
-        for i in 0..to_read {
-            let idx = (rp.wrapping_add(i as u32) & RING_MASK) as usize;
-            dst[i] = self.data[idx];
+        for (i, slot) in dst[..to_read].iter_mut().enumerate() {
+            *slot = self.slot(rp.wrapping_add(i as u32));
         }
 
         self.read_pos
@@ -168,8 +178,7 @@ impl RingBuffer {
         let n = dst.len().min(RING_SIZE);
         let start = wp.wrapping_sub(n as u32);
         for (i, slot) in dst[..n].iter_mut().enumerate() {
-            let idx = (start.wrapping_add(i as u32) & RING_MASK) as usize;
-            *slot = self.data[idx];
+            *slot = self.slot(start.wrapping_add(i as u32));
         }
         n
     }
@@ -189,13 +198,6 @@ impl RingBuffer {
         self.read_pos.store(wp, Ordering::Release);
     }
 }
-
-// SAFETY: RingBuffer uses atomic u32 positions for synchronization (Acquire/Release).
-// The single-producer constraint is upheld by design: only one thread calls push().
-// Readers use atomic loads and only access indices behind the write position.
-unsafe impl Send for RingBuffer {}
-// SAFETY: See above — atomics provide the cross-thread synchronization guarantees.
-unsafe impl Sync for RingBuffer {}
 
 pub struct AudioCapture {
     _stream: Stream,
@@ -379,31 +381,94 @@ fn push_samples<T: Sample>(
         log::info!("Audio callback fired (first data: {} samples)", data.len());
     }
     let conv = |s: T| <f32 as cpal::FromSample<T>>::from_sample_(s);
-    let mut stereo: Vec<f32> = Vec::with_capacity(data.len() / channels.max(1) * 2);
+    // Converted frames go straight into the ring: this runs on the OS audio callback, where a
+    // heap allocation can block on the allocator's lock and cause a dropout (#50).
     if channels == 1 {
-        for &s in data {
+        ring.push_iter(data.iter().flat_map(|&s| {
             let v = conv(s);
-            stereo.push(v);
-            stereo.push(v);
-        }
+            [v, v]
+        }));
     } else if channels == 2 {
-        for frame in data.chunks_exact(2) {
-            stereo.push(conv(frame[0]));
-            stereo.push(conv(frame[1]));
-        }
+        ring.push_iter(
+            data.chunks_exact(2)
+                .flat_map(|frame| [conv(frame[0]), conv(frame[1])]),
+        );
     } else {
-        for frame in data.chunks_exact(channels) {
+        ring.push_iter(data.chunks_exact(channels).flat_map(|frame| {
             let (l, r) = downmix.frame(|ch| conv(frame[ch]));
-            stereo.push(l);
-            stereo.push(r);
-        }
+            [l, r]
+        }));
     }
-    ring.push(&stereo);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // #49: the ring is shared across threads without any `unsafe impl`.
+    const _: () = {
+        const fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<RingBuffer>();
+    };
+
+    #[test]
+    fn concurrent_push_and_read_see_samples_in_order() {
+        // One producer, one consumer, as in the capture callback / analysis thread. Small
+        // enough to run under Miri, which is what flags a racy slot access.
+        let ring = Arc::new(RingBuffer::new());
+        let total = 2_000u32;
+        let producer = {
+            let ring = ring.clone();
+            std::thread::spawn(move || {
+                for chunk in (0..total).collect::<Vec<_>>().chunks(64) {
+                    ring.push_iter(chunk.iter().map(|&i| i as f32));
+                    std::thread::yield_now();
+                }
+            })
+        };
+        let mut seen = Vec::with_capacity(total as usize);
+        let mut buf = [0.0f32; 128];
+        while seen.len() < total as usize {
+            let n = ring.read(&mut buf);
+            seen.extend_from_slice(&buf[..n]);
+            let mut peek = [0.0f32; 4];
+            ring.peek_latest(&mut peek);
+            std::thread::yield_now();
+        }
+        producer.join().unwrap();
+        let expected: Vec<f32> = (0..total).map(|i| i as f32).collect();
+        assert_eq!(seen, expected);
+    }
+
+    fn pushed<T: Sample>(data: &[T], channels: usize) -> Vec<f32>
+    where
+        f32: cpal::FromSample<T>,
+    {
+        let ring = RingBuffer::new();
+        let count = AtomicU64::new(0);
+        push_samples(
+            &ring,
+            &count,
+            data,
+            channels,
+            &Downmix::host_default(channels),
+        );
+        let mut out = vec![0.0f32; ring.available()];
+        ring.read(&mut out);
+        out
+    }
+
+    #[test]
+    fn push_samples_writes_interleaved_stereo() {
+        assert_eq!(pushed(&[0.1f32, 0.2], 1), [0.1, 0.1, 0.2, 0.2]);
+        // A trailing partial frame is dropped, keeping the push even-length.
+        assert_eq!(pushed(&[0.1f32, 0.2, 0.3], 2), [0.1, 0.2]);
+        assert_eq!(pushed(&[i16::MAX, 0], 2), [i16::MAX as f32 / 32768.0, 0.0]);
+
+        let frame = [0.5f32, 0.25, 0.125, 0.0625, 0.03125, 0.015625];
+        let (l, r) = Downmix::host_default(6).frame(|ch| frame[ch]);
+        assert_eq!(pushed(&frame, 6), [l, r]);
+    }
 
     #[test]
     fn skip_to_write_pos_discards_history() {
