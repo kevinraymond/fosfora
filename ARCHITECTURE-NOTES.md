@@ -83,7 +83,7 @@ channel sees every hop and fixes this by construction.
 - **OSC** (`src/osc/`, rosc): RX thread + fire-and-forget UDP sender. Namespace
   `/fosfora/`; the pre-rename `/phosphor/` prefix is still accepted (`receiver.rs`). Config `osc.json`
   (rx 9000, tx 9001, tx_rate 30, learn maps).
-- **MIDI** (`src/midi/`, midir, patched for alsa 0.11): **input only** — CC/note +
+- **MIDI** (`src/midi/`, midir): **input only** — CC/note +
   clock IN (24 ppqn, `midi/clock.rs`). No MIDI output exists; clock/note/CC out is
   greenfield (`midi/output.rs`, Signal phase A2).
 - **Bindings** (`src/bindings/`): dotted string sources → typed `BindingTarget`;

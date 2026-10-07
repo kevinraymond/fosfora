@@ -62,7 +62,7 @@ pollster = "0.4"
 # System theme detection
 dark-light = { version = "2", optional = true }
 # MIDI input
-midir = { version = "0.10", optional = true }
+midir = { version = "0.11", optional = true }
 # OSC input/output
 rosc = "0.11"
 # Ableton Link session sync. Vendors Link (GPL-2.0-or-later) — see the `link`
