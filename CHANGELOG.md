@@ -5,6 +5,9 @@
 
 ## Unreleased
 
+### Added
+- **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
+
 ### Fixed
 - **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
 

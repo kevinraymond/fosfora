@@ -648,6 +648,14 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Scanlines** | Darkens the picture in horizontal bands, the CRT look | `count` 10–1080 lines · `depth` 0–1 · `scroll` lines per second · `sharpness` 0–1 |
 | **Edge** | A Sobel outline: bright where brightness changes. `fill` mixes the original back underneath | `strength` 0–4 · `thickness` 0.5–8 px · `fill` 0–1 |
 | **Palette Map** | Keeps only brightness and recolors it through a cosine palette. A white-on-black effect comes back in full color | `offset` 0–1 · `drift` turns per second · `spread` 0.25–4 · `blend` 0–1 |
+| **Invert** | The negative. Put a beat-synced square on `amount` to invert on the kick. `luma_only` flips light and dark but keeps the colors | `amount` 0–1 · `luma_only` |
+| **Posterize** | Cuts each channel to a few flat steps, the screen-print look | `levels` 2–32 · `amount` 0–1 |
+| **Threshold** | Two tones: white above the cut, black below. Alpha is kept, unlike Key. Follow it with Palette Map for any two colors | `threshold` 0–1 · `softness` 0–0.5 · `amount` 0–1 · `invert` |
+| **Sharpen** | Makes edges crisper. A small `radius` sharpens texture, a large one lifts local contrast; a high `amount` adds halos | `amount` 0–4 · `radius` 0.5–8 px |
+| **Tile** | Repeats the picture in a grid. `mirror` flips alternate tiles so they meet without a seam | `count` 1–16 · `mirror` · `scroll_x` / `scroll_y` tiles per second |
+| **Dither** | Ordered (Bayer) dithering down to a few levels, the early-computer look. `mono` makes it black and white | `levels` 2–16 · `scale` 1–8 px · `amount` 0–1 · `mono` |
+| **CRT** | A tube monitor: bulging screen, scanlines, RGB stripe mask, glow and dark corners. Outside the bulge is transparent | `curvature` 0–0.5 · `scanlines` · `mask` · `mask_size` 1–8 px · `glow` · `vignette` |
+| **Strobe** | Flashes locked to the music: `per_bar` times a bar on the tempo grid, or on the kick or any hit. Black `color` makes a blackout strobe, `invert` flashes the negative. Stays dark with no tempo. Subject to the flash limit in Settings | `per_bar` 1–16 · `duty` · `amount` · `color` · `invert` · `on_kick` · `on_onset` |
 | **Noise Field** (Source) | Drifting palette-colored noise, a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
 | **Gradient** (Source) | A linear ramp between two colors. Both carry alpha, so opaque-to-transparent is a fade mask for a Mix | `color_a` · `color_b` · `angle` ±0.5 turns · `midpoint` |
 | **Solid** (Source) | A flat color. The second input a Mix needs, and the backdrop a keyed layer sits on | `color` (RGBA) |
