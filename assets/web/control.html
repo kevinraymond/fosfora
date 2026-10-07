@@ -315,11 +315,28 @@ body { display: flex; flex-direction: column; }
     }
   }
 
+  // At most one message per key every 33 ms. A message that arrives during the
+  // cooldown is kept (newest wins) and sent when the cooldown ends, so the
+  // value a drag is released on always reaches the app.
   function throttledSend(key, obj) {
-    if (sendThrottle[key]) return;
+    const t = sendThrottle[key];
+    if (t) {
+      t.pending = obj;
+      return;
+    }
     send(obj);
-    sendThrottle[key] = true;
-    setTimeout(() => { sendThrottle[key] = false; }, 33);
+    const entry = { pending: null };
+    sendThrottle[key] = entry;
+    const release = () => {
+      if (entry.pending) {
+        send(entry.pending);
+        entry.pending = null;
+        setTimeout(release, 33);
+      } else {
+        delete sendThrottle[key];
+      }
+    };
+    setTimeout(release, 33);
   }
 
   function handleMessage(msg) {
