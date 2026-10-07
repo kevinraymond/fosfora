@@ -102,7 +102,7 @@ pub struct PulseCounts {
 }
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1284,6 +1284,17 @@ const TAP_RESET_SECS: f64 = 3.0;
 const TAP_WINDOW: usize = 4;
 const TAP_MIN_TAPS: usize = 3;
 
+/// Lock `m` only if that needs no wait: `None` while another thread holds it. Poison is
+/// ignored, as at every other lock site on this config. The analysis thread uses this so a
+/// UI panel holding the lock while it draws never stalls a hop (#77).
+fn try_lock_now<T>(m: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match m.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
 fn audio_thread(
     ring: Arc<RingBuffer>,
     sample_rate: f32,
@@ -1300,11 +1311,12 @@ fn audio_thread(
 ) {
     // Every stateful detector, in the one order that is correct (see `hop.rs`). The ring,
     // the recording mirror, the shared-config locks and the channel stay here.
-    let mut hop_analyzer = HopAnalyzer::new(
-        sample_rate,
-        band_scale,
-        tempo.lock().unwrap_or_else(|e| e.into_inner()).config,
-    );
+    // #77: the latest snapshots of the shared config. Refreshed each hop when the lock is
+    // free; while the UI holds it (it does for a whole panel draw) the hop reuses these
+    // rather than waiting on the render thread.
+    let mut tempo_cfg = tempo.lock().unwrap_or_else(|e| e.into_inner()).config;
+    let mut struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
+    let mut hop_analyzer = HopAnalyzer::new(sample_rate, band_scale, tempo_cfg);
     // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
@@ -1391,16 +1403,23 @@ fn audio_thread(
             // once per hop, same as the A18 tuning below. In auto mode the estimator owns the
             // prior centre, so publish what it adapted to back into the shared config — that's
             // what the UI slider reads, and where it freezes when auto is switched off.
-            let (tempo_cfg, tempo_cmds) = {
-                let mut t = tempo.lock().unwrap_or_else(|e| e.into_inner());
-                if t.config.auto_prior {
-                    t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
+            // Never blocks (#77): a busy lock keeps the last snapshot and leaves queued
+            // commands for the next hop, ~11 ms later.
+            let tempo_cmds = match try_lock_now(&tempo) {
+                Some(mut t) => {
+                    if t.config.auto_prior {
+                        t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
+                    }
+                    tempo_cfg = t.config;
+                    t.drain()
                 }
-                (t.config, t.drain())
+                None => Vec::new(),
             };
             // Snapshot the shared A18 tuning once per hop (#1510) so this frame's structure
             // detection sees a consistent set of thresholds; the UI may be writing it live.
-            let struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cfg) = try_lock_now(&tuning) {
+                struct_cfg = *cfg;
+            }
 
             let out = hop_analyzer.process_hop(
                 hop, hop_stereo, timestamp, struct_cfg, tempo_cfg, tempo_cmds,
@@ -1436,6 +1455,28 @@ pub(crate) mod tests {
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    #[test]
+    fn try_lock_now_skips_a_held_lock_and_ignores_poison() {
+        let m = Arc::new(Mutex::new(1));
+        {
+            let _held = m.lock().unwrap();
+            assert!(
+                try_lock_now(&m).is_none(),
+                "a held lock must not block or succeed"
+            );
+        }
+        assert_eq!(*try_lock_now(&m).unwrap(), 1);
+
+        let poisoner = m.clone();
+        let _ = thread::spawn(move || {
+            let _g = poisoner.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        assert_eq!(*try_lock_now(&m).unwrap(), 1);
     }
 
     /// Deterministic stereo test signal: 60 Hz sub with a 2 Hz gate (kick-like), a steady

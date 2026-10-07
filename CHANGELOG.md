@@ -10,6 +10,7 @@
 
 ### Fixed
 - **Audio capture could drop out when the system was short on memory.** The capture callback allocated memory each time the device delivered audio, which can stall the realtime audio thread. It now writes straight into the capture buffer, and that buffer is no longer shared between threads unsoundly.
+- **Audio analysis stalled while the tempo or build-up/drop settings were on screen.** Each analysis step waited for the UI to finish drawing those settings, adding timing jitter to beats. It now keeps using the previous settings for that step instead of waiting.
 - **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
 
 ## v2.3.0 — 2026-10-06
