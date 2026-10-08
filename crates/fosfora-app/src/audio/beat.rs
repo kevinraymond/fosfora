@@ -52,7 +52,10 @@ pub struct TempoConfig {
 impl Default for TempoConfig {
     fn default() -> Self {
         // The pre-A7 hardcoded values — upgrading users get identical detection until
-        // they pick a preset.
+        // they pick a preset. 150 is deliberate, not a stray: benched against 120, 130
+        // and 120/σ0.75 (#78), every lower center halved fast EDM (GiantSteps Acc1
+        // 69.9% → 53.6–60.1%) for at most +2.5 points on Ballroom. Slow material is
+        // what the genre presets are for.
         Self {
             prior_center_bpm: 150.0,
             prior_sigma: 1.0,
