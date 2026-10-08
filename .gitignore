@@ -40,3 +40,6 @@ __pycache__/
 /android/build/
 /android/app/build/
 /android/local.properties
+# The voice path's agent config (board #3751): it holds an API key and lives
+# on the headset (files/config/voice.json); a local copy is never committed.
+voice.json

@@ -228,6 +228,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       off, for the unworn gate: logged `voice: heard "…" → <intent or miss> · label "…"`, the label ahead of the head; read at launch
     //       and polled once a second, fed once per value (waiting for the room's anchors as debug.fosfora.surface does); an app cannot
     //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence)
+    //   adb shell setprop debug.fosfora.agent 0|1                (board #3751, V3: a sentence the grammar cannot match goes to the language model
+    //       voice.json under the config dir names (the label reads "Thinking…", then the model's sentence; the actions go through V2's
+    //       path); default 1 whenever voice.json configures a provider, 0 keeps the call off for sweeps; read at launch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; default
     //       on until a room has been saved (no rooms/*.json: the first launch, board #3752), off once one has; 1 forces, 0 forbids)
@@ -461,6 +464,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // menu's, and the `say` knob's last sentence fed.
     let mut voice_actions: Vec<Action> = Vec::new();
     let mut say_knob = crate::intent::SayKnob::default();
+    // V3, the agent (`agent.rs`): the provider `voice.json` names, read
+    // once (the key never reaches the log), and the one call in flight. A
+    // newer sentence's call replaces an older one, whose answer is then
+    // dropped.
+    let agent = match (
+        crate::agent::load(&dirs.config.join(crate::agent::CONFIG_FILE)),
+        debug_prop("debug.fosfora.agent").as_deref(),
+    ) {
+        (Err(why), _) => {
+            info!("voice agent: off ({why})");
+            None
+        }
+        (Ok(_), Some("0")) => {
+            info!("voice agent: off (debug.fosfora.agent 0)");
+            None
+        }
+        (Ok(config), _) => {
+            info!("voice agent: on \u{b7} {}", config.summary());
+            Some(config.provider())
+        }
+    };
+    let mut agent_call: Option<AgentCall> = None;
     // A USE_SCENE grant whose requery waits for a query or Space Setup in
     // flight, retried once a second.
     let mut room_pickup = false;
@@ -2337,10 +2362,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // Board #3751, V2: the sentence through the grammar, generated
             // from what the frame holds (the world effects, the behaviors,
             // the lane boxes by their friendly names, the surface under the
-            // editor's beam). The menu's intents go to the action consumer
-            // as the menu's presses do (the toggles set `controls` first,
-            // as the menu does); the surface intents write through the
-            // lanes' typed writers now, `lane_boxes` being this frame's.
+            // editor's beam), applied by `apply_intent` (`lane_boxes` being
+            // this frame's). With the agent on (V3), a sentence no template
+            // fits goes to the model instead of the miss's label.
             if let Some(sentence) = sentence.take() {
                 let vocab = crate::intent::Vocabulary {
                     effects: &world_effects,
@@ -2352,49 +2376,143 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .map(|h| h.index),
                 };
                 let outcome = crate::intent::parse(&sentence, &vocab);
-                let (text, seconds) = match &outcome {
-                    Ok(intent) => {
-                        use crate::intent::Intent;
-                        match *intent {
-                            Intent::NextEffect => voice_actions.push(Action::NextEffect),
-                            Intent::PrevEffect => voice_actions.push(Action::PrevEffect),
-                            // The effect showing has nothing parked, so
-                            // naming it switches nothing.
-                            Intent::Effect(i) => switch_to = Some(i),
-                            Intent::EditRoom(on) => {
-                                controls.edit_room = on;
-                                voice_actions.push(Action::SetEditRoom(on));
-                            }
-                            Intent::Cloud(on) => {
-                                controls.cloud = on;
-                                voice_actions.push(Action::SetCloud(on));
-                            }
-                            Intent::Pitcher(on) => {
-                                controls.pitcher = on;
-                                voice_actions.push(Action::SetPitcher(on));
-                            }
-                            Intent::Music(on) => {
-                                controls.music = on;
-                                voice_actions.push(Action::SetMusic(on));
-                            }
-                            Intent::Rescan => voice_actions.push(Action::RescanRoom),
-                            Intent::Recenter => voice_actions.push(Action::Recenter),
-                            Intent::AllNone => voice_actions.push(Action::AllNone),
-                            _ => {}
-                        }
-                        let text = crate::intent::apply(
+                let ask_agent = agent.is_some()
+                    && matches!(&outcome, Err(m) if m.reason == crate::intent::Reason::NoMatch);
+                let (text, seconds) = match (&outcome, &agent) {
+                    (Ok(intent), _) => (
+                        apply_intent(
                             intent,
                             &vocab,
                             &mut surface_lanes,
                             &lane_boxes,
+                            &mut controls,
+                            &mut voice_actions,
+                            &mut switch_to,
+                        ),
+                        crate::intent::REPLY_S,
+                    ),
+                    // V3: a sentence no template fits goes to the agent
+                    // with the room as it is now; the grammar's other
+                    // misses are its own answers and stay.
+                    (Err(_), Some(provider)) if ask_agent => {
+                        let head = glam::Vec3::from(input.head);
+                        let sizes: Vec<[f32; 2]> = input
+                            .room_boxes
+                            .iter()
+                            .chain(floor_box.iter())
+                            .map(|b| {
+                                let face = crate::surfaces::acting_face(
+                                    glam::Vec3::from(b.center),
+                                    glam::Quat::from_array(b.rot),
+                                    glam::Vec3::from(b.half),
+                                    head,
+                                );
+                                [2.0 * face.half[0], 2.0 * face.half[1]]
+                            })
+                            .collect();
+                        let room = crate::agent::room_state(
+                            &vocab,
+                            (mode == Mode::World).then_some(world_index),
+                            &sizes,
+                            &surface_lanes,
+                            &lane_boxes,
+                        );
+                        let request = provider.request(&sentence, &room);
+                        agent_call = Some(AgentCall {
+                            reply: crate::agent::spawn(
+                                provider.clone(),
+                                request,
+                                crate::agent::TIMEOUT,
+                            ),
+                            sentence: sentence.clone(),
+                            pointed: vocab.pointed,
+                            at: voice_at,
+                            started: Instant::now(),
+                        });
+                        (
+                            crate::agent::THINKING_LABEL.to_owned(),
+                            crate::agent::THINKING_S,
                         )
-                        .unwrap_or_else(|| crate::intent::reply(intent, &vocab));
-                        (text, crate::intent::REPLY_S)
                     }
-                    Err(miss) => (crate::intent::miss_text(miss), crate::intent::MISS_S),
+                    (Err(miss), _) => (crate::intent::miss_text(miss), crate::intent::MISS_S),
                 };
                 info!("{}", crate::intent::log_line(&sentence, &outcome, &text));
                 voice_label.show_for(text, voice_at.0, voice_at.1, seconds);
+            }
+            // V3: the agent's answer, polled (never waited for). Its
+            // actions map onto intents through the grammar's resolution
+            // and apply through the grammar's path, in order; the label
+            // shows the model's sentence (the actions' own labels are in
+            // the log), or what was skipped, or the error.
+            if let Some(call) = &agent_call {
+                use std::sync::mpsc::TryRecvError;
+                let answer = match call.reply.try_recv() {
+                    Ok(answer) => Some(answer),
+                    Err(TryRecvError::Empty)
+                        if call.started.elapsed() > crate::agent::TIMEOUT + Duration::from_secs(1) =>
+                    {
+                        Some(Err(crate::agent::AgentError::Timeout))
+                    }
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => Some(Err(
+                        crate::agent::AgentError::Http(0, "the call's thread ended".to_owned()),
+                    )),
+                };
+                if let Some(answer) = answer {
+                    let at = call.at;
+                    let sentence = call.sentence.clone();
+                    let pointed = call.pointed.filter(|&p| p < lane_boxes.len());
+                    agent_call = None;
+                    let (text, seconds) = match answer {
+                        Ok(reply) => {
+                            let vocab = crate::intent::Vocabulary {
+                                effects: &world_effects,
+                                behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                                surfaces: crate::intent::surfaces(&lane_boxes),
+                                pointed,
+                            };
+                            let outcomes: Vec<Result<crate::intent::Intent, crate::intent::Miss>> =
+                                reply
+                                    .actions
+                                    .iter()
+                                    .map(|a| crate::intent::Intent::from_json(a, &vocab))
+                                    .collect();
+                            let mut applied = Vec::new();
+                            let mut missed = Vec::new();
+                            for outcome in &outcomes {
+                                match outcome {
+                                    Ok(intent) => applied.push(apply_intent(
+                                        intent,
+                                        &vocab,
+                                        &mut surface_lanes,
+                                        &lane_boxes,
+                                        &mut controls,
+                                        &mut voice_actions,
+                                        &mut switch_to,
+                                    )),
+                                    Err(miss) => missed.push(miss.clone()),
+                                }
+                            }
+                            info!(
+                                "{}",
+                                crate::agent::heard_line(&sentence, &outcomes, &reply.say)
+                            );
+                            if let Some(line) = crate::agent::dropped_line(&outcomes) {
+                                info!("{line}");
+                            }
+                            crate::agent::label(&reply.say, &applied, &missed)
+                        }
+                        Err(e) => {
+                            info!(
+                                "voice agent: heard \"{}\" \u{2192} {e} \u{b7} label \"{}\"",
+                                sentence.trim(),
+                                e.label()
+                            );
+                            (e.label().to_owned(), crate::agent::LABEL_S)
+                        }
+                    };
+                    voice_label.show_for(text, at.0, at.1, seconds);
+                }
             }
             scan_label.step(scan_state, dt);
             {
@@ -3421,6 +3539,64 @@ fn ray_boxes(room: &[ObstacleBox], floor: Option<&ObstacleBox>) -> Vec<crate::in
         boxes.push(ray_box(f));
     }
     boxes
+}
+
+/// Board #3751, V3: the agent's call in flight: its answer's channel, the
+/// sentence, the lane box pointed at when it was said (a "this" means
+/// that one), where the label floats, and when it was asked.
+struct AgentCall {
+    reply: std::sync::mpsc::Receiver<Result<crate::agent::Reply, crate::agent::AgentError>>,
+    sentence: String,
+    pointed: Option<usize>,
+    at: (glam::Vec3, glam::Vec3),
+    started: Instant,
+}
+
+/// Board #3751: one intent applied, the grammar's (V2) and the agent's
+/// (V3) alike, and its label. The menu's intents become the `Action`s the
+/// hand menu's presses produce, consumed by the next frame's action loop
+/// (a toggle sets its `controls` field first, as the menu does; naming a
+/// world effect sets `switch_to`); the surface intents write through the
+/// lanes' typed writers now (`intent::apply`).
+fn apply_intent(
+    intent: &crate::intent::Intent,
+    vocab: &crate::intent::Vocabulary<'_>,
+    lanes: &mut crate::lanes::RoomLanes,
+    boxes: &[crate::lanes::LaneBox<'_>],
+    controls: &mut Controls,
+    actions: &mut Vec<Action>,
+    switch_to: &mut Option<usize>,
+) -> String {
+    use crate::intent::Intent;
+    match *intent {
+        Intent::NextEffect => actions.push(Action::NextEffect),
+        Intent::PrevEffect => actions.push(Action::PrevEffect),
+        // The effect showing has nothing parked, so naming it switches
+        // nothing.
+        Intent::Effect(i) => *switch_to = Some(i),
+        Intent::EditRoom(on) => {
+            controls.edit_room = on;
+            actions.push(Action::SetEditRoom(on));
+        }
+        Intent::Cloud(on) => {
+            controls.cloud = on;
+            actions.push(Action::SetCloud(on));
+        }
+        Intent::Pitcher(on) => {
+            controls.pitcher = on;
+            actions.push(Action::SetPitcher(on));
+        }
+        Intent::Music(on) => {
+            controls.music = on;
+            actions.push(Action::SetMusic(on));
+        }
+        Intent::Rescan => actions.push(Action::RescanRoom),
+        Intent::Recenter => actions.push(Action::Recenter),
+        Intent::AllNone => actions.push(Action::AllNone),
+        _ => {}
+    }
+    crate::intent::apply(intent, vocab, lanes, boxes)
+        .unwrap_or_else(|| crate::intent::reply(intent, vocab))
 }
 
 /// A pose for the log and the panel: `lost` for an untracked hand.

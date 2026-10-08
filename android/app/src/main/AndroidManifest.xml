@@ -18,6 +18,11 @@
     <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
     <uses-permission android:name="com.oculus.permission.USE_SCENE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- The voice path's agent (crates/fosfora-xr/src/agent.rs, board #3751):
+         a sentence the grammar cannot match goes to the language model that
+         files/config/voice.json names, hosted or on the LAN. A normal
+         permission, granted at install, no runtime ask. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Khronos loader: runtime discovery through the OpenXR runtime broker. -->
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
