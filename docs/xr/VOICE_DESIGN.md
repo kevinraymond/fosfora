@@ -202,6 +202,86 @@ gesture is.
    (the menu reads its rows aloud is out of scope; the label is the
    feedback), and the thumb tap as the second opener.
 
+## V1 as built
+
+The first step, built; the reviewer's device numbers go to `MEASURED.md`.
+The defaults of the open questions below were taken: the left fist opens
+the window, `base.en` is bundled, the grammar comes later.
+
+**The module.** `crates/fosfora-xr/src/voice.rs`. Its pure part builds and
+tests on the desktop: the window (`PushToTalk`), the stream's 48 kHz
+stereo to whisper's 16 kHz mono (`mono_16k`: the channels averaged, a box
+low-pass as long as the rate ratio, then linear interpolation), the
+encoder window (`audio_ctx`, the clip plus 1.28 s at 50 frames a second
+within 64 to 1500: 214 for 3 s), short clips padded to 1.1 s (whisper.cpp
+returns nothing under 1 s), the log and label text, and a small RIFF
+reader for the test clip. Its device part (`Voice`) is Android only.
+
+**The window's rules.** The left fist (hand 0, `Pose::Fist` from
+`pose.rs`) opens it once it has lasted 0.15 s; a shorter fist is nothing.
+Release closes it, and so does 6 s of holding, after which the hand has to
+open before the next press. A closed window is *closing* until its
+transcription returns: a fist meanwhile is ignored, so two windows never
+overlap and one transcription runs at a time. The fist opens the window in
+every mode: with Edit room on, with the hand menu up, and on Flock, where
+the same fist is also the flock's predator. While `RECORD_AUDIO` is
+missing the window never opens (logged once); a late grant is picked up
+by the permission poll.
+
+**The stream.** Each window opens its own AAudio input stream (the voice
+recognition preset, 48 kHz stereo, 16-bit, no low-latency mode) when it
+opens and closes it when it closes; the frame drains its ring each frame.
+It never shares a stream with the music path. The open and close times
+are logged; if opening per window costs more than about 50 ms on the
+headset, the stream moves to launch and the window only reads it.
+
+**The thread.** One worker thread, `fosfora-voice`, loads the model at
+launch (one whisper context and one state, kept warm) and then
+transcribes each closed window: greedy, `language en`, one segment, no
+context, the encoder window cut to the clip, at most 64 tokens (a
+repetition loop ends), the knob's threads. The frame thread only polls a
+channel; neither the load nor a transcription runs on it. A window that
+closes before the load has finished is dropped ("Voice is still loading").
+
+**The knobs** (read at launch): `debug.fosfora.voice 0|1` (default 1 when
+the model was installed), `debug.fosfora.voicethreads <n>` (1 to 6,
+default 3), `debug.fosfora.voicefile <path>` (a 16 kHz mono 16-bit WAV
+transcribed 3 s after the model loads, as if a window had closed, so the
+gate runs unworn). With voice on, `RECORD_AUDIO` is asked for at launch on
+any audio source.
+
+**The label.** The voice path has its own label, drawn before the room
+editor's and the scan label. "Listening…" at the left palm, facing the
+head, while the window is open; "…" when it closes, until the text
+returns; then the sentence for 1.5 s, or "Didn't catch that" when nothing
+was heard (whisper's non-speech annotations such as `[BLANK_AUDIO]` count
+as nothing). The `voicefile` clip's label floats 1 m ahead of the head.
+The log has the window's length, the transcription's time and encoder
+window, the time from the window's close to the text, and
+`voice: heard "…" (N ms)`.
+
+**The build.** `whisper-rs` 0.16 is an Android-only dependency of
+`fosfora-xr`; the desktop workspace never builds whisper.cpp. The cmake
+build inside `whisper-rs-sys` sees only `CMAKE_*`, `GGML_*` and
+`WHISPER_*` variables, so `android/cmake/android.toolchain.cmake` wraps the
+NDK's toolchain file to set the ABI and API level, and `scripts/xr/run.sh`
+exports it with `GGML_NATIVE=OFF` and
+`GGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16` for build and lint. whisper.cpp
+links the NDK's `libc++_shared.so` (1.8 MB), which `run.sh` copies next to
+the cdylib. `scripts/xr/fetch-model.sh` fetches `ggml-base.en.bin` with its
+SHA-256 into the git-ignored `assets/xr/models/` (source and license in
+`LICENSE.md` there); the APK stores it uncompressed, and the asset install
+streams it to internal storage in chunks. `whisper-rs` and `whisper-rs-sys`
+are Unlicense, which `deny.toml` admits for those two crates only. The
+debug APK is 171.5 MB: the model 148.0 MB, `libfosfora_xr.so` 18.9 MB
+(17.6 MB without whisper), `libc++_shared.so` 1.8 MB.
+
+**Not yet.** The grammar and the agent (V2, V3); the microphone's level
+bar under "Listening…"; the thumb tap as a second opener; the measurements
+inside the running app (the transcription time with the renderer live, the
+window's cost on the frame, the stream's open time, the first launch's
+unpack of the model), which are the reviewer's.
+
 ## Open questions for Kevin
 
 1. The opener: the left fist held, or the thumb tap, or both from the
