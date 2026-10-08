@@ -243,6 +243,16 @@ impl SignalEmitter {
         sink: &mut dyn SignalSink,
     ) {
         sink.emit(ts, schema::BPM, &[OscType::Float(f.raw_bpm())]);
+        sink.emit(
+            ts,
+            schema::BPM_CONFIDENCE,
+            &[OscType::Float(f.tempo_confidence)],
+        );
+        sink.emit(
+            ts,
+            schema::BPM_LOCKED,
+            &[OscType::Int(i32::from(f.beat_locked > 0.5))],
+        );
         sink.emit(ts, schema::BAR_PHASE, &[OscType::Float(f.bar_phase)]);
         sink.emit(ts, schema::BUILD, &[OscType::Float(f.buildup)]);
         sink.emit(ts, schema::ENERGY, &[OscType::Float(f.loudness_s)]);

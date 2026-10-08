@@ -222,7 +222,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     vel += total_force * dt;
 
     // ZCR-driven Brownian noise: noisy signals = jittery particles
-    let jitter_strength = u.zcr * drive * 0.04;
+    let jitter_strength = max(u.zcr - 0.45, 0.0) * drive * 0.04;
     let jitter = vec2f(
         hash(u.seed + f32(idx) * 3.7) * 2.0 - 1.0,
         hash(u.seed + f32(idx) * 7.3 + 1.0) * 2.0 - 1.0

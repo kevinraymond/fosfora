@@ -7,11 +7,15 @@
 
 ### Added
 - **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
+- **`tempo_confidence` and `beat_locked`**, so effects, bindings and OSC clients can tell whether the beat grid is trustworthy, for example to keep a strobe off until the tempo locks. Signal also sends them as `/fosfora/v1/bpm/confidence` and `/fosfora/v1/bpm/locked`. `AudioFeatures` grows from 83 to 85 slots (332 → 340 bytes); the shader uniform block stays 448 bytes because the two values take its former padding, so existing shaders need no changes.
+- **Input trim and a level meter in Setup › Audio.** Lift a quiet line or mic input off the silence gate, or tame a hot one, by up to 24 dB; the trim changes only what the analysis hears, so recordings keep the source level. The meter reads the input before the trim and lights CLIP when the source itself is clipping.
 
 ### Fixed
 - **Audio capture could drop out when the system was short on memory.** The capture callback allocated memory each time the device delivered audio, which can stall the realtime audio thread. It now writes straight into the capture buffer, and that buffer is no longer shared between threads unsoundly.
 - **Audio analysis stalled while the tempo or build-up/drop settings were on screen.** Each analysis step waited for the UI to finish drawing those settings, adding timing jitter to beats. It now keeps using the previous settings for that step instead of waiting.
 - **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
+- **Audio analysis behaved differently depending on the input's sample rate.** At 48 kHz, feature ranging, tuning and the bass-note tracker ran on windows tuned for 44.1 kHz, and above 88.2 kHz every band had half its frequency resolution, leaving `sub_bass` about two FFT bins. Input above 88.2 kHz is now halved before analysis and the remaining windows follow the actual rate; `buildup` also updates at its intended 10 Hz instead of 9.6 Hz.
+- **`rolloff`, `bandwidth` and `zcr` only used a sliver of 0–1**, so anything bound to them barely moved. They now share the octave-based axis `centroid` uses (a clean 440 Hz note reads about 0.4 on `rolloff` and `zcr`, white noise about 0.9), and `bandwidth` is the spread around `centroid`, from 0 for a pure tone to about 0.8 for pink noise. Built-in effects are retuned to match; re-set the ranges of your own bindings or shaders that read these three.
 
 ## v2.3.0 — 2026-10-06
 

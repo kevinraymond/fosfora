@@ -113,7 +113,7 @@ A list of pages on the left, one page at a time.
 
 | Page                | What is on it                                                        |
 |---------------------|----------------------------------------------------------------------|
-| Audio               | Input device, what happens if it goes quiet, band scale              |
+| Audio               | Input device, level meter and trim, what happens if it goes quiet, band scale |
 | Control             | MIDI, OSC, the web remote, triggers                                  |
 | Outputs and streams | What black becomes, second window, recording, NDI, virtual camera (Spout and Syphon where available) |
 | Sync                | Ableton Link                                                         |
@@ -164,7 +164,7 @@ pick a displacement mode from the UI, OSC or a preset.
 | 5 | Presence   | PR   | 4-6 kHz       | Definition, edge           |
 | 6 | Brilliance | BR   | 6-20 kHz      | Air, sparkle, cymbals      |
 
-Full glossary of all 83 audio features, in plain English: [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+Full glossary of all 85 audio features, in plain English: [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
 ---
 

@@ -372,6 +372,24 @@ pub struct DropTrace {
 /// musical time instead of at the moment of announcement.
 pub const BOUNDARY_LAG_SECONDS: f32 = KERNEL_SECONDS + CONFIRM_SECONDS;
 
+/// Whether the hop at `timestamp` runs a tick, advancing `next_tick` if so. Ticks fire on the
+/// first hop at or past each point of a fixed `interval` grid, so they average exactly
+/// `1 / interval` per second at any hop length. Re-arming from the hop instead (the old rule)
+/// rounded every interval up to whole hops: 9.6 Hz at 44.1 kHz, 9.4 Hz at 48 kHz, against
+/// constants written for 10 Hz (#53). After a gap of more than an interval the grid restarts
+/// at the hop, rather than firing a burst of catch-up ticks.
+pub(crate) fn tick_due(next_tick: &mut f64, timestamp: f64, interval: f64) -> bool {
+    if timestamp < *next_tick {
+        return false;
+    }
+    *next_tick = if timestamp - *next_tick >= interval {
+        timestamp + interval
+    } else {
+        *next_tick + interval
+    };
+    true
+}
+
 pub struct StructureTracker {
     tick_interval: f64,
     /// Precomputed checkerboard kernel `K(i,j) = g(i,j)·sgn(i)·sgn(j)` over `-L..=L`,
@@ -418,7 +436,8 @@ pub struct StructureTracker {
     tick_index: u64,
 
     last_frame_time: f64,
-    last_tick_time: f64,
+    /// When the next tick is due; see [`tick_due`].
+    next_tick: f64,
     started: bool,
     /// Live-tunable thresholds, refreshed from the shared config each `process` call (#1510).
     cfg: StructureConfig,
@@ -446,7 +465,7 @@ impl StructureTracker {
         let confirm_ticks = (CONFIRM_SECONDS * TICK_HZ).round().max(1.0) as usize;
         let nov_hist_cap = (PEAK_STAT_SECONDS * TICK_HZ) as usize + confirm_ticks + 1;
         Self {
-            tick_interval: (1.0 / TICK_HZ) as f64,
+            tick_interval: 1.0 / f64::from(TICK_HZ),
             kernel,
             kernel_half,
             kernel_weight_recip: 1.0 / kernel_weight,
@@ -477,7 +496,7 @@ impl StructureTracker {
             drop_trace: DropTrace::default(),
             tick_index: 0,
             last_frame_time: -1.0,
-            last_tick_time: -1.0,
+            next_tick: f64::NEG_INFINITY,
             started: false,
             cfg: StructureConfig::default(),
         }
@@ -505,8 +524,7 @@ impl StructureTracker {
 
         let mut drop = 0.0;
         let mut boundary = 0.0;
-        if self.last_tick_time < 0.0 || timestamp - self.last_tick_time >= self.tick_interval {
-            self.last_tick_time = timestamp;
+        if tick_due(&mut self.next_tick, timestamp, self.tick_interval) {
             let ticked = self.tick(pre_norm, timestamp);
             drop = ticked.0;
             boundary = ticked.1;
@@ -813,6 +831,30 @@ fn sigmoid(x: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// Ticks average exactly TICK_HZ at any hop length (#53); re-arming from the hop rounded
+    /// each interval up to whole hops, 9.6 Hz at 44.1 kHz and 9.4 Hz at 48 kHz.
+    #[test]
+    fn ticks_hold_their_rate_at_any_hop_length() {
+        for sr in [44_100.0f64, 48_000.0, 22_050.0] {
+            let hop = 512.0 / sr;
+            let mut next = f64::NEG_INFINITY;
+            let hops = (60.0 / hop) as usize;
+            let ticks = (1..=hops)
+                .filter(|&i| tick_due(&mut next, i as f64 * hop, 0.1))
+                .count();
+            assert!(
+                (ticks as i64 - 600).abs() <= 1,
+                "{sr} Hz: {ticks} ticks in 60 s"
+            );
+        }
+        // A stall restarts the grid instead of firing a catch-up burst.
+        let mut next = f64::NEG_INFINITY;
+        assert!(tick_due(&mut next, 0.0, 0.1));
+        assert!(tick_due(&mut next, 5.0, 0.1));
+        assert!(!tick_due(&mut next, 5.05, 0.1));
+        assert!(tick_due(&mut next, 5.1, 0.1));
+    }
+
     const HOP: f32 = 86.0;
 
     fn beat(onset: f32) -> BeatResult {
@@ -824,6 +866,8 @@ mod tests {
             beat_strength: 0.0,
             beat_time: 0.0,
             beat_index: 0,
+            tempo_confidence: 0.0,
+            beat_locked: false,
         }
     }
 

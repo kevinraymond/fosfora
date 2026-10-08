@@ -52,7 +52,10 @@ pub struct TempoConfig {
 impl Default for TempoConfig {
     fn default() -> Self {
         // The pre-A7 hardcoded values — upgrading users get identical detection until
-        // they pick a preset.
+        // they pick a preset. 150 is deliberate, not a stray: benched against 120, 130
+        // and 120/σ0.75 (#78), every lower center halved fast EDM (GiantSteps Acc1
+        // 69.9% → 53.6–60.1%) for at most +2.5 points on Ballroom. Slow material is
+        // what the genre presets are for.
         Self {
             prior_center_bpm: 150.0,
             prior_sigma: 1.0,
@@ -1892,6 +1895,12 @@ pub struct BeatResult {
     /// including MUTED ones, so bar rotation downstream stays phase-coherent
     /// through breakdown mutes and unlocked gaps. Meaningful when `beat > 0.5`.
     pub beat_index: u64,
+    /// How much recent tempo evidence agrees with the tracked tempo, 0..1: the estimator's
+    /// lock support EMA (#81). Not `beat_strength`, which is onset strength.
+    pub tempo_confidence: f32,
+    /// Whether the estimator holds a tempo lock (support crossed the enter threshold and
+    /// has not fallen below the exit one) — the grid is worth trusting (#81).
+    pub beat_locked: bool,
 }
 
 /// 3-stage beat detection pipeline.
@@ -2033,6 +2042,8 @@ impl BeatDetector {
             },
             beat_time: if is_beat { beat_time } else { timestamp },
             beat_index: self.beat_scheduler.grid_beat_count,
+            tempo_confidence: self.tempo_estimator.support.clamp(0.0, 1.0) as f32,
+            beat_locked: self.tempo_estimator.locked,
         }
     }
 }

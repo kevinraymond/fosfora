@@ -5,7 +5,7 @@
 //! - **Harmonic** estimate `H[f]` = trailing **time**-median over the last [`TIME_FRAMES`]
 //!   frames at each bin — sustained tones survive a median across time, transients don't.
 //!   A trailing median centres half a window back, so `H` trails a new sustained tone by
-//!   ~8 hops (~93 ms at 44.1 kHz); the centred-median fix is #66.
+//!   ~93 ms; the centred-median fix is #66.
 //! - **Percussive** estimate `P[f]` = **frequency**-median over ±[`FREQ_RADIUS`] bins of the
 //!   current frame — broadband transients survive a median across frequency, tonal peaks don't.
 //!
@@ -25,10 +25,17 @@
 //! by up to ~27 dB relative to a band-limited RMS. `harmonic_ratio` is computed from the raw
 //! powers (level-invariant 0..1 balance), producer-owned (`Passthrough`) and neutral-gated here.
 
-/// Time-median window in frames (~0.2 s at the 512-sample hop). Odd for a defined median.
+/// Time-median window in frames at the reference hop rate (~0.2 s). Rescaled to the same time
+/// at other rates and kept odd, for a defined median (#53).
 const TIME_FRAMES: usize = 17;
-/// Frequency-median half-width in bins (±8 → a 17-bin window on the 1024-pt spectrum).
+/// Frequency-median half-width in bins at 44.1 kHz (±8 → a 17-bin, ~730 Hz window on the
+/// 1024-pt spectrum). Rescaled to the same width in Hz at other rates (#53).
 const FREQ_RADIUS: usize = 8;
+/// Scratch bounds for the two windows. The analysis rate stays below 88.2 kHz (see
+/// `decimate`), where the time window is at most twice [`TIME_FRAMES`]; the frequency window
+/// widens as the rate drops and reaches this bound only below ~7.4 kHz.
+const MAX_TIME_FRAMES: usize = 4 * TIME_FRAMES;
+const MAX_FREQ_RADIUS: usize = 6 * FREQ_RADIUS;
 
 /// The three HPSS features.
 #[derive(Debug, Clone, Copy)]
@@ -52,19 +59,27 @@ impl HpssFeatures {
 
 /// Rolling median-filter HPSS over the medium magnitude spectrum.
 pub struct HpssAnalyzer {
+    /// [`TIME_FRAMES`] at this rate.
+    time_frames: usize,
+    /// [`FREQ_RADIUS`] at this rate.
+    freq_radius: usize,
     /// Bin count of the spectrum; the ring is sized to it on the first frame.
     bins: usize,
-    /// `TIME_FRAMES × bins` flat ring of recent magnitude frames.
+    /// `time_frames × bins` flat ring of recent magnitude frames.
     ring: Vec<f32>,
     /// Next slot to overwrite (oldest frame).
     pos: usize,
-    /// Frames seen so far, capped at `TIME_FRAMES`.
+    /// Frames seen so far, capped at `time_frames`.
     filled: usize,
 }
 
 impl HpssAnalyzer {
-    pub fn new() -> Self {
+    pub fn new(sample_rate: f32) -> Self {
+        let frames = super::rescale_hops(TIME_FRAMES, super::hop_rate(sample_rate));
+        let radius = (FREQ_RADIUS as f32 * 44_100.0 / sample_rate).round() as usize;
         Self {
+            time_frames: (frames | 1).min(MAX_TIME_FRAMES - 1),
+            freq_radius: radius.clamp(1, MAX_FREQ_RADIUS),
             bins: 0,
             ring: Vec::new(),
             pos: 0,
@@ -84,7 +99,7 @@ impl HpssAnalyzer {
         // Lazily size the ring to the spectrum width on the first frame (or a resolution change).
         if self.bins != mag.len() {
             self.bins = mag.len();
-            self.ring = vec![0.0; TIME_FRAMES * self.bins];
+            self.ring = vec![0.0; self.time_frames * self.bins];
             self.pos = 0;
             self.filled = 0;
         }
@@ -92,8 +107,8 @@ impl HpssAnalyzer {
         // Overwrite the oldest slot with the current frame; the median then includes it.
         let bins = self.bins;
         self.ring[self.pos * bins..(self.pos + 1) * bins].copy_from_slice(mag);
-        self.pos = (self.pos + 1) % TIME_FRAMES;
-        if self.filled < TIME_FRAMES {
+        self.pos = (self.pos + 1) % self.time_frames;
+        if self.filled < self.time_frames {
             self.filled += 1;
         }
 
@@ -103,18 +118,19 @@ impl HpssAnalyzer {
 
         let mut e_p = 0.0f64;
         let mut e_h = 0.0f64;
-        let mut time_scratch = [0.0f32; TIME_FRAMES];
-        let mut freq_scratch = [0.0f32; 2 * FREQ_RADIUS + 1];
+        let radius = self.freq_radius;
+        let mut time_scratch = [0.0f32; MAX_TIME_FRAMES];
+        let mut freq_scratch = [0.0f32; 2 * MAX_FREQ_RADIUS + 1];
         for f in 0..bins {
             // Harmonic estimate: trailing time-median at this bin (suppresses transients).
             for (k, slot) in time_scratch[..self.filled].iter_mut().enumerate() {
                 *slot = self.ring[k * bins + f];
             }
             let h = median(&mut time_scratch[..self.filled]);
-            // Percussive estimate: frequency-median over ±FREQ_RADIUS of the current frame
+            // Percussive estimate: frequency-median over ±radius of the current frame
             // (suppresses tonal peaks); the window shrinks at the spectrum edges.
-            let lo = f.saturating_sub(FREQ_RADIUS);
-            let hi = (f + FREQ_RADIUS + 1).min(bins);
+            let lo = f.saturating_sub(radius);
+            let hi = (f + radius + 1).min(bins);
             let m = hi - lo;
             freq_scratch[..m].copy_from_slice(&mag[lo..hi]);
             let p = median(&mut freq_scratch[..m]);
@@ -150,12 +166,6 @@ fn db_map(power: f64) -> f32 {
     ((db + 120.0) / 120.0).clamp(0.0, 1.0)
 }
 
-impl Default for HpssAnalyzer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Median of a scratch slice (sorted in place). Magnitudes are non-negative and finite, so the
 /// partial comparison never hits the `Equal` fallback in practice.
 fn median(vals: &mut [f32]) -> f32 {
@@ -175,7 +185,21 @@ fn median(vals: &mut [f32]) -> f32 {
 mod tests {
     use super::*;
 
+    /// Both windows keep their reference span at 48 kHz, and the time window stays odd (#53).
+    #[test]
+    fn windows_track_the_sample_rate() {
+        let h = HpssAnalyzer::new(SR);
+        assert_eq!((h.time_frames, h.freq_radius), (TIME_FRAMES, FREQ_RADIUS));
+        let h = HpssAnalyzer::new(48_000.0);
+        assert_eq!(h.time_frames % 2, 1);
+        let secs = h.time_frames as f32 * 512.0 / 48_000.0;
+        assert!((secs - 0.2).abs() < 0.015, "time window {secs} s");
+        let hz = (2 * h.freq_radius + 1) as f32 * 48_000.0 / 1024.0;
+        assert!((hz - 732.0).abs() < 50.0, "frequency window {hz} Hz");
+    }
+
     const BINS: usize = 513; // medium 1024-pt spectrum: 1024/2 + 1
+    const SR: f32 = 44_100.0;
 
     fn spike(bin: usize, amp: f32) -> Vec<f32> {
         let mut v = vec![0.0; BINS];
@@ -189,7 +213,7 @@ mod tests {
 
     #[test]
     fn empty_input_is_neutral() {
-        let f = HpssAnalyzer::new().process(&[], false);
+        let f = HpssAnalyzer::new(SR).process(&[], false);
         assert_eq!(f.harmonic_ratio, 0.5);
         assert_eq!(f.percussive_energy, 0.0);
         assert_eq!(f.harmonic_energy, 0.0);
@@ -198,7 +222,7 @@ mod tests {
     #[test]
     fn silence_is_neutral() {
         // A loud frame flagged silent must still gate to neutral (ratio is Passthrough).
-        let mut h = HpssAnalyzer::new();
+        let mut h = HpssAnalyzer::new(SR);
         let f = h.process(&flat(1.0), true);
         assert_eq!(f.harmonic_ratio, 0.5);
         assert_eq!(f.percussive_energy, 0.0);
@@ -209,7 +233,7 @@ mod tests {
     fn steady_tone_is_harmonic() {
         // A single-bin tone held steady: time-median keeps it, frequency-median (mostly zeros)
         // kills it → harmonic-dominant.
-        let mut h = HpssAnalyzer::new();
+        let mut h = HpssAnalyzer::new(SR);
         let tone = spike(100, 1.0);
         let mut f = HpssFeatures::NEUTRAL;
         for _ in 0..TIME_FRAMES {
@@ -228,7 +252,7 @@ mod tests {
     fn broadband_transient_is_percussive() {
         // A flat burst after a quiet history: time-median (mostly zeros) kills it, frequency-median
         // (flat) keeps it → percussive-dominant.
-        let mut h = HpssAnalyzer::new();
+        let mut h = HpssAnalyzer::new(SR);
         let zeros = vec![0.0; BINS];
         for _ in 0..TIME_FRAMES - 1 {
             h.process(&zeros, false);
@@ -249,7 +273,7 @@ mod tests {
         // powers are ~1e-7..1e-9 — below the normalizer's absolute span epsilon — so without the
         // dB map the energies normalized to a hard 0 on live music. A quiet tone (amp 1e-3, i.e.
         // −60 dBFS) must still produce a clearly nonzero energy for the ranger to work with.
-        let mut h = HpssAnalyzer::new();
+        let mut h = HpssAnalyzer::new(SR);
         let tone = spike(100, 1e-3);
         let mut f = HpssFeatures::NEUTRAL;
         for _ in 0..TIME_FRAMES {
@@ -262,7 +286,7 @@ mod tests {
     #[test]
     fn steady_broadband_is_balanced() {
         // Flat noise held steady: both medians land on the same level → ~50/50.
-        let mut h = HpssAnalyzer::new();
+        let mut h = HpssAnalyzer::new(SR);
         let noise = flat(0.5);
         let mut f = HpssFeatures::NEUTRAL;
         for _ in 0..TIME_FRAMES {

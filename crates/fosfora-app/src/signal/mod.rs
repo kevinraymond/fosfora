@@ -88,6 +88,7 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
     let tuning = Arc::new(Mutex::new(settings.structure_tuning));
     let tempo = Arc::new(Mutex::new(TempoControl::new(settings.tempo)));
     let audio = AudioSystem::new_with_device(device.as_deref(), settings.band_scale, tuning, tempo);
+    audio.set_input_trim_db(settings.input_trim_db);
     if !audio.active {
         return Err(anyhow!(
             "no audio input available{}",
@@ -98,7 +99,7 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
                 .unwrap_or_default()
         ));
     }
-    let hop_hz = f64::from(audio.sample_rate) / ANALYSIS_HOP as f64;
+    let hop_hz = f64::from(audio.analysis_rate()) / ANALYSIS_HOP as f64;
     log::info!(
         "signal: broadcasting /fosfora/v1 to {}:{} — device \"{}\", {:.1} Hz hops, {} Hz continuous{}{}",
         cfg.host,
