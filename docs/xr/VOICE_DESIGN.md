@@ -282,6 +282,155 @@ inside the running app (the transcription time with the renderer live, the
 window's cost on the frame, the stream's open time, the first launch's
 unpack of the model), which are the reviewer's.
 
+## V2 as built
+
+The second step, built; the reviewer runs the unworn gate through the
+`say` knob and the worn gate with the ten phrases.
+
+**The module.** `crates/fosfora-xr/src/intent.rs`, pure and
+desktop-tested: data plus one matcher. The vocabulary (`Vocabulary`) is
+built from the frame at the moment of the sentence: the world effects'
+names ("Flux Cloud", "Embers", "Flock"), `SurfaceBehavior::ALL` by
+`name()`, the lane boxes by `surfaces::friendly_name` ("desk", "table
+14", "wall 5", "window"; the box index appended where two share a name)
+and the surface under the editor's beam while Edit room is on. `parse`
+returns one `Intent` or a `Miss`; every intent is something a hand
+already does:
+
+| Intent | The hands' way |
+|---|---|
+| `NextEffect`, `PrevEffect`, `Effect(i)` | the hand menu's effect row |
+| `EditRoom`, `Cloud`, `Pitcher`, `Music` | the menu's toggles (the Cloud toggle's row reads "Particles") |
+| `Rescan`, `Recenter`, `AllNone` | the menu's buttons |
+| `Behavior { target, behavior }` | the editor's tap (a surface) or hold (a kind), set instead of stepped |
+| `Color`, `Band`, `Strength` | the menu's surface rows with Edit room on |
+| `Describe(target)` | the status cell and the rows' label |
+
+**The normalizer.** Lower case; apostrophes dropped ("what's" is
+"whats"); every other mark a space ("re-center" is "re center");
+whitespace collapsed; "the", "a", "an", "please" and "to" dropped
+wherever they stand, names included, so both sides compare alike. Number
+words stay words.
+
+**The templates**, tried in order; each slot takes a whole run of words,
+so a name is never cut in two:
+
+| Template (slots in braces) | Intent |
+|---|---|
+| `next effect`, `next` / `previous effect`, `last effect`, `previous` | NextEffect / PrevEffect |
+| `edit (the) room`, `start editing` / `stop editing`, `done editing`, `edit room off` | EditRoom |
+| `rescan (the) room`, `scan (the) room` / `recenter (the) cloud`, `re-center` | Rescan / Recenter |
+| `clear everything`, `clear all`, `nothing anywhere`, `all none`, `everything off` | AllNone |
+| `cloud on/off`, `particles on/off`, `pitcher on/off`, `music play/stop/on/off`, `play (the) music`, `turn (the) cloud off`, `turn off (the) music`, `show/hide (the) particles` | the toggles |
+| `{effect}` alone, or `switch to {effect}`, `show {effect}` | Effect |
+| `what is {target}`, `what's {target}`, `describe {target}`, `what is this` | Describe |
+| `clear {target}` | Behavior none |
+| `{behavior} on {target}`, `put {behavior} on {target}`, `{target} {behavior}` | Behavior |
+| `{target} in {color}`, `{color} on {target}`, `make {target} {color}`, `{target} {color}` | Color |
+| `{target} on (the) {band}`, `{target} follow(s) (the) {band}`, `{target} {band}` | Band |
+| `{target} {strength}`, `{brighter/dimmer} on {target}` | Strength |
+
+A leading `put`, `set`, `make`, `turn`, `give`, `paint` or `use` is
+dropped before the surface templates ("set the desk to amber", "turn the
+desk off").
+
+**The slots.** `{target}`: a surface's friendly name ("desk", "table 14");
+a name without its number ("table") for the surfaces sharing it; a kind
+for all of it ("every table", "all the walls", or a plural alone,
+"walls"); "this", "that", "here", "it" for the pointed surface; or no
+words, which also means the pointed surface. A shared name is the pointed
+surface when that is one of them, every floor when they are all floors
+(the room's floor and the stage floor are one floor to the eye, and both
+are drawn), else a miss that lists them. `{behavior}`: a behavior's name,
+the eight ports included ("aurora on the wall"), `ripple` for the rings,
+a dropped trailing "s" forgiven ("streamline"), and `none`, `nothing`,
+`clear`, `off` for none; one the target's kind does not cycle through
+(`SurfaceBehavior::catalogue`) is refused. `{color}`: the hand menu's
+names (blue, violet, warm white, amber, green, teal, rose), `key` for the
+key's tint, the kind's own as "normal color", "its own color" or "default
+color", "color" after a name allowed. `{band}` and `{strength}`: below.
+
+**The synonyms**, one table:
+
+| Said | Means |
+|---|---|
+| desk, desks | the table kind (when no surface is called "desk") |
+| couch, sofa, chair (and plurals) | the other kind |
+| floor, ground | the floor kind |
+| ceiling, roof | the ceiling kind |
+| frame, window, door (and plurals) | the frame kind (a lamp is the other kind, as its anchor's label makes it) |
+| all, every, each `{kind}`; a plural | the kind: its default and every surface of it |
+| bass, base, low, lows | band 1 (whisper heard "bass" as "base" in the spike) |
+| mid, mids, middle | band 2 |
+| high, highs, treble | band 3 |
+| rms, level, volume | band 0 |
+| brighter, up, more, stronger / dimmer, down, less, weaker, darker | a strength step up / down (the Strength row's tenth) |
+| half, full (max) | strength 0.5, 1 |
+| off, zero with a level word ("strength off", "brightness zero") | strength 0 |
+| off, nothing, none, clear after or before a surface | behavior none |
+| purple, white, orange, pink | violet, warm white, amber, rose |
+
+**The misses** and what the label says:
+
+| Reason | Example | Label |
+|---|---|---|
+| NoMatch | "Flibber jabber." | Didn't catch that: "Flibber jabber." |
+| NoSurface | "in amber" with nothing pointed | Point at a surface, or name one |
+| UnknownSurface | "the shelf in blue" | No surface called "shelf" |
+| UnknownBehavior | "fire on the desk" | No behavior called "fire" |
+| NotOnThisKind | "embers on wall 2" | embers doesn't run on a wall |
+| Ambiguous | "table in amber", two tables, neither pointed | Which one: table 1 or table 2? |
+
+A target longer than three words is no name, so a long sentence that
+ends in a slot word misses as NoMatch instead of naming an unknown
+surface ("switch to the next effect and fade the colors to purple" is
+NoMatch). An ambiguity lists five names, then "or N more".
+
+**The wiring** (`app.rs`). Where V1's transcription arrives, the sentence
+goes through `parse` with the frame's vocabulary. The menu's intents
+become the `Action`s the hand menu's presses produce, consumed by the
+next frame's action loop together with the menu's (the loop no longer
+sits inside the panel-shown branch), so the saves and the logs stay one
+path; a toggle sets its `controls` field first, as the menu does, and
+naming a world effect sets `switch_to` to it. The surface intents write
+in the same frame (its `lane_boxes`) through `intent::apply` and the
+lanes' typed writers: a behavior on one surface through `assign` with its
+strength kept (the tap's way), on a kind through the new
+`RoomLanes::set_kind` (the hold's writer with a set instead of a step,
+at the kind's first surface's strength), a color, band or strength
+through `set_params`, on each surface of a kind in turn. `Describe` reads
+`label::param_text` ("table 14: streamlines · amber · rms · 1.0"); a kind,
+its behaviors ("all tables: streamlines, curls").
+
+**The label and the log.** The voice label, where V1 showed the sentence:
+the reply for 1.5 s on success, in the editor's words ("desk:
+streamlines", "all walls: spectrum", "desk: amber", "wall 5: bass",
+"desk: dimmer", "next effect", "particles off"), the miss for 2.5 s.
+Nothing heard still reads "Didn't catch that". The log, one line per
+sentence: `voice: heard "<sentence>" → <intent or miss> · label "<text>"`,
+after V1's `voice: heard "…" (N ms)`, and the lanes' own lines for a
+write.
+
+**The `say` knob.** `adb shell "setprop debug.fosfora.say 'the desk in
+amber'"` feeds a sentence to the grammar as if heard, voice on or off,
+its label ahead of the head: read at launch and polled once a second, fed
+once per value, waiting for the room's anchors as
+`debug.fosfora.surface` does. An app cannot clear a `debug.` property,
+so the same sentence again needs the knob set to "" (or to another
+sentence) first.
+
+**Where it differs from the design above.** "particles on/off" is the
+Cloud toggle, the hand menu's row for it reading "Particles"; the
+pitcher is reached as "pitcher on/off". The debug panel's toggle is not
+reachable by voice. A kind's reply reads "all walls", the hold's words.
+The rings do run on a wall (the wall's catalogue has them), so the
+refused example is embers on a wall.
+
+**Not yet.** The agent (V3): a sentence the grammar misses says so and
+goes nowhere else. Numbers as digits: "table fourteen" does not name
+table 14 (whisper writes digits for a spoken number, which do). Anything
+but English. Two actions in one sentence.
+
 ## Open questions for Kevin
 
 1. The opener: the left fist held, or the thumb tap, or both from the

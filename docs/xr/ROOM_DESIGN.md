@@ -681,3 +681,18 @@ a gesture a hand can make by accident. In the same change the hand menu
 gained the world effect's `<` `>` row on top, since the bare pinch-hold no
 longer cycles the effect, so the menu is five rows, eight with Edit room
 on.
+
+**Amended, the voice path's grammar (Oct 8, board #3751).** The editor's
+assignments can be spoken (`VOICE_DESIGN.md`, "V2 as built"): hold the
+left fist, say "the desk in amber", "every table streamlines", "wall 5 on
+the bass", "nothing on the ceiling", "the desk dimmer" or "what is this",
+and release. A surface is named by the status cell's words ("desk",
+"table 14", "window"), by its kind for all of it ("every table", "the
+walls"), or not at all, in which case the surface under the beam is meant,
+as the rows' is. The writes go through the same lanes, room file and log
+as the tap, the hold and the rows (a kind's behavior through
+`RoomLanes::set_kind`, a set where the hold steps), and the voice label
+names the result in the editor's words ("desk: amber", "all tables:
+streamlines"). Nothing the voice does is out of the hands' reach: a
+behavior a kind does not cycle through is refused ("embers doesn't run on
+a wall").
