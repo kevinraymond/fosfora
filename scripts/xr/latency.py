@@ -5,8 +5,8 @@ The app runs with `debug.fosfora.audio file`, `debug.fosfora.file click`
 and `debug.fosfora.flash 1`: a 120 BPM click through the headset speakers
 and a two-frame white flash on each detected beat. The phone films a lens
 and records the click. This script finds the click times in the video's
-audio and the flash times in its frames, pairs each flash with the click
-before it, and prints the offsets.
+audio, scores each click by the sharpest brightening in the 400 ms after
+it (the flash), and prints the offsets.
 
     scripts/xr/latency.py video.mp4 [click_bpm, default 120]
 
@@ -69,21 +69,36 @@ def main(path, bpm=120.0):
     bright = frames.reshape(len(frames), -1).astype(np.float32).mean(1)
     base = np.median(bright)
     peak = bright.max()
-    fthresh = base + 0.5 * (peak - base)
+    # Each click is scored on its own: the flash is the sharpest brightening
+    # (frame-to-frame rise) within the 400 ms after the click, taken when
+    # that rise is at least a quarter of the video's full swing. A global
+    # brightness threshold lost flashes over the ember cloud (the cloud's
+    # own bright frames crossed it, the flash on a dim frame did not; board
+    # #3289): a two-frame white flash is a rise, whatever the frame under it.
+    rise = np.diff(bright, prepend=bright[0])
+    window = int(round(0.4 * fps))
+    min_rise = 0.25 * (peak - base)
     flashes = []
-    k = 0
-    while k < len(bright):
-        if bright[k] > fthresh:
+    missed = 0
+    for t in clicks:
+        k0 = int(t * fps)
+        k1 = min(len(bright), k0 + window + 1)
+        if k1 <= k0:
+            missed += 1
+            continue
+        k = k0 + int(np.argmax(rise[k0:k1]))
+        if rise[k] >= min_rise:
             flashes.append(k / fps)
-            while k < len(bright) and bright[k] > fthresh:
-                k += 1
         else:
-            k += 1
+            missed += 1
     flashes = np.array(flashes)
 
     print(f"video {w}x{h} @ {fps:.2f} fps, {len(frames)} frames · audio {len(audio)/sr:.1f} s")
     print(f"clicks found {len(clicks)} (median spacing {np.median(np.diff(clicks))*1000:.1f} ms if >1)")
-    print(f"flashes found {len(flashes)} (median spacing {np.median(np.diff(flashes))*1000:.1f} ms if >1)")
+    print(
+        f"flashes found {len(flashes)} of {len(clicks)} clicks ({missed} without a rise of "
+        f"{min_rise:.0f} in the 400 ms after; brightness base {base:.0f}, peak {peak:.0f})"
+    )
     if len(flashes) < 3:
         print("not enough flashes; check the framing (lens fills part of the frame)")
         return
