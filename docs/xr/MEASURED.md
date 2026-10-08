@@ -2080,3 +2080,50 @@ query at focus sees the grant, and the log reads `permission USE_SCENE
 granted after 11 s: the room is already in`. Unworn, a force-stopped app
 leaves the system dialog up and the next launch is blocked by it;
 `adb shell am force-stop com.android.permissioncontroller` clears it.
+
+## On-device speech to text (board #3751)
+
+A feasibility spike for the voice path (`VOICE_DESIGN.md`): whisper.cpp
+1.8.3 through `whisper-rs` 0.16 (Unlicense; whisper.cpp and the models
+MIT), built for `aarch64-linux-android` with cargo-ndk (NDK r27, a
+wrapper toolchain file setting `ANDROID_ABI=arm64-v8a` and
+`ANDROID_PLATFORM=android-29`, `-march=armv8.2-a+dotprod+fp16`), run as a
+plain binary from `/data/local/tmp` on the Quest 3 (Android 14, 6
+Cortex-A78C cores, dotprod and fp16, no i8mm), the headset asleep and no
+app running, release build, greedy decoding, `language=en`,
+`single_segment`, `no_context`. Three synthetic English clips of 2.6 to
+3.2 s. Each figure the median of 6 warm runs over 3 launches; a rerun
+after a cool-down matched within 2%.
+
+| model | encoder window | threads | load ms | clip 2.61 s | 2.84 s | 3.17 s |
+|---|---|---|---|---|---|---|
+| tiny.en | default 30 s | 2 | 86 | 1258 | 1234 | 1287 |
+| tiny.en | default 30 s | 3 | 97 | 905 | 981 | 1004 |
+| tiny.en | default 30 s | 4 | 93 | 693 | 676 | 705 |
+| tiny.en | default 30 s | 6 | 88 | 511 | 500 | 516 |
+| tiny.en | cut to the clip + 1.28 s | 4 | 87 | 113 (wrong) | 4013 (loop) | 117 |
+| base.en | default 30 s | 4 | 126 | 1464 | 1443 | 1466 |
+| base.en | default 30 s | 6 | 133 | 1067 | 1051 | 1075 |
+| base.en | cut to the clip + 1.28 s | 2 | 176 | 378 | 365 | 429 |
+| base.en | cut to the clip + 1.28 s | 3 | 173 | 286 | 278 | 318 |
+| base.en | cut to the clip + 1.28 s | 4 | 125 | 198 | 190 | 224 |
+| base.en | cut to the clip + 1.28 s | 6 | 128 | 168 | 161 | 190 |
+
+Transcripts: both models with the default window, and `base.en` with the
+cut window, returned every clip right except "bass", heard as "base".
+`tiny.en` with the cut window dropped a word on one clip and fell into a
+repetition loop on another (turning off the temperature retry did not
+help). Peak resident memory: `tiny.en` 216 MB default / 120 MB cut,
+`base.en` 331 / 204 MB. Model files 77.7 MB and 148.0 MB; the benchmark
+binary 1.4 MB plus the NDK's `libc++_shared.so` (1.8 MB, linked
+dynamically). One ad-hoc run with the store app active and the headset at
+36 to 38 C took 2.5x the matrix figure: background load and heat matter.
+
+**Verdict.** A 2 to 4 s utterance transcribes well under a second on the
+headset: `base.en` with the cut window at 0.16 to 0.43 s on 6 to 2
+threads is the choice; `tiny.en` at the default window is the fallback
+(0.5 s on 6 threads). Not yet measured: the same inside the running app
+with the renderer live on a 2 to 3 thread budget, and real recorded
+voice. The spike's crate, scripts and logs live outside the repo
+(`fosfora-xr-kit/spikes/stt/`); the headset keeps the binary, models and
+clips under `/data/local/tmp/stt/` for reruns.

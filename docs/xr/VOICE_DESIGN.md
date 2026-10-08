@@ -83,11 +83,21 @@ MIT) is the candidate: `tiny.en` (75 MB) and `base.en` (142 MB), English
 only, which the command grammar is anyway.
 
 **Budget.** A 3 s utterance should come back in under a second, so the
-label can answer while the gesture is still fresh. The spike measures
-`tiny.en` and `base.en` on the Quest 3 with 4 and 6 threads; the numbers
-go in `MEASURED.md` and here. If `base.en` fits the budget it is the one
-(fewer misheard commands); if only `tiny.en` does, the grammar grows
-synonyms instead.
+label can answer while the gesture is still fresh. Measured on the Quest 3
+(the spike in `MEASURED.md`, "On-device speech to text"): `tiny.en` with
+whisper's default 30 s encoder window takes 0.5 s on 6 threads and 0.7 s
+on 4; `base.en` with the default window 1.05 s on 6 and 1.46 s on 4, over
+the budget; `base.en` with the encoder window cut to the clip's length
+plus 1.28 s (`audio_ctx`) takes 0.16 to 0.19 s on 6 threads, 0.19 to 0.23
+on 4, and still 0.37 to 0.43 on 2, with every transcript right. `tiny.en`
+with the cut window is unsafe (a repetition loop of 4 s on one clip, a
+dropped word on another). So the model is **`base.en` with the cut
+window, on 2 to 3 threads** (the render loop keeps the rest), at about
+0.3 to 0.4 s per utterance and 204 MB peak, loaded in 0.13 s. Two checks
+remain before V1 commits: the same measurement inside the running app
+with the renderer live, and real recorded voice for words like "bass",
+which the synthetic clips heard as "base" (the grammar snaps such words
+to its own list).
 
 **Where it runs.** On its own thread, after the window closes, with the
 threads the render loop does not need (the loop's CPU is 2 ms of a
@@ -95,15 +105,17 @@ threads the render loop does not need (the loop's CPU is 2 ms of a
 a frame. The model loads once at launch, after the room, so the first
 command does not pay the load.
 
-**Memory.** `base.en` holds about 200 MB resident. The app's budget on
-the Quest is comfortable for that; the spike reports the real figure.
+**Memory.** `base.en` with the cut window peaks at 204 MB (331 MB with
+the default window; `tiny.en` 120 and 216 MB). The app's budget on the
+Quest is comfortable for that.
 
 **Licensing.** `whisper-rs` is Unlicense, `whisper.cpp` MIT, the models
 MIT; all pass `deny.toml`. The model file is downloaded by the build (as
 the effects' assets are packed) and bundled in the APK, which grows by
 the model's size; or fetched on first use into the app's files, which
 keeps the APK small and needs a network once. Recommendation: bundle
-`tiny.en`, fetch `base.en` on first use if the spike says it is worth it.
+`base.en` (148 MB) and ship `libc++_shared.so` with it (the whisper build
+links it dynamically).
 
 ### The intent layer
 
@@ -195,7 +207,7 @@ gesture is.
 1. The opener: the left fist held, or the thumb tap, or both from the
    start? Default taken if silent: the fist, the tap later.
 2. Bundle the model in the APK or fetch on first use? Default: bundle
-   `tiny.en` (75 MB), decide on `base.en` after the spike.
+   `base.en` (148 MB; the spike made it the model).
 3. Is the agent in scope for the first release of the voice path, or does
    the grammar ship first and the agent follow? Default: grammar first.
 4. Which hosted model, and where does its key live on the headset?
