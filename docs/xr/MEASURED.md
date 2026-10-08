@@ -2006,3 +2006,34 @@ the live depth occluder; aurora, prism, shards and tessera show as light
 on the strip of floor in view with the real floor showing through their
 dark parts, bezel and reticle (drawn at the face's edges and center) are
 out of the view. Judged worn.
+
+## Surfaces as effects, D3: per-surface parameters from the panel (board #3472)
+
+The hand menu gains three rows with Edit room on (Color, Band, Strength,
+each `<` and `>`) acting on the surface under the beam, through the lanes'
+typed writer; and the ported effects honor the lane's color index (a tint
+after the coverage, so no alpha changes). `SURFACES_DESIGN.md` has the
+"D3 as built" section.
+
+**Unworn screencaps** (`d083083`, `debug.fosfora.hudtest 1`, `editroom 1`,
+`anchors replay`): the menu shows seven rows with "Point at a surface" on
+the first surface row (no beam without a hand), the debug panel its 14;
+nothing overlaps the header. The rows acting on a pointed surface are
+judged worn.
+
+**Cost of the tint** (`d083083`, Quest 3 v207, `mode world`, Flux Cloud
+500K, the replayed room's 17 anchors, 16 ported faces + the stage floor's
+streamlines, 72 Hz, unworn, 45 s runs interleaved, headset 36 → 42 C over
+the four, App GPU med / p90 / max ms):
+
+| Run | Ports | App GPU med / p90 / max | fps | long | stale |
+|---|---|---|---|---|---|
+| 1 | untinted (`table=shards,floor=tessera,wall=aurora,other=reticle,frame=bezel`) | 9.34 / 9.51 / 9.60 | 72 | 5 | 77 |
+| 2 | tinted (the same `:4`, `:1`, `:6`, `:2`, `:5`) | 9.40 / 9.63 / 9.86 | 72 | 6 | 130 |
+| 3 | untinted | 9.46 / 9.66 / 9.88 | 72 | 7 | 133 |
+| 4 | tinted | 9.55 / 9.93 / 10.22 | 72 | 5 | 104 |
+
+The tint is one multiply in the wrapper: 0.06–0.09 ms between neighbors,
+under the 0.1 ms the warming headset added run to run. The room's file was
+backed up before the kind-wide knob writes and restored byte-identical
+after (`adb shell run-as … sh -c 'cat > files/config/rooms/<id>.json'`).
