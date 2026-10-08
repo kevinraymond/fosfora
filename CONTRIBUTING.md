@@ -31,7 +31,7 @@ RUST_LOG=fosfora=debug cargo run  # verbose logging
 
 The fastest way to contribute is writing a new visual effect. Three steps:
 
-1. **Create a shader** in `assets/shaders/your_effect.wgsl`. Start from the template in [docs/TECHNICAL.md](docs/TECHNICAL.md#shader-authoring-guide) — you get time, resolution, 83 audio features, up to 16 params, and a WGSL library (noise, palette, SDF, tonemap) auto-prepended.
+1. **Create a shader** in `assets/shaders/your_effect.wgsl`. Start from the template in [docs/TECHNICAL.md](docs/TECHNICAL.md#shader-authoring-guide) — you get time, resolution, 85 audio features, up to 16 params, and a WGSL library (noise, palette, SDF, tonemap) auto-prepended.
 
 2. **Create a definition** in `assets/effects/your_effect.pfx` (JSON):
    ```json
