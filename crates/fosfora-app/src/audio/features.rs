@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
-/// 83 audio features, normalized to 0.0-1.0 — except the two trailing overlay-clock
-/// counters (`bar_index`/`beat_index`), which are raw counts by design.
+/// 85 audio features, normalized to 0.0-1.0 — except the two overlay-clock counters
+/// (`bar_index`/`beat_index`), which are raw counts by design.
 /// Multi-resolution FFT bands + spectral shape + beat detection + MFCC + chroma,
 /// plus a reserved tail laid out by two batched shader-ABI bumps: v2 (#1505 —
 /// loudness / key / downbeat / stereo / structure) and v3 (#1629 — hpss / pitch /
@@ -113,9 +113,15 @@ pub struct AudioFeatures {
     // monotonic clocks. Exact in f32 to 2^24. Appended so every existing index stays put.
     pub bar_index: f32,
     pub beat_index: f32,
+
+    // ---- Tempo trust (#81) ----
+    // Appended so every existing index stays put. In the shader uniforms these fill the
+    // two pad slots after the overlay clock, so the uniform block does not grow.
+    pub tempo_confidence: f32, // agreement of recent tempo evidence with the grid, 0-1
+    pub beat_locked: f32,      // 1.0 while the tempo is locked, else 0.0
 }
 
-pub const NUM_FEATURES: usize = 83;
+pub const NUM_FEATURES: usize = 85;
 
 /// The `bpm` feature ships as raw BPM divided by this. Every consumer doing
 /// time math MUST denormalize through [`AudioFeatures::raw_bpm`] or
@@ -171,7 +177,7 @@ mod tests {
     #[test]
     fn as_slice_len() {
         let f = AudioFeatures::default();
-        assert_eq!(f.as_slice().len(), 83);
+        assert_eq!(f.as_slice().len(), 85);
     }
 
     #[test]
@@ -191,6 +197,7 @@ mod tests {
             band_pan_brilliance: 0.77,
             bar_index: 33.0,
             beat_index: 132.0,
+            beat_locked: 1.0,
             ..Default::default()
         };
         let s = f.as_slice();
@@ -206,12 +213,14 @@ mod tests {
         // v4 overlay clock: the two trailing counters
         assert!((s[81] - 33.0).abs() < 1e-6);
         assert!((s[82] - 132.0).abs() < 1e-6);
+        // #81 tempo trust appended after the clock
+        assert!((s[84] - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn size_is_332_bytes() {
-        // 83 f32 features (324 / 81 before the v4 overlay-clock append)
-        assert_eq!(std::mem::size_of::<AudioFeatures>(), 332);
+    fn size_is_340_bytes() {
+        // 85 f32 features (332 / 83 before the #81 tempo-trust append)
+        assert_eq!(std::mem::size_of::<AudioFeatures>(), 340);
     }
 
     /// #2054: `bpm` ships normalized; time math must go through the raw

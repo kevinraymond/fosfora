@@ -36,7 +36,7 @@ A comprehensive guide to using Fosfora, a real-time particle and shader engine f
 2. **Play some music**: anything your computer can hear. The visuals start reacting immediately using your default input device. (Hearing nothing react? See [Audio → Choosing an Input](#audio).)
 3. **Pick a look.** In the **Effects** panel on the left, click any effect to load it onto the active layer. Try Aurora, Storm, or Tesla to feel the range.
 4. **Go big.** Press **F** for borderless fullscreen. Press **F** again (or **Esc**) to come back.
-5. **Make it yours.** Drag the sliders in the right panel to reshape the effect. Every one is audio-mappable later. When something looks great, save it as a preset.
+5. **Make it yours.** Drag the sliders under **Parameters**, in the middle column of Build, to reshape the effect. Every one is audio-mappable later. When something looks great, save it as a preset.
 
 That's the whole loop: **open → play music → pick an effect → fullscreen**. Everything below goes deeper on each piece.
 
@@ -55,11 +55,11 @@ Effects are the core visual building blocks of Fosfora. Each effect is a WGSL sh
 
 ### Built-In Effects
 
-Fosfora ships with **56 built-in effects**, plus 2 hidden ones (the signature **Fosfora**
+Fosfora ships with **58 built-in effects**, plus 2 hidden ones (the signature **Fosfora**
 intro visual you see at startup, and a rasterizer stress test).
 
-**Shaders** (11): pure fragment shaders, no particles.
-Aurora · Beam · Drift · Frost · Iris · Prism · Pulse · Shards · Storm · Strata · Tunnel
+**Shaders** (13): pure fragment shaders, no particles.
+Aurora · Beam · Drift · Frost · Iris · Plateau · Prism · Pulse · Shards · Storm · Strand · Strata · Tunnel
 
 **Particle simulations** (20): GPU compute, from a few thousand particles to two million:
 Accretion · Array · Cascade · Chaos · Cleave · Cymatics · Flux · Genesis · Morph · Murmur ·
@@ -306,7 +306,7 @@ On Linux, Fosfora uses PulseAudio/PipeWire for monitor capture (loopback of syst
 
 ### What Gets Detected
 
-Fosfora extracts **83 audio features** from multi-resolution FFT analysis. The list below is a quick index. For what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+Fosfora extracts **85 audio features** from multi-resolution FFT analysis. The list below is a quick index. For what each feature *means* musically, what to hook it to, and the research behind it, see [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
 The core set below is joined by ten detector groups (loudness, key, downbeat, stereo, structure, harmonic/percussive split, pitch, spectral contrast, per-band pan, and the bar/beat counters) that fill the shader ABI's reserved tail (see [Detector features](#reserved-features)):
 
@@ -356,6 +356,7 @@ The remaining three groups fill the shader ABI v3 tail. All three are live as of
 Two more groups close out the tail:
 - **band_pan_sub_bass … band_pan_brilliance**: per-band pan: where each of the seven frequency bands sits in the stereo image, same convention as `pan` (0.5 = centred)
 - **bar_index / beat_index**: running bar and beat counts, as raw whole numbers rather than 0–1. `bar_index + bar_phase` is a continuous clock that never wraps
+- **tempo_confidence / beat_locked**: whether the beat grid is worth trusting: how much recent tempo evidence agrees with it (0–1), and 1 while the tempo is locked
 
 Alongside these, three live audio *textures* let effects read the signal directly, for oscilloscopes, spectrum bars and waterfalls. Sample them with the built-in helpers:
 - **`waveform(x)`** → `vec2f` (min, max) of the raw PCM at horizontal position `x`: a min/max-decimated, zero-crossing-triggered scope trace.
@@ -380,7 +381,7 @@ This is where the magic happens: audio features drive every aspect of the visual
 
 ### How It Works
 
-Every frame, Fosfora packs all **83 audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
+Every frame, Fosfora packs all **85 audio features** into the shader uniform buffer. Your shaders read these values and use them to modulate anything: color, position, size, speed, distortion, brightness.
 
 ### Available Uniforms in Shaders
 
@@ -437,6 +438,7 @@ band_pan_sub_bass, band_pan_bass, band_pan_low_mid,  // per-band stereo position
 band_pan_mid, band_pan_upper_mid, band_pan_presence,
 band_pan_brilliance
 bar_index, beat_index                               // raw bar/beat counts (not 0–1)
+tempo_confidence, beat_locked                       // is the beat grid trustworthy?
 
 // Audio textures: read the signal directly
 waveform(x)           // vec2f min/max of the PCM waveform at x = 0..1
@@ -444,7 +446,7 @@ spectrum(x)           // magnitude at log-frequency x = 0..1
 spectrogram(uv)       // scrolling mel-band history
 ```
 
-The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 37 detector scalars (listed above) are the full set of **83 audio features**, all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
+The 20 scalar fields above plus `dominant_chroma`, the 13 MFCCs, the 12 chroma values, and the 39 detector scalars (listed above) are the full set of **85 audio features**, all available in every effect shader. MFCC and chroma are packed as `array<vec4f>` internally, so read them through the `mfcc(i)` / `chroma_val(i)` helpers rather than by field name.
 
 Not sure what one of these means, or which to reach for? Every field is explained in plain English in [AUDIO-FEATURES.md](AUDIO-FEATURES.md), including a [pick-by-what-you-want table](AUDIO-FEATURES.md#pick-a-feature-by-what-you-want).
 
@@ -648,6 +650,14 @@ Layer rows show a diamond and a node count for any layer with a chain. It is **f
 | **Scanlines** | Darkens the picture in horizontal bands, the CRT look | `count` 10–1080 lines · `depth` 0–1 · `scroll` lines per second · `sharpness` 0–1 |
 | **Edge** | A Sobel outline: bright where brightness changes. `fill` mixes the original back underneath | `strength` 0–4 · `thickness` 0.5–8 px · `fill` 0–1 |
 | **Palette Map** | Keeps only brightness and recolors it through a cosine palette. A white-on-black effect comes back in full color | `offset` 0–1 · `drift` turns per second · `spread` 0.25–4 · `blend` 0–1 |
+| **Invert** | The negative. Put a beat-synced square on `amount` to invert on the kick. `luma_only` flips light and dark but keeps the colors | `amount` 0–1 · `luma_only` |
+| **Posterize** | Cuts each channel to a few flat steps, the screen-print look | `levels` 2–32 · `amount` 0–1 |
+| **Threshold** | Two tones: white above the cut, black below. Alpha is kept, unlike Key. Follow it with Palette Map for any two colors | `threshold` 0–1 · `softness` 0–0.5 · `amount` 0–1 · `invert` |
+| **Sharpen** | Makes edges crisper. A small `radius` sharpens texture, a large one lifts local contrast; a high `amount` adds halos | `amount` 0–4 · `radius` 0.5–8 px |
+| **Tile** | Repeats the picture in a grid. `mirror` flips alternate tiles so they meet without a seam | `count` 1–16 · `mirror` · `scroll_x` / `scroll_y` tiles per second |
+| **Dither** | Ordered (Bayer) dithering down to a few levels, the early-computer look. `mono` makes it black and white | `levels` 2–16 · `scale` 1–8 px · `amount` 0–1 · `mono` |
+| **CRT** | A tube monitor: bulging screen, scanlines, RGB stripe mask, glow and dark corners. Outside the bulge is transparent | `curvature` 0–0.5 · `scanlines` · `mask` · `mask_size` 1–8 px · `glow` · `vignette` |
+| **Strobe** | Flashes locked to the music: `per_bar` times a bar on the tempo grid, or on the kick or any hit. Black `color` makes a blackout strobe, `invert` flashes the negative. Stays dark with no tempo. Subject to the flash limit in Settings | `per_bar` 1–16 · `duty` · `amount` · `color` · `invert` · `on_kick` · `on_onset` |
 | **Noise Field** (Source) | Drifting palette-colored noise, a picture from nothing | `scale` · `speed` · `octaves` · `contrast` |
 | **Gradient** (Source) | A linear ramp between two colors. Both carry alpha, so opaque-to-transparent is a fade mask for a Mix | `color_a` · `color_b` · `angle` ±0.5 turns · `midpoint` |
 | **Solid** (Source) | A flat color. The second input a Mix needs, and the backdrop a keyed layer sits on | `color` (RGBA) |
@@ -972,7 +982,7 @@ The **Templates** dropdown wires up a whole set at once against the layer you ha
 
 ### Sources
 
-- **Audio**: all 83 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
+- **Audio**: all 85 detected features, grouped: Bands, Loudness, Features, Timbre, Beat, Structure, Harmonic, Stereo, Pitch, Key, Chroma, plus per-bin MFCC, Mel and ΔMFCC. See [Audio Features](AUDIO-FEATURES.md) for what each one means. The long groups start collapsed.
 - **MIDI**: any CC on any channel. The **Learn** button captures the next knob you touch.
 - **OSC**: any address the app receives, whether or not it is one of Fosfora's own.
 - **Bridges**: hand, face and body tracking over WebSocket. See [bridges/README.md](../bridges/README.md).
@@ -1280,7 +1290,7 @@ NDI (Network Device Interface) lets you send Fosfora's output to other software 
 
 ### Themes and interface scale
 
-Pick a theme under **Appearance** (Setup in the workspace layout, Settings in Classic):
+Pick a theme under **Appearance** in Setup:
 Light, Gray and Black use no hue at all, and Blue and orange uses a pair that stays
 distinct for red–green color blindness. Every built-in theme meets WCAG 2.2 AA contrast.
 

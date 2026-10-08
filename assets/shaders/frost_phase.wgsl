@@ -34,7 +34,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Mirrors the main pass's morph, which is what sets the wander rate.
     let morph_bias = param(1u);
     let reactivity = param(7u);
-    let zcr_x = min(u.zcr * 2.5, 1.0);
+    let zcr_x = clamp((u.zcr - 0.45) * 2.5, 0.0, 1.0);
     let m = clamp(mix(0.5, u.flatness, reactivity) + morph_bias, 0.0, 1.0);
     let agitation = 0.15 + m * (0.6 + zcr_x * 2.0);
 

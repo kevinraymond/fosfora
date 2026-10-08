@@ -61,7 +61,7 @@ fn range_base() -> f32 {
 // instead of collapsing) — it lifts the whole range, which is what makes the
 // terrain track timbre rather than level and keeps climbing on a bright swell.
 fn ridgeline_y(x: f32) -> f32 {
-    let altitude = clamp(u.rolloff, 0.0, 1.0) * param(0u) * 1.5;
+    let altitude = clamp(u.rolloff - 0.5, 0.0, 1.0) * param(0u) * 1.5;
 
     // Seven band peaks centred from x=-1.05 (sub-bass) to x=+1.05 (brilliance).
     // Width 0.20 is narrow enough that a loud band stands up as its own summit
@@ -119,7 +119,7 @@ fn emit_particle(idx: u32) -> Particle {
     // spread) fattens it: a pure tone draws a taut ridge, broadband noise
     // inflates it into a massif. A power keeps density high at the bright crest
     // and thins toward the base.
-    let reach = 0.35 + clamp(u.bandwidth, 0.0, 1.0) * 0.45;
+    let reach = 0.35 + clamp(u.bandwidth, 0.0, 1.0) * 0.2;
     let depth = max(crest - range_base(), 0.12) * reach;
     // crest_t: 0 at the bright crest, 1 at the deep base. The power concentrates
     // particles near the crest, so the ridge has a dense lit edge over a thinner
@@ -183,7 +183,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3u) {
     // Lateral flow, with zcr shimmering the field sideways. zcr rises on noisy /
     // breathy material, so hiss visibly agitates the surface while a clean tone
     // leaves it gliding.
-    let shimmer = clamp(u.zcr, 0.0, 1.0) * param(2u);
+    let shimmer = clamp(u.zcr - 0.45, 0.0, 1.0) * param(2u);
     vel.x += (uhash_f(idx * 2654435761u + u32(u.time * 60.0)) - 0.5) * shimmer * 0.9 * dt;
     vel.x += 0.04 * param(3u) * dt;
 

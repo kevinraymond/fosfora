@@ -3,12 +3,16 @@ name: Repo checks
 # The plain-Python guards the pre-commit hook runs, on every PR. They live apart from
 # ci.yml because that workflow skips '**.md' changes, and CHANGELOG.md and docs/ are
 # exactly what two of these check. No Rust toolchain: the whole job takes seconds.
+#
+# On a PR it also requires a CHANGELOG entry, which the pre-commit hook cannot know to ask
+# for. Adding or removing the no-changelog label re-runs the job.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -30,6 +34,18 @@ jobs:
           fetch-depth: 0
       - name: CHANGELOG headers and entry rules
         run: scripts/check_changelog.py
+      - name: CHANGELOG entry for a user-visible change
+        if: >-
+          github.event_name == 'pull_request'
+          && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
+        run: |
+          # HEAD is the PR merged into main, so diffing against its first parent lists
+          # exactly what the PR would change there.
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          if grep -qE '^(crates|assets)/' <<<"$changed" && ! grep -qx 'CHANGELOG.md' <<<"$changed"; then
+            echo "::error file=CHANGELOG.md::This PR changes crates/ or assets/ but adds no CHANGELOG.md entry. Add one under '## Unreleased' (see 'Writing CHANGELOG entries' in CLAUDE.md), or ask a maintainer for the no-changelog label if users will not notice the change."
+            exit 1
+          fi
       - name: Docs (gallery, effect count, links)
         run: scripts/check_docs.py
       - name: Shader rate audit

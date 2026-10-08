@@ -75,9 +75,23 @@ def anchors(path: Path) -> set[str]:
 
 
 def md_files() -> list[Path]:
+    """The Markdown files a commit could carry: tracked, or new and not ignored.
+
+    Git-ignored notes in a working copy are never committed, and one that mentioned an
+    old feature count failed the pre-commit hook for every commit. CI's fresh checkout
+    has no ignored files, so it saw nothing wrong. Without git, every file is checked.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.md"],
+            cwd=REPO, capture_output=True, check=True,
+        ).stdout.decode()
+        paths = [REPO / p for p in out.split("\0") if p]
+    except (OSError, subprocess.CalledProcessError):
+        paths = list(REPO.rglob("*.md"))
     return sorted(
-        p for p in REPO.rglob("*.md")
-        if not any(part in SKIP_DIRS for part in p.relative_to(REPO).parts)
+        p for p in paths
+        if p.is_file() and not any(part in SKIP_DIRS for part in p.relative_to(REPO).parts)
     )
 
 

@@ -115,8 +115,8 @@ struct ParticleUniforms {
     // Zero-crossing rate + spectral shape + tempo
     zcr: f32,
     flatness: f32,      // Noise vs tone (Wiener entropy)
-    rolloff: f32,       // 85% energy frequency (normalized)
-    bandwidth: f32,     // Spectral spread
+    rolloff: f32,       // 85% energy frequency, 40 Hz-18 kHz log axis
+    bandwidth: f32,     // Spread around the centroid, 0-4 octaves
     bpm: f32,           // BPM / 300 (normalized 0-1)
     beat_strength: f32, // Strength of the detected beat
     bar_phase: f32,     // A12 0-1 sawtooth over the current bar (#1505; 0.0 until DSP)

@@ -17,6 +17,18 @@ pub struct FullState {
     pub presets: Vec<PresetInfo>,
     pub current_preset: Option<usize>,
     pub postprocess_enabled: bool,
+    pub streams: Vec<StreamInfo>,
+}
+
+/// A network stream switched on in the settings, for the header's lights.
+#[derive(Serialize)]
+pub struct StreamInfo {
+    pub name: String,
+    /// `down`, `waiting` or `connected`: the settings page's red, yellow
+    /// and green.
+    pub light: &'static str,
+    /// The settings page's words for it, such as "Live, 1920x1080".
+    pub status: String,
 }
 
 #[derive(Serialize)]
@@ -150,6 +162,7 @@ pub fn build_full_state(
     layers: &[LayerTuple<'_>],
     preset_store: &PresetStore,
     postprocess_enabled: bool,
+    streams: Vec<StreamInfo>,
 ) -> String {
     let effect_list: Vec<EffectInfo> = effects
         .iter()
@@ -212,6 +225,7 @@ pub fn build_full_state(
         presets,
         current_preset: preset_store.current_preset,
         postprocess_enabled,
+        streams,
     };
 
     serde_json::to_string(&state).unwrap_or_default()

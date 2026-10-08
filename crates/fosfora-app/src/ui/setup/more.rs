@@ -200,6 +200,124 @@ pub fn tutorials_page(ui: &mut Ui, s: &mut ShellState<'_>) {
     }
 }
 
+/// A text field that returns its text when it loses focus with a change.
+#[cfg(feature = "webcam")]
+fn committed_text(
+    ui: &mut Ui,
+    id: egui::Id,
+    current: &str,
+    width: f32,
+    hint: &str,
+) -> Option<String> {
+    let mut text: String = ui
+        .ctx()
+        .data(|d| d.get_temp(id))
+        .unwrap_or_else(|| current.to_string());
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .desired_width(width)
+            .hint_text(hint)
+            .font(egui::FontId::proportional(kit::LABEL_SIZE)),
+    );
+    if resp.lost_focus() {
+        ui.ctx().data_mut(|d| d.remove_temp::<String>(id));
+        return (text != current).then_some(text);
+    }
+    if resp.has_focus() {
+        ui.ctx().data_mut(|d| d.insert_temp(id, text));
+    }
+    None
+}
+
+#[cfg(feature = "webcam")]
+use crate::media::stream::StreamLight;
+
+/// Where each stream in use stands, by name, as `main.rs` publishes it.
+#[cfg(feature = "webcam")]
+pub type StreamStatuses = Vec<(String, (StreamLight, String))>;
+
+/// A stream's status light: red when it is not listening, yellow while it
+/// waits for the sender, green once the sender is connected. The words
+/// under the row say the same, so the state does not rest on color.
+#[cfg(feature = "webcam")]
+fn stream_light(ui: &mut Ui, light: StreamLight, words: &str) {
+    let color = match light {
+        StreamLight::Down => egui::Color32::from_rgb(0xE5, 0x48, 0x4D),
+        StreamLight::Waiting => egui::Color32::from_rgb(0xF5, 0xC5, 0x18),
+        StreamLight::Connected => egui::Color32::from_rgb(0x3F, 0xC3, 0x5F),
+    };
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(18.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 6.0, color);
+    resp.on_hover_text(words);
+}
+
+/// The network streams, one per line, and the button that adds one. Any
+/// change sends the whole list as `set_rtmp_streams`.
+#[cfg(feature = "webcam")]
+fn stream_rows(ui: &mut Ui, streams: &[crate::settings::RtmpStream]) {
+    let mut edited = streams.to_vec();
+    let mut removed = None;
+    // Published every frame by main.rs, for the streams something shows.
+    let status: StreamStatuses = ui
+        .ctx()
+        .data(|d| d.get_temp(egui::Id::new("rtmp_stream_status")))
+        .unwrap_or_default();
+    for (i, stream) in edited.iter_mut().enumerate() {
+        // Every stream switched on is opened; one that is not has failed to
+        // start or shares its name with a camera.
+        let state = status.iter().find(|(name, _)| *name == stream.name);
+        let (light, words) = match state {
+            Some((_, (light, words))) => (*light, words.as_str()),
+            None if stream.is_usable() => (StreamLight::Down, crate::media::stream::NOT_LISTENING),
+            None => (StreamLight::Down, "Off"),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut stream.enabled, "")
+                .on_hover_text("List this stream with the cameras");
+            let id = egui::Id::new(("rtmp_stream_name", i));
+            if let Some(name) = committed_text(ui, id, &stream.name, 110.0, "Name") {
+                stream.name = name.trim().to_string();
+            }
+            let id = egui::Id::new(("rtmp_stream_url", i));
+            if let Some(url) = committed_text(ui, id, &stream.url, 250.0, "rtmp://server/live/key")
+            {
+                stream.url = url.trim().to_string();
+            }
+            ui.checkbox(
+                &mut stream.listen,
+                RichText::new("Listen").size(kit::LABEL_SIZE),
+            )
+            .on_hover_text("Wait at this address for the sender to connect");
+            if ui.button("Remove").clicked() {
+                removed = Some(i);
+            }
+            stream_light(ui, light, words);
+        });
+        kit::help(ui, words);
+        ui.add_space(4.0);
+    }
+    if let Some(i) = removed {
+        edited.remove(i);
+    }
+    if ui.button("Add stream").clicked() {
+        let taken = |name: &String| edited.iter().any(|s| s.name == *name);
+        let name = (1..=edited.len() + 1)
+            .map(|n| format!("Stream {n}"))
+            .find(|name| !taken(name))
+            .unwrap_or_default();
+        edited.push(crate::settings::RtmpStream {
+            name,
+            url: String::new(),
+            enabled: true,
+            listen: false,
+        });
+    }
+    if edited != streams {
+        kit::send(ui, "set_rtmp_streams", edited);
+    }
+    ui.add_space(4.0);
+}
+
 pub fn general_page(ui: &mut Ui, s: &mut ShellState<'_>) {
     kit::block(
         ui,
@@ -284,29 +402,18 @@ pub fn general_page(ui: &mut Ui, s: &mut ShellState<'_>) {
                      can't open. Needs FFmpeg.",
                 );
             });
-        },
-    );
-    kit::block(
-        ui,
-        "Layout",
-        None,
-        |_| {},
-        |ui| {
-            kit::tall_row(ui, "Classic layout", |ui| {
-                let mut on = s.settings.classic_layout;
-                if ui
-                    .checkbox(
-                        &mut on,
-                        RichText::new(
-                            "Use the two side panels instead of Perform, Build and Setup",
-                        )
-                        .size(kit::LABEL_SIZE),
-                    )
-                    .changed()
-                {
-                    kit::send(ui, "set_classic_layout", on);
-                }
-                kit::help(ui, "The Classic layout goes away in v2.1.");
+            ui.add_space(8.0);
+            kit::tall_row(ui, "Network streams", |ui| {
+                stream_rows(ui, &s.settings.rtmp_streams);
+                kit::help(
+                    ui,
+                    "RTMP streams (or any address FFmpeg opens) listed with the cameras, for \
+                     webcam layers and webcam particle sources. A stream switched on is open \
+                     from launch, whether or not anything shows it. Presets remember a stream by \
+                     its name. With Listen on, Fosfora waits at the address for the sender \
+                     to connect, for example rtmp://0.0.0.0:1935/live/cam; off, it connects \
+                     to a server. Needs FFmpeg.",
+                );
             });
         },
     );

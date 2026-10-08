@@ -149,6 +149,42 @@ impl FlashLimit {
     }
 }
 
+/// A network video stream offered as a camera: RTMP, or anything else
+/// FFmpeg opens by URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtmpStream {
+    /// What the camera lists and presets know the stream by.
+    pub name: String,
+    pub url: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Wait at `url` for the sender to connect, rather than connecting to a
+    /// server there.
+    #[serde(default)]
+    pub listen: bool,
+}
+
+impl RtmpStream {
+    /// Whether it is listed as a camera: switched on, named and addressed.
+    pub fn is_usable(&self) -> bool {
+        self.enabled && !self.name.trim().is_empty() && !self.url.trim().is_empty()
+    }
+}
+
+/// The names the usable `streams` are listed under, in order. A stream
+/// named like an entry of `taken` (the connected cameras) or like an earlier
+/// stream is left out: a name has to mean one source.
+pub fn stream_names<'a>(streams: &'a [RtmpStream], taken: &[&str]) -> Vec<&'a str> {
+    let mut names: Vec<&str> = Vec::new();
+    for stream in streams.iter().filter(|s| s.is_usable()) {
+        let name = stream.name.as_str();
+        if !taken.contains(&name) && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsConfig {
     pub version: u32,
@@ -157,12 +193,22 @@ pub struct SettingsConfig {
     pub audio_device: Option<String>,
     #[serde(default)]
     pub band_scale: BandScale,
+    /// Gain applied to the input before analysis, dB (#84). Recordings are not affected.
+    #[serde(default)]
+    pub input_trim_db: f32,
     #[serde(default)]
     pub particle_quality: ParticleQuality,
     #[serde(default)]
     pub webcam_device: Option<u32>,
+    /// The default camera by name. Preferred over `webcam_device`: the OS
+    /// renumbers cameras as they come and go, so a saved index goes stale.
+    #[serde(default)]
+    pub webcam_device_name: Option<String>,
     #[serde(default)]
     pub use_ffmpeg_webcam: bool,
+    /// Network streams listed among the cameras.
+    #[serde(default)]
+    pub rtmp_streams: Vec<RtmpStream>,
     /// A18 structure-detector tuning (#1510). `#[serde(default)]` so older settings files
     /// without this key load with the built-in defaults.
     #[serde(default)]
@@ -186,13 +232,6 @@ pub struct SettingsConfig {
     /// reproduces pre-overlay behavior byte-for-byte on old settings files.
     #[serde(default)]
     pub output_alpha: AlphaOutputMode,
-    /// Keep the v1 two-side-panel layout instead of the v2 workspace shell
-    /// (#3122). Off by default, and a settings file from before v2.0.0 has no
-    /// such field, so upgrading installs open in the workspace too (Kevin,
-    /// M6 #3130); this switch is the way back. It ships for one release and
-    /// goes away in v2.1.
-    #[serde(default)]
-    pub classic_layout: bool,
     /// Display the second output window was last opened on, by name (#3122).
     /// A name rather than an index: displays come and go and winit reorders
     /// them, and an index would send the output to whatever took that slot.
@@ -251,15 +290,17 @@ impl Default for SettingsConfig {
             theme: ThemeMode::Gray,
             audio_device: None,
             band_scale: BandScale::default(),
+            input_trim_db: 0.0,
             particle_quality: ParticleQuality::default(),
             webcam_device: None,
+            webcam_device_name: None,
             use_ffmpeg_webcam: false,
+            rtmp_streams: Vec::new(),
             structure_tuning: StructureConfig::default(),
             tempo: TempoConfig::default(),
             auto_reconnect: true,
             favorite_effects: Vec::new(),
             output_alpha: AlphaOutputMode::default(),
-            classic_layout: false,
             output_display: None,
             ui_scale: 1.0,
             tours_done: Vec::new(),
@@ -378,16 +419,40 @@ mod tests {
     }
 
     #[test]
-    fn an_upgrading_install_opens_in_the_workspace() {
-        // A v1 settings file has no classic_layout: v2.0.0 opens it in the
-        // workspace, the same as a fresh install. A saved choice is kept.
+    fn a_settings_file_that_chose_classic_still_loads() {
+        // v2.0.x saved `classic_layout`; the Classic layout went in v2.1.0.
+        // The key is ignored and the rest of the file is kept.
+        let json = r#"{"version":1,"theme":"Dark","classic_layout":true,"ui_scale":1.5}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!((c.ui_scale - 1.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn streams_are_listed_under_names_of_their_own() {
+        let stream = |name: &str, url: &str, enabled| RtmpStream {
+            name: name.into(),
+            url: url.into(),
+            enabled,
+            listen: false,
+        };
+        let streams = [
+            stream("Stage", "rtmp://a/live/1", true),
+            stream("Off", "rtmp://a/live/2", false),
+            stream("FaceTime", "rtmp://a/live/3", true),
+            stream("Stage", "rtmp://a/live/4", true),
+            stream("No address", " ", true),
+            stream("Crowd", "rtmp://a/live/5", true),
+        ];
+        assert_eq!(stream_names(&streams, &["FaceTime"]), ["Stage", "Crowd"]);
+
+        // A stream saved without the later fields is on and connects out.
+        let json =
+            r#"{"version":1,"theme":"Dark","rtmp_streams":[{"name":"A","url":"rtmp://a/b"}]}"#;
+        let c: SettingsConfig = serde_json::from_str(json).unwrap();
+        assert!(c.rtmp_streams[0].enabled && !c.rtmp_streams[0].listen);
         let json = r#"{"version":1,"theme":"Dark"}"#;
         let c: SettingsConfig = serde_json::from_str(json).unwrap();
-        assert!(!c.classic_layout);
-        assert!(!SettingsConfig::default().classic_layout);
-        let json = r#"{"version":1,"theme":"Dark","classic_layout":true}"#;
-        let c: SettingsConfig = serde_json::from_str(json).unwrap();
-        assert!(c.classic_layout);
+        assert!(c.rtmp_streams.is_empty());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! The workspace's Scenes tab (#3173): the scenes on the left, and the
 //! current one as a single strip of cue cards in play order.
 //!
-//! The Classic panel draws the same cues twice, as a list and as a timeline
-//! bar. Here they are drawn once: each card is a cue (its preset's picture,
+//! The old Classic panel drew the same cues twice, as a list and as a
+//! timeline bar. Here they are drawn once: each card is a cue (its preset's picture,
 //! its name, how long it holds), each transition is the joint between two
 //! cards, and the playhead runs through the cards and joints themselves.
 //!

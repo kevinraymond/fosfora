@@ -35,6 +35,10 @@ pub struct ParticleInfo {
     pub source_kind: ParticleSourceKind,
     /// Source filename or device name
     pub source_name: String,
+    /// The cameras a webcam source can be fed by, and the name of the one
+    /// feeding it.
+    pub webcam_devices: Vec<(u32, String)>,
+    pub webcam_device: String,
     pub video_playing: bool,
     pub video_looping: bool,
     pub video_speed: f32,
@@ -393,6 +397,39 @@ pub fn draw_particle_panel(ui: &mut Ui, info: &ParticleInfo) {
                     .size(SMALL_SIZE)
                     .color(tc.text_secondary),
             );
+        }
+
+        // Which camera or stream feeds a webcam source. Saved with the
+        // preset, so presets can each use another one.
+        if info.source_kind == ParticleSourceKind::Webcam && info.webcam_devices.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Camera")
+                        .size(SMALL_SIZE)
+                        .color(tc.text_secondary),
+                );
+                let shown = crate::ui::widgets::truncate_chars(&info.webcam_device, 24);
+                egui::ComboBox::from_id_salt("particle_webcam_device_combo")
+                    .selected_text(RichText::new(shown).size(SMALL_SIZE))
+                    .width(ui.available_width() - 4.0)
+                    .show_ui(ui, |ui| {
+                        for (_, name) in &info.webcam_devices {
+                            let selected = *name == info.webcam_device;
+                            if ui
+                                .selectable_label(selected, RichText::new(name).size(SMALL_SIZE))
+                                .clicked()
+                                && !selected
+                            {
+                                ui.ctx().data_mut(|d| {
+                                    d.insert_temp(
+                                        egui::Id::new("particle_webcam_device"),
+                                        name.clone(),
+                                    );
+                                });
+                            }
+                        }
+                    });
+            });
         }
 
         // Source loading indicator

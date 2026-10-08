@@ -6,9 +6,9 @@
 //! canvas reads left to right. The other view shows each layer alone. Master's
 //! picture is the finished output.
 //!
-//! Rows send the same intents the v1 layer panel sends (`select_layer`,
-//! `layer_toggle_enable`, `layer_move`, …), so `main.rs` handles both layouts
-//! with one set of handlers. What is new is the Master *selection*: the
+//! Rows send the same intents as Perform's layer list (`select_layer`,
+//! `layer_toggle_enable`, `layer_move`, …), so `main.rs` handles both with
+//! one set of handlers. What is new is the Master *selection*: the
 //! inspector shows Master's settings instead of a layer's while it is set.
 
 use crate::ui::theme::tokens::SMALL_SIZE;

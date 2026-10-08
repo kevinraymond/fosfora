@@ -1,53 +1,54 @@
 # Fosfora Quick Reference
 
+Three workspaces, picked in the top bar: **Perform** to play, **Build** to make presets, **Setup** for
+devices and settings.
+
 ```
-+--[ Left Panel (315px) ]--+-----[ Canvas ]-----+--[ Right Panel (315px) ]-+
-|  Audio                   |                     |  Parameters              |
-|  Effects                 |   Live visual       |  Particles / Media / Cam |
-|  Layers                  |   output            |  Obstacle                |
-|  Presets                 |                     |  Splat Scene / Lattice   |
-|  Scenes                  |                     |  Audio Reactivity        |
-|  Settings                |                     |  Volumetric              |
-|                          |                     |  Post-Processing         |
-+--------------------------+---------------------+--------------------------+
-|                          Status Bar                                       |
-+---------------------------------------------------------------------------+
+Perform                                 Build
++-----------+----------------------+    +-----------+-----------------+-----------+
+| Presets   |                      |    | Stack     | Inspector       | Output    |
+| Layers    |       Output         |    | Presets   | (the selected   | Audio     |
+|           |                      |    |           |  layer, or      |           |
+|           |                      |    |           |  Master)        |           |
++-----------+----------------------+    +-----------+-----------------+-----------+
+| Scenes (drawer)                  |    | Catalog / Scenes (drawer)                 |
++----------------------------------+    +-------------------------------------------+
+
+Setup
++-----------+---------------------------------+-----------+
+| Pages     | One page at a time              | Output    |
++-----------+---------------------------------+-----------+
 ```
 
-Press **D** to toggle all UI panels. Press **F** for fullscreen.
+Press **D** to hide or show the interface. Press **F** for fullscreen.
 
 ---
 
 ## Keyboard Shortcuts
 
-| Key              | Action                      |
-|------------------|-----------------------------|
-| D                | Toggle UI overlay           |
-| F                | Fullscreen                  |
-| B                | Binding matrix              |
-| C                | trama chain editor          |
-| [ / ]            | Previous / next layer       |
-| Esc              | Quit                        |
-| Tab / Shift+Tab  | Next / previous widget      |
-| F6               | Cycle panels                |
-| Arrow keys       | Adjust slider (1% step)     |
-| Shift+Arrow keys | Adjust slider (10% step)    |
-| Home / End       | Slider min / max            |
+| Key              | Action                                                      |
+|------------------|-------------------------------------------------------------|
+| D                | Hide / show the interface                                   |
+| F                | Fullscreen                                                  |
+| B                | Binding matrix                                              |
+| C                | trama chain editor                                          |
+| [ / ]            | Previous / next layer                                       |
+| Space            | Next cue (when the scene has cues)                          |
+| T                | Play / pause the scene (when it has cues)                   |
+| Esc              | Step back: cancel a half-made binding, close the binding matrix, show a hidden interface, close the chain editor, close the second output window. With nothing left to close, quit |
+| Tab / Shift+Tab  | Next / previous widget                                      |
+| Arrow keys       | Adjust slider (1% step)                                     |
+| Shift+Arrow keys | Adjust slider (10% step)                                    |
+| Home / End       | Slider min / max                                            |
 
 ---
 
-## Left Panel
+## Perform
 
-### Audio
-Device selector dropdown, 7-band spectrum analyzer, dynamics display (RMS, kick, onset, flux, centroid, flatness, rolloff), 13 MFCC coefficients, 12 chroma pitch classes, BPM ring.
+### Presets
+Save/load named presets. Dirty indicator shows unsaved changes. Cycle via MIDI/OSC triggers (NextPreset / PrevPreset).
 
-### Effects
-Grid browser (3 columns) with type badges:
-- **SH** (purple) — Shader effect
-- **PS** (orange) — Particle system
-- **FB** (teal) — Feedback effect
-
-Copy, edit, or create new effects from the browser.
+**Switch** (top row of the Presets panel, on the left of Perform and in Build's left column): how switching presets changes the picture, Cut, Dissolve or Morph, plus a length in seconds. Applies to clicks, NextPreset / PrevPreset and the web remote; scene cues keep their own transitions. **Keep moving** (shown with Dissolve, on by default) keeps the outgoing preset animating through every Dissolve, cues included; turn it off if two presets at once is too much for your GPU.
 
 ### Layers
 Up to **8 layers** (0-7), composited bottom-to-top. Each layer has:
@@ -56,45 +57,36 @@ Up to **8 layers** (0-7), composited bottom-to-top. Each layer has:
 - Drag handle for reorder
 - Type label: **FX** (effect), **MD** (media), **WC** (webcam)
 
-### Presets
-Save/load named presets. Dirty indicator shows unsaved changes. Cycle via MIDI/OSC triggers (NextPreset / PrevPreset).
-
-**Switch** (top row of the Presets panel, on the left of Perform and in Build's left column): how switching presets changes the picture, Cut, Dissolve or Morph, plus a length in seconds. Applies to clicks, NextPreset / PrevPreset and the web remote; scene cues keep their own transitions. **Keep moving** (shown with Dissolve, on by default) keeps the outgoing preset animating through every Dissolve, cues included; turn it off if two presets at once is too much for your GPU.
-
 ### Scenes
-Cue timeline with per-cue preset, transition type, and duration. Advance modes: Manual, Timer (auto-advance after hold), BeatSync (advance every N beats). Loop toggle.
-
-### Settings
-Status dots show connection state (MIDI / OSC / WEB / NDI / AUD). Subsections: MIDI, OSC, Web,
-Outputs (NDI and video recording), Appearance (theme, interface scale), Global (particle quality,
-band scale, auto-reconnect).
+The drawer along the bottom. Each cue is a card (its preset's picture, its name, how long it holds), and each transition is the joint between two cards. Advance by hand, on a timer (after the hold), or every N beats. Loop toggle. Build's drawer has the same Scenes tab.
 
 ---
 
-## Right Panel
+## Build
 
-Contextual — shows controls for the active layer type.
+### Stack (left)
+Master on top, then each layer, each row with a picture of the stack so far. Lock and Pin per layer. **+ Effect layer**, **+ Media layer** and **+ Camera layer** add one. Select a row to show it in the inspector. The Presets panel sits under the stack, closed to start.
 
-### Parameters (effect layers)
-Sliders with **M** (MIDI) and **O** (OSC) learn badges. Color pickers, Point2D controls. Click a badge to enter learn mode (blinking orange), then move the target control to bind.
+### Inspector (middle)
+What the selected layer, or Master, controls.
 
-### Media (media layers)
-File info, video playback controls (play/pause/seek).
+**Blend** (every layer): blend mode, visibility and opacity.
 
-### Webcam (webcam layers)
-Device selector, mirror toggle, disconnect.
+**Parameters** (effect layers): sliders with **M** (MIDI) and **O** (OSC) learn badges. Color pickers, Point2D controls. Click a badge to enter learn mode (blinking orange), then move the target control to bind. Under them, how many bindings drive the layer and the way into the binding matrix.
 
-### Particles (effect layers)
-Alive/max count, quality level, image source selector, morph target controls.
+**Media** (media layers): file info, video playback controls (play/pause/seek).
 
-### Obstacle (effect layers)
-Enable toggle, source tabs (image/model/depth/webcam), threshold, elasticity, collision mode. Model loads a rotating 3D `.glb`/`.gltf` mesh or `.ply`/`.splat` cloud. Depth model downloads on first use.
+**Camera** (camera layers): device selector (cameras, and the network streams set up in Setup ▸ General ▸ Cameras), mirror toggle, disconnect.
 
-### Audio Reactivity (effect layers)
-Map audio bands or dynamics to any parameter. Shows mapping count badge.
+**Particles** (particle effects): alive/max count, quality level, image source selector, morph target controls.
 
-### Post-Processing
-Four toggleable effects (per-effect overridable):
+**Obstacle** (particle effects): enable toggle, source tabs (image/model/depth/webcam), threshold, elasticity, collision mode. Model loads a rotating 3D `.glb`/`.gltf` mesh or `.ply`/`.splat` cloud. Depth model downloads on first use.
+
+**Lattice** and **Helix** (those effects): their own controls.
+
+**Audio Reactivity** (effect layers): map audio bands or dynamics to any parameter. Shows mapping count badge.
+
+**Post-Processing** (Master): four toggleable effects, saved with the preset:
 
 | Effect               | Default | Range |
 |----------------------|---------|-------|
@@ -104,6 +96,30 @@ Four toggleable effects (per-effect overridable):
 | Vignette strength    | 0.3     | 0-1   |
 | Film grain intensity | 0.5     | 0-1   |
 | Film grain rate (Hz) | 24      | 0-60  |
+
+**Volumetric** (Master): renders the particle layer as fog or nebula instead of dots.
+
+### Output and Audio (right)
+The output, and under it the audio: 7-band spectrum analyzer, dynamics display (RMS, kick, onset, flux, centroid, flatness, rolloff), 13 MFCC coefficients, 12 chroma pitch classes, BPM ring.
+
+### Catalog (drawer)
+Every effect as a picture, in families, searchable, with favorites. Click a picture to load it into the selected layer. Drag it onto the stack: onto a row to replace that layer's effect, onto the edge between rows to add a layer there. **+ New effect** starts one.
+
+---
+
+## Setup
+
+A list of pages on the left, one page at a time.
+
+| Page                | What is on it                                                        |
+|---------------------|----------------------------------------------------------------------|
+| Audio               | Input device, level meter and trim, what happens if it goes quiet, band scale |
+| Control             | MIDI, OSC, the web remote, triggers                                  |
+| Outputs and streams | What black becomes, second window, recording, NDI, virtual camera (Spout and Syphon where available) |
+| Sync                | Ableton Link                                                         |
+| Appearance          | Theme, interface scale                                               |
+| Tutorials           | The guided tours                                                     |
+| General             | Particle quality, flash limiter, cameras and network streams         |
 
 ---
 
@@ -148,7 +164,7 @@ pick a displacement mode from the UI, OSC or a preset.
 | 5 | Presence   | PR   | 4-6 kHz       | Definition, edge           |
 | 6 | Brilliance | BR   | 6-20 kHz      | Air, sparkle, cymbals      |
 
-Full glossary of all 83 audio features, in plain English: [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
+Full glossary of all 85 audio features, in plain English: [AUDIO-FEATURES.md](AUDIO-FEATURES.md).
 
 ---
 

@@ -1,15 +1,12 @@
-//! The v2 workspace shell (#3122, GH #32).
+//! The workspace shell (#3122, GH #32).
 //!
-//! The v1 layout puts every control into two fixed 315 px side panels drawn
-//! over a full-window render. This draws the alternative: a top bar that
-//! switches between three workspaces, the output as a preview rather than the
-//! backdrop, and each setting at one level of the Preset → Layers → Effect
-//! hierarchy.
+//! A top bar switches between three workspaces, the output is a preview
+//! rather than the backdrop, and each setting sits at one level of the
+//! Preset → Layers → Effect hierarchy. The per-section draw functions live in
+//! [`super::panels`]; this arranges them.
 //!
-//! It ships behind `SettingsConfig::classic_layout` for one release, so the
-//! old panels stay reachable while this settles. Both layouts call the same
-//! per-section draw functions in [`super::panels`] — only the arrangement
-//! differs, so a control fixed in one is fixed in both.
+//! It replaced the v1 layout of two fixed 315 px side panels over a
+//! full-window render, which v2.0.x kept as Classic and v2.1.0 removed.
 
 use crate::ui::theme::tokens::{MIN_INTERACT_HEIGHT, SMALL_SIZE};
 use egui::{Context, Frame, Margin, ScrollArea};
@@ -70,9 +67,9 @@ impl Workspace {
     }
 }
 
-/// Everything the shell draws. One struct rather than thirty arguments: the
-/// v1 `draw_panels` takes them positionally and adding a section there means
-/// threading another parameter through every call site.
+/// Everything the shell draws, in one struct rather than thirty positional
+/// arguments, so adding a section does not mean threading another parameter
+/// through every call site.
 pub struct ShellState<'a> {
     pub audio: &'a mut AudioSystem,
     pub params: &'a mut ParamStore,
@@ -813,7 +810,7 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
         };
         let r = ui.scope(|ui| {
             widgets::section(ui, "v2_params", "Parameters", None, true, |ui| {
-                param_panel::draw_param_panel(ui, s.params, s.midi, s.osc, Some(&binds));
+                param_panel::draw_param_panel(ui, s.params, s.midi, s.osc, &binds);
             });
         });
         tour::anchor(ui, tour::Anchor::Parameters, r.response.rect);
@@ -841,8 +838,8 @@ fn layer_inspector(ui: &mut egui::Ui, s: &mut ShellState<'_>) {
     tour::anchor(ui, tour::Anchor::ChainLine, r.response.rect);
 }
 
-/// The sections only some effects have, in the order the Classic panel
-/// draws them: Obstacle (particle effects), Lattice, Helix, and the
+/// The sections only some effects have, in the order the old Classic panel
+/// drew them: Obstacle (particle effects), Lattice, Helix, and the
 /// effect's own audio mappings (#3238).
 fn effect_sections(ui: &mut egui::Ui, s: &ShellState<'_>, layer: &crate::gpu::layer::LayerInfo) {
     use super::panels::{audio_mappings_panel, helix_panel, lattice_panel, obstacle_panel};

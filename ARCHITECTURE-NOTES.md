@@ -6,8 +6,8 @@ source-level survey; line numbers drift, names don't. Single crate:
 
 ## Corrections to README/docs claims
 
-- **83 audio features**, not 74 (`audio/features.rs::NUM_FEATURES = 83`; struct pinned
-  at 332 bytes). `analyze/report.rs` comment says 81 — also stale.
+- **85 audio features**, not 74 (`audio/features.rs::NUM_FEATURES = 85`; struct pinned
+  at 340 bytes). `analyze/report.rs` comment says 81 — also stale.
 - Feature rate is `sample_rate / 512`: **86.13 Hz at 44.1 kHz only** (93.75 Hz at 48 k).
 - **No chord detection** (key detection only, `audio/key.rs`). README's "key and chord"
   is wrong.
@@ -83,7 +83,7 @@ channel sees every hop and fixes this by construction.
 - **OSC** (`src/osc/`, rosc): RX thread + fire-and-forget UDP sender. Namespace
   `/fosfora/`; the pre-rename `/phosphor/` prefix is still accepted (`receiver.rs`). Config `osc.json`
   (rx 9000, tx 9001, tx_rate 30, learn maps).
-- **MIDI** (`src/midi/`, midir, patched for alsa 0.11): **input only** — CC/note +
+- **MIDI** (`src/midi/`, midir): **input only** — CC/note +
   clock IN (24 ppqn, `midi/clock.rs`). No MIDI output exists; clock/note/CC out is
   greenfield (`midi/output.rs`, Signal phase A2).
 - **Bindings** (`src/bindings/`): dotted string sources → typed `BindingTarget`;

@@ -27,8 +27,7 @@
 //! through. The one view a tour opens itself is the binding matrix: a step
 //! says whether it wants it ([`matrix_wanted`]), and the matrix follows.
 //!
-//! A tour runs only in the workspace layout: the Classic panels register no
-//! anchors. Finishing or skipping one sends `tour_done` with its key, which
+//! Finishing or skipping a tour sends `tour_done` with its key, which
 //! `main.rs` records in settings, so the First run tour starts by itself
 //! once and afterwards only from the Tours menu or Setup › Tutorials.
 
@@ -1137,14 +1136,13 @@ fn callout_height(ctx: &Context) -> f32 {
         .unwrap_or(200.0)
 }
 
-/// Should the First run tour start by itself? Once, in the workspace
-/// layout, for someone who has neither finished nor skipped it.
+/// Should the First run tour start by itself? Once, for someone who has
+/// neither finished nor skipped it.
 pub fn should_auto_start(settings: &crate::settings::SettingsConfig) -> bool {
-    !settings.classic_layout
-        && !settings
-            .tours_done
-            .iter()
-            .any(|k| k == Tour::FirstRun.key())
+    !settings
+        .tours_done
+        .iter()
+        .any(|k| k == Tour::FirstRun.key())
 }
 
 #[cfg(test)]
@@ -1528,16 +1526,11 @@ mod tests {
     }
 
     #[test]
-    fn first_run_starts_by_itself_once_and_only_in_the_workspace() {
+    fn first_run_starts_by_itself_once() {
         let mut s = crate::settings::SettingsConfig::default();
         assert!(should_auto_start(&s));
         s.tours_done.push(Tour::FirstRun.key().into());
         assert!(!should_auto_start(&s));
-        let classic = crate::settings::SettingsConfig {
-            classic_layout: true,
-            ..Default::default()
-        };
-        assert!(!should_auto_start(&classic));
     }
 
     // ── The Bindings tour (#3127) ─────────────────────────────────────

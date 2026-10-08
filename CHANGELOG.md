@@ -6,15 +6,64 @@
 ## Unreleased
 
 ### Added
+- **Eight new trama nodes.** Strobe flashes on the tempo grid, the kick or any hit, in any color, as a blackout or as an invert, and stays within the flash limit set in Settings. Invert, Posterize, Threshold, Sharpen, Tile, Dither and CRT cover the other staple looks.
+- **`tempo_confidence` and `beat_locked`**, so effects, bindings and OSC clients can tell whether the beat grid is trustworthy, for example to keep a strobe off until the tempo locks. Signal also sends them as `/fosfora/v1/bpm/confidence` and `/fosfora/v1/bpm/locked`. `AudioFeatures` grows from 83 to 85 slots (332 → 340 bytes); the shader uniform block stays 448 bytes because the two values take its former padding, so existing shaders need no changes.
+- **Input trim and a level meter in Setup › Audio.** Lift a quiet line or mic input off the silence gate, or tame a hot one, by up to 24 dB; the trim changes only what the analysis hears, so recordings keep the source level. The meter reads the input before the trim and lights CLIP when the source itself is clipping.
+
+### Fixed
+- **Audio capture could drop out when the system was short on memory.** The capture callback allocated memory each time the device delivered audio, which can stall the realtime audio thread. It now writes straight into the capture buffer, and that buffer is no longer shared between threads unsoundly.
+- **Audio analysis stalled while the tempo or build-up/drop settings were on screen.** Each analysis step waited for the UI to finish drawing those settings, adding timing jitter to beats. It now keeps using the previous settings for that step instead of waiting.
+- **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
+- **Audio analysis behaved differently depending on the input's sample rate.** At 48 kHz, feature ranging, tuning and the bass-note tracker ran on windows tuned for 44.1 kHz, and above 88.2 kHz every band had half its frequency resolution, leaving `sub_bass` about two FFT bins. Input above 88.2 kHz is now halved before analysis and the remaining windows follow the actual rate; `buildup` also updates at its intended 10 Hz instead of 9.6 Hz.
+- **`rolloff`, `bandwidth` and `zcr` only used a sliver of 0–1**, so anything bound to them barely moved. They now share the octave-based axis `centroid` uses (a clean 440 Hz note reads about 0.4 on `rolloff` and `zcr`, white noise about 0.9), and `bandwidth` is the spread around `centroid`, from 0 for a pure tone to about 0.8 for pink noise. Built-in effects are retuned to match; re-set the ranges of your own bindings or shaders that read these three.
+
+## v2.3.0 — 2026-10-06
+
+The web remote shows whether each network stream is live, and its buttons no longer miss taps.
+
+### Added
+- **Network stream status in the web remote.** The header shows each stream that is switched on, next to the BPM, so you can check every stream is live before loading a preset. A filled dot means connected, a ring means waiting for the sender and a cross means down; hover for the settings page's words. Contributed by @Marvo2011.
+
+### Fixed
+- **Web remote buttons often ignored taps.** Effect, layer, parameter and preset controls were rebuilt ten times a second, so a tap that spanned a rebuild did nothing and sliders let go mid-drag. Presets now sit in the same three-column grid as the effects. Contributed by @Marvo2011.
+
+## v2.2.0 — 2026-10-04
+
+Two optical-illusion effects in a new Illusions tab of the catalog, and a `kick` that no longer
+fires on bass notes.
+
+### Added
+- **Strand**, an optical illusion: helices of hollow boxes drawn without depth, so you cannot tell which way they spin and they flip as you watch. When the kick drum comes in the boxes gain depth and the spin locks; in a breakdown it turns ambiguous again.
+- **Plateau**, the motion aftereffect: a spiral, rings or falling bars drift while the kick plays and stop dead in a breakdown, and the still picture seems to flow backward for a few seconds. Switch off `drift` to stop it by hand, or `follow_kick` to keep it moving.
+- **Illusions**, a new tab in the effect catalog, holding both.
+
+### Fixed
+- **`kick` fired on bass notes and kept firing through passages with no kick drum**, so kick-bound visuals flickered on basslines and never rested in a breakdown. It is now decided by a small model trained on Creative Commons music; on test tracks with known kick times, detections that really were kicks went from about 4 in 10 to 6 or 7 in 10, while it still finds about as many of the real ones. Bindings, shaders and OSC see the same 0–1 value, so nothing needs changing.
+
+## v2.1.0 — 2026-10-03
+
+Several cameras in one preset, RTMP streams from phones and action cameras as camera input, and
+transitions for plain preset switches. The Classic layout is gone, as announced with 2.0.
+
+### Added
 - **Transitions when switching presets.** Clicking a preset, Next/Prev Preset and the web remote can now dissolve or morph instead of cutting: pick Cut, Dissolve or Morph and a length in the new Switch row at the top of the Presets panel (left side of Perform, and Build's left column), or over OSC with `/fosfora/preset/transition` and `/fosfora/preset/transition_secs`. The default stays Cut. Suggested by @Marvo2011.
+- **Several cameras in one preset.** Each camera layer now has its own camera: a second camera layer takes a camera not yet in use, the Camera menu changes only the selected layer, and a preset brings back every layer's camera. Before, all camera layers showed the same one. A webcam particle source has a Camera menu of its own too, saved with the preset. Obstacles still use the default camera.
+- **RTMP streams as cameras.** Setup ▸ General ▸ Cameras has a new Network streams list: give a stream a name and an address and switch it on, and it is listed with the cameras for webcam layers and webcam particle sources. A stream either connects to a server or, with Listen ticked, waits for a phone or encoder to publish straight to Fosfora. Streams switched on are open from launch, with a status light each (red not listening, yellow waiting, green connected), and a stream that drops comes back by itself. Needs FFmpeg on PATH.
 
 ### Changed
 - **Dissolves keep the outgoing preset moving.** It used to freeze for the length of the fade. Both presets render during a Dissolve, so if that stutters on your machine, untick **Keep moving** next to Dissolve in the Switch row or the cue editor. Presets with a trama chain or a locked layer still fade from a still.
 - **Morph crossfades layers that change effect.** A Morph between presets or scene cues with different effects used to land as a cut; those layers now crossfade while the rest morph.
 
+### Removed
+- **The Classic layout.** The two side panels that v2.0 kept as an option in Setup ▸ General are gone; everything lives in Perform, Build and Setup. A settings file that chose Classic opens in the workspace.
+
 ### Fixed
 - **Changing your mind while a preset with a video was loading** switched back to that preset seconds later, when its video finished decoding; the later choice now sticks.
 - **A scene cue dissolving into a preset with a video** faded into the old preset and then hard-cut to the new one once the video loaded, about 13 s later for a typical clip. The dissolve now starts when the video is ready.
+- **Virtual cameras would not open with the FFmpeg webcam option**, which asked every camera for 1280x720 and gave up on one that only offers another size. It now takes the nearest size the camera has. On macOS its camera list also showed microphones.
+- **"+ Webcam" failed, or opened the wrong camera, after a camera was plugged in or unplugged or a virtual camera started.** Cameras are now remembered by name rather than by position, and the list is read again when you add one. Two cameras of the same model are listed separately.
+- **Switching a camera layer to a camera with a different resolution crashed**, and removing or switching a camera that had stopped sending pictures froze the app.
+- **Cameras stayed on after switching to a preset without them**, and a particle source lost its camera when a camera layer was removed.
 
 ## v2.0.1 — 2026-09-30
 

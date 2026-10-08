@@ -98,6 +98,9 @@ impl OscSender {
         self.send_float("/audio/beat", f.beat);
         self.send_float("/audio/beat_phase", f.beat_phase);
         self.send_float("/audio/bpm", f.bpm * 300.0); // raw BPM, not normalized
+        // #81: whether that BPM is worth trusting — grid agreement 0..1 and the lock flag.
+        self.send_float("/audio/tempo_confidence", f.tempo_confidence);
+        self.send_float("/audio/beat_locked", f.beat_locked);
         // A11 key (#1462): pitch-class index (×11 → 0..11), minor flag, confidence.
         self.send_float("/audio/key/class", f.key_class * 11.0);
         self.send_float("/audio/key/is_minor", f.key_is_minor);

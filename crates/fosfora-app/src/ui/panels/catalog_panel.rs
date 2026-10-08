@@ -19,7 +19,7 @@ use crate::ui::theme::colors::theme_colors;
 /// The families an effect's `category` names, in tab order. The tabs are for
 /// finding a look, so they say what an effect looks like or works on, not how
 /// it is built — how it is built is in each picture's tooltip.
-pub const FAMILIES: [(&str, &str, &str); 7] = [
+pub const FAMILIES: [(&str, &str, &str); 8] = [
     (
         "particles",
         "Particles",
@@ -46,6 +46,11 @@ pub const FAMILIES: [(&str, &str, &str); 7] = [
         "overlay",
         "Overlays",
         "Instrument chrome meant to sit over other layers",
+    ),
+    (
+        "illusion",
+        "Illusions",
+        "Pictures your eye completes, reverses or sets moving on its own",
     ),
 ];
 

@@ -107,7 +107,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     // Each edge carries a travelling light pulse (tempo-locked). Dissonant intervals pulse
     // faster and shimmer, so a diminished chord visibly trembles while a fifth glows steady.
     if (edges_master > 0.001) {
-        let line_w = (0.002 + u.bandwidth * 0.005) * arc_thick; // bandwidth -> line thickness
+        let line_w = (0.002 + u.bandwidth * 0.0022) * arc_thick; // bandwidth -> line thickness
         for (var i = 0; i < 12; i = i + 1) {
             let ai = node_amp[i];
             if (ai < 0.12) { continue; }

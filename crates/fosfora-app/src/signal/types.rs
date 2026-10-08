@@ -20,7 +20,7 @@ pub struct SignalConfig {
     /// Continuous-group rate; clamped to 1..=86 at use (events always fire per hop).
     #[serde(default = "default_rate")]
     pub tx_rate_hz: u32,
-    /// The raw 83-slot feature bus (~2.5k datagrams/s at 30 Hz) — opt-in.
+    /// The raw 85-slot feature bus (~2.5k datagrams/s at 30 Hz) — opt-in.
     #[serde(default)]
     pub feat_bus: bool,
     /// The stem-proxy group (documented estimates, not real separation).

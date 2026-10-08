@@ -104,10 +104,7 @@ fn every_setting_has_a_page() {
             &["If it goes quiet", "Band scale", "Device"][..],
         ),
         (Page::Outputs, &["Black becomes", "Second window"][..]),
-        (
-            Page::General,
-            &["Particle quality", "Flash limiter", "Classic layout"][..],
-        ),
+        (Page::General, &["Particle quality", "Flash limiter"][..]),
         (
             Page::Control,
             &["Listen on port", "Addresses start", "Port"][..],
@@ -126,8 +123,8 @@ fn every_setting_has_a_page() {
     }
 }
 
-// Recording's button sends the request the Classic panel sends, and the
-// page says what is running.
+// Recording's button sends the request `main.rs` handles, and the page
+// says what is running.
 #[test]
 fn record_sends_the_same_request() {
     let mut h = setup(Vec2::new(1400.0, 900.0), Page::Outputs);
@@ -271,7 +268,7 @@ fn the_streams_draw_inside_the_column() {
     }
 }
 
-// A stream's switch sends the request its Classic checkbox sends.
+// A stream's switch sends the request `main.rs` handles.
 #[cfg(feature = "ndi")]
 #[test]
 fn the_ndi_switch_sends_the_same_request() {

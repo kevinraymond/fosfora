@@ -79,13 +79,14 @@ pub struct HopOutput {
     /// and the drumless-material range inflation (#1854) go away.
     ///
     /// CAVEAT — it is snapshotted *before* the beat, downbeat and structure blocks fill their
-    /// fields, so these 13 carry the previous hop's value, not this one's:
+    /// fields, so these 15 carry the previous hop's value, not this one's:
     /// `onset`, `beat`, `beat_phase`, `bpm`, `beat_strength` (15..=19),
     /// `downbeat`, `bar_phase`, `beat_in_bar` (52..=54),
-    /// `section_novelty`, `buildup`, `drop` (58..=60).
+    /// `section_novelty`, `buildup`, `drop` (58..=60),
+    /// `bar_index`, `beat_index`, `tempo_confidence`, `beat_locked` (81..=84).
     /// Read those from `frame.features`, which is complete.
     ///
-    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 332-byte
+    /// Only `--analyze` consumes this; the live audio thread ignores it (it costs one 340-byte
     /// `Copy` per hop either way).
     #[cfg_attr(not(feature = "analyze"), allow(dead_code))]
     pub pre_norm: AudioFeatures,
@@ -124,6 +125,7 @@ pub struct HopAnalyzer {
 
 impl HopAnalyzer {
     pub fn new(sample_rate: f32, band_scale: BandScale, tempo_cfg: TempoConfig) -> Self {
+        let hop_rate = super::hop_rate(sample_rate);
         Self {
             dc_mono: DcBlocker::new(sample_rate),
             dc_left: DcBlocker::new(sample_rate),
@@ -131,7 +133,7 @@ impl HopAnalyzer {
             mono: Vec::with_capacity(ANALYSIS_HOP),
             stereo: Vec::with_capacity(ANALYSIS_HOP * 2),
             analyzer: FftAnalyzer::new(sample_rate, band_scale),
-            normalizer: FeatureNormalizer::new(),
+            normalizer: FeatureNormalizer::new(hop_rate),
             beat_detector: BeatDetector::new(sample_rate, tempo_cfg),
             key_detector: KeyDetector::new(sample_rate),
             loudness_meter: LoudnessMeter::new(sample_rate),
@@ -139,9 +141,9 @@ impl HopAnalyzer {
             structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
             stereo_analyzer: StereoAnalyzer::with_sample_rate(sample_rate),
-            hpss_analyzer: HpssAnalyzer::new(),
+            hpss_analyzer: HpssAnalyzer::new(sample_rate),
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
-            dmfcc_analyzer: DeltaMfccAnalyzer::new(),
+            dmfcc_analyzer: DeltaMfccAnalyzer::new(hop_rate),
             key_sidecar: KeySidecar::from_env(),
             structure_sidecar: StructureSidecar::from_env(),
             dt: ANALYSIS_HOP as f32 / sample_rate,
@@ -320,6 +322,8 @@ impl HopAnalyzer {
         raw.beat_phase = beat_result.beat_phase;
         raw.bpm = beat_result.bpm / crate::audio::features::BPM_NORM; // normalize to 0-1
         raw.beat_strength = beat_result.beat_strength;
+        raw.tempo_confidence = beat_result.tempo_confidence;
+        raw.beat_locked = if beat_result.beat_locked { 1.0 } else { 0.0 };
 
         // A12 (#1463): bar/downbeat/meter tracking. Runs every frame (advances bar_phase
         // on the audio clock, integrates flux); heavy scoring gates on a fired beat. RMS is
@@ -427,6 +431,55 @@ mod tests {
                 .pre_norm;
         }
         last
+    }
+
+    /// The last frame's published features after `secs` of `signal(t)`.
+    fn final_frame(secs: f32, mut signal: impl FnMut(f32) -> f32) -> AudioFeatures {
+        const SR: f32 = 44100.0;
+        let mut a = HopAnalyzer::new(SR, BandScale::Db, TempoConfig::default());
+        let mut last = AudioFeatures::default();
+        for h in 0..(secs * SR) as usize / ANALYSIS_HOP {
+            let mono: Vec<f32> = (0..ANALYSIS_HOP)
+                .map(|i| signal((h * ANALYSIS_HOP + i) as f32 / SR))
+                .collect();
+            let stereo: Vec<f32> = mono.iter().flat_map(|&x| [x, x]).collect();
+            let ts = ((h + 1) * ANALYSIS_HOP) as f64 / f64::from(SR);
+            let cfg = (StructureConfig::default(), TempoConfig::default());
+            last = a
+                .process_hop(&mono, &stereo, ts, cfg.0, cfg.1, Vec::new())
+                .frame
+                .features;
+        }
+        last
+    }
+
+    /// #81: a steady four-on-the-floor locks and reports high confidence; noise never does.
+    #[test]
+    fn tempo_trust_tracks_the_lock() {
+        let tau = std::f32::consts::TAU;
+        let kick = |t: f32| {
+            let tb = t % 0.5; // 120 BPM
+            (tau * (50.0 + 100.0 * (-tb * 40.0).exp()) * tb).sin() * (-tb * 10.0).exp() * 0.7
+        };
+        let steady = final_frame(25.0, kick);
+        assert_eq!(steady.beat_locked, 1.0, "120 BPM kick never locked");
+        assert!(
+            steady.tempo_confidence > 0.6,
+            "confidence {}",
+            steady.tempo_confidence
+        );
+
+        let mut lcg = 0x1234_5678u32;
+        let noise = final_frame(25.0, |_| {
+            lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((lcg >> 8) as f32 / 8_388_608.0 - 1.0) * 0.2
+        });
+        assert_eq!(noise.beat_locked, 0.0, "noise locked");
+        assert!(
+            noise.tempo_confidence < 0.6,
+            "confidence {}",
+            noise.tempo_confidence
+        );
     }
 
     /// A DC offset larger than the tone it carries would leak into sub_bass through the Hann

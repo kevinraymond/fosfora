@@ -283,7 +283,7 @@ pub fn draw_binding_matrix(
     let touring = crate::ui::tour::is_running(ctx);
 
     // In the workspace the matrix covers Build's stack and inspector and stops
-    // at the output column (#3125); in Classic it has the whole window.
+    // at the output column (#3125); without one it has the whole window.
     let bounded = crate::ui::modal::bounds(ctx);
     #[allow(deprecated)]
     let screen = bounded.unwrap_or_else(|| ctx.input(|i| i.screen_rect()));

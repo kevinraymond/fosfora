@@ -24,7 +24,22 @@ body { display: flex; flex-direction: column; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; transition: background 0.15s; }
 .status-dot.connected { background: var(--green); }
 .status-dot.beat { background: var(--beat); }
-.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text2); }
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text2); min-width: 0; }
+#bpmDisplay { white-space: nowrap; }
+/* Network streams: the settings page's lights, gray while Fosfora is unreachable.
+   The shape says the state too, so it does not rest on color: a filled dot is
+   connected, a ring is waiting for the sender, a cross is down. */
+.streams { display: flex; align-items: center; gap: 14px; min-width: 0; overflow: hidden; }
+.streams:not(:empty) { margin-right: 14px; }
+.stream { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.stream-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stream-light { --c: #555; position: relative; width: 10px; height: 10px; flex-shrink: 0; border-radius: 50%; }
+.stream-light.down { --c: #e5484d; border-radius: 0; }
+.stream-light.waiting { --c: #f5c518; border: 2px solid var(--c); }
+.stream-light.connected { --c: #3fc35f; background: var(--c); }
+.stream-light.down::before, .stream-light.down::after { content: ''; position: absolute; left: -1px; right: -1px; top: 4px; height: 2px; background: var(--c); transform: rotate(45deg); }
+.stream-light.down::after { transform: rotate(-45deg); }
+.streams.offline .stream-light { --c: #555; }
 
 /* Audio bars — labeled, 60px tall */
 .audio-section { background: var(--surface); padding: 6px 12px 8px; flex-shrink: 0; border-bottom: 1px solid var(--border); }
@@ -90,11 +105,13 @@ body { display: flex; flex-direction: column; }
 /* Enable checkbox — bigger touch target */
 .layer-cb { width: 24px; height: 24px; accent-color: var(--accent); cursor: pointer; }
 
-/* Presets — bigger */
-.preset-btn { display: block; width: 100%; padding: 16px 14px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; margin-bottom: 8px; min-height: var(--btn-min); }
+/* Presets — same grid as the effects */
+.presets-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.presets-grid > .preset-section-label, .presets-grid > .empty-msg { grid-column: 1 / -1; }
+.preset-btn { padding: 14px 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; text-align: center; overflow-wrap: anywhere; cursor: pointer; min-height: var(--btn-min); display: flex; align-items: center; justify-content: center; }
 .preset-btn.active { background: var(--accent2); border-color: var(--accent); color: #fff; }
 .preset-btn:active { opacity: 0.8; }
-.preset-section-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0 4px; }
+.preset-section-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin: 6px 0 0; }
 
 /* Triggers — bigger */
 .trigger-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -117,6 +134,7 @@ body { display: flex; flex-direction: column; }
   <div class="status-dot" id="statusDot"></div>
   <h1>Fosfora</h1>
   <div class="header-right">
+    <div class="streams offline" id="streams"></div>
     <span id="bpmDisplay"></span>
     <div class="status-dot" id="beatDot"></div>
   </div>
@@ -175,7 +193,7 @@ body { display: flex; flex-direction: column; }
   </div>
 
   <div class="panel" id="panel-presets">
-    <div id="presetsContainer"></div>
+    <div class="presets-grid" id="presetsContainer"></div>
   </div>
 </div>
 
@@ -198,10 +216,19 @@ body { display: flex; flex-direction: column; }
   const isLocal = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const beatDot = document.getElementById('beatDot');
   const bpmDisplay = document.getElementById('bpmDisplay');
+  const streamsEl = document.getElementById('streams');
+  let streamsKey = '';
   const effectsGrid = document.getElementById('effectsGrid');
   const paramsContainer = document.getElementById('paramsContainer');
   const layersContainer = document.getElementById('layersContainer');
   const presetsContainer = document.getElementById('presetsContainer');
+  let effectsKey = '';
+  let paramsKey = '';
+  let paramSyncs = [];
+  let layersKey = '';
+  let layerSyncs = [];
+  let presetsKey = '';
+  let holds = {};
   const ppToggle = document.getElementById('ppToggle');
   const bars = [0,1,2,3,4,5,6].map(i => document.getElementById('bar'+i));
 
@@ -255,12 +282,14 @@ body { display: flex; flex-direction: column; }
 
     ws.onopen = () => {
       statusDot.classList.add('connected');
+      streamsEl.classList.remove('offline');
       keyHint.style.display = 'none';
       reconnectDelay = 1000;
     };
 
     ws.onclose = () => {
       statusDot.classList.remove('connected');
+      streamsEl.classList.add('offline');
       if (!accessKey && !isLocal) keyHint.style.display = 'block';
       ws = null;
       reconnectTimer = setTimeout(connect, reconnectDelay);
@@ -286,18 +315,37 @@ body { display: flex; flex-direction: column; }
     }
   }
 
+  // At most one message per key every 33 ms. A message that arrives during the
+  // cooldown is kept (newest wins) and sent when the cooldown ends, so the
+  // value a drag is released on always reaches the app.
   function throttledSend(key, obj) {
-    if (sendThrottle[key]) return;
+    const t = sendThrottle[key];
+    if (t) {
+      t.pending = obj;
+      return;
+    }
     send(obj);
-    sendThrottle[key] = true;
-    setTimeout(() => { sendThrottle[key] = false; }, 33);
+    const entry = { pending: null };
+    sendThrottle[key] = entry;
+    const release = () => {
+      if (entry.pending) {
+        send(entry.pending);
+        entry.pending = null;
+        setTimeout(release, 33);
+      } else {
+        delete sendThrottle[key];
+      }
+    };
+    setTimeout(release, 33);
   }
 
   function handleMessage(msg) {
     switch(msg.type) {
       case 'state':
         state = msg;
+        state.active_layer = shown('active_layer', msg.active_layer);
         renderAll();
+        renderStreams(msg.streams || []);
         break;
       case 'audio':
         updateAudio(msg);
@@ -309,7 +357,7 @@ body { display: flex; flex-direction: column; }
         if (state) updateLayer(msg);
         break;
       case 'active_layer':
-        if (state) { state.active_layer = msg.index; renderLayers(); renderParams(); }
+        if (state) { state.active_layer = shown('active_layer', msg.index); renderLayers(); renderParams(); renderEffects(); }
         break;
       case 'effect_loaded':
         if (state) handleEffectLoaded(msg);
@@ -329,88 +377,155 @@ body { display: flex; flex-direction: column; }
     updatePP();
   }
 
+  // Full state arrives at 10 Hz. Each panel rebuilds its controls only when the set of
+  // them changed and otherwise updates them in place, so a rebuild never cuts off a tap
+  // or a drag.
+  //
+  // A value changed here is held until the app reports it (or the hold runs out): the app
+  // keeps reporting the old one for a moment, and the control would jump back.
+  function hold(key, value, ms) {
+    holds[key] = { value: value, until: Date.now() + (ms || 1000) };
+  }
+  function shown(key, reported) {
+    var h = holds[key];
+    if (!h) return reported;
+    var arrived = typeof reported === 'number' && typeof h.value === 'number'
+      ? Math.abs(reported - h.value) < 0.002
+      : reported === h.value;
+    if (arrived || Date.now() > h.until) {
+      delete holds[key];
+      return reported;
+    }
+    return h.value;
+  }
+
   function renderEffects() {
-    effectsGrid.innerHTML = '';
-    if (!state || !state.effects) return;
-    const activeLayer = state.layers[state.active_layer];
-    const activeIdx = activeLayer ? activeLayer.effect_index : null;
-    state.effects.forEach(fx => {
-      const btn = document.createElement('div');
-      btn.className = 'effect-btn' + (fx.index === activeIdx ? ' active' : '');
-      btn.textContent = fx.name;
-      btn.addEventListener('click', () => {
-        send({ type: 'load_effect', index: fx.index });
+    const effects = (state && state.effects) || [];
+    const key = JSON.stringify(effects.map(fx => [fx.index, fx.name]));
+    if (key !== effectsKey) {
+      effectsKey = key;
+      effectsGrid.innerHTML = '';
+      effects.forEach(fx => {
+        const btn = document.createElement('div');
+        btn.className = 'effect-btn';
+        btn.dataset.index = fx.index;
+        btn.textContent = fx.name;
+        btn.addEventListener('click', () => {
+          hold('effect_' + state.active_layer, fx.index, 3000);
+          renderEffects();
+          send({ type: 'load_effect', index: fx.index });
+        });
+        effectsGrid.appendChild(btn);
       });
-      effectsGrid.appendChild(btn);
+    }
+    if (!state || !state.layers) return;
+    const activeLayer = state.layers[state.active_layer];
+    const activeIdx = shown('effect_' + state.active_layer, activeLayer ? activeLayer.effect_index : null);
+    effectsGrid.querySelectorAll('.effect-btn').forEach(btn => {
+      btn.classList.toggle('active', Number(btn.dataset.index) === activeIdx);
     });
   }
 
   function renderParams() {
+    const layer = state && state.layers ? state.layers[state.active_layer] : null;
+    const params = (layer && layer.params) || [];
+    const key = JSON.stringify([
+      state ? state.active_layer : null,
+      layer ? layer.effect_name : null,
+      params.map(p => [p.name, p.type, p.min, p.max]),
+    ]);
+    if (key !== paramsKey) {
+      paramsKey = key;
+      buildParams(layer, params);
+    }
+    paramSyncs.forEach(sync => sync(params));
+  }
+  function buildParams(layer, params) {
     paramsContainer.innerHTML = '';
+    paramSyncs = [];
     const header = document.getElementById('paramHeader');
     if (!state || !state.layers) { header.textContent = ''; return; }
-    const layer = state.layers[state.active_layer];
     const layerLabel = 'Layer ' + (state.active_layer + 1);
     const effectLabel = layer && layer.effect_name ? layer.effect_name : '(no effect)';
-    header.innerHTML = '<span style="color:var(--accent);font-weight:600;">' + layerLabel + '</span> <span style="color:var(--text2);margin:0 4px;">\u2014</span> <span>' + effectLabel + '</span>';
-    if (!layer || !layer.params || layer.params.length === 0) {
+    header.innerHTML = '<span style="color:var(--accent);font-weight:600;">' + layerLabel + '</span> <span style="color:var(--text2);margin:0 4px;">—</span> <span>' + effectLabel + '</span>';
+    if (params.length === 0) {
       paramsContainer.innerHTML = '<div class="empty-msg">No parameters</div>';
       return;
     }
 
-    layer.params.forEach(p => {
+    params.forEach((p, pi) => {
+      const holdKey = 'param_' + state.active_layer + '_' + p.name;
       if (p.type === 'float') {
         const row = document.createElement('div');
         row.className = 'param-row';
-        const valDisplay = (p.min + (p.max - p.min) * p.value).toFixed(2);
-        row.innerHTML = '<div class="param-label"><span class="param-name">' + p.name + '</span><span class="param-value">' + valDisplay + '</span></div>';
+        row.innerHTML = '<div class="param-label"><span class="param-name">' + p.name + '</span><span class="param-value"></span></div>';
+        const valEl = row.querySelector('.param-value');
+        const show = v => { valEl.textContent = (p.min + (p.max - p.min) * v).toFixed(2); };
         const slider = document.createElement('input');
         slider.type = 'range';
         slider.className = 'param-slider';
         slider.min = 0;
         slider.max = 1000;
-        slider.value = Math.round(p.value * 1000);
         slider.setAttribute('touch-action', 'none');
         slider.addEventListener('input', function(e) {
           const v = parseInt(e.target.value) / 1000;
-          p.value = v;
-          row.querySelector('.param-value').textContent = (p.min + (p.max - p.min) * v).toFixed(2);
+          hold(holdKey, v);
+          show(v);
           throttledSend('param_' + p.name, { type: 'set_param', name: p.name, value: v });
         });
         row.appendChild(slider);
         paramsContainer.appendChild(row);
+        paramSyncs.push(current => {
+          const v = shown(holdKey, current[pi].value);
+          const pos = String(Math.round(v * 1000));
+          if (slider.value !== pos) slider.value = pos;
+          show(v);
+        });
       } else if (p.type === 'bool') {
         const toggle = document.createElement('div');
-        toggle.className = 'param-toggle' + (p.value > 0.5 ? ' on' : '');
+        toggle.className = 'param-toggle';
         toggle.innerHTML = '<div class="param-toggle-dot"></div><span>' + p.name + '</span>';
         toggle.addEventListener('click', function() {
-          p.value = p.value > 0.5 ? 0 : 1;
-          toggle.classList.toggle('on', p.value > 0.5);
-          toggle.querySelector('.param-toggle-dot').style.background = p.value > 0.5 ? '#fff' : '#555';
-          send({ type: 'set_param', name: p.name, value: p.value });
+          const v = toggle.classList.contains('on') ? 0 : 1;
+          hold(holdKey, v);
+          toggle.classList.toggle('on', v > 0.5);
+          send({ type: 'set_param', name: p.name, value: v });
         });
         paramsContainer.appendChild(toggle);
+        paramSyncs.push(current => {
+          toggle.classList.toggle('on', shown(holdKey, current[pi].value) > 0.5);
+        });
       }
     });
   }
 
   function renderLayers() {
+    const layers = (state && state.layers) || [];
+    const key = JSON.stringify(layers.map(l => l.name));
+    if (key !== layersKey) {
+      layersKey = key;
+      buildLayers(layers);
+    }
+    layers.forEach((layer, i) => layerSyncs[i](layer));
+  }
+  function buildLayers(layers) {
     layersContainer.innerHTML = '';
-    if (!state || !state.layers) return;
+    layerSyncs = [];
 
     // Must stay in lockstep with BlendMode in gpu/layer.rs (index == as_u32).
     // The last three are the displacement family (#1478).
     const blendNames = ['Normal','Add','Screen','Color Dodge','Multiply','Overlay','Hard Light','Difference','Exclusion','Subtract','Displace','Refract','Lens'];
 
-    state.layers.forEach(function(layer, i) {
+    layers.forEach(function(layer, i) {
       const card = document.createElement('div');
-      card.className = 'layer-card' + (i === state.active_layer ? ' active' : '') + (!layer.enabled ? ' disabled' : '');
 
       // Info area (tap to select)
       const info = document.createElement('div');
       info.className = 'layer-info';
-      info.innerHTML = '<div class="layer-name">' + layer.name + '</div><div class="layer-effect">' + (layer.effect_name || '(empty)') + '</div>';
+      info.innerHTML = '<div class="layer-name">' + layer.name + '</div><div class="layer-effect"></div>';
+      const effectEl = info.querySelector('.layer-effect');
       info.addEventListener('click', function() {
+        hold('active_layer', i);
         state.active_layer = i;
         renderLayers();
         renderParams();
@@ -430,10 +545,10 @@ body { display: flex; flex-direction: column; }
         const opt = document.createElement('option');
         opt.value = bi;
         opt.textContent = name;
-        if (bi === layer.blend_mode) opt.selected = true;
         sel.appendChild(opt);
       });
       sel.addEventListener('change', function() {
+        hold('blend_' + i, parseInt(sel.value));
         send({ type: 'set_layer_blend', layer: i, value: parseInt(sel.value) });
       });
       controls.appendChild(sel);
@@ -445,10 +560,10 @@ body { display: flex; flex-direction: column; }
       opSlider.type = 'range';
       opSlider.min = 0;
       opSlider.max = 100;
-      opSlider.value = Math.round(layer.opacity * 100);
       opSlider.setAttribute('touch-action', 'none');
       opSlider.addEventListener('input', function(e) {
         var v = parseInt(e.target.value) / 100;
+        hold('opacity_' + i, v);
         throttledSend('opacity_' + i, { type: 'set_layer_opacity', layer: i, value: v });
       });
       opWrap.appendChild(opSlider);
@@ -457,19 +572,43 @@ body { display: flex; flex-direction: column; }
       // Enable checkbox
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = layer.enabled;
       cb.className = 'layer-cb';
       cb.addEventListener('change', function() {
+        hold('enabled_' + i, cb.checked);
+        renderLayers();
         send({ type: 'set_layer_enabled', layer: i, value: cb.checked });
       });
       controls.appendChild(cb);
 
       card.appendChild(controls);
       layersContainer.appendChild(card);
+
+      layerSyncs.push(function(current) {
+        const enabled = shown('enabled_' + i, current.enabled);
+        card.className = 'layer-card' + (i === state.active_layer ? ' active' : '') + (!enabled ? ' disabled' : '');
+        effectEl.textContent = current.effect_name || '(empty)';
+        // An open picker keeps its own selection until the user is done with it.
+        if (document.activeElement !== sel) sel.value = shown('blend_' + i, current.blend_mode);
+        const pos = String(Math.round(shown('opacity_' + i, current.opacity) * 100));
+        if (opSlider.value !== pos) opSlider.value = pos;
+        cb.checked = enabled;
+      });
     });
   }
 
   function renderPresets() {
+    var key = JSON.stringify(state ? state.presets : null);
+    if (key !== presetsKey) {
+      presetsKey = key;
+      buildPresets();
+    }
+    if (!state) return;
+    var current = shown('preset', state.current_preset);
+    presetsContainer.querySelectorAll('.preset-btn').forEach(function(btn) {
+      btn.classList.toggle('active', Number(btn.dataset.index) === current);
+    });
+  }
+  function buildPresets() {
     presetsContainer.innerHTML = '';
     if (!state || !state.presets || state.presets.length === 0) {
       presetsContainer.innerHTML = '<div class="empty-msg">No presets</div>';
@@ -500,14 +639,39 @@ body { display: flex; flex-direction: column; }
   }
   function makePresetBtn(p) {
     var btn = document.createElement('div');
-    btn.className = 'preset-btn' + (p.index === state.current_preset ? ' active' : '');
+    btn.className = 'preset-btn';
+    btn.dataset.index = p.index;
     btn.textContent = p.name;
     btn.addEventListener('click', function() {
-      state.current_preset = p.index;
+      // A preset with media or a transition loads a moment after the tap.
+      hold('preset', p.index, 10000);
       renderPresets();
       send({ type: 'load_preset', index: p.index });
     });
     return btn;
+  }
+
+  // Full state arrives at 10 Hz; rebuild the lights only when one changed.
+  function renderStreams(streams) {
+    var key = JSON.stringify(streams);
+    if (key === streamsKey) return;
+    streamsKey = key;
+    streamsEl.textContent = '';
+    streams.forEach(function(s) {
+      var el = document.createElement('div');
+      el.className = 'stream';
+      el.title = s.name + ': ' + s.status;
+      var dot = document.createElement('div');
+      dot.className = 'stream-light ' + s.light;
+      dot.setAttribute('role', 'img');
+      dot.setAttribute('aria-label', s.status);
+      var name = document.createElement('span');
+      name.className = 'stream-name';
+      name.textContent = s.name;
+      el.appendChild(name);
+      el.appendChild(dot);
+      streamsEl.appendChild(el);
+    });
   }
 
   function updatePP() {
@@ -538,23 +702,7 @@ body { display: flex; flex-direction: column; }
     var p = layer.params.find(function(p) { return p.name === msg.name; });
     if (p) {
       p.value = msg.value;
-      if (msg.layer === state.active_layer) {
-        var sliders = paramsContainer.querySelectorAll('.param-slider');
-        var rows = paramsContainer.querySelectorAll('.param-row');
-        var floatIdx = 0;
-        layer.params.forEach(function(param) {
-          if (param.type === 'float') {
-            if (param.name === msg.name && sliders[floatIdx]) {
-              if (document.activeElement !== sliders[floatIdx]) {
-                sliders[floatIdx].value = Math.round(msg.value * 1000);
-                var valEl = rows[floatIdx] && rows[floatIdx].querySelector('.param-value');
-                if (valEl) valEl.textContent = (param.min + (param.max - param.min) * msg.value).toFixed(2);
-              }
-            }
-            floatIdx++;
-          }
-        });
-      }
+      if (msg.layer === state.active_layer) renderParams();
     }
   }
 

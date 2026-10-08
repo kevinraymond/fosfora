@@ -1,9 +1,10 @@
 use super::features::{AudioFeatures, NUM_FEATURES};
 use super::ranging::PercentileWindow;
 use super::schema::{FEATURES, NormPolicy};
+use super::{rescale_decay, rescale_hops};
 
-/// Number of recent frames each Adaptive feature ranges over (~4 s at the fixed
-/// 512-sample hop / 44.1 kHz). This length is the spike-recovery knob: a transient
+/// Number of recent frames each Adaptive feature ranges over at the reference hop rate
+/// (~4 s; rescaled to the same time at other rates, #53). This length is the spike-recovery knob: a transient
 /// leaves the window after ~4 s, so the old "if v < 0.2·hi for 30 frames" decay is gone.
 const ADAPTIVE_WINDOW: usize = 344;
 
@@ -20,7 +21,8 @@ const SPAN_EPS: f32 = 1e-6;
 /// transients above P95 still read as "louder" instead of hard-clipping flat at 1.0.
 const KNEE: f32 = 0.85;
 
-/// EMA rate for the ZScore running mean/variance (~1.2 s time constant at 512-hop).
+/// EMA rate for the ZScore running mean/variance at the reference hop rate (~1.2 s time
+/// constant; rescaled to the same time at other rates, #53).
 const Z_ALPHA: f32 = 0.01;
 
 /// tanh softness for the ZScore → 0..1 map: ±3σ lands near 0/1, so ordinary MFCC
@@ -48,17 +50,23 @@ pub struct FeatureNormalizer {
     z_var: [f32; NUM_FEATURES],
     /// Last emitted value per slot — FixedRange holds this through a silence gate.
     fixed_last: [f32; NUM_FEATURES],
+    /// [`Z_ALPHA`] at the running hop rate.
+    z_alpha: f32,
 }
 
 impl FeatureNormalizer {
-    pub fn new() -> Self {
+    /// `hop_rate` is hops per second; the window and the ZScore EMA keep their reference
+    /// time constants at it.
+    pub fn new(hop_rate: f32) -> Self {
+        let window = rescale_hops(ADAPTIVE_WINDOW, hop_rate);
         Self {
             windows: (0..NUM_FEATURES)
-                .map(|_| PercentileWindow::new(ADAPTIVE_WINDOW))
+                .map(|_| PercentileWindow::new(window))
                 .collect(),
             z_mean: [0.0; NUM_FEATURES],
             z_var: [1.0; NUM_FEATURES],
             fixed_last: [0.0; NUM_FEATURES],
+            z_alpha: 1.0 - rescale_decay(1.0 - Z_ALPHA, hop_rate),
         }
     }
 
@@ -106,8 +114,9 @@ impl FeatureNormalizer {
                         let z = (v - mean) / (var + 1e-6).sqrt();
                         // Update running stats (EMA mean + EWMA variance).
                         let delta = v - mean;
-                        self.z_mean[i] = mean + Z_ALPHA * delta;
-                        self.z_var[i] = (1.0 - Z_ALPHA) * (var + Z_ALPHA * delta * delta);
+                        let a = self.z_alpha;
+                        self.z_mean[i] = mean + a * delta;
+                        self.z_var[i] = (1.0 - a) * (var + a * delta * delta);
                         0.5 + 0.5 * (z / Z_SOFT).tanh()
                     }
                 }
@@ -141,6 +150,7 @@ fn soft_clip01(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::REFERENCE_HOP_RATE;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
@@ -148,7 +158,7 @@ mod tests {
 
     #[test]
     fn all_zero_stays_finite() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         let out = norm.normalize(&AudioFeatures::default(), false);
         for &v in out.as_slice() {
             assert!(v.is_finite());
@@ -157,7 +167,7 @@ mod tests {
 
     #[test]
     fn silence_gates_energy_to_zero() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         // Warm up the rms window with real signal so it has a range.
         for i in 0..200 {
             let raw = AudioFeatures {
@@ -179,7 +189,7 @@ mod tests {
 
     #[test]
     fn adaptive_ranges_high_and_low() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         // A varied history (sawtooth 0..~1) so P5/P95 straddle the range.
         for i in 0..ADAPTIVE_WINDOW {
             let raw = AudioFeatures {
@@ -213,7 +223,7 @@ mod tests {
 
     #[test]
     fn fixedrange_clamps_and_holds_on_silence() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         // In-range value passes through; out-of-range clamps.
         assert!(approx_eq(
             norm.normalize(
@@ -254,7 +264,7 @@ mod tests {
 
     #[test]
     fn zscore_centers_constant_mfcc() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         let mut raw = AudioFeatures::default();
         raw.mfcc[0] = 5.0;
         let mut out = 0.0;
@@ -270,7 +280,7 @@ mod tests {
 
     #[test]
     fn passthrough_untouched() {
-        let mut norm = FeatureNormalizer::new();
+        let mut norm = FeatureNormalizer::new(REFERENCE_HOP_RATE);
         let mut raw = AudioFeatures {
             beat: 1.0,
             beat_phase: 0.7,

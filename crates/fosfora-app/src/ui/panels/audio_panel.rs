@@ -896,8 +896,8 @@ fn draw_tuning_rows(ui: &mut Ui, audio: &mut AudioSystem) {
     );
 }
 
-/// The build-up and drop sliders and their reset, without a container: the
-/// Classic panel wraps them in a subsection, Setup in its own group.
+/// The build-up and drop sliders and their reset, without a container:
+/// Setup puts them in its own group.
 pub(crate) fn draw_tuning_body(ui: &mut Ui, audio: &mut AudioSystem) {
     let mut committed = false;
     {
@@ -1038,7 +1038,7 @@ fn draw_tempo_rows(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUnifor
 }
 
 /// The tempo prior, the octave and tap controls and their reset, without a
-/// container: the Classic panel wraps them in a subsection, Setup in a group.
+/// container: Setup puts them in a group.
 pub(crate) fn draw_tempo_body(ui: &mut Ui, audio: &mut AudioSystem, uniforms: &ShaderUniforms) {
     let mut committed = false;
     let mut tapped = false;

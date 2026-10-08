@@ -3,14 +3,15 @@
 //! beside it. Every device and stream is a block with its state in words and
 //! an On/Off switch over its settings.
 //!
-//! The pages send the same requests the Classic panels send, so `main.rs`
-//! handles both layouts with one set of handlers; what is new is only where
-//! each control sits and how it reads.
+//! The pages send requests that `main.rs` handles, as the rest of the
+//! interface does.
 
 mod audio;
 mod control;
 pub mod kit;
 mod more;
+#[cfg(feature = "webcam")]
+pub use more::StreamStatuses;
 mod outputs;
 
 use egui::{Context, RichText, ScrollArea, Sense, Ui, Vec2};

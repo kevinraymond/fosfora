@@ -241,8 +241,11 @@ struct PhosphorUniforms {
     // clock (raw counts, exact to 2^24).
     bar_index: f32,
     beat_index: f32,
-    _pad_clock0: f32,
-    _pad_clock1: f32,
+    // Tempo trust (#81): how far recent tempo evidence agrees with the grid (0-1), and
+    // 1.0 while the tempo is locked. Gate strobes on beat_locked to keep them off an
+    // unconfirmed grid.
+    tempo_confidence: f32,
+    beat_locked: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: PhosphorUniforms;
@@ -1282,6 +1285,67 @@ mod tests {
     // ABI kept in sync with UNIFORM_BLOCK and gpu/uniforms.rs, and it is the one
     // file the suppression branch of prepend_library exists to serve. Asserting
     // it *does* declare keeps that branch covered by a real shader.
+    /// The WGSL `PhosphorUniforms` (both copies: `UNIFORM_BLOCK` and `default.wgsl`) must lay
+    /// the overlay-clock block out exactly as `gpu::uniforms::ShaderUniforms` does. #81 turned
+    /// its two pad slots into `tempo_confidence`/`beat_locked`; a WGSL copy that kept the pads,
+    /// or swapped the two, would read the wrong value with no validation error.
+    #[test]
+    fn uniform_block_layout_matches_rust() {
+        use crate::gpu::uniforms::ShaderUniforms;
+        use std::mem::offset_of;
+        let default_wgsl = include_str!("../../../../assets/shaders/default.wgsl");
+        for (name, src) in [
+            ("UNIFORM_BLOCK", UNIFORM_BLOCK),
+            ("default.wgsl", default_wgsl),
+        ] {
+            let module = naga::front::wgsl::parse_str(src).expect("parses");
+            let (members, span) = module
+                .types
+                .iter()
+                .find_map(|(_, ty)| match &ty.inner {
+                    naga::TypeInner::Struct { members, span }
+                        if ty.name.as_deref() == Some("PhosphorUniforms") =>
+                    {
+                        Some((members.clone(), *span))
+                    }
+                    _ => None,
+                })
+                .expect("declares PhosphorUniforms");
+            let offset = |field: &str| {
+                members
+                    .iter()
+                    .find(|m| m.name.as_deref() == Some(field))
+                    .unwrap_or_else(|| panic!("{name}: no member {field}"))
+                    .offset as usize
+            };
+            assert_eq!(
+                span as usize,
+                std::mem::size_of::<ShaderUniforms>(),
+                "{name} size"
+            );
+            assert_eq!(
+                offset("bar_index"),
+                offset_of!(ShaderUniforms, bar_index),
+                "{name}"
+            );
+            assert_eq!(
+                offset("beat_index"),
+                offset_of!(ShaderUniforms, beat_index),
+                "{name}"
+            );
+            assert_eq!(
+                offset("tempo_confidence"),
+                offset_of!(ShaderUniforms, tempo_confidence),
+                "{name}"
+            );
+            assert_eq!(
+                offset("beat_locked"),
+                offset_of!(ShaderUniforms, beat_locked),
+                "{name}"
+            );
+        }
+    }
+
     #[test]
     fn only_default_wgsl_declares_the_uniform_struct() {
         let shaders = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/shaders");

@@ -31,7 +31,7 @@ RUST_LOG=fosfora=debug cargo run  # verbose logging
 
 The fastest way to contribute is writing a new visual effect. Three steps:
 
-1. **Create a shader** in `assets/shaders/your_effect.wgsl`. Start from the template in [docs/TECHNICAL.md](docs/TECHNICAL.md#shader-authoring-guide) — you get time, resolution, 83 audio features, up to 16 params, and a WGSL library (noise, palette, SDF, tonemap) auto-prepended.
+1. **Create a shader** in `assets/shaders/your_effect.wgsl`. Start from the template in [docs/TECHNICAL.md](docs/TECHNICAL.md#shader-authoring-guide) — you get time, resolution, 85 audio features, up to 16 params, and a WGSL library (noise, palette, SDF, tonemap) auto-prepended.
 
 2. **Create a definition** in `assets/effects/your_effect.pfx` (JSON):
    ```json
@@ -106,6 +106,9 @@ scripts/audit_pfx_rates.py --check  # .pfx shaders that multiply a parameter by 
 scripts/test_scenelib.py            # unit tests for the scene generator library
 ```
 
+On a PR, CI also checks that a change to `crates/` or `assets/` comes with a
+`CHANGELOG.md` entry (see [Pull Requests](#pull-requests)).
+
 ## Reporting Bugs
 
 Please include:
@@ -137,6 +140,10 @@ cargo clippy --target aarch64-apple-darwin  -- -D warnings   # macOS-gated code
 - Test on at least one platform before submitting
 - Include a brief description of what changed and why
 - New effects should include both the `.wgsl` shader and `.pfx` definition
+- A change users will notice needs an entry under `## Unreleased` in `CHANGELOG.md`
+  (see "Writing CHANGELOG entries" in [CLAUDE.md](CLAUDE.md)). CI fails a PR that changes
+  `crates/` or `assets/` without one; refactors, test-only and similar changes get the
+  `no-changelog` label from a maintainer instead
 
 ## License
 

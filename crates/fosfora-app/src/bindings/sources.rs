@@ -140,6 +140,9 @@ pub fn collect_audio(features: &AudioFeatures) -> SourceSnapshot {
         ("audio.band_pan_upper_mid", features.band_pan_upper_mid),
         ("audio.band_pan_presence", features.band_pan_presence),
         ("audio.band_pan_brilliance", features.band_pan_brilliance),
+        // Tempo trust (#81).
+        ("audio.tempo_confidence", features.tempo_confidence),
+        ("audio.beat_locked", features.beat_locked),
     ];
     for (key, val) in reserved {
         map.insert(key.to_string(), (val, raw(val)));
@@ -275,7 +278,10 @@ mod tests {
         let snap = collect_audio(&features);
         // 7 bands + 13 scalars + 13 mfcc + 12 chroma + 1 dominant + 1 key_hue + 35 reserved
         // (28 from the v2/v3 tails + the 7 A13b band pans that were listed but uncollected)
-        assert_eq!(snap.len(), 82);
+        // + 2 tempo-trust slots (#81)
+        assert_eq!(snap.len(), 84);
+        assert!(snap.contains_key("audio.tempo_confidence"));
+        assert!(snap.contains_key("audio.beat_locked"));
         assert!(snap.contains_key("audio.band_pan_sub_bass"));
         assert!(snap.contains_key("audio.band_pan_brilliance"));
         assert!(snap.contains_key("audio.kick"));

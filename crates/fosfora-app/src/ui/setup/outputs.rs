@@ -1,7 +1,7 @@
 //! Setup › Outputs and streams: the second window, recording, what the black
 //! parts become, and each stream to another app. Each stream's state comes
-//! from the snapshot `main.rs` publishes every frame, as for the Classic
-//! panels, and its settings go back as the same requests.
+//! from the snapshot `main.rs` publishes every frame, and its settings go
+//! back as requests `main.rs` handles.
 
 // The stream helpers are used only by the streams a build has.
 #![cfg_attr(

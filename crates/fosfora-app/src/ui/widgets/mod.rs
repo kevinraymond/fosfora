@@ -253,45 +253,6 @@ pub(crate) fn draw_section_arrow_sized(ui: &mut Ui, is_open: bool, color: Color3
         .add(Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
-/// Collapsible section with card styling and custom header content (e.g. status dots).
-pub fn section_with_header(
-    ui: &mut Ui,
-    id: &str,
-    title: &str,
-    add_header: impl FnOnce(&mut Ui),
-    default_open: bool,
-    add_body: impl FnOnce(&mut Ui),
-) {
-    let tc = theme_colors(ui.ctx());
-    let id = ui.make_persistent_id(id);
-    let state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
-
-    card_frame(ui).show(ui, |ui| {
-        let header_response = header_row(ui, MIN_INTERACT_HEIGHT, |ui| {
-            draw_section_arrow(ui, state.is_open(), tc.text_secondary);
-            ui.label(
-                RichText::new(title.to_uppercase())
-                    .size(HEADING_SIZE)
-                    .color(tc.text_secondary)
-                    .strong(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                add_header(ui);
-            });
-        });
-
-        if header_response.clicked() {
-            let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
-            state.toggle(ui);
-            state.store(ui.ctx());
-        }
-
-        if state.is_open() {
-            add_body(ui);
-        }
-    });
-}
-
 /// Subsection title: a step below the section heading, at the text floor.
 const SUBSECTION_SIZE: f32 = SMALL_SIZE;
 /// Subsection arrow size.

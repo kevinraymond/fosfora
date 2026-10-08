@@ -12,9 +12,11 @@ name: Tag Release
 # the docs. The job is cheap (checkout + two guard scripts + a tag check) and no-ops
 # when the tag already exists.
 #
-# Not gated on the build: a doc-only fix doesn't change the code, and release.yml
-# rebuilds every platform from the tag and publishes nothing if that build fails — so a
-# broken commit produces at worst a dangling tag, never a broken release.
+# Gated on CI: release.yml builds but runs no tests, so without this a commit that
+# builds but fails its tests would ship. CI may still be running when the push above
+# fires, so this also runs when CI finishes on main and tags then. CI skips '**.md'
+# pushes, so a doc-only fix has no CI run of its own; the gate accepts the run of the
+# newest commit that changed code, since HEAD's code is the code that run tested.
 
 on:
   push:
@@ -24,25 +26,59 @@ on:
       - "CHANGELOG.md" # the release body release.yml awk-extracts
       - "README.md" # carries the effect count the docs guard checks
       - "docs/**" # GALLERY.md / TUTORIALS.md counts + relative links
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: write
+  actions: read
+
+# The push and the CI completion can both arrive for one version; one tags, the other
+# finds the tag and stops.
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
 
 jobs:
   tag-release:
     name: Tag release if version changed
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # A CI run from a pull request is not a candidate for a release.
+    if: github.event_name == 'push' || github.event.workflow_run.event == 'push'
     steps:
+      # Always main's newest commit: a workflow_run job checks out the default branch, so
+      # an older CI completion re-checks what is there now rather than what it tested.
       - uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT }}
+
+      # First, so the far more common case — every CI completion on main, nearly all of
+      # them for a version already tagged — stops here without running the guards.
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(grep '^version' crates/fosfora-app/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v${VERSION}"
+          echo "Cargo.toml version: ${VERSION} (tag: ${TAG})"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — skipping"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # Gate the tag on the CHANGELOG: release.yml extracts the release body by
       # awk-matching '## vX.Y.Z' and publishes an empty one if that header is missing
       # (v1.11.0, v1.13.0 both shipped empty that way). No tag means no release, so this
       # fails where the mistake is still cheap to fix.
       - name: Check CHANGELOG
+        if: steps.version.outputs.new == 'true'
         run: scripts/check_changelog.py
 
       # Gate on the docs too: a stale effect count or a broken relative link would
@@ -56,22 +92,45 @@ jobs:
       # as broken images because listing a tile and publishing one are separate acts
       # and only the first was checked (board #2004).
       - name: Check docs
+        if: steps.version.outputs.new == 'true'
         run: scripts/check_docs.py --check-assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check version and tag
+      # The newest commit CI would have run on: ci.yml's paths-ignore skips a push that
+      # changes only these, so every commit after it has the same code. A run on any commit
+      # from it up to HEAD tested HEAD's code (one push of several commits runs CI once, on
+      # the last). A success on any of them passes; else a run still going defers to the
+      # CI completion trigger; else none passed and the tag is refused.
+      - name: Require CI to pass
+        id: ci
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Read version from Cargo.toml
-          VERSION=$(grep '^version' crates/fosfora-app/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          TAG="v${VERSION}"
-          echo "Cargo.toml version: ${VERSION} (tag: ${TAG})"
-
-          # Check if this tag already exists
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists — skipping"
+          code=$(git log -1 --format=%H HEAD -- . ':(exclude)*.md' ':(exclude)LICENSE' ':(exclude).gitignore')
+          echo "Newest commit with code changes: ${code}"
+          states=""
+          for sha in $(git rev-list "${code}^..HEAD"); do
+            states+=$(gh run list --workflow ci.yml --commit "$sha" --event push \
+              --json status,conclusion --jq '.[] | if .status != "completed" then "pending" else .conclusion end')
+            states+=$'\n'
+          done
+          echo "CI runs: $(tr '\n' ' ' <<<"$states")"
+          if grep -qx success <<<"$states"; then
+            echo "pass=true" >> "$GITHUB_OUTPUT"
+          elif grep -qx pending <<<"$states" || ! grep -q . <<<"$states"; then
+            echo "::notice::CI has not finished on ${code}; ${{ steps.version.outputs.tag }} is tagged when it passes"
+            echo "pass=false" >> "$GITHUB_OUTPUT"
           else
-            echo "New version detected — creating tag ${TAG}"
-            git tag "$TAG"
-            git push origin "$TAG"
+            echo "::error::CI did not pass on ${code}; not tagging ${{ steps.version.outputs.tag }}. Fix it on main and the next CI run tags it."
+            exit 1
           fi
+
+      - name: Tag
+        if: steps.ci.outputs.pass == 'true'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          echo "New version detected — creating tag ${TAG}"
+          git tag "$TAG"
+          git push origin "$TAG"

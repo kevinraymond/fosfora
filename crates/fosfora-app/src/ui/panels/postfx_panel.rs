@@ -1,6 +1,6 @@
 //! Post-processing chain controls (bloom / chromatic aberration / vignette /
-//! film grain). Extracted from the `draw_panels` inline block; the per-effect
-//! checkbox + indented-params structure is kept, with sliders on shared rows.
+//! film grain): a checkbox per effect with its parameters indented under it,
+//! sliders on shared rows.
 
 use egui::Ui;
 

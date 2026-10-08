@@ -72,8 +72,7 @@ fn format_mapping_label(msg_type: MidiMsgType, cc: u8) -> String {
     }
 }
 
-/// What the workspace's rows need to show and start bindings (#3127): the
-/// Classic panel passes none and keeps its rows as they were.
+/// What the rows need to show and start bindings (#3127).
 pub struct ParamBinds<'a> {
     pub bus: &'a BindingBus,
     /// The layer these controls belong to, as bindings name it.
@@ -219,7 +218,7 @@ pub fn draw_param_panel(
     store: &mut ParamStore,
     midi: &mut MidiSystem,
     osc: &mut OscSystem,
-    binds: Option<&ParamBinds<'_>>,
+    binds: &ParamBinds<'_>,
 ) {
     let tc = theme_colors(ui.ctx());
 
@@ -247,9 +246,7 @@ pub fn draw_param_panel(
                 float_row(ui, name, &mut val, *min..=*max, |ui| {
                     osc_panel::draw_osc_badge(ui, osc, name);
                     draw_midi_badge(ui, midi, name);
-                    if let Some(b) = binds {
-                        draw_bind_control(ui, b, name);
-                    }
+                    draw_bind_control(ui, binds, name);
                 });
 
                 #[expect(
@@ -295,9 +292,7 @@ pub fn draw_param_panel(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         osc_panel::draw_osc_badge(ui, osc, name);
                         draw_midi_badge(ui, midi, name);
-                        if let Some(b) = binds {
-                            draw_bind_control(ui, b, name);
-                        }
+                        draw_bind_control(ui, binds, name);
                     });
                 });
 
@@ -342,7 +337,7 @@ pub fn draw_param_panel(
                 }
             }
         }
-        if i == 0 && binds.is_some() {
+        if i == 0 {
             // The first row: where the Bindings tour shows Bind, M and O.
             let row =
                 egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), row_top..=ui.cursor().top());

@@ -13,9 +13,8 @@ use crate::output_window::DisplayInfo;
 use crate::ui::theme::colors::theme_colors;
 
 /// What the frame knows about the second output window. Published into egui
-/// data once per frame rather than passed in: neither layout's draw function
-/// takes it as an argument, and `draw_panels` already carries thirty
-/// positional parameters. `recording_info` travels the same way.
+/// data once per frame rather than passed in, so the shell's draw function
+/// does not take it as an argument. `recording_info` travels the same way.
 #[derive(Clone, Default)]
 pub struct OutputWindowInfo {
     /// Every display the window system reports, in winit's order — which is

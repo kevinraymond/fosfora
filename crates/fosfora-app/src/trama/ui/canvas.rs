@@ -709,9 +709,10 @@ fn wire_under_pointer(distances_px: &[f32], live: bool) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// The Classic layout's host: a floating window. Drawn from `main.rs` between
-/// the overlay's `begin_frame`/`end_frame`, the same hosting pattern as the
-/// shader editor — `draw_panels` stays untouched.
+/// The chain editor as a floating window, used while the shader editor is
+/// open and when the workspace has no output column to put the modal beside.
+/// Drawn from `main.rs` between the overlay's `begin_frame`/`end_frame`, the
+/// same hosting pattern as the shader editor.
 pub fn draw_trama_window(
     ctx: &egui::Context,
     trama: &mut TramaSystem,

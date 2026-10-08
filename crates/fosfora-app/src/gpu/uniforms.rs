@@ -128,7 +128,10 @@ pub struct ShaderUniforms {
     // family's `bars_per_cycle` runs on. Appended so every offset above stays put.
     pub bar_index: f32,
     pub beat_index: f32,
-    pub _pad_clock: [f32; 2],
+    // #81 tempo trust, in what were the clock block's two pad slots — so the block does
+    // not grow and a shader that still declares them as padding reads the same layout.
+    pub tempo_confidence: f32,
+    pub beat_locked: f32,
     // 16 bytes (448 total)
 }
 
@@ -321,6 +324,9 @@ pub fn mirror_audio_features(u: &mut ShaderUniforms, f: &crate::audio::AudioFeat
     // Overlay clock (v4).
     u.bar_index = f.bar_index;
     u.beat_index = f.beat_index;
+    // Tempo trust (#81).
+    u.tempo_confidence = f.tempo_confidence;
+    u.beat_locked = f.beat_locked;
 }
 
 #[cfg(test)]
@@ -331,7 +337,7 @@ mod tests {
     fn shader_uniforms_size_448() {
         // 288 (through chroma) + 28 reserved audio scalars = 400, the A13b per-band pan
         // block (#1801) appends 8 slots = 432, then the v4 overlay clock appends
-        // bar_index/beat_index + 2 pads = 448. Must stay a multiple of 16 for the
+        // bar_index/beat_index + tempo_confidence/beat_locked (#81, formerly pads) = 448. Must stay a multiple of 16 for the
         // array<vec4f> members and match the WGSL PhosphorUniforms struct byte-for-byte
         // (declared twice: effect/loader.rs UNIFORM_BLOCK and assets/shaders/default.wgsl).
         assert_eq!(std::mem::size_of::<ShaderUniforms>(), 448);

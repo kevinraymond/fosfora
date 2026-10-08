@@ -24,6 +24,9 @@ pub const STEM_DRUMS_ONSET: &str = "/fosfora/v1/stem/drums/onset"; // f kick-ban
 
 // Continuous (decimated to the configured TX rate).
 pub const BPM: &str = "/fosfora/v1/bpm"; // f real BPM
+// #81: whether to trust that BPM. Additive, so still v1.
+pub const BPM_CONFIDENCE: &str = "/fosfora/v1/bpm/confidence"; // f 0..1
+pub const BPM_LOCKED: &str = "/fosfora/v1/bpm/locked"; // i 0|1
 pub const BAR_PHASE: &str = "/fosfora/v1/bar_phase"; // f 0..1
 pub const BUILD: &str = "/fosfora/v1/build"; // f 0..1
 pub const ENERGY: &str = "/fosfora/v1/energy"; // f 0..1 (short-term loudness)
@@ -80,13 +83,15 @@ mod tests {
     /// a silent breaking change for every patched rig, so pin the exact strings.
     #[test]
     fn v1_addresses_are_pinned() {
-        let pinned: [(&str, &str); 22] = [
+        let pinned: [(&str, &str); 24] = [
             (BEAT, "/fosfora/v1/beat"),
             (DOWNBEAT, "/fosfora/v1/downbeat"),
             (DROP, "/fosfora/v1/drop"),
             (ONSET, "/fosfora/v1/onset"),
             (STEM_DRUMS_ONSET, "/fosfora/v1/stem/drums/onset"),
             (BPM, "/fosfora/v1/bpm"),
+            (BPM_CONFIDENCE, "/fosfora/v1/bpm/confidence"),
+            (BPM_LOCKED, "/fosfora/v1/bpm/locked"),
             (BAR_PHASE, "/fosfora/v1/bar_phase"),
             (BUILD, "/fosfora/v1/build"),
             (ENERGY, "/fosfora/v1/energy"),
@@ -134,5 +139,6 @@ mod tests {
         assert!(addrs.contains(&"/fosfora/v1/feat/sub_bass".to_string()));
         assert!(addrs.contains(&"/fosfora/v1/feat/mfcc.0".to_string()));
         assert!(addrs.contains(&"/fosfora/v1/feat/beat_index".to_string()));
+        assert!(addrs.contains(&"/fosfora/v1/feat/beat_locked".to_string()));
     }
 }

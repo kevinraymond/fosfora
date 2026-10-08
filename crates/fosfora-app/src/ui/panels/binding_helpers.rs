@@ -243,6 +243,8 @@ const EXTENDED_SOURCES: &[(&str, &str, &str)] = &[
     ("downbeat", "Downbeat", "Beat"),
     ("bar_phase", "Bar Phase", "Beat"),
     ("beat_in_bar", "Beat in Bar", "Beat"),
+    ("tempo_confidence", "Tempo Confidence", "Beat"),
+    ("beat_locked", "Beat Locked", "Beat"),
     ("section_novelty", "Section Novelty", "Structure"),
     ("buildup", "Build-up", "Structure"),
     ("drop", "Drop", "Structure"),
@@ -510,6 +512,8 @@ pub const AUDIO_SOURCE_ORDER: &[&str] = &[
     "audio.downbeat",
     "audio.bar_phase",
     "audio.beat_in_bar",
+    "audio.tempo_confidence",
+    "audio.beat_locked",
     // Structure
     "audio.section_novelty",
     "audio.buildup",

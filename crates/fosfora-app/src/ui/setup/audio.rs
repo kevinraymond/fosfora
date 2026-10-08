@@ -4,6 +4,8 @@
 use egui::{RichText, Ui};
 
 use super::kit::{self, Status};
+use crate::audio::input_level::{TRIM_MAX_DB, TRIM_MIN_DB};
+use crate::audio::{AudioSystem, METER_FLOOR_DB};
 use crate::settings::BandScale;
 use crate::ui::panels::audio_panel as ap;
 use crate::ui::shell::ShellState;
@@ -35,6 +37,31 @@ pub fn page(ui: &mut Ui, s: &mut ShellState<'_>) {
         kit::tall_row(ui, "State", |ui| kit::status(ui, &st));
     });
     crate::ui::tour::anchor(ui, crate::ui::tour::Anchor::AudioInput, r.response.rect);
+
+    if s.audio.active {
+        kit::row(ui, "Level", |ui| level_meter(ui, s.audio));
+    }
+    kit::row(ui, "Input trim", |ui| {
+        let mut db = s.audio.input_trim_db();
+        let r = ui.add(
+            egui::Slider::new(&mut db, TRIM_MIN_DB..=TRIM_MAX_DB)
+                .step_by(0.5)
+                .suffix(" dB"),
+        );
+        if r.changed() {
+            s.audio.set_input_trim_db(db);
+        }
+        // Persist once per adjustment, not every drag frame.
+        if r.drag_stopped() || (r.changed() && !r.dragged()) {
+            kit::send(ui, "set_input_trim", db);
+        }
+    });
+    kit::row_help(
+        ui,
+        "Lifts a quiet line or mic input off the silence gate, or tames a hot one. It changes \
+         what the analysis hears; recordings keep the input as it arrives. The level meter \
+         reads the input before the trim, since clipping happens at the source.",
+    );
 
     kit::tall_row(ui, "If it goes quiet", |ui| {
         let mut on = s.settings.auto_reconnect;
@@ -116,6 +143,41 @@ pub fn page(ui: &mut Ui, s: &mut ShellState<'_>) {
             ui.set_max_width(520.0);
             ap::draw_tuning_body(ui, s.audio);
         });
+}
+
+/// Peak meter for the raw input with a clip light (#84).
+fn level_meter(ui: &mut Ui, audio: &mut AudioSystem) {
+    let tc = theme_colors(ui.ctx());
+    let m = audio.input_meter();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(240.0, 10.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, tc.meter_bg);
+    let frac = ((m.peak_dbfs - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0);
+    let color = if m.clipping {
+        tc.error
+    } else if m.peak_dbfs > -6.0 {
+        tc.warning
+    } else {
+        tc.success
+    };
+    let mut fill = rect;
+    fill.set_width(rect.width() * frac);
+    painter.rect_filled(fill, 2.0, color);
+    let readout = if m.peak_dbfs <= METER_FLOOR_DB {
+        "silent".to_owned()
+    } else {
+        format!("{:.0} dB", m.peak_dbfs)
+    };
+    ui.label(RichText::new(readout).monospace().size(13.0));
+    if m.clipping {
+        ui.label(
+            RichText::new("CLIP")
+                .strong()
+                .size(kit::LABEL_SIZE)
+                .color(tc.error),
+        );
+    }
+    ui.ctx().request_repaint();
 }
 
 /// A card of the analysis: its title, a note, and what draws it.

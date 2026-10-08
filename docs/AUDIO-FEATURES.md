@@ -2,7 +2,7 @@
 
 What Fosfora hears in your music, in plain English — and the research behind each measurement.
 
-Fosfora listens to your audio and turns it into 83 numbers, updated every 512 samples — 86 times a second at 44.1 kHz, 94 at 48 kHz. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
+Fosfora listens to your audio and turns it into 85 numbers, updated every 512 samples — 86 times a second at 44.1 kHz, 94 at 48 kHz. Every one of those numbers is available to every shader, every parameter slider, and every OSC client. This page explains what each one actually means musically, and links the paper or standard it comes from.
 
 ---
 
@@ -43,9 +43,10 @@ Fosfora listens to your audio and turns it into 83 numbers, updated every 512 sa
 | I want the visual to… | Use | Why this one |
 |---|---|---|
 | Flash on every drum hit | `onset` | Fires on any attack, from any instrument |
-| Flash only on the kick | `kick` | Deaf to everything above 120 Hz |
+| Flash only on the kick | `kick` | Ignores bass notes, snares and hats |
 | Stay locked to the groove | `beat_phase` | Smooth 0→1 ramp, one per beat |
 | Know where the bar starts | `downbeat`, `bar_phase` | Bar-level clock, not just beats |
+| Only strobe once the grid is solid | `beat_locked` | 1 while the tempo is locked, 0 otherwise |
 | Change color with the mood | `centroid` | How bright the music sounds |
 | Get dirty when the music does | `flatness` | Noisy versus musical |
 | React to melody but not drums | `harmonic_energy` | Drums have been filtered out |
@@ -117,13 +118,13 @@ Source: Standard descriptor — [spectral flatness](https://en.wikipedia.org/wik
 
 **`rolloff`** — where the top of the sound ends. It marks the point below which almost all the energy lives, so it rises when a filter opens up or hi-hats come in, and drops when a track gets muffled. The classic pairing is a filter-sweep visual that opens as this rises.
 
-Source: Standard descriptor — [librosa's `spectral_rolloff`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_rolloff.html) documents the same formula. Fosfora uses the conventional 85% threshold.
+Source: Standard descriptor — [librosa's `spectral_rolloff`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_rolloff.html) documents the same formula. Fosfora uses the conventional 85% threshold, and reports it on the same octave-based axis as `centroid`.
 
-**`bandwidth`** — how spread out the sound is. A single clean note or a lone sine tone reads low; a full mix, a distorted guitar, or a crash cymbal spreads energy everywhere and reads high. Pair it with `centroid`: that one says *where* the sound sits, this one says *how wide* it is around that point.
+**`bandwidth`** — how spread out the sound is. A single clean note or a lone sine tone reads low; a full mix, a distorted guitar, or a crash cymbal spreads energy everywhere and reads high. Pair it with `centroid`: that one says *where* the sound sits, this one says *how wide* it is around that point. It is the spread in octaves around the centroid: 0 is a pure tone, 1 is a standard deviation of four octaves, and pink noise reads about 0.8.
 
-Source: Standard descriptor — [librosa's `spectral_bandwidth`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_bandwidth.html) documents the same formula.
+Source: Standard descriptor — [librosa's `spectral_bandwidth`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_bandwidth.html) documents the formula on a Hz axis; Fosfora takes it on the octave axis `centroid` uses.
 
-**`zcr`** — a rough, very cheap noisiness meter. It counts how often the waveform crosses zero, which is high for hissy and percussive sounds and low for smooth bass. It largely agrees with `flatness`, but reacts faster and costs nothing.
+**`zcr`** — a rough, very cheap noisiness meter. It counts how often the waveform crosses zero, which is high for hissy and percussive sounds and low for smooth bass. It largely agrees with `flatness`, but reacts faster and costs nothing. It is reported as the pitch of a tone that would cross zero as often, on the same axis as `centroid`, so a clean 440 Hz note reads about 0.4 and white noise about 0.9.
 
 Source: Standard descriptor — [librosa's `zero_crossing_rate`](https://librosa.org/doc/latest/generated/librosa.feature.zero_crossing_rate.html) documents the same measurement.
 
@@ -131,9 +132,9 @@ Source: Standard descriptor — [librosa's `zero_crossing_rate`](https://librosa
 
 ## Rhythm, Beats and Tempo
 
-**`kick`** — the kick drum, and nothing else. It listens only between 30 and 120 Hz and reports the moment energy arrives there, so a hi-hat or vocal cannot trigger it. When you want a visual that thumps with the kick specifically rather than with any drum, this is the one.
+**`kick`** — the kick drum, and nothing else. It reads 0.5 or more on a kick and falls back toward 0 between hits. It judges each moment by how the whole spectrum changes, not just the low end, so a bass note, a tom, a snare or a hi-hat does not count, and a passage with no kick drum stays quiet. When you want a visual that thumps with the kick specifically rather than with any drum, this is the one.
 
-Source: Fosfora-specific — a narrow-band version of the same level-independent measure `onset` uses, with its own automatic gain so it stays usable across tracks. See [`audio/analyzer.rs`](../crates/fosfora-app/src/audio/analyzer.rs).
+Source: Fosfora-specific — a small gradient-boosted tree model over per-band change and the shape of the low-end spectrum, trained on Creative Commons electronic music from the Free Music Archive with kicks labeled from separated drum tracks. See [`audio/kick_model.rs`](../crates/fosfora-app/src/audio/kick_model.rs) and [`scripts/kick_model/`](../scripts/kick_model/).
 
 **`onset`** — something just got hit. It spikes the instant a new sound starts — a kick, a snare, a plucked string, a vocal entry — and falls back toward 0 between hits. Unlike `beat`, it does not care about tempo, so it fires on every attack including the off-beat ones.
 
@@ -170,6 +171,12 @@ Source: Fosfora-specific — the beat counter in [`audio/downbeat.rs`](../crates
 **`bar_index`** and **`beat_index`** — running counts of bars and beats since audio started, as plain whole numbers (0, 1, 2, …), **not** 0 to 1. Each steps up by one exactly when `bar_phase` or `beat_phase` wraps, so `bar_index + bar_phase` is a clock that never jumps backwards — use it for anything that should advance steadily over a whole set, like a slow rotation or a palette that walks forward every four bars (`floor(bar_index / 4)`). Shaders and bindings only.
 
 Source: Fosfora-specific — the bar and beat counters in [`audio/downbeat.rs`](../crates/fosfora-app/src/audio/downbeat.rs) and [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
+
+**`tempo_confidence`** — how much to trust `bpm` and the beat grid right now. It is the share of recent tempo measurements (over roughly the last 2.5 seconds) that agree with the tracked tempo, so a steady groove reads near 1, while a breakdown, a tempo change or beatless material drains it toward 0. It is not `beat_strength`, which says how hard a hit was.
+
+**`beat_locked`** — 1 while the tempo is locked and 0 otherwise. Lock engages once `tempo_confidence` climbs past about 0.6 and releases only when it falls below about 0.35, so it does not flicker on a single odd bar. Multiply a strobe or any grid-synced cue by it to keep it from firing on a beat grid the tracker has not confirmed. Also sent over OSC as `/audio/tempo_confidence` and `/audio/beat_locked`.
+
+Source: Fosfora-specific — the tempo estimator's lock support and hysteresis in [`audio/beat.rs`](../crates/fosfora-app/src/audio/beat.rs).
 
 ---
 
@@ -338,6 +345,8 @@ Source: Fosfora-specific — per-feature attack and release constants in [`audio
 ### The silence gate
 
 One shared test decides whether there is any music at all: perceptual loudness below −55 LUFS counts as silence. When it trips, energy features fall to 0, the auto-leveling windows freeze so silence cannot rescale them, and values that should persist — tempo, key, pitch — hold their last reading instead of collapsing.
+
+A quiet line or microphone input can sit close to that gate. **Input trim** in Setup › Audio adds up to 24 dB before analysis (or takes it away from a hot source); its level meter shows the input before the trim and lights CLIP when the source itself is clipping.
 
 Source: Fosfora-specific — the gate lives in [`audio/loudness.rs`](../crates/fosfora-app/src/audio/loudness.rs) and is shared by every detector.
 

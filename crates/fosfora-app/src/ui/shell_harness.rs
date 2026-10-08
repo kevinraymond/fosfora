@@ -185,10 +185,7 @@ impl ShellHarness {
                 },
                 layer("Effect 0", 0),
             ],
-            settings: SettingsConfig {
-                classic_layout: false,
-                ..Default::default()
-            },
+            settings: SettingsConfig::default(),
             // Nowhere: the cards draw without pictures.
             thumbs: CatalogThumbs::new("/nonexistent".into()),
             scene: super::panels::cue_strip::sample(false),

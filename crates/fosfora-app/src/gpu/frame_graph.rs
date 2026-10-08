@@ -1961,24 +1961,26 @@ mod tests {
     // (x, y) depends only on (x mod cell, y mod cell). Non-periodic output IS
     // the bug, so that is what this measures. Restore `let cells = vec2f(n *
     // res.x / res.y, n)` addressing and it goes red.
+    /// One little-endian half float.
+    fn f16_le(b: &[u8]) -> f32 {
+        let h = u16::from_le_bytes([b[0], b[1]]);
+        let (sign, exp, man) = (
+            (h >> 15) as u32,
+            ((h >> 10) & 0x1f) as i32,
+            (h & 0x3ff) as f32,
+        );
+        let v = if exp == 0 {
+            man * 2f32.powi(-24)
+        } else {
+            (1.0 + man / 1024.0) * 2f32.powi(exp - 15)
+        };
+        if sign == 1 { -v } else { v }
+    }
+
     /// The luma of an rgba16f pixel, decoded from its raw half floats.
     fn luma16(f: &[u8], x: u32, y: u32) -> f32 {
-        let half = |b: &[u8]| {
-            let h = u16::from_le_bytes([b[0], b[1]]);
-            let (sign, exp, man) = (
-                (h >> 15) as u32,
-                ((h >> 10) & 0x1f) as i32,
-                (h & 0x3ff) as f32,
-            );
-            let v = if exp == 0 {
-                man * 2f32.powi(-24)
-            } else {
-                (1.0 + man / 1024.0) * 2f32.powi(exp - 15)
-            };
-            if sign == 1 { -v } else { v }
-        };
-        let i = ((y * DIM + x) * 8) as usize;
-        0.2126 * half(&f[i..]) + 0.7152 * half(&f[i + 2..]) + 0.0722 * half(&f[i + 4..])
+        let [r, g, b, _] = rgba16(f, x, y);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
     // Kevin's live check (#3128): Kaleidoscope drew a break from the center
@@ -2354,6 +2356,259 @@ mod tests {
             read(ThumbKind::Alone, 0),
             top_alone,
             "a hidden layer keeps its picture in the row"
+        );
+
+        let err = pollster::block_on(device.pop_error_scope());
+        assert!(err.is_none(), "validation error: {err:?}");
+    }
+
+    /// One rgba16f pixel, decoded from its raw half floats.
+    fn rgba16(f: &[u8], x: u32, y: u32) -> [f32; 4] {
+        let i = ((y * DIM + x) * 8) as usize;
+        std::array::from_fn(|c| f16_le(&f[i + 2 * c..]))
+    }
+
+    // Run: cargo test -p fosfora-app -- --ignored trama_utility_nodes_do_what_they_say
+    //
+    // Invert, Posterize, Threshold, Sharpen, Tile, Dither, CRT and Strobe,
+    // each fed a flat Solid so the expected output can be worked out by hand.
+    #[test]
+    #[ignore = "requires a GPU/software adapter"]
+    fn trama_utility_nodes_do_what_they_say() {
+        use crate::params::ParamValue;
+        let _guard = gpu_guard();
+        let (device, queue) = test_gpu();
+        let (mut stack, mut compositor, mut trama, mut targets) = scene(&device, &queue, 1);
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        // Solid(color) -> effect(params) -> Output, under `uniforms`, after
+        // two frames (a rate's integral starts moving on the second).
+        let mut run = |effect: &str,
+                       color: [f32; 4],
+                       params: &[(&str, ParamValue)],
+                       uniforms: &dyn Fn(&mut crate::gpu::ShaderUniforms)|
+         -> Vec<u8> {
+            if let Some(e) = stack.layers[0].as_effect_mut() {
+                let mut u = crate::gpu::ShaderUniforms::zeroed();
+                u.resolution = [DIM as f32, DIM as f32];
+                u.time = 1.0;
+                uniforms(&mut u);
+                e.uniforms = u;
+            }
+            let slot = stack.ensure_chain(0).expect("a slot is free");
+            {
+                let solid = trama.registry.get(&EffectId("solid".into())).unwrap();
+                let fx = trama
+                    .registry
+                    .get(&EffectId(effect.into()))
+                    .unwrap_or_else(|| panic!("{effect} ships"));
+                let graph = &mut stack.layers[0].chain.as_deref_mut().unwrap().graph;
+                let s = graph.add_node(
+                    NodeKind::Source {
+                        effect: solid.id.clone(),
+                    },
+                    0,
+                    &solid.params,
+                );
+                let n = graph.add_node(
+                    NodeKind::Effect {
+                        effect: fx.id.clone(),
+                    },
+                    1,
+                    &fx.params,
+                );
+                graph
+                    .params_mut(s)
+                    .unwrap()
+                    .params
+                    .set("color", ParamValue::Color(color));
+                let p = graph.params_mut(n).unwrap();
+                for (name, v) in params {
+                    p.params.set(name, v.clone());
+                }
+                let out = graph.output_node();
+                graph.connect(s, n, 0).unwrap();
+                graph.connect(n, out, 0).unwrap();
+            }
+            let mut out = Vec::new();
+            for _ in 0..2 {
+                out = frame(
+                    &device,
+                    &queue,
+                    &mut stack,
+                    &mut compositor,
+                    &mut trama,
+                    &mut targets,
+                );
+            }
+            stack.layers[0].chain = None;
+            trama.drop_chain(slot);
+            out
+        };
+        let none = |_: &mut crate::gpu::ShaderUniforms| {};
+        let c = DIM / 2;
+        let near = |got: [f32; 4], want: [f32; 4], what: &str| {
+            for ch in 0..4 {
+                assert!(
+                    (got[ch] - want[ch]).abs() < 0.01,
+                    "{what}: got {got:?}, want {want:?}"
+                );
+            }
+        };
+        let grey = |v: f32| [v, v, v, 1.0];
+
+        let out = run("invert", [0.2, 0.5, 0.8, 1.0], &[], &none);
+        near(rgba16(&out, c, c), [0.8, 0.5, 0.2, 1.0], "invert");
+        let out = run(
+            "invert",
+            [0.2, 0.5, 0.8, 1.0],
+            &[("luma_only", ParamValue::Bool(true))],
+            &none,
+        );
+        let [r, g, b, _] = rgba16(&out, c, c);
+        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let y_in = 0.2126 * 0.2 + 0.7152 * 0.5 + 0.0722 * 0.8;
+        assert!((y - (1.0 - y_in)).abs() < 0.01, "luma_only: luma {y}");
+        assert!(
+            r < g && g < b,
+            "luma_only keeps the hue, so the channels keep their order: {r} {g} {b}"
+        );
+        let out = run("invert", [0.5, 0.5, 0.5, 0.5], &[], &none);
+        near(
+            rgba16(&out, c, c),
+            [0.25, 0.25, 0.25, 0.5],
+            "invert keeps coverage",
+        );
+
+        // Two levels, spaced in display space: sqrt(0.3) = 0.55 rounds up,
+        // sqrt(0.2) = 0.45 rounds down.
+        let two = [("levels", ParamValue::Float(2.0))];
+        near(
+            rgba16(&run("posterize", grey(0.3), &two, &none), c, c),
+            grey(1.0),
+            "posterize up",
+        );
+        near(
+            rgba16(&run("posterize", grey(0.2), &two, &none), c, c),
+            grey(0.0),
+            "posterize down",
+        );
+
+        let hard = [("softness", ParamValue::Float(0.0))];
+        near(
+            rgba16(&run("threshold", grey(0.3), &hard, &none), c, c),
+            grey(1.0),
+            "threshold above",
+        );
+        near(
+            rgba16(&run("threshold", grey(0.2), &hard, &none), c, c),
+            grey(0.0),
+            "threshold below",
+        );
+
+        // No detail in a flat picture, so nothing to sharpen or repeat.
+        near(
+            rgba16(
+                &run(
+                    "sharpen",
+                    grey(0.4),
+                    &[("amount", ParamValue::Float(4.0))],
+                    &none,
+                ),
+                c,
+                c,
+            ),
+            grey(0.4),
+            "sharpen flat",
+        );
+        near(
+            rgba16(
+                &run(
+                    "tile",
+                    grey(0.4),
+                    &[("mirror", ParamValue::Bool(true))],
+                    &none,
+                ),
+                1,
+                1,
+            ),
+            grey(0.4),
+            "tile flat",
+        );
+
+        // One-bit mono dither of a flat 0.5 lights a sqrt(0.5) = 71% share of
+        // the 8x8 matrix: 45 of 64 thresholds sit below 0.707.
+        let out = run(
+            "dither",
+            grey(0.5),
+            &[
+                ("mono", ParamValue::Bool(true)),
+                ("scale", ParamValue::Float(1.0)),
+            ],
+            &none,
+        );
+        let lit = (0..DIM * DIM)
+            .filter(|i| rgba16(&out, i % DIM, i / DIM)[0] > 0.5)
+            .count();
+        assert_eq!(lit * 64, 45 * (DIM * DIM) as usize, "dither: {lit} lit");
+
+        // Full curvature bends the corners off the screen: transparent there.
+        let out = run(
+            "crt",
+            grey(0.5),
+            &[("curvature", ParamValue::Float(0.5))],
+            &none,
+        );
+        assert_eq!(rgba16(&out, 0, 0)[3], 0.0, "crt corner");
+        assert!(rgba16(&out, c, c)[3] > 0.99, "crt center");
+
+        // Strobe: dark with no tempo, lit early in a beat, dark late in it.
+        let tempo = |phase: f32| {
+            move |u: &mut crate::gpu::ShaderUniforms| {
+                u.bpm = 0.4;
+                u.bar_index = 3.0;
+                u.bar_phase = phase;
+            }
+        };
+        near(
+            rgba16(&run("strobe", grey(0.2), &[], &none), c, c),
+            grey(0.2),
+            "strobe, no tempo",
+        );
+        // per_bar 4, duty 0.25: lit for the first quarter of each beat.
+        near(
+            rgba16(&run("strobe", grey(0.2), &[], &tempo(0.26)), c, c),
+            grey(1.0),
+            "strobe on the 2nd beat",
+        );
+        near(
+            rgba16(&run("strobe", grey(0.2), &[], &tempo(0.4)), c, c),
+            grey(0.2),
+            "strobe between beats",
+        );
+        let black = [("color", ParamValue::Color([0.0, 0.0, 0.0, 1.0]))];
+        near(
+            rgba16(&run("strobe", grey(0.2), &black, &tempo(0.0)), c, c),
+            grey(0.0),
+            "blackout strobe",
+        );
+        let kick = [("on_kick", ParamValue::Bool(true))];
+        near(
+            rgba16(&run("strobe", grey(0.2), &kick, &tempo(0.0)), c, c),
+            grey(0.2),
+            "on_kick, no kick",
+        );
+        let kicked = |u: &mut crate::gpu::ShaderUniforms| u.kick = 0.8;
+        near(
+            rgba16(&run("strobe", grey(0.2), &kick, &kicked), c, c),
+            grey(1.0),
+            "on_kick, kick",
+        );
+        let inv = [("invert", ParamValue::Bool(true))];
+        near(
+            rgba16(&run("strobe", grey(0.2), &inv, &tempo(0.0)), c, c),
+            grey(0.8),
+            "invert strobe",
         );
 
         let err = pollster::block_on(device.pop_error_scope());

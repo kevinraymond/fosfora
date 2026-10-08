@@ -1,6 +1,6 @@
 //! Volumetric (R3) mode controls — a global toggle applied to the active
 //! particle layer, rendering it as fog/nebula instead of discrete dots.
-//! Extracted from the `draw_panels` inline block; rows use the shared widgets.
+//! Rows use the shared widgets.
 
 use egui::Ui;
 

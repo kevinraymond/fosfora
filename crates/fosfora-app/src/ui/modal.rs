@@ -15,8 +15,8 @@ pub fn set_bounds(ctx: &Context, rect: Rect) {
     ctx.data_mut(|d| d.insert_temp(Id::new(BOUNDS), (pass, rect)));
 }
 
-/// The area recorded this frame, if the shell recorded one. The Classic
-/// layout never does, and its modals keep the whole window.
+/// The area recorded this frame, if the shell recorded one. Without one,
+/// modals keep the whole window.
 pub fn bounds(ctx: &Context) -> Option<Rect> {
     let pass = ctx.cumulative_pass_nr();
     ctx.data(|d| d.get_temp::<(u64, Rect)>(Id::new(BOUNDS)))

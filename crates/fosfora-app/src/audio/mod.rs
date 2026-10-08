@@ -2,14 +2,17 @@ pub mod analyzer;
 pub mod beat;
 pub mod capture;
 pub mod chroma;
+pub mod decimate;
 pub mod downbeat;
 pub mod downmix;
 pub mod features;
 pub mod hop;
 pub mod hpss;
+pub mod input_level;
 pub mod interp;
 pub mod key;
 pub mod key_sidecar;
+pub mod kick_model;
 pub mod loudness;
 pub mod normalizer;
 #[cfg(any(target_os = "windows", test))]
@@ -30,6 +33,7 @@ pub mod timbre;
 pub mod wasapi_capture;
 
 pub use features::AudioFeatures;
+pub use input_level::InputLevel;
 
 /// A single analyzed audio frame handed from the audio thread to the render thread.
 /// Carries the scalar [`AudioFeatures`] plus the two array streams the A17 audio textures
@@ -101,7 +105,7 @@ pub struct PulseCounts {
 }
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -146,6 +150,35 @@ struct OpenedBackend {
     /// merely idle. This is where the per-backend policy lives, so nothing downstream of
     /// `open_backend` has to know which platform it is on.
     silence_delivers_data: bool,
+}
+
+/// What the input meter shows (#84): the raw input, before the trim.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputMeter {
+    /// Peak level with a falling hold, dBFS, floored at [`METER_FLOOR_DB`].
+    pub peak_dbfs: f32,
+    /// A sample clipped within the last [`CLIP_HOLD`].
+    pub clipping: bool,
+    /// Clipped samples since audio started.
+    pub clips: u64,
+}
+
+/// Bottom of the meter scale, dBFS.
+pub const METER_FLOOR_DB: f32 = -60.0;
+/// How fast the held peak falls, dB per second.
+const METER_FALL_DB_PER_SEC: f32 = 20.0;
+/// How long the clip light stays on after the last clipped sample.
+pub const CLIP_HOLD: Duration = Duration::from_secs(2);
+/// A meter not read for longer than this restarts instead of showing what built up.
+const METER_STALE: Duration = Duration::from_millis(500);
+
+/// UI-side meter ballistics, owned by the render thread.
+#[derive(Debug, Default)]
+struct MeterState {
+    peak_db: Option<f32>,
+    at: Option<Instant>,
+    clips_seen: u64,
+    clip_at: Option<Instant>,
 }
 
 /// How long `callback_count` may stay frozen before the watchdog calls it a stall.
@@ -307,6 +340,11 @@ pub struct AudioSystem {
     /// shared with the audio thread, snapshotted once per hop, threaded through
     /// `switch_device`. The mailbox half carries UI/MIDI/OSC overrides to the detector.
     tempo: Arc<Mutex<TempoControl>>,
+    /// Input trim and the raw-input meter (#84). Shared with the audio thread and threaded
+    /// through `switch_device`, so the trim survives a device change.
+    input: Arc<InputLevel>,
+    /// UI-side ballistics for [`input_meter`](Self::input_meter).
+    meter: MeterState,
     /// Beat taps for tap tempo (A7 #1458). Held as `Instant`s rather than offsets from
     /// `started_at`, which `switch_device` resets — a reset clock mid-sequence would turn
     /// the stored taps into garbage intervals.
@@ -390,6 +428,7 @@ impl AudioSystem {
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
             Arc::new(Mutex::new(TempoControl::default())),
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         );
@@ -410,6 +449,7 @@ impl AudioSystem {
             band_scale,
             tuning,
             tempo,
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         )
@@ -447,6 +487,7 @@ impl AudioSystem {
             band_scale,
             tuning,
             tempo,
+            Arc::new(InputLevel::default()),
             Arc::new(RingBuffer::new()),
             None,
         );
@@ -471,6 +512,7 @@ impl AudioSystem {
         band_scale: BandScale,
         tuning: Arc<Mutex<StructureConfig>>,
         tempo: Arc<Mutex<TempoControl>>,
+        input: Arc<InputLevel>,
         recording_ring: Arc<RingBuffer>,
         recording_rate: Option<u32>,
     ) -> Self {
@@ -496,6 +538,7 @@ impl AudioSystem {
                 let drops = drop_counter.clone();
                 let tuning_thread = tuning.clone();
                 let tempo_thread = tempo.clone();
+                let input_thread = input.clone();
 
                 let thread_handle = thread::Builder::new()
                     .name("fosfora-audio".into())
@@ -513,6 +556,7 @@ impl AudioSystem {
                             band_scale,
                             tuning_thread,
                             tempo_thread,
+                            input_thread,
                         );
                     })
                     .expect("Failed to spawn audio thread");
@@ -520,7 +564,7 @@ impl AudioSystem {
                 Self {
                     receiver: rx,
                     latest: None,
-                    interp: FeatureInterpolator::new(sample_rate as u32),
+                    interp: FeatureInterpolator::new(decimate::analysis_rate(sample_rate as u32)),
                     latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
                     pending_mel: Vec::new(),
                     latest_mel: Vec::new(),
@@ -547,6 +591,8 @@ impl AudioSystem {
                     band_scale,
                     tuning,
                     tempo,
+                    input,
+                    meter: MeterState::default(),
                     tap_times: Vec::new(),
                     beat_counter,
                     beats_seen: 0,
@@ -610,6 +656,8 @@ impl AudioSystem {
                     band_scale,
                     tuning,
                     tempo,
+                    input,
+                    meter: MeterState::default(),
                     tap_times: Vec::new(),
                     beat_counter,
                     beats_seen: 0,
@@ -695,6 +743,7 @@ impl AudioSystem {
             self.band_scale,
             self.tuning.clone(),
             self.tempo.clone(),
+            self.input.clone(),
             self.recording_ring.clone(),
             recording_rate,
         );
@@ -705,7 +754,7 @@ impl AudioSystem {
         // interpolation state so the playhead re-seeds from the new clock instead of
         // slewing across that gap. (`push` also guards this, but the device may also have
         // changed sample rate — so rebuild rather than just reset.)
-        self.interp = FeatureInterpolator::new(new.sample_rate);
+        self.interp = FeatureInterpolator::new(decimate::analysis_rate(new.sample_rate));
         self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
         self.pending_mel.clear();
         self.latest_mel.clear();
@@ -748,6 +797,78 @@ impl AudioSystem {
         // `self.reconnect` is likewise deliberately unswapped (A9 #1460): an episode spans the
         // backends it cycles through, so `new`'s fresh state must not clobber the live one.
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
+    }
+
+    /// Set the input trim in dB (#84), clamped to
+    /// [`TRIM_MIN_DB`](input_level::TRIM_MIN_DB)..[`TRIM_MAX_DB`](input_level::TRIM_MAX_DB).
+    /// Takes effect on the next capture read; survives a device switch.
+    pub fn set_input_trim_db(&self, db: f32) {
+        self.input.set_trim_db(db);
+    }
+
+    pub fn input_trim_db(&self) -> f32 {
+        self.input.trim_db()
+    }
+
+    /// The input meter (#84). Call once per UI frame: it drains the peak the audio thread
+    /// has collected since the previous call.
+    pub fn input_meter(&mut self) -> InputMeter {
+        let now = Instant::now();
+        let raw = self.input.take_peak();
+        let clips = self.input.clips();
+        // Not drawn for a while (the page was closed): what accumulated meanwhile is old news,
+        // so start fresh rather than flash a peak or a clip from minutes ago.
+        if self
+            .meter
+            .at
+            .is_none_or(|at| now.duration_since(at) > METER_STALE)
+        {
+            self.meter = MeterState {
+                clips_seen: clips,
+                at: Some(now),
+                ..MeterState::default()
+            };
+            return InputMeter {
+                peak_dbfs: METER_FLOOR_DB,
+                clipping: false,
+                clips,
+            };
+        }
+        let raw_db = if raw > 0.0 {
+            (20.0 * raw.log10()).max(METER_FLOOR_DB)
+        } else {
+            METER_FLOOR_DB
+        };
+        let dt = self
+            .meter
+            .at
+            .map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        let held = self
+            .meter
+            .peak_db
+            .map_or(METER_FLOOR_DB, |p| p - METER_FALL_DB_PER_SEC * dt);
+        let peak_db = raw_db.max(held).max(METER_FLOOR_DB);
+        self.meter.peak_db = Some(peak_db);
+        self.meter.at = Some(now);
+
+        if clips > self.meter.clips_seen {
+            self.meter.clips_seen = clips;
+            self.meter.clip_at = Some(now);
+        }
+        InputMeter {
+            peak_dbfs: peak_db,
+            clipping: self
+                .meter
+                .clip_at
+                .is_some_and(|at| now.duration_since(at) < CLIP_HOLD),
+            clips,
+        }
+    }
+
+    /// The rate the analysis chain runs at: the device rate, halved while above 88.2 kHz
+    /// (#53). Hops, and so frame timestamps, run on this clock.
+    pub fn analysis_rate(&self) -> u32 {
+        decimate::analysis_rate(self.sample_rate)
     }
 
     /// Shared, live-tunable A18 structure-detection thresholds (#1510). The audio panel locks
@@ -1276,12 +1397,46 @@ impl Drop for AudioSystem {
 /// (87.5% overlap of the 4096-sample analysis window).
 pub const ANALYSIS_HOP: usize = 512;
 
+/// Hop rate the analysis chain's frame-counted windows and per-hop decays were tuned at:
+/// 44.1 kHz / [`ANALYSIS_HOP`] ≈ 86.1 Hz. At 48 kHz hops come ~9% faster, so a constant
+/// counted in hops would shrink by 9% in seconds; [`rescale_hops`] and [`rescale_decay`]
+/// carry each one to the running rate instead (#53).
+pub const REFERENCE_HOP_RATE: f32 = 44_100.0 / ANALYSIS_HOP as f32;
+
+/// Hops per second at `sample_rate`.
+pub fn hop_rate(sample_rate: f32) -> f32 {
+    sample_rate / ANALYSIS_HOP as f32
+}
+
+/// A window of `hops` tuned at [`REFERENCE_HOP_RATE`], resized to span the same time at
+/// `hop_rate`. Exact at the reference rate; never less than one hop.
+pub fn rescale_hops(hops: usize, hop_rate: f32) -> usize {
+    ((hops as f32 * hop_rate / REFERENCE_HOP_RATE).round() as usize).max(1)
+}
+
+/// A per-hop decay factor tuned at [`REFERENCE_HOP_RATE`], adjusted to keep the same time
+/// constant at `hop_rate`. Exact at the reference rate. For an EMA rate `a`, rescale `1 - a`.
+pub fn rescale_decay(decay: f32, hop_rate: f32) -> f32 {
+    decay.powf(REFERENCE_HOP_RATE / hop_rate)
+}
+
 /// Tap tempo (A7 #1458). A gap longer than this means the user stopped and started over,
 /// so the sequence resets; `TAP_WINDOW` taps are averaged and `TAP_MIN_TAPS` (2 intervals)
 /// are needed before a tempo is inferred at all.
 const TAP_RESET_SECS: f64 = 3.0;
 const TAP_WINDOW: usize = 4;
 const TAP_MIN_TAPS: usize = 3;
+
+/// Lock `m` only if that needs no wait: `None` while another thread holds it. Poison is
+/// ignored, as at every other lock site on this config. The analysis thread uses this so a
+/// UI panel holding the lock while it draws never stalls a hop (#77).
+fn try_lock_now<T>(m: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match m.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
 
 fn audio_thread(
     ring: Arc<RingBuffer>,
@@ -1296,14 +1451,27 @@ fn audio_thread(
     band_scale: BandScale,
     tuning: Arc<Mutex<StructureConfig>>,
     tempo: Arc<Mutex<TempoControl>>,
+    input: Arc<InputLevel>,
 ) {
     // Every stateful detector, in the one order that is correct (see `hop.rs`). The ring,
     // the recording mirror, the shared-config locks and the channel stay here.
-    let mut hop_analyzer = HopAnalyzer::new(
-        sample_rate,
-        band_scale,
-        tempo.lock().unwrap_or_else(|e| e.into_inner()).config,
-    );
+    // #77: the latest snapshots of the shared config. Refreshed each hop when the lock is
+    // free; while the UI holds it (it does for a whole panel draw) the hop reuses these
+    // rather than waiting on the render thread.
+    let mut tempo_cfg = tempo.lock().unwrap_or_else(|e| e.into_inner()).config;
+    let mut struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
+    // #53: above 88.2 kHz the input is halved down to 44.1–88.2 kHz before analysis, so every
+    // stage below runs at a rate it was tuned for. The recording mirror keeps the device rate.
+    let mut decimator = decimate::StereoDecimator::new(sample_rate as u32);
+    let mut decimated: Vec<f32> = Vec::new();
+    let analysis_rate = decimate::analysis_rate(sample_rate as u32) as f32;
+    if decimator.is_active() {
+        log::info!(
+            "Analysis decimated {} Hz -> {analysis_rate} Hz",
+            sample_rate as u32
+        );
+    }
+    let mut hop_analyzer = HopAnalyzer::new(analysis_rate, band_scale, tempo_cfg);
     // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
@@ -1355,6 +1523,8 @@ fn audio_thread(
                 *s = 0.0;
             }
         }
+        // #84: meter the source as it arrived, before the trim.
+        input.record(&read_buf[..read]);
         // Interleaved L,R off the capture ring — always even-length (ring L/R parity invariant).
         let stereo = &read_buf[..read];
 
@@ -1372,9 +1542,25 @@ fn audio_thread(
         } else {
             recording_ring.push(&mono_scratch);
         }
+        // #84: the trim applies to analysis only — the recording above keeps the source level.
+        if let Some(gain) = input.gain() {
+            for s in &mut read_buf[..read] {
+                *s *= gain;
+            }
+            for m in &mut mono_scratch {
+                *m *= gain;
+            }
+        }
+        let stereo = &read_buf[..read];
         // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
-        fifo.extend_from_slice(&mono_scratch);
-        fifo_stereo.extend_from_slice(stereo);
+        if decimator.is_active() {
+            decimator.process(stereo, &mut decimated);
+            fifo.extend(decimated.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5));
+            fifo_stereo.extend_from_slice(&decimated);
+        } else {
+            fifo.extend_from_slice(&mono_scratch);
+            fifo_stereo.extend_from_slice(stereo);
+        }
 
         // Process every complete hop the read produced (>=2 when catching up after a stall).
         let mut offset = 0;
@@ -1384,22 +1570,29 @@ fn audio_thread(
             let hop_stereo = &fifo_stereo[offset * 2..(offset + ANALYSIS_HOP) * 2];
             offset += ANALYSIS_HOP;
             samples_consumed += ANALYSIS_HOP as u64;
-            let timestamp = samples_consumed as f64 / sample_rate as f64;
+            let timestamp = samples_consumed as f64 / f64::from(analysis_rate);
 
             // A7 (#1458): snapshot the shared tempo config and drain the command mailbox
             // once per hop, same as the A18 tuning below. In auto mode the estimator owns the
             // prior centre, so publish what it adapted to back into the shared config — that's
             // what the UI slider reads, and where it freezes when auto is switched off.
-            let (tempo_cfg, tempo_cmds) = {
-                let mut t = tempo.lock().unwrap_or_else(|e| e.into_inner());
-                if t.config.auto_prior {
-                    t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
+            // Never blocks (#77): a busy lock keeps the last snapshot and leaves queued
+            // commands for the next hop, ~11 ms later.
+            let tempo_cmds = match try_lock_now(&tempo) {
+                Some(mut t) => {
+                    if t.config.auto_prior {
+                        t.config.prior_center_bpm = hop_analyzer.prior_center_bpm();
+                    }
+                    tempo_cfg = t.config;
+                    t.drain()
                 }
-                (t.config, t.drain())
+                None => Vec::new(),
             };
             // Snapshot the shared A18 tuning once per hop (#1510) so this frame's structure
             // detection sees a consistent set of thresholds; the UI may be writing it live.
-            let struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cfg) = try_lock_now(&tuning) {
+                struct_cfg = *cfg;
+            }
 
             let out = hop_analyzer.process_hop(
                 hop, hop_stereo, timestamp, struct_cfg, tempo_cfg, tempo_cmds,
@@ -1435,6 +1628,28 @@ pub(crate) mod tests {
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    #[test]
+    fn try_lock_now_skips_a_held_lock_and_ignores_poison() {
+        let m = Arc::new(Mutex::new(1));
+        {
+            let _held = m.lock().unwrap();
+            assert!(
+                try_lock_now(&m).is_none(),
+                "a held lock must not block or succeed"
+            );
+        }
+        assert_eq!(*try_lock_now(&m).unwrap(), 1);
+
+        let poisoner = m.clone();
+        let _ = thread::spawn(move || {
+            let _g = poisoner.lock().unwrap();
+            panic!("poison the lock");
+        })
+        .join();
+        assert!(m.is_poisoned());
+        assert_eq!(*try_lock_now(&m).unwrap(), 1);
     }
 
     /// Deterministic stereo test signal: 60 Hz sub with a 2 Hz gate (kick-like), a steady
@@ -1485,8 +1700,23 @@ pub(crate) mod tests {
         signal: &[f32],
         sample_rate: f32,
     ) -> (Vec<AudioFrame>, PulseCounts) {
-        let ring = Arc::new(RingBuffer::new());
         let rec_ring = Arc::new(RingBuffer::new());
+        run_audio_thread_with(
+            signal,
+            sample_rate,
+            Arc::new(InputLevel::default()),
+            &rec_ring,
+        )
+    }
+
+    /// [`run_audio_thread_collecting`] with the input trim/meter and recording ring exposed.
+    fn run_audio_thread_with(
+        signal: &[f32],
+        sample_rate: f32,
+        input: Arc<InputLevel>,
+        rec_ring: &Arc<RingBuffer>,
+    ) -> (Vec<AudioFrame>, PulseCounts) {
+        let ring = Arc::new(RingBuffer::new());
         let (tx, rx) = crate::inbound::bounded::<AudioFrame>(signal.len() / ANALYSIS_HOP + 8);
         let shutdown = Arc::new(AtomicBool::new(false));
         let beat_counter = Arc::new(AtomicU32::new(0));
@@ -1513,6 +1743,7 @@ pub(crate) mod tests {
                         BandScale::Db,
                         Arc::new(Mutex::new(StructureConfig::default())),
                         Arc::new(Mutex::new(TempoControl::new(TempoConfig::default()))),
+                        input,
                     );
                 })
                 .expect("spawn golden audio thread")
@@ -1577,6 +1808,111 @@ pub(crate) mod tests {
         }
     }
 
+    /// A 96 kHz device is decimated to 48 kHz before analysis (#53): it hops on the 48 kHz
+    /// clock, and its raw band levels match the 48 kHz capture of the same signal.
+    #[test]
+    fn high_rate_input_analyzes_like_its_decimated_rate() {
+        let at_96 = run_audio_thread_over(&golden_signal(96_000.0, 4.0), 96_000.0);
+        assert_eq!(
+            at_96.len(),
+            4 * 48_000 / ANALYSIS_HOP,
+            "96 kHz must hop on the 48 kHz clock"
+        );
+
+        // Raw (pre-normalization) levels, so the adaptive ranging can't hide or invent a gap.
+        let raw = |signal: &[f32]| {
+            let mut a = HopAnalyzer::new(48_000.0, BandScale::Db, TempoConfig::default());
+            let mut mono = [0.0f32; ANALYSIS_HOP];
+            let mut last = AudioFeatures::default();
+            for (h, st) in signal.chunks_exact(ANALYSIS_HOP * 2).enumerate() {
+                for (m, f) in mono.iter_mut().zip(st.chunks_exact(2)) {
+                    *m = (f[0] + f[1]) * 0.5;
+                }
+                let ts = ((h + 1) * ANALYSIS_HOP) as f64 / 48_000.0;
+                let cfg = (StructureConfig::default(), TempoConfig::default());
+                last = a
+                    .process_hop(&mono, st, ts, cfg.0, cfg.1, Vec::new())
+                    .pre_norm;
+            }
+            last
+        };
+        let mut decimated = Vec::new();
+        decimate::StereoDecimator::new(96_000)
+            .process(&golden_signal(96_000.0, 4.0), &mut decimated);
+        let (a, b) = (raw(&golden_signal(48_000.0, 4.0)), raw(&decimated));
+        for (name, x, y) in [
+            ("sub_bass", a.sub_bass, b.sub_bass),
+            ("bass", a.bass, b.bass),
+            ("low_mid", a.low_mid, b.low_mid),
+            ("mid", a.mid, b.mid),
+        ] {
+            assert!(
+                (x - y).abs() <= 0.02 * x.abs().max(0.05),
+                "{name}: 48 kHz {x} vs 96 kHz {y}"
+            );
+        }
+    }
+
+    /// #84: the trim lifts what the analysis hears (absolute loudness rises by the trim) but
+    /// not what the recording mirror carries, and the meter counts clips on the raw input.
+    #[test]
+    fn input_trim_reaches_analysis_but_not_the_recording() {
+        const SR: f32 = 44100.0;
+        let mut signal: Vec<f32> = golden_signal(SR, 1.0).iter().map(|s| s * 0.5).collect();
+        signal[1000] = 1.0;
+        signal[1001] = -1.0;
+
+        let run = |trim_db: f32| {
+            let input = Arc::new(InputLevel::default());
+            input.set_trim_db(trim_db);
+            let rec = Arc::new(RingBuffer::new());
+            let (frames, _) = run_audio_thread_with(&signal, SR, input.clone(), &rec);
+            let mut recorded = vec![0.0f32; signal.len() / 2];
+            let n = rec.read(&mut recorded);
+            recorded.truncate(n);
+            (frames.last().expect("frames").features, recorded, input)
+        };
+        let (flat, rec_flat, input_flat) = run(0.0);
+        let (lifted, rec_lifted, input_lifted) = run(6.0);
+
+        // +6 dB of trim is +6 LU of loudness, 0.1 on the 60 LU feature scale.
+        let rise = lifted.loudness_m - flat.loudness_m;
+        assert!((rise - 0.1).abs() < 0.01, "loudness rose {rise}");
+        assert_eq!(rec_flat, rec_lifted, "the recording must not be trimmed");
+        assert!(!rec_flat.is_empty());
+        // Two clipped samples, counted before the trim either way.
+        assert_eq!(input_flat.clips(), 2);
+        assert_eq!(input_lifted.clips(), 2);
+    }
+
+    /// #84: the meter starts fresh after a pause, holds a peak, and latches the clip light.
+    #[test]
+    fn input_meter_ballistics() {
+        let mut sys = AudioSystem::offline();
+        sys.input.record(&[1.0]);
+        let first = sys.input_meter();
+        assert_eq!(
+            first.peak_dbfs, METER_FLOOR_DB,
+            "a stale peak must not show"
+        );
+        assert!(!first.clipping, "a stale clip must not light");
+
+        sys.input.record(&[0.5, -0.25]);
+        let m = sys.input_meter();
+        assert!((m.peak_dbfs - -6.02).abs() < 0.05, "peak {}", m.peak_dbfs);
+        assert!(!m.clipping);
+
+        // Nothing new: the held peak falls slowly rather than dropping to the floor.
+        let held = sys.input_meter();
+        assert!(held.peak_dbfs > -7.0 && held.peak_dbfs <= m.peak_dbfs);
+
+        sys.input.record(&[0.9995]);
+        let c = sys.input_meter();
+        assert!(c.clipping);
+        assert_eq!(c.clips, 2);
+        assert!(sys.input_meter().clipping, "the clip light holds");
+    }
+
     /// A burst of NaN/Inf from the capture device must not leave any feature non-finite, then
     /// or afterwards: running sums (loudness) and EMAs (normalizer) never recover from one (#51).
     #[test]
@@ -1619,6 +1955,16 @@ pub(crate) mod tests {
     /// the DC blocker nudges the rest by ≤ 0.025; `beat_in_bar` (54) on hop 340 changes its
     /// guess — this 4 s clip never gets a bar lock. The bench fixture's beat and downbeat
     /// scores are unchanged.
+    /// Re-captured 2026-10-04 for the kick model (#3624): `kick` (8) is now the tree
+    /// ensemble's score mapped so 0.5 means a kick; it moves on all three hops and nothing
+    /// else does.
+    /// Re-captured 2026-10-08 for the structure tick grid (#53): ticks now average exactly
+    /// 10 Hz instead of 9.6 Hz, so `buildup` (59) moves on all three hops; the rest match to
+    /// ≤ 1e-7 last-digit rounding.
+    /// Re-captured 2026-10-08 for #62: `rolloff`, `bandwidth` and `zcr` (12–14) moved onto
+    /// the centroid's log-frequency axis; nothing else moves.
+    /// Re-captured 2026-10-08 for #81: `tempo_confidence`/`beat_locked` (83–84) appended.
+    /// The clip never locks, so only the late hop's confidence is non-zero.
     // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
     // re-capture diffs cleanly against this block.
     #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -1627,51 +1973,54 @@ pub(crate) mod tests {
             40,
             [
                 0.1407876, 0.1420596, 0.6145152, 0.3154613, 0.0430347, 0.9350787, 0.6669751,
-                0.0566947, 0.0161380, 0.3560369, 0.0031109, 0.0127056, 0.0253217, 0.4416282,
-                0.0306153, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2709295,
-                0.6099496, 0.7784974, 0.7338392, 0.6270733, 0.5727628, 0.4557225, 0.3412039,
-                0.2734341, 0.2777484, 0.3016584, 0.3823771, 0.5377032, 0.6482748, 0.5863790,
+                0.0566947, 0.0533245, 0.3560369, 0.0031109, 0.0127056, 0.3955412, 0.2795721,
+                0.4623505, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2709294,
+                0.6099497, 0.7784974, 0.7338393, 0.6270733, 0.5727629, 0.4557225, 0.3412039,
+                0.2734340, 0.2777483, 0.3016583, 0.3823771, 0.5377032, 0.6482748, 0.5863790,
                 0.3664406, 0.2348731, 0.0749160, 0.1860548, 0.1479038, 0.0841248, 0.3017020,
                 0.9999736, 0.2573203, 0.0413149, 0.8181818, 0.8052005, 0.8124636, 0.0000000,
                 0.7272727, 1.0000000, 0.0227470, 0.0000000, 0.0000000, 0.0000000, 0.3724320,
-                0.0194766, 0.9947287, 0.0000000, 0.2187184, 0.0000000, 0.1732833, 0.0598805,
+                0.0194766, 0.9947287, 0.0000000, 0.2222967, 0.0000000, 0.1732833, 0.0598805,
                 0.9940155, 0.6009381, 0.9461797, 0.4126789, 0.9999693, 0.4485310, 0.4881209,
                 0.4763152, 0.4603756, 0.5333704, 0.1859715, 0.4986978, 0.4986971, 0.3528318,
-                0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000,
+                0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000,
             ],
         ),
         (
             172,
             [
                 0.1102263, 0.1081984, 0.7946914, 0.8267748, 0.7893429, 0.9627049, 0.8690839,
-                0.2188624, 0.0339859, 0.3564951, 0.0098162, 0.0128876, 0.0226174, 0.4402910,
-                0.0348674, 0.1681761, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4163287,
-                0.4930184, 0.5987619, 0.5700652, 0.4939170, 0.4750780, 0.5056299, 0.4571947,
-                0.4101900, 0.4235389, 0.4410454, 0.4640085, 0.5006856, 0.6367147, 0.5761620,
+                0.2188624, 0.1281905, 0.3564948, 0.0098162, 0.0128876, 0.3930339, 0.2730777,
+                0.4833857, 0.1681761, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4163286,
+                0.4930184, 0.5987619, 0.5700653, 0.4939171, 0.4750780, 0.5056298, 0.4571946,
+                0.4101900, 0.4235388, 0.4410453, 0.4640084, 0.5006856, 0.6367147, 0.5761620,
                 0.3581127, 0.2241911, 0.0637431, 0.1728067, 0.1373570, 0.0722338, 0.3008879,
                 0.9999934, 0.2556811, 0.0375539, 0.8181818, 0.7882963, 0.7974412, 0.0210354,
                 0.7272727, 1.0000000, 0.0001375, 0.0000000, 0.0000000, 0.0000000, 0.3876600,
-                0.0201893, 0.9947813, 0.0000000, 0.4442507, 0.0000000, 0.3679971, 0.1145830,
+                0.0201893, 0.9947813, 0.0000000, 0.4392110, 0.0000000, 0.3679971, 0.1145830,
                 0.9699730, 0.6012337, 0.9462099, 0.3652980, 0.9999987, 0.4890743, 0.5026374,
                 0.4690950, 0.4539478, 0.5269762, 0.0719375, 0.4999769, 0.5000178, 0.3531286,
-                0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000,
+                0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000, 0.0000000,
+                0.0000000,
             ],
         ),
         (
             340,
             [
                 0.1530726, 0.1504618, 0.7956443, 0.5298309, 0.0604075, 0.5831037, 0.5809369,
-                0.0753485, 0.0203862, 0.3561243, 0.0057274, 0.0126783, 0.0238795, 0.4389419,
-                0.0304028, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574384,
-                0.4586743, 0.5644627, 0.5217401, 0.4544856, 0.4380917, 0.5563500, 0.5298984,
-                0.4502431, 0.4356842, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
+                0.0753485, 0.0532104, 0.3561241, 0.0057274, 0.0126783, 0.3949849, 0.2794965,
+                0.4611151, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574383,
+                0.4586742, 0.5644628, 0.5217401, 0.4544857, 0.4380916, 0.5563499, 0.5298982,
+                0.4502431, 0.4356841, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
                 0.3684024, 0.2376923, 0.0745927, 0.1856951, 0.1463016, 0.0798915, 0.3004525,
                 0.9999670, 0.2597559, 0.0414821, 0.8181818, 0.7969663, 0.7951008, 0.0411382,
                 0.8181818, 1.0000000, 0.6746101, 0.0000000, 0.0000000, 0.2500000, 0.3740249,
-                0.0193253, 0.9973397, 0.0000000, 0.4409111, 0.0000000, 0.1625745, 0.1114902,
+                0.0193253, 0.9973397, 0.0000000, 0.4568526, 0.0000000, 0.1625745, 0.1114902,
                 0.9936647, 0.6007999, 0.9458395, 0.3599527, 0.9999986, 0.4310307, 0.4896301,
                 0.4748437, 0.4592255, 0.5218306, 0.0867677, 0.5000031, 0.4999986, 0.3532110,
-                0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000,
+                0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000, 0.5416813,
+                0.0000000,
             ],
         ),
     ];
@@ -1706,8 +2055,9 @@ pub(crate) mod tests {
         decay_features(&mut f, 0.5);
         for (i, &v) in f.as_slice().iter().enumerate() {
             match i {
-                // The beat (16), downbeat (52) and drop (60) triggers are forced to 0 on silence.
-                16 | 52 | 60 => {
+                // The beat (16), downbeat (52) and drop (60) triggers, and the #81 lock flag
+                // (84), are forced to 0 on silence.
+                16 | 52 | 60 | 84 => {
                     assert!(approx_eq(v, 0.0, 1e-6), "trigger {i} must be forced to 0");
                 }
                 // bpm (18), the categorical key fields key_class (49) / key_is_minor (50), the
