@@ -404,6 +404,26 @@ pub fn palette(kind: u32) -> [f32; 3] {
 pub const SURFACE_PALETTE: [[f32; 3]; 7] = [BLUE, VIOLET, WARM_WHITE, AMBER, GREEN, TEAL, ROSE];
 /// The color index of the key's tint, the last one.
 pub const COLOR_KEY: u32 = 8;
+/// What the hand menu calls each color index (board #3472, D3), in index
+/// order: the kind's own color, the [`SURFACE_PALETTE`] in its order, the
+/// key's tint.
+pub const COLOR_NAMES: [&str; COLOR_KEY as usize + 1] = [
+    "kind",
+    "blue",
+    "violet",
+    "warm white",
+    "amber",
+    "green",
+    "teal",
+    "rose",
+    "key",
+];
+
+/// Color index `index`'s name as the hand menu shows it ([`COLOR_NAMES`]);
+/// `?` past [`COLOR_KEY`].
+pub fn color_name(index: u32) -> &'static str {
+    COLOR_NAMES.get(index as usize).copied().unwrap_or("?")
+}
 /// How saturated the key's tint is: a little short of the pure hue, so
 /// the light keeps some white in it as the rest of the palette does.
 pub const KEY_TINT_SATURATION: f32 = 0.8;
@@ -1441,6 +1461,41 @@ mod tests {
             assert!((c.iter().copied().fold(0.0, f32::max) - 1.0).abs() < 1e-6);
             assert!(c.iter().all(|v| *v >= floor - 1e-6), "{c:?}");
         }
+    }
+
+    #[test]
+    fn every_color_index_has_a_name_and_nothing_else_does() {
+        // The names follow the palette: each names the color its index
+        // draws in, 0 the kind's own and the last the key's.
+        let key = [0.1, 0.2, 0.3];
+        let named = [
+            ("blue", BLUE),
+            ("violet", VIOLET),
+            ("warm white", WARM_WHITE),
+            ("amber", AMBER),
+            ("green", GREEN),
+            ("teal", TEAL),
+            ("rose", ROSE),
+        ];
+        assert_eq!(named.len(), SURFACE_PALETTE.len());
+        for (name, color) in named {
+            let index = COLOR_NAMES
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or_else(|| panic!("{name}")) as u32;
+            assert_eq!(color_name(index), name);
+            assert_close!(surface_color(index, KIND_TABLE, key), color);
+        }
+        assert_eq!(color_name(0), "kind");
+        assert_eq!(color_name(COLOR_KEY), "key");
+        assert_eq!(COLOR_NAMES.len(), COLOR_KEY as usize + 1);
+        // Every name once.
+        for (i, n) in COLOR_NAMES.iter().enumerate() {
+            assert!(!n.is_empty());
+            assert_eq!(COLOR_NAMES.iter().position(|m| m == n), Some(i), "{n}");
+        }
+        assert_eq!(color_name(COLOR_KEY + 1), "?");
+        assert_eq!(color_name(u32::MAX), "?");
     }
 
     #[test]

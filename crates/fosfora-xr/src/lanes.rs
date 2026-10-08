@@ -6,7 +6,11 @@
 //! boxes, the `debug.fosfora.surface` knob and the room editor's pinches
 //! (`room_edit.rs`), which go through the same typed calls the knob does
 //! ([`RoomLanes::assign`], [`RoomLanes::assign_kind_of`],
-//! [`RoomLanes::cycle`]): one path that writes, saves and logs.
+//! [`RoomLanes::cycle`]): one path that writes, saves and logs. The hand
+//! menu's surface rows (board #3472, D3) step the pointed surface's color,
+//! band and strength through [`RoomLanes::set_params`], which writes the
+//! same entry fields the knob's `:<color>:<band>@<strength>` does, through
+//! the same path.
 //!
 //! The rows are rebuilt only when the box list (UUIDs and kinds, in order)
 //! or an assignment changes: the boxes relocate once a second but keep
@@ -36,12 +40,94 @@ use std::path::PathBuf;
 use log::{info, warn};
 
 use crate::room_file::{Loaded, RoomFile, STAGE_FLOOR_UUID, room_id_hex, room_path, uuid_hex};
+use crate::surface_fx::BANDS;
 use crate::surfaces::{
-    RESERVED_BEHAVIORS, SURFACE_LANE_ROWS, SurfaceBehavior, kind_from_name, kind_name, lane_row,
+    COLOR_KEY, RESERVED_BEHAVIORS, SURFACE_LANE_ROWS, SurfaceBehavior, kind_from_name, kind_name,
+    lane_params, lane_row,
 };
 
 /// The shortest UUID prefix the knob takes.
 pub const MIN_UUID_PREFIX: usize = 8;
+/// The hand menu's Strength row steps 0..1 in this many steps (tenths,
+/// [`next_strength`]), and a strength from it is stored at that precision.
+pub const STRENGTH_STEPS: f32 = 10.0;
+
+/// One of a surface's three parameters the hand menu steps (board #3472,
+/// D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Param {
+    /// The color index, 0..=[`COLOR_KEY`] (`surfaces::color_name`).
+    Color,
+    /// The audio band, 0..[`BANDS`] (`surface_fx::band_name`).
+    Band,
+    /// The strength, 0..1.
+    Strength,
+}
+
+/// What the panel changes on one surface ([`RoomLanes::set_params`]).
+/// `None` leaves a field alone.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ParamEdit {
+    pub color: Option<u32>,
+    pub band: Option<u32>,
+    pub strength: Option<f32>,
+}
+
+impl ParamEdit {
+    /// One step of `param` up or down from a surface's `current` (color,
+    /// band, strength, as [`RoomLanes::params_of`] reports them): the
+    /// color and the band wrap, the strength clamps.
+    pub fn step(param: Param, up: bool, current: (u32, u32, f32)) -> Self {
+        let (color, band, strength) = current;
+        match param {
+            Param::Color => Self {
+                color: Some(next_color(color, up)),
+                ..Self::default()
+            },
+            Param::Band => Self {
+                band: Some(next_band(band, up)),
+                ..Self::default()
+            },
+            Param::Strength => Self {
+                strength: Some(next_strength(strength, up)),
+                ..Self::default()
+            },
+        }
+    }
+}
+
+/// The color index one step up or down from `color`, wrapping over
+/// 0..=[`COLOR_KEY`] (the key's tint is one step below the kind's own).
+pub fn next_color(color: u32, up: bool) -> u32 {
+    step_wrapping(color, up, COLOR_KEY + 1)
+}
+
+/// The audio band one step up or down from `band`, wrapping over the
+/// [`BANDS`] (rms, bass, mid, high).
+pub fn next_band(band: u32, up: bool) -> u32 {
+    step_wrapping(band, up, BANDS)
+}
+
+/// `v` (taken as the last value when past it) one step up or down in
+/// `0..n`, wrapping.
+fn step_wrapping(v: u32, up: bool, n: u32) -> u32 {
+    let v = v.min(n - 1);
+    if up { (v + 1) % n } else { (v + n - 1) % n }
+}
+
+/// The strength a tenth up or down from `strength`'s nearest tenth,
+/// clamped to 0..1 with no wrap: dimming to nothing and then jumping to
+/// full would surprise.
+pub fn next_strength(strength: f32, up: bool) -> f32 {
+    let tenths = (strength * STRENGTH_STEPS).round() + if up { 1.0 } else { -1.0 };
+    tenths.clamp(0.0, STRENGTH_STEPS) / STRENGTH_STEPS
+}
+
+/// `strength` at one decimal, as a strength from the panel is stored (the
+/// nearest float to the decimal, as the knob's `@0.7` reads).
+pub fn round_strength(strength: f32) -> f32 {
+    (strength * STRENGTH_STEPS).round() / STRENGTH_STEPS
+}
 
 /// One obstacle box of this frame as the lanes see it, in the obstacle
 /// block's order: the room's boxes, then the stage floor.
@@ -399,6 +485,82 @@ impl RoomLanes {
         let b = boxes.get(k)?;
         let (behavior, strength, _) = self.file.resolve(&b.uuid, b.kind);
         Some((behavior, strength))
+    }
+
+    /// Box `index`'s color index, audio band and strength as the surfaces
+    /// pass resolves them under the file as it is now: the entry's lane
+    /// row read back (`surfaces::lane_params` and the row's strength), so
+    /// the panel shows what the face shows. An unset color is 0 (the
+    /// kind's own), an entry without params (or no entry) runs its
+    /// behavior's default band, an unset strength is 1. Past the boxes:
+    /// those defaults for none.
+    pub fn params_of(&self, index: usize, boxes: &[LaneBox<'_>]) -> (u32, u32, f32) {
+        let (behavior, strength, params) = boxes.get(index).map_or_else(
+            || {
+                let none = SurfaceBehavior::None;
+                (none, 1.0, crate::room_file::default_params(none))
+            },
+            |b| self.file.resolve(&b.uuid, b.kind),
+        );
+        let row = lane_row(behavior, strength, params);
+        let (color, band) = lane_params(row, behavior);
+        (color, band, row[1])
+    }
+
+    /// The hand menu's write (board #3472, D3): `edit`'s fields on box
+    /// `index` (the pointed surface), the others kept. A surface without an
+    /// entry gets one first, at its effective behavior and strength, so
+    /// the params have somewhere to go (`RoomFile::set_color` writes
+    /// nothing without an entry). Saved and logged through the path every
+    /// assignment takes. The color is a whole number 0..=[`COLOR_KEY`],
+    /// the band 0..[`BANDS`], the strength 0..1 (stored at one decimal);
+    /// anything out of range, or a box past `boxes`, refuses the edit
+    /// whole: nothing written, one warning. Returns whether the surface's
+    /// look changed (an edit to the values it already has writes nothing).
+    pub fn set_params(&mut self, index: usize, boxes: &[LaneBox<'_>], edit: ParamEdit) -> bool {
+        let bad = |what: String| {
+            warn!("room {}: {what}; nothing changed", room_label(self.room));
+            false
+        };
+        if index >= boxes.len() {
+            return bad(format!("no box #{index} ({} boxes)", boxes.len()));
+        }
+        if let Some(c) = edit.color.filter(|c| *c > COLOR_KEY) {
+            return bad(format!("color {c} is not from 0 to {COLOR_KEY}"));
+        }
+        if let Some(b) = edit.band.filter(|b| *b >= BANDS) {
+            return bad(format!("band {b} is not from 0 to {}", BANDS - 1));
+        }
+        if let Some(s) = edit.strength.filter(|s| !(0.0..=1.0).contains(s)) {
+            return bad(format!("strength {s} is not in 0..1"));
+        }
+        let b = boxes[index];
+        let (behavior, strength, _) = self.file.resolve(&b.uuid, b.kind);
+        let (color, band, _) = self.params_of(index, boxes);
+        let next = (
+            edit.color.unwrap_or(color),
+            edit.band.unwrap_or(band),
+            edit.strength.map_or(strength, round_strength),
+        );
+        if next == (color, band, strength) {
+            return false;
+        }
+        // The color goes in whenever the band does (the room file keeps
+        // the two together); a strength alone leaves unset params unset.
+        let (color, band) = match (edit.color, edit.band) {
+            (None, None) => (None, None),
+            (_, b) => (Some(next.0), b),
+        };
+        let a = Assignment {
+            target: Target::Index(index),
+            behavior,
+            strength: next.2,
+            color,
+            band,
+        };
+        let lines = self.write(&a, &[index], boxes);
+        self.commit(&lines);
+        true
     }
 
     /// The class assignment from one surface: box `k`'s effective behavior
@@ -887,6 +1049,228 @@ mod tests {
         assert_close!(again.rows()[0][2..], [5.0, 2.0]);
         assert_close!(again.rows()[3][2..], [7.0, 1.0]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh room's lanes over `room()` in a temporary config dir named
+    /// for `what`.
+    fn fresh(what: &str) -> (PathBuf, Vec<LaneBox<'static>>, Option<u64>, RoomLanes) {
+        let dir = std::env::temp_dir().join(format!("fosfora-lanes-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let boxes = room();
+        let id = room_of(&boxes);
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        (dir, boxes, id, lanes)
+    }
+
+    fn color(c: u32) -> ParamEdit {
+        ParamEdit {
+            color: Some(c),
+            ..ParamEdit::default()
+        }
+    }
+
+    fn band(b: u32) -> ParamEdit {
+        ParamEdit {
+            band: Some(b),
+            ..ParamEdit::default()
+        }
+    }
+
+    fn strength(s: f32) -> ParamEdit {
+        ParamEdit {
+            strength: Some(s),
+            ..ParamEdit::default()
+        }
+    }
+
+    #[test]
+    fn the_panels_writer_creates_the_entry_on_an_unset_surface_and_keeps_the_behavior() {
+        let (dir, boxes, id, mut lanes) = fresh("panel");
+        // The desk runs its kind's default with no entry.
+        assert!(lanes.file.entry(&uuid(1)).is_none());
+        assert_eq!(lanes.params_of(0, &boxes), (0, 0, 1.0));
+        assert!(lanes.set_params(0, &boxes, color(4)));
+        let entry = *lanes
+            .file
+            .entry(&uuid(1))
+            .expect("the entry the writer made");
+        assert_eq!(
+            (entry.behavior, entry.strength, entry.params),
+            (B::Streamlines, 1.0, Some([4.0, 0.0]))
+        );
+        assert_eq!(lanes.effective(0, &boxes), Some((B::Streamlines, 1.0)));
+        assert_eq!(lanes.params_of(0, &boxes), (4, 0, 1.0));
+        // The band, then the strength: each kept by the next.
+        assert!(lanes.set_params(0, &boxes, band(2)));
+        assert!(lanes.set_params(0, &boxes, strength(0.7)));
+        let (c, b, s) = lanes.params_of(0, &boxes);
+        assert_eq!((c, b), (4, 2));
+        assert_close!(s, 0.7);
+        // The rows follow on the next update: what the pass reads.
+        assert!(lanes.update(id, &boxes));
+        assert_close!(lanes.rows()[0], lane_row(B::Streamlines, 0.7, [4.0, 2.0]));
+        // A strength alone on an unset surface: its entry, its params still
+        // unset (the behavior's default band, the bass for the rings).
+        assert!(lanes.set_params(3, &boxes, strength(0.5)));
+        let floor = *lanes.file.entry(&uuid(4)).expect("an entry");
+        assert_eq!((floor.behavior, floor.params), (B::Rings, None));
+        assert_close!(lanes.params_of(3, &boxes).2, 0.5);
+        assert_eq!(lanes.params_of(3, &boxes).0, 0);
+        assert_eq!(lanes.params_of(3, &boxes).1, B::Rings.default_band());
+        // A band alone takes the color the surface shows with it.
+        assert!(lanes.set_params(3, &boxes, band(3)));
+        assert_eq!(lanes.file.entry(&uuid(4)).unwrap().params, Some([0.0, 3.0]));
+        // The stage floor, under its zero UUID, as the knob's `#k`.
+        assert!(lanes.set_params(5, &boxes, color(8)));
+        assert_eq!(lanes.params_of(5, &boxes).0, 8);
+        // Stored at one decimal.
+        assert!(lanes.set_params(4, &boxes, strength(0.333)));
+        assert_close!(lanes.params_of(4, &boxes).2, 0.3);
+        // An edit to the values it has changes nothing and writes nothing.
+        let before = lanes.revision;
+        assert!(!lanes.set_params(0, &boxes, color(4)));
+        assert!(!lanes.set_params(0, &boxes, ParamEdit::default()));
+        assert_eq!(lanes.revision, before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panel_edit_saves_and_the_room_reads_back_on_relaunch() {
+        let (dir, boxes, id, mut lanes) = fresh("panel-save");
+        assert!(lanes.set_params(0, &boxes, color(4)));
+        assert!(lanes.set_params(0, &boxes, band(2)));
+        assert!(lanes.set_params(0, &boxes, strength(0.5)));
+        assert!(lanes.set_params(1, &boxes, band(1)));
+        let path = room_path(&dir, id.unwrap());
+        assert!(path.is_file(), "saved");
+        let mut again = RoomLanes::new(dir.clone());
+        again.update(id, &boxes);
+        assert_eq!(again.params_of(0, &boxes), (4, 2, 0.5));
+        assert_eq!(again.params_of(1, &boxes), (0, 1, 1.0));
+        assert_eq!(again.behavior(0), B::Streamlines);
+        assert_eq!(again.behavior(1), B::Spectrum);
+        assert_close!(again.rows()[0], lane_row(B::Streamlines, 0.5, [4.0, 2.0]));
+        // A tap's cycle keeps them, as it keeps the knob's.
+        assert_eq!(again.cycle(0, &boxes), Ok(B::Curls));
+        assert_eq!(again.params_of(0, &boxes), (4, 2, 0.5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_out_of_range_edit_is_refused_whole_and_the_file_is_unchanged() {
+        let (dir, boxes, id, mut lanes) = fresh("panel-bad");
+        assert!(lanes.set_params(0, &boxes, color(2)));
+        assert!(lanes.update(id, &boxes));
+        let path = room_path(&dir, id.unwrap());
+        let before = std::fs::read_to_string(&path).unwrap();
+        let file = lanes.file.clone();
+        let revision = lanes.revision;
+        for (k, bad) in [
+            (0, color(COLOR_KEY + 1)),
+            (0, band(BANDS)),
+            (0, strength(1.5)),
+            (0, strength(-0.1)),
+            (0, strength(f32::NAN)),
+            // One field out of range refuses the others with it.
+            (
+                0,
+                ParamEdit {
+                    color: Some(5),
+                    band: Some(9),
+                    strength: Some(0.5),
+                },
+            ),
+            (
+                1,
+                ParamEdit {
+                    color: Some(3),
+                    band: None,
+                    strength: Some(2.0),
+                },
+            ),
+            // Past the boxes.
+            (6, color(1)),
+        ] {
+            assert!(!lanes.set_params(k, &boxes, bad), "#{k} {bad:?}");
+        }
+        assert_eq!(lanes.file, file);
+        assert_eq!(lanes.revision, revision);
+        assert!(!lanes.update(id, &boxes));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn params_of_reports_what_the_knob_wrote() {
+        let (dir, boxes, _, mut lanes) = fresh("panel-knob");
+        // Unset: the kind's color and the behavior's band at full strength.
+        assert_eq!(lanes.params_of(0, &boxes), (0, 0, 1.0), "the desk");
+        assert_eq!(lanes.params_of(3, &boxes), (0, 1, 1.0), "the floor's rings");
+        assert!(lanes.poll_knob(
+            Some("table=curls:5:2,#3=rings:7@0.5,#1=pulse@0.25"),
+            false,
+            &boxes
+        ));
+        assert_eq!(lanes.params_of(0, &boxes), (5, 2, 1.0));
+        assert_eq!(lanes.params_of(3, &boxes), (7, 1, 0.5));
+        // An entry with no params: its behavior's default band.
+        assert_eq!(lanes.params_of(1, &boxes), (0, 1, 0.25));
+        // Past the boxes: the defaults.
+        assert_eq!(lanes.params_of(9, &boxes), (0, 0, 1.0));
+        // The panel's write lands where the knob's does: the same fields.
+        assert!(lanes.set_params(3, &boxes, color(5)));
+        assert_eq!(
+            lanes.file.entry(&uuid(4)).map(|e| (e.behavior, e.params)),
+            Some((B::Rings, Some([5.0, 1.0])))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_steppers_wrap_the_color_and_the_band_and_clamp_the_strength() {
+        // The color: 0..=8 round, both ways.
+        let mut c = 0;
+        let mut seen = Vec::new();
+        for _ in 0..=COLOR_KEY {
+            c = next_color(c, true);
+            seen.push(c);
+        }
+        assert_eq!(seen, [1, 2, 3, 4, 5, 6, 7, 8, 0]);
+        assert_eq!(next_color(0, false), COLOR_KEY);
+        assert_eq!(next_color(COLOR_KEY, true), 0);
+        assert_eq!(next_color(5, false), 4);
+        // The band: rms, bass, mid, high, round.
+        assert_eq!([0, 1, 2, 3].map(|b| next_band(b, true)), [1, 2, 3, 0]);
+        assert_eq!([0, 1, 2, 3].map(|b| next_band(b, false)), [3, 0, 1, 2]);
+        // Out of range in: taken as the last.
+        assert_eq!(next_band(7, true), 0);
+        assert_eq!(next_color(20, false), COLOR_KEY - 1);
+        // The strength: tenths, no wrap.
+        assert_close!(next_strength(0.7, true), 0.8);
+        assert_close!(next_strength(0.7, false), 0.6);
+        assert_close!(next_strength(1.0, true), 1.0);
+        assert_close!(next_strength(0.0, false), 0.0);
+        assert_close!(next_strength(0.95, true), 1.0);
+        assert_close!(next_strength(0.04, false), 0.0);
+        // From full to nothing in ten steps and back, every value a tenth.
+        let mut s = 1.0;
+        for k in (0..10).rev() {
+            s = next_strength(s, false);
+            assert_close!(s, k as f32 / 10.0);
+            assert_close!(s, round_strength(s));
+        }
+        for k in 1..=10 {
+            s = next_strength(s, true);
+            assert_close!(s, k as f32 / 10.0);
+        }
+        // One step of each from a surface's values.
+        let now = (8, 3, 0.4);
+        assert_eq!(ParamEdit::step(Param::Color, true, now), color(0));
+        assert_eq!(ParamEdit::step(Param::Band, true, now), band(0));
+        let down = ParamEdit::step(Param::Strength, false, now);
+        assert_eq!((down.color, down.band), (None, None));
+        assert_close!(down.strength.unwrap(), 0.3);
     }
 
     #[test]

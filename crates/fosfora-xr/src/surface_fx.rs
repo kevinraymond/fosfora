@@ -165,6 +165,14 @@ pub const BAND_MID: u32 = 2;
 pub const BAND_HIGH: u32 = 3;
 /// How many bands there are.
 pub const BANDS: u32 = 4;
+/// What the hand menu calls each band (board #3472, D3), in band order.
+pub const BAND_NAMES: [&str; BANDS as usize] = ["rms", "bass", "mid", "high"];
+
+/// Band `band`'s name as the hand menu shows it ([`BAND_NAMES`]); `?` past
+/// the last band.
+pub fn band_name(band: u32) -> &'static str {
+    BAND_NAMES.get(band as usize).copied().unwrap_or("?")
+}
 
 /// The audio a slot carries: the rms, the bass, the mid and the high
 /// (0..1), the beat envelope (1 on the beat, decaying), the surfaces'
@@ -884,6 +892,22 @@ mod tests {
             naga::Expression::Literal(naga::Literal::F32(v)) => v,
             naga::Expression::Literal(naga::Literal::U32(v)) => v as f32,
             ref e => panic!("{name}: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn every_band_has_a_name_and_nothing_else_does() {
+        assert_eq!(band_name(BAND_RMS), "rms");
+        assert_eq!(band_name(BAND_BASS), "bass");
+        assert_eq!(band_name(BAND_MID), "mid");
+        assert_eq!(band_name(BAND_HIGH), "high");
+        assert_eq!(BAND_NAMES.len(), BANDS as usize);
+        assert_eq!(BAND_HIGH, BANDS - 1);
+        assert_eq!(band_name(BANDS), "?");
+        assert_eq!(band_name(u32::MAX), "?");
+        // Each behavior's default band has a name.
+        for b in SurfaceBehavior::ALL {
+            assert_ne!(band_name(b.default_band()), "?", "{}", b.name());
         }
     }
 
