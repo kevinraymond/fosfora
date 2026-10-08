@@ -525,7 +525,9 @@ so the model sees the same task whoever serves it:
 **The Anthropic request**: `POST {base_url}/v1/messages` with
 `content-type`, `x-api-key`, `anthropic-version: 2023-06-01` and
 `anthropic-beta: server-side-fallback-2026-07-01`; the body has the
-model, `max_tokens` 1024, `output_config` with `effort: low` and the
+model, `max_tokens` 4096 (shared with the model's thinking, which runs
+at every effort; the reply itself is short), `output_config` with
+`effort: low` and the
 schema as a `json_schema` format, `fallbacks: "default"` (a refusal is
 retried server-side on a fallback model), the instruction as one system
 block with `cache_control`, and one user message. It sends no `thinking`
@@ -553,9 +555,14 @@ took (`schema` or `no schema (retried)`). The fixtures in the tests take
 the schema path; which one a live endpoint takes is the reviewer's to
 read from the log.
 
-**The wiring** (`app.rs`). Only a NoMatch miss goes to the agent; the
-grammar's other misses (no such surface, not on this kind, which one) are
-already answers and keep their labels. The frame builds the room's state
+**The wiring** (`app.rs`). Two misses go to the agent
+(`agent::forwards`): NoMatch, a sentence no template fits, and
+UnknownBehavior, one that fits a template's shape but names a behavior
+the catalogue lacks ("a campfire on the desk", "fire on the desk"),
+which a model can read for its meaning (Kevin, Oct 8). The grammar's
+other misses (no such surface, which the agent cannot know either; not
+on this kind; which one; nothing pointed at) are already answers and
+keep their labels. The frame builds the room's state
 from V2's vocabulary, the lanes' assignments and each box's acting face,
 builds the request, and hands it to the call's thread; the label reads
 "Thinking…" (13 s, past the call's 12 s limit) and the frame loop polls
@@ -581,7 +588,8 @@ line; the other actions still apply.
 | an HTTP error, an unreadable or cut-off answer | The agent didn't answer |
 
 **The log**, per sentence: V2's `voice: heard "<sentence>" → miss NoMatch
-· label "Thinking…"`; the call, `voice agent: <provider> <model> · <N> ms
+· label "Thinking…"` (or `miss UnknownBehavior("campfire") · label
+"Thinking…"`); the call, `voice agent: <provider> <model> · <N> ms
 · in <input tokens> [cached <cache reads>] out <output tokens> · <K>
 actions · schema` (a count a server leaves out is `-`; on an error, the
 error in place of the counts); then `voice agent: heard "<sentence>" →
@@ -599,7 +607,9 @@ included.
 **The cost.** One call is one request with the room's JSON: the
 instruction (about 0.7 K tokens, fixed) plus the room (a surface is
 about 40 tokens; the 18-box replayed room comes to about 1 K), so about
-1 to 2 K input tokens and a reply under 150 output tokens. The Anthropic
+1 to 2 K input tokens and a reply under 150 output tokens (on Anthropic
+the output count includes the model's thinking, so it runs higher; the
+4096 ceiling leaves it room, and only the tokens used are billed). The Anthropic
 system text is marked for caching, so repeated sentences read it from the
 cache (`cached` in the log; the model's minimum cacheable prefix is 512
 tokens, which the instruction passes); `effort: low` keeps the model's
@@ -630,16 +640,16 @@ Particles toggle, as in the grammar). `provider` is optional, defaulting
 to Anthropic. `AgentError::NoNetwork` carries the transport's message for
 the log. Loopback addresses (127/8, `[::1]`) count as private, as
 `localhost` does. An OpenAI-compatible 422 naming `response_format` is
-retried like a 400. A bare kind word as the target means every surface of
+retried like a 400. UnknownBehavior misses go to the agent too, not
+only NoMatch (Kevin, Oct 8), and the Anthropic `max_tokens` is 4096, not
+1024, since the model's thinking shares it (Kevin, Oct 8). A bare kind word as the target means every surface of
 that kind even where a spoken "table" would ask which one, unless a
 surface carries that exact name.
 
 **Not yet.** A conversation across turns (each sentence is one request,
 with no memory of the last); more providers; the agent proposing new
 behaviors, parameters or surfaces (it only reaches what the hands reach);
-spoken replies; streaming. A sentence that fits a template's shape but
-names an unknown behavior ("a campfire on the desk" is UnknownBehavior
-"campfire") keeps the grammar's answer and does not reach the agent.
+spoken replies; streaming.
 
 ## Open questions for Kevin
 

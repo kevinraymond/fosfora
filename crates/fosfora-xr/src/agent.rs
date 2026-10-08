@@ -48,8 +48,11 @@ pub const THINKING_LABEL: &str = "Thinking\u{2026}";
 pub const THINKING_S: f32 = 13.0;
 /// How long the label shows the agent's answer or an error (s).
 pub const LABEL_S: f32 = 2.5;
-/// The reply's token ceiling, on both providers.
-pub const MAX_TOKENS: u32 = 1024;
+/// The reply's token ceiling. Anthropic's is shared with the model's
+/// thinking, which runs at every effort, so it is four times the
+/// OpenAI-compatible one; the reply itself is short on both.
+pub const ANTHROPIC_MAX_TOKENS: u32 = 4096;
+pub const OPENAI_MAX_TOKENS: u32 = 1024;
 /// The longest `say` the label shows (characters); the instruction asks
 /// for 60, a longer one is cut with an ellipsis.
 pub const MAX_SAY_CHARS: usize = 80;
@@ -638,7 +641,7 @@ impl Provider for Anthropic {
             ],
             body: json!({
                 "model": self.model,
-                "max_tokens": MAX_TOKENS,
+                "max_tokens": ANTHROPIC_MAX_TOKENS,
                 "output_config": {
                     "effort": "low",
                     "format": { "type": "json_schema", "schema": schema() }
@@ -738,7 +741,7 @@ impl Provider for OpenAi {
         }
         let mut body = json!({
             "model": self.model,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": OPENAI_MAX_TOKENS,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": { "name": "room_actions", "strict": true, "schema": schema() }
@@ -798,6 +801,17 @@ impl Provider for OpenAi {
         req.body.as_object_mut()?.remove("response_format")?;
         Some(req)
     }
+}
+
+/// Whether a grammar miss goes to the agent: a sentence no template fits
+/// (NoMatch), and one that fits a template's shape but names a behavior
+/// the catalogue lacks ("a campfire on the desk", UnknownBehavior), which
+/// a model can read for its meaning. The other misses stay the grammar's
+/// own answers: a surface the room lacks (the agent cannot know it
+/// either), a behavior the kind does not run, which surface, and nothing
+/// pointed at.
+pub fn forwards(reason: &Reason) -> bool {
+    matches!(reason, Reason::NoMatch | Reason::UnknownBehavior(_))
 }
 
 /// The per-call log line: `voice agent: anthropic claude-opus-5-5 · 1840
@@ -1239,7 +1253,7 @@ mod tests {
         );
         let golden = json!({
             "model": "claude-opus-5-5",
-            "max_tokens": 1024,
+            "max_tokens": 4096,
             "output_config": {
                 "effort": "low",
                 "format": { "type": "json_schema", "schema": schema() }
@@ -1873,6 +1887,50 @@ mod tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Which grammar misses reach the agent: no template fits, or an
+    /// unknown behavior in a template's shape; the rest are answers.
+    #[test]
+    fn nomatch_and_unknown_behavior_reach_the_agent_the_other_misses_stay() {
+        for (reason, forwarded) in [
+            (Reason::NoMatch, true),
+            (Reason::UnknownBehavior("campfire".into()), true),
+            (Reason::UnknownSurface("shelf".into()), false),
+            (
+                Reason::NotOnThisKind {
+                    behavior: B::Embers,
+                    kind: KIND_WALL,
+                },
+                false,
+            ),
+            (
+                Reason::Ambiguous(vec!["table 1".into(), "table 2".into()]),
+                false,
+            ),
+            (Reason::NoSurface, false),
+        ] {
+            assert_eq!(forwards(&reason), forwarded, "{reason:?}");
+        }
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, None);
+        for (sentence, forwarded) in [
+            ("A campfire on the desk.", true),
+            ("Fire on the desk.", true),
+            ("Make the walls calmer.", true),
+            ("The shelf in blue.", false),
+            ("Embers on wall 3.", false),
+            ("Table in amber.", false),
+            ("In amber.", false),
+        ] {
+            let miss = crate::intent::parse(sentence, &v).unwrap_err();
+            assert_eq!(
+                forwards(&miss.reason),
+                forwarded,
+                "{sentence}: {:?}",
+                miss.reason
+            );
+        }
     }
 
     /// The replayed room the reviewer runs the `say` knob on (as

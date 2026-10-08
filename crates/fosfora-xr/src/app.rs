@@ -2364,7 +2364,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // the lane boxes by their friendly names, the surface under the
             // editor's beam), applied by `apply_intent` (`lane_boxes` being
             // this frame's). With the agent on (V3), a sentence no template
-            // fits goes to the model instead of the miss's label.
+            // fits, or one naming an unknown behavior, goes to the model
+            // instead of the miss's label.
             if let Some(sentence) = sentence.take() {
                 let vocab = crate::intent::Vocabulary {
                     effects: &world_effects,
@@ -2377,7 +2378,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 };
                 let outcome = crate::intent::parse(&sentence, &vocab);
                 let ask_agent = agent.is_some()
-                    && matches!(&outcome, Err(m) if m.reason == crate::intent::Reason::NoMatch);
+                    && matches!(&outcome, Err(m) if crate::agent::forwards(&m.reason));
                 let (text, seconds) = match (&outcome, &agent) {
                     (Ok(intent), _) => (
                         apply_intent(
@@ -2391,8 +2392,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         ),
                         crate::intent::REPLY_S,
                     ),
-                    // V3: a sentence no template fits goes to the agent
-                    // with the room as it is now; the grammar's other
+                    // V3: a sentence no template fits, or one naming an
+                    // unknown behavior, goes to the agent with the room as
+                    // it is now (`agent::forwards`); the grammar's other
                     // misses are its own answers and stay.
                     (Err(_), Some(provider)) if ask_agent => {
                         let head = glam::Vec3::from(input.head);
