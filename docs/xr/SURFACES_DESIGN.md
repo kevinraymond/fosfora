@@ -528,3 +528,90 @@ adb shell setprop debug.fosfora.surface "table=prism,floor=astrolabe,wall=fenest
 cost rows in `MEASURED.md` and the worn gate are the reviewer's. A
 tint from the lane's color index, and the effects' parameters from the
 panel (D3).
+
+## D3 as built (Oct 8, board #3472)
+
+**The writer.** `RoomLanes::set_params` (`lanes.rs`) is the panel's
+path to the fields the knob's `<target>=<behavior>:<color>:<band>@<strength>`
+writes: a box index (the pointed surface) and a `ParamEdit` of an
+optional color, band and strength, `None` leaving a field alone. A
+surface without an entry first gets one at its effective behavior and
+strength (the room file's `set_color` writes nothing without an entry),
+then the params, through the same write, save and log as every
+assignment ("room <id>: DESK 11a1a2a3 (table) -> streamlines@1.00 color
+4", the revision bumped). The color is a whole number 0 to 8, the band 0
+to 3, the strength 0..1, stored at one decimal; anything out of range,
+or a box past the frame's, refuses the edit whole with one warning, as
+a bad knob value does. A strength alone leaves unset params unset; a
+band goes in with the color the surface shows, as the file keeps the
+two together. An edit to the values a surface already has writes
+nothing. `params_of` reads a surface back as the pass does (its lane
+row through `lane_params` and the row's strength), so the panel shows
+what the face shows: an unset color is 0, an entry without params runs
+its behavior's default band. The panel and the knob write the same
+fields; the knob's grammar is unchanged.
+
+**The rows.** With Edit room on, the hand menu and the debug panel's
+menu block gain three rows under the editor's: `<` and `>` at the ends,
+"Color  amber", "Band  mid", "Strength  0.7" between (`surfaces::color_name`:
+kind, blue, violet, warm white, amber, green, teal, rose, key;
+`surface_fx::band_name`: rms, bass, mid, high). They act on the surface
+under the beam: the editor holds its hit while the panel is up, so the
+wearer points at the desk, turns the left palm up and steps it, and the
+right hand's pinches are the panel's, never an editor tap. Color and
+band wrap (the key's tint is one step below the kind's own); strength
+moves by tenths and clamps at 0 and 1, and a held Strength `<` or `>`
+repeats like a stepper; color and band do not. With no surface under
+the beam the first row reads "Point at a surface" over two empty rows,
+nothing presses, and the menu keeps its height. The press is a step,
+not a value: the app applies it after the frame's boxes exist, as All:
+none, from the file as it is then, and on a change the label at the hit
+says "desk: curls · amber · mid · 0.7" (`label::param_text`). The
+status cell is unchanged. The values the rows paint are one frame late
+after a press (the panel renders before the editor steps).
+
+**The layout.** The menu's row count follows Edit room: 4 rows or 7
+(`panel_grid::menu_rows`, `menu_h`: 204 or 324 points), the debug
+panel's 11 or 14 (`debug_rows`), 14 being the headroom its header
+leaves. No row or font shrinks. The quad follows the state the last
+render laid out and keeps its bottom edge, so it grows upward when Edit
+room turns on and the rows under the pointer stay put.
+
+**What each shader does with the three.**
+
+| behavior | color | band | strength |
+| --- | --- | --- | --- |
+| streamlines, curls | the light's color | the level under the flow | scales the light |
+| pulse | the glow's color | the envelope's floor | scales the glow |
+| rings | the rings' color (0: the ripple's warm white on a floor) | not read: the ripple's own bass, by design | scales the light |
+| spectrum | the bars' color (0: the canvas's warm white) | not read: the bars are every band, by design | scales the light |
+| the eight ports | a tint (0: the effect's own colors) | not read: the effect's own audio bindings | scales the light |
+| embers, sparks | not read | not read | scales the sim's gate |
+
+**The port tint.** The port block's `color.rgb`, written white and never
+read in D2b, carries the tint: white for index 0, so the default look is
+bit-identical to D2b's (a multiply by 1), else the color the index picks
+(`surface_port::tint`, the same `surface_color` the pass's own faces
+resolve through `color_of`, the key's tint included; the key's tint is
+now computed when a ported face asks for it too). The wrapper multiplies
+the effect's rgb by it after the coverage is taken, for overlays and
+opaque effects alike, so a tint never changes an alpha: an opaque
+effect's luminance coverage is its untinted color's, and a tinted effect
+covers the surface where it did, in the tint's color. A desktop GPU run
+of the eight pipelines with the tint passes (`cargo test -p fosfora-xr
+--lib surface_port -- --ignored`).
+
+**Logs.** "edit room: desk color up (the panel)" for each press, then
+the lanes' "room <id>: ... -> curls@0.70 color 4 band 2, saved
+rooms/<id>.json" on a change; "edit room: color up with no surface
+under the beam, nothing changed" without a hit; "room <id>: color 9 is
+not from 0 to 8; nothing changed" for a refused edit (none reachable
+from the panel).
+
+**Not yet.** Speed and density per surface: the room file's `params` is
+exactly two numbers, and widening it is a version 3 with a migration, a
+later step. Parameter edits for a whole kind (a hold on a row, or
+similar). The worn gate (point at the desk, step it to amber on the mid,
+lower the strength, relaunch and find it kept), the screencaps of the
+rows and the cost of tinted ports against untinted in `MEASURED.md` are
+the reviewer's, on the device.

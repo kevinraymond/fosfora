@@ -648,3 +648,18 @@ shards and prism; a floor tessera, prism and astrolabe; a wall aurora,
 fenestra and bezel; a ceiling aurora and astrolabe; a frame bezel,
 reticle and fenestra; other and unlabeled shards, reticle and tessera.
 The knob and the room file take the eight names on any kind.
+
+**Amended, D3 (Oct 8, board #3472).** The hand menu's rows, top to
+bottom: Pitcher and Debug panel; Edit room and its status; with Edit
+room on, three rows for the surface under the beam (`SURFACES_DESIGN.md`,
+"D3 as built"): Color, Band and Strength, each a `<` and a `>` around
+the name and the value ("Color  amber", "Band  mid", "Strength  0.7");
+Particles and All: none; Music. The menu grows from four rows to seven
+upward when Edit room turns on, its bottom rows staying under the
+pointer, and the debug panel's block from 11 rows to 14. The rows act
+on the editor's hit, which holds while the panel is up, so pointing at
+the desk and turning the palm up is how the desk is chosen; with no
+surface under the beam they say "Point at a surface" and press nothing.
+Each step is saved to the room file through the lanes, as the knob's
+`:<color>:<band>@<strength>` is, and the label at the hit names the
+result ("desk: curls · amber · mid · 0.7").
