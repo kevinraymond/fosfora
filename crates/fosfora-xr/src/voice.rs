@@ -142,6 +142,15 @@ impl PushToTalk {
         }
     }
 
+    /// Drop an open window without a transcription (the hand menu's Voice
+    /// toggle went off while it listened): closed at once.
+    pub fn cancel(&mut self) {
+        if matches!(self.window, Window::Open { .. }) {
+            self.window = Window::Closed;
+            self.held_s = 0.0;
+        }
+    }
+
     /// A transcription that no window started (the `voicefile` path) is
     /// running: closed becomes closing. False if a window is open.
     pub fn begin_closing(&mut self) -> bool {
@@ -482,6 +491,15 @@ mod device {
             self.send(Job::Stereo(audio, rate))
         }
 
+        /// Close the open window's stream and drop its audio, sending
+        /// nothing (the Voice toggle went off while it listened).
+        pub fn cancel(&mut self) {
+            if self.mic.take().is_some() {
+                self.captured.clear();
+                info!("voice: window dropped (voice off)");
+            }
+        }
+
         /// Once a frame: read the open window's stream, pick up the
         /// worker's messages, and start the `voicefile` clip when it is due
         /// and `idle` (no window open or closing).
@@ -728,6 +746,20 @@ mod tests {
         ptt.finish();
         assert_eq!(ptt.window(), Window::Closed);
         assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened]);
+    }
+
+    #[test]
+    fn cancel_drops_an_open_window_only() {
+        let mut ptt = PushToTalk::default();
+        hold(&mut ptt, true, 1.0);
+        assert!(matches!(ptt.window(), Window::Open { .. }));
+        ptt.cancel();
+        assert_eq!(ptt.window(), Window::Closed);
+        // A closing window keeps waiting for its transcription.
+        hold(&mut ptt, true, 1.0);
+        ptt.step(false, DT);
+        ptt.cancel();
+        assert_eq!(ptt.window(), Window::Closing);
     }
 
     #[test]

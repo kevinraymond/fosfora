@@ -219,8 +219,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
     //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
     //       label shows what it did or "Didn't catch that", the log both; the fist opens the window in every mode, Edit room and the hand
-    //       menu included; default 1 when the speech model is installed (assets/xr/models/ggml-base.en.bin), else off with a log; on,
-    //       RECORD_AUDIO is asked for on any audio source; read at launch)
+    //       menu included; V4: the hand menu's Voice toggle, saved in hand_menu.json ("voice", on when absent), which the knob forces
+    //       and saves as debug.fosfora.hud does the debug panel's; voice needs the speech model installed
+    //       (assets/xr/models/ggml-base.en.bin); on at launch, the model loads and RECORD_AUDIO is asked for on any audio source; read at launch)
     //   adb shell setprop debug.fosfora.voicethreads 3           (the transcription's whisper threads, 1..6; default 3; read at launch)
     //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
     //       window had closed; the label shows it ahead of the head; read at launch)
@@ -358,21 +359,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     // Board #3751: the voice path, on by default once the asset install
-    // has put the speech model in place.
+    // has put the speech model in place. V4: the hand menu's Voice toggle,
+    // saved in the menu's file (on when the file lacks it); the knob, when
+    // set, forces it and is saved, as `debug.fosfora.hud` does the debug
+    // panel's.
     let voice_model = dirs.assets.join(VOICE_MODEL);
-    let voice_on = match (
-        debug_prop("debug.fosfora.voice").as_deref(),
-        voice_model.is_file(),
-    ) {
-        (Some("0"), _) => {
-            info!("voice: off (debug.fosfora.voice 0)");
+    let menu_file = dirs.config.join(HAND_MENU_FILE);
+    let mut menu_saved = load_hand_menu(&menu_file);
+    match debug_prop("debug.fosfora.voice").as_deref() {
+        Some("1") => {
+            menu_saved.voice = true;
+            save_hand_menu(&menu_file, menu_saved);
+        }
+        Some("0") => {
+            menu_saved.voice = false;
+            save_hand_menu(&menu_file, menu_saved);
+        }
+        _ => {}
+    }
+    let voice_on = match (menu_saved.voice, voice_model.is_file()) {
+        (false, _) => {
+            info!("voice: off (the hand menu's Voice toggle, saved)");
             false
         }
-        (_, false) => {
+        (true, false) => {
             info!("voice: off, no model at {}", voice_model.display());
             false
         }
-        (_, true) => true,
+        (true, true) => true,
     };
     // Board #3264: the runtime permissions, asked for before the session
     // so the dialog comes with the launch. USE_SCENE always (the room is
@@ -440,12 +454,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3751: the voice path. The model loads on the voice thread
     // while the session starts; the window opens its own microphone stream
     // only with RECORD_AUDIO granted (the poll below picks a late grant up).
+    // V4: a launch with the toggle off loads nothing (a sweep with
+    // `debug.fosfora.voice 0` stays free of the model); the first turn on
+    // from the menu loads it then, and turning it off again keeps it, so
+    // the toggle is instant from then on.
+    let voice_threads = debug_prop("debug.fosfora.voicethreads")
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
     let mut voice = if voice_on {
-        let threads = debug_prop("debug.fosfora.voicethreads")
-            .and_then(|v| v.trim().parse::<i32>().ok())
-            .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
         let file = debug_prop("debug.fosfora.voicefile").map(std::path::PathBuf::from);
-        Voice::new(&voice_model, threads, file)
+        Voice::new(&voice_model, voice_threads, file)
             .inspect_err(|e| error!("voice: {e:#}; off"))
             .ok()
     } else {
@@ -930,17 +948,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // debug panel's -/+ rows drive these values from then on; with it off
     // they stay the knobs'. While the menu is up its pinches are its own.
     let hud_test = toggle("debug.fosfora.hudtest", false);
-    let menu_file = dirs.config.join(HAND_MENU_FILE);
     let debug_on = match debug_prop("debug.fosfora.hud").as_deref() {
         Some("1") => {
-            save_hand_menu(&menu_file, true);
+            menu_saved.debug = true;
+            save_hand_menu(&menu_file, menu_saved);
             true
         }
         Some("0") => {
-            save_hand_menu(&menu_file, false);
+            menu_saved.debug = false;
+            save_hand_menu(&menu_file, menu_saved);
             false
         }
-        _ => load_hand_menu(&menu_file),
+        _ => menu_saved.debug,
     };
     info!(
         "hand menu: debug panel {}",
@@ -982,6 +1001,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         edit_room: false,
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
         music: music.wanted(),
+        voice: menu_saved.voice,
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1559,7 +1579,47 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         moved = true;
                     }
                     Action::RescanRoom => rescan = true,
-                    Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                    Action::SetDebug(on) => {
+                        menu_saved.debug = on;
+                        save_hand_menu(&menu_file, menu_saved);
+                    }
+                    // Board #3751, V4: the Voice toggle, saved; the model
+                    // loads on the first turn on (a launch with it off
+                    // loaded nothing) and stays loaded when it goes off.
+                    Action::SetVoice(on) => {
+                        menu_saved.voice = on;
+                        save_hand_menu(&menu_file, menu_saved);
+                        info!("voice: {} (menu)", if on { "on" } else { "off" });
+                        if !on {
+                            // Off: an open window is dropped unheard and
+                            // the label shows nothing.
+                            push_to_talk.cancel();
+                            if let Some(v) = voice.as_mut() {
+                                v.cancel();
+                            }
+                            voice_label.clear();
+                        }
+                        if on && voice.is_none() {
+                            if voice_model.is_file() {
+                                voice = Voice::new(&voice_model, voice_threads, None)
+                                    .inspect_err(|e| error!("voice: {e:#}; off"))
+                                    .ok();
+                            } else {
+                                info!("voice: no model at {}, nothing listens", voice_model.display());
+                            }
+                        }
+                        if on
+                            && voice.is_some()
+                            && !voice_mic
+                            && ask
+                            && let Some(p) = &permissions
+                        {
+                            match p.request(&[RECORD_AUDIO]) {
+                                Ok(()) => info!("permissions: asked for RECORD_AUDIO (voice on)"),
+                                Err(e) => error!("permissions: {e:#}"),
+                            }
+                        }
+                    }
                     Action::SetEditRoom(on) => info!(
                         "edit room {}",
                         if on {
@@ -2266,11 +2326,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let mut sentence: Option<String> = None;
             if let Some(v) = voice.as_mut() {
                 let head = glam::Vec3::from(input.head);
-                if left_fist && !voice_mic && !voice_mic_logged {
+                if left_fist && controls.voice && !voice_mic && !voice_mic_logged {
                     voice_mic_logged = true;
                     info!("voice: RECORD_AUDIO missing, the window stays closed");
                 }
-                match push_to_talk.step(left_fist && voice_mic, dt) {
+                // V4: with the hand menu's Voice toggle off the fist does
+                // nothing for voice.
+                match push_to_talk.step(left_fist && voice_mic && controls.voice, dt) {
                     Some(VoiceEvent::Opened) => {
                         let at = input.hands.palm[0].map_or(head, |(p, _)| glam::Vec3::from(p));
                         voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
@@ -2330,7 +2392,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Some(VoiceNote::Heard { text, .. }) => {
                         push_to_talk.finish();
                         let text = crate::voice::spoken(&text);
-                        if text.is_empty() {
+                        if !controls.voice {
+                            // V4: turned off while it transcribed.
+                            info!("voice: off (menu), the sentence is dropped");
+                        } else if text.is_empty() {
                             voice_label.show(
                                 crate::voice::NOTHING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2979,6 +3044,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     })
                 })
             };
+            // Board #3751, V4: voice turned on from the menu after a launch
+            // that did not ask for the microphone: its grant, once a second.
+            if controls.voice && voice.is_some() && !voice_mic && granted_now(RECORD_AUDIO) {
+                voice_mic = true;
+                info!("permission RECORD_AUDIO granted: the voice window can open");
+            }
             for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
                 match change {
                     Change::Granted { name, after_s } if name == USE_SCENE => {
@@ -3693,23 +3764,23 @@ fn system_prop(name: &str) -> Option<String> {
 /// The hand menu's saved state under the config dir.
 const HAND_MENU_FILE: &str = "hand_menu.json";
 
-/// Whether the saved hand menu has the debug panel on (off when there is
-/// no file or it does not parse).
-fn load_hand_menu(path: &std::path::Path) -> bool {
+/// The saved hand menu's toggles (`palm_panel::MenuFile`): the debug
+/// panel off and voice on when there is no file, it does not parse, or a
+/// field is missing.
+fn load_hand_menu(path: &std::path::Path) -> crate::palm_panel::MenuFile {
     std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("debug")?.as_bool())
-        .unwrap_or(false)
+        .map(|s| crate::palm_panel::MenuFile::parse(&s))
+        .unwrap_or_default()
 }
 
-/// Save the hand menu's debug toggle; a failure is logged, not fatal.
-fn save_hand_menu(path: &std::path::Path, debug: bool) {
-    let json = serde_json::json!({ "debug": debug }).to_string();
-    match std::fs::write(path, json) {
+/// Save the hand menu's toggles; a failure is logged, not fatal.
+fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} (saved)",
-            if debug { "on" } else { "off" }
+            "hand menu: debug panel {} · voice {} (saved)",
+            on_off(menu.debug),
+            on_off(menu.voice)
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }
