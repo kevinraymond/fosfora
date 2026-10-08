@@ -34,6 +34,13 @@
 //! [`FADE_S`]; re-posed every frame [`SCAN_DISTANCE_M`] in front of the
 //! head at eye height ([`scan_billboard`]). The editor's label, while one
 //! shows, takes its place.
+//!
+//! **The permission** (board #3264). Without `USE_SCENE` the query returns
+//! nothing, so while the app waits for the grant (`permissions::Watch`)
+//! and the room has no anchors the label reads "Allow spatial data to see
+//! the room" instead ([`ScanState::NotAllowed`], [`with_scene_permission`]),
+//! held like the scan; once the grant arrives the requery scans again, and
+//! once the wait gives up the room's own state shows.
 
 use glam::{Quat, Vec3};
 
@@ -251,6 +258,19 @@ pub enum ScanState {
     Found(usize),
     /// The retries gave up with no anchors.
     None,
+    /// No anchors and `USE_SCENE` not granted yet: the query cannot see
+    /// the room until the wearer allows spatial data.
+    NotAllowed,
+}
+
+/// The scan label's state: the room's, or [`ScanState::NotAllowed`] while
+/// the app waits for `USE_SCENE` (`waiting`) and the room has no anchors.
+/// `None` (no room) stays `None`.
+pub fn with_scene_permission(state: Option<ScanState>, waiting: bool) -> Option<ScanState> {
+    match state {
+        Some(ScanState::Scanning | ScanState::None) if waiting => Some(ScanState::NotAllowed),
+        other => other,
+    }
 }
 
 /// The scan label's words for `state`.
@@ -260,15 +280,16 @@ pub fn scan_text(state: ScanState) -> String {
         ScanState::Found(1) => "Room: 1 surface".to_owned(),
         ScanState::Found(n) => format!("Room: {n} surfaces"),
         ScanState::None => "No room found. Rescan from the hand menu".to_owned(),
+        ScanState::NotAllowed => "Allow spatial data to see the room".to_owned(),
     }
 }
 
 /// The scan label's alpha `age` seconds into `state`: held while
-/// scanning; full for [`SCAN_FOUND_S`] or [`SCAN_NONE_S`], then linearly
+/// scanning or waiting for the permission; full for [`SCAN_FOUND_S`] or [`SCAN_NONE_S`], then linearly
 /// to 0 over [`FADE_S`].
 pub fn scan_fade(state: ScanState, age: f32) -> f32 {
     let hold = match state {
-        ScanState::Scanning => return 1.0,
+        ScanState::Scanning | ScanState::NotAllowed => return 1.0,
         ScanState::Found(_) => SCAN_FOUND_S,
         ScanState::None => SCAN_NONE_S,
     };
@@ -731,6 +752,41 @@ mod tests {
         assert!(l.now().is_some());
         l.step(None, dt);
         assert_eq!(l.now(), None);
+    }
+
+    #[test]
+    fn the_scan_label_says_when_spatial_data_is_not_allowed() {
+        assert_eq!(
+            scan_text(ScanState::NotAllowed),
+            "Allow spatial data to see the room"
+        );
+        // Held while the app waits, like the scan.
+        assert_close!(scan_fade(ScanState::NotAllowed, 600.0), 1.0);
+        // Waiting for USE_SCENE: scanning or given up reads as not allowed;
+        // anchors (a replay) and no room are left alone.
+        for state in [ScanState::Scanning, ScanState::None] {
+            assert_eq!(
+                with_scene_permission(Some(state), true),
+                Some(ScanState::NotAllowed)
+            );
+            assert_eq!(with_scene_permission(Some(state), false), Some(state));
+        }
+        assert_eq!(
+            with_scene_permission(Some(ScanState::Found(3)), true),
+            Some(ScanState::Found(3))
+        );
+        assert_eq!(with_scene_permission(None, true), None);
+        // The grant: the requery scans again, then names the room.
+        let dt = 1.0 / 72.0;
+        let mut l = ScanLabel::default();
+        for _ in 0..720 {
+            l.step(with_scene_permission(Some(ScanState::None), true), dt);
+        }
+        assert_eq!(l.now(), Some(("Allow spatial data to see the room", 1.0)));
+        l.step(with_scene_permission(Some(ScanState::Scanning), false), dt);
+        assert_eq!(l.now(), Some(("Scanning the room\u{2026}", 1.0)));
+        l.step(with_scene_permission(Some(ScanState::Found(17)), false), dt);
+        assert_eq!(l.now(), Some(("Room: 17 surfaces", 1.0)));
     }
 
     #[test]
