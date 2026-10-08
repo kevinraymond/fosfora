@@ -20,7 +20,7 @@
 //! ([`check_url`]), both request builders and both reply parsers, the
 //! room's JSON, the label ([`label`]) and the log lines. **The call**
 //! ([`ask`], on its own thread through [`spawn`]) is a thin `ureq` wrapper
-//! with a deadline; the frame loop only polls its channel.
+//! with a time limit; the frame loop only polls its channel.
 //!
 //! **The key** lives in `voice.json` on the headset, never in the repo:
 //! [`Config`]'s and [`HttpRequest`]'s `Debug` print no key, and no log line
@@ -498,7 +498,7 @@ pub enum AgentError {
     Http(u16, String),
     /// The model declined (Anthropic's refusal category, or empty).
     Refused(String),
-    /// The deadline passed.
+    /// The time limit passed.
     Timeout,
     /// The answer was not the schema's JSON, or was cut off.
     Parse(String),
@@ -834,7 +834,7 @@ pub fn call_line(
     )
 }
 
-/// One `POST` with a deadline: the status and the body, any status (the
+/// One `POST` within a time limit: the status and the body, any status (the
 /// body of a 400 names the field to fix).
 fn post(req: &HttpRequest, timeout: Duration) -> Result<(u16, String), AgentError> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -1873,6 +1873,172 @@ mod tests {
             )
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The replayed room the reviewer runs the `say` knob on (as
+    /// `intent.rs` builds it: 5 tables, 5 storage, 4 walls, a floor, a
+    /// window frame, a ceiling, then the stage floor).
+    fn replayed_room() -> Vec<LaneBox<'static>> {
+        let at = |k: usize| -> (u32, &'static str) {
+            match k {
+                0 | 3 | 6 | 12 | 14 => (KIND_TABLE, "TABLE"),
+                1 | 4 | 9 | 11 | 13 => (KIND_OTHER, "STORAGE"),
+                2 | 5 | 15 | 16 => (KIND_WALL, "WALL_FACE"),
+                7 => (KIND_FLOOR, "FLOOR"),
+                8 => (crate::surfaces::KIND_FRAME, "WINDOW_FRAME"),
+                _ => (KIND_CEILING, "CEILING"),
+            }
+        };
+        let mut boxes: Vec<LaneBox<'static>> = (0..17)
+            .map(|k| {
+                let (kind, label) = at(k);
+                lane(k as u8, kind, label)
+            })
+            .collect();
+        boxes.push(LaneBox {
+            uuid: crate::room_file::STAGE_FLOOR_UUID,
+            kind: KIND_FLOOR,
+            label: "",
+        });
+        boxes
+    }
+
+    /// The five sentences for the `say` knob: each misses the grammar as
+    /// NoMatch (so it reaches the agent), and the reply a model is expected
+    /// to give maps onto intents in the replayed room, nothing pointed.
+    #[test]
+    fn the_five_sentences_reach_the_agent_and_their_replies_map() {
+        let e = effects();
+        let boxes = replayed_room();
+        let v = vocab(&e, &boxes, None);
+        let names: Vec<&str> = v.surfaces.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "table 0",
+                "storage 1",
+                "wall 2",
+                "table 3",
+                "storage 4",
+                "wall 5",
+                "table 6",
+                "floor 7",
+                "window",
+                "storage 9",
+                "ceiling",
+                "storage 11",
+                "table 12",
+                "storage 13",
+                "table 14",
+                "wall 15",
+                "wall 16",
+                "floor 17"
+            ]
+        );
+        let floors = Target::Kind(KIND_FLOOR);
+        let walls = Target::Kind(KIND_WALL);
+        for (sentence, reply, want) in [
+            (
+                "Something like a campfire on table 14.",
+                vec![
+                    act("behavior", "table 14", "embers"),
+                    act("color", "table 14", "amber"),
+                ],
+                vec![
+                    Intent::Behavior {
+                        target: Target::Surface(14),
+                        behavior: B::Embers,
+                    },
+                    Intent::Color {
+                        target: Target::Surface(14),
+                        color: 4,
+                    },
+                ],
+            ),
+            (
+                "Make the walls calmer.",
+                vec![
+                    act("behavior", "wall", "aurora"),
+                    act("strength", "wall", "down"),
+                ],
+                vec![
+                    Intent::Behavior {
+                        target: walls,
+                        behavior: B::Aurora,
+                    },
+                    Intent::Strength {
+                        target: walls,
+                        strength: Strength::Down,
+                    },
+                ],
+            ),
+            (
+                "Less going on.",
+                vec![act("cloud", "", "off"), act("behavior", "wall", "none")],
+                vec![
+                    Intent::Cloud(false),
+                    Intent::Behavior {
+                        target: walls,
+                        behavior: B::None,
+                    },
+                ],
+            ),
+            (
+                "Make the room feel like the ocean.",
+                vec![
+                    act("behavior", "floor", "rings"),
+                    act("color", "floor", "teal"),
+                    act("behavior", "wall", "aurora"),
+                    act("color", "wall", "blue"),
+                ],
+                vec![
+                    Intent::Behavior {
+                        target: floors,
+                        behavior: B::Rings,
+                    },
+                    Intent::Color {
+                        target: floors,
+                        color: 6,
+                    },
+                    Intent::Behavior {
+                        target: walls,
+                        behavior: B::Aurora,
+                    },
+                    Intent::Color {
+                        target: walls,
+                        color: 1,
+                    },
+                ],
+            ),
+            (
+                "Give the ceiling a starry night.",
+                vec![
+                    act("behavior", "ceiling", "astrolabe"),
+                    act("color", "ceiling", "violet"),
+                ],
+                vec![
+                    Intent::Behavior {
+                        target: Target::Surface(10),
+                        behavior: B::Astrolabe,
+                    },
+                    Intent::Color {
+                        target: Target::Surface(10),
+                        color: 2,
+                    },
+                ],
+            ),
+        ] {
+            assert_eq!(
+                crate::intent::parse(sentence, &v).map_err(|m| m.reason),
+                Err(Reason::NoMatch),
+                "{sentence}"
+            );
+            let got: Vec<Intent> = reply
+                .iter()
+                .map(|a| Intent::from_json(a, &v).unwrap())
+                .collect();
+            assert_eq!(got, want, "{sentence}");
+        }
     }
 
     #[test]

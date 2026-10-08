@@ -54,6 +54,7 @@ every native library under `arm64-v8a`, with no 32-bit-only dependencies.
 | `fosfora-audio` (existing) | Analysis chain; hands `AudioFrame` to the render side through the existing bounded channel |
 | AAudio callbacks | Capture and playback; write only to the SPSC ring buffer (no DSP in callbacks, as on desktop) |
 | `fosfora-voice` (board #3751) | Loads the speech model at launch, then transcribes each closed push-to-talk window; results back over a channel the frame loop polls |
+| `fosfora-agent` (board #3751, V3) | One per sentence the grammar cannot match: the HTTPS call to the language model `voice.json` names and its parse; the answer back over a channel the frame loop polls |
 
 Render is single-threaded for the spike. Don't add a render thread until the
 measurements say the CPU side is the bottleneck.
@@ -330,6 +331,8 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   - `debug.fosfora.voice 0|1`: the voice path; default 1 when the speech model was installed, else off with a log.
   - `debug.fosfora.voicethreads <n>`: whisper's threads for a transcription, 1..6, default 3.
   - `debug.fosfora.voicefile <path>`: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a window had closed (the unworn gate).
+  - `debug.fosfora.say "<sentence>"` (V2): a sentence fed to the grammar as if heard, polled once a second, fed once per value.
+  - `debug.fosfora.agent 0|1` (V3, `VOICE_DESIGN.md`, "V3 as built"): a sentence the grammar cannot match goes to the language model `voice.json` names; default 1 whenever `voice.json` configures a provider, 0 keeps the call off for sweeps.
 - **Hand occluders.** The runtime's skinned hand mesh
   (`XR_FB_hand_tracking_mesh`, `xrGetHandMeshFB` once per hand through the
   `openxr-sys` function pointer: 1360 vertices, 2314 triangles, 26 joints
@@ -759,6 +762,7 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API"/>
   <uses-permission android:name="com.oculus.permission.USE_SCENE"/>
   <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="org.khronos.openxr.permission.OPENXR"/>
   <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM"/>
   <queries>
@@ -786,6 +790,8 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   it is hard to change later.
 - The `supportedDevices` value for Meta VR Glasses isn't known yet. Add it when
   Meta publishes it.
+- `INTERNET` (the voice path's agent, board #3751) is a normal permission:
+  granted at install, no runtime ask.
 - Runtime permissions (`USE_SCENE`, `RECORD_AUDIO`) need a request at runtime;
   the app makes it (below). The development scripts never relied on the
   ask: the permissions were granted once with `adb shell pm grant`, which
@@ -877,6 +883,17 @@ in `assets/xr/models/LICENSE.md`) is fetched with its checksum by
 staged as `xr/models/ggml-base.en.bin` and stored uncompressed in the APK.
 The install streams every file in chunks, so the model never sits whole in
 memory; like every asset it is copied again only when the stamp changes.
+
+*The agent's config (board #3751, V3):* `voice.json` under the config dir
+(`files/config/voice.json` in the app's data) names the language model a
+sentence the grammar cannot match goes to: `provider` (`anthropic` or
+`openai`), `base_url`, `model`, `api_key`, and for `openai` an `extra`
+object merged into the request (examples in `VOICE_DESIGN.md`, "V3 as
+built"). It holds a key, so it is never committed (git-ignored wherever
+it sits) and never logged; it is read once at launch. Put it on the
+headset with
+`adb shell "run-as dev.fosfora.xr sh -c 'cat > files/config/voice.json'" < voice.json`
+and relaunch; without it the agent is off and says why in the log.
 
 ## Glasses notes
 
