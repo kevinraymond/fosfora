@@ -171,58 +171,18 @@ impl LiveAudio {
         sample_rate: u32,
         low_latency: bool,
     ) -> Result<Self> {
-        use ndk::audio::{
-            AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode,
-            AudioStreamBuilder,
-        };
         let ring = Arc::new(RingBuffer::new());
         let callback_count = Arc::new(AtomicU64::new(0));
-        let (ring_cb, count_cb) = (ring.clone(), callback_count.clone());
-        let stream = AudioStreamBuilder::new()
-            .context("AAudio builder")?
-            .direction(AudioDirection::Input)
-            .format(AudioFormat::PCM_I16)
-            .channel_count(2)
-            .sample_rate(i32::try_from(sample_rate).unwrap_or(48_000))
-            .input_preset(preset)
-            .performance_mode(if low_latency {
-                AudioPerformanceMode::LowLatency
-            } else {
-                AudioPerformanceMode::None
-            })
-            .data_callback(Box::new(move |_stream, data, frames| {
-                let n = usize::try_from(frames).unwrap_or(0) * 2;
-                // SAFETY: AAudio hands the callback `frames` frames of the
-                // stream's format (PCM_I16, 2 channels, as requested and
-                // confirmed after open); the buffer is valid for the call.
-                let samples = unsafe { std::slice::from_raw_parts(data.cast::<i16>(), n) };
-                push_stereo(
-                    &ring_cb,
-                    &count_cb,
-                    samples.iter().map(|&s| f32::from(s) / 32768.0),
-                );
-                AudioCallbackResult::Continue
-            }))
-            .error_callback(Box::new(|_stream, e| error!("AAudio input error: {e:?}")))
-            .open_stream()
-            .context("AAudio open_stream")?;
-        let actual_rate = stream.sample_rate();
-        let actual_channels = stream.channel_count();
-        let actual_format = stream.format();
-        info!(
-            "audio: AAudio mic {preset:?} · {actual_rate} Hz · {actual_channels} ch · {actual_format:?} · preset now {:?} · perf {:?}",
-            stream.input_preset(),
-            stream.performance_mode()
-        );
-        if actual_channels != 2 || actual_format != AudioFormat::PCM_I16 {
-            return Err(anyhow!(
-                "AAudio opened {actual_channels} ch {actual_format:?}, need 2 ch PCM_I16"
-            ));
-        }
-        stream.request_start().context("AAudio request_start")?;
+        let stream = open_input(
+            preset,
+            sample_rate,
+            low_latency,
+            ring.clone(),
+            callback_count.clone(),
+        )?;
         let system = AudioSystem::from_ring(
             ring,
-            u32::try_from(actual_rate).unwrap_or(sample_rate),
+            u32::try_from(stream.sample_rate()).unwrap_or(sample_rate),
             callback_count,
             BandScale::default(),
             Arc::new(Mutex::new(StructureConfig::default())),
@@ -332,4 +292,64 @@ fn push_stereo(ring: &RingBuffer, count: &AtomicU64, samples: impl Iterator<Item
         ring.push(&chunk[..n]);
     }
     count.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A started raw AAudio input stream with `preset`: 16-bit stereo at
+/// `sample_rate` (the stream's own rate if it differs: read it back),
+/// converted to f32 into `ring`, `count` bumped per delivery. The mic
+/// source's [`LiveAudio::mic_aaudio`] analyzes the ring; the voice path's
+/// window (`voice.rs`, board #3751) only reads it, with no analysis thread.
+pub fn open_input(
+    preset: ndk::audio::AudioInputPreset,
+    sample_rate: u32,
+    low_latency: bool,
+    ring: Arc<RingBuffer>,
+    count: Arc<AtomicU64>,
+) -> Result<ndk::audio::AudioStream> {
+    use ndk::audio::{
+        AudioCallbackResult, AudioDirection, AudioFormat, AudioPerformanceMode, AudioStreamBuilder,
+    };
+    let stream = AudioStreamBuilder::new()
+        .context("AAudio builder")?
+        .direction(AudioDirection::Input)
+        .format(AudioFormat::PCM_I16)
+        .channel_count(2)
+        .sample_rate(i32::try_from(sample_rate).unwrap_or(48_000))
+        .input_preset(preset)
+        .performance_mode(if low_latency {
+            AudioPerformanceMode::LowLatency
+        } else {
+            AudioPerformanceMode::None
+        })
+        .data_callback(Box::new(move |_stream, data, frames| {
+            let n = usize::try_from(frames).unwrap_or(0) * 2;
+            // SAFETY: AAudio hands the callback `frames` frames of the
+            // stream's format (PCM_I16, 2 channels, as requested and
+            // confirmed after open); the buffer is valid for the call.
+            let samples = unsafe { std::slice::from_raw_parts(data.cast::<i16>(), n) };
+            push_stereo(
+                &ring,
+                &count,
+                samples.iter().map(|&s| f32::from(s) / 32768.0),
+            );
+            AudioCallbackResult::Continue
+        }))
+        .error_callback(Box::new(|_stream, e| error!("AAudio input error: {e:?}")))
+        .open_stream()
+        .context("AAudio open_stream")?;
+    let actual_rate = stream.sample_rate();
+    let actual_channels = stream.channel_count();
+    let actual_format = stream.format();
+    info!(
+        "audio: AAudio mic {preset:?} · {actual_rate} Hz · {actual_channels} ch · {actual_format:?} · preset now {:?} · perf {:?}",
+        stream.input_preset(),
+        stream.performance_mode()
+    );
+    if actual_channels != 2 || actual_format != AudioFormat::PCM_I16 {
+        return Err(anyhow!(
+            "AAudio opened {actual_channels} ch {actual_format:?}, need 2 ch PCM_I16"
+        ));
+    }
+    stream.request_start().context("AAudio request_start")?;
+    Ok(stream)
 }

@@ -18,7 +18,7 @@
 //! ignored, so two windows never overlap and one transcription runs at a
 //! time.
 //!
-//! **The device part** (Android, `Voice`): whisper.cpp through
+//! **The device part** (Android, [`Voice`]): whisper.cpp through
 //! `whisper-rs` on one worker thread that loads `ggml-base.en.bin` at launch
 //! and then transcribes each closed window (greedy, English, one segment,
 //! no context, the encoder window cut to the clip: `MEASURED.md`,
@@ -304,6 +304,357 @@ pub fn parse_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
         at = body.saturating_add(len).saturating_add(len & 1);
     }
     Err("no data chunk".to_owned())
+}
+
+#[cfg(target_os = "android")]
+pub use device::{Note, Voice};
+
+#[cfg(target_os = "android")]
+mod device {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+    use std::time::Instant;
+
+    use anyhow::{Context, Result};
+    use fosfora_app::audio::capture::RingBuffer;
+    use log::{error, info, warn};
+    use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+    use super::{WHISPER_RATE, audio_ctx, mono_16k, pad_short, parse_wav};
+
+    /// The window's stream: 48 kHz stereo, the voice recognition preset,
+    /// no low-latency mode (the window reads it once a frame).
+    const MIC_RATE: u32 = 48_000;
+    /// The `voicefile` clip is transcribed this long after the model loads.
+    const FILE_DELAY_S: f32 = 3.0;
+    /// A runaway decode (a repetition loop) stops after this many tokens.
+    const MAX_TOKENS: i32 = 64;
+
+    /// What the worker thread sends back.
+    enum Msg {
+        Loaded,
+        LoadFailed(String),
+        Heard(Heard),
+    }
+
+    /// One transcription's result.
+    struct Heard {
+        text: String,
+        ms: u32,
+        seconds: f32,
+        audio_ctx: i32,
+    }
+
+    /// A clip for the worker: the window's stereo at its rate, or a 16 kHz
+    /// mono file.
+    enum Job {
+        Stereo(Vec<f32>, u32),
+        Mono16k(Vec<f32>),
+    }
+
+    /// What [`Voice::step`] tells the frame loop.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Note {
+        /// The `voicefile` clip went to the worker as if a window had
+        /// closed after `seconds`.
+        FileQueued { seconds: f32 },
+        /// A transcription returned.
+        Heard { text: String, ms: u32 },
+    }
+
+    /// An open window's microphone.
+    struct Mic {
+        _stream: ndk::audio::AudioStream,
+        ring: Arc<RingBuffer>,
+        rate: u32,
+    }
+
+    /// The device side of the voice path: the worker thread, the window's
+    /// stream and the `voicefile` test clip.
+    pub struct Voice {
+        jobs: Sender<Job>,
+        msgs: Receiver<Msg>,
+        threads: i32,
+        loaded: bool,
+        failed: bool,
+        mic: Option<Mic>,
+        captured: Vec<f32>,
+        scratch: Vec<f32>,
+        closed_at: Option<Instant>,
+        /// The `voicefile` path and the seconds left before it is read
+        /// (counting once the model has loaded).
+        file: Option<(PathBuf, f32)>,
+    }
+
+    impl Voice {
+        /// Start the worker: it loads the model in the background (logging
+        /// `voice: model <path> loaded in N ms`) and then waits for clips.
+        pub fn new(model: &Path, threads: i32, file: Option<PathBuf>) -> Result<Self> {
+            let (jobs, job_rx) = channel::<Job>();
+            let (msg_tx, msgs) = channel::<Msg>();
+            let model = model.to_path_buf();
+            std::thread::Builder::new()
+                .name("fosfora-voice".to_owned())
+                .spawn(move || worker(&model, threads, &job_rx, &msg_tx))
+                .context("spawning the voice thread")?;
+            info!(
+                "voice: on · {threads} threads · loading the model in the background{}",
+                file.as_ref()
+                    .map(|f| format!(
+                        " · voicefile {} {FILE_DELAY_S} s after the load",
+                        f.display()
+                    ))
+                    .unwrap_or_default()
+            );
+            Ok(Self {
+                jobs,
+                msgs,
+                threads,
+                loaded: false,
+                failed: false,
+                mic: None,
+                captured: Vec::new(),
+                scratch: vec![0.0; 8192],
+                closed_at: None,
+                file: file.map(|f| (f, FILE_DELAY_S)),
+            })
+        }
+
+        /// Whether the model has loaded.
+        pub fn ready(&self) -> bool {
+            self.loaded
+        }
+
+        /// The window opened: open its microphone stream.
+        pub fn open(&mut self) -> Result<()> {
+            let started = Instant::now();
+            let ring = Arc::new(RingBuffer::new());
+            let stream = crate::audio::open_input(
+                ndk::audio::AudioInputPreset::VoiceRecognition,
+                MIC_RATE,
+                false,
+                ring.clone(),
+                Arc::new(AtomicU64::new(0)),
+            )?;
+            let rate = u32::try_from(stream.sample_rate()).unwrap_or(MIC_RATE);
+            self.captured.clear();
+            self.captured
+                .reserve((super::MAX_S * rate as f32 * 2.0) as usize + 8192);
+            self.mic = Some(Mic {
+                _stream: stream,
+                ring,
+                rate,
+            });
+            info!(
+                "voice: window open · mic stream opened in {:.1} ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+            Ok(())
+        }
+
+        /// The window closed after `seconds`: close the stream and hand the
+        /// audio to the worker. False when nothing was sent (no stream, or
+        /// the model is not loaded: logged), so the window can open again.
+        pub fn close(&mut self, seconds: f32) -> bool {
+            let Some(mic) = self.mic.take() else {
+                return false;
+            };
+            self.drain(&mic);
+            let rate = mic.rate;
+            let started = Instant::now();
+            drop(mic);
+            let audio = std::mem::take(&mut self.captured);
+            info!(
+                "voice: window closed after {seconds:.2} s · {:.2} s of audio · stream closed in {:.1} ms",
+                audio.len() as f32 / (2.0 * rate as f32),
+                started.elapsed().as_secs_f64() * 1e3
+            );
+            if !self.loaded {
+                if self.failed {
+                    warn!("voice: the model failed to load, nothing to transcribe with");
+                } else {
+                    info!("voice: model still loading");
+                }
+                return false;
+            }
+            self.send(Job::Stereo(audio, rate))
+        }
+
+        /// Once a frame: read the open window's stream, pick up the
+        /// worker's messages, and start the `voicefile` clip when it is due
+        /// and `idle` (no window open or closing).
+        pub fn step(&mut self, dt: f32, idle: bool) -> Option<Note> {
+            if let Some(mic) = self.mic.take() {
+                self.drain(&mic);
+                self.mic = Some(mic);
+            }
+            loop {
+                match self.msgs.try_recv() {
+                    Ok(Msg::Loaded) => self.loaded = true,
+                    Ok(Msg::LoadFailed(e)) => {
+                        error!("voice: {e}");
+                        self.failed = true;
+                        self.file = None;
+                    }
+                    Ok(Msg::Heard(h)) => {
+                        let after = self
+                            .closed_at
+                            .take()
+                            .map(|t| {
+                                format!(
+                                    ", text {:.0} ms after the window closed",
+                                    t.elapsed().as_secs_f64() * 1e3
+                                )
+                            })
+                            .unwrap_or_default();
+                        info!(
+                            "voice: {:.2} s of audio transcribed in {} ms (audio_ctx {}, {} threads){after}",
+                            h.seconds, h.ms, h.audio_ctx, self.threads
+                        );
+                        info!("{}", super::heard_line(&h.text, h.ms));
+                        return Some(Note::Heard {
+                            text: h.text,
+                            ms: h.ms,
+                        });
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        if !self.failed {
+                            error!("voice: the worker thread ended");
+                            self.failed = true;
+                            self.loaded = false;
+                        }
+                        break;
+                    }
+                }
+            }
+            if self.loaded && idle {
+                if let Some((path, left)) = self.file.as_mut() {
+                    *left -= dt;
+                    if *left <= 0.0 {
+                        let path = path.clone();
+                        self.file = None;
+                        return self.queue_file(&path);
+                    }
+                }
+            }
+            None
+        }
+
+        /// Read the `voicefile` WAV and send it as a closed window's clip.
+        fn queue_file(&mut self, path: &Path) -> Option<Note> {
+            let samples = std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| parse_wav(&b));
+            match samples {
+                Ok(samples) => {
+                    let seconds = samples.len() as f32 / WHISPER_RATE as f32;
+                    info!(
+                        "voice: voicefile {} · {seconds:.2} s · transcribing as a closed window",
+                        path.display()
+                    );
+                    self.send(Job::Mono16k(samples))
+                        .then_some(Note::FileQueued { seconds })
+                }
+                Err(e) => {
+                    warn!("voice: voicefile {}: {e}", path.display());
+                    None
+                }
+            }
+        }
+
+        fn send(&mut self, job: Job) -> bool {
+            if self.jobs.send(job).is_err() {
+                error!("voice: the worker thread is gone");
+                self.loaded = false;
+                self.failed = true;
+                return false;
+            }
+            self.closed_at = Some(Instant::now());
+            true
+        }
+
+        /// Move what the stream has delivered into the window's buffer.
+        fn drain(&mut self, mic: &Mic) {
+            loop {
+                let n = mic.ring.read(&mut self.scratch);
+                if n == 0 {
+                    break;
+                }
+                self.captured.extend_from_slice(&self.scratch[..n]);
+            }
+        }
+    }
+
+    /// The worker thread: load the model, then transcribe clips until the
+    /// app goes away (the job channel closes).
+    fn worker(model: &Path, threads: i32, jobs: &Receiver<Job>, msgs: &Sender<Msg>) {
+        // whisper.cpp and ggml log to stderr, which Android discards; the
+        // hooks without a log backend silence them.
+        whisper_rs::install_logging_hooks();
+        let started = Instant::now();
+        let loaded = WhisperContext::new_with_params(model, WhisperContextParameters::default())
+            .map_err(|e| format!("loading the model {}: {e}", model.display()))
+            .and_then(|ctx| {
+                let state = ctx
+                    .create_state()
+                    .map_err(|e| format!("whisper state: {e}"))?;
+                Ok((ctx, state))
+            });
+        let (_ctx, mut state) = match loaded {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = msgs.send(Msg::LoadFailed(e));
+                return;
+            }
+        };
+        let ms = started.elapsed().as_millis() as u32;
+        info!("voice: model {} loaded in {ms} ms", model.display());
+        if msgs.send(Msg::Loaded).is_err() {
+            return;
+        }
+        while let Ok(job) = jobs.recv() {
+            let started = Instant::now();
+            let mut mono = match job {
+                Job::Stereo(stereo, rate) => mono_16k(&stereo, rate),
+                Job::Mono16k(mono) => mono,
+            };
+            let seconds = mono.len() as f32 / WHISPER_RATE as f32;
+            pad_short(&mut mono);
+            let ctx = audio_ctx(mono.len() as f32 / WHISPER_RATE as f32);
+            let mut p = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            p.set_n_threads(threads);
+            p.set_language(Some("en"));
+            p.set_translate(false);
+            p.set_no_context(true);
+            p.set_single_segment(true);
+            p.set_print_special(false);
+            p.set_print_progress(false);
+            p.set_print_realtime(false);
+            p.set_print_timestamps(false);
+            p.set_suppress_blank(true);
+            p.set_audio_ctx(ctx);
+            p.set_max_tokens(MAX_TOKENS);
+            let text = match state.full(p, &mono) {
+                Ok(()) => state.as_iter().map(|s| s.to_string()).collect::<String>(),
+                Err(e) => {
+                    error!("voice: transcription failed: {e}");
+                    String::new()
+                }
+            };
+            let heard = Heard {
+                text: text.trim().to_owned(),
+                ms: started.elapsed().as_millis() as u32,
+                seconds,
+                audio_ctx: ctx,
+            };
+            if msgs.send(Msg::Heard(heard)).is_err() {
+                return;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
