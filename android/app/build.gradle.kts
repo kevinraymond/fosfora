@@ -45,8 +45,18 @@ android {
         }
     }
 
+    // The speech model (board #3751) is stored, not deflated: it barely
+    // compresses, and a stored asset streams out of the APK without
+    // inflating 148 MB at its first launch.
+    androidResources {
+        noCompress += "bin"
+    }
+
     packaging {
         jniLibs {
+            // libc++_shared.so (whisper.cpp's C++ runtime, copied in by
+            // scripts/xr/run.sh from the NDK) is packaged from jniLibs/
+            // with the cdylib and stripped of nothing, like every .so here.
             // Keep the Rust symbols: readable native crash backtraces, and no
             // NDK lookup by Gradle for its strip step.
             keepDebugSymbols += "**/*.so"
@@ -59,7 +69,8 @@ android {
 // them into internal storage on first run or when the stamp changes
 // (docs/xr/XR_DESIGN.md, "Assets on Android"). The NDK asset API cannot list
 // subdirectories, hence the manifest. Kept to what the effects need: shaders,
-// effect definitions, the XR scenes and the S6 test track; no images or fonts.
+// effect definitions, the XR scenes, the S6 test track and the voice path's
+// speech model; no images or fonts.
 val xrAssetsDir = layout.buildDirectory.dir("generated/xrassets")
 
 val stageXrAssets by tasks.registering(Sync::class) {
@@ -82,6 +93,14 @@ val stageXrAssets by tasks.registering(Sync::class) {
         include("*.ogg")
         into("audio")
     }
+    // The voice path's speech model (board #3751; MIT, fetched with its
+    // checksum by scripts/xr/fetch-model.sh, never committed:
+    // assets/xr/models/LICENSE.md). Installed to <internal data>/assets/
+    // xr/models/ with the rest.
+    from(rootProject.file("../assets/xr/models")) {
+        include("*.bin")
+        into("xr/models")
+    }
     into(xrAssetsDir.map { it.dir("assets") })
     doLast {
         val root = xrAssetsDir.get().dir("assets").asFile
@@ -89,9 +108,17 @@ val stageXrAssets by tasks.registering(Sync::class) {
             .map { it.relativeTo(root).path.replace(File.separatorChar, '/') }
             .sorted().toList()
         val digest = MessageDigest.getInstance("SHA-256")
+        // Streamed: the speech model alone is 148 MB.
+        val buf = ByteArray(1 shl 20)
         for (f in files) {
             digest.update(f.toByteArray())
-            digest.update(File(root, f).readBytes())
+            File(root, f).inputStream().use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    digest.update(buf, 0, n)
+                }
+            }
         }
         val stamp = digest.digest().joinToString("") { "%02x".format(it) }
         File(root, "xr_manifest.txt").writeText((listOf(stamp) + files).joinToString("\n") + "\n")

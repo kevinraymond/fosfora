@@ -6,6 +6,10 @@
 //! line). On first run, or when the stamp changes, every listed file is copied
 //! to `<internal data>/assets/`, and that directory is pinned as the core's
 //! assets dir before any other core call.
+//!
+//! Each file is streamed out of the APK in chunks, never held whole in
+//! memory: the voice path's speech model (`xr/models/ggml-base.en.bin`,
+//! board #3751) is 148 MB, which a read into a `Vec` would double at launch.
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -55,16 +59,14 @@ pub fn install(app: &AndroidApp) -> Result<AppDirs> {
             &stamp[..12.min(stamp.len())]
         );
         let started = std::time::Instant::now();
-        let mut bytes = 0usize;
+        let mut bytes = 0u64;
         for rel in &files {
-            let data = read_asset(app, &format!("assets/{rel}"))?;
             let dest = assets.join(rel);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
-            std::fs::write(&dest, &data).with_context(|| format!("writing {}", dest.display()))?;
-            bytes += data.len();
+            bytes += copy_asset(app, &format!("assets/{rel}"), &dest)?;
         }
         std::fs::write(assets.join(STAMP_FILE), &stamp)?;
         info!(
@@ -88,15 +90,34 @@ fn pin_core_dirs(assets: &Path, config: &Path) {
     }
 }
 
-/// Read one file out of the APK through the NDK asset manager.
-fn read_asset(app: &AndroidApp, path: &str) -> Result<Vec<u8>> {
+/// Open one file in the APK through the NDK asset manager.
+fn open_asset(app: &AndroidApp, path: &str) -> Result<ndk::asset::Asset> {
     let manager = app.asset_manager();
     let cpath = CString::new(path).context("asset path with NUL")?;
-    let mut asset = manager
+    manager
         .open(&cpath)
-        .ok_or_else(|| anyhow!("asset {path} not in the APK"))?;
+        .ok_or_else(|| anyhow!("asset {path} not in the APK"))
+}
+
+/// Read one file out of the APK whole (the manifest).
+fn read_asset(app: &AndroidApp, path: &str) -> Result<Vec<u8>> {
+    let mut asset = open_asset(app, path)?;
     let buf = asset
         .buffer()
         .with_context(|| format!("reading asset {path}"))?;
     Ok(buf.to_vec())
+}
+
+/// Stream one file out of the APK into `dest` in chunks; its size in bytes.
+fn copy_asset(app: &AndroidApp, path: &str, dest: &Path) -> Result<u64> {
+    let mut asset = open_asset(app, path)?;
+    let file =
+        std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+    let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
+    let n = std::io::copy(&mut asset, &mut out)
+        .with_context(|| format!("copying asset {path} to {}", dest.display()))?;
+    out.into_inner()
+        .map_err(std::io::IntoInnerError::into_error)
+        .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(n)
 }

@@ -20,6 +20,9 @@ use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
 use crate::surfaces::SurfaceWeights;
+use crate::voice::{
+    Event as VoiceEvent, Note as VoiceNote, PushToTalk, Voice, Window as VoiceWindow,
+};
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
 /// Logcat tag. `scripts/xr/run.sh log` filters on it.
@@ -104,6 +107,17 @@ const PICK_BEAM_ALPHA: f32 = 0.35;
 const PICK_TEST_TILT_DEG: f32 = 20.0;
 /// The room editor's status while it is off.
 const EDIT_OFF: &str = "edit room off";
+/// Board #3751: the voice path's speech model under the installed assets,
+/// and its default whisper threads (`debug.fosfora.voicethreads`): the
+/// spike's 0.29 s per 3 s clip on 3 threads leaves the render loop the rest.
+const VOICE_MODEL: &str = "xr/models/ggml-base.en.bin";
+const VOICE_THREADS: i32 = 3;
+/// The longest the label's "…" waits for a transcription (s).
+const VOICE_WAIT_LABEL_S: f32 = 10.0;
+/// What the label says when a window closes before the model has loaded.
+const VOICE_LOADING_LABEL: &str = "Voice is still loading";
+/// The `voicefile` clip's label: this far ahead of the head (m).
+const VOICE_FILE_LABEL_M: f32 = 1.0;
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +216,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
     //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward,
     //       backward and the thumb tap are logged and unassigned; default 1; 0 creates no action set; read at launch)
+    //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path, V1: hold the left fist to talk, release it (or 6 s pass)
+    //       and the transcription shows on the label and in the log, nothing acts on it yet; the fist opens the window in every mode,
+    //       Edit room and the hand menu included; default 1 when the speech model is installed (assets/xr/models/ggml-base.en.bin), else
+    //       off with a log; on, RECORD_AUDIO is asked for on any audio source; read at launch)
+    //   adb shell setprop debug.fosfora.voicethreads 3           (the transcription's whisper threads, 1..6; default 3; read at launch)
+    //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
+    //       window had closed; the label shows it ahead of the head; read at launch)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; default
     //       on until a room has been saved (no rooms/*.json: the first launch, board #3752), off once one has; 1 forces, 0 forbids)
@@ -328,6 +349,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
+    // Board #3751: the voice path, on by default once the asset install
+    // has put the speech model in place.
+    let voice_model = dirs.assets.join(VOICE_MODEL);
+    let voice_on = match (
+        debug_prop("debug.fosfora.voice").as_deref(),
+        voice_model.is_file(),
+    ) {
+        (Some("0"), _) => {
+            info!("voice: off (debug.fosfora.voice 0)");
+            false
+        }
+        (_, false) => {
+            info!("voice: off, no model at {}", voice_model.display());
+            false
+        }
+        (_, true) => true,
+    };
     // Board #3264: the runtime permissions, asked for before the session
     // so the dialog comes with the launch. USE_SCENE always (the room is
     // the product), RECORD_AUDIO when the audio source opens the
@@ -355,7 +393,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         (USE_SCENE, true, scene_granted),
         (
             RECORD_AUDIO,
-            crate::permissions::wants_mic(&audio_source),
+            voice_on || crate::permissions::wants_mic(&audio_source),
             mic_granted,
         ),
     ] {
@@ -364,13 +402,15 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             crate::permissions::short(name),
             match (granted, needed, ask) {
                 (true, _, _) => "granted".to_owned(),
-                (false, false, _) => format!("missing, not needed (audio {audio_source})"),
+                (false, false, _) => {
+                    format!("missing, not needed (audio {audio_source}, voice off)")
+                }
                 (false, true, true) => "missing, asking".to_owned(),
                 (false, true, false) => "missing, not asking (debug.fosfora.ask 0)".to_owned(),
             }
         );
     }
-    let missing = crate::permissions::to_ask(&audio_source, scene_granted, mic_granted);
+    let missing = crate::permissions::to_ask(&audio_source, voice_on, scene_granted, mic_granted);
     if ask
         && !missing.is_empty()
         && let Some(p) = &permissions
@@ -389,6 +429,28 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     }
     let asked_at = Instant::now();
     let mut permission_watch = Watch::new(missing);
+    // Board #3751: the voice path. The model loads on the voice thread
+    // while the session starts; the window opens its own microphone stream
+    // only with RECORD_AUDIO granted (the poll below picks a late grant up).
+    let mut voice = if voice_on {
+        let threads = debug_prop("debug.fosfora.voicethreads")
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
+        let file = debug_prop("debug.fosfora.voicefile").map(std::path::PathBuf::from);
+        Voice::new(&voice_model, threads, file)
+            .inspect_err(|e| error!("voice: {e:#}; off"))
+            .ok()
+    } else {
+        None
+    };
+    let mut voice_mic = mic_granted;
+    let mut voice_mic_logged = false;
+    let mut push_to_talk = PushToTalk::default();
+    // The voice path's own label (the editor's is stepped and cleared by
+    // Edit room), and where it floats: the left palm at the window's
+    // opening, facing the head.
+    let mut voice_label = crate::label::Label::default();
+    let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
     // A USE_SCENE grant whose requery waits for a query or Space Setup in
     // flight, retried once a second.
     let mut room_pickup = false;
@@ -1527,6 +1589,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     ),
                 }
             }
+            // The left fist this frame, for the voice path (below).
+            let mut left_fist = false;
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
                     recentered = true;
@@ -1601,6 +1665,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }),
                     dt,
                 );
+                left_fist = pose_frame.pose[0] == Some(Pose::Fist);
                 let poses_apply = poses_on
                     && world
                     && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
@@ -2150,12 +2215,90 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // head: "Scanning the room…" until the query returns anchors,
             // "Room: 17 surfaces" when it does, "No room found..." when
             // the retries give up.
+            // Board #3751: the voice path's push-to-talk window on the left
+            // fist (hand 0). It opens whatever else the hands are doing:
+            // with Edit room on, with the hand menu up, on Flock's fist
+            // predator; voice is independent of the hands' other modes.
+            voice_label.step(dt);
+            if let Some(v) = voice.as_mut() {
+                let head = glam::Vec3::from(input.head);
+                if left_fist && !voice_mic && !voice_mic_logged {
+                    voice_mic_logged = true;
+                    info!("voice: RECORD_AUDIO missing, the window stays closed");
+                }
+                match push_to_talk.step(left_fist && voice_mic, dt) {
+                    Some(VoiceEvent::Opened) => {
+                        let at = input.hands.palm[0].map_or(head, |(p, _)| glam::Vec3::from(p));
+                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                        match v.open() {
+                            Ok(()) => voice_label.show_for(
+                                crate::voice::LISTENING_LABEL.to_owned(),
+                                voice_at.0,
+                                voice_at.1,
+                                crate::voice::MAX_S + 1.0,
+                            ),
+                            Err(e) => {
+                                log::warn!("voice: the window's microphone did not open: {e:#}");
+                                voice_label.clear();
+                            }
+                        }
+                    }
+                    Some(VoiceEvent::Closed { seconds }) => {
+                        if v.close(seconds) {
+                            voice_label.show_for(
+                                crate::voice::WAITING_LABEL.to_owned(),
+                                voice_at.0,
+                                voice_at.1,
+                                VOICE_WAIT_LABEL_S,
+                            );
+                        } else {
+                            // Nothing to wait for: the model is still
+                            // loading, or the stream never opened.
+                            push_to_talk.finish();
+                            if v.ready() {
+                                voice_label.clear();
+                            } else {
+                                voice_label.show(
+                                    VOICE_LOADING_LABEL.to_owned(),
+                                    voice_at.0,
+                                    voice_at.1,
+                                );
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                let idle = push_to_talk.window() == VoiceWindow::Closed;
+                match v.step(dt, idle) {
+                    Some(VoiceNote::FileQueued { .. }) => {
+                        // The unworn path: the label ahead of the head.
+                        push_to_talk.begin_closing();
+                        let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                        let at = head + ahead * VOICE_FILE_LABEL_M;
+                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                        voice_label.show_for(
+                            crate::voice::WAITING_LABEL.to_owned(),
+                            voice_at.0,
+                            voice_at.1,
+                            VOICE_WAIT_LABEL_S,
+                        );
+                    }
+                    Some(VoiceNote::Heard { text, .. }) => {
+                        push_to_talk.finish();
+                        voice_label.show(crate::voice::label_text(&text), voice_at.0, voice_at.1);
+                    }
+                    None => {}
+                }
+            }
             scan_label.step(scan_state, dt);
             {
                 let head = glam::Vec3::from(input.head);
                 let head_rot = glam::Quat::from_array(input.head_rot);
-                let shown = label
+                // The voice path's label first: it answers the wearer's
+                // own fist.
+                let shown = voice_label
                     .now()
+                    .or_else(|| label.now())
                     .map(|l| {
                         let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
                         (l.text, l.alpha, pose)
@@ -2626,24 +2769,29 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         };
                         info!("permission USE_SCENE granted after {after_s:.0} s: {then}");
                     }
-                    Change::Granted { name, after_s } => match mic_waiting.take() {
-                        Some(source) => {
-                            info!(
-                                "permission {} granted after {after_s:.0} s: opening the microphones",
-                                crate::permissions::short(name)
-                            );
-                            match LiveAudio::open(source) {
-                                Ok(a) => live_audio = Some(a),
-                                Err(e) => log::warn!(
-                                    "audio: the microphones did not open after the grant: {e:#}; the synthetic groove stays"
-                                ),
+                    Change::Granted { name, after_s } => {
+                        // Board #3751: the voice window's stream needs only
+                        // the grant.
+                        voice_mic |= name == RECORD_AUDIO;
+                        match mic_waiting.take() {
+                            Some(source) => {
+                                info!(
+                                    "permission {} granted after {after_s:.0} s: opening the microphones",
+                                    crate::permissions::short(name)
+                                );
+                                match LiveAudio::open(source) {
+                                    Ok(a) => live_audio = Some(a),
+                                    Err(e) => log::warn!(
+                                        "audio: the microphones did not open after the grant: {e:#}; the synthetic groove stays"
+                                    ),
+                                }
                             }
+                            None => info!(
+                                "permission {} granted after {after_s:.0} s",
+                                crate::permissions::short(name)
+                            ),
                         }
-                        None => info!(
-                            "permission {} granted after {after_s:.0} s",
-                            crate::permissions::short(name)
-                        ),
-                    },
+                    }
                     Change::GaveUp(still) => info!(
                         "permissions: {} still missing after {:.0} s: polling stopped, the fallbacks stay",
                         still

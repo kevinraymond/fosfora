@@ -53,6 +53,7 @@ every native library under `arm64-v8a`, with no 32-bit-only dependencies.
 | Main (android_main) | Android event polling, OpenXR frame loop, all wgpu submission |
 | `fosfora-audio` (existing) | Analysis chain; hands `AudioFrame` to the render side through the existing bounded channel |
 | AAudio callbacks | Capture and playback; write only to the SPSC ring buffer (no DSP in callbacks, as on desktop) |
+| `fosfora-voice` (board #3751) | Loads the speech model at launch, then transcribes each closed push-to-talk window; results back over a channel the frame loop polls |
 
 Render is single-threaded for the spike. Don't add a render thread until the
 measurements say the CPU side is the bottleneck.
@@ -323,6 +324,12 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   from the right hand in Edit room. Forward, backward and the thumb tap are
   logged and reserved. The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
+- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built").** The left fist
+  held is a push-to-talk window; the transcription shows on the label.
+  Knobs, read at launch:
+  - `debug.fosfora.voice 0|1`: the voice path; default 1 when the speech model was installed, else off with a log.
+  - `debug.fosfora.voicethreads <n>`: whisper's threads for a transcription, 1..6, default 3.
+  - `debug.fosfora.voicefile <path>`: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a window had closed (the unworn gate).
 - **Hand occluders.** The runtime's skinned hand mesh
   (`XR_FB_hand_tracking_mesh`, `xrGetHandMeshFB` once per hand through the
   `openxr-sys` function pointer: 1360 vertices, 2314 triangles, 26 joints
@@ -863,6 +870,13 @@ into the APK with `assets/xr_manifest.txt` (SHA-256 stamp + file list, because
 the NDK asset API cannot list directories). 209 files, 0.9 MB, unpack 21 ms.
 Scenes are generated at runtime from an effect name (one cue, default params)
 under the config dir, so no scene files ship.
+
+*The speech model (board #3751):* `ggml-base.en.bin` (148 MB, MIT; source
+in `assets/xr/models/LICENSE.md`) is fetched with its checksum by
+`scripts/xr/fetch-model.sh` into the git-ignored `assets/xr/models/`,
+staged as `xr/models/ggml-base.en.bin` and stored uncompressed in the APK.
+The install streams every file in chunks, so the model never sits whole in
+memory; like every asset it is copied again only when the stamp changes.
 
 ## Glasses notes
 

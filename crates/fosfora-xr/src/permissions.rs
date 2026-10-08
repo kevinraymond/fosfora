@@ -4,7 +4,8 @@
 //! Two of the manifest's permissions are runtime ones: `USE_SCENE` (without
 //! it the scene query returns nothing and the room is the stage floor) and
 //! `RECORD_AUDIO` (without it the microphones do not open and the analysis
-//! runs on the synthetic groove). At launch the app checks both, asks for
+//! runs on the synthetic groove, and the voice path's window stays closed,
+//! board #3751). At launch the app checks both, asks for
 //! the missing ones in one `Activity.requestPermissions` call (the OS shows
 //! one dialog per permission it has not decided) and carries on; the result
 //! callback never reaches native code, so the frame loop polls the grants
@@ -36,16 +37,17 @@ pub fn wants_mic(audio_source: &str) -> bool {
     MIC_SOURCES.contains(&audio_source)
 }
 
-/// What to ask for, given the audio source and what is granted (`scene`:
-/// `USE_SCENE`, `mic`: `RECORD_AUDIO`): `USE_SCENE` whenever it is missing
-/// (the room is the product), `RECORD_AUDIO` only when it is missing and
-/// the source needs the microphones.
-pub fn to_ask(audio_source: &str, scene: bool, mic: bool) -> Vec<&'static str> {
+/// What to ask for, given the audio source, whether the voice path is on,
+/// and what is granted (`scene`: `USE_SCENE`, `mic`: `RECORD_AUDIO`):
+/// `USE_SCENE` whenever it is missing (the room is the product),
+/// `RECORD_AUDIO` only when it is missing and the source or the voice path
+/// needs the microphones (with voice on, even on the synthetic groove).
+pub fn to_ask(audio_source: &str, voice: bool, scene: bool, mic: bool) -> Vec<&'static str> {
     let mut ask = Vec::new();
     if !scene {
         ask.push(USE_SCENE);
     }
-    if !mic && wants_mic(audio_source) {
+    if !mic && (voice || wants_mic(audio_source)) {
         ask.push(RECORD_AUDIO);
     }
     ask
@@ -242,28 +244,53 @@ mod tests {
 
     #[test]
     fn the_synth_asks_for_the_room_only() {
-        assert_eq!(to_ask("synth", false, false), vec![USE_SCENE]);
-        assert_eq!(to_ask("file", false, false), vec![USE_SCENE]);
-        assert!(to_ask("synth", true, false).is_empty());
+        assert_eq!(to_ask("synth", false, false, false), vec![USE_SCENE]);
+        assert_eq!(to_ask("file", false, false, false), vec![USE_SCENE]);
+        assert!(to_ask("synth", false, true, false).is_empty());
+    }
+
+    #[test]
+    fn voice_asks_for_the_mic_on_any_source() {
+        for source in ["synth", "file", "mic", "aaudio"] {
+            assert_eq!(
+                to_ask(source, true, false, false),
+                vec![USE_SCENE, RECORD_AUDIO],
+                "{source}"
+            );
+            assert_eq!(
+                to_ask(source, true, true, false),
+                vec![RECORD_AUDIO],
+                "{source}"
+            );
+            assert!(to_ask(source, true, true, true).is_empty(), "{source}");
+        }
     }
 
     #[test]
     fn a_mic_source_asks_for_both_when_both_are_missing() {
         for source in ["mic", "micxr", "aaudio", "loop"] {
             assert_eq!(
-                to_ask(source, false, false),
+                to_ask(source, false, false, false),
                 vec![USE_SCENE, RECORD_AUDIO],
                 "{source}"
             );
-            assert_eq!(to_ask(source, true, false), vec![RECORD_AUDIO], "{source}");
-            assert_eq!(to_ask(source, false, true), vec![USE_SCENE], "{source}");
+            assert_eq!(
+                to_ask(source, false, true, false),
+                vec![RECORD_AUDIO],
+                "{source}"
+            );
+            assert_eq!(
+                to_ask(source, false, false, true),
+                vec![USE_SCENE],
+                "{source}"
+            );
         }
     }
 
     #[test]
     fn nothing_missing_asks_for_nothing() {
         for source in ["synth", "mic", "micxr", "aaudio", "loop", "file"] {
-            assert!(to_ask(source, true, true).is_empty(), "{source}");
+            assert!(to_ask(source, false, true, true).is_empty(), "{source}");
         }
     }
 

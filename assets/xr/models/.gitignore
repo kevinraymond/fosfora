@@ -1,0 +1,4 @@
+# The speech-to-text model is fetched by scripts/xr/fetch-model.sh (checksum
+# verified) and never committed; LICENSE.md records its source.
+*.bin
+*.bin.part

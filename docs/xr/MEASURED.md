@@ -2127,3 +2127,47 @@ with the renderer live on a 2 to 3 thread budget, and real recorded
 voice. The spike's crate, scripts and logs live outside the repo
 (`fosfora-xr-kit/spikes/stt/`); the headset keeps the binary, models and
 clips under `/data/local/tmp/stt/` for reruns.
+
+## The voice path, V1: the window and the text (board #3751)
+
+`xr-voice-v1` on the Quest 3 v207, `mode world`, Flux Cloud 500K, the
+replayed room, 72 Hz, unworn, the APK at 171.5 MB with `ggml-base.en.bin`
+stored. The headset was 1 h 50 min past a reboot and 35 to 42 C through
+these runs, so the absolute frame figures are below the morning's.
+
+**Launch.** The first launch after the install unpacks 228 asset files,
+149.7 MB, in 194 ms (streamed; the model included); `base.en` loads on the
+worker thread in 340 to 357 ms.
+
+**The clips through `debug.fosfora.voicefile`** (the spike's three, in the
+app's files; 3 threads, the renderer live at 72 fps):
+
+| clip | length | encoder window | transcribed in | text after the close | transcript |
+|---|---|---|---|---|---|
+| 1 | 2.61 s | 195 | 315 ms | 320 ms | "Switch to the next effect and fade the colors to purple." |
+| 2 | 2.84 s | 207 | 295 ms | 306 ms | "Make the particles slower, brighter and more blue." |
+| 3 | 3.17 s | 223 | 357 ms | 361 ms | "Turn the base reaction up a little bit and freeze the camera." |
+
+Every transcript exact ("bass" as "base", as in the spike), each under the
+one-second budget with the renderer running: the spike's 2-to-3-thread
+figures (0.29 to 0.43 s on an idle headset) hold in the app.
+
+**Idle cost** (the model loaded, the worker waiting, no window; 30 s runs
+interleaved, App GPU med / max, fps med, loop CPU avg):
+
+| voice | run 1 | run 2 |
+|---|---|---|
+| off | 11.46 / 12.92 · 67.5 fps · 2.24 ms | 11.94 / 13.82 · 66 fps · 2.70 ms |
+| on | 11.56 / 14.16 · 67 fps · 2.18 ms | 12.04 / 12.83 · 66 fps · 2.27 ms |
+
+0.1 ms between neighbors on the GPU and nothing on the loop's CPU: a
+loaded model that is not transcribing costs nothing. Both arms ran at 66
+to 67 fps because the headset was warm and long past its reboot (the
+uptime finding above), not because of the voice path.
+
+**Not yet measured:** the per-window stream open (the app opens the
+AAudio voice stream when the fist closes; the log prints the open time;
+it needs a hand), the frame cost during a transcription (a hand too), and
+real voice. The spike's clips in the app's files: `adb shell "run-as
+dev.fosfora.xr sh -c 'cat > files/clip1.wav'" < clip1.wav` (the app cannot
+read `/sdcard`).
