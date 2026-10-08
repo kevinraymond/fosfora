@@ -115,7 +115,8 @@ enum Mode {
     /// obstacles, no quad.
     Mixed,
     /// C3b: a core effect's world-layout variant (Flux Cloud) instead of
-    /// the S5 test sim, over the same mixed-reality setup as `Mixed`.
+    /// the S5 test sim, over the same mixed-reality setup as `Mixed`. The
+    /// default since board #3553: the room is what a launch shows.
     World,
 }
 
@@ -151,7 +152,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         dirs.config.display()
     );
     // Spike knobs, settable without a rebuild:
-    //   adb shell setprop debug.fosfora.mode quad|particles     (default particles)
+    //   adb shell setprop debug.fosfora.mode world|mr|particles|quad  (default world, the room; board #3553. particles and quad are the
+    //       spike's test scenes, mr the S7 setup under world)
     //   adb shell setprop debug.fosfora.audio synth|mic|micxr|aaudio|file  (default synth; mic needs RECORD_AUDIO;
     //       mic = the core's capture; micxr = an XR-owned cpal stream with debug.fosfora.micfmt i16|f32 and
     //       debug.fosfora.micrate <Hz>; aaudio = raw AAudio with debug.fosfora.micpreset
@@ -313,8 +315,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
         Some("mr" | "mixed") => Mode::Mixed,
-        Some("world") => Mode::World,
-        _ => Mode::Particles,
+        Some("particles") => Mode::Particles,
+        // Board #3553: an unset knob (every launch after a reboot, and the
+        // product's first) is the room, not the spike's test scene.
+        _ => Mode::World,
     };
     // World mode runs over the whole mixed-reality setup: passthrough, hands,
     // room, floor, occluders, primer and the wearer-centered anchor all take

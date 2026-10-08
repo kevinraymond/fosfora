@@ -193,7 +193,7 @@ NDC; a port needs core changes, listed in `MEASURED.md` "Particle sweep (S5)").
   and farther than the quad center in each eye's matrices; correct depth means
   nearer = smaller depth value and larger disparity. Plus the screencap: the
   quad occludes what is behind it.
-- Knobs (`adb shell setprop`): `debug.fosfora.mode` (`particles`, default,
+- Knobs (`adb shell setprop`): `debug.fosfora.mode` (`world`, the default since board #3553: an unset knob shows the room; `particles`,
   or `quad` for the S4 path), `count`, `sim` (`0` freezes the sim after a 2 s
   warmup to isolate draw cost), `size` (sprite radius multiplier), `tri`
   (3-vertex sprites), `pull` (vertex pulling), `hz` (requests a display rate
