@@ -677,6 +677,14 @@ impl XrSession {
         }
     }
 
+    /// Query the room again after a late `USE_SCENE` grant
+    /// (`Room::requery_after_grant`, board #3264). False while a query or
+    /// Space Setup is in flight (try again); true once issued, or with
+    /// nothing to do.
+    pub fn requery_room_after_grant(&mut self) -> bool {
+        self.room.as_mut().is_none_or(Room::requery_after_grant)
+    }
+
     pub fn has_room(&self) -> bool {
         self.room.is_some()
     }

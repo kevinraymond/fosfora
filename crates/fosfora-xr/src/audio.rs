@@ -23,6 +23,27 @@ use log::{error, info};
 /// Seconds between status lines in logcat.
 const STATUS_PERIOD_S: f32 = 2.0;
 
+/// How a microphone source opens the headset microphones: the knob path
+/// at launch and the retry when `RECORD_AUDIO` arrives later (board #3264)
+/// both go through [`LiveAudio::open`].
+#[derive(Debug, Clone, Copy)]
+pub enum MicSource {
+    /// The core's capture (`debug.fosfora.audio mic`): [`LiveAudio::mic`].
+    Core,
+    /// An XR-owned cpal stream (`micxr`): [`LiveAudio::mic_with`].
+    Cpal {
+        format: cpal::SampleFormat,
+        sample_rate: u32,
+    },
+    /// Raw AAudio with an input preset (`aaudio`, `loop`):
+    /// [`LiveAudio::mic_aaudio`].
+    AAudio {
+        preset: ndk::audio::AudioInputPreset,
+        sample_rate: u32,
+        low_latency: bool,
+    },
+}
+
 pub struct LiveAudio {
     system: AudioSystem,
     /// An XR-owned capture stream (`mic_with`), kept alive with the system.
@@ -40,6 +61,22 @@ pub struct LiveAudio {
 }
 
 impl LiveAudio {
+    /// Open the microphones the way `source` says.
+    pub fn open(source: MicSource) -> Result<Self> {
+        match source {
+            MicSource::Core => Ok(Self::mic()),
+            MicSource::Cpal {
+                format,
+                sample_rate,
+            } => Self::mic_with(format, sample_rate).context("XR mic stream"),
+            MicSource::AAudio {
+                preset,
+                sample_rate,
+                low_latency,
+            } => Self::mic_aaudio(preset, sample_rate, low_latency).context("AAudio mic"),
+        }
+    }
+
     /// Open the default input device (the headset microphones through
     /// AAudio; needs `RECORD_AUDIO` granted) and start analysis.
     pub fn mic() -> Self {
