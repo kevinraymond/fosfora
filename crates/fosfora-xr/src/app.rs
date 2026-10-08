@@ -152,6 +152,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         dirs.config.display()
     );
     // Spike knobs, settable without a rebuild:
+    //   adb shell setprop debug.fosfora.aim 0|1                  (board #3336: the runtime's aim state chained onto the hand locate; its
+    //       system-gesture flag suppresses our pinch on that hand; default on; read at startup)
     //   adb shell setprop debug.fosfora.mode world|mr|particles|quad  (default world, the room; board #3553. particles and quad are the
     //       spike's test scenes, mr the S7 setup under world)
     //   adb shell setprop debug.fosfora.audio synth|mic|micxr|aaudio|file  (default synth; mic needs RECORD_AUDIO;
@@ -386,6 +388,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     let mr = MrOptions {
         passthrough: toggle("debug.fosfora.passthrough", mixed),
         hands: toggle("debug.fosfora.hands", mixed),
+        aim: toggle("debug.fosfora.aim", true),
         room: toggle("debug.fosfora.room", mixed),
         scene_capture: toggle("debug.fosfora.scenecapture", false),
         rescan_at_start: match debug_prop("debug.fosfora.rescan").as_deref() {
