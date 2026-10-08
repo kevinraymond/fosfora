@@ -117,13 +117,13 @@ Source: Standard descriptor — [spectral flatness](https://en.wikipedia.org/wik
 
 **`rolloff`** — where the top of the sound ends. It marks the point below which almost all the energy lives, so it rises when a filter opens up or hi-hats come in, and drops when a track gets muffled. The classic pairing is a filter-sweep visual that opens as this rises.
 
-Source: Standard descriptor — [librosa's `spectral_rolloff`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_rolloff.html) documents the same formula. Fosfora uses the conventional 85% threshold.
+Source: Standard descriptor — [librosa's `spectral_rolloff`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_rolloff.html) documents the same formula. Fosfora uses the conventional 85% threshold, and reports it on the same octave-based axis as `centroid`.
 
-**`bandwidth`** — how spread out the sound is. A single clean note or a lone sine tone reads low; a full mix, a distorted guitar, or a crash cymbal spreads energy everywhere and reads high. Pair it with `centroid`: that one says *where* the sound sits, this one says *how wide* it is around that point.
+**`bandwidth`** — how spread out the sound is. A single clean note or a lone sine tone reads low; a full mix, a distorted guitar, or a crash cymbal spreads energy everywhere and reads high. Pair it with `centroid`: that one says *where* the sound sits, this one says *how wide* it is around that point. It is the spread in octaves around the centroid: 0 is a pure tone, 1 is a standard deviation of four octaves, and pink noise reads about 0.8.
 
-Source: Standard descriptor — [librosa's `spectral_bandwidth`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_bandwidth.html) documents the same formula.
+Source: Standard descriptor — [librosa's `spectral_bandwidth`](https://librosa.org/doc/latest/generated/librosa.feature.spectral_bandwidth.html) documents the formula on a Hz axis; Fosfora takes it on the octave axis `centroid` uses.
 
-**`zcr`** — a rough, very cheap noisiness meter. It counts how often the waveform crosses zero, which is high for hissy and percussive sounds and low for smooth bass. It largely agrees with `flatness`, but reacts faster and costs nothing.
+**`zcr`** — a rough, very cheap noisiness meter. It counts how often the waveform crosses zero, which is high for hissy and percussive sounds and low for smooth bass. It largely agrees with `flatness`, but reacts faster and costs nothing. It is reported as the pitch of a tone that would cross zero as often, on the same axis as `centroid`, so a clean 440 Hz note reads about 0.4 and white noise about 0.9.
 
 Source: Standard descriptor — [librosa's `zero_crossing_rate`](https://librosa.org/doc/latest/generated/librosa.feature.zero_crossing_rate.html) documents the same measurement.
 

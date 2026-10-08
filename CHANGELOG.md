@@ -13,6 +13,7 @@
 - **Audio analysis stalled while the tempo or build-up/drop settings were on screen.** Each analysis step waited for the UI to finish drawing those settings, adding timing jitter to beats. It now keeps using the previous settings for that step instead of waiting.
 - **A quick slider drag in the web remote could stop short of where it was let go.** The last value of a fast drag was sometimes never sent, so the app kept an earlier one and the slider jumped back a second later.
 - **Audio analysis behaved differently depending on the input's sample rate.** At 48 kHz, feature ranging, tuning and the bass-note tracker ran on windows tuned for 44.1 kHz, and above 88.2 kHz every band had half its frequency resolution, leaving `sub_bass` about two FFT bins. Input above 88.2 kHz is now halved before analysis and the remaining windows follow the actual rate; `buildup` also updates at its intended 10 Hz instead of 9.6 Hz.
+- **`rolloff`, `bandwidth` and `zcr` only used a sliver of 0–1**, so anything bound to them barely moved. They now share the octave-based axis `centroid` uses (a clean 440 Hz note reads about 0.4 on `rolloff` and `zcr`, white noise about 0.9), and `bandwidth` is the spread around `centroid`, from 0 for a pure tone to about 0.8 for pink noise. Built-in effects are retuned to match; re-set the ranges of your own bindings or shaders that read these three.
 
 ## v2.3.0 — 2026-10-06
 

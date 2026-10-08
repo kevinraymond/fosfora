@@ -50,7 +50,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // --- Audio ---
     // zcr defocuses the beam (noisier signal = softer/wider trace).
-    let sigma = base_focus * (1.0 + u.zcr * 3.0);
+    let sigma = base_focus * (1.0 + max(u.zcr - 0.45, 0.0) * 3.0);
     // rms drives overall beam brightness; onset adds a transient flash.
     let gain = intensity * (0.55 + u.rms * 1.4) * (1.0 + u.onset * 1.5);
     // beat kicks the persistence (trails linger a touch longer on the beat).

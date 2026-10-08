@@ -290,7 +290,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
         // --- Aerial-perspective fog: distance + height falloff + sun tint ---
         // draw_distance (fog_amt): higher = clearer / see farther (less fog).
-        let fog_density = mix(0.09, 0.004, fog_amt) * (1.3 - u.rolloff * 0.5);
+        let fog_density = mix(0.09, 0.004, fog_amt) * (1.3 - max(u.rolloff - 0.5, 0.0) * 0.5);
         var fog = 1.0 - exp(-th * fog_density);
         fog *= exp(-max(pos.y - 0.6, 0.0) * 0.35);   // peaks poke above the haze
         let sun_amt = pow(max(dot(rd, sun), 0.0), 8.0);

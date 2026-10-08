@@ -18,9 +18,13 @@ const N_CHROMA: usize = 12;
 
 /// A4 (#1455): the `centroid` feature maps a power-weighted mean of log2(frequency) onto
 /// 0..1 across this musical range, so it reads as a perceptual brightness fader instead
-/// of hugging the top octave on a linear-Hz axis.
+/// of hugging the top octave on a linear-Hz axis. `rolloff` and `zcr` share the axis (#62).
 const CENTROID_F_MIN: f32 = 40.0;
 const CENTROID_F_MAX: f32 = 18000.0;
+
+/// `bandwidth` is the power-weighted spread of log2(frequency) around the centroid, in
+/// octaves; this many octaves reads 1.0 (#62). A pure tone reads ~0, pink noise ~0.75.
+const BANDWIDTH_OCTAVES: f32 = 4.0;
 
 /// A4 (#1455): fraction of spectral energy below the rolloff frequency. Configurable
 /// (was a hardcoded 0.85); can be promoted to a user setting later with no ABI impact.
@@ -599,10 +603,10 @@ impl FftAnalyzer {
             FLUX_FLOOR,
         );
 
-        // Spectral features (from large FFT for best frequency resolution). `centroid_hz`
-        // is the power-weighted arithmetic centroid in Hz, used as the centre for the
-        // bandwidth spread; the `centroid` feature itself is on a log2 axis (A4 #1455).
-        let centroid_hz = self.spectral_centroid_hz();
+        // Spectral features (from large FFT for best frequency resolution). Centroid and
+        // bandwidth are the mean and spread of the same power-weighted log2-frequency
+        // distribution (A4 #1455, #62).
+        let (centroid, bandwidth) = self.spectral_shape();
 
         let [
             sub_bass,
@@ -628,12 +632,15 @@ impl FftAnalyzer {
             brilliance,
             rms,
             kick: 0.0, // A3 (#1454): filled by `kick_envelope` after the silence gate
-            centroid: self.spectral_centroid_01(),
+            centroid,
             flux: self.spectral_flux(),
             flatness: spectral_flatness(&mel),
-            rolloff: self.spectral_rolloff() / (self.sample_rate * 0.5),
-            bandwidth: (self.spectral_bandwidth(centroid_hz) / (self.sample_rate * 0.5)).min(1.0),
-            zcr: self.zero_crossing_rate(),
+            rolloff: log_freq_01(self.spectral_rolloff()),
+            bandwidth,
+            // A zero-crossing rate is the frequency of the sine that would cross as often:
+            // f = rate · sr / 2. On the centroid's axis it spans 0..1 and no longer depends
+            // on the sample rate (#62).
+            zcr: log_freq_01(self.zero_crossing_rate() * self.sample_rate * 0.5),
             ..Default::default()
         };
 
@@ -694,45 +701,38 @@ impl FftAnalyzer {
         }
     }
 
-    /// Power-weighted spectral centroid in **Hz** (arithmetic, skipping the DC bin). The
-    /// centre of mass used for the bandwidth spread; the `centroid` feature uses the log2
-    /// form below.
-    fn spectral_centroid_hz(&self) -> f32 {
+    /// The `(centroid, bandwidth)` features: mean and spread of the power-weighted
+    /// distribution of **log2(frequency)**, skipping DC.
+    ///
+    /// A4 (#1455): the centroid is that mean mapped onto 0..1 across
+    /// `CENTROID_F_MIN..CENTROID_F_MAX`. On a log axis it stops living in the top octave
+    /// and becomes a usable brightness fader; the FixedRange policy (A2) holds it steady
+    /// below the silence gate. #62: the bandwidth is the standard deviation around that
+    /// same centroid, in octaves over [`BANDWIDTH_OCTAVES`]. It used to be a
+    /// magnitude-weighted spread in Hz (DC included) around a separate linear centroid,
+    /// divided by Nyquist, so it measured neither this centroid's spread nor more than a
+    /// sliver of 0..1.
+    fn spectral_shape(&self) -> (f32, f32) {
         let mag = &self.large.magnitude;
-        let bin_hz = self.large.bin_hz;
-        let mut weighted_sum = 0.0f32;
-        let mut power_sum = 0.0f32;
-        for (i, &m) in mag.iter().enumerate().skip(1) {
-            let p = m * m;
-            weighted_sum += (i as f32 * bin_hz) * p;
-            power_sum += p;
-        }
-        if power_sum > 1e-12 {
-            weighted_sum / power_sum
-        } else {
-            0.0
-        }
-    }
-
-    /// A4 (#1455): the `centroid` feature — a power-weighted mean of **log2(frequency)**
-    /// (skipping DC) mapped onto 0..1 across `CENTROID_F_MIN..CENTROID_F_MAX`. On a log
-    /// axis the centroid stops living in the top octave and becomes a usable brightness
-    /// fader; the FixedRange policy (A2) holds it steady below the silence gate.
-    fn spectral_centroid_01(&self) -> f32 {
-        let mag = &self.large.magnitude;
-        let mut weighted_log2 = 0.0f32;
-        let mut power_sum = 0.0f32;
+        let mut power_sum = 0.0f64;
+        let mut sum = 0.0f64;
+        let mut sum_sq = 0.0f64;
         for (&m, &log2_hz) in mag.iter().zip(&self.log2_bin_hz).skip(1) {
-            let p = m * m;
-            weighted_log2 += log2_hz * p;
+            let p = f64::from(m * m);
+            let x = f64::from(log2_hz);
             power_sum += p;
+            sum += x * p;
+            sum_sq += x * x * p;
         }
         if power_sum <= 1e-12 {
-            return 0.0;
+            return (0.0, 0.0);
         }
+        let mean = sum / power_sum;
+        let spread = (sum_sq / power_sum - mean * mean).max(0.0).sqrt() as f32;
         let lo = CENTROID_F_MIN.log2();
         let hi = CENTROID_F_MAX.log2();
-        ((weighted_log2 / power_sum - lo) / (hi - lo)).clamp(0.0, 1.0)
+        let centroid = ((mean as f32 - lo) / (hi - lo)).clamp(0.0, 1.0);
+        (centroid, (spread / BANDWIDTH_OCTAVES).min(1.0))
     }
 
     /// A4 (#1455): spectral flux as a **level-invariant** rate of change — half-wave
@@ -809,24 +809,6 @@ impl FftAnalyzer {
         (mag.len() - 1) as f32 * bin_hz
     }
 
-    fn spectral_bandwidth(&self, centroid_hz: f32) -> f32 {
-        let mag = &self.large.magnitude;
-        let bin_hz = self.large.bin_hz;
-        let mut weighted_sum = 0.0f32;
-        let mut mag_sum = 0.0f32;
-        for (i, &m) in mag.iter().enumerate() {
-            let freq = i as f32 * bin_hz;
-            let diff = freq - centroid_hz;
-            weighted_sum += diff * diff * m;
-            mag_sum += m;
-        }
-        if mag_sum > 1e-10 {
-            (weighted_sum / mag_sum).sqrt()
-        } else {
-            0.0
-        }
-    }
-
     fn zero_crossing_rate(&self) -> f32 {
         let td_start = FFT_LARGE - 2048;
         let td = &self.time_domain[td_start..];
@@ -838,6 +820,17 @@ impl FftAnalyzer {
         }
         crossings as f32 / (td.len() - 1) as f32
     }
+}
+
+/// `hz` on the centroid's log2 axis: `CENTROID_F_MIN..CENTROID_F_MAX` → 0..1, clamped
+/// (0 Hz reads 0).
+fn log_freq_01(hz: f32) -> f32 {
+    if hz <= 0.0 {
+        return 0.0;
+    }
+    let lo = CENTROID_F_MIN.log2();
+    let hi = CENTROID_F_MAX.log2();
+    ((hz.log2() - lo) / (hi - lo)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -1195,6 +1188,53 @@ mod tests {
         assert!(
             high > low,
             "rolloff should rise with tone frequency: low={low}, high={high}"
+        );
+    }
+
+    /// #62: rolloff, zcr and the centroid share one log-frequency axis, so for a pure tone
+    /// all three read the tone's own position on it, and an octave is the same step anywhere.
+    #[test]
+    fn rolloff_zcr_and_centroid_share_the_log_axis() {
+        for hz in [220.0, 1000.0, 5000.0] {
+            let f = features_for_sine(BandScale::Db, hz);
+            let expect = log_freq_01(hz);
+            for (name, v) in [
+                ("rolloff", f.rolloff),
+                ("zcr", f.zcr),
+                ("centroid", f.centroid),
+            ] {
+                assert!((v - expect).abs() < 0.02, "{hz} Hz {name}: {v} vs {expect}");
+            }
+        }
+        let octave = log_freq_01(880.0) - log_freq_01(440.0);
+        assert!((octave - (log_freq_01(8000.0) - log_freq_01(4000.0))).abs() < 1e-5);
+    }
+
+    /// #62: bandwidth is the spread around the reported centroid. A pure tone has none;
+    /// two tones three octaves apart at equal power sit 1.5 octaves either side of it.
+    #[test]
+    fn bandwidth_is_the_octave_spread_around_the_centroid() {
+        assert!(features_for_sine(BandScale::Db, 1000.0).bandwidth < 0.02);
+
+        let mut a = FftAnalyzer::new(SR, BandScale::Db);
+        let tau = std::f32::consts::TAU;
+        let mut f = AudioFeatures::default();
+        for blk in 0..5 {
+            let block: Vec<f32> = (0..FFT_LARGE)
+                .map(|i| {
+                    let t = (blk * FFT_LARGE + i) as f32 / SR;
+                    0.3 * (tau * 250.0 * t).sin() + 0.3 * (tau * 2000.0 * t).sin()
+                })
+                .collect();
+            f = a.analyze(&block);
+        }
+        let octaves = f.bandwidth * BANDWIDTH_OCTAVES;
+        assert!((octaves - 1.5).abs() < 0.1, "spread {octaves} octaves");
+        let mid = log_freq_01((250.0f32 * 2000.0).sqrt());
+        assert!(
+            (f.centroid - mid).abs() < 0.02,
+            "centroid {} vs {mid}",
+            f.centroid
         );
     }
 

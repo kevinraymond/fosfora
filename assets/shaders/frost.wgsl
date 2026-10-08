@@ -24,8 +24,8 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
     let reactivity = param(7u);
     let drift_dir = vec2f(param(8u), param(9u));
 
-    // zcr physically tops out near 0.5 for broadband noise
-    let zcr_x = min(u.zcr * 2.5, 1.0);
+    // zcr reads ~0.4 for a clean tone and ~0.9 for broadband noise
+    let zcr_x = clamp((u.zcr - 0.45) * 2.5, 0.0, 1.0);
 
     // Master morph: 0 = crystal, 1 = sand
     let m = clamp(mix(0.5, u.flatness, reactivity) + morph_bias, 0.0, 1.0);
@@ -105,7 +105,7 @@ fn fs_main(@builtin(position) frag_coord: vec4f) -> @location(0) vec4f {
 
     // === GRAIN LAYER (sand) ===
     // bandwidth widens the grain: broad spectrum = coarser, more scattered
-    let grain_scale = mix(220.0, 60.0, grain_size) * mix(1.35, 0.65, u.bandwidth);
+    let grain_scale = mix(220.0, 60.0, grain_size) * mix(1.35, 0.65, u.bandwidth * 0.45);
     let gp = floor(p * grain_scale);
     let g_static = fosfora_hash2(gp);
     // Per-frame shimmer: integer hash is safe for frame-varying identity
