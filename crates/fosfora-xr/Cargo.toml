@@ -66,6 +66,20 @@ jni = "0.21"
 # NDK cmake toolchain wrapper and the GGML_* flags `scripts/xr/run.sh` sets,
 # and links the NDK's `libc++_shared.so`, which run.sh packages.
 whisper-rs = "0.16"
+# The voice path's on-device provider (`local.rs`, board #3751, V5): ONNX
+# Runtime through `ort` (MIT OR Apache-2.0) with `load-dynamic`, so nothing
+# links or downloads the runtime at build time; `libonnxruntime.so` comes
+# from the official onnxruntime-android AAR (MIT) that the Gradle project
+# depends on, and is dlopened by name at launch. rc.11, not the rc.13 the
+# device bench ran: the core pins `=2.0.0-rc.11` for its depth feature, and
+# one lock holds one `ort` (prerelease versions of one major unify, and
+# `ort-sys` declares `links`); rc.11 asks for the ONNX Runtime 1.23 API,
+# which 1.28 serves.
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic"] }
+# The decision model's tokenizer (Apache-2.0): ModernBERT's byte-level BPE,
+# whose pre-tokenizer pattern needs look-ahead, so the pure-Rust
+# `fancy-regex` backend instead of the default `onig` (C, and a cross build).
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 # Host tests validate the XR-only WGSL (`ripple.rs`) at baseline WebGPU
 # capabilities; the same naga as wgpu 27 and the core, so the lock keeps one.
@@ -86,6 +100,14 @@ bytemuck = "1"
 # compiles to the plain-number modules alone; no features, so a workspace
 # test or clippy run builds the core exactly as it did without this line.
 fosfora-app = { path = "../fosfora-app", default-features = false }
+# `local.rs`'s desktop tests (board #3751, V5): the tokenizer for the
+# rendering's parity with the training toolkit, and `ort` for the
+# `#[ignore]`d run of the real model against its parity fixtures (with
+# `ORT_DYLIB_PATH` naming a host ONNX Runtime). Dev-dependencies only, so the
+# desktop library builds neither; `load-dynamic` downloads and builds no
+# runtime.
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "load-dynamic"] }
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 
 [lints]
 workspace = true

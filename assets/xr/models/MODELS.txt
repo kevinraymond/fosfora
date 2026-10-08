@@ -1,0 +1,11 @@
+# The voice path's models (board #3751), fetched into this directory by
+# scripts/xr/fetch-model.sh and never committed: one per line, the file's
+# name, the URL it is fetched from and its SHA-256. A URL of `placeholder`
+# means it is not hosted yet: the script then accepts a file already here
+# whose SHA-256 matches, and otherwise warns and goes on (the APK builds
+# without it, and the app logs that the provider is off). Sources and
+# licenses: LICENSE.md.
+ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002
+s1-17m-int8.onnx placeholder cd7f55ced9e661a86ef05004c4afbb57770059f320fccc3028029a87a99310d1
+s1-17m-tokenizer.json placeholder f75521d7f18a32ec8a9dce9d378a5edcea370be41cf86bcc9fc3d687d6f929da
+s1-17m-tokenizer_config.json placeholder 6459575245dbb8f85afefb89547b4a0c88b45934810483c806f885b1a5ad801d

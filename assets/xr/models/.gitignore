@@ -1,4 +1,10 @@
-# The speech-to-text model is fetched by scripts/xr/fetch-model.sh (checksum
-# verified) and never committed; LICENSE.md records its source.
+# The models are fetched by scripts/xr/fetch-model.sh (checksum verified,
+# MODELS.txt) and never committed; LICENSE.md records their sources. The
+# decision model's spec (s1-17m-spec.json) is ours, small, and committed.
 *.bin
 *.bin.part
+*.onnx
+*.onnx.part
+s1-17m-tokenizer.json
+s1-17m-tokenizer_config.json
+*.json.part

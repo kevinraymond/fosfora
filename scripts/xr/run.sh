@@ -6,7 +6,7 @@
 #   scripts/xr/run.sh [all|build|lint|install|launch|stop|log|uninstall] [--debug]
 #
 #   all      build + install + launch + log (default)
-#   build    cargo ndk (release unless --debug) + the speech model + gradle assembleDebug
+#   build    cargo ndk (release unless --debug) + the voice models + gradle assembleDebug
 #   lint     cargo clippy for the Android target with -D warnings
 #   install  adb install -r the debug APK
 #   launch   adb shell am start the NativeActivity

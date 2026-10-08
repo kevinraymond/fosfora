@@ -1,0 +1,437 @@
+{
+ "model": {
+  "onnx": "model_int8.onnx (embedding-only INT8; blocks and heads FP32)",
+  "inputs": [
+   "prefix_ids int64 [q, L]",
+   "prefix_mask bool [q, L]",
+   "doc_ids int64 [n, W]",
+   "doc_mask bool [n, W]",
+   "owners int64 [n]"
+  ],
+  "output": "logits float [n, 3]; columns choice, noul, score; softmax over a decision's candidates",
+  "tokenizer": [
+   "tokenizer.json",
+   "tokenizer_config.json"
+  ],
+  "special_ids": {
+   "cls": 50281,
+   "sep": 50282,
+   "pad": 50283
+  },
+  "query_length": 512,
+  "document_length": 64,
+  "query_truncation": "balanced"
+ },
+ "rendering": {
+  "layout": "instruction_state (the model was trained on both orders 1:1; use this one)",
+  "prefix": "[CLS] + enc(system + '\\n\\n' if system) + enc('Instruction: ' + instruction) + enc('\\n') + enc('State: ' + state) + [SEP]; each part tokenized separately, no special tokens; system is empty here",
+  "noul_state": "for the request decision the state is json.dumps({'noul': {'yes': YES, 'no': NO}, 'state': <state object>}, separators=(',', ':'))",
+  "candidate": "enc('Candidate: ' + id + ': ' + text) + [SEP]",
+  "state": "json.dumps({'sentence', 'pointed' (a surface name or 'nothing'), 'effect', 'effects', 'surfaces': {name: behavior or 'behavior, color'}}) with Python's default separators (', ', ': ')",
+  "state_example": {
+   "sentence": "Table 14 in amber.",
+   "pointed": "table 3",
+   "effect": "Flux Cloud",
+   "effects": [
+    "Flux Cloud",
+    "Embers",
+    "Flock"
+   ],
+   "surfaces": {
+    "table 0": "streamlines",
+    "shelf 1": "curls",
+    "wall 2": "spectrum",
+    "table 3": "streamlines",
+    "shelf 4": "curls",
+    "wall 5": "spectrum",
+    "table 6": "streamlines",
+    "floor": "rings",
+    "window": "pulse",
+    "shelf 9": "curls",
+    "ceiling": "none",
+    "shelf 11": "curls",
+    "table 12": "streamlines",
+    "shelf 13": "curls",
+    "table 14": "streamlines",
+    "wall 15": "spectrum",
+    "wall 16": "spectrum"
+   }
+  }
+ },
+ "cascade": [
+  {
+   "step": "request",
+   "type": "noul",
+   "instruction": "Is the sentence a request to the room: its visuals, a surface, the music or the effect?",
+   "yes": "a request: change, switch, show, start, stop, clear or describe something in the room",
+   "no": "not a request: a greeting, chat, a remark, or a question the room cannot answer",
+   "criteria_order": [
+    "false",
+    "true"
+   ],
+   "rule": "stop unless p(true) >= 0.5"
+  },
+  {
+   "step": "kind",
+   "type": "choice",
+   "instruction": "Which action does the sentence ask for?",
+   "candidates": [
+    {
+     "id": "next_effect",
+     "text": "next world effect"
+    },
+    {
+     "id": "previous_effect",
+     "text": "previous world effect"
+    },
+    {
+     "id": "effect",
+     "text": "a world effect by its name"
+    },
+    {
+     "id": "edit_room",
+     "text": "room editor on or off"
+    },
+    {
+     "id": "particles",
+     "text": "particle cloud on or off"
+    },
+    {
+     "id": "pitcher",
+     "text": "pitcher on or off"
+    },
+    {
+     "id": "music",
+     "text": "music play or stop"
+    },
+    {
+     "id": "rescan",
+     "text": "scan the room again"
+    },
+    {
+     "id": "recenter",
+     "text": "move the particle cloud back to the center"
+    },
+    {
+     "id": "all_none",
+     "text": "clear every surface"
+    },
+    {
+     "id": "behavior",
+     "text": "put a visual on a surface, or clear it"
+    },
+    {
+     "id": "color",
+     "text": "a surface's color"
+    },
+    {
+     "id": "band",
+     "text": "the part of the music a surface follows"
+    },
+    {
+     "id": "strength",
+     "text": "a surface's strength or brightness"
+    },
+    {
+     "id": "describe",
+     "text": "say what a surface shows"
+    }
+   ]
+  },
+  {
+   "step": "target",
+   "type": "choice",
+   "instruction": "Which surface does the sentence mean?",
+   "only_for": [
+    "band",
+    "behavior",
+    "color",
+    "describe",
+    "strength"
+   ],
+   "candidates": "every surface (id = its friendly name, text = its kind word: {\"table\": \"table\", \"floor\": \"floor\", \"wall\": \"wall\", \"ceiling\": \"ceiling\", \"frame\": \"window or door\", \"other\": \"object\"}), then 'all <kinds>' for each kind with two or more surfaces ({\"table\": \"every table\", \"floor\": \"every floor\", \"wall\": \"every wall\", \"ceiling\": \"every ceiling\", \"frame\": \"every window and door\", \"other\": \"every other object\"}), then 'pointed' ('the surface pointed at') when something is pointed at",
+   "example_replayed_room": [
+    {
+     "id": "table 0",
+     "text": "table"
+    },
+    {
+     "id": "shelf 1",
+     "text": "object"
+    },
+    {
+     "id": "wall 2",
+     "text": "wall"
+    },
+    {
+     "id": "table 3",
+     "text": "table"
+    },
+    {
+     "id": "shelf 4",
+     "text": "object"
+    },
+    {
+     "id": "wall 5",
+     "text": "wall"
+    },
+    {
+     "id": "table 6",
+     "text": "table"
+    },
+    {
+     "id": "floor",
+     "text": "floor"
+    },
+    {
+     "id": "window",
+     "text": "window or door"
+    },
+    {
+     "id": "shelf 9",
+     "text": "object"
+    },
+    {
+     "id": "ceiling",
+     "text": "ceiling"
+    },
+    {
+     "id": "shelf 11",
+     "text": "object"
+    },
+    {
+     "id": "table 12",
+     "text": "table"
+    },
+    {
+     "id": "shelf 13",
+     "text": "object"
+    },
+    {
+     "id": "table 14",
+     "text": "table"
+    },
+    {
+     "id": "wall 15",
+     "text": "wall"
+    },
+    {
+     "id": "wall 16",
+     "text": "wall"
+    },
+    {
+     "id": "all tables",
+     "text": "every table"
+    },
+    {
+     "id": "all walls",
+     "text": "every wall"
+    },
+    {
+     "id": "all others",
+     "text": "every other object"
+    },
+    {
+     "id": "pointed",
+     "text": "the surface pointed at"
+    }
+   ]
+  },
+  {
+   "step": "value",
+   "type": "choice",
+   "questions": {
+    "behavior": "Which visual should the surface show?",
+    "color": "Which color does the sentence ask for?",
+    "band": "Which part of the music should the surface follow?",
+    "strength": "How should the surface's strength change?",
+    "effect": "Which world effect does the sentence ask for?",
+    "edit_room": "Should the room editor be on or off?",
+    "particles": "Should the particle cloud be on or off?",
+    "pitcher": "Should the pitcher be on or off?",
+    "music": "Should the music play or stop?"
+   },
+   "candidates": {
+    "behavior": {
+     "by_kind": {
+      "table": [
+       "none",
+       "streamlines",
+       "curls",
+       "pulse",
+       "embers",
+       "sparks",
+       "shards",
+       "prism"
+      ],
+      "floor": [
+       "none",
+       "rings",
+       "streamlines",
+       "curls",
+       "sparks",
+       "tessera",
+       "prism",
+       "astrolabe"
+      ],
+      "wall": [
+       "none",
+       "spectrum",
+       "streamlines",
+       "rings",
+       "pulse",
+       "aurora",
+       "fenestra",
+       "bezel"
+      ],
+      "ceiling": [
+       "none",
+       "rings",
+       "pulse",
+       "streamlines",
+       "aurora",
+       "astrolabe"
+      ],
+      "frame": [
+       "none",
+       "pulse",
+       "rings",
+       "streamlines",
+       "bezel",
+       "reticle",
+       "fenestra"
+      ],
+      "other": [
+       "none",
+       "curls",
+       "streamlines",
+       "pulse",
+       "embers",
+       "shards",
+       "reticle",
+       "tessera"
+      ]
+     },
+     "texts": {
+      "none": "nothing, cleared",
+      "embers": "glowing embers, fire",
+      "sparks": "sparks shooting up",
+      "spectrum": "spectrum bars",
+      "rings": "rings spreading, ripples",
+      "streamlines": "flowing lines of light",
+      "curls": "curling swirls",
+      "pulse": "a glow on the beat",
+      "aurora": "light curtains, northern lights",
+      "prism": "a turning kaleidoscope",
+      "shards": "cells with glowing edges",
+      "astrolabe": "a dial, ring by ring",
+      "bezel": "a border on the edges",
+      "fenestra": "panels snapping into place",
+      "reticle": "crosshairs",
+      "tessera": "tiles in waves"
+     }
+    },
+    "color": [
+     {
+      "id": "own color",
+      "text": "the surface's own color"
+     },
+     {
+      "id": "blue",
+      "text": "blue"
+     },
+     {
+      "id": "violet",
+      "text": "violet, purple"
+     },
+     {
+      "id": "warm white",
+      "text": "warm white"
+     },
+     {
+      "id": "amber",
+      "text": "amber, orange"
+     },
+     {
+      "id": "green",
+      "text": "green"
+     },
+     {
+      "id": "teal",
+      "text": "teal, blue green"
+     },
+     {
+      "id": "rose",
+      "text": "rose, pink"
+     }
+    ],
+    "band": [
+     {
+      "id": "level",
+      "text": "overall loudness"
+     },
+     {
+      "id": "bass",
+      "text": "bass, kick"
+     },
+     {
+      "id": "mid",
+      "text": "mids, voices"
+     },
+     {
+      "id": "high",
+      "text": "highs, treble"
+     }
+    ],
+    "strength": [
+     {
+      "id": "brighter",
+      "text": "one step brighter"
+     },
+     {
+      "id": "dimmer",
+      "text": "one step dimmer"
+     },
+     {
+      "id": "half",
+      "text": "half strength"
+     },
+     {
+      "id": "full",
+      "text": "full strength"
+     },
+     {
+      "id": "off",
+      "text": "strength zero, dark"
+     }
+    ],
+    "effect": "the room's effects, text 'world effect'",
+    "toggles (edit_room, particles, pitcher, music)": [
+     {
+      "id": "on",
+      "text": "on, show, play, start"
+     },
+     {
+      "id": "off",
+      "text": "off, hide, stop"
+     }
+    ]
+   },
+   "none_for": [
+    "next_effect",
+    "previous_effect",
+    "rescan",
+    "recenter",
+    "all_none",
+    "describe"
+   ]
+  }
+ ],
+ "id_mapping_to_app": {
+  "band level": "rms (BAND_NAMES)",
+  "color own color": "color index 0",
+  "pointed": "Target::Pointed",
+  "all <kind>s": "Target::Kind",
+  "strength brighter/dimmer": "Strength::Up/Down"
+ }
+}
