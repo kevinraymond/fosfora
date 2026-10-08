@@ -498,6 +498,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // menu's, and the `say` knob's last sentence fed.
     let mut voice_actions: Vec<Action> = Vec::new();
     let mut say_knob = crate::intent::SayKnob::default();
+    // V4: "what can I say" shows the next five examples on each ask.
+    let mut help_page = 0usize;
     // V3, the agent (`agent.rs`): the provider `voice.json` names, read
     // once (the key never reaches the log), and the one call in flight. A
     // newer sentence's call replaces an older one, whose answer is then
@@ -2481,11 +2483,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .filter(|_| controls.edit_room)
                         .map(|h| h.index),
                 };
-                let outcome = crate::intent::parse(&sentence, &vocab);
-                let ask_agent = agent.is_some()
-                    && matches!(&outcome, Err(m) if crate::agent::forwards(&m.reason));
-                let (text, seconds) = match (&outcome, &agent) {
-                    (Ok(intent), _) => (
+                // V4: the sentence as clauses ("amber on the desk and the
+                // walls on the bass"), applied in order; "what can I say"
+                // shows examples; with the agent on, what misses the way
+                // the agent takes goes to it (`intent::respond`), after the
+                // matched clauses applied, so it sees the room after them.
+                let clauses = crate::intent::parse_clauses(&sentence, &vocab);
+                let response = crate::intent::respond(
+                    &sentence,
+                    &clauses,
+                    &vocab,
+                    agent.is_some(),
+                    &mut help_page,
+                    |intent| {
                         apply_intent(
                             intent,
                             &vocab,
@@ -2494,57 +2504,46 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             &mut controls,
                             &mut voice_actions,
                             &mut switch_to,
-                        ),
-                        crate::intent::REPLY_S,
-                    ),
-                    // V3: a sentence no template fits, or one naming an
-                    // unknown behavior, goes to the agent with the room as
-                    // it is now (`agent::forwards`); the grammar's other
-                    // misses are its own answers and stay.
-                    (Err(_), Some(provider)) if ask_agent => {
-                        let head = glam::Vec3::from(input.head);
-                        let sizes: Vec<[f32; 2]> = input
-                            .room_boxes
-                            .iter()
-                            .chain(floor_box.iter())
-                            .map(|b| {
-                                let face = crate::surfaces::acting_face(
-                                    glam::Vec3::from(b.center),
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                    head,
-                                );
-                                [2.0 * face.half[0], 2.0 * face.half[1]]
-                            })
-                            .collect();
-                        let room = crate::agent::room_state(
-                            &vocab,
-                            (mode == Mode::World).then_some(world_index),
-                            &sizes,
-                            &surface_lanes,
-                            &lane_boxes,
-                        );
-                        let request = provider.request(&sentence, &room);
-                        agent_call = Some(AgentCall {
-                            reply: crate::agent::spawn(
-                                provider.clone(),
-                                request,
-                                crate::agent::TIMEOUT,
-                            ),
-                            sentence: sentence.clone(),
-                            pointed: vocab.pointed,
-                            at: voice_at,
-                            started: Instant::now(),
-                        });
-                        (
-                            crate::agent::THINKING_LABEL.to_owned(),
-                            crate::agent::THINKING_S,
                         )
-                    }
-                    (Err(miss), _) => (crate::intent::miss_text(miss), crate::intent::MISS_S),
-                };
-                info!("{}", crate::intent::log_line(&sentence, &outcome, &text));
-                voice_label.show_for(text, voice_at.0, voice_at.1, seconds);
+                    },
+                );
+                if let (Some(asked), Some(provider)) = (&response.agent, &agent) {
+                    let head = glam::Vec3::from(input.head);
+                    let sizes: Vec<[f32; 2]> = input
+                        .room_boxes
+                        .iter()
+                        .chain(floor_box.iter())
+                        .map(|b| {
+                            let face = crate::surfaces::acting_face(
+                                glam::Vec3::from(b.center),
+                                glam::Quat::from_array(b.rot),
+                                glam::Vec3::from(b.half),
+                                head,
+                            );
+                            [2.0 * face.half[0], 2.0 * face.half[1]]
+                        })
+                        .collect();
+                    let room = crate::agent::room_state(
+                        &vocab,
+                        (mode == Mode::World).then_some(world_index),
+                        &sizes,
+                        &surface_lanes,
+                        &lane_boxes,
+                    );
+                    let request = provider.request(asked, &room);
+                    agent_call = Some(AgentCall {
+                        reply: crate::agent::spawn(provider.clone(), request, crate::agent::TIMEOUT),
+                        sentence: asked.clone(),
+                        pointed: vocab.pointed,
+                        at: voice_at,
+                        started: Instant::now(),
+                    });
+                }
+                info!(
+                    "{}",
+                    crate::intent::clauses_log_line(&sentence, &clauses, &response.label)
+                );
+                voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }
             // V3: the agent's answer, polled (never waited for). Its
             // actions map onto intents through the grammar's resolution

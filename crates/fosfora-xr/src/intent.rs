@@ -16,8 +16,19 @@
 //! **The normalizer** ([`normalize`]): lower case, apostrophes dropped,
 //! every other mark a space, whitespace collapsed, and the fillers "the",
 //! "a", "an", "please" and "to" dropped wherever they stand (in the names
-//! too, so both sides compare alike). Number words stay words: "table two"
-//! is not "table 2" (whisper writes digits for a spoken number).
+//! too, so both sides compare alike). V4: number words are digits, `one`
+//! to `twenty`, `thirty`, `forty`, `fifty` and their compounds ("twenty
+//! one"), so "table fourteen" names "table 14" (whisper writes digits for
+//! most spoken numbers, words for some); "one" after "this", "that",
+//! "next" or "previous" stays a word.
+//!
+//! **Clauses, help and the hint** (V4, [`parse_clauses`], [`respond`]): a
+//! sentence the grammar misses whole is split at " and ", " then ", ", ",
+//! ";" and a sentence's end ([`split_clauses`], never inside a name the
+//! room has), each clause parsed on its own, at most [`MAX_CLAUSES`];
+//! "what can I say" shows five example phrases built from the room
+//! ([`examples`], the next five on each ask); a sentence no template fits
+//! gets the nearest example as a hint ([`hint`]).
 //!
 //! Pure and desktop-tested; `app.rs` builds the vocabulary from the frame,
 //! maps the menu's intents onto its `Action` consumer and writes the
@@ -143,6 +154,9 @@ pub enum Intent {
     Strength { target: Target, strength: Strength },
     /// The status cell and the label for the pointed surface: what it runs.
     Describe(Target),
+    /// "What can I say": five example phrases on the label (V4), the way
+    /// the hand menu's rows show what the hands can do.
+    Help,
 }
 
 /// Why a sentence did nothing.
@@ -164,6 +178,8 @@ pub enum Reason {
     },
     /// A name several surfaces share, none of them pointed at: their names.
     Ambiguous(Vec<String>),
+    /// More clauses in one sentence than [`MAX_CLAUSES`]: how many (V4).
+    TooMany(usize),
 }
 
 /// A sentence that did nothing, and what was heard.
@@ -178,7 +194,7 @@ const FILLERS: [&str; 5] = ["the", "a", "an", "please", "to"];
 
 /// The sentence as words: lower case, apostrophes dropped ("what's" is
 /// "whats"), every other non-alphanumeric character a space, the
-/// [`FILLERS`] dropped.
+/// [`FILLERS`] dropped, number words as digits ([`numbers`]).
 pub fn normalize(sentence: &str) -> Vec<String> {
     let cleaned: String = sentence
         .to_lowercase()
@@ -186,11 +202,74 @@ pub fn normalize(sentence: &str) -> Vec<String> {
         .filter(|c| !matches!(c, '\'' | '\u{2019}'))
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
-    cleaned
-        .split_whitespace()
-        .filter(|w| !FILLERS.contains(w))
-        .map(str::to_owned)
-        .collect()
+    numbers(
+        cleaned
+            .split_whitespace()
+            .filter(|w| !FILLERS.contains(w))
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// The number words `one` to `nineteen`.
+const UNITS: [&str; 19] = [
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+];
+/// The tens, `twenty` to `fifty`.
+const TENS: [&str; 4] = ["twenty", "thirty", "forty", "fifty"];
+/// The words after which "one" is a pronoun, not a number: "this one",
+/// "next one".
+const ONE_AFTER: [&str; 5] = ["this", "that", "next", "previous", "last"];
+
+/// Number words as digits: `one` to `nineteen`, the tens to `fifty`, and a
+/// ten followed by a unit word under ten as one number ("twenty one" is
+/// 21). "One" after a word of [`ONE_AFTER`] stays a word.
+fn numbers(words: Vec<String>) -> Vec<String> {
+    let unit = |w: &str| UNITS.iter().position(|u| *u == w).map(|i| i + 1);
+    let ten = |w: &str| TENS.iter().position(|t| *t == w).map(|i| 20 + 10 * i);
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if let Some(t) = ten(w) {
+            match words.get(i + 1).and_then(|n| unit(n)).filter(|u| *u < 10) {
+                Some(u) => {
+                    out.push((t + u).to_string());
+                    i += 2;
+                }
+                None => {
+                    out.push(t.to_string());
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        let pronoun = w == "one" && out.last().is_some_and(|p| ONE_AFTER.contains(&p.as_str()));
+        match unit(w) {
+            Some(u) if !pronoun => out.push(u.to_string()),
+            _ => out.push(w.to_owned()),
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Whether `ts` is `phrase`'s words.
@@ -227,6 +306,15 @@ const RECENTER: [&str; 6] = [
     "re center cloud",
     "re center particles",
     "re center",
+];
+/// "What can I say" (V4).
+const HELP: [&str; 6] = [
+    "what can i say",
+    "what can i do",
+    "what do i say",
+    "help",
+    "help me",
+    "voice help",
 ];
 const ALL_NONE: [&str; 6] = [
     "clear everything",
@@ -501,6 +589,9 @@ fn fill(slot: Slot, target_words: &[&str], vocab: &Vocabulary<'_>) -> Result<Int
 
 /// The menu's phrases: the effect row, the toggles and the buttons.
 fn menu(ts: &[&str], vocab: &Vocabulary<'_>) -> Option<Intent> {
+    if any(ts, &HELP) {
+        return Some(Intent::Help);
+    }
     if any(ts, &NEXT) {
         return Some(Intent::NextEffect);
     }
@@ -700,6 +791,395 @@ pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
     surface(&ts, vocab).map_err(miss)
 }
 
+/// The most clauses one sentence asks for (V4): "amber on the desk and
+/// the walls on the bass" is two; more than this is [`Reason::TooMany`].
+pub const MAX_CLAUSES: usize = 3;
+/// How long the label shows "what can I say"'s examples (s).
+pub const HELP_S: f32 = 4.0;
+/// How many examples one ask shows, and the longest one (characters).
+pub const HELP_LINES: usize = 5;
+const MAX_EXAMPLE_CHARS: usize = 29;
+/// The label for [`Reason::TooMany`].
+pub const TOO_MANY_LABEL: &str = "Three things at most in one sentence";
+/// Where a sentence splits into clauses: the conjunctions, a comma, a
+/// semicolon, and a sentence's end (whisper writes two commands said with
+/// a pause as two sentences).
+const SPLITTERS: [&str; 7] = [" and ", " then ", ", ", ";", ". ", "? ", "! "];
+/// Words a clause may open with that join it to the last one, dropped.
+const JOINERS: [&str; 3] = ["and", "then", "also"];
+
+/// `sentence` cut into clauses at the [`SPLITTERS`], each trimmed and
+/// without a leading joiner ("and then rings on the floor" is "rings on
+/// the floor"); a clause of fillers alone ("please") is dropped. A
+/// splitter inside a name the vocabulary has (an effect, a surface, a
+/// behavior or a color whose name carries "and" or a comma) does not
+/// split. A sentence without a splitter is one clause.
+pub fn split_clauses(sentence: &str, vocab: &Vocabulary<'_>) -> Vec<String> {
+    let s = sentence.trim();
+    // ASCII lower case keeps every byte where it was, so the offsets found
+    // in it cut `s`; the splitters are ASCII, so every cut is on a char
+    // boundary.
+    let lower = s.to_ascii_lowercase();
+    let names = vocab
+        .effects
+        .iter()
+        .cloned()
+        .chain(vocab.surfaces.iter().map(|x| x.name.clone()))
+        .chain(vocab.behaviors.iter().map(|b| b.name().to_owned()))
+        .chain((1..=COLOR_KEY).map(|i| color_name(i).to_owned()));
+    let mut guarded: Vec<(usize, usize)> = Vec::new();
+    for name in names {
+        let name = name.to_ascii_lowercase();
+        if !SPLITTERS.iter().any(|sp| name.contains(sp)) {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(i) = lower.get(from..).and_then(|rest| rest.find(&name)) {
+            guarded.push((from + i, from + i + name.len()));
+            from += i + 1;
+        }
+    }
+    let bytes = lower.as_bytes();
+    let mut cuts: Vec<&str> = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < bytes.len() {
+        let hit = SPLITTERS
+            .iter()
+            .find(|sp| bytes[i..].starts_with(sp.as_bytes()))
+            .filter(|sp| !guarded.iter().any(|&(a, b)| a <= i && i + sp.len() <= b));
+        match hit {
+            Some(sp) => {
+                cuts.push(&s[start..i]);
+                i += sp.len();
+                start = i;
+            }
+            None => i += 1,
+        }
+    }
+    cuts.push(&s[start..]);
+    cuts.into_iter()
+        .map(|c| {
+            let mut c = c.trim();
+            while let Some(rest) = JOINERS.iter().find_map(|j| {
+                c.get(..j.len())
+                    .filter(|head| head.eq_ignore_ascii_case(j))
+                    .and_then(|_| c.get(j.len()..))
+                    .filter(|rest| rest.starts_with(char::is_whitespace))
+            }) {
+                c = rest.trim_start();
+            }
+            c.to_owned()
+        })
+        .filter(|c| !normalize(c).is_empty())
+        .collect()
+}
+
+/// One clause of a sentence and what the grammar made of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clause {
+    pub text: String,
+    pub outcome: Result<Intent, Miss>,
+}
+
+/// The sentence as clauses (V4). A sentence the grammar matches whole is
+/// one clause, as in V2 (so a comma whisper put inside a command, "the
+/// desk, in amber", splits nothing); else it is cut ([`split_clauses`])
+/// and each clause parsed on its own, a clause's miss not stopping the
+/// others. More than [`MAX_CLAUSES`] is one clause missing as
+/// [`Reason::TooMany`]; a sentence that does not split keeps its own miss.
+pub fn parse_clauses(sentence: &str, vocab: &Vocabulary<'_>) -> Vec<Clause> {
+    let text = sentence.trim().to_owned();
+    let whole = parse(sentence, vocab);
+    if whole.is_ok() {
+        return vec![Clause {
+            text,
+            outcome: whole,
+        }];
+    }
+    let parts = split_clauses(sentence, vocab);
+    match parts.len() {
+        0 => vec![Clause {
+            text,
+            outcome: whole,
+        }],
+        1 => {
+            let part = parse(&parts[0], vocab);
+            vec![Clause {
+                text,
+                outcome: if part.is_ok() { part } else { whole },
+            }]
+        }
+        n if n > MAX_CLAUSES => vec![Clause {
+            outcome: Err(Miss {
+                reason: Reason::TooMany(n),
+                heard: text.clone(),
+            }),
+            text,
+        }],
+        _ => parts
+            .into_iter()
+            .map(|text| Clause {
+                outcome: parse(&text, vocab),
+                text,
+            })
+            .collect(),
+    }
+}
+
+/// Every example the room gives, in the order the help pages through
+/// them: a round robin over the menu's phrases, the room's surfaces (a
+/// template each, turning through a behavior of the surface's kind, a
+/// color, a band, a strength and "what is"), the world effects and the
+/// kinds ("every wall aurora"). Names come from the vocabulary, so each
+/// one is a surface or an effect of this room.
+fn pool(vocab: &Vocabulary<'_>) -> Vec<String> {
+    let menu: Vec<String> = [
+        "next effect",
+        "music play and next effect",
+        "edit the room",
+        "particles off",
+        "previous effect",
+        "music stop",
+        "recenter the cloud",
+        "rescan the room",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let runs = |kind: u32, k: usize| -> Option<&'static str> {
+        let own: Vec<SurfaceBehavior> = SurfaceBehavior::catalogue(kind)
+            .iter()
+            .copied()
+            .filter(|b| *b != SurfaceBehavior::None && vocab.behaviors.contains(b))
+            .collect();
+        (!own.is_empty()).then(|| own[k % own.len()].name())
+    };
+    let surfaces: Vec<String> = vocab
+        .surfaces
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            let name = &s.name;
+            Some(match i % 5 {
+                0 => format!("{} on {name}", runs(s.kind, i / 5)?),
+                1 => format!("{name} in {}", color_name(1 + (i as u32 / 5) % 7)),
+                2 => format!("{name} on the {}", ["bass", "mids", "highs"][(i / 5) % 3]),
+                3 => format!("{name} {}", ["brighter", "dimmer", "half"][(i / 5) % 3]),
+                _ => format!("what is {name}"),
+            })
+        })
+        .collect();
+    let effects: Vec<String> = vocab
+        .effects
+        .iter()
+        .map(|e| {
+            let switch = format!("switch to {e}");
+            if switch.chars().count() <= MAX_EXAMPLE_CHARS {
+                switch
+            } else {
+                e.clone()
+            }
+        })
+        .collect();
+    let mut kinds: Vec<u32> = Vec::new();
+    for s in &vocab.surfaces {
+        if [KIND_TABLE, KIND_WALL, KIND_FLOOR, KIND_CEILING, KIND_FRAME].contains(&s.kind)
+            && !kinds.contains(&s.kind)
+        {
+            kinds.push(s.kind);
+        }
+    }
+    let kinds: Vec<String> = kinds
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &kind)| Some(format!("every {} {}", kind_name(kind), runs(kind, i + 1)?)))
+        .collect();
+    let lists = [menu, surfaces, effects, kinds];
+    let longest = lists.iter().map(Vec::len).max().unwrap_or(0);
+    (0..longest)
+        .flat_map(|k| lists.iter().filter_map(move |l| l.get(k).cloned()))
+        .collect()
+}
+
+/// The examples the help can show: [`pool`]'s, under 30 characters, and
+/// only those the grammar matches on this vocabulary (every clause), so
+/// the help never shows a phrase that would miss.
+fn shown_pool(vocab: &Vocabulary<'_>) -> Vec<String> {
+    pool(vocab)
+        .into_iter()
+        .filter(|e| {
+            e.chars().count() <= MAX_EXAMPLE_CHARS
+                && parse_clauses(e, vocab).iter().all(|c| c.outcome.is_ok())
+        })
+        .collect()
+}
+
+/// "What can I say", ask number `page` (from 0): the next [`HELP_LINES`]
+/// examples of this room, wrapping round its pool.
+pub fn examples(vocab: &Vocabulary<'_>, page: usize) -> Vec<String> {
+    let pool = shown_pool(vocab);
+    if pool.is_empty() {
+        return Vec::new();
+    }
+    let start = page.wrapping_mul(HELP_LINES) % pool.len();
+    (0..HELP_LINES.min(pool.len()))
+        .map(|k| pool[(start + k) % pool.len()].clone())
+        .collect()
+}
+
+/// Words that say little about which phrase was meant, left out of the
+/// hint's shared words.
+const GLUE: [&str; 5] = ["on", "in", "of", "and", "then"];
+/// With no word shared, the shortest common prefix (characters) that
+/// still makes an example near.
+const MIN_PREFIX: usize = 4;
+
+/// The hint under a [`Reason::NoMatch`]: the example nearest to what was
+/// `heard`, by the words they share (glue words aside), then by how long
+/// a prefix their words have in common; `Try "what can I say"` when
+/// nothing is near.
+pub fn hint(heard: &str, vocab: &Vocabulary<'_>) -> String {
+    let said = normalize(heard);
+    let said_line = said.join(" ");
+    let best = shown_pool(vocab)
+        .into_iter()
+        .map(|e| {
+            let words = normalize(&e);
+            let shared = words
+                .iter()
+                .filter(|w| !GLUE.contains(&w.as_str()) && said.contains(w))
+                .count();
+            let prefix = words
+                .join(" ")
+                .chars()
+                .zip(said_line.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            (shared, prefix, e)
+        })
+        .filter(|(shared, prefix, _)| *shared > 0 || *prefix >= MIN_PREFIX)
+        // The first of the best: `max_by_key` keeps the last of equals.
+        .fold(None::<(usize, usize, String)>, |best, c| match best {
+            Some(b) if (b.0, b.1) >= (c.0, c.1) => Some(b),
+            _ => Some(c),
+        });
+    format!(
+        "Try \"{}\"",
+        best.map_or_else(|| "what can I say".to_owned(), |(.., e)| e)
+    )
+}
+
+/// What a sentence came to (V4, [`respond`]): the label and how long it
+/// shows, and the words for the agent, if any go to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Response {
+    pub label: String,
+    pub seconds: f32,
+    pub agent: Option<String>,
+}
+
+/// The sentence's clauses applied in order, and the label: each clause's
+/// own text (its reply through `apply`, or its miss's text) joined with
+/// " · "; then "what can I say"'s examples a line each, the page turned
+/// on each ask; then, under a [`Reason::NoMatch`] the agent does not take,
+/// the [`hint`]. With the agent on (`agent`), a clause that misses the way
+/// the agent takes (`agent::forwards`) goes to it instead of showing its
+/// miss, and "Thinking…" stands in its place: the whole sentence when
+/// every clause goes or it had too many, else the clauses that go, joined
+/// with " and ". The menu's and the surfaces' clauses that matched are
+/// applied first, so the agent sees the room after them.
+pub fn respond(
+    sentence: &str,
+    clauses: &[Clause],
+    vocab: &Vocabulary<'_>,
+    agent: bool,
+    help_page: &mut usize,
+    mut apply: impl FnMut(&Intent) -> String,
+) -> Response {
+    let goes = |c: &Clause| {
+        agent
+            && matches!(&c.outcome, Err(m) if crate::agent::forwards(&m.reason)
+                || matches!(m.reason, Reason::TooMany(_)))
+    };
+    let mut parts: Vec<String> = Vec::new();
+    let mut extra: Vec<String> = Vec::new();
+    let mut to_agent: Vec<&str> = Vec::new();
+    let (mut missed, mut helped) = (false, false);
+    for c in clauses {
+        match &c.outcome {
+            Ok(Intent::Help) => {
+                extra.extend(examples(vocab, *help_page));
+                *help_page = help_page.wrapping_add(1);
+                helped = true;
+            }
+            Ok(intent) => parts.push(apply(intent)),
+            Err(_) if goes(c) => {
+                to_agent.push(&c.text);
+                if !parts.iter().any(|p| p == crate::agent::THINKING_LABEL) {
+                    parts.push(crate::agent::THINKING_LABEL.to_owned());
+                }
+            }
+            Err(miss) => {
+                missed = true;
+                parts.push(miss_text(miss));
+                if miss.reason == Reason::NoMatch && !extra.iter().any(|l| l.starts_with("Try ")) {
+                    extra.push(hint(&miss.heard, vocab));
+                }
+            }
+        }
+    }
+    let agent_text = (!to_agent.is_empty()).then(|| {
+        if to_agent.len() == clauses.len() {
+            sentence.trim().to_owned()
+        } else {
+            to_agent.join(" and ")
+        }
+    });
+    let label = parts
+        .join(" \u{b7} ")
+        .lines()
+        .map(str::to_owned)
+        .chain(extra)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let seconds = if agent_text.is_some() {
+        crate::agent::THINKING_S
+    } else if helped {
+        HELP_S
+    } else if missed {
+        MISS_S
+    } else {
+        REPLY_S
+    };
+    Response {
+        label,
+        seconds,
+        agent: agent_text,
+    }
+}
+
+/// The log line for a sentence of `clauses`: one clause as [`log_line`]
+/// has it, several as `voice: heard "…" → [<intent or miss>, …] · label
+/// "…"`; the label's lines joined with " | ".
+pub fn clauses_log_line(sentence: &str, clauses: &[Clause], label: &str) -> String {
+    let label = label.replace('\n', " | ");
+    if let [one] = clauses {
+        return log_line(sentence, &one.outcome, &label);
+    }
+    let what: Vec<String> = clauses
+        .iter()
+        .map(|c| match &c.outcome {
+            Ok(intent) => format!("{intent:?}"),
+            Err(miss) => format!("miss {:?}", miss.reason),
+        })
+        .collect();
+    format!(
+        "voice: heard \"{}\" \u{2192} [{}] \u{b7} label \"{label}\"",
+        sentence.trim(),
+        what.join(", ")
+    )
+}
+
 /// One action of the agent's reply (`agent.rs`, the schema's `actions`
 /// items): a kind from the fixed set, a target (a surface's name, a kind
 /// word, `pointed`, or empty) and a value (an effect, `on`/`off`, a
@@ -872,6 +1352,7 @@ pub fn reply(intent: &Intent, vocab: &Vocabulary<'_>) -> String {
             },
         ),
         Intent::Describe(target) => target_name(target, vocab),
+        Intent::Help => "what can I say".to_owned(),
     }
 }
 
@@ -912,6 +1393,7 @@ pub fn miss_text(miss: &Miss) -> String {
             format!("{} doesn't run on {}", behavior.name(), a_kind(*kind))
         }
         Reason::Ambiguous(names) => format!("Which one: {}?", listed(names)),
+        Reason::TooMany(_) => TOO_MANY_LABEL.to_owned(),
     }
 }
 
@@ -1343,7 +1825,7 @@ mod tests {
         );
         assert_eq!(normalize("  Switch   to\tEMBERS! "), ["switch", "embers"]);
         assert_eq!(normalize("What's this?"), ["whats", "this"]);
-        assert_eq!(normalize("table two"), ["table", "two"]);
+        assert_eq!(normalize("table two"), ["table", "2"]);
         let (e, boxes) = (effects(), room());
         let v = vocab(&e, &boxes, Some(0));
         check(
@@ -1756,6 +2238,7 @@ mod tests {
                 .to_owned(),
             ),
             Intent::Describe(t) => ("describe", target(t), String::new()),
+            Intent::Help => unreachable!("the agent's actions have no help"),
         };
         AgentAction {
             kind: kind.to_owned(),
@@ -1915,6 +2398,386 @@ mod tests {
             "voice: heard \"The shelf in blue.\" → miss UnknownSurface(\"shelf\") · label \"No surface called \"shelf\"\"",
         ];
         assert_eq!(lines, want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn number_words_are_digits() {
+        for (said, want) in [
+            ("table two", vec!["table", "2"]),
+            ("table fourteen", vec!["table", "14"]),
+            ("wall twenty one", vec!["wall", "21"]),
+            ("forty", vec!["40"]),
+            ("fifty nine", vec!["59"]),
+            ("twenty twelve", vec!["20", "12"]),
+            ("one", vec!["1"]),
+            ("this one", vec!["this", "one"]),
+            ("that one", vec!["that", "one"]),
+            ("next one", vec!["next", "one"]),
+            ("brightness zero", vec!["brightness", "zero"]),
+        ] {
+            assert_eq!(normalize(said), want, "{said}");
+        }
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        check(
+            &v,
+            &[
+                ("table two in amber", color_of(Target::Surface(2), 4)),
+                ("Wall three on the bass.", band_of(Target::Surface(3), 1)),
+                ("next one", Intent::NextEffect),
+                (
+                    "streamlines on this one",
+                    on(Target::Pointed, B::Streamlines),
+                ),
+                (
+                    "the desk brightness zero",
+                    strength_of(Target::Surface(0), Strength::Off),
+                ),
+            ],
+        );
+        let boxes = replayed_room();
+        let v = vocab(&e, &boxes, None);
+        check(
+            &v,
+            &[
+                ("Table fourteen in amber.", color_of(Target::Surface(14), 4)),
+                ("wall sixteen pulse", on(Target::Surface(16), B::Pulse)),
+            ],
+        );
+    }
+
+    #[test]
+    fn split_clauses_cuts_at_the_joiners_and_never_inside_a_name() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let split = |s: &str| split_clauses(s, &v);
+        assert_eq!(
+            split("Amber on the desk and the walls on the bass."),
+            ["Amber on the desk", "the walls on the bass."]
+        );
+        assert_eq!(
+            split("Next effect, particles off then music play"),
+            ["Next effect", "particles off", "music play"]
+        );
+        assert_eq!(
+            split("Embers on the desk and then rings on the floor."),
+            ["Embers on the desk", "rings on the floor."]
+        );
+        assert_eq!(
+            split("Next effect. Embers on the desk."),
+            ["Next effect", "Embers on the desk."]
+        );
+        assert_eq!(
+            split("next effect; music stop"),
+            ["next effect", "music stop"]
+        );
+        // No splitter, a name without one, a clause of fillers.
+        assert_eq!(
+            split("The desk in warm white."),
+            ["The desk in warm white."]
+        );
+        assert_eq!(split("Next effect, please."), ["Next effect"]);
+        assert_eq!(split("  "), Vec::<String>::new());
+        // A name the room has with "and" in it splits nothing inside it.
+        let e: Vec<String> = ["Flux Cloud", "Rock and Roll"].map(str::to_owned).to_vec();
+        let v = vocab(&e, &boxes, Some(0));
+        assert_eq!(
+            split_clauses("Rock and Roll and next effect", &v),
+            ["Rock and Roll", "next effect"]
+        );
+        let clauses = parse_clauses("rock and roll then embers on the desk", &v);
+        assert_eq!(clauses[0].outcome, Ok(Intent::Effect(1)));
+        assert_eq!(clauses[1].outcome, Ok(on(Target::Surface(0), B::Embers)));
+    }
+
+    #[test]
+    fn parse_clauses_keeps_a_whole_match_and_caps_the_count() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let outcomes = |s: &str| -> Vec<Result<Intent, Reason>> {
+            parse_clauses(s, &v)
+                .into_iter()
+                .map(|c| c.outcome.map_err(|m| m.reason))
+                .collect()
+        };
+        // V2's sentences are one clause, commas and all.
+        assert_eq!(
+            outcomes("The Desk, in Amber, please."),
+            [Ok(color_of(Target::Surface(0), 4))]
+        );
+        assert_eq!(outcomes("Next effect."), [Ok(Intent::NextEffect)]);
+        assert_eq!(outcomes("Flibber jabber."), [Err(Reason::NoMatch)]);
+        // Two and three things.
+        assert_eq!(
+            outcomes("Amber on the desk and the walls on the bass."),
+            [
+                Ok(color_of(Target::Surface(0), 4)),
+                Ok(band_of(Target::Kind(KIND_WALL), 1)),
+            ]
+        );
+        assert_eq!(
+            outcomes("Next effect, particles off and table one dimmer."),
+            [
+                Ok(Intent::NextEffect),
+                Ok(Intent::Cloud(false)),
+                Ok(strength_of(Target::Surface(1), Strength::Down)),
+            ]
+        );
+        // A clause that misses does not stop the others.
+        assert_eq!(
+            outcomes("Embers on the desk and flibber jabber."),
+            [Ok(on(Target::Surface(0), B::Embers)), Err(Reason::NoMatch)]
+        );
+        // Four is too many: one miss for the sentence.
+        let four = parse_clauses(
+            "Next effect, particles off, music play and edit the room.",
+            &v,
+        );
+        assert_eq!(four.len(), 1);
+        let miss = four[0].outcome.as_ref().unwrap_err();
+        assert_eq!(miss.reason, Reason::TooMany(4));
+        assert_eq!(miss_text(miss), TOO_MANY_LABEL);
+    }
+
+    #[test]
+    fn help_and_every_example_parses() {
+        let e = effects();
+        let rooms = [room(), replayed_room()];
+        for boxes in &rooms {
+            for pointed in [None, Some(0)] {
+                let v = vocab(&e, boxes, pointed);
+                for said in ["What can I say?", "help", "Voice help.", "what can I do"] {
+                    assert_eq!(parse(said, &v), Ok(Intent::Help), "{said}");
+                }
+                // Every example the room gives matches, every clause of
+                // it, and fits the label's line.
+                let all = pool(&v);
+                assert!(all.len() >= 20, "{all:?}");
+                for example in &all {
+                    assert!(example.chars().count() < 30, "{example}");
+                    for c in parse_clauses(example, &v) {
+                        assert!(c.outcome.is_ok(), "\"{example}\": {:?}", c.outcome);
+                    }
+                }
+                assert_eq!(shown_pool(&v), all);
+                // Five a page, the next five on each ask, wrapping.
+                let pages: Vec<Vec<String>> = (0..=all.len()).map(|p| examples(&v, p)).collect();
+                assert!(pages.iter().all(|p| p.len() == HELP_LINES));
+                assert_ne!(pages[0], pages[1]);
+                assert_eq!(pages[1][0], all[HELP_LINES]);
+                assert_eq!(pages[all.len()], pages[0]);
+                let seen: std::collections::HashSet<&String> = pages.iter().flatten().collect();
+                assert_eq!(seen.len(), all.len());
+            }
+        }
+        // The examples name this room's surfaces and effects.
+        let boxes = replayed_room();
+        let v = vocab(&e, &boxes, None);
+        assert_eq!(
+            examples(&v, 0),
+            [
+                "next effect",
+                "streamlines on table 0",
+                "switch to Flux Cloud",
+                "every table curls",
+                "music play and next effect",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_hint_is_the_nearest_example() {
+        let (e, boxes) = (effects(), replayed_room());
+        let v = vocab(&e, &boxes, None);
+        // Words in common: the example that shares the most.
+        assert_eq!(
+            hint("Switch over to the flock now.", &v),
+            "Try \"switch to Flock\""
+        );
+        assert_eq!(
+            hint("Make table 14 sort of glowy.", &v),
+            "Try \"what is table 14\""
+        );
+        // Nothing near: the help.
+        assert_eq!(hint("Flibber jabber.", &v), "Try \"what can I say\"");
+    }
+
+    /// `sentence` through the clauses and [`respond`] as the app runs it
+    /// (the menu's intents labeled by [`reply`]), on `lanes`, and its log
+    /// line.
+    fn respond_on(
+        sentence: &str,
+        v: &Vocabulary<'_>,
+        lanes: &mut RoomLanes,
+        boxes: &[LaneBox<'_>],
+        agent: bool,
+        page: &mut usize,
+    ) -> (Response, String) {
+        let clauses = parse_clauses(sentence, v);
+        let response = respond(sentence, &clauses, v, agent, page, |i| {
+            apply(i, v, lanes, boxes).unwrap_or_else(|| reply(i, v))
+        });
+        let line = clauses_log_line(sentence, &clauses, &response.label);
+        (response, line)
+    }
+
+    #[test]
+    fn the_reply_joins_the_clauses_and_the_agent_takes_what_misses() {
+        let dir = std::env::temp_dir().join(format!("fosfora-intent-v4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (e, boxes) = (effects(), room());
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, Some(0));
+        let mut page = 0;
+        let mut say = |sentence: &str, agent: bool, page: &mut usize| {
+            respond_on(sentence, &v, &mut lanes, &boxes, agent, page)
+        };
+        let (r, line) = say(
+            "Amber on the desk and the walls on the bass.",
+            false,
+            &mut page,
+        );
+        assert_eq!(r.label, "desk: amber \u{b7} all walls: bass");
+        assert_close!(r.seconds, REPLY_S);
+        assert_eq!(r.agent, None);
+        assert_eq!(
+            line,
+            "voice: heard \"Amber on the desk and the walls on the bass.\" \u{2192} [Color { target: Surface(0), color: 4 }, Band { target: Kind(3), band: 1 }] \u{b7} label \"desk: amber \u{b7} all walls: bass\""
+        );
+        // A miss joins the reply, with the hint under it.
+        let (r, line) = say("Embers on the desk and flibber jabber.", false, &mut page);
+        assert_eq!(
+            r.label,
+            "desk: embers \u{b7} Didn't catch that: \"flibber jabber.\"\nTry \"what can I say\""
+        );
+        assert_close!(r.seconds, MISS_S);
+        assert!(
+            line.ends_with(
+                "label \"desk: embers \u{b7} Didn't catch that: \"flibber jabber.\" | Try \"what can I say\"\""
+            ),
+            "{line}"
+        );
+        // The agent on: the clause that misses goes to it, alone.
+        let (r, _) = say("Embers on the desk and make it cozy.", true, &mut page);
+        assert_eq!(r.label, "desk: embers \u{b7} Thinking\u{2026}");
+        assert_eq!(r.agent.as_deref(), Some("make it cozy."));
+        assert_close!(r.seconds, crate::agent::THINKING_S);
+        // Every clause misses, or too many: the whole sentence goes.
+        for sentence in [
+            "Make it cozy and warm.",
+            "Something like a campfire on table 1.",
+            "Next effect, particles off, music play and edit the room.",
+        ] {
+            let (r, _) = say(sentence, true, &mut page);
+            assert_eq!(r.agent.as_deref(), Some(sentence), "{sentence}");
+            assert_eq!(r.label, "Thinking\u{2026}", "{sentence}");
+        }
+        // Not with the agent off: the misses' own texts.
+        let (r, _) = say(
+            "Next effect, particles off, music play and edit the room.",
+            false,
+            &mut page,
+        );
+        assert_eq!(r.label, TOO_MANY_LABEL);
+        // A miss the agent does not take stays the grammar's answer.
+        let (r, _) = say("Next effect and the shelf in blue.", true, &mut page);
+        assert_eq!(r.label, "next effect \u{b7} No surface called \"shelf\"");
+        assert_eq!(r.agent, None);
+        // Help: five lines, the page turned.
+        let before = page;
+        let (r, _) = say("What can I say?", false, &mut page);
+        assert_eq!(r.label.lines().count(), HELP_LINES);
+        assert_close!(r.seconds, HELP_S);
+        assert_eq!(page, before + 1);
+        assert_eq!(lanes.params_of(0, &boxes).0, 4);
+        assert_eq!(lanes.params_of(3, &boxes).1, 1);
+        assert_eq!(lanes.effective(0, &boxes).map(|(b, _)| b), Some(B::Embers));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `say` knob's V4 sentences on the replayed room (nothing pointed,
+    /// the agent off), each with the log line and the label the device
+    /// should show: two things, numbers, help twice (the page turns), the
+    /// hint on two misses, and too many.
+    #[test]
+    fn the_v4_sentences_on_the_replayed_room() {
+        let dir =
+            std::env::temp_dir().join(format!("fosfora-intent-v4-say-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let e: Vec<String> = ["Flux Cloud", "Embers", "Flock"]
+            .map(str::to_owned)
+            .to_vec();
+        let boxes = replayed_room();
+        let id = room_id(boxes.iter().map(|b| b.uuid));
+        let mut lanes = RoomLanes::new(dir.clone());
+        lanes.update(id, &boxes);
+        let v = vocab(&e, &boxes, None);
+        let mut page = 0;
+        let mut got = Vec::new();
+        for sentence in [
+            "Amber on table 14 and the walls on the bass.",
+            "Table fourteen in teal, then wall five on the highs.",
+            "Wall sixteen pulse.",
+            "What can I say?",
+            "Help.",
+            "Flibber jabber.",
+            "Make table fourteen sort of glowy.",
+            "Next effect, particles off, music play and edit the room.",
+        ] {
+            let (r, line) = respond_on(sentence, &v, &mut lanes, &boxes, false, &mut page);
+            got.push((line, r.label, r.seconds));
+        }
+        let want: [(&str, &str, f32); 8] = [
+            (
+                "voice: heard \"Amber on table 14 and the walls on the bass.\" \u{2192} [Color { target: Surface(14), color: 4 }, Band { target: Kind(3), band: 1 }] \u{b7} label \"table 14: amber \u{b7} all walls: bass\"",
+                "table 14: amber \u{b7} all walls: bass",
+                REPLY_S,
+            ),
+            (
+                "voice: heard \"Table fourteen in teal, then wall five on the highs.\" \u{2192} [Color { target: Surface(14), color: 6 }, Band { target: Surface(5), band: 3 }] \u{b7} label \"table 14: teal \u{b7} wall 5: high\"",
+                "table 14: teal \u{b7} wall 5: high",
+                REPLY_S,
+            ),
+            (
+                "voice: heard \"Wall sixteen pulse.\" \u{2192} Behavior { target: Surface(16), behavior: Pulse } \u{b7} label \"wall 16: pulse\"",
+                "wall 16: pulse",
+                REPLY_S,
+            ),
+            (
+                "voice: heard \"What can I say?\" \u{2192} Help \u{b7} label \"next effect | streamlines on table 0 | switch to Flux Cloud | every table curls | music play and next effect\"",
+                "next effect\nstreamlines on table 0\nswitch to Flux Cloud\nevery table curls\nmusic play and next effect",
+                HELP_S,
+            ),
+            (
+                "voice: heard \"Help.\" \u{2192} Help \u{b7} label \"storage 1 in blue | switch to Embers | every wall rings | edit the room | wall 2 on the bass\"",
+                "storage 1 in blue\nswitch to Embers\nevery wall rings\nedit the room\nwall 2 on the bass",
+                HELP_S,
+            ),
+            (
+                "voice: heard \"Flibber jabber.\" \u{2192} miss NoMatch \u{b7} label \"Didn't catch that: \"Flibber jabber.\" | Try \"what can I say\"\"",
+                "Didn't catch that: \"Flibber jabber.\"\nTry \"what can I say\"",
+                MISS_S,
+            ),
+            (
+                "voice: heard \"Make table fourteen sort of glowy.\" \u{2192} miss NoMatch \u{b7} label \"Didn't catch that: \"Make table fourteen sort of glowy.\" | Try \"what is table 14\"\"",
+                "Didn't catch that: \"Make table fourteen sort of glowy.\"\nTry \"what is table 14\"",
+                MISS_S,
+            ),
+            (
+                "voice: heard \"Next effect, particles off, music play and edit the room.\" \u{2192} miss TooMany(4) \u{b7} label \"Three things at most in one sentence\"",
+                "Three things at most in one sentence",
+                MISS_S,
+            ),
+        ];
+        assert_eq!(got.len(), want.len());
+        for ((line, label, seconds), (want_line, want_label, want_s)) in got.iter().zip(want) {
+            assert_eq!(line, want_line);
+            assert_eq!(label, want_label);
+            assert_close!(*seconds, want_s);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
