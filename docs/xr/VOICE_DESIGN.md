@@ -651,10 +651,167 @@ with no memory of the last); more providers; the agent proposing new
 behaviors, parameters or surfaces (it only reaches what the hands reach);
 spoken replies; streaming.
 
+## V4 as built
+
+The fourth step, built: voice as an input the wearer can rely on, not a
+feature behind a knob. Nothing new to act on: the grammar's actions are
+V2's. The reviewer runs the unworn gate through the `say` knob and the
+menu toggle, and the worn gate for the tap, the silence close, the meter,
+the help and Flock.
+
+**The toggle, saved.** The hand menu's Music row had an empty right cell;
+it is `Voice: on` / `Voice: off` now, in both layouts, so no row count
+changes. The state is in `hand_menu.json` next to the debug panel's,
+`{"debug":false,"voice":true}` (`palm_panel::MenuFile`); a file without
+the field reads voice as on, so a headset updated from V3 keeps
+listening. `debug.fosfora.voice 0|1` forces the toggle at launch and
+saves it, as `debug.fosfora.hud` does the debug panel's. Off: neither
+opener does anything for voice, an open window is dropped unheard, a
+transcription that returns is dropped, and the label shows nothing.
+`voice: on (menu)` / `voice: off (menu)` in the log on a change.
+
+The model loads at launch when the toggle is on at launch; a launch with
+it off loads nothing, so a sweep with `debug.fosfora.voice 0` stays free
+of the model as before. The first turn on from the menu loads it then
+(and asks for `RECORD_AUDIO` if it is missing; a grant is picked up
+within a second); turning it off keeps the model loaded, so the toggle is
+instant from then on.
+
+**Two openers.** The left fist held, as V1; and a thumb tap on the index
+(`XR_META_hand_tracking_microgestures`, either hand), logged `voice:
+window open (thumb tap, <hand>)`. Both are on whenever voice is.
+`PushToTalk` knows which opened the window (`Window::Open { opener: Fist
+| Tap }`):
+
+| Opener | Opens | Closes |
+|---|---|---|
+| Fist | after 0.15 s held | on release, or at 6 s; ignores taps and the level |
+| Tap | at once | once speech has been heard and 0.6 s of audio has passed, after 0.8 s under the quiet level; at 6 s; on a second tap; ignores the fist |
+
+Requiring speech first keeps a wearer who taps and then gathers a
+sentence from being cut off before they begin; a pause between words
+shorter than 0.8 s does not close. The level is the RMS of the stream's
+last 50 ms (`voice::level`), taken where the ring is drained. The quiet
+level starts at 0.01 RMS on the ±1 scale (-40 dBFS); the knob
+`debug.fosfora.voicequiet <level>` tunes it against the room. The launch
+logs the threshold, and each close its cause: `voice: window closed after
+2.40 s (quiet 0.8 s at 0.004)`, `(release)`, `(6 s)`, `(second tap)`.
+A fist held through a tap window has to open before it presses again.
+
+**The meter.** While a window is open, a thin bar under "Listening…"
+whose length is the level, log-scaled over 40 dB (`voice::meter_width`:
+-40 dBFS and below empty, -20 dBFS half, full scale the whole bar), so
+the quiet level is exactly the empty bar; redrawn each frame. When the
+window closes the bar goes; "…" and the sentence are as in V1.
+
+**Two things in one sentence.** A sentence the grammar misses whole is
+cut into clauses (`intent::split_clauses`) at " and ", " then ", ", ",
+";" and a sentence's end ("Next effect. Embers." is two: whisper writes
+two commands said with a pause as two sentences), never inside a name
+the room has (an effect, a surface, a behavior or a color whose name
+carries a splitter); a leading "and" or "then" is dropped, and so is a
+clause of fillers alone ("please"). Each clause is parsed on its own
+and applied in order; a clause that misses does not stop the others; at
+most three, more is one miss (`TooMany`, "Three things at most in one
+sentence"). Matching the whole sentence first keeps every V2 sentence one
+clause, commas and all ("The desk, in amber, please."), so splitting only
+rescues a sentence V2 missed. A clause sharing a slot with the next one
+is not understood ("the desk and the table in amber" is "desk", a miss,
+and "table in amber").
+
+| Said | Label |
+|---|---|
+| Amber on table 14 and the walls on the bass. | table 14: amber · all walls: bass |
+| Embers on the desk and flibber jabber. | desk: embers · Didn't catch that: "flibber jabber." / Try "what can I say" |
+
+The log lists every intent: `voice: heard "…" → [Color { … }, Band { … }]
+· label "…"`; a one-clause sentence keeps V2's line exactly. A label of
+several lines is logged with its lines joined by " | ".
+
+**With the agent.** A clause that misses the way the agent takes (NoMatch
+or UnknownBehavior, `agent::forwards`) goes to it instead of showing its
+miss, "Thinking…" in its place in the label, after the matched clauses
+were applied, so the model sees the room after them. When every clause
+goes, or the sentence had too many, the whole sentence goes, exactly as
+V3 sent it ("Make the room feel like the ocean." is unchanged); else only
+the clauses that go, joined with " and " ("Embers on the desk and make it
+cozy." applies the embers and asks the agent "make it cozy."). The
+grammar's other misses stay its answers.
+
+**Number words.** The normalizer turns `one` to `twenty`, `thirty`,
+`forty`, `fifty` and the compounds ("twenty one") into digits, so "table
+fourteen" names table 14. "One" after "this", "that", "next", "previous"
+or "last" stays a word ("this one", "next one"); "zero" stays a word
+("strength zero").
+
+**"What can I say".** "What can I say", "what can I do", "help", "voice
+help" show five example phrases for 4 s, a line each (the voice label
+grows for them), and the next five on each ask, wrapping
+(`intent::examples`). They are built from the room: a round robin over
+the menu's phrases ("next effect", "music play and next effect", "edit
+the room", …), a template per surface of this room turning through a
+behavior of its kind, a color, a band, a strength and "what is"
+("streamlines on table 0", "storage 1 in blue", "wall 2 on the bass"),
+the world effects ("switch to Embers") and the kinds ("every wall
+rings"); each under 30 characters, and only those whose every clause
+parses on the same vocabulary, so the help never shows a phrase the
+grammar would miss.
+
+**The hint.** A NoMatch the agent does not take gets one line under
+"Didn't catch that": the nearest example, by the words they share (glue
+words such as "on" aside), then by the common prefix of their words, else
+`Try "what can I say"`. "Switch over to the flock now." hints `Try
+"switch to Flock"`.
+
+**The fist and Flock.** With voice on, the left fist opens the voice
+window everywhere, so Murmur's predator fist no longer acts on the left
+hand: the flock sees an open left hand (`voice::flock_poses`, masking
+the pose `pose::decide` reads), the right fist keeps its predator, and
+the log says so once per change. With voice off, Flock is as it was.
+
+**The label's place.** At the left palm when it is located, as V1; with
+the palm out of view (a tap from the right hand, the left one down), 1 m
+ahead of the head along its view, as the `say` knob's and the
+`voicefile` clip's label (`voice::label_anchor`). V1 put it at the head
+itself then.
+
+**The knobs.** `debug.fosfora.voice 0|1` (forces the toggle at launch,
+saved), `debug.fosfora.voicequiet <level>` (the tap window's quiet level,
+default 0.01), and V1 to V3's unchanged: `voicethreads`, `voicefile`,
+`say`, `agent`.
+
+**The `say` knob on the replayed room** (nothing pointed, the agent off;
+`the_v4_sentences_on_the_replayed_room` checks these lines):
+
+| Sentence | Label |
+|---|---|
+| Amber on table 14 and the walls on the bass. | table 14: amber · all walls: bass |
+| Table fourteen in teal, then wall five on the highs. | table 14: teal · wall 5: high |
+| Wall sixteen pulse. | wall 16: pulse |
+| What can I say? | next effect / streamlines on table 0 / switch to Flux Cloud / every table curls / music play and next effect (4 s) |
+| Help. | storage 1 in blue / switch to Embers / every wall rings / edit the room / wall 2 on the bass (4 s) |
+| Flibber jabber. | Didn't catch that: "Flibber jabber." / Try "what can I say" |
+| Make table fourteen sort of glowy. | Didn't catch that: "Make table fourteen sort of glowy." / Try "what is table 14" |
+| Next effect, particles off, music play and edit the room. | Three things at most in one sentence |
+
+**Where it differs from the brief.** `split_clauses` takes the
+vocabulary (it guards the room's names) and also splits at a sentence's
+end. A sentence is matched whole before it is split. A tap window closes
+on silence only once speech has been heard, so quiet before any speech
+waits for the speech or `MAX_S`. A launch with the toggle off loads no
+model, and the first turn on loads it. The `say` knob still feeds the
+grammar with the toggle off, as V2's did with voice off. TooMany goes to
+the agent when it is on (V3 sent such a sentence as a NoMatch).
+
+**Not yet.** Spoken replies; a voice-only menu (the menu read aloud);
+anything but English; a slot shared across clauses ("the desk and the
+table in amber").
+
 ## Open questions for Kevin
 
 1. The opener: the left fist held, or the thumb tap, or both from the
-   start? Default taken if silent: the fist, the tap later.
+   start? Default taken if silent: the fist, the tap later. V4 added the
+   tap as the second opener ("V4 as built").
 2. Bundle the model in the APK or fetch on first use? Default: bundle
    `base.en` (148 MB; the spike made it the model).
 3. Is the agent in scope for the first release of the voice path, or does
