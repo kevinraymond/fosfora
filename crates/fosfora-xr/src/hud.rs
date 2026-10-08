@@ -7,7 +7,10 @@
 //! rows, the particle pitcher's on/off toggle and the debug panel's, under
 //! them the room editor's toggle beside its status ("desk: embers",
 //! board #3326), under that the cloud's toggle (`room_edit::Cloud`), and
-//! at the bottom the music's play/stop (`music.rs`, board #3472).
+//! at the bottom the music's play/stop (`music.rs`, board #3472). With
+//! Edit room on, three more rows under the editor's (board #3472, D3):
+//! the color, the band and the strength of the surface under the beam,
+//! each stepped with `<` and `>`, the menu growing upward to hold them.
 //! With debug on the same quad grows upward into the debug
 //! panel (frame timing, the effect, hands, reach, anchor and audio, and
 //! controls for what can change without a restart), the menu rows still
@@ -35,7 +38,7 @@ use glam::{Quat, Vec3};
 use crate::gfx::{Beam, Gfx, PanelPose};
 use crate::palm_panel::{PalmPanel, Touch};
 use crate::panel_grid::{
-    self as grid, FONT_BUTTON, FONT_END, FONT_GRAPH, FONT_LABEL, FONT_TITLE, FONT_VALUE, MENU_H,
+    self as grid, FONT_BUTTON, FONT_END, FONT_GRAPH, FONT_LABEL, FONT_TITLE, FONT_VALUE,
     PIXELS_PER_POINT, TEX_H, TEX_W,
 };
 use crate::perf::PerfSample;
@@ -135,6 +138,9 @@ pub enum Action {
     /// The "All: none" button: every room surface and every kind default
     /// to none, saved (board #3326, Kevin's debug ask).
     AllNone,
+    /// A surface row's `<` (false) or `>` (true) with Edit room on: step
+    /// that parameter of the surface under the beam (board #3472, D3).
+    SurfaceParam(crate::lanes::Param, bool),
 }
 
 impl Controls {
@@ -169,6 +175,11 @@ enum Target {
     AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
+    /// The surface rows' `<` and `>` (Edit room on, board #3472, D3): up
+    /// is `>`, as for `Step`.
+    Color(bool),
+    Band(bool),
+    Strength(bool),
 }
 
 /// Frame-loop numbers from the last one-second window.
@@ -208,6 +219,10 @@ pub struct View<'a> {
     /// The room editor's status: the pointed surface and its behavior
     /// ("desk: embers"), "no surface" or "edit room off".
     pub edit_status: &'a str,
+    /// The pointed surface's color index, band and strength
+    /// (`lanes::RoomLanes::params_of`) for the surface rows; `None` with no
+    /// surface under the beam or Edit room off.
+    pub surface_params: Option<(u32, u32, f32)>,
 }
 
 /// The panel's colors (board #3523): the Blue and orange theme, the same
@@ -224,6 +239,9 @@ fn with_alpha(c: Color32, a: u8) -> Color32 {
 pub struct Hud {
     /// The debug panel is on (else the hand menu shows only its toggle).
     debug: bool,
+    /// Edit room was on at the last render: the menu holds the surface
+    /// rows, and the quad is placed tall enough for them.
+    editing: bool,
     placement: PalmPanel,
     touch: Touch,
     was_pressed: bool,
@@ -280,6 +298,7 @@ impl Hud {
         });
         Self {
             debug,
+            editing: false,
             placement: PalmPanel::default(),
             touch: Touch::default(),
             was_pressed: false,
@@ -374,12 +393,13 @@ impl Hud {
         self.debug
     }
 
-    /// The texture height the quad shows (points): the menu strip, or all.
+    /// The texture height the quad shows (points): the menu strip (taller
+    /// with Edit room's surface rows), or all.
     fn visible_pts(&self) -> f32 {
         if self.debug {
             TEX_H as f32 / PIXELS_PER_POINT
         } else {
-            MENU_H
+            grid::menu_h(grid::menu_rows(self.editing))
         }
     }
 
@@ -523,7 +543,7 @@ impl Hud {
                     if debug {
                         crowded = panel_ui(ui, view, &history, controls, rows);
                     } else {
-                        menu_ui(ui, controls, view.edit_status, rows);
+                        menu_ui(ui, controls, view, rows);
                     }
                     // The cursor: a filled dot while pressed, else a ring.
                     // For a poke the ring shrinks as the fingertip closes
@@ -558,13 +578,15 @@ impl Hud {
             self.locked = hovered;
             self.repeat_at = now + REPEAT_DELAY_S;
             hovered
-        } else if let Some(t @ Target::Step(..)) = self.locked
+        } else if let Some(t @ (Target::Step(..) | Target::Strength(_))) = self.locked
             && pressed
             && now >= self.repeat_at
         {
             // From now, not from the schedule: after a stall (an effect
             // switch, a hand-mesh upload) a scheduled repeat fired once per
             // frame until it caught up and jumped the value to its clamp.
+            // A held Strength `>` ramps too; the color and the band do not
+            // repeat (a held press would spin through them).
             self.repeat_at = now + REPEAT_EVERY_S;
             Some(t)
         } else {
@@ -596,6 +618,15 @@ impl Hud {
                 actions.push(Action::SetMusic(controls.music));
             }
             Some(Target::AllNone) => actions.push(Action::AllNone),
+            Some(Target::Color(up)) => {
+                actions.push(Action::SurfaceParam(crate::lanes::Param::Color, up));
+            }
+            Some(Target::Band(up)) => {
+                actions.push(Action::SurfaceParam(crate::lanes::Param::Band, up));
+            }
+            Some(Target::Strength(up)) => {
+                actions.push(Action::SurfaceParam(crate::lanes::Param::Strength, up));
+            }
             Some(Target::Step(i, up)) => {
                 let (name, lo, hi, step) = STEPPERS[i];
                 let v = controls.field(i);
@@ -650,6 +681,9 @@ impl Hud {
         for id in &output.textures_delta.free {
             self.renderer.free_texture(id);
         }
+        // The next frame places the quad for the rows this state lays out
+        // (a toggle this frame was laid out before it fired).
+        self.editing = controls.edit_room;
         actions
     }
 }
@@ -675,6 +709,8 @@ enum Control<'a> {
     Button(Target, &'a str),
     /// Two cells side by side (`None`: an empty one).
     Pair([Option<Cell<'a>>; 2]),
+    /// Text across the row, no target: a status.
+    Text(String),
 }
 
 /// One cell of a pair row.
@@ -697,6 +733,7 @@ impl Control<'_> {
         match self {
             Self::Wide { left, right, .. } => Some(if hit.col == 1 { right.0 } else { left.0 }),
             Self::Button(t, _) => Some(*t),
+            Self::Text(_) => None,
             Self::Pair(cells) => match cells[hit.col].as_ref()? {
                 Cell::Stepper { index, .. } => Some(Target::Step(*index, hit.right)),
                 Cell::Button(t, _) => Some(*t),
@@ -743,6 +780,7 @@ impl Rows<'_> {
                     );
                 }
                 Control::Button(t, label) => self.button(painter, row, *t, label, on.is_some()),
+                Control::Text(text) => label(painter, row, text),
                 Control::Pair(cells) => {
                     for (col, cell) in cells.iter().enumerate() {
                         let area = grid::cell(row, col);
@@ -1042,6 +1080,9 @@ fn panel_ui(
     });
     block.push(menu_row(true, controls.pitcher));
     block.push(edit_row(controls.edit_room, view.edit_status));
+    if controls.edit_room {
+        block.extend(surface_rows(view.surface_params));
+    }
     block.push(cloud_row(controls.cloud, controls.edit_room));
     block.push(music_row(controls.music));
     let bottom = grid::PANEL_H;
@@ -1049,16 +1090,54 @@ fn panel_ui(
     header_end > grid::block_top(bottom, block.len())
 }
 
-/// The hand menu with the debug panel off: a title over its rows.
-fn menu_ui(ui: &mut egui::Ui, controls: &Controls, edit_status: &str, mut rows: Rows<'_>) {
+/// The hand menu with the debug panel off: a title over its rows, the
+/// surface rows among them while Edit room is on.
+fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Rows<'_>) {
     ui.label(RichText::new("Fosfora").strong().size(FONT_TITLE));
-    let block: [Control<'_>; grid::MENU_ROWS] = [
-        menu_row(false, controls.pitcher),
-        edit_row(controls.edit_room, edit_status),
-        cloud_row(controls.cloud, controls.edit_room),
-        music_row(controls.music),
-    ];
-    rows.block(ui, MENU_H, &block);
+    let editing = controls.edit_room;
+    let mut block = Vec::with_capacity(grid::menu_rows(editing));
+    block.push(menu_row(false, controls.pitcher));
+    block.push(edit_row(editing, view.edit_status));
+    if editing {
+        block.extend(surface_rows(view.surface_params));
+    }
+    block.push(cloud_row(controls.cloud, editing));
+    block.push(music_row(controls.music));
+    debug_assert_eq!(block.len(), grid::menu_rows(editing));
+    rows.block(ui, grid::menu_h(block.len()), &block);
+}
+
+/// The surface rows, under the room editor's while Edit room is on (board
+/// #3472, D3): the color, the band and the strength of the surface under
+/// the beam (`params`, as the face runs them), each a `<` and a `>` with
+/// the parameter's name and value between, "Color  amber". The editor
+/// holds its hit while the panel is up, so the wearer points at a surface,
+/// turns the palm up and steps it. With no surface, one line says so over
+/// two empty rows (the menu keeps its height), and nothing presses.
+fn surface_rows(params: Option<(u32, u32, f32)>) -> [Control<'static>; grid::SURFACE_ROWS] {
+    let Some((color, band, strength)) = params else {
+        return [
+            Control::Text("Point at a surface".to_owned()),
+            Control::Text(String::new()),
+            Control::Text(String::new()),
+        ];
+    };
+    let row = |target: fn(bool) -> Target, middle: String| Control::Wide {
+        left: (target(false), "<"),
+        right: (target(true), ">"),
+        middle,
+    };
+    [
+        row(
+            Target::Color,
+            format!("Color  {}", crate::surfaces::color_name(color)),
+        ),
+        row(
+            Target::Band,
+            format!("Band  {}", crate::surface_fx::band_name(band)),
+        ),
+        row(Target::Strength, format!("Strength  {strength:.1}")),
+    ]
 }
 
 /// The music's row, the bottom row in both layouts: play or stop, the

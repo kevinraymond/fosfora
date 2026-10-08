@@ -1035,6 +1035,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // The panel's "All: none" this frame, applied once the frame's boxes
     // are known.
     let mut all_none = false;
+    // Board #3472, D3: a surface row's step this frame (which parameter,
+    // up or down), applied the same way to the surface under the beam.
+    let mut surface_step: Option<(crate::lanes::Param, bool)> = None;
     // Closest thumb-index approach per hand since the last log (meters):
     // shows near-miss pinches that never crossed the threshold.
     let mut tip_min = [f32::MAX; 2];
@@ -1310,6 +1313,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         reach: reach_now.map(|r| r.map(|r| (r.real_m, r.virtual_m))),
                         pose: &pose_text,
                         edit_status: &edit_status,
+                        // Last frame's hit (the editor steps below), held
+                        // while the panel is up; the file as it is now.
+                        surface_params: editor
+                            .hit()
+                            .filter(|_| controls.edit_room)
+                            .map(|h| surface_lanes.params_of(h.index, &lane_boxes)),
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
@@ -1338,6 +1347,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             // Logged with the cloud's change, below.
                             Action::SetCloud(_) => {}
                             Action::AllNone => all_none = true,
+                            Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
                             Action::SetMusic(on) => music.set(on),
                             Action::SetPitcher(on) => info!(
                                 "pitcher {} ({}/s at {} m/s)",
@@ -1354,6 +1364,50 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 all_none = false;
                 info!("edit room: every surface -> none (the panel)");
                 surface_lanes.all_none(&lane_boxes);
+            }
+            // Board #3472, D3: a surface row's step, on the surface under
+            // the beam (the editor holds its hit while the panel is up, so
+            // it is the one the rows show), through the lanes' typed
+            // writer: the same entry fields the knob's
+            // `:<color>:<band>@<strength>` writes, saved and logged the
+            // same way. The label at the hit names the result.
+            if let Some((param, up)) = surface_step.take() {
+                let what = match param {
+                    crate::lanes::Param::Color => "color",
+                    crate::lanes::Param::Band => "band",
+                    crate::lanes::Param::Strength => "strength",
+                };
+                let dir = if up { "up" } else { "down" };
+                match editor.hit().filter(|_| controls.edit_room) {
+                    Some(h) => {
+                        let k = h.index;
+                        let name = crate::surfaces::friendly_name(k, &lane_boxes);
+                        let edit = crate::lanes::ParamEdit::step(
+                            param,
+                            up,
+                            surface_lanes.params_of(k, &lane_boxes),
+                        );
+                        info!("edit room: {name} {what} {dir} (the panel)");
+                        if surface_lanes.set_params(k, &lane_boxes, edit) {
+                            let behavior = surface_lanes
+                                .effective(k, &lane_boxes)
+                                .map(|(b, _)| b)
+                                .unwrap_or_default();
+                            label.show(
+                                crate::label::param_text(
+                                    &name,
+                                    behavior,
+                                    surface_lanes.params_of(k, &lane_boxes),
+                                ),
+                                h.point,
+                                h.normal,
+                            );
+                        }
+                    }
+                    None => info!(
+                        "edit room: {what} {dir} with no surface under the beam, nothing changed"
+                    ),
+                }
             }
             if let Some(p) = particles.as_ref() {
                 if recenter_on_wearer && !recentered {
@@ -2114,7 +2168,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 for e in surface_ports.iter_mut().flatten() {
                     e.advance(dt);
                 }
-                let mut port_faces = Vec::new();
+                // The ported faces this frame: effect, face, kind,
+                // behavior, strength and color index.
+                let mut ported = Vec::new();
                 let mut spectrum_sign = 1.0;
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     // The lane's behavior, strength, color index and band
@@ -2160,29 +2216,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     // A ported desktop effect (board #3489): its own
                     // slot, the face turned upright for its frame, the
-                    // effect's uniform for this face's size. The lane's
-                    // color and band are not read: its colors are its own.
-                    if let (Some(i), Some(effects)) = (behavior.port(), surface_ports.as_ref()) {
-                        let face = crate::surface_port::port_face(face);
-                        let effect = &effects[i];
+                    // effect's uniform for this face's size, built below
+                    // once the key's tint is known. Since D3 (board
+                    // #3472) the lane's color index tints it
+                    // (`surface_port::tint`: index 0 leaves its colors its
+                    // own); the band is not read, a port follows its own
+                    // audio bindings.
+                    if let (Some(i), Some(_)) = (behavior.port(), surface_ports.as_ref()) {
                         counts[5] += 1;
-                        port_faces.push(crate::gfx::PortFace {
-                            effect: i,
-                            uniforms: crate::surface_port::uniforms(
-                                &f,
-                                audio.clock,
-                                dt,
-                                frame_index,
-                                face.half,
-                                effect.params(),
-                            ),
-                            rows: crate::surface_port::rows(
-                                &face,
-                                strength,
-                                effect.overlay,
-                                behavior.id(),
-                            ),
-                        });
+                        ported.push((
+                            i,
+                            crate::surface_port::port_face(face),
+                            b.kind,
+                            behavior,
+                            strength,
+                            color,
+                        ));
                         continue;
                     }
                     match behavior {
@@ -2201,15 +2250,49 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         band,
                     });
                 }
-                // The key's tint only when a lit face asks for it: the
-                // desktop's key hue from core's binding sources, which
-                // builds a map of every source.
-                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY) {
+                // The key's tint only when a lit face asks for it (a
+                // ported one too, since D3): the desktop's key hue from
+                // core's binding sources, which builds a map of every
+                // source.
+                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY)
+                    || ported
+                        .iter()
+                        .any(|&(.., color)| color == crate::surfaces::COLOR_KEY)
+                {
                     let hue = fosfora_app::bindings::sources::collect_audio(&f)
                         .get("audio.key_hue")
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
                 }
+                let mut port_faces: Vec<_> = surface_ports
+                    .as_ref()
+                    .map(|effects| {
+                        ported
+                            .iter()
+                            .map(|&(i, face, kind, behavior, strength, color)| {
+                                let effect = &effects[i];
+                                crate::gfx::PortFace {
+                                    effect: i,
+                                    uniforms: crate::surface_port::uniforms(
+                                        &f,
+                                        audio.clock,
+                                        dt,
+                                        frame_index,
+                                        face.half,
+                                        effect.params(),
+                                    ),
+                                    rows: crate::surface_port::rows(
+                                        &face,
+                                        strength,
+                                        effect.overlay,
+                                        behavior.id(),
+                                        crate::surface_port::tint(color, kind, audio.key_tint),
+                                    ),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let spectrum = canvas.as_ref().map(|c| crate::surface_fx::Spectrum {
                     canvas: c,
                     sign: spectrum_sign,
