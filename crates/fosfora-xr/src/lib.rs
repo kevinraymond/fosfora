@@ -9,7 +9,8 @@
 //! S4 one core effect on a world-locked quad, S5 world-space particles on
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
 //! geometry as obstacles; the room's surfaces as emitters, the floor
-//! ripple, the wall spectrum, the hand instruments and the room editor.
+//! ripple, the wall spectrum, the hand instruments, the room editor and the
+//! thumb microgestures.
 
 // Declared first: `assert_close!` is textually scoped to the modules after it.
 #[cfg(test)]
@@ -37,6 +38,7 @@ pub mod instruments;
 pub mod label;
 pub mod lanes;
 pub mod math;
+pub mod microgestures;
 pub mod music;
 pub mod palm_panel;
 pub mod panel_grid;
