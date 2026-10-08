@@ -431,6 +431,226 @@ goes nowhere else. Numbers as digits: "table fourteen" does not name
 table 14 (whisper writes digits for a spoken number, which do). Anything
 but English. Two actions in one sentence.
 
+## V3 as built
+
+The third step, built; the reviewer runs the unworn gate with sentences
+through the `say` knob on a headset with a `voice.json`, and the worn gate
+with five sentences the grammar cannot match.
+
+**The module.** `crates/fosfora-xr/src/agent.rs`: the config, the two
+providers' requests and replies, the room's JSON and the label are pure
+and desktop-tested; the call is a thin `ureq` wrapper on its own thread
+(`fosfora-agent`). `intent.rs` gains `AgentAction` (one item of the
+reply: `kind`, `target`, `value`) and `Intent::from_json`, which resolves
+an action through the grammar's own slots and target lookup.
+
+**The provider is the wearer's choice** (Kevin, Oct 8), named in
+`voice.json` under the config dir (`files/config/voice.json` in the app's
+data), read once at launch. Every field but the key for Anthropic is
+optional:
+
+| Field | Meaning | Default |
+|---|---|---|
+| `provider` | `anthropic` (the Messages API) or `openai` (any OpenAI-compatible chat completions endpoint) | `anthropic` |
+| `base_url` | where the API lives | `https://api.anthropic.com`, `https://api.openai.com/v1` |
+| `model` | the model asked | `claude-opus-5-5` for Anthropic; **required** for `openai` |
+| `api_key` | the key | **required** for Anthropic; none for a local server (no `Authorization` header is sent) |
+| `extra` | an object merged into the top level of an `openai` request body (the Anthropic request ignores it) | empty |
+
+Anthropic, with a key (the key is a placeholder here; the real one never
+enters the repo):
+
+```json
+{ "provider": "anthropic", "api_key": "<the key>" }
+```
+
+A local OpenAI-compatible server on the LAN (llama.cpp's server, Ollama,
+LM Studio), no key, the sentence staying in the room. Ollama's thinking
+models spend the whole output budget on hidden reasoning unless the body
+carries `"think": false` (2.5 s and a schema-valid reply with it, on
+qwen3.5); OpenAI's own API refuses unknown fields, so it lives in
+`extra`, never in the code:
+
+```json
+{ "provider": "openai", "base_url": "http://192.168.1.20:11434/v1",
+  "model": "qwen3.5", "extra": { "think": false } }
+```
+
+Put it on the headset with adb (the file is git-ignored wherever it sits):
+`adb shell "run-as dev.fosfora.xr sh -c 'cat > files/config/voice.json'" < voice.json`,
+then relaunch.
+
+**The private-address rule.** `https://` anywhere; plain `http://` only to
+a private address (`localhost`, loopback, 10/8, 172.16/12, 192.168/16),
+since a key over plain HTTP on the internet is a leak; anything else
+leaves the agent off with the reason in the log. A `.local` name does not
+count: use the server's address.
+
+**Off, and why.** A missing file, a broken one (the log names its line and
+column, never its contents), `openai` without a model, `anthropic`
+without a key, an unknown provider, an `extra` that is not an object, or
+plain `http://` to a public address: the agent is off, logged once, and
+the grammar's misses keep V2's text.
+
+**One task, two wrappers.** Both providers send the same three things,
+so the model sees the same task whoever serves it:
+
+- *The instruction* (`agent::INSTRUCTION`, one fixed paragraph, so it
+  caches): the model is the room's assistant; it gets the room and one
+  sentence; it answers only with the JSON object (a list of actions in the
+  order to apply them, and `say`, at most 60 characters, for the label);
+  what each action kind does and what each behavior looks like (embers
+  shed off a top face on the beat, aurora is flowing curtains, and so on),
+  so "a campfire" can find embers; surfaces by their names, kinds by their
+  words, behaviors only from the target's own kind; the pointed surface
+  when the sentence says "this" or names none; no actions and a sentence
+  saying so when the actions cannot express the request; never an
+  invented name.
+- *The schema* (`agent::schema`), every object closed
+  (`additionalProperties: false`) and every field required: `actions`, a
+  list of `{kind, target, value}`, and `say`. The kinds: `next_effect`,
+  `prev_effect`, `effect`, `edit_room`, `cloud`, `particles`, `pitcher`,
+  `music`, `rescan`, `recenter`, `all_none`, `behavior`, `color`, `band`,
+  `strength`, `describe`. The target: a surface's name, a kind word
+  (`table`, `floor`, `wall`, `ceiling`, `frame`, `other`), `pointed`, or
+  empty. The value: an effect's name, `on`/`off`, a behavior, a color, a
+  band, `up`/`down`/`half`/`full`/`off`, or empty.
+- *The room* as JSON, then the sentence, in the user message: the world
+  effect showing and every effect; every surface as `{name, kind, size_m:
+  [w, h], behavior, color, band, strength}` (the acting face's sides,
+  larger first; the color `own` for the kind's own); the pointed surface's
+  name or null; each kind's behaviors (`SurfaceBehavior::catalogue`); the
+  color names and the band names.
+
+**The Anthropic request**: `POST {base_url}/v1/messages` with
+`content-type`, `x-api-key`, `anthropic-version: 2023-06-01` and
+`anthropic-beta: server-side-fallback-2026-07-01`; the body has the
+model, `max_tokens` 4096 (shared with the model's thinking, which runs
+at every effort; the reply itself is short), `output_config` with
+`effort: low` and the
+schema as a `json_schema` format, `fallbacks: "default"` (a refusal is
+retried server-side on a fallback model), the instruction as one system
+block with `cache_control`, and one user message. It sends no `thinking`
+(the model thinks by default and refuses an explicit setting), no
+`temperature`, no `tool_choice`, no prefill. The reply: a status other
+than 200 is an error with its body logged in full (never a header); a
+`refusal` stop is refused, with `stop_details.category`; a `max_tokens`
+stop is cut off; else the first `text` block, after any thinking blocks.
+
+**The OpenAI-compatible request**: `POST {base_url}/chat/completions`
+with `content-type` and, when a key exists, `authorization: Bearer`; the
+body has the model, `max_tokens` 1024, the schema as a strict
+`response_format` named `room_actions`, the instruction as the system
+message and the room and sentence as the user message, then `extra`'s
+members. No `temperature`, no tools. The reply: `finish_reason` `length`
+is cut off, `content_filter` refused, else the first choice's content.
+
+**Either way**, the reply is read from the first balanced `{…}` in the
+text, so a server that ignores the schema, or wraps the JSON in prose or a
+code fence, still works when the model obeys the instruction. An endpoint
+that refuses the format (Anthropic's 400 naming `output_config` or
+`format`; a 400 or 422 naming `response_format`) gets the request once
+more without it, in the time left, and the log says which path a call
+took (`schema` or `no schema (retried)`). The fixtures in the tests take
+the schema path; which one a live endpoint takes is the reviewer's to
+read from the log.
+
+**The wiring** (`app.rs`). Two misses go to the agent
+(`agent::forwards`): NoMatch, a sentence no template fits, and
+UnknownBehavior, one that fits a template's shape but names a behavior
+the catalogue lacks ("a campfire on the desk", "fire on the desk"),
+which a model can read for its meaning (Kevin, Oct 8). The grammar's
+other misses (no such surface, which the agent cannot know either; not
+on this kind; which one; nothing pointed at) are already answers and
+keep their labels. The frame builds the room's state
+from V2's vocabulary, the lanes' assignments and each box's acting face,
+builds the request, and hands it to the call's thread; the label reads
+"Thinking…" (13 s, past the call's 12 s limit) and the frame loop polls
+the channel, never waits. One call is in flight: a newer sentence's call
+replaces it and the older answer is dropped. On an answer, each action
+becomes an intent through `Intent::from_json` and applies through
+`apply_intent`, the function V2's grammar intents go through (refactored
+out of the frame, unchanged), in order. A dropped action (a name the room
+lacks, a color like "orchid") is the grammar's own miss, named on one log
+line; the other actions still apply.
+
+**What the label says:**
+
+| Answer | Label (2.5 s) |
+|---|---|
+| every action applied, or none and a sentence | `say` (the actions' own labels would flicker past; the log has them) |
+| some actions dropped | the applied ones' labels and "skipped N" |
+| every action dropped | the first miss's own text ("No surface called …") |
+| nothing at all | The agent didn't answer |
+| no network (no route, no name, refused) | No network for that |
+| a refusal | I can't help with that one |
+| the time limit passed | Took too long |
+| an HTTP error, an unreadable or cut-off answer | The agent didn't answer |
+
+**The log**, per sentence: V2's `voice: heard "<sentence>" → miss NoMatch
+· label "Thinking…"` (or `miss UnknownBehavior("campfire") · label
+"Thinking…"`); the call, `voice agent: <provider> <model> · <N> ms
+· in <input tokens> [cached <cache reads>] out <output tokens> · <K>
+actions · schema` (a count a server leaves out is `-`; on an error, the
+error in place of the counts); then `voice agent: heard "<sentence>" →
+[<intent or miss>, …] · say "<say>"`, `voice agent: dropped …` when an
+action was dropped, and the lanes' own lines for each write. An error's
+line: `voice agent: heard "<sentence>" → <error> · label "<label>"`. A
+non-200 body is logged in full before it (`voice agent: <provider>
+answered <status>: <body>`).
+
+**The knob.** `debug.fosfora.agent 0|1`, read at launch: default on
+whenever `voice.json` configures a provider, 0 keeps the call off for
+sweeps. The `say` knob from V2 exercises the whole path, the call
+included.
+
+**The cost.** One call is one request with the room's JSON: the
+instruction (about 0.7 K tokens, fixed) plus the room (a surface is
+about 40 tokens; the 18-box replayed room comes to about 1 K), so about
+1 to 2 K input tokens and a reply under 150 output tokens (on Anthropic
+the output count includes the model's thinking, so it runs higher; the
+4096 ceiling leaves it room, and only the tokens used are billed). The Anthropic
+system text is marked for caching, so repeated sentences read it from the
+cache (`cached` in the log; the model's minimum cacheable prefix is 512
+tokens, which the instruction passes); `effort: low` keeps the model's
+thinking short. A local server costs nothing per call. The reviewer
+reports the per-call token counts from the log.
+
+**Permissions.** The manifest declares `android.permission.INTERNET` (a
+normal permission, granted at install, no runtime ask); `permissions.rs`
+is unchanged.
+
+**Five sentences for the `say` knob** on the replayed room (nothing
+pointed), each a NoMatch for the grammar, with a reply a model may
+sensibly give; the test `the_five_sentences_reach_the_agent_and_their_replies_map`
+checks that each reaches the agent and that these replies map onto
+intents:
+
+| Sentence | A sensible reply's actions |
+|---|---|
+| Something like a campfire on table 14. | behavior table 14 embers; color table 14 amber |
+| Make the walls calmer. | behavior wall aurora; strength wall down |
+| Less going on. | cloud off; behavior wall none |
+| Make the room feel like the ocean. | behavior floor rings; color floor teal; behavior wall aurora; color wall blue |
+| Give the ceiling a starry night. | behavior ceiling astrolabe; color ceiling violet |
+
+**Where it differs from the brief.** The schema's kinds add `pitcher`, so
+every grammar intent is reachable (`cloud` and `particles` are both the
+Particles toggle, as in the grammar). `provider` is optional, defaulting
+to Anthropic. `AgentError::NoNetwork` carries the transport's message for
+the log. Loopback addresses (127/8, `[::1]`) count as private, as
+`localhost` does. An OpenAI-compatible 422 naming `response_format` is
+retried like a 400. UnknownBehavior misses go to the agent too, not
+only NoMatch (Kevin, Oct 8), and the Anthropic `max_tokens` is 4096, not
+1024, since the model's thinking shares it (Kevin, Oct 8). A bare kind word as the target means every surface of
+that kind even where a spoken "table" would ask which one, unless a
+surface carries that exact name.
+
+**Not yet.** A conversation across turns (each sentence is one request,
+with no memory of the last); more providers; the agent proposing new
+behaviors, parameters or surfaces (it only reaches what the hands reach);
+spoken replies; streaming.
+
 ## Open questions for Kevin
 
 1. The opener: the left fist held, or the thumb tap, or both from the
@@ -440,5 +660,5 @@ but English. Two actions in one sentence.
 3. Is the agent in scope for the first release of the voice path, or does
    the grammar ship first and the agent follow? Default: grammar first.
 4. Which hosted model, and where does its key live on the headset?
-   Default: the app's config file, entered through the companion web
-   remote later; the agent is off until a key exists.
+   Answered (Kevin, Oct 8): the wearer picks the provider in `voice.json`
+   under the config dir ("V3 as built"); the agent is off until it exists.

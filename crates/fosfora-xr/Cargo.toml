@@ -16,6 +16,15 @@ crate-type = ["cdylib", "rlib"]
 log = "0.4"
 anyhow = "1"
 serde_json = "1"
+# The voice path's agent (`agent.rs`, board #3751): `voice.json` and the
+# model's reply read into derived structs, and the one HTTPS call to the
+# provider the wearer picks. Both already in the lock through the core
+# (serde MIT OR Apache-2.0; ureq MIT OR Apache-2.0 with its default rustls +
+# ring TLS and the bundled webpki roots, so no system certificate store is
+# needed on Android). On every target: the request builders and the reply
+# parsers are desktop-tested; the call is a thin wrapper.
+serde = { version = "1", features = ["derive"] }
+ureq = "3"
 # Matches core; `math.rs` builds and tests on every target.
 glam = "0.29"
 

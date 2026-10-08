@@ -10,14 +10,15 @@
 //! the billboard path, S6 live audio, S7 passthrough, hands and room
 //! geometry as obstacles; the room's surfaces as emitters, the floor
 //! ripple, the wall spectrum, the hand instruments, the room editor, the
-//! thumb microgestures, and the voice path's push-to-talk window and its
-//! grammar.
+//! thumb microgestures, and the voice path's push-to-talk window, its
+//! grammar and its agent.
 
 // Declared first: `assert_close!` is textually scoped to the modules after it.
 #[cfg(test)]
 #[macro_use]
 mod test_util;
 
+pub mod agent;
 pub mod anchor_replay;
 #[cfg(target_os = "android")]
 mod app;

@@ -22,6 +22,11 @@
 //! Pure and desktop-tested; `app.rs` builds the vocabulary from the frame,
 //! maps the menu's intents onto its `Action` consumer and writes the
 //! surface intents through [`apply`].
+//!
+//! **The agent's actions** (V3, `agent.rs`): one [`AgentAction`] of a
+//! model's reply becomes an [`Intent`] through [`Intent::from_json`], by the
+//! same slots and the same target resolution as a sentence, so a name the
+//! room lacks misses as the grammar's would.
 
 use crate::lanes::{LaneBox, Param, ParamEdit, RoomLanes, Target as LaneTarget};
 use crate::surfaces::{
@@ -693,6 +698,130 @@ pub fn parse(sentence: &str, vocab: &Vocabulary<'_>) -> Result<Intent, Miss> {
         return Ok(intent);
     }
     surface(&ts, vocab).map_err(miss)
+}
+
+/// One action of the agent's reply (`agent.rs`, the schema's `actions`
+/// items): a kind from the fixed set, a target (a surface's name, a kind
+/// word, `pointed`, or empty) and a value (an effect, `on`/`off`, a
+/// behavior, a color, a band, a strength word, or empty). A missing field
+/// reads as empty.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AgentAction {
+    pub kind: String,
+    pub target: String,
+    pub value: String,
+}
+
+impl std::fmt::Display for AgentAction {
+    /// `kind target value`, the empty parts left out: "color desk amber".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<&str> = [&self.kind, &self.target, &self.value]
+            .into_iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        f.write_str(&parts.join(" "))
+    }
+}
+
+/// An agent action's target as the target slot's words: none for
+/// `pointed` or empty (the pointed surface, as a sentence without a name);
+/// a bare kind word that is no surface's own name as "every" and the word
+/// (the agent's kind words mean the kind, where "table" alone in a
+/// sentence asks which one); else the name's words.
+fn agent_target(target: &str, vocab: &Vocabulary<'_>) -> Vec<String> {
+    let target = target.trim();
+    if target.is_empty() || target.eq_ignore_ascii_case("pointed") {
+        return Vec::new();
+    }
+    let words = normalize(target);
+    if let [w] = words.as_slice()
+        && kind_word(w).is_some()
+        && !vocab.surfaces.iter().any(|s| normalize(&s.name) == words)
+    {
+        return vec!["every".to_owned(), w.clone()];
+    }
+    words
+}
+
+impl Intent {
+    /// One action of the agent's reply as an intent, through the grammar's
+    /// own slots and target resolution: the same effect names, the same
+    /// behavior lookup and catalogue check, the same color and band names,
+    /// the same surface names. A surface the room does not have is the
+    /// grammar's [`Reason::UnknownSurface`], a behavior the catalogue lacks
+    /// its [`Reason::UnknownBehavior`], one the kind does not run its
+    /// [`Reason::NotOnThisKind`]; an unknown kind, effect, color, band or
+    /// strength, or a toggle that is neither on nor off, is
+    /// [`Reason::NoMatch`]. The miss's `heard` is the action as text
+    /// ("color desk orchid").
+    pub fn from_json(action: &AgentAction, vocab: &Vocabulary<'_>) -> Result<Self, Miss> {
+        let miss = |reason| Miss {
+            reason,
+            heard: action.to_string(),
+        };
+        let value = normalize(&action.value);
+        let vs: Vec<&str> = value.iter().map(String::as_str).collect();
+        let target = agent_target(&action.target, vocab);
+        let ts: Vec<&str> = target.iter().map(String::as_str).collect();
+        let on = || match vs.as_slice() {
+            ["on" | "play" | "start" | "show" | "true"] => Ok(true),
+            ["off" | "stop" | "pause" | "hide" | "false"] => Ok(false),
+            _ => Err(miss(Reason::NoMatch)),
+        };
+        // The value with words around it, for a slot it alone does not
+        // fit: the kind's own color ("own" as "own color"), strength off
+        // ("off" as "strength off").
+        let around = |pre: &[&'static str], post: &[&'static str]| -> Vec<&str> {
+            pre.iter()
+                .copied()
+                .chain(vs.iter().copied())
+                .chain(post.iter().copied())
+                .collect()
+        };
+        let filled = |slot: Option<Slot>| match slot {
+            Some(slot) => fill(slot, &ts, vocab).map_err(miss),
+            None => Err(miss(Reason::NoMatch)),
+        };
+        match action.kind.trim() {
+            "next_effect" => Ok(Self::NextEffect),
+            "prev_effect" => Ok(Self::PrevEffect),
+            "effect" => effect(&vs, vocab)
+                .map(Self::Effect)
+                .ok_or_else(|| miss(Reason::NoMatch)),
+            "edit_room" => on().map(Self::EditRoom),
+            "cloud" | "particles" => on().map(Self::Cloud),
+            "pitcher" => on().map(Self::Pitcher),
+            "music" => on().map(Self::Music),
+            "rescan" => Ok(Self::Rescan),
+            "recenter" => Ok(Self::Recenter),
+            "all_none" => Ok(Self::AllNone),
+            "behavior" => match behavior(&vs, vocab) {
+                Some(b) => filled(Some(Slot::Behavior(b))),
+                None => Err(miss(Reason::UnknownBehavior(
+                    action.value.trim().to_owned(),
+                ))),
+            },
+            "color" => filled(
+                color(&vs)
+                    .or_else(|| color(&around(&[], &["color"])))
+                    .map(Slot::Color),
+            ),
+            "band" => filled(band(&vs).map(Slot::Band)),
+            "strength" => filled(
+                strength(&vs)
+                    .or_else(|| strength(&around(&["strength"], &[])))
+                    .map(Slot::Strength),
+            ),
+            "describe" => match aim(&ts, vocab) {
+                Aim::Hit(t) => Ok(Self::Describe(t)),
+                Aim::Several(ks) => Err(miss(Reason::Ambiguous(names(&ks, vocab)))),
+                Aim::Miss(r) => Err(miss(r)),
+            },
+            _ => Err(miss(Reason::NoMatch)),
+        }
+    }
 }
 
 /// What the label calls `target`: the surface's name, "all tables" for a
@@ -1573,6 +1702,121 @@ mod tests {
         assert_eq!(again.effective(1, &boxes), Some((B::Curls, 1.0)));
         assert_eq!(again.params_of(4, &boxes), (7, 0, 0.5));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `intent` as the agent would send it: the kind, the target by name
+    /// (a kind by its word, the pointed surface as `pointed`), the value.
+    fn to_json(intent: &Intent, v: &Vocabulary<'_>) -> AgentAction {
+        let target = |t: Target| match t {
+            Target::Pointed => "pointed".to_owned(),
+            Target::Surface(k) => v.surface(k).unwrap().name.clone(),
+            Target::Kind(kind) => kind_name(kind).to_owned(),
+        };
+        let on_off = |on: bool| if on { "on" } else { "off" }.to_owned();
+        let (kind, t, value) = match *intent {
+            Intent::NextEffect => ("next_effect", String::new(), String::new()),
+            Intent::PrevEffect => ("prev_effect", String::new(), String::new()),
+            Intent::Effect(i) => ("effect", String::new(), v.effects[i].clone()),
+            Intent::EditRoom(on) => ("edit_room", String::new(), on_off(on)),
+            Intent::Cloud(on) => ("cloud", String::new(), on_off(on)),
+            Intent::Pitcher(on) => ("pitcher", String::new(), on_off(on)),
+            Intent::Music(on) => ("music", String::new(), on_off(on)),
+            Intent::Rescan => ("rescan", String::new(), String::new()),
+            Intent::Recenter => ("recenter", String::new(), String::new()),
+            Intent::AllNone => ("all_none", String::new(), String::new()),
+            Intent::Behavior {
+                target: t,
+                behavior,
+            } => ("behavior", target(t), behavior.name().to_owned()),
+            Intent::Color {
+                target: t,
+                color: 0,
+            } => ("color", target(t), "own".to_owned()),
+            Intent::Color { target: t, color } => {
+                ("color", target(t), color_name(color).to_owned())
+            }
+            Intent::Band { target: t, band } => (
+                "band",
+                target(t),
+                crate::surface_fx::band_name(band).to_owned(),
+            ),
+            Intent::Strength {
+                target: t,
+                strength,
+            } => (
+                "strength",
+                target(t),
+                match strength {
+                    Strength::Up => "up",
+                    Strength::Down => "down",
+                    Strength::Half => "half",
+                    Strength::Full => "full",
+                    Strength::Off => "off",
+                }
+                .to_owned(),
+            ),
+            Intent::Describe(t) => ("describe", target(t), String::new()),
+        };
+        AgentAction {
+            kind: kind.to_owned(),
+            target: t,
+            value,
+        }
+    }
+
+    /// Every variant sent as the agent's JSON (through serde, as a reply
+    /// carries it) comes back as itself, with the same label.
+    #[test]
+    fn from_json_round_trips_the_reply_of_every_variant() {
+        let (e, boxes) = (effects(), room());
+        let v = vocab(&e, &boxes, Some(0));
+        let mut intents = vec![
+            Intent::NextEffect,
+            Intent::PrevEffect,
+            Intent::Effect(0),
+            Intent::Effect(3),
+            Intent::EditRoom(true),
+            Intent::EditRoom(false),
+            Intent::Cloud(true),
+            Intent::Cloud(false),
+            Intent::Pitcher(true),
+            Intent::Pitcher(false),
+            Intent::Music(true),
+            Intent::Music(false),
+            Intent::Rescan,
+            Intent::Recenter,
+            Intent::AllNone,
+            on(Target::Pointed, B::Pulse),
+            on(Target::Surface(2), B::Streamlines),
+            on(Target::Kind(KIND_WALL), B::Aurora),
+            on(Target::Kind(KIND_TABLE), B::None),
+            band_of(Target::Surface(3), 1),
+            band_of(Target::Kind(KIND_WALL), 3),
+            Intent::Describe(Target::Pointed),
+            Intent::Describe(Target::Surface(7)),
+            Intent::Describe(Target::Kind(KIND_TABLE)),
+        ];
+        intents.extend((0..=COLOR_KEY).map(|c| color_of(Target::Surface(7), c)));
+        intents.extend(
+            [
+                Strength::Up,
+                Strength::Down,
+                Strength::Half,
+                Strength::Full,
+                Strength::Off,
+            ]
+            .map(|s| strength_of(Target::Surface(0), s)),
+        );
+        for intent in intents {
+            let sent = serde_json::to_string(&to_json(&intent, &v)).unwrap();
+            let action: AgentAction = serde_json::from_str(&sent).unwrap();
+            let back = Intent::from_json(&action, &v);
+            assert_eq!(back, Ok(intent), "{sent}");
+            assert_eq!(reply(&back.unwrap(), &v), reply(&intent, &v), "{sent}");
+        }
+        // A missing field reads as empty.
+        let bare: AgentAction = serde_json::from_str(r#"{"kind": "rescan"}"#).unwrap();
+        assert_eq!(Intent::from_json(&bare, &v), Ok(Intent::Rescan));
     }
 
     #[test]
