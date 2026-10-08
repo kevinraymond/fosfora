@@ -28,9 +28,22 @@
 //! request step's state wraps the room in the noul envelope with its yes
 //! and no texts.
 //!
-//! **The tokenizer** (Android, and the desktop tests): the `tokenizers`
-//! crate on the model's `tokenizer.json`. The cascade, the session and the
-//! provider build on this.
+//! **The cascade** ([`cascade`]): the request step (the noul column, below
+//! the spec's threshold a miss); the kind over the fifteen (the choice
+//! column, softmaxed over the decision's candidates); the target when the
+//! kind takes one (every surface by its name, `all <kind>s` for each kind
+//! with two or more surfaces, `pointed` when something is pointed at); the
+//! value from the list the kind and its target allow. A confidence floor on
+//! the kind and the value ([`Floors`], `debug.fosfora.localmin`) turns a
+//! weak answer into a miss, so it never changes the room. Every decision is
+//! one run of the model with one prefix and all its candidates.
+//!
+//! **The runtime** (Android, and the desktop tests): ONNX Runtime through
+//! `ort` with `load-dynamic`, `libonnxruntime.so` from the
+//! onnxruntime-android AAR, dlopened by name (the app's native library
+//! directory is on the namespace's search path, as for the OpenXR loader),
+//! the Activity's `nativeLibraryDir` as the fallback; the tokenizer through
+//! `tokenizers`.
 
 use std::collections::BTreeMap;
 
@@ -38,7 +51,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::{RoomState, SurfaceState};
-use crate::surfaces::{KIND_NAMES, SurfaceBehavior, kind_from_name};
+use crate::intent::{AgentAction, Intent, Surface, Vocabulary};
+use crate::surfaces::{KIND_NAMES, KIND_NONE, SurfaceBehavior, kind_from_name};
 
 /// The model's name in the log.
 pub const MODEL_NAME: &str = "s1-17m-int8";
@@ -60,6 +74,8 @@ pub const FLOOR: f32 = 0.35;
 /// The model's output columns: `logits [n, 3]`, choice, noul, score.
 const CHOICE: usize = 0;
 const NOUL: usize = 1;
+#[cfg(any(target_os = "android", test))]
+const COLUMNS: usize = 3;
 /// What the spec's `model.output` must say for the columns above.
 const OUTPUT_COLUMNS: &str = "columns choice, noul, score";
 
@@ -772,6 +788,260 @@ impl Spec {
     }
 }
 
+// --------------------------------------------------------------- the cascade
+
+/// A softmax, stable for large logits.
+pub fn softmax(logits: &[f32]) -> Vec<f32> {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let exp: Vec<f32> = logits.iter().map(|x| (x - max).exp()).collect();
+    let sum: f32 = exp.iter().sum();
+    exp.iter().map(|e| e / sum).collect()
+}
+
+/// The first of the largest (numpy's `argmax`).
+fn argmax(p: &[f32]) -> Option<usize> {
+    p.iter()
+        .enumerate()
+        .fold(None, |best: Option<(usize, f32)>, (i, &x)| match best {
+            Some((_, b)) if b >= x => best,
+            _ => Some((i, x)),
+        })
+        .map(|(i, _)| i)
+}
+
+/// The confidence floors: a kind or a value whose probability is under
+/// its floor is a miss. The target has none: twenty surfaces share its
+/// probability, and its answer is checked against the room anyway.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Floors {
+    pub kind: f32,
+    pub value: f32,
+}
+
+impl Floors {
+    /// The same floor on the kind and the value (`debug.fosfora.localmin`).
+    pub fn both(p: f32) -> Self {
+        Self { kind: p, value: p }
+    }
+}
+
+impl Default for Floors {
+    fn default() -> Self {
+        Self::both(FLOOR)
+    }
+}
+
+/// One step's answer: the id it picked and its probability (the request
+/// step: p(true)).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pick {
+    pub step: Step,
+    pub id: String,
+    pub p: f32,
+}
+
+/// What the cascade came to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    /// One action for the room.
+    Act(AgentAction),
+    /// The request step said no (p(true) under the spec's threshold).
+    NotARequest,
+    /// A step's pick was under its floor.
+    Unsure(Step),
+    /// A step had nothing to choose from (no surfaces, no effects).
+    Nothing(Step),
+}
+
+/// The cascade's picks in order, and its verdict.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Answer {
+    pub picks: Vec<Pick>,
+    pub verdict: Verdict,
+}
+
+/// The four decisions for one sentence in `room`, each through `decide`
+/// (the decision's candidates' probabilities, in order): the request step
+/// (stop under the spec's threshold), the kind (stop under its floor),
+/// the target when the kind takes one, the value when it takes one (stop
+/// under its floor). The verdict's action names the spec's ids
+/// (`behavior`, `table 14` or `all tables` or `pointed`, `amber`).
+pub fn cascade(
+    spec: &Spec,
+    room: &RoomState,
+    floors: Floors,
+    mut decide: impl FnMut(&Decision) -> Result<Vec<f32>, String>,
+) -> Result<Answer, String> {
+    let mut picks = Vec::new();
+    let mut ask = |d: &Decision, picks: &mut Vec<Pick>| -> Result<Option<(String, f32)>, String> {
+        if d.candidates.is_empty() {
+            return Ok(None);
+        }
+        let p = decide(d)?;
+        if p.len() != d.candidates.len() || p.iter().any(|x| !x.is_finite()) {
+            return Err(format!(
+                "the {} step gave {} probabilities for {} candidates",
+                d.step.name(),
+                p.len(),
+                d.candidates.len()
+            ));
+        }
+        let (id, p) = if d.step == Step::Request {
+            let yes = d
+                .candidates
+                .iter()
+                .position(|c| c.id == "true")
+                .unwrap_or(0);
+            ("true".to_owned(), p[yes])
+        } else {
+            let i = argmax(&p).unwrap_or(0);
+            (d.candidates[i].id.clone(), p[i])
+        };
+        picks.push(Pick {
+            step: d.step,
+            id: id.clone(),
+            p,
+        });
+        Ok(Some((id, p)))
+    };
+    let done = |picks: Vec<Pick>, verdict| Ok(Answer { picks, verdict });
+
+    let request = spec.request_decision();
+    match ask(&request, &mut picks)? {
+        Some((_, p)) if p >= spec.request.threshold => {}
+        Some(_) => return done(picks, Verdict::NotARequest),
+        None => return done(picks, Verdict::Nothing(Step::Request)),
+    }
+    let kind = match ask(&spec.kind_decision(), &mut picks)? {
+        Some((id, p)) if p >= floors.kind => id,
+        Some(_) => return done(picks, Verdict::Unsure(Step::Kind)),
+        None => return done(picks, Verdict::Nothing(Step::Kind)),
+    };
+    let target = match spec.target_decision(&kind, room) {
+        Some(d) => match ask(&d, &mut picks)? {
+            Some((id, _)) => Some(id),
+            None => return done(picks, Verdict::Nothing(Step::Target)),
+        },
+        None => None,
+    };
+    let value = match spec.value_decision(&kind, target.as_deref(), room) {
+        Some(d) => match ask(&d, &mut picks)? {
+            Some((id, p)) if p >= floors.value => Some(id),
+            Some(_) => return done(picks, Verdict::Unsure(Step::Value)),
+            None => return done(picks, Verdict::Nothing(Step::Value)),
+        },
+        None => None,
+    };
+    done(
+        picks,
+        Verdict::Act(AgentAction {
+            kind,
+            target: target.unwrap_or_default(),
+            value: value.unwrap_or_default(),
+        }),
+    )
+}
+
+/// The room's vocabulary rebuilt from its state (the agent's room has the
+/// surfaces in lane box order, so a surface's index is its position): for
+/// the log's intent, resolved as the frame will resolve it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoomVocabulary {
+    effects: Vec<String>,
+    surfaces: Vec<Surface>,
+    pointed: Option<usize>,
+}
+
+impl RoomVocabulary {
+    pub fn of(room: &RoomState) -> Self {
+        let surfaces: Vec<Surface> = room
+            .surfaces
+            .iter()
+            .enumerate()
+            .map(|(index, s)| Surface {
+                name: s.name.clone(),
+                kind: kind_from_name(&s.kind).unwrap_or(KIND_NONE),
+                index,
+            })
+            .collect();
+        let pointed = room
+            .pointed
+            .as_ref()
+            .and_then(|p| surfaces.iter().find(|s| &s.name == p))
+            .map(|s| s.index);
+        Self {
+            effects: room.effects.clone(),
+            surfaces,
+            pointed,
+        }
+    }
+
+    pub fn vocabulary(&self) -> Vocabulary<'_> {
+        Vocabulary {
+            effects: &self.effects,
+            behaviors: &SurfaceBehavior::ALL,
+            surfaces: self.surfaces.clone(),
+            pointed: self.pointed,
+        }
+    }
+}
+
+/// What an answer comes to, for the log: the intent (`Color { … }`), the
+/// grammar's miss for an action it refuses, or why the cascade stopped.
+pub fn outcome_text(spec: &Spec, floors: Floors, answer: &Answer, room: &RoomState) -> String {
+    match &answer.verdict {
+        Verdict::Act(action) => {
+            let vocab = RoomVocabulary::of(room);
+            match Intent::from_json(action, &vocab.vocabulary()) {
+                Ok(intent) => format!("{intent:?}"),
+                Err(miss) => format!("miss {:?}", miss.reason),
+            }
+        }
+        Verdict::NotARequest => format!(
+            "miss NoMatch (not a request, under {})",
+            spec.request.threshold
+        ),
+        Verdict::Unsure(step) => {
+            let floor = if *step == Step::Kind {
+                floors.kind
+            } else {
+                floors.value
+            };
+            format!("miss NoMatch ({} under {floor:.2})", step.name())
+        }
+        Verdict::Nothing(step) => format!("miss NoMatch (no {} to choose from)", step.name()),
+    }
+}
+
+/// The per-sentence log line: `voice local: 212 ms (request 0.99 · kind
+/// color 0.97 · target table 14 0.88 · value amber 0.93) → Color { … }`.
+pub fn log_line(ms: u128, picks: &[Pick], outcome: &str) -> String {
+    let steps: Vec<String> = picks
+        .iter()
+        .map(|p| match p.step {
+            Step::Request => format!("request {:.2}", p.p),
+            s => format!("{} {} {:.2}", s.name(), p.id, p.p),
+        })
+        .collect();
+    format!(
+        "voice local: {ms} ms ({}) \u{2192} {outcome}",
+        steps.join(" \u{b7} ")
+    )
+}
+
+/// The per-step timing line that follows it: `voice local: steps request
+/// 31 · kind 48 · target 92 · value 41 ms · prefix 204 tokens`.
+pub fn steps_line(steps: &[(Step, f32)], prefix_tokens: usize) -> String {
+    let each: Vec<String> = steps
+        .iter()
+        .map(|(s, ms)| format!("{} {ms:.0}", s.name()))
+        .collect();
+    format!(
+        "voice local: steps {} ms \u{b7} prefix {prefix_tokens} tokens",
+        each.join(" \u{b7} ")
+    )
+}
+
 // ------------------------------------------------------------- the files
 
 /// The provider's files in the models dir.
@@ -822,16 +1092,20 @@ impl Files {
     }
 }
 
-// ---------------------------------------------------------- the tokenizer
+// ------------------------------------------------- the runtime and the worker
 
 #[cfg(any(target_os = "android", test))]
-pub use self::device::Tokens;
+pub use self::device::{Model, Tokens, init_runtime};
 
 #[cfg(any(target_os = "android", test))]
 mod device {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use super::{Encode, SpecialIds};
+    use ort::session::Session;
+    use ort::session::builder::GraphOptimizationLevel;
+    use ort::value::Tensor;
+
+    use super::{COLUMNS, Encode, SpecialIds};
 
     /// The tokenizer, with its own truncation and padding off (the
     /// renderer cuts each part itself).
@@ -871,6 +1145,80 @@ mod device {
                 .encode(text, false)
                 .map(|e| e.get_ids().to_vec())
                 .map_err(|e| e.to_string())
+        }
+    }
+
+    /// Load ONNX Runtime from the first of `candidates` that loads (a bare
+    /// name goes through the dynamic linker's search path); which one it
+    /// was. Loading it again in the same process is a no-op.
+    pub fn init_runtime(candidates: &[PathBuf]) -> Result<PathBuf, String> {
+        let mut errors = Vec::new();
+        for path in candidates {
+            match ort::init_from(path) {
+                Ok(builder) => {
+                    builder.with_name("fosfora").commit();
+                    return Ok(path.clone());
+                }
+                Err(e) => errors.push(e.to_string()),
+            }
+        }
+        Err(format!("ONNX Runtime did not load: {}", errors.join("; ")))
+    }
+
+    /// The decision model's session.
+    pub struct Model {
+        session: Session,
+    }
+
+    impl Model {
+        /// A session on `path` with `threads` intra-op threads and one
+        /// inter-op thread, the graph optimized fully, intra-op spinning
+        /// off (the threads sleep between sentences instead of spinning
+        /// next to the render loop).
+        pub fn load(path: &Path, threads: usize) -> Result<Self, String> {
+            let session = Session::builder()
+                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(threads))
+                .and_then(|b| b.with_inter_threads(1))
+                .and_then(|b| b.with_intra_op_spinning(false))
+                .and_then(|b| b.commit_from_file(path))
+                .map_err(|e| format!("the model {}: {e}", path.display()))?;
+            Ok(Self { session })
+        }
+
+        /// One decision: one prefix, its candidates (padded with `pad`),
+        /// and the `column` of `logits [n, 3]`.
+        pub fn logits(
+            &mut self,
+            prefix: &[i64],
+            docs: &[Vec<i64>],
+            pad: i64,
+            column: usize,
+        ) -> Result<Vec<f32>, String> {
+            let n = docs.len();
+            let width = docs.iter().map(Vec::len).max().unwrap_or(0);
+            let mut ids = vec![pad; n * width];
+            let mut mask = vec![false; n * width];
+            for (i, d) in docs.iter().enumerate() {
+                ids[i * width..i * width + d.len()].copy_from_slice(d);
+                mask[i * width..i * width + d.len()].fill(true);
+            }
+            let tensor = |e: ort::Error| e.to_string();
+            let inputs = ort::inputs![
+                "prefix_ids" => Tensor::from_array(([1usize, prefix.len()], prefix.to_vec())).map_err(tensor)?,
+                "prefix_mask" => Tensor::from_array(([1usize, prefix.len()], vec![true; prefix.len()])).map_err(tensor)?,
+                "doc_ids" => Tensor::from_array(([n, width], ids)).map_err(tensor)?,
+                "doc_mask" => Tensor::from_array(([n, width], mask)).map_err(tensor)?,
+                "owners" => Tensor::from_array(([n], vec![0i64; n])).map_err(tensor)?,
+            ];
+            let out = self.session.run(inputs).map_err(|e| e.to_string())?;
+            let (_, logits) = out["logits"]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| e.to_string())?;
+            if logits.len() != n * COLUMNS {
+                return Err(format!("logits of {} for {n} candidates", logits.len()));
+            }
+            Ok((0..n).map(|i| logits[i * COLUMNS + column]).collect())
         }
     }
 }
@@ -921,6 +1269,14 @@ mod tests {
 
     fn rows(v: &Value) -> Vec<Vec<i64>> {
         v.as_array().unwrap().iter().map(ids).collect()
+    }
+
+    fn floats(v: &Value) -> Vec<f32> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap() as f32)
+            .collect()
     }
 
     /// The replayed room as the generator has it (`gen/world.py`
@@ -1338,5 +1694,246 @@ mod tests {
         assert_eq!(v.candidates.len(), 7);
         let v = s.value_decision("effect", None, &r).unwrap();
         assert_eq!(v.candidates[2], Candidate::new("Flock", "world effect"));
+    }
+
+    #[test]
+    fn softmax_and_the_noul_read() {
+        let p = softmax(&[1.0, 2.0, 3.0]);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((p[2] - 0.665_240_9).abs() < 1e-6);
+        // Large logits stay finite.
+        let p = softmax(&[1000.0, 1000.0]);
+        assert_eq!(p, [0.5, 0.5]);
+        assert_eq!(argmax(&[0.2, 0.4, 0.4]), Some(1));
+        assert_eq!(argmax(&[]), None);
+        // The request step reads p(true) whatever the order.
+        let s = spec();
+        let r = room();
+        let a = cascade(&s, &r, Floors::default(), |d| {
+            assert_eq!(d.step, Step::Request);
+            assert_eq!(d.column, NOUL);
+            Ok(softmax(&[2.0, -1.0]))
+        })
+        .unwrap();
+        assert_eq!(a.verdict, Verdict::NotARequest);
+        assert!((a.picks[0].p - softmax(&[2.0, -1.0])[1]).abs() < 1e-6);
+    }
+
+    /// A canned cascade: each step's probabilities by its step, the argmax
+    /// on the candidate `pick` names.
+    fn canned(
+        s: &Spec,
+        r: &RoomState,
+        floors: Floors,
+        steps: &[(Step, &str, f32)],
+    ) -> (Answer, Vec<Step>) {
+        let mut asked = Vec::new();
+        let a = cascade(s, r, floors, |d| {
+            asked.push(d.step);
+            let (_, pick, p) = steps
+                .iter()
+                .find(|(step, ..)| *step == d.step)
+                .unwrap_or_else(|| panic!("{:?} not canned", d.step));
+            let n = d.candidates.len();
+            let rest = (1.0 - p) / (n - 1) as f32;
+            Ok(d.candidates
+                .iter()
+                .map(|c| if c.id == *pick { *p } else { rest })
+                .collect())
+        })
+        .unwrap();
+        (a, asked)
+    }
+
+    #[test]
+    fn the_cascade_stops_at_the_gate_and_the_floors() {
+        let s = spec();
+        let r = room();
+        let f = Floors::default();
+        let (a, asked) = canned(&s, &r, f, &[(Step::Request, "true", 0.3)]);
+        assert_eq!(
+            (a.verdict, asked),
+            (Verdict::NotARequest, vec![Step::Request])
+        );
+        let (a, asked) = canned(
+            &s,
+            &r,
+            f,
+            &[(Step::Request, "true", 0.9), (Step::Kind, "color", 0.3)],
+        );
+        assert_eq!(a.verdict, Verdict::Unsure(Step::Kind));
+        assert_eq!(asked, [Step::Request, Step::Kind]);
+        let (a, asked) = canned(
+            &s,
+            &r,
+            f,
+            &[
+                (Step::Request, "true", 0.9),
+                (Step::Kind, "color", 0.8),
+                (Step::Target, "table 14", 0.2),
+                (Step::Value, "amber", 0.34),
+            ],
+        );
+        assert_eq!(a.verdict, Verdict::Unsure(Step::Value));
+        assert_eq!(asked.len(), 4);
+        assert_eq!(
+            outcome_text(&s, f, &a, &r),
+            "miss NoMatch (value under 0.35)"
+        );
+        // The target has no floor; a lower floor lets the value through.
+        let (a, _) = canned(
+            &s,
+            &r,
+            Floors::both(0.3),
+            &[
+                (Step::Request, "true", 0.9),
+                (Step::Kind, "color", 0.8),
+                (Step::Target, "table 14", 0.2),
+                (Step::Value, "amber", 0.34),
+            ],
+        );
+        assert!(matches!(a.verdict, Verdict::Act(_)));
+    }
+
+    #[test]
+    fn a_full_chain_comes_to_an_intent() {
+        let s = spec();
+        let r = room();
+        let (a, asked) = canned(
+            &s,
+            &r,
+            Floors::default(),
+            &[
+                (Step::Request, "true", 0.99),
+                (Step::Kind, "color", 0.97),
+                (Step::Target, "table 14", 0.88),
+                (Step::Value, "amber", 0.93),
+            ],
+        );
+        assert_eq!(
+            asked,
+            [Step::Request, Step::Kind, Step::Target, Step::Value]
+        );
+        let action = AgentAction {
+            kind: "color".into(),
+            target: "table 14".into(),
+            value: "amber".into(),
+        };
+        assert_eq!(a.verdict, Verdict::Act(action));
+        let outcome = outcome_text(&s, Floors::default(), &a, &r);
+        assert_eq!(outcome, "Color { target: Surface(14), color: 4 }");
+        assert_eq!(
+            log_line(212, &a.picks, &outcome),
+            "voice local: 212 ms (request 0.99 \u{b7} kind color 0.97 \u{b7} target table 14 0.88 \u{b7} value amber 0.93) \u{2192} Color { target: Surface(14), color: 4 }"
+        );
+        assert_eq!(
+            steps_line(&[(Step::Request, 31.2), (Step::Kind, 48.0)], 204),
+            "voice local: steps request 31 \u{b7} kind 48 ms \u{b7} prefix 204 tokens"
+        );
+        // A kind that takes neither a target nor a value stops there.
+        let (a, asked) = canned(
+            &s,
+            &r,
+            Floors::default(),
+            &[
+                (Step::Request, "true", 0.99),
+                (Step::Kind, "next_effect", 0.9),
+            ],
+        );
+        assert_eq!(asked, [Step::Request, Step::Kind]);
+        assert_eq!(outcome_text(&s, Floors::default(), &a, &r), "NextEffect");
+        // A room with no effects has no effect to choose.
+        let mut bare = room();
+        bare.effects.clear();
+        let (a, _) = canned(
+            &s,
+            &bare,
+            Floors::default(),
+            &[(Step::Request, "true", 0.99), (Step::Kind, "effect", 0.9)],
+        );
+        assert_eq!(a.verdict, Verdict::Nothing(Step::Value));
+    }
+
+    /// The host's ONNX Runtime (`ORT_DYLIB_PATH`, 1.23 or newer, e.g. the
+    /// `onnxruntime` Python wheel's `capi/libonnxruntime.so.1.*`) and the
+    /// model in `assets/xr/models/` (or `FOSFORA_S1_DIR`).
+    fn host_model() -> (Files, std::path::PathBuf) {
+        let lib = std::env::var_os("ORT_DYLIB_PATH")
+            .map(std::path::PathBuf::from)
+            .expect("set ORT_DYLIB_PATH to a host libonnxruntime.so (1.23 or newer)");
+        let files = Files::in_dir(&models_dir());
+        files.check().expect("the model's files");
+        (files, lib)
+    }
+
+    /// The real model on the host, against the parity fixtures: the
+    /// toolkit's cases (the FP32 export's logits, so the int8 model's
+    /// probabilities within 0.05 and the same argmax) and every room
+    /// decision (the int8 model's probabilities through ONNX Runtime,
+    /// within 1e-3), first on the fixture's token ids, then rendered from
+    /// the sentence. Run with
+    /// `ORT_DYLIB_PATH=… cargo test -p fosfora-xr local -- --ignored`.
+    #[test]
+    #[ignore = "needs a host ONNX Runtime (ORT_DYLIB_PATH) and the model in assets/xr/models/"]
+    fn the_model_on_the_host_matches_its_parity() {
+        let (files, lib) = host_model();
+        init_runtime(&[lib]).unwrap();
+        let s = spec();
+        let tok = tokenizer(&s).unwrap();
+        let mut model = Model::load(&files.model(), 4).unwrap();
+        let pad = i64::from(s.limits.ids.pad);
+        let p = parity();
+        let column = |task: &str| {
+            ["choice", "noul", "score"]
+                .iter()
+                .position(|t| *t == task)
+                .unwrap()
+        };
+        for case in p["toolkit"].as_array().unwrap() {
+            let Some(logits) = case["logits"].as_array() else {
+                continue;
+            };
+            let c = column(case["task"].as_str().unwrap());
+            let want = softmax(
+                &logits
+                    .iter()
+                    .map(|row| row[c].as_f64().unwrap() as f32)
+                    .collect::<Vec<_>>(),
+            );
+            let got = softmax(
+                &model
+                    .logits(&ids(&case["prefix_ids"]), &rows(&case["doc_ids"]), pad, c)
+                    .unwrap(),
+            );
+            assert_eq!(argmax(&got), argmax(&want), "{case:.80}");
+            for (g, w) in got.iter().zip(&want) {
+                assert!((g - w).abs() < 0.05, "{got:?} vs {want:?}");
+            }
+        }
+        let r = room();
+        for sentence in p["room"]["sentences"].as_array().unwrap() {
+            let said = sentence["sentence"].as_str().unwrap();
+            for row in sentence["decisions"].as_array().unwrap() {
+                let want = floats(&row["onnx_probabilities"]);
+                let c = row["column"].as_u64().unwrap() as usize;
+                let fixture = softmax(
+                    &model
+                        .logits(&ids(&row["prefix_ids"]), &rows(&row["doc_ids"]), pad, c)
+                        .unwrap(),
+                );
+                let d = decision_for(&s, row, &r);
+                let (prefix, docs) = s.render(&tok, &d, said, &r).unwrap();
+                let rendered = softmax(&model.logits(&prefix, &docs, pad, c).unwrap());
+                for got in [&fixture, &rendered] {
+                    for (g, w) in got.iter().zip(&want) {
+                        assert!(
+                            (g - w).abs() < 1e-3,
+                            "{said} {:?}: {got:?} vs {want:?}",
+                            d.step
+                        );
+                    }
+                }
+            }
+        }
     }
 }
