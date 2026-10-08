@@ -86,8 +86,7 @@ pub fn reapply(def_radius: f32, preset: f32, requested: f32) -> Option<f32> {
 /// The app's side of the control. Until the knob or the stepper asks for a
 /// size, each world effect keeps its preset's, or the room fit for the
 /// surface-born one ([`fit_room`]), and the stepper shows it; once asked,
-/// the size holds for every effect a pinch-hold swaps in, the room fit
-/// too.
+/// the size holds for every effect switched in, the room fit too.
 #[derive(Debug, Clone, Copy)]
 pub struct SpaceControl {
     /// The half extent asked for (clamped to the stepper's range).
@@ -128,7 +127,7 @@ impl SpaceControl {
     /// room fit when the effect takes it ([`fit_room`]; `None` for the
     /// others and a room with no boxes). Returns the half to set on the
     /// scene when that differs (the stepper moved, the room fit changed,
-    /// or a pinch-hold swapped in an effect set for another) and leaves
+    /// or an effect switch swapped in one set for another) and leaves
     /// `panel` showing the size the scene runs at.
     pub fn update(
         &mut self,
@@ -160,7 +159,7 @@ mod tests {
         // Embers at its preset's 1.5: nothing to set.
         assert_eq!(c.update(&mut panel, 0.0, 1.5, None), None);
         assert_close!(panel, 1.5);
-        // A pinch-hold swaps in an effect with a 1 m preset: still its own.
+        // An effect switch swaps in one with a 1 m preset: still its own.
         assert_eq!(c.update(&mut panel, 0.0, 1.0, None), None);
         assert_close!(panel, 1.0);
         // The wearer steps it: set, and shown.
@@ -265,7 +264,7 @@ mod tests {
         assert_eq!(c.asked(), None);
         // The anchor moves: the new fit.
         assert_eq!(c.update(&mut panel, 3.75, 1.5, Some(3.0)), Some(3.0));
-        // A pinch-hold swaps in the flock (no fit): its preset.
+        // An effect switch swaps in the flock (no fit): its preset.
         assert_eq!(c.update(&mut panel, 0.0, 1.5, None), None);
         assert_close!(panel, 1.5);
         // Back on Embers, set for the old fit: the fit again.

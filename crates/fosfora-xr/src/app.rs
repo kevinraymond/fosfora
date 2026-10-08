@@ -38,7 +38,7 @@ const DEFAULT_EFFECT: &str = "Flux";
 /// editor's (Kevin, Sep 30; the names as the wearer sees them since then:
 /// Embers was Embers, Flux Cloud was Flux Cloud, Flock was
 /// Flock; Flux Cloud Coarse, a sprite-size diagnostic, left the
-/// pinch-hold cycle and stays reachable by `debug.fosfora.effect`).
+/// effect cycle and stays reachable by `debug.fosfora.effect`).
 const DEFAULT_WORLD_EFFECT: &str = "Embers";
 /// The world effects that read the per-hand lanes (board #3314): there the
 /// hand's pose picks its behavior and its pad. The others keep one behavior
@@ -230,7 +230,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.openkick 0.1             (Murmur: an open hand's kick, m/s)
     //   adb shell setprop debug.fosfora.holdradius 0.25          (Murmur: a palm-up hold's radius, m; a two-hand hold's is half the palms' distance, up to this)
     //   adb shell setprop debug.fosfora.cycletest 10             (world: switch to the next world effect every 10 s,
-    //       as a pinch-hold does; for measuring the switch unworn)
+    //       as the hand menu's effect row does; for measuring the switch unworn)
     //   adb shell setprop debug.fosfora.floorweight 0.5          (surface emitters, Embers: the floor's emitter weight, 0..1)
     //   adb shell setprop debug.fosfora.tableweight 1            (surface emitters: scales every table's weight; the largest
     //       emitting table inside the volume gets this, the others by top-face area against it)
@@ -606,7 +606,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     {
         music.set(true);
     }
-    // The world effects a pinch-hold cycles through: every
+    // The world effects the hand menu's effect row cycles through: every
     // `*_xr_world*.pfx` staged into the effects dir, in file-name order,
     // starting at `debug.fosfora.effect` (added if it is not one of them).
     let mut world_effects = if mode == Mode::World {
@@ -624,7 +624,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             0
         });
     if mode == Mode::World {
-        info!("world effects (pinch-hold cycles): {world_effects:?}");
+        info!("world effects (the hand menu's effect row cycles them): {world_effects:?}");
     }
     let mut scene = None;
     // World mode: the effects not showing, by index in `world_effects`.

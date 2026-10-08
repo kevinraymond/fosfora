@@ -428,8 +428,8 @@ impl XrScene {
 
     /// World mode: the effect's obstacle texture, for the depth atlas's
     /// copy (`width` x `height` texels), and whether it was just sized.
-    /// The texture starts as the core's 1x1 placeholder, and a pinch-hold
-    /// swaps in another effect with its own, so it is checked every frame:
+    /// The texture starts as the core's 1x1 placeholder, and an effect
+    /// switch swaps in another effect with its own, so it is checked every frame:
     /// at any other size, a zeroed image of the atlas's size goes through
     /// `update_obstacle_webcam`, which allocates the texture and rebinds
     /// the sim's bind group, and the copy then fills it on the GPU.
