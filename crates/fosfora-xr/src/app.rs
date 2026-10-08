@@ -9,12 +9,13 @@ use anyhow::{Context, Result};
 use fosfora_app::settings::ParticleQuality;
 use log::{error, info};
 
-use crate::audio::LiveAudio;
+use crate::audio::{LiveAudio, MicSource};
 use crate::env_depth::EnvDepthOptions;
 use crate::gesture::{Gesture, Gestures, PinchInput};
 use crate::gfx::Gfx;
 use crate::hud::{Action, Controls, FrameWindow, Hud, View};
 use crate::particles3d::{ObstacleBox, ObstacleSet, Params, Particles3d};
+use crate::permissions::{Change, Permissions, RECORD_AUDIO, USE_SCENE, Watch};
 use crate::playback::{Clip, Playback, PlaybackOptions};
 use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
@@ -162,6 +163,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       unprocessed|generic|voice|camcorder and debug.fosfora.micperf lowlatency|none;
     //       file = the test clip looping on the speakers, analysis on its tap;
     //       loop = the clip on the speakers, analysis on the AAudio microphones (acoustic loopback))
+    //   adb shell setprop debug.fosfora.ask 0|1        (board #3264: ask for the missing runtime permissions at launch, USE_SCENE and,
+    //       for the sources that open the microphones, RECORD_AUDIO; default 1. 0 for unworn runs, where the OS dialog would sit
+    //       over the view: the app still checks and logs them and picks up a later `pm grant` within 120 s)
     //   adb shell setprop debug.fosfora.file <path>   (.ogg/.mp3/.wav/.flac decoded by the core, or a raw
     //       48 kHz stereo f32 file ending in .f32, or "click" / "click:100" for a click track at that BPM;
     //       default: the bundled CC0 track under assets/audio/)
@@ -315,6 +319,71 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   The envdepth and depthcollide knobs are read at startup (restart the app after a change), except envdepthhands; with envdepth,
     //   envdepthshow, envdepthcheck and depthcollide all 0 no depth provider is created, so the baseline is the app without it.
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
+    let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
+    // Board #3264: the runtime permissions, asked for before the session
+    // so the dialog comes with the launch. USE_SCENE always (the room is
+    // the product), RECORD_AUDIO when the audio source opens the
+    // microphones; the missing ones in one request. The bring-up carries
+    // on whichever way the wearer answers: the session, passthrough, hands
+    // and the stage floor need neither, and the frame loop picks a grant
+    // up without a relaunch (`permission_watch` below). Should the JNI
+    // layer fail, the app runs as before it asked (everything taken as
+    // granted).
+    let permissions = Permissions::new(app)
+        .inspect_err(|e| error!("permissions: {e:#}; carrying on as if granted"))
+        .ok();
+    let granted_at_launch = |name: &str| {
+        permissions.as_ref().is_none_or(|p| {
+            p.granted(name).unwrap_or_else(|e| {
+                error!("permissions: {e:#}; taking it as granted");
+                true
+            })
+        })
+    };
+    let scene_granted = granted_at_launch(USE_SCENE);
+    let mic_granted = granted_at_launch(RECORD_AUDIO);
+    let ask = debug_prop("debug.fosfora.ask").as_deref() != Some("0");
+    for (name, needed, granted) in [
+        (USE_SCENE, true, scene_granted),
+        (
+            RECORD_AUDIO,
+            crate::permissions::wants_mic(&audio_source),
+            mic_granted,
+        ),
+    ] {
+        info!(
+            "permission {}: {}",
+            crate::permissions::short(name),
+            match (granted, needed, ask) {
+                (true, _, _) => "granted".to_owned(),
+                (false, false, _) => format!("missing, not needed (audio {audio_source})"),
+                (false, true, true) => "missing, asking".to_owned(),
+                (false, true, false) => "missing, not asking (debug.fosfora.ask 0)".to_owned(),
+            }
+        );
+    }
+    let missing = crate::permissions::to_ask(&audio_source, scene_granted, mic_granted);
+    if ask
+        && !missing.is_empty()
+        && let Some(p) = &permissions
+    {
+        match p.request(&missing) {
+            Ok(()) => info!(
+                "permissions: asked for {}",
+                missing
+                    .iter()
+                    .map(|n| crate::permissions::short(n))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Err(e) => error!("permissions: {e:#}"),
+        }
+    }
+    let asked_at = Instant::now();
+    let mut permission_watch = Watch::new(missing);
+    // A USE_SCENE grant whose requery waits for a query or Space Setup in
+    // flight, retried once a second.
+    let mut room_pickup = false;
     let mode = match debug_prop("debug.fosfora.mode").as_deref() {
         Some("quad") => Mode::Quad,
         Some("mr" | "mixed") => Mode::Mixed,
@@ -485,7 +554,6 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     } else {
         (QUAD_CENTER, CUBE_HALF_M)
     });
-    let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     let quality = match debug_prop("debug.fosfora.quality").as_deref() {
         Some("low") => ParticleQuality::Low,
         Some("medium") => ParticleQuality::Medium,
@@ -539,40 +607,25 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // from launch, the hand menu's Music row's at runtime.
     let bundled_clip = dirs.assets.join("audio").join(crate::music::CLIP);
     let mut music = Music::new(bundled_clip.clone(), &audio_source, playback_options);
-    match audio_source.as_str() {
-        "mic" => live_audio = Some(LiveAudio::mic()),
-        "micxr" => {
-            let format = match debug_prop("debug.fosfora.micfmt").as_deref() {
-                Some("f32") => cpal::SampleFormat::F32,
-                _ => cpal::SampleFormat::I16,
-            };
-            let rate = debug_prop("debug.fosfora.micrate")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(48_000);
-            live_audio = Some(LiveAudio::mic_with(format, rate).context("XR mic stream")?);
+    // Board #3264: the microphones open only with RECORD_AUDIO granted;
+    // without it the synthetic groove runs (as with `synth`) and the frame
+    // loop opens them, the same way, when the grant arrives.
+    let mut mic_waiting = None;
+    if let Some(source) = mic_source_for(&audio_source) {
+        if mic_granted {
+            live_audio = Some(LiveAudio::open(source)?);
+        } else {
+            info!("audio: RECORD_AUDIO missing: the synthetic groove until it is granted");
+            mic_waiting = Some(source);
         }
-        "aaudio" | "loop" => {
-            use ndk::audio::AudioInputPreset;
-            let preset = match debug_prop("debug.fosfora.micpreset").as_deref() {
-                Some("generic") => AudioInputPreset::Generic,
-                Some("voice") => AudioInputPreset::VoiceRecognition,
-                Some("camcorder") => AudioInputPreset::Camcorder,
-                _ => AudioInputPreset::Unprocessed,
-            };
-            let rate = debug_prop("debug.fosfora.micrate")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(48_000);
-            let low_latency = debug_prop("debug.fosfora.micperf").as_deref() != Some("none");
-            live_audio =
-                Some(LiveAudio::mic_aaudio(preset, rate, low_latency).context("AAudio mic")?);
-            if audio_source == "loop" {
-                let clip = Clip::decode(&bundled_clip)?;
-                let unused_tap =
-                    std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
-                let p = Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
-                    .context("starting playback")?;
-                music.adopt(p, None, crate::music::CLIP.to_owned());
-            }
+    }
+    match audio_source.as_str() {
+        "loop" => {
+            let clip = Clip::decode(&bundled_clip)?;
+            let unused_tap = std::sync::Arc::new(fosfora_app::audio::capture::RingBuffer::new());
+            let p = Playback::start(std::sync::Arc::new(clip), unused_tap, playback_options)
+                .context("starting playback")?;
+            music.adopt(p, None, crate::music::CLIP.to_owned());
         }
         "file" => {
             let path = debug_prop("debug.fosfora.file")
@@ -1138,7 +1191,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         let scene_mut = scene.as_mut();
         let frames_window = stats.last;
         let has_room = session.has_room();
-        let scan_state = session.scan_state();
+        // Board #3264: while USE_SCENE is awaited, a room without anchors
+        // reads "Allow spatial data to see the room".
+        let scan_state = crate::label::with_scene_permission(
+            session.scan_state(),
+            permission_watch.waiting_for(USE_SCENE),
+        );
         if scan_state != scan_logged {
             if let Some(state) = scan_state {
                 info!(
@@ -2494,6 +2552,71 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         }
         if frame_index.is_multiple_of(72) {
+            // Board #3264: the runtime permissions' grants while any is
+            // missing (the result callback never reaches native code).
+            let granted_now = |name: &str| {
+                permissions.as_ref().is_some_and(|p| {
+                    p.granted(name).unwrap_or_else(|e| {
+                        log::warn!("permissions: {e:#}");
+                        false
+                    })
+                })
+            };
+            for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
+                match change {
+                    Change::Granted { name, after_s } if name == USE_SCENE => {
+                        let then = if !session.has_room() {
+                            "no room in this mode"
+                        } else if matches!(
+                            session.scan_state(),
+                            Some(crate::label::ScanState::Found(_))
+                        ) {
+                            "the room is already in"
+                        } else {
+                            room_pickup = true;
+                            "querying the room"
+                        };
+                        info!("permission USE_SCENE granted after {after_s:.0} s: {then}");
+                    }
+                    Change::Granted { name, after_s } => match mic_waiting.take() {
+                        Some(source) => {
+                            info!(
+                                "permission {} granted after {after_s:.0} s: opening the microphones",
+                                crate::permissions::short(name)
+                            );
+                            match LiveAudio::open(source) {
+                                Ok(a) => live_audio = Some(a),
+                                Err(e) => log::warn!(
+                                    "audio: the microphones did not open after the grant: {e:#}; the synthetic groove stays"
+                                ),
+                            }
+                        }
+                        None => info!(
+                            "permission {} granted after {after_s:.0} s",
+                            crate::permissions::short(name)
+                        ),
+                    },
+                    Change::GaveUp(still) => info!(
+                        "permissions: {} still missing after {:.0} s: polling stopped, the fallbacks stay",
+                        still
+                            .iter()
+                            .map(|n| crate::permissions::short(n))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        crate::permissions::WATCH_S
+                    ),
+                }
+            }
+            // The requery waits while a query or Space Setup is in flight;
+            // anchors that arrive meanwhile make it moot.
+            if room_pickup
+                && (matches!(
+                    session.scan_state(),
+                    Some(crate::label::ScanState::Found(_))
+                ) || session.requery_room_after_grant())
+            {
+                room_pickup = false;
+            }
             if let Some(was) = env_hands {
                 let now = match system_prop("debug.fosfora.envdepthhands").as_deref() {
                     Some("0") => false,
@@ -3019,6 +3142,43 @@ fn cycle_index(parked: &[Option<XrScene>], from: usize, step: isize) -> Option<u
             (from + offset) % n
         })
         .find(|&i| parked[i].is_some())
+}
+
+/// How `audio_source` (`debug.fosfora.audio`) opens the microphones, from
+/// its knobs; `None` for a source that does not listen. Read once at
+/// launch, so the retry after a late `RECORD_AUDIO` grant (board #3264)
+/// opens them as the launch would have. The sources match
+/// `permissions::MIC_SOURCES`.
+fn mic_source_for(audio_source: &str) -> Option<MicSource> {
+    let sample_rate = || {
+        debug_prop("debug.fosfora.micrate")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(48_000)
+    };
+    match audio_source {
+        "mic" => Some(MicSource::Core),
+        "micxr" => Some(MicSource::Cpal {
+            format: match debug_prop("debug.fosfora.micfmt").as_deref() {
+                Some("f32") => cpal::SampleFormat::F32,
+                _ => cpal::SampleFormat::I16,
+            },
+            sample_rate: sample_rate(),
+        }),
+        "aaudio" | "loop" => {
+            use ndk::audio::AudioInputPreset;
+            Some(MicSource::AAudio {
+                preset: match debug_prop("debug.fosfora.micpreset").as_deref() {
+                    Some("generic") => AudioInputPreset::Generic,
+                    Some("voice") => AudioInputPreset::VoiceRecognition,
+                    Some("camcorder") => AudioInputPreset::Camcorder,
+                    _ => AudioInputPreset::Unprocessed,
+                },
+                sample_rate: sample_rate(),
+                low_latency: debug_prop("debug.fosfora.micperf").as_deref() != Some("none"),
+            })
+        }
+        _ => None,
+    }
 }
 
 fn debug_prop(name: &str) -> Option<String> {

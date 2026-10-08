@@ -357,6 +357,26 @@ impl Room {
         self.query_any();
     }
 
+    /// `USE_SCENE` was granted while the app ran (board #3264): the query
+    /// alone, as `debug.fosfora.rescan query` runs it ([`Self::requery`],
+    /// not Space Setup), with a first query's retry budget, since the
+    /// runtime can answer the first query after a grant with nothing as
+    /// it does right after focus. Before the first query there is nothing
+    /// to do: it runs at focus and sees the grant. Returns false, having
+    /// done nothing, while a query or Space Setup is in flight, so the
+    /// caller tries again.
+    pub fn requery_after_grant(&mut self) -> bool {
+        if !self.started {
+            return true;
+        }
+        if self.request.is_some() || self.capture.is_some() {
+            return false;
+        }
+        self.empty_results = 0;
+        self.requery();
+        true
+    }
+
     /// Relaunch Space Setup and requery the anchors (the hand menu's
     /// "Rescan the room"), so a changed room takes without a reinstall.
     /// The anchors the new query returns replace the old ones

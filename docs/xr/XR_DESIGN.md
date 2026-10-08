@@ -40,7 +40,7 @@ scripts/xr/run.sh     build → install → launch → logcat
   **VERIFY** the feature flags needed to expose the Vulkan hal on Android.
 - `android-activity` with `native-activity`; `android_logger`; `log`; `glam = "0.29"` (matches core).
 - `fosfora-app = { path = "../fosfora-app", default-features = false }` (after S3).
-- Later: `jni` for runtime permissions.
+- `jni` 0.21 for the runtime permissions (see "Android manifest essentials").
 
 **Build:** `cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build -p fosfora-xr`,
 then `./gradlew assembleDebug`. Only arm64-v8a; the glasses test page requires
@@ -259,7 +259,8 @@ renderer takes; `recording_ring.peek_latest` feeds the waveform texture.
   latency, the display chain is ~75 ms. Delay the tap by the stream's
   reported output latency (or open the output low-latency) before this is
   a product path; `scripts/xr/latency.py` re-measures from a phone video.
-- Later: the in-app `RECORD_AUDIO` runtime request (via `jni`), AEC when the
+- The in-app `RECORD_AUDIO` request is built (see "Runtime permissions"
+  under "Android manifest essentials"). Later: AEC when the
   headset both plays and listens, and a real render-thread split only if the
   measurements say the CPU side is the bottleneck (it is under 1 ms now).
 
@@ -747,8 +748,56 @@ moved to `android/app/build.gradle.kts` (`namespace` / `applicationId`).
   it is hard to change later.
 - The `supportedDevices` value for Meta VR Glasses isn't known yet. Add it when
   Meta publishes it.
-- Runtime permissions (`USE_SCENE`, `RECORD_AUDIO`) need a request at runtime.
-  Spike: `adb shell pm grant`. Product: a JNI call to `Activity.requestPermissions`.
+- Runtime permissions (`USE_SCENE`, `RECORD_AUDIO`) need a request at runtime;
+  the app makes it (below). The development scripts never relied on the
+  ask: the permissions were granted once with `adb shell pm grant`, which
+  survives `adb install -r`.
+
+**Runtime permissions** (*built*, board #3264; `crates/fosfora-xr/src/permissions.rs`).
+At launch, after the asset install and before the session, the app checks
+`USE_SCENE` and `RECORD_AUDIO` with `Activity.checkSelfPermission` (JNI
+through the `jni` crate on the `android_main` thread; no Java source) and
+logs each: `permission USE_SCENE: granted`, `missing, asking`, `missing, not
+asking (debug.fosfora.ask 0)`, or for the microphones `missing, not needed
+(audio synth)`. It asks for the missing ones in one
+`Activity.requestPermissions` call: `USE_SCENE` always (the room is the
+product), `RECORD_AUDIO` only when `debug.fosfora.audio` is a source that
+opens the microphones (`mic`, `micxr`, `aaudio`, `loop`). The bring-up does
+not wait for the answer: the session, passthrough, hands and the stage floor
+need neither permission. Without `USE_SCENE` the scene query returns nothing;
+without `RECORD_AUDIO` the microphones stay closed and the synthetic groove
+runs. The result callback (`onRequestPermissionsResult`) never reaches native
+code, so the frame loop polls the grants once a second until nothing is
+missing or 120 s pass (`permissions: … still missing after 120 s: polling
+stopped, the fallbacks stay`); a denial leaves the fallback for the run. The
+pickup, without a relaunch: a `USE_SCENE` grant while the room has no anchors
+reruns the scene query (the query alone, as `debug.fosfora.rescan query` runs
+it, not Space Setup, with a fresh set of empty-result retries), logged
+`permission USE_SCENE granted after N s: querying the room`; a `RECORD_AUDIO`
+grant opens the microphones the way the launch would have, logged
+`permission RECORD_AUDIO granted after N s: opening the microphones`. While
+`USE_SCENE` is awaited and the room has no anchors, the scan label reads
+"Allow spatial data to see the room" (`room scan: NotAllowed` in the log)
+instead of "Scanning the room…". `debug.fosfora.ask 0` skips the request for
+unworn runs, where the dialog would sit over the view; the checks, the log and
+the pickup stay. `scripts/xr/sweep.sh` and `soak.sh` set it for their runs
+and clear it afterwards. Should the JNI layer fail, the app takes everything
+as granted and runs as it did before it asked.
+
+Device check (the reviewer's recipe):
+
+```
+adb shell pm revoke dev.fosfora.xr com.oculus.permission.USE_SCENE
+adb shell pm revoke dev.fosfora.xr android.permission.RECORD_AUDIO
+# launch, screencap the dialog, then
+adb shell pm grant dev.fosfora.xr com.oculus.permission.USE_SCENE
+# the log says "granted after N s: querying the room" and "room scan: Found(…)"
+```
+
+With the default `debug.fosfora.audio synth` only `USE_SCENE` is asked for;
+set `debug.fosfora.audio aaudio` before the launch to see both dialogs and the
+microphone pickup (`adb shell pm grant dev.fosfora.xr
+android.permission.RECORD_AUDIO`).
 - **The manifest gates extension enumeration** (measured S7, v207): without
   `com.oculus.permission.USE_ANCHOR_API` the runtime listed 84 extensions and
   none of `XR_FB_scene`, `XR_FB_scene_capture`, `XR_FB_spatial_entity*`,

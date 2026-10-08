@@ -1743,6 +1743,7 @@ dependencies = [
  "egui-wgpu",
  "fosfora-app",
  "glam",
+ "jni 0.21.1",
  "libc",
  "log",
  "naga",

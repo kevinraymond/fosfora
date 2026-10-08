@@ -10,8 +10,9 @@
 
     <uses-permission android:name="com.oculus.permission.HAND_TRACKING" />
     <!-- Scene anchors (S7): USE_ANCHOR_API declares the spatial-entity API;
-         USE_SCENE is a runtime permission (granted with `pm grant` in the
-         spike; the product requests it through JNI). Without USE_ANCHOR_API
+         USE_SCENE is a runtime permission (the app asks for it at launch
+         through crates/fosfora-xr/src/permissions.rs, as it does for
+         RECORD_AUDIO). Without USE_ANCHOR_API
          the runtime hid every XR_FB_spatial_entity* / XR_FB_scene extension
          from the S1 app (docs/xr/MEASURED.md, S7). -->
     <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
