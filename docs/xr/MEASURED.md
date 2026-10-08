@@ -2339,3 +2339,75 @@ from the Ettin base with the Bekko toolkit. Both device benches abort at
 teardown while the runtime library unloads (every number prints first);
 the same cause, to fix once before anything ships. The spike is kept under
 `fosfora-xr-kit/spikes/decima/`.
+
+## Our own System One 17M, trained (board #3766)
+
+A 17M decision model trained from the Apache-2.0 `cross-encoder/ettin-reranker-17m-v1`
+(revision `9e4aa35`) with the MIT Bekko toolkit (commit `0fccbb8`) on
+120,000 synthetic cases (335,000 decisions) generated from the voice path's
+own catalogue and naming: 800 rooms of 4 to 20 surfaces, 546 phrasing
+templates plus 112 indirect phrasings, 14 % not-a-request negatives, soft
+labels where several answers are right; 80 rooms, 80 templates and 15
+indirect phrasings held out; the 40 test sentences and any generated
+sentence containing one filtered out. Full fine-tune, batch 512, query
+512 / candidate 64, two epochs, 22 minutes on one RTX 4090 at 7.5 GB. The
+weights are ours, Apache-2.0; nothing outside the generator fed them.
+
+**The 40 never-trained sentences, the four-decision cascade, teacher-forced
+target and value as in the spike:**
+
+| model | gate | kind | target | value | end to end | grammar 25 | misses 10 | non-requests 5 |
+|---|---|---|---|---|---|---|---|---|
+| ours 17M, ONNX int8 | 39/40 | 32/35 | 18/19 | 26/26 | **36/40** | 25/25 | 6/10 | 5/5 |
+| zero-shot v0 17M | 29/40 | 14/35 | 1/19 | 10/26 | 9/40 | 5/25 | 2/10 | 2/5 |
+| zero-shot v0 68M | 32/40 | 18/35 | 13/19 | 22/26 | 18/40 | 9/25 | 4/10 | 5/5 |
+
+The four wrong: "campfire on the desk" names table 14 (0.47) instead of
+the pointed surface; "I'm bored of this one, show me something different"
+is gated out as not a request; "get rid of the dots floating around" and
+"start over with a blank room" land on the behavior kind. Held-out rooms
+0.999 whole-case; held-out templates 0.824, the weak step being the value
+on unseen wordings (color 0.46, "calmer" 0.10, toggles 0.7). Four of the
+ten misses had near-paraphrases in the training phrasings (campfire,
+calmer, feels cold, pump with the kick), so the miss subset partly
+measures template coverage; the honest wins are "kill the music" and
+"what's showing on the window", and the next lever is wider phrasing
+data, not a bigger model.
+
+**Export and parity:** FP32 ONNX 67.5 MB; embeddings-only int8 29.0 MB
+(sha256 `c6dc7b22…`); the toolkit's verifier at logit error 3.8e-6; int8
+against PyTorch over the cascade's 120 decisions worst |Δp| 0.032 with one
+flip, a tie between two accepted answers.
+
+**Quest 3** (`s1-bench`, asleep on USB power, 30 to 33 C, the 40
+sentences' tokens, prefixes 194 to 225 tokens; median per sentence over
+the 35 requests, min to max):
+
+| threads | spin | load | per sentence | gate only (a non-request) | peak RSS |
+|---|---|---|---|---|---|
+| 2 | on | 528 ms | 257 ms (147 to 331) | 57 ms | 125 MB |
+| 4 | on | 502 ms | 171 ms (101 to 217) | 37 ms | 125 MB |
+| 6 | on | 500 ms | 146 ms (86 to 185) | 32 ms | 126 MB |
+| 2 | off | 494 ms | 262 ms | 54 ms | 125 MB |
+| 4 | off | 504 ms | 191 ms | 47 ms | 125 MB |
+| 6 | off | 505 ms | 178 ms | 42 ms | 125 MB |
+
+Device answers equal the host's on 119 of 120 decisions (the same tie).
+Rooms of 20 surfaces push the prefix toward 314 tokens and cost more.
+
+**The teardown abort, root-caused:** `ort` 2.0.0-rc.13 releases its global
+environment from the executable's `.fini_array`; on Android that runs after
+the dlopened `libonnxruntime.so`'s static destructors (exit handlers are
+last-in-first-out), so the release locks a destroyed mutex and FORTIFY
+aborts. The bench flushes and `_exit(0)`s; a vendored `ort` that registers
+the release through `__cxa_atexit` after creating the environment (the path
+it already takes on Apple) exits cleanly through libc, which is the fix the
+app's provider carries or takes upstream.
+
+**Verdict.** The pass bar holds on the host and the headset: all 25 of the
+grammar's sentences, 6 of its 10 misses, all 5 non-requests, at 0.15 to
+0.26 s per sentence and 125 MB. The weights, the ONNX, the tokenizer and a
+`provider-spec.json` (the prefix and candidate templates, the four
+questions as data, the id mapping to `Intent`) live outside the repo under
+`fosfora-xr-kit/spikes/system-one-train/`; the generator regenerates the
+data. The provider in the app is the next step.
