@@ -256,7 +256,7 @@ mod device {
                 ),
                 Err(e) => {
                     warn!(
-                        "microgestures: suggested {} bindings on {PROFILE}: {e}",
+                        "microgestures: suggested {} bindings on {PROFILE}: {e:?} ({e})",
                         bindings.len()
                     );
                     return Err(e).context("xrSuggestInteractionProfileBindings");
