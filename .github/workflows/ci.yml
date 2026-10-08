@@ -183,20 +183,14 @@ jobs:
           echo "LIBCLANG_PATH=$llvm_lib" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
+      # Two feature sets, not one per feature: cargo rebuilds the whole crate for each
+      # distinct set (2-5 min apiece), and the features are additive. Defaults cover the
+      # cfg(not(feature)) paths; the union runs every feature-gated test. Each feature on
+      # its own is still compiled and linted by the Lint job's per-feature clippy passes.
       - name: Test
         run: cargo test
-      - name: Test (video feature)
-        run: cargo test --features video
-      - name: Test (webcam feature)
-        run: cargo test --features webcam
-      - name: Test (depth feature)
-        run: cargo test --features depth
-      - name: Test (analyze feature)
-        run: cargo test --features analyze
-      - name: Test (link feature)
-        run: cargo test --features link
-      - name: Test (output sinks)
-        run: cargo test --features "ndi,v4l2,spout,syphon"
+      - name: Test (all optional features)
+        run: cargo test --features "video,webcam,depth,analyze,link,ndi,v4l2,spout,syphon"
 
   # The capture ring is shared lock-free between the audio callback and the analysis and
   # render threads; Miri is what catches an unsound slot access there (#49). Default
