@@ -1,7 +1,8 @@
 //! The room editor's label (board #3326, step 2b): after each tap or hold,
 //! a short line of text floats at the hit for [`LABEL_S`], naming the
 //! result ("desk: sparks", "all tables: none", "ceiling: nothing to
-//! change"), because the only other naming of it is the palm panel's
+//! change"), or after a first hold what a second would do ("desk: hold
+//! again for all tables -> curls", board #3336), because the only other naming of it is the palm panel's
 //! status cell, which the wearer is not looking at while pointing (Kevin,
 //! worn, Sep 29). The text, the fade and the pose are plain numbers, so
 //! they build and test on the desktop; on Android [`LabelTexture`]
@@ -106,6 +107,18 @@ pub fn space_text(text: String, after: SurfaceBehavior, outside: bool) -> String
 /// "all tables: none".
 pub fn class_text(kind: u32, before: SurfaceBehavior, after: SurfaceBehavior) -> String {
     format!("all {}: {}", kind_plural(kind), result(before, after))
+}
+
+/// The label for a first hold, which arms the class cycle (board #3336):
+/// the surface's name (`surfaces::friendly_name`), and what a second hold
+/// would do, in [`class_text`]'s words, "desk: hold again for all tables
+/// -> streamlines".
+pub fn arm_text(name: &str, kind: u32, next: SurfaceBehavior) -> String {
+    format!(
+        "{name}: hold again for all {} -> {}",
+        kind_plural(kind),
+        next.name()
+    )
 }
 
 /// A kind's name (`surfaces::kind_name`) for "all ...": "tables",
@@ -516,6 +529,33 @@ mod tests {
         assert_eq!(
             cycle_text("ceiling", B::Embers, B::Embers.next_for(KIND_CEILING)),
             "ceiling: rings"
+        );
+    }
+
+    #[test]
+    fn the_arm_text_names_the_kind_and_what_a_second_hold_does() {
+        assert_eq!(
+            arm_text("desk", KIND_TABLE, B::Streamlines),
+            "desk: hold again for all tables -> streamlines"
+        );
+        assert_eq!(
+            arm_text("lamp", KIND_OTHER, B::Curls),
+            "lamp: hold again for all other surfaces -> curls"
+        );
+        // The next behavior is the class cycle's: the step after the
+        // surface's own in its kind's catalogue.
+        let next = B::None.next_for(KIND_CEILING);
+        assert_eq!(
+            arm_text("ceiling", KIND_CEILING, next),
+            "ceiling: hold again for all ceilings -> rings"
+        );
+        // The same words as the result the second hold labels.
+        assert_eq!(
+            class_text(KIND_FRAME, B::Rings, B::Streamlines),
+            "all frames: streamlines"
+        );
+        assert!(
+            arm_text("frame 4", KIND_FRAME, B::Streamlines).ends_with("all frames -> streamlines")
         );
     }
 

@@ -259,8 +259,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       the right far hand's beam picks a room surface, a pinch cycles its behavior through what renders on its kind (board #3488,
     //       the default first after none: table none, streamlines, curls, pulse, embers, sparks; floor none, rings, streamlines, curls,
     //       sparks; wall none, spectrum, streamlines, rings, pulse; ceiling none, rings, pulse, streamlines; frame none, pulse, rings,
-    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold cycles every surface
-    //       of its kind one step past it, through the same lanes and room file as debug.fosfora.surface; default 0, not saved)
+    //       streamlines; other and unlabeled none, curls, streamlines, pulse, embers), a pinch-hold arms and a second within
+    //       2.5 s cycles every surface of its kind one step past it (board #3336), through the same lanes and room file as
+    //       debug.fosfora.surface; default 0, not saved)
     //   adb shell setprop debug.fosfora.cloud 0|1                (board #3326: the cloud at launch, as the hand menu's "Cloud" row turns it on and off:
     //       off, the world effect is hidden at once, whatever the effect, its sim stepping on so on shows it as it would have been (the
     //       pitcher's pour and the throw's bursts are its particles and hide with it), Edit room on or off; default 1, not saved)
@@ -1751,6 +1752,27 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                                 Err(e) => log::warn!("edit room: {e}; nothing changed"),
                             }
                         }
+                        // Board #3336: a first hold only arms the class
+                        // cycle; the label says what a second hold within
+                        // `ARM_S` would do.
+                        Some(crate::room_edit::EditAction::Arm(k)) => {
+                            if let Some((b, _)) = effective(k) {
+                                let kind = lane_boxes[k].kind;
+                                let next = b.next_for(kind);
+                                info!(
+                                    "edit room: armed, every {} like {} -> {} on a second hold within {} s",
+                                    crate::surfaces::kind_name(kind),
+                                    named(k),
+                                    next.name(),
+                                    crate::room_edit::ARM_S
+                                );
+                                labeled = Some(crate::label::arm_text(
+                                    &crate::surfaces::friendly_name(k, &lane_boxes),
+                                    kind,
+                                    next,
+                                ));
+                            }
+                        }
                         Some(crate::room_edit::EditAction::AssignKind(k)) => {
                             let before = effective(k).map(|(b, _)| b);
                             if let Some(b) = before {
@@ -1787,8 +1809,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         let behavior = surface_lanes
                             .effective(h.index, &lane_boxes)
                             .map_or("?", |(b, _)| b.name());
+                        // Board #3336: while the class cycle is armed on it.
+                        let armed = if frame.armed.is_some() { " · armed" } else { "" };
                         format!(
-                            "{}: {behavior}",
+                            "{}: {behavior}{armed}",
                             crate::surfaces::friendly_name(h.index, &lane_boxes)
                         )
                     } else {
