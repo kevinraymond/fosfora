@@ -2037,3 +2037,46 @@ The tint is one multiply in the wrapper: 0.06–0.09 ms between neighbors,
 under the 0.1 ms the warming headset added run to run. The room's file was
 backed up before the kind-wide knob writes and restored byte-identical
 after (`adb shell run-as … sh -c 'cat > files/config/rooms/<id>.json'`).
+
+## The gesture map and the runtime permissions (board #3336, #3264)
+
+Four steps of the hands audit in `XR_DESIGN.md` ("Hands: the gesture
+vocabulary") and the in-app permission ask, each measured unworn on the
+Quest 3 v207, `mode world`, Flux Cloud 500K, the replayed room, 72 Hz.
+
+**The aim state chained onto the hand locate** (`xr-aim`, `XR_FB_hand_tracking_aim`,
+`debug.fosfora.aim`; 30 s runs interleaved, App GPU median):
+
+| aim | run 1 | run 2 |
+|---|---|---|
+| off | 12.64 | 12.45 |
+| on | 12.44 | 12.45 |
+
+No cost. The absolute numbers were the headset's five-day uptime (load
+average 6.9, cool at 33 C): the same scene ran 10.8 ms two hours earlier
+and, after a reboot, 10.15 / 10.72 ms (med / max) at 72 fps with the chain
+on. `adb shell uptime` is the first check when numbers drift.
+
+**Thumb microgestures** (`xr-microgestures`, `XR_META_hand_tracking_microgestures`
+on `XR_EXT_hand_interaction`, one action set synced per frame,
+`debug.fosfora.micro`; after the reboot, 42–43 C, 30 s runs interleaved):
+
+| micro | App GPU med / max | fps | loop CPU avg |
+|---|---|---|---|
+| off | 10.55 / 11.72 · 10.72 / 10.97 | 72 | 2.04 · 2.03 ms |
+| on | 10.57 / 11.47 · 10.79 / 11.81 | 72 | 2.11 · 2.09 ms |
+
+Flat on the GPU, 0.06 ms of CPU for the sync. The runtime bound both hands
+to `/interaction_profiles/ext/hand_interaction_ext` (10 bindings accepted).
+
+**The closing gate and the arm** (`pinch.rs`, `room_edit.rs`) are plain
+numbers with desktop tests and no device cost; their gates are worn.
+
+**The permission ask** (`permissions.rs`): with `USE_SCENE` revoked the OS
+dialog "Allow this app to access your spatial data?" shows at launch; the
+OpenXR session stays `IDLE` under it (no frames, so the once-a-second poll
+waits with it); once it clears the session goes `READY` → `FOCUSED`, the
+query at focus sees the grant, and the log reads `permission USE_SCENE
+granted after 11 s: the room is already in`. Unworn, a force-stopped app
+leaves the system dialog up and the next launch is blocked by it;
+`adb shell am force-stop com.android.permissioncontroller` clears it.
