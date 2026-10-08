@@ -1,5 +1,5 @@
-//! S7 hands: `XR_EXT_hand_tracking` joints as obstacle spheres, a pinch
-//! detector, and the runtime's skinned hand mesh (`XR_FB_hand_tracking_mesh`)
+//! S7 hands: `XR_EXT_hand_tracking` joints as obstacle spheres, the pinch
+//! detector's input (`pinch.rs`), and the runtime's skinned hand mesh (`XR_FB_hand_tracking_mesh`)
 //! as the depth occluder. Bare hands are the primary input (invariant I5);
 //! controllers are not read at all in the spike.
 //!
@@ -61,10 +61,8 @@ pub struct HandsFrame {
     pub mesh_ready: [bool; 2],
 }
 
-/// Thumb tip to index tip distance thresholds (meters), with hysteresis so
-/// a held pinch does not flicker at the boundary.
-pub const PINCH_ON_M: f32 = 0.015;
-const PINCH_OFF_M: f32 = 0.030;
+pub use crate::pinch::PINCH_ON_M;
+use crate::pinch::{CLOSE_DROP_M, CLOSE_WINDOW_S, PinchDetector, PinchEdge};
 /// Log the estimated hand scale when it moves this much from the last log.
 const SCALE_LOG_STEP: f32 = 0.02;
 
@@ -82,7 +80,10 @@ struct HandMesh {
 pub struct Hands {
     trackers: [xr::HandTracker; 2],
     meshes: [Option<HandMesh>; 2],
-    pinching: [bool; 2],
+    /// The pinch detector per hand (`pinch.rs`).
+    pinch: [PinchDetector; 2],
+    /// The last locate's time, for the detector's frame length.
+    last_time: Option<i64>,
     /// Frames since the last "tracked" log per hand, to log state changes only.
     was_tracked: [bool; 2],
     /// Last logged scale estimate per hand.
@@ -145,7 +146,8 @@ impl Hands {
         Ok(Self {
             trackers: [left, right],
             meshes,
-            pinching: [false; 2],
+            pinch: [PinchDetector::new(), PinchDetector::new()],
+            last_time: None,
             was_tracked: [false; 2],
             scale_logged: [1.0; 2],
         })
@@ -166,12 +168,21 @@ impl Hands {
             spheres: Vec::with_capacity(2 * xr::HAND_JOINT_COUNT),
             ..HandsFrame::default()
         };
+        // The frame's length from the runtime's clock, clamped so a pause
+        // or a clock jump neither empties the detector's window at once nor
+        // freezes it.
+        let now = time.as_nanos();
+        let dt = self
+            .last_time
+            .map_or(1.0 / 72.0, |last| (now - last) as f32 * 1e-9)
+            .clamp(1.0 / 120.0, 1.0 / 30.0);
+        self.last_time = Some(now);
         for (h, tracker) in self.trackers.iter().enumerate() {
             let joints = match space.locate_hand_joints(tracker, time) {
                 Ok(Some(j)) => j,
                 Ok(None) => {
                     note_tracked(&mut self.was_tracked, h, false);
-                    self.pinching[h] = false;
+                    self.pinch[h].reset();
                     frame.pinching[h] = false;
                     continue;
                 }
@@ -248,33 +259,40 @@ impl Hands {
 
             let thumb = &joints[xr::HandJoint::THUMB_TIP.into_raw() as usize];
             let index = &joints[xr::HandJoint::INDEX_TIP.into_raw() as usize];
-            if any && valid(thumb) && valid(index) {
+            let tips = (any && valid(thumb) && valid(index)).then(|| {
                 let a = thumb.pose.position;
                 let b = index.pose.position;
                 let d = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2)).sqrt();
                 frame.pinch_point[h] =
                     Some([0.5 * (a.x + b.x), 0.5 * (a.y + b.y), 0.5 * (a.z + b.z)]);
                 frame.tip_distance[h] = Some(d);
-                if !self.pinching[h] && d < PINCH_ON_M {
-                    self.pinching[h] = true;
+                d
+            });
+            let mm = tips.unwrap_or(0.0) * 1000.0;
+            match self.pinch[h].step(tips, dt) {
+                PinchEdge::Began => {
                     frame.pinch_began[h] = true;
                     info!(
-                        "pinch {} began (tip distance {:.1} mm)",
+                        "pinch {} began (tip distance {mm:.1} mm, closed {:.0} mm within {CLOSE_WINDOW_S} s)",
                         hand_name(h),
-                        d * 1000.0
-                    );
-                } else if self.pinching[h] && d > PINCH_OFF_M {
-                    self.pinching[h] = false;
-                    info!(
-                        "pinch {} released (tip distance {:.1} mm)",
-                        hand_name(h),
-                        d * 1000.0
+                        self.pinch[h].recent_drop() * 1000.0
                     );
                 }
-            } else {
-                self.pinching[h] = false;
+                PinchEdge::Released => {
+                    info!("pinch {} released (tip distance {mm:.1} mm)", hand_name(h));
+                }
+                PinchEdge::Rejected => {
+                    // Board #3336: a hand that drifted shut, not a pinch.
+                    info!(
+                        "pinch {} not taken: tips at {mm:.1} mm closed only {:.0} mm within {CLOSE_WINDOW_S} s (a pinch closes {:.0} mm or more)",
+                        hand_name(h),
+                        self.pinch[h].recent_drop() * 1000.0,
+                        CLOSE_DROP_M * 1000.0
+                    );
+                }
+                PinchEdge::None => {}
             }
-            frame.pinching[h] = self.pinching[h];
+            frame.pinching[h] = self.pinch[h].pinching();
         }
         frame
     }

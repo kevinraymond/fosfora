@@ -44,6 +44,7 @@ pub mod panel_grid;
 mod particles3d;
 #[cfg(target_os = "android")]
 mod perf;
+pub mod pinch;
 #[cfg(target_os = "android")]
 mod playback;
 pub mod pose;
