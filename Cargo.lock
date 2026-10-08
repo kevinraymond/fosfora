@@ -1750,6 +1750,7 @@ dependencies = [
  "ndk",
  "openxr",
  "pollster",
+ "serde",
  "serde_json",
  "wgpu",
  "whisper-rs",
