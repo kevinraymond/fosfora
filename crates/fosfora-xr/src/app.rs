@@ -692,7 +692,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
             if mode == Mode::World {
                 // Every world effect is built up front (~0.5 s each on the
-                // Quest 3) and parked, so a pinch-hold swaps in an instant
+                // Quest 3) and parked, so an effect switch is instant
                 // instead of stalling the frame loop for a rebuild.
                 for (i, effect) in world_effects.iter().enumerate() {
                     let started = Instant::now();
@@ -1207,8 +1207,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             });
             let mut moved = false;
             // Board #3326: with Edit room on, the right hand's gestures are
-            // the editor's (no throw, no size toggle, no anchor drag, no
-            // effect cycle); the left hand's are unchanged.
+            // the editor's (no throw, no size toggle, no anchor drag); the
+            // left hand's are unchanged.
             let edit_on = controls.edit_room;
             let (mut edit_tap, mut edit_hold) = (false, false);
             for g in gestures.step(pinches, dt) {
@@ -1248,13 +1248,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         if !panel_up {
                             tapped = Some(hand);
                         }
-                        size_boost = !size_boost;
-                        info!(
-                            "gesture: tap {} · sprite size x{} {}",
-                            hand_name(hand),
-                            PINCH_SIZE_BOOST,
-                            if size_boost { "on" } else { "off" }
-                        );
+                        // The sprite size toggle is the S5 test sim's, for
+                        // the sweeps (board #3336): in mr and world it drew
+                        // nothing and logged on every throw.
+                        if mode == Mode::Particles {
+                            size_boost = !size_boost;
+                            info!(
+                                "gesture: tap {} · sprite size x{} {}",
+                                hand_name(hand),
+                                PINCH_SIZE_BOOST,
+                                if size_boost { "on" } else { "off" }
+                            );
+                        } else {
+                            info!("gesture: tap {}", hand_name(hand));
+                        }
                     }
                     Gesture::DragStart { hand } => {
                         drag_total = glam::Vec3::ZERO;
@@ -1280,12 +1287,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         anchor[1],
                         anchor[2]
                     ),
-                    Gesture::Hold { hand } => {
-                        info!("gesture: hold {}", hand_name(hand));
-                        if world && world_effects.len() > 1 {
-                            switch_to = cycle_index(&parked, world_index, 1);
-                        }
-                    }
+                    // Board #3336: a hold no longer cycles the world effect
+                    // (a still pinch, aiming a throw or a hand at rest, fired
+                    // it unasked); the hand menu's effect row does.
+                    Gesture::Hold { hand } => info!(
+                        "gesture: hold {} (unassigned in the world since board #3336)",
+                        hand_name(hand)
+                    ),
                 }
             }
             if let Some(h) = hud.as_mut() {
@@ -2393,8 +2401,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The cloud density: the showing world effect's emission against
-        // the rate `new_world` set, applied when it changes and when a
-        // pinch-hold swaps in an effect set for another. The cloud toggle
+        // the rate `new_world` set, applied when it changes and when an
+        // effect switch swaps in one set for another. The cloud toggle
         // leaves it alone: off hides the effect (step 2e; 2c took the
         // emission to 0 here).
         if world
@@ -2414,7 +2422,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             );
         }
         // The space size: the showing world effect's volume, applied when
-        // the stepper moves, when a pinch-hold swaps in an effect set for
+        // the stepper moves, when an effect switch swaps in one set for
         // another, and for the surface-born effect when the room fit
         // changes (step 2h: the boxes or the anchor moved) while no size
         // is asked; the stepper shows the size it runs at.
