@@ -2168,7 +2168,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 for e in surface_ports.iter_mut().flatten() {
                     e.advance(dt);
                 }
-                let mut port_faces = Vec::new();
+                // The ported faces this frame: effect, face, kind,
+                // behavior, strength and color index.
+                let mut ported = Vec::new();
                 let mut spectrum_sign = 1.0;
                 for (k, b) in input.room_boxes.iter().chain(floor_box.iter()).enumerate() {
                     // The lane's behavior, strength, color index and band
@@ -2214,29 +2216,22 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     // A ported desktop effect (board #3489): its own
                     // slot, the face turned upright for its frame, the
-                    // effect's uniform for this face's size. The lane's
-                    // color and band are not read: its colors are its own.
-                    if let (Some(i), Some(effects)) = (behavior.port(), surface_ports.as_ref()) {
-                        let face = crate::surface_port::port_face(face);
-                        let effect = &effects[i];
+                    // effect's uniform for this face's size, built below
+                    // once the key's tint is known. Since D3 (board
+                    // #3472) the lane's color index tints it
+                    // (`surface_port::tint`: index 0 leaves its colors its
+                    // own); the band is not read, a port follows its own
+                    // audio bindings.
+                    if let (Some(i), Some(_)) = (behavior.port(), surface_ports.as_ref()) {
                         counts[5] += 1;
-                        port_faces.push(crate::gfx::PortFace {
-                            effect: i,
-                            uniforms: crate::surface_port::uniforms(
-                                &f,
-                                audio.clock,
-                                dt,
-                                frame_index,
-                                face.half,
-                                effect.params(),
-                            ),
-                            rows: crate::surface_port::rows(
-                                &face,
-                                strength,
-                                effect.overlay,
-                                behavior.id(),
-                            ),
-                        });
+                        ported.push((
+                            i,
+                            crate::surface_port::port_face(face),
+                            b.kind,
+                            behavior,
+                            strength,
+                            color,
+                        ));
                         continue;
                     }
                     match behavior {
@@ -2255,15 +2250,49 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         band,
                     });
                 }
-                // The key's tint only when a lit face asks for it: the
-                // desktop's key hue from core's binding sources, which
-                // builds a map of every source.
-                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY) {
+                // The key's tint only when a lit face asks for it (a
+                // ported one too, since D3): the desktop's key hue from
+                // core's binding sources, which builds a map of every
+                // source.
+                if slots.iter().any(|s| s.color == crate::surfaces::COLOR_KEY)
+                    || ported
+                        .iter()
+                        .any(|&(.., color)| color == crate::surfaces::COLOR_KEY)
+                {
                     let hue = fosfora_app::bindings::sources::collect_audio(&f)
                         .get("audio.key_hue")
                         .map_or(0.5, |v| v.0);
                     audio.key_tint = crate::surfaces::key_tint(hue);
                 }
+                let mut port_faces: Vec<_> = surface_ports
+                    .as_ref()
+                    .map(|effects| {
+                        ported
+                            .iter()
+                            .map(|&(i, face, kind, behavior, strength, color)| {
+                                let effect = &effects[i];
+                                crate::gfx::PortFace {
+                                    effect: i,
+                                    uniforms: crate::surface_port::uniforms(
+                                        &f,
+                                        audio.clock,
+                                        dt,
+                                        frame_index,
+                                        face.half,
+                                        effect.params(),
+                                    ),
+                                    rows: crate::surface_port::rows(
+                                        &face,
+                                        strength,
+                                        effect.overlay,
+                                        behavior.id(),
+                                        crate::surface_port::tint(color, kind, audio.key_tint),
+                                    ),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let spectrum = canvas.as_ref().map(|c| crate::surface_fx::Spectrum {
                     canvas: c,
                     sign: spectrum_sign,

@@ -34,6 +34,15 @@
 //! scaled by the peak alpha ([`PEAK_ALPHA`]), the lane's strength and the
 //! surfaces pass's 5 cm edge fade.
 //!
+//! **The tint** (board #3472, D3). The lane's color index tints the
+//! effect: index 0 leaves its colors its own (white, `[1, 1, 1]`, so the
+//! default look is bit-identical to D2b's), any other multiplies its rgb by
+//! the surface color the index picks ([`tint`], the key's tint included).
+//! The tint goes on after the coverage is taken, so it never changes an
+//! alpha, the opaque effects' luminance coverage included: a tinted
+//! effect covers the surface where it did, in the tint's color. The lane's
+//! band is not read: a ported effect follows its own audio bindings.
+//!
 //! **The uniform** ([`uniforms`]): the core's `ShaderUniforms`, filled as
 //! the desktop fills it: this frame's audio features mirrored in, the
 //! surfaces' clock as the time, the frame's dt and index, the `.pfx`
@@ -161,20 +170,39 @@ pub fn port_face(face: Face) -> Face {
 
 /// The port block's rows for `face` ([`port_face`] already applied) at
 /// `strength`, for an effect that is an `overlay` or opaque, of catalogue
-/// id `id`: the corners (lifted as the surfaces pass lifts them); `face`
-/// (the half extents, the lift, the id); `params` (the strength); `color`
-/// (white, the peak alpha: the effect's colors are its own); `mode` (x 1
-/// for an overlay).
-pub fn rows(face: &Face, strength: f32, overlay: bool, id: u32) -> [[f32; 4]; UNIFORM_ROWS] {
+/// id `id`, tinted `tint` ([`tint`]): the corners (lifted as the surfaces
+/// pass lifts them); `face` (the half extents, the lift, the id); `params`
+/// (the strength); `color` (the tint, the peak alpha); `mode` (x 1 for an
+/// overlay).
+pub fn rows(
+    face: &Face,
+    strength: f32,
+    overlay: bool,
+    id: u32,
+    tint: [f32; 3],
+) -> [[f32; 4]; UNIFORM_ROWS] {
     let mut rows = [[0.0f32; 4]; UNIFORM_ROWS];
     for (row, c) in rows.iter_mut().zip(face.corners(LIFT_M)) {
         *row = [c.x, c.y, c.z, 1.0];
     }
     rows[4] = [face.half[0], face.half[1], LIFT_M, id as f32];
     rows[5] = [strength.clamp(0.0, 1.0), 0.0, 0.0, 0.0];
-    rows[6] = [1.0, 1.0, 1.0, PEAK_ALPHA];
+    rows[6] = [tint[0], tint[1], tint[2], PEAK_ALPHA];
     rows[7] = [f32::from(u8::from(overlay)), 0.0, 0.0, 0.0];
     rows
+}
+
+/// The tint of a ported effect on a surface of `kind` whose lane's color
+/// index is `color`, while the key's tint is `key`: white for index 0 (the
+/// effect's colors are its own), else the surface color the index picks
+/// (`surfaces::surface_color`, as the surfaces pass's own faces resolve
+/// it through `surface_fx::color_of`).
+pub fn tint(color: u32, kind: u32, key: [f32; 3]) -> [f32; 3] {
+    if color == 0 {
+        [1.0; 3]
+    } else {
+        crate::surfaces::surface_color(color, kind, key)
+    }
 }
 
 /// The frame coordinate the wrapper hands the effect for face point `uv`
@@ -186,11 +214,12 @@ pub fn frame_coord(uv: Vec2, half: [f32; 2], resolution: [f32; 2]) -> Vec2 {
 }
 
 /// What the wrapper writes for the effect's output `c` at a scale of `k`
-/// (the peak alpha times the strength times the edge fade): premultiplied
-/// light. An overlay's coverage is its alpha; an opaque effect's is its
-/// luminance, so black is no coverage. The WGSL's `fs_main` after the
-/// call.
-pub fn light(c: [f32; 4], overlay: bool, k: f32) -> [f32; 4] {
+/// (the peak alpha times the strength times the edge fade), tinted `tint`:
+/// premultiplied light. An overlay's coverage is its alpha; an opaque
+/// effect's is its luminance (of the untinted color), so black is no
+/// coverage; the tint then multiplies the color alone. The WGSL's
+/// `fs_main` after the call.
+pub fn light(c: [f32; 4], overlay: bool, k: f32, tint: [f32; 3]) -> [f32; 4] {
     let rgb = [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0));
     let cover = if overlay {
         c[3]
@@ -198,9 +227,9 @@ pub fn light(c: [f32; 4], overlay: bool, k: f32) -> [f32; 4] {
         rgb.iter().zip(LUMA).map(|(x, w)| x * w).sum()
     };
     [
-        rgb[0] * k,
-        rgb[1] * k,
-        rgb[2] * k,
+        rgb[0] * tint[0] * k,
+        rgb[1] * tint[1] * k,
+        rgb[2] * tint[2] * k,
         cover.clamp(0.0, 1.0) * k,
     ]
 }
@@ -230,7 +259,7 @@ struct XrPort {
     face: vec4<f32>,
     // x strength 0..1
     params: vec4<f32>,
-    // w the peak alpha
+    // rgb the tint (white: the effect's own colors), w the peak alpha
     color: vec4<f32>,
     // x 1 for an overlay (its own premultiplied alpha), 0 for an opaque
     // effect (its luminance is the coverage)
@@ -275,7 +304,8 @@ fn fs_main(in: XrVsOut) -> @location(0) vec4<f32> {
         cover = c.a;
     }
     let k = xr_port.color.w * clamp(xr_port.params.x, 0.0, 1.0) * edge;
-    return vec4<f32>(rgb, clamp(cover, 0.0, 1.0)) * k;
+    // The tint after the coverage: it colors the light, never its alpha.
+    return vec4<f32>(rgb * xr_port.color.rgb, clamp(cover, 0.0, 1.0)) * k;
 }
 ";
 
@@ -789,24 +819,83 @@ mod tests {
     #[test]
     fn an_opaque_effects_black_is_no_coverage_and_an_overlay_keeps_its_own() {
         // Opaque: the luminance covers; black is the real surface.
-        assert_close!(light([0.0, 0.0, 0.0, 1.0], false, 0.5), [0.0; 4]);
-        assert_close!(light([1.0, 1.0, 1.0, 1.0], false, 0.5), [0.5; 4]);
-        let green = light([0.0, 1.0, 0.0, 1.0], false, 0.5);
+        const WHITE: [f32; 3] = [1.0; 3];
+        assert_close!(light([0.0, 0.0, 0.0, 1.0], false, 0.5, WHITE), [0.0; 4]);
+        assert_close!(light([1.0, 1.0, 1.0, 1.0], false, 0.5, WHITE), [0.5; 4]);
+        let green = light([0.0, 1.0, 0.0, 1.0], false, 0.5, WHITE);
         assert_close!(green, [0.0, 0.5, 0.0, 0.5 * LUMA[1]]);
         // Past 1 the light clips at the peak.
-        assert_close!(light([3.0, 3.0, 3.0, 1.0], false, 0.5), [0.5; 4]);
+        assert_close!(light([3.0, 3.0, 3.0, 1.0], false, 0.5, WHITE), [0.5; 4]);
         // Overlay: premultiplied in, premultiplied out, scaled.
         assert_close!(
-            light([0.2, 0.1, 0.0, 0.4], true, 0.5),
+            light([0.2, 0.1, 0.0, 0.4], true, 0.5, WHITE),
             [0.1, 0.05, 0.0, 0.2]
         );
-        assert_close!(light([0.0, 0.0, 0.0, 0.0], true, 0.5), [0.0; 4]);
+        assert_close!(light([0.0, 0.0, 0.0, 0.0], true, 0.5, WHITE), [0.0; 4]);
         // The edge fade: 0 at an edge, 1 from 5 cm in.
         let half = [0.6, 0.4];
         assert_close!(edge_fade(Vec2::new(0.6, 0.0), half), 0.0);
         assert_close!(edge_fade(Vec2::new(0.55, 0.35), half), 1.0);
         // Halfway in (to the float's rounding of the 2.5 cm).
         assert!((edge_fade(Vec2::new(0.575, 0.0), half) - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_tint_colors_the_light_and_never_its_alpha() {
+        use crate::surfaces::{AMBER, COLOR_KEY, KIND_TABLE, TEAL, palette};
+        let key = [0.9, 0.3, 0.2];
+        // Index 0: white, the effect's own colors; the others the color
+        // the surfaces pass draws that index in, the key's tint included.
+        assert_close!(tint(0, KIND_TABLE, key), [1.0; 3]);
+        assert_close!(tint(4, KIND_TABLE, key), AMBER);
+        assert_close!(tint(6, KIND_TABLE, key), TEAL);
+        assert_close!(tint(COLOR_KEY, KIND_TABLE, key), key);
+        for c in 1..=COLOR_KEY {
+            let behavior = crate::surfaces::SurfaceBehavior::Aurora;
+            assert_close!(
+                tint(c, KIND_TABLE, key),
+                crate::surface_fx::color_of(KIND_TABLE, behavior, c, key)
+            );
+        }
+        assert!(!crate::test_util::close(
+            &tint(0, KIND_TABLE, key),
+            &palette(KIND_TABLE)
+        ));
+        // White is bit-identical to D2b's light, which had no tint: the
+        // default look.
+        let untinted = |c: [f32; 4], overlay: bool, k: f32| {
+            let rgb = [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0));
+            let cover: f32 = if overlay {
+                c[3]
+            } else {
+                rgb.iter().zip(LUMA).map(|(x, w)| x * w).sum()
+            };
+            [
+                rgb[0] * k,
+                rgb[1] * k,
+                rgb[2] * k,
+                cover.clamp(0.0, 1.0) * k,
+            ]
+        };
+        let samples = [
+            [0.3, 0.6, 0.9, 1.0],
+            [0.71, 0.13, 0.02, 0.4],
+            [1.7, 0.5, 0.25, 0.8],
+        ];
+        for c in samples {
+            for overlay in [false, true] {
+                let a = light(c, overlay, 0.37, [1.0; 3]);
+                let b = untinted(c, overlay, 0.37);
+                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "{c:?}");
+                // Tinted: the color times the tint, the alpha unchanged,
+                // for an opaque effect's luminance coverage too.
+                let t = light(c, overlay, 0.37, AMBER);
+                assert_close!(t[3], a[3]);
+                for i in 0..3 {
+                    assert_close!(t[i], a[i] * AMBER[i]);
+                }
+            }
+        }
     }
 
     #[test]
@@ -843,9 +932,9 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_carry_the_face_the_strength_and_the_mode() {
+    fn the_rows_carry_the_face_the_strength_the_color_and_the_mode() {
         let face = port_face(table());
-        let r = rows(&face, 0.8, true, FIRST_ID + 4);
+        let r = rows(&face, 0.8, true, FIRST_ID + 4, [1.0; 3]);
         for (row, c) in r.iter().zip(face.corners(LIFT_M)) {
             assert_close!(*row, [c.x, c.y, c.z, 1.0]);
         }
@@ -853,8 +942,10 @@ mod tests {
         assert_close!(r[5], [0.8, 0.0, 0.0, 0.0]);
         assert_close!(r[6], [1.0, 1.0, 1.0, PEAK_ALPHA]);
         assert_close!(r[7], [1.0, 0.0, 0.0, 0.0]);
-        let opaque = rows(&face, 2.0, false, FIRST_ID);
+        let amber = crate::surfaces::AMBER;
+        let opaque = rows(&face, 2.0, false, FIRST_ID, amber);
         assert_close!(opaque[5][0], 1.0);
+        assert_close!(opaque[6], [amber[0], amber[1], amber[2], PEAK_ALPHA]);
         assert_close!(opaque[7][0], 0.0);
     }
 
@@ -992,7 +1083,7 @@ mod tests {
             let eye = uniform(gpu, bytemuck::cast_slice(&fit.to_cols_array()));
             let port = uniform(
                 gpu,
-                bytemuck::cast_slice(&rows(&face, 1.0, overlay, FIRST_ID)),
+                bytemuck::cast_slice(&rows(&face, 1.0, overlay, FIRST_ID, [1.0; 3])),
             );
             fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
                 wgpu::BindGroupEntry {
