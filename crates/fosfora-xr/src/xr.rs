@@ -42,6 +42,10 @@ pub struct XrContext {
     pub has_scene: bool,
     /// `XR_META_environment_depth` (board #3324).
     pub has_env_depth: bool,
+    /// `XR_META_hand_tracking_microgestures` together with the
+    /// `XR_EXT_hand_interaction` profile its input paths extend (board
+    /// #3336).
+    pub has_microgestures: bool,
 }
 
 /// Which S7 features to bring up with the session.
@@ -148,6 +152,13 @@ impl XrContext {
         enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
         // The live depth map from the passthrough cameras (board #3324).
         enabled.meta_environment_depth = available.meta_environment_depth;
+        // Board #3336: thumb microgestures. Their input paths extend the
+        // EXT hand interaction profile, so the pair is enabled together or
+        // not at all.
+        let has_microgestures =
+            available.ext_hand_interaction && available.meta_hand_tracking_microgestures;
+        enabled.ext_hand_interaction = has_microgestures;
+        enabled.meta_hand_tracking_microgestures = has_microgestures;
         info!(
             "hand aim (XR_FB_hand_tracking_aim): {}",
             enabled.fb_hand_tracking_aim
@@ -170,6 +181,15 @@ impl XrContext {
                 .any(|n| n == "XR_META_spatial_entity_room_mesh"),
             available.meta_environment_depth,
         );
+        info!(
+            "microgestures (XR_META_hand_tracking_microgestures on XR_EXT_hand_interaction): {has_microgestures}"
+        );
+        if !has_microgestures {
+            info!(
+                "microgestures off: XR_EXT_hand_interaction {} · XR_META_hand_tracking_microgestures {}",
+                available.ext_hand_interaction, available.meta_hand_tracking_microgestures
+            );
+        }
 
         let instance = entry
             .create_instance(
@@ -267,6 +287,7 @@ impl XrContext {
             has_hand_aim: enabled.fb_hand_tracking_aim,
             has_scene,
             has_env_depth: enabled.meta_environment_depth,
+            has_microgestures,
         })
     }
 }
