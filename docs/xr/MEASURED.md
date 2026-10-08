@@ -2411,3 +2411,46 @@ grammar's sentences, 6 of its 10 misses, all 5 non-requests, at 0.15 to
 questions as data, the id mapping to `Intent`) live outside the repo under
 `fosfora-xr-kit/spikes/system-one-train/`; the generator regenerates the
 data. The provider in the app is the next step.
+
+**Run 3: wider phrasings, a second test set** (board #3768). The generator
+gained about 70 color wordings, 20 strength and 12 "calmer"-family
+templates, toggle verbs, 20 all_none and 27 next/previous wordings, 22
+pointed-versus-named contrast templates and 46 look-alike negative frames
+(1,083 templates; 140,000 cases, 386,000 training decisions, 14.5 %
+negatives; 103 templates and 22 phrasings held out), under a rule that no
+template may use a test sentence's distinctive words (checked by script
+over 1,511 strings). A second test set of 40 sentences was written and
+frozen before the widening, by a different route (set 1's ten miss
+intents in new wordings; the grammar's own phrasings; five non-requests),
+and both sets are filtered out of the data. Same recipe, two epochs, 28
+minutes on one 4090.
+
+| model | set | gate | kind | target | value | end to end | grammar 25 | misses 10 | non-requests 5 |
+|---|---|---|---|---|---|---|---|---|---|
+| run 2 | 1 | 39 | 32 | 18 | 26 | 36/40 | 25 | 6 | 5 |
+| run 3 | 1 | 38 | 32 | 19 | 26 | 36/40 | 24 | 7 | 5 |
+| run 2 | 2 | 38 | 32 | 19 | 24 | 35/40 | 25 (16 of them seen verbatim in its data) | 6 | 4 |
+| run 3 | 2 | 38 | 32 | 19 | 25 | 35/40 | 25 (clean) | 6 | 4 |
+
+On phrasings held out from training the widening worked: value accuracy
+0.80 → 0.90 (color 0.46 → 0.88, the calmer family 0.10 → above 0.97),
+whole-case 0.824 → 0.855. On the two sets it did not move the end-to-end
+score: set 1 traded "campfire on the desk" (now right) for "Edit the room."
+(now gated out at p 0.003, while "edit the room", "Edit room." and "Edit
+the room please." pass at 0.93 to 0.999); the remaining misses are unseen
+words (bored, seen enough, dots, sparkly dust, blank room, boom, vivid),
+not unseen structure. Still weak on held-out templates: the gate on
+look-alike negatives 0.72, the all_none kind 0.73, rescan 0.79,
+next_effect 0.80. Quest 3 cost unchanged: 148 / 169 / 259 ms per sentence
+at 6 / 4 / 2 threads, 134 MB; device answers equal the host's on 120 of
+120. Parity: int8 worst |Δp| 0.031, no flips. Export
+`exports/17m-run3-onnx/`, sha256 `cd7f55ce…`.
+
+**Which one ships.** In the app the grammar answers first and the model
+sees only what the grammar missed, so a grammar sentence the gate rejects
+never reaches the model; the literal pass bar's "25 of 25" is moot in the
+pipeline, and the measures that matter are the misses, the non-requests
+and the held-out phrasings. On those run 3 is equal or better (7 of 10 on
+set 1, 0.90 on unseen value wordings), so **run 3 is the model for the
+provider**, with the gate's fragility on exact spellings noted as the
+known weakness and the provider's confidence floor as its guard.
