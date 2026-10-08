@@ -1752,6 +1752,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "ureq",
  "wgpu",
  "whisper-rs",
 ]

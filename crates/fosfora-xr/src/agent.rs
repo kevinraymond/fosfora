@@ -28,7 +28,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -831,6 +832,98 @@ pub fn call_line(
         provider.name(),
         provider.model()
     )
+}
+
+/// One `POST` with a deadline: the status and the body, any status (the
+/// body of a 400 names the field to fix).
+fn post(req: &HttpRequest, timeout: Duration) -> Result<(u16, String), AgentError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut call = agent.post(&req.url);
+    for (k, v) in &req.headers {
+        call = call.header(k.as_str(), v.as_str());
+    }
+    let map = |e: ureq::Error| match e {
+        ureq::Error::Timeout(_) => AgentError::Timeout,
+        ureq::Error::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => AgentError::Timeout,
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::Io(_) => {
+            AgentError::NoNetwork(e.to_string())
+        }
+        other => AgentError::Http(0, other.to_string()),
+    };
+    let mut response = call.send(req.body.to_string()).map_err(map)?;
+    let status = response.status().as_u16();
+    let body = response.body_mut().read_to_string().map_err(map)?;
+    Ok((status, body))
+}
+
+/// The call: `req` posted within `timeout`; on a refused output format
+/// ([`Provider::without_format`]) once more without it, in the time left;
+/// the answer read by the provider. Blocking: run it off the frame thread
+/// ([`spawn`]). Logs one line per call ([`call_line`]), and a non-200
+/// body in full (never a header).
+pub fn ask(
+    provider: &dyn Provider,
+    req: HttpRequest,
+    timeout: Duration,
+) -> Result<Reply, AgentError> {
+    let started = Instant::now();
+    let mut req = req;
+    let mut path = "schema";
+    let outcome = loop {
+        let left = timeout.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break Err(AgentError::Timeout);
+        }
+        let (status, body) = match post(&req, left) {
+            Ok(answer) => answer,
+            Err(e) => break Err(e),
+        };
+        if status != 200 {
+            log::warn!("voice agent: {} answered {status}: {body}", provider.name());
+            if path == "schema"
+                && let Some(again) = provider.without_format(&req, status, &body)
+            {
+                log::warn!(
+                    "voice agent: {} refused the output format; once more without it",
+                    provider.name()
+                );
+                req = again;
+                path = "no schema (retried)";
+                continue;
+            }
+        }
+        break provider.parse(status, &body);
+    };
+    log::info!(
+        "{}",
+        call_line(provider, started.elapsed().as_millis(), &outcome, path)
+    );
+    outcome
+}
+
+/// [`ask`] on its own thread: the receiver gets the one outcome.
+pub fn spawn(
+    provider: Arc<dyn Provider + Send + Sync>,
+    req: HttpRequest,
+    timeout: Duration,
+) -> Receiver<Result<Reply, AgentError>> {
+    let (tx, rx) = channel();
+    let fail = tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fosfora-agent".into())
+        .spawn(move || {
+            // The frame loop may have moved on (a newer sentence): then
+            // nobody listens, and the answer is dropped.
+            let _ = tx.send(ask(provider.as_ref(), req, timeout));
+        });
+    if let Err(e) = spawned {
+        let _ = fail.send(Err(AgentError::Http(0, format!("no thread: {e}"))));
+    }
+    rx
 }
 
 /// The label for a reply, and how long it shows: `say` when every action
