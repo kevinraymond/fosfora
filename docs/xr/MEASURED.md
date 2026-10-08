@@ -2171,3 +2171,50 @@ it needs a hand), the frame cost during a transcription (a hand too), and
 real voice. The spike's clips in the app's files: `adb shell "run-as
 dev.fosfora.xr sh -c 'cat > files/clip1.wav'" < clip1.wav` (the app cannot
 read `/sdcard`).
+
+## The voice path, V3: the agent (board #3751)
+
+`xr-voice-v3` on the Quest 3, `mode world`, the replayed room (17 anchors,
+nothing pointed), the five sentences the grammar cannot match fed through
+`debug.fosfora.say`, the room file backed up before and restored
+byte-identical after. The provider was the desktop's Ollama over the LAN
+(`openai`, `http://10.10.0.153:11435/v1`, the system server exposed for
+the run with `socat TCP-LISTEN:11435,bind=0.0.0.0,fork,reuseaddr
+TCP:127.0.0.1:11434`), two models. The hosted Anthropic provider was not
+exercised (no key on the headset yet); its request shape is pinned by the
+golden test.
+
+**qwen3.5 (6.6 GB, a thinking model, `"extra": {"think": false}`)**, the
+prompt about 2000 to 2500 tokens with the room's JSON:
+
+| sentence | round trip | result |
+|---|---|---|
+| Something like a campfire on table 14. | 12.1 s | timed out (the server was loading the model) |
+| Make the walls calmer. | 9.7 s | cut off (the 1024-token output budget spent) |
+| Less going on. | 4.9 s | `AllNone`, "Set all effects to none" (in 2058, out 30) |
+| Make the room feel like the ocean. | 8.9 s | 7 actions applied: streamlines on three walls and more (in 2473, out 124) |
+| Give the ceiling a starry night. | 9.5 s | cut off |
+
+**qwen2.5 3B instruct (1.9 GB, no thinking), pre-warmed:**
+
+| sentence | round trip | result |
+|---|---|---|
+| Something like a campfire on table 14. | 1.4 s | embers on table 14, "Embers activated on table 14." (in 1672, out 48) |
+| Make the walls calmer. | 2.1 s | three `EditRoom(true)` (schema-valid, wrong) |
+| Less going on. | 0.8 s | `PrevEffect`, "Ok" |
+| Make the room feel like the ocean. | 5.3 s | 6 actions, every one dropped: made-up kinds and packed values (`edit_room table*14 shards:amber:mid:full`) |
+| Give the ceiling a starry night. | 1.2 s | 1 action dropped (`edit_room ceiling stars`), "Ceiling set to stars effect." |
+
+**What this says.** The path holds: the headset reaches the LAN server,
+the schema is honored by both models, every reply is parsed or named as
+cut off or timed out, an invented kind or value is dropped and logged
+without touching the room, the valid actions in a mixed reply still apply,
+and the label always says something. The quality is the model's: the 3 B
+model is fast (0.8 to 2.1 s for a short answer) and schema-obedient but
+picks wrong actions and packs values into one field; the thinking model
+answers well when it answers but spends its output budget on reasoning on
+the long prompt and takes 5 to 12 s on this desktop's GPU. A hosted model,
+or a local one of 7 B or more without thinking, is the practical setting;
+the on-device decision-model spike measures the other direction. The
+12 s timeout was hit once while the server loaded a model: the first call
+after a long idle pays that.
