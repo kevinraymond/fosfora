@@ -57,6 +57,9 @@ pub struct MrOptions {
     /// Chain `XR_FB_hand_tracking_aim`'s state onto the joint locate
     /// (`debug.fosfora.aim`, board #3336).
     pub aim: bool,
+    /// Lead the hand joints along the runtime's velocities by this many
+    /// seconds (`debug.fosfora.handlead` ms, board #3753); 0 is off.
+    pub hand_lead_s: f32,
     pub room: bool,
     /// Launch Space Setup when the room query finds no anchors.
     pub scene_capture: bool,
@@ -468,7 +471,11 @@ impl XrSession {
         };
         let hands = if mr.hands {
             if ctx.has_hand_tracking {
-                Some(Hands::new(&session, ctx.has_hand_aim && mr.aim)?)
+                Some(Hands::new(
+                    &session,
+                    ctx.has_hand_aim && mr.aim,
+                    mr.hand_lead_s,
+                )?)
             } else {
                 warn!("hands requested but XR_EXT_hand_tracking is missing");
                 None

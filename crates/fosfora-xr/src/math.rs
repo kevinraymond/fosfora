@@ -111,3 +111,33 @@ mod tests {
         assert!(p.z > 0.0 && p.z < 1.0, "{p}");
     }
 }
+
+/// A located point moved ahead along its velocity by `lead_s` seconds
+/// (board #3753: the hand joints led by the runtime's velocities so the
+/// skinned mesh trails less on fast motion). Nothing moves with no lead.
+pub fn led(p: [f32; 3], v: [f32; 3], lead_s: f32) -> [f32; 3] {
+    [
+        p[0] + v[0] * lead_s,
+        p[1] + v[1] * lead_s,
+        p[2] + v[2] * lead_s,
+    ]
+}
+
+#[cfg(test)]
+mod lead_tests {
+    use super::led;
+
+    #[test]
+    fn a_point_is_led_along_its_velocity_and_not_at_all_with_no_lead() {
+        let same = led([1.0, 2.0, 3.0], [0.5, -1.0, 2.0], 0.0);
+        assert!(
+            same.iter()
+                .zip([1.0, 2.0, 3.0])
+                .all(|(a, b)| (a - b).abs() < 1e-9)
+        );
+        let p = led([1.0, 2.0, 3.0], [0.5, -1.0, 2.0], 0.02);
+        assert!(
+            (p[0] - 1.01).abs() < 1e-6 && (p[1] - 1.98).abs() < 1e-6 && (p[2] - 3.04).abs() < 1e-6
+        );
+    }
+}

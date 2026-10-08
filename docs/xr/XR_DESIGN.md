@@ -291,7 +291,11 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   the function pointer, since the crate's safe locate cannot chain a
   `next`): while its `SYSTEM_GESTURE` flag is on, the runtime's own menu
   gesture owns that hand and its pinch is suppressed here, so a pinch the
-  system took never starts a gesture of ours. Controllers are not read (I5).
+  system took never starts a gesture of ours. `debug.fosfora.handlead <ms>`
+  chains `XrHandJointVelocitiesEXT` onto the same locate and moves every
+  joint ahead along its linear velocity by that long (board #3753, an A/B
+  for the trailing mesh on fast motion; default 0, off). Controllers are
+  not read (I5).
 - **Thumb microgestures (board #3336, step 4 of the gesture map).**
   `XR_META_hand_tracking_microgestures`, enabled together with
   `XR_EXT_hand_interaction` (the registry makes it depend on that extension,
