@@ -117,8 +117,6 @@ const VOICE_THREADS: i32 = 3;
 const VOICE_WAIT_LABEL_S: f32 = 10.0;
 /// What the label says when a window closes before the model has loaded.
 const VOICE_LOADING_LABEL: &str = "Voice is still loading";
-/// The `voicefile` clip's label: this far ahead of the head (m).
-const VOICE_FILE_LABEL_M: f32 = 1.0;
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -488,6 +486,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         crate::voice::QUIET_S
     );
     let mut push_to_talk = PushToTalk::new(voice_quiet);
+    // V4: whether the flock last saw the left fist masked for voice, for
+    // the log's one line per change.
+    let mut flock_rule_logged = false;
     // The voice path's own label (the editor's is stepped and cleared by
     // Edit room), and where it floats: the left palm at the window's
     // opening, facing the head.
@@ -1789,6 +1790,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let poses_apply = poses_on
                     && world
                     && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                // Board #3751, V4: with voice on the left fist is the voice
+                // opener everywhere, so the flock sees an open left hand;
+                // the right fist keeps its predator. Logged once per change.
+                let voice_fist = controls.voice && voice.is_some();
+                let flock_rule = poses_apply && voice_fist;
+                if flock_rule != flock_rule_logged {
+                    flock_rule_logged = flock_rule;
+                    info!(
+                        "{}",
+                        if flock_rule {
+                            "pose: voice on, the left fist opens the voice window and is no predator; the right fist is"
+                        } else {
+                            "pose: the left fist is a predator again"
+                        }
+                    );
+                }
+                let flock_frame = crate::voice::flock_poses(&pose_frame, voice_fist);
                 let tuning = Tuning {
                     fist_pad: controls.hand_pad,
                     fist_kick: controls.hand_kick,
@@ -1805,7 +1823,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             )
                         })
                     });
-                    crate::pose::decide(&pose_frame, far_palm, panel_up, &tuning)
+                    crate::pose::decide(&flock_frame, far_palm, panel_up, &tuning)
                 } else {
                     [Plan::hawk(&tuning); 2]
                 };
@@ -2336,9 +2354,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // "Room: 17 surfaces" when it does, "No room found..." when
             // the retries give up.
             // Board #3751: the voice path's push-to-talk window on the left
-            // fist (hand 0). It opens whatever else the hands are doing:
-            // with Edit room on, with the hand menu up, on Flock's fist
-            // predator; voice is independent of the hands' other modes.
+            // fist (hand 0), or (V4) a thumb tap on either hand, while the
+            // hand menu's Voice toggle is on. It opens whatever else the
+            // hands are doing: with Edit room on, with the hand menu up, on
+            // Flock, where the left fist is then no predator (above).
             voice_label.step(dt);
             // The sentence heard this frame, for the grammar below.
             let mut sentence: Option<String> = None;
@@ -2364,8 +2383,14 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 };
                 match push_to_talk.step_with(press, dt) {
                     Some(VoiceEvent::Opened(opener)) => {
-                        let at = input.hands.palm[0].map_or(head, |(p, _)| glam::Vec3::from(p));
-                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                        // V4: at the left palm, or 1 m ahead of the head
+                        // with the palm out of view (a tap from the right
+                        // hand, the left one down).
+                        voice_at = crate::voice::label_anchor(
+                            input.hands.palm[0].map(|(p, _)| glam::Vec3::from(p)),
+                            head,
+                            glam::Quat::from_array(input.head_rot),
+                        );
                         let how = match opener {
                             VoiceOpener::Fist => "left fist".to_owned(),
                             VoiceOpener::Tap => {
@@ -2421,9 +2446,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Some(VoiceNote::FileQueued { .. }) => {
                         // The unworn path: the label ahead of the head.
                         push_to_talk.begin_closing();
-                        let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                        let at = head + ahead * VOICE_FILE_LABEL_M;
-                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                        voice_at = crate::voice::label_anchor(
+                            None,
+                            head,
+                            glam::Quat::from_array(input.head_rot),
+                        );
                         voice_label.show_for(
                             crate::voice::WAITING_LABEL.to_owned(),
                             voice_at.0,
@@ -2460,10 +2487,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 )
             {
                 info!("voice: debug.fosfora.say \"{said}\"");
-                let head = glam::Vec3::from(input.head);
-                let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                let at = head + ahead * VOICE_FILE_LABEL_M;
-                voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                voice_at = crate::voice::label_anchor(
+                    None,
+                    glam::Vec3::from(input.head),
+                    glam::Quat::from_array(input.head_rot),
+                );
                 sentence = Some(said);
             }
             // Board #3751, V2: the sentence through the grammar, generated

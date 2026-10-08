@@ -359,6 +359,36 @@ pub fn close_text(why: Close) -> String {
     }
 }
 
+/// How far ahead of the head the label floats when there is no palm to
+/// put it at (m): the `voicefile` clip's and the `say` knob's place, and a
+/// window's when the left palm is out of view.
+pub const AHEAD_M: f32 = 1.0;
+
+/// Where the voice label floats and the way it faces (V4): at the left
+/// palm when it is located (`palm`), else [`AHEAD_M`] ahead of the head
+/// along its view (the hand out of view, a tap from the right hand), and
+/// facing the head either way.
+pub fn label_anchor(
+    palm: Option<glam::Vec3>,
+    head: glam::Vec3,
+    head_rot: glam::Quat,
+) -> (glam::Vec3, glam::Vec3) {
+    let at = palm.unwrap_or_else(|| head + head_rot * glam::Vec3::NEG_Z * AHEAD_M);
+    (at, (head - at).normalize_or(glam::Vec3::Z))
+}
+
+/// The poses Murmur (the Flock effect) reads (V4): with voice on the left
+/// fist is the voice opener everywhere, so it is an open hand to the
+/// flock; the right fist keeps its predator. With voice off, the poses as
+/// they are.
+pub fn flock_poses(frame: &crate::pose::PoseFrame, voice_on: bool) -> crate::pose::PoseFrame {
+    let mut out = *frame;
+    if voice_on && out.pose[0] == Some(crate::pose::Pose::Fist) {
+        out.pose[0] = Some(crate::pose::Pose::Open);
+    }
+    out
+}
+
 /// Interleaved stereo at `rate` (Hz) to mono at [`WHISPER_RATE`]: the
 /// channels averaged, then resampled by linear interpolation. Above 16 kHz
 /// the mono signal first goes through a moving average as long as the rate
@@ -1226,6 +1256,45 @@ mod tests {
         assert_close!(meter_width(2.0), 1.0);
         // Speech at -10 dBFS fills most of it.
         assert!((meter_width(0.316) - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_label_sits_at_the_palm_or_ahead_of_the_head() {
+        use glam::{Quat, Vec3};
+        let head = Vec3::new(0.0, 1.6, 0.0);
+        let palm = Vec3::new(-0.2, 1.2, -0.4);
+        let (at, normal) = label_anchor(Some(palm), head, Quat::IDENTITY);
+        assert_eq!(at, palm);
+        assert_close!(normal.to_array(), (head - palm).normalize().to_array());
+        // The palm out of view: 1 m along the view, facing back.
+        let (at, normal) = label_anchor(None, head, Quat::IDENTITY);
+        assert_close!(at.to_array(), [0.0, 1.6, -AHEAD_M]);
+        assert_close!(normal.to_array(), [0.0, 0.0, 1.0]);
+        // Turned left a quarter: ahead is -X.
+        let turned = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let (at, normal) = label_anchor(None, head, turned);
+        assert_close!(at.to_array(), [-AHEAD_M, 1.6, 0.0]);
+        assert_close!(normal.to_array(), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn with_voice_on_the_left_fist_is_no_predator_to_the_flock() {
+        use crate::pose::{Pose, PoseFrame};
+        let frame = PoseFrame {
+            pose: [Some(Pose::Fist), Some(Pose::Fist)],
+            ..PoseFrame::default()
+        };
+        let on = flock_poses(&frame, true);
+        assert_eq!(on.pose, [Some(Pose::Open), Some(Pose::Fist)]);
+        assert_eq!(flock_poses(&frame, false), frame);
+        // Only a fist changes: a palm up, an open or a lost hand stay.
+        for pose in [Some(Pose::PalmUp), Some(Pose::Open), None] {
+            let frame = PoseFrame {
+                pose: [pose, None],
+                ..PoseFrame::default()
+            };
+            assert_eq!(flock_poses(&frame, true), frame);
+        }
     }
 
     fn sine(freq: f32, rate: u32, seconds: f32) -> Vec<f32> {
