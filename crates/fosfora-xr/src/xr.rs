@@ -35,6 +35,9 @@ pub struct XrContext {
     /// S7 extensions the runtime offered and the instance enabled.
     pub has_passthrough: bool,
     pub has_hand_tracking: bool,
+    /// `XR_FB_hand_tracking_aim` is enabled: the aim state rides on the
+    /// joint locate.
+    pub has_hand_aim: bool,
     /// `XR_FB_scene` + `XR_FB_spatial_entity` + `XR_FB_spatial_entity_query`.
     pub has_scene: bool,
     /// `XR_META_environment_depth` (board #3324).
@@ -46,6 +49,9 @@ pub struct XrContext {
 pub struct MrOptions {
     pub passthrough: bool,
     pub hands: bool,
+    /// Chain `XR_FB_hand_tracking_aim`'s state onto the joint locate
+    /// (`debug.fosfora.aim`, board #3336).
+    pub aim: bool,
     pub room: bool,
     /// Launch Space Setup when the room query finds no anchors.
     pub scene_capture: bool,
@@ -127,6 +133,10 @@ impl XrContext {
         // hand tracker it is queried through).
         enabled.fb_hand_tracking_mesh =
             available.ext_hand_tracking && available.fb_hand_tracking_mesh;
+        // The runtime's own pinch and system-gesture flags, chained onto the
+        // joint locate (board #3336, `input.rs`).
+        enabled.fb_hand_tracking_aim =
+            available.ext_hand_tracking && available.fb_hand_tracking_aim;
         let has_scene =
             available.fb_scene && available.fb_spatial_entity && available.fb_spatial_entity_query;
         enabled.fb_scene = has_scene;
@@ -138,6 +148,10 @@ impl XrContext {
         enabled.fb_scene_capture = has_scene && available.fb_scene_capture;
         // The live depth map from the passthrough cameras (board #3324).
         enabled.meta_environment_depth = available.meta_environment_depth;
+        info!(
+            "hand aim (XR_FB_hand_tracking_aim): {}",
+            enabled.fb_hand_tracking_aim
+        );
         info!(
             "S7 extensions: passthrough {} · hand tracking {} (mesh {}) · scene {} (XR_FB_scene {}, XR_FB_spatial_entity {}, XR_FB_spatial_entity_query {}, container {}, mesh {}) · plane tracking EXT {} (base XR_EXT_spatial_entity {}) · room mesh META {} · environment depth {}",
             available.fb_passthrough,
@@ -250,6 +264,7 @@ impl XrContext {
             has_refresh_rate_ext: enabled.fb_display_refresh_rate,
             has_passthrough: enabled.fb_passthrough,
             has_hand_tracking: enabled.ext_hand_tracking,
+            has_hand_aim: enabled.fb_hand_tracking_aim,
             has_scene,
             has_env_depth: enabled.meta_environment_depth,
         })
@@ -420,7 +435,7 @@ impl XrSession {
         };
         let hands = if mr.hands {
             if ctx.has_hand_tracking {
-                Some(Hands::new(&session)?)
+                Some(Hands::new(&session, ctx.has_hand_aim && mr.aim)?)
             } else {
                 warn!("hands requested but XR_EXT_hand_tracking is missing");
                 None

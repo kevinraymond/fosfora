@@ -43,6 +43,9 @@ pub struct HandsFrame {
     pub pinch_point: [Option<[f32; 3]>; 2],
     /// Thumb tip to index tip distance (meters), where both were located.
     pub tip_distance: [Option<f32>; 2],
+    /// The aim extension's state per hand, where enabled and the hand is
+    /// tracked (board #3336).
+    pub aim: [Option<AimState>; 2],
     /// Palm joint pose: position and (x, y, z, w) orientation. Its -Y axis
     /// is the palm normal (`XR_EXT_hand_tracking`: +Y points out of the
     /// back of the hand).
@@ -63,6 +66,34 @@ pub struct HandsFrame {
 
 pub use crate::pinch::PINCH_ON_M;
 use crate::pinch::{CLOSE_DROP_M, CLOSE_WINDOW_S, PinchDetector, PinchEdge};
+
+/// What `XR_FB_hand_tracking_aim` says about a hand this frame (board
+/// #3336): the runtime's own pinch and whether its system gesture (the
+/// palm-toward-the-face menu gesture) is armed or in progress, in which
+/// case the pinch is the runtime's and none of ours.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AimState {
+    /// The aim data is valid this frame.
+    pub valid: bool,
+    /// The runtime's system gesture owns this hand.
+    pub system_gesture: bool,
+    /// The runtime's own index pinch, with its filtering.
+    pub index_pinching: bool,
+    /// The runtime's index pinch strength, 0 to 1.
+    pub pinch_strength_index: f32,
+}
+
+impl AimState {
+    fn from_sys(s: &sys::HandTrackingAimStateFB) -> Self {
+        let f = s.status;
+        Self {
+            valid: f.contains(sys::HandTrackingAimFlagsFB::VALID),
+            system_gesture: f.contains(sys::HandTrackingAimFlagsFB::SYSTEM_GESTURE),
+            index_pinching: f.contains(sys::HandTrackingAimFlagsFB::INDEX_PINCHING),
+            pinch_strength_index: s.pinch_strength_index,
+        }
+    }
+}
 /// Log the estimated hand scale when it moves this much from the last log.
 const SCALE_LOG_STEP: f32 = 0.02;
 
@@ -82,6 +113,12 @@ pub struct Hands {
     meshes: [Option<HandMesh>; 2],
     /// The pinch detector per hand (`pinch.rs`).
     pinch: [PinchDetector; 2],
+    /// `xrLocateHandJointsEXT` through the function pointer, when the aim
+    /// state is chained onto it (`XR_FB_hand_tracking_aim` enabled); else the
+    /// crate's safe locate, which cannot chain.
+    locate_fp: Option<sys::pfn::LocateHandJointsEXT>,
+    /// The system gesture was on this hand last frame (log on change).
+    system_logged: [bool; 2],
     /// The last locate's time, for the detector's frame length.
     last_time: Option<i64>,
     /// Frames since the last "tracked" log per hand, to log state changes only.
@@ -91,7 +128,7 @@ pub struct Hands {
 }
 
 impl Hands {
-    pub fn new(session: &xr::Session<xr::Vulkan>) -> Result<Self> {
+    pub fn new(session: &xr::Session<xr::Vulkan>, aim: bool) -> Result<Self> {
         let left = session
             .create_hand_tracker(xr::Hand::LEFT)
             .context("xrCreateHandTrackerEXT(left)")?;
@@ -143,10 +180,24 @@ impl Hands {
             }
         };
         let meshes = [mesh_for(0, &left), mesh_for(1, &right)];
+        let locate_fp = aim
+            .then(|| session.instance().exts().ext_hand_tracking.as_ref())
+            .flatten()
+            .map(|fp| fp.locate_hand_joints);
+        info!(
+            "hand aim state: {}",
+            if locate_fp.is_some() {
+                "chained onto the joint locate (XR_FB_hand_tracking_aim)"
+            } else {
+                "off"
+            }
+        );
         Ok(Self {
             trackers: [left, right],
             meshes,
             pinch: [PinchDetector::new(), PinchDetector::new()],
+            locate_fp,
+            system_logged: [false; 2],
             last_time: None,
             was_tracked: [false; 2],
             scale_logged: [1.0; 2],
@@ -178,8 +229,8 @@ impl Hands {
             .clamp(1.0 / 120.0, 1.0 / 30.0);
         self.last_time = Some(now);
         for (h, tracker) in self.trackers.iter().enumerate() {
-            let joints = match space.locate_hand_joints(tracker, time) {
-                Ok(Some(j)) => j,
+            let (joints, aim) = match locate_joints(self.locate_fp, space, tracker, time) {
+                Ok(Some(located)) => located,
                 Ok(None) => {
                     note_tracked(&mut self.was_tracked, h, false);
                     self.pinch[h].reset();
@@ -269,7 +320,28 @@ impl Hands {
                 d
             });
             let mm = tips.unwrap_or(0.0) * 1000.0;
-            match self.pinch[h].step(tips, dt) {
+            frame.aim[h] = aim;
+            // Board #3336: while the runtime's system gesture owns the hand
+            // (palm toward the face, its menu), its pinch is not ours.
+            let system = aim.is_some_and(|a| a.valid && a.system_gesture);
+            if system != self.system_logged[h] {
+                self.system_logged[h] = system;
+                info!(
+                    "hand {}: system gesture {}",
+                    hand_name(h),
+                    if system {
+                        "armed, its pinch is the runtime's"
+                    } else {
+                        "over, the pinch is ours again"
+                    }
+                );
+            }
+            let edge = if system {
+                self.pinch[h].suppress()
+            } else {
+                self.pinch[h].step(tips, dt)
+            };
+            match edge {
                 PinchEdge::Began => {
                     frame.pinch_began[h] = true;
                     info!(
@@ -496,6 +568,62 @@ fn fetch_mesh(instance: &xr::Instance, tracker: &xr::HandTracker) -> Result<Opti
 }
 
 /// Log a hand appearing or disappearing, once per change.
+/// Locate the joints at `time` in `space`, with the aim state chained on
+/// when `fp` is the raw locate (the crate's safe locate cannot chain a
+/// `next` struct). `None` when the hand is not tracked.
+fn locate_joints(
+    fp: Option<sys::pfn::LocateHandJointsEXT>,
+    space: &xr::Space,
+    tracker: &xr::HandTracker,
+    time: xr::Time,
+) -> xr::Result<Option<(xr::HandJointLocations, Option<AimState>)>> {
+    let Some(locate) = fp else {
+        return space
+            .locate_hand_joints(tracker, time)
+            .map(|j| j.map(|j| (j, None)));
+    };
+    let info = sys::HandJointsLocateInfoEXT {
+        ty: sys::HandJointsLocateInfoEXT::TYPE,
+        next: ptr::null(),
+        base_space: space.as_raw(),
+        time,
+    };
+    let mut aim = sys::HandTrackingAimStateFB {
+        ty: sys::HandTrackingAimStateFB::TYPE,
+        next: ptr::null_mut(),
+        status: sys::HandTrackingAimFlagsFB::EMPTY,
+        aim_pose: sys::Posef::IDENTITY,
+        pinch_strength_index: 0.0,
+        pinch_strength_middle: 0.0,
+        pinch_strength_ring: 0.0,
+        pinch_strength_little: 0.0,
+    };
+    let mut joints: xr::HandJointLocations =
+        [xr::HandJointLocation::default(); xr::HAND_JOINT_COUNT];
+    let mut locations = sys::HandJointLocationsEXT {
+        ty: sys::HandJointLocationsEXT::TYPE,
+        next: (&raw mut aim).cast(),
+        is_active: false.into(),
+        joint_count: xr::HAND_JOINT_COUNT as u32,
+        joint_locations: joints.as_mut_ptr(),
+    };
+    // SAFETY: `locate` is the runtime's xrLocateHandJointsEXT for the
+    // instance the tracker and the space came from (both from one session,
+    // as the crate's own locate asserts); every pointer is to a live local:
+    // `info` for the call, `locations` with `joint_count` entries of
+    // `joints` to fill and `aim` chained as its `next` (an output struct the
+    // extension defines for this call, with its `ty` set); nothing escapes
+    // the call.
+    let result = unsafe { locate(tracker.as_raw(), &raw const info, &raw mut locations) };
+    if result.into_raw() < 0 {
+        return Err(result);
+    }
+    if !bool::from(locations.is_active) {
+        return Ok(None);
+    }
+    Ok(Some((joints, Some(AimState::from_sys(&aim)))))
+}
+
 fn note_tracked(was_tracked: &mut [bool; 2], hand: usize, tracked: bool) {
     if was_tracked[hand] != tracked {
         was_tracked[hand] = tracked;

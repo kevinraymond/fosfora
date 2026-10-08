@@ -74,6 +74,19 @@ impl PinchDetector {
         self.rejected = false;
     }
 
+    /// The runtime owns this hand's pinch this frame (its system gesture
+    /// is armed or in progress, board #3336): a held pinch releases, and
+    /// nothing begins until the hand is ours again, judged afresh.
+    pub fn suppress(&mut self) -> PinchEdge {
+        let was = self.pinching;
+        self.reset();
+        if was {
+            PinchEdge::Released
+        } else {
+            PinchEdge::None
+        }
+    }
+
     /// How far (meters) the tips closed within the window: their widest
     /// recent distance minus the latest.
     pub fn recent_drop(&self) -> f32 {
@@ -211,6 +224,20 @@ mod tests {
         // Back in view already under the threshold: nothing is known about
         // how it got there, so it is a slow approach until it closes more.
         assert_eq!(p.step(Some(0.010), DT), PinchEdge::Rejected);
+    }
+
+    #[test]
+    fn the_runtimes_gesture_takes_the_pinch_and_gives_it_back_afresh() {
+        let mut p = PinchDetector::new();
+        assert_eq!(sweep(&mut p, 0.030, 0.005, 0.08), vec![PinchEdge::Began]);
+        assert_eq!(p.suppress(), PinchEdge::Released);
+        assert!(!p.pinching());
+        assert_eq!(p.suppress(), PinchEdge::None);
+        // Still closed when the hand comes back: not a pinch until it
+        // closes again.
+        assert_eq!(p.step(Some(0.005), DT), PinchEdge::Rejected);
+        assert!(sweep(&mut p, 0.005, 0.030, 0.2).is_empty());
+        assert_eq!(sweep(&mut p, 0.030, 0.005, 0.08), vec![PinchEdge::Began]);
     }
 
     #[test]
