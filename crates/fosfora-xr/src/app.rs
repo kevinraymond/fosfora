@@ -21,7 +21,8 @@ use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
 use crate::surfaces::SurfaceWeights;
 use crate::voice::{
-    Event as VoiceEvent, Note as VoiceNote, PushToTalk, Voice, Window as VoiceWindow,
+    Event as VoiceEvent, Note as VoiceNote, Opener as VoiceOpener, Press as VoicePress, PushToTalk,
+    Voice, Window as VoiceWindow,
 };
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
@@ -116,8 +117,6 @@ const VOICE_THREADS: i32 = 3;
 const VOICE_WAIT_LABEL_S: f32 = 10.0;
 /// What the label says when a window closes before the model has loaded.
 const VOICE_LOADING_LABEL: &str = "Voice is still loading";
-/// The `voicefile` clip's label: this far ahead of the head (m).
-const VOICE_FILE_LABEL_M: f32 = 1.0;
 
 /// What the frame renders, from `debug.fosfora.mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,14 +213,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
     //   adb shell setprop debug.fosfora.micro 0|1                (board #3336: thumb microgestures, XR_META_hand_tracking_microgestures through one
     //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
-    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward,
-    //       backward and the thumb tap are logged and unassigned; default 1; 0 creates no action set; read at launch)
+    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward
+    //       and backward are logged and unassigned; the thumb tap opens the voice window (board #3751, V4, with voice on); default 1;
+    //       0 creates no action set; read at launch)
     //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
     //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
     //       label shows what it did or "Didn't catch that", the log both; the fist opens the window in every mode, Edit room and the hand
-    //       menu included; default 1 when the speech model is installed (assets/xr/models/ggml-base.en.bin), else off with a log; on,
-    //       RECORD_AUDIO is asked for on any audio source; read at launch)
+    //       menu included; V4: the hand menu's Voice toggle, saved in hand_menu.json ("voice", on when absent), which the knob forces
+    //       and saves as debug.fosfora.hud does the debug panel's; voice needs the speech model installed
+    //       (assets/xr/models/ggml-base.en.bin); on at launch, the model loads and RECORD_AUDIO is asked for on any audio source; read at launch)
     //   adb shell setprop debug.fosfora.voicethreads 3           (the transcription's whisper threads, 1..6; default 3; read at launch)
+    //   adb shell setprop debug.fosfora.voicequiet 0.01          (board #3751, V4: a thumb tap opens a voice window too, either hand, which closes
+    //       once speech was heard and the microphone's level (RMS of the last 50 ms, ±1 scale) has stayed under this for 0.8 s, or at 6 s,
+    //       or on a second tap; default 0.01 (-40 dBFS); tune it against the room's noise; logged at launch, the closing level with each
+    //       close; read at launch)
     //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
     //       window had closed; the label shows it ahead of the head; read at launch)
     //   adb shell "setprop debug.fosfora.say 'the desk in amber'"   (board #3751, V2: a sentence fed to the grammar as if heard, voice on or
@@ -358,21 +363,34 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Clear a knob with `setprop debug.fosfora.<name> ""`.
     let audio_source = debug_prop("debug.fosfora.audio").unwrap_or_else(|| "synth".to_owned());
     // Board #3751: the voice path, on by default once the asset install
-    // has put the speech model in place.
+    // has put the speech model in place. V4: the hand menu's Voice toggle,
+    // saved in the menu's file (on when the file lacks it); the knob, when
+    // set, forces it and is saved, as `debug.fosfora.hud` does the debug
+    // panel's.
     let voice_model = dirs.assets.join(VOICE_MODEL);
-    let voice_on = match (
-        debug_prop("debug.fosfora.voice").as_deref(),
-        voice_model.is_file(),
-    ) {
-        (Some("0"), _) => {
-            info!("voice: off (debug.fosfora.voice 0)");
+    let menu_file = dirs.config.join(HAND_MENU_FILE);
+    let mut menu_saved = load_hand_menu(&menu_file);
+    match debug_prop("debug.fosfora.voice").as_deref() {
+        Some("1") => {
+            menu_saved.voice = true;
+            save_hand_menu(&menu_file, menu_saved);
+        }
+        Some("0") => {
+            menu_saved.voice = false;
+            save_hand_menu(&menu_file, menu_saved);
+        }
+        _ => {}
+    }
+    let voice_on = match (menu_saved.voice, voice_model.is_file()) {
+        (false, _) => {
+            info!("voice: off (the hand menu's Voice toggle, saved)");
             false
         }
-        (_, false) => {
+        (true, false) => {
             info!("voice: off, no model at {}", voice_model.display());
             false
         }
-        (_, true) => true,
+        (true, true) => true,
     };
     // Board #3264: the runtime permissions, asked for before the session
     // so the dialog comes with the launch. USE_SCENE always (the room is
@@ -440,12 +458,16 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // Board #3751: the voice path. The model loads on the voice thread
     // while the session starts; the window opens its own microphone stream
     // only with RECORD_AUDIO granted (the poll below picks a late grant up).
+    // V4: a launch with the toggle off loads nothing (a sweep with
+    // `debug.fosfora.voice 0` stays free of the model); the first turn on
+    // from the menu loads it then, and turning it off again keeps it, so
+    // the toggle is instant from then on.
+    let voice_threads = debug_prop("debug.fosfora.voicethreads")
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
     let mut voice = if voice_on {
-        let threads = debug_prop("debug.fosfora.voicethreads")
-            .and_then(|v| v.trim().parse::<i32>().ok())
-            .map_or(VOICE_THREADS, |n| n.clamp(1, 6));
         let file = debug_prop("debug.fosfora.voicefile").map(std::path::PathBuf::from);
-        Voice::new(&voice_model, threads, file)
+        Voice::new(&voice_model, voice_threads, file)
             .inspect_err(|e| error!("voice: {e:#}; off"))
             .ok()
     } else {
@@ -453,7 +475,20 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     };
     let mut voice_mic = mic_granted;
     let mut voice_mic_logged = false;
-    let mut push_to_talk = PushToTalk::default();
+    // V4: a thumb tap's window closes on silence, under this level (RMS on
+    // the ±1 scale), which the knob tunes against the room.
+    let voice_quiet = debug_prop("debug.fosfora.voicequiet")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|q| q.is_finite() && *q > 0.0)
+        .unwrap_or(crate::voice::QUIET_LEVEL);
+    info!(
+        "voice: openers the left fist (closes on release) and a thumb tap (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet)",
+        crate::voice::QUIET_S
+    );
+    let mut push_to_talk = PushToTalk::new(voice_quiet);
+    // V4: whether the flock last saw the left fist masked for voice, for
+    // the log's one line per change.
+    let mut flock_rule_logged = false;
     // The voice path's own label (the editor's is stepped and cleared by
     // Edit room), and where it floats: the left palm at the window's
     // opening, facing the head.
@@ -464,6 +499,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // menu's, and the `say` knob's last sentence fed.
     let mut voice_actions: Vec<Action> = Vec::new();
     let mut say_knob = crate::intent::SayKnob::default();
+    // V4: "what can I say" shows the next five examples on each ask.
+    let mut help_page = 0usize;
     // V3, the agent (`agent.rs`): the provider `voice.json` names, read
     // once (the key never reaches the log), and the one call in flight. A
     // newer sentence's call replaces an older one, whose answer is then
@@ -930,17 +967,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // debug panel's -/+ rows drive these values from then on; with it off
     // they stay the knobs'. While the menu is up its pinches are its own.
     let hud_test = toggle("debug.fosfora.hudtest", false);
-    let menu_file = dirs.config.join(HAND_MENU_FILE);
     let debug_on = match debug_prop("debug.fosfora.hud").as_deref() {
         Some("1") => {
-            save_hand_menu(&menu_file, true);
+            menu_saved.debug = true;
+            save_hand_menu(&menu_file, menu_saved);
             true
         }
         Some("0") => {
-            save_hand_menu(&menu_file, false);
+            menu_saved.debug = false;
+            save_hand_menu(&menu_file, menu_saved);
             false
         }
-        _ => load_hand_menu(&menu_file),
+        _ => menu_saved.debug,
     };
     info!(
         "hand menu: debug panel {}",
@@ -982,6 +1020,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
         edit_room: false,
         cloud: crate::room_edit::cloud_knob(debug_prop("debug.fosfora.cloud").as_deref()),
         music: music.wanted(),
+        voice: menu_saved.voice,
     };
     // The cloud density each world effect's emission was last set for
     // (by index in `world_effects`; `new_world` leaves it at 1).
@@ -1559,7 +1598,47 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         moved = true;
                     }
                     Action::RescanRoom => rescan = true,
-                    Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                    Action::SetDebug(on) => {
+                        menu_saved.debug = on;
+                        save_hand_menu(&menu_file, menu_saved);
+                    }
+                    // Board #3751, V4: the Voice toggle, saved; the model
+                    // loads on the first turn on (a launch with it off
+                    // loaded nothing) and stays loaded when it goes off.
+                    Action::SetVoice(on) => {
+                        menu_saved.voice = on;
+                        save_hand_menu(&menu_file, menu_saved);
+                        info!("voice: {} (menu)", if on { "on" } else { "off" });
+                        if !on {
+                            // Off: an open window is dropped unheard and
+                            // the label shows nothing.
+                            push_to_talk.cancel();
+                            if let Some(v) = voice.as_mut() {
+                                v.cancel();
+                            }
+                            voice_label.clear();
+                        }
+                        if on && voice.is_none() {
+                            if voice_model.is_file() {
+                                voice = Voice::new(&voice_model, voice_threads, None)
+                                    .inspect_err(|e| error!("voice: {e:#}; off"))
+                                    .ok();
+                            } else {
+                                info!("voice: no model at {}, nothing listens", voice_model.display());
+                            }
+                        }
+                        if on
+                            && voice.is_some()
+                            && !voice_mic
+                            && ask
+                            && let Some(p) = &permissions
+                        {
+                            match p.request(&[RECORD_AUDIO]) {
+                                Ok(()) => info!("permissions: asked for RECORD_AUDIO (voice on)"),
+                                Err(e) => error!("permissions: {e:#}"),
+                            }
+                        }
+                    }
                     Action::SetEditRoom(on) => info!(
                         "edit room {}",
                         if on {
@@ -1711,6 +1790,23 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 let poses_apply = poses_on
                     && world
                     && POSE_EFFECTS.contains(&world_effects[world_index].as_str());
+                // Board #3751, V4: with voice on the left fist is the voice
+                // opener everywhere, so the flock sees an open left hand;
+                // the right fist keeps its predator. Logged once per change.
+                let voice_fist = controls.voice && voice.is_some();
+                let flock_rule = poses_apply && voice_fist;
+                if flock_rule != flock_rule_logged {
+                    flock_rule_logged = flock_rule;
+                    info!(
+                        "{}",
+                        if flock_rule {
+                            "pose: voice on, the left fist opens the voice window and is no predator; the right fist is"
+                        } else {
+                            "pose: the left fist is a predator again"
+                        }
+                    );
+                }
+                let flock_frame = crate::voice::flock_poses(&pose_frame, voice_fist);
                 let tuning = Tuning {
                     fist_pad: controls.hand_pad,
                     fist_kick: controls.hand_kick,
@@ -1727,7 +1823,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             )
                         })
                     });
-                    crate::pose::decide(&pose_frame, far_palm, panel_up, &tuning)
+                    crate::pose::decide(&flock_frame, far_palm, panel_up, &tuning)
                 } else {
                     [Plan::hawk(&tuning); 2]
                 };
@@ -2258,23 +2354,50 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // "Room: 17 surfaces" when it does, "No room found..." when
             // the retries give up.
             // Board #3751: the voice path's push-to-talk window on the left
-            // fist (hand 0). It opens whatever else the hands are doing:
-            // with Edit room on, with the hand menu up, on Flock's fist
-            // predator; voice is independent of the hands' other modes.
+            // fist (hand 0), or (V4) a thumb tap on either hand, while the
+            // hand menu's Voice toggle is on. It opens whatever else the
+            // hands are doing: with Edit room on, with the hand menu up, on
+            // Flock, where the left fist is then no predator (above).
             voice_label.step(dt);
             // The sentence heard this frame, for the grammar below.
             let mut sentence: Option<String> = None;
             if let Some(v) = voice.as_mut() {
                 let head = glam::Vec3::from(input.head);
-                if left_fist && !voice_mic && !voice_mic_logged {
+                // V4: a thumb tap on either hand is the second opener;
+                // with the hand menu's Voice toggle off neither the fist
+                // nor the tap does anything for voice.
+                let tap_hand = (0..2).find(|&h| input.micro.tap[h]);
+                if (left_fist || tap_hand.is_some())
+                    && controls.voice
+                    && !voice_mic
+                    && !voice_mic_logged
+                {
                     voice_mic_logged = true;
                     info!("voice: RECORD_AUDIO missing, the window stays closed");
                 }
-                match push_to_talk.step(left_fist && voice_mic, dt) {
-                    Some(VoiceEvent::Opened) => {
-                        let at = input.hands.palm[0].map_or(head, |(p, _)| glam::Vec3::from(p));
-                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
-                        match v.open() {
+                let listens = voice_mic && controls.voice;
+                let press = VoicePress {
+                    fist: left_fist && listens,
+                    tap: tap_hand.is_some() && listens,
+                    level: v.level(),
+                };
+                match push_to_talk.step_with(press, dt) {
+                    Some(VoiceEvent::Opened(opener)) => {
+                        // V4: at the left palm, or 1 m ahead of the head
+                        // with the palm out of view (a tap from the right
+                        // hand, the left one down).
+                        voice_at = crate::voice::label_anchor(
+                            input.hands.palm[0].map(|(p, _)| glam::Vec3::from(p)),
+                            head,
+                            glam::Quat::from_array(input.head_rot),
+                        );
+                        let how = match opener {
+                            VoiceOpener::Fist => "left fist".to_owned(),
+                            VoiceOpener::Tap => {
+                                format!("thumb tap, {}", hand_name(tap_hand.unwrap_or(0)))
+                            }
+                        };
+                        match v.open(&how) {
                             Ok(()) => voice_label.show_for(
                                 crate::voice::LISTENING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2287,8 +2410,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         }
                     }
-                    Some(VoiceEvent::Closed { seconds }) => {
-                        if v.close(seconds) {
+                    Some(VoiceEvent::Closed { seconds, why }) => {
+                        if v.close(seconds, why) {
                             voice_label.show_for(
                                 crate::voice::WAITING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2313,13 +2436,21 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     None => {}
                 }
                 let idle = push_to_talk.window() == VoiceWindow::Closed;
-                match v.step(dt, idle) {
+                let note = v.step(dt, idle);
+                // V4: the microphone's level under "Listening…", this
+                // frame's.
+                if matches!(push_to_talk.window(), VoiceWindow::Open { .. }) {
+                    voice_label.meter(Some(v.level()));
+                }
+                match note {
                     Some(VoiceNote::FileQueued { .. }) => {
                         // The unworn path: the label ahead of the head.
                         push_to_talk.begin_closing();
-                        let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                        let at = head + ahead * VOICE_FILE_LABEL_M;
-                        voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                        voice_at = crate::voice::label_anchor(
+                            None,
+                            head,
+                            glam::Quat::from_array(input.head_rot),
+                        );
                         voice_label.show_for(
                             crate::voice::WAITING_LABEL.to_owned(),
                             voice_at.0,
@@ -2330,7 +2461,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     Some(VoiceNote::Heard { text, .. }) => {
                         push_to_talk.finish();
                         let text = crate::voice::spoken(&text);
-                        if text.is_empty() {
+                        if !controls.voice {
+                            // V4: turned off while it transcribed.
+                            info!("voice: off (menu), the sentence is dropped");
+                        } else if text.is_empty() {
                             voice_label.show(
                                 crate::voice::NOTHING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2353,10 +2487,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                 )
             {
                 info!("voice: debug.fosfora.say \"{said}\"");
-                let head = glam::Vec3::from(input.head);
-                let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
-                let at = head + ahead * VOICE_FILE_LABEL_M;
-                voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                voice_at = crate::voice::label_anchor(
+                    None,
+                    glam::Vec3::from(input.head),
+                    glam::Quat::from_array(input.head_rot),
+                );
                 sentence = Some(said);
             }
             // Board #3751, V2: the sentence through the grammar, generated
@@ -2376,11 +2511,19 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                         .filter(|_| controls.edit_room)
                         .map(|h| h.index),
                 };
-                let outcome = crate::intent::parse(&sentence, &vocab);
-                let ask_agent = agent.is_some()
-                    && matches!(&outcome, Err(m) if crate::agent::forwards(&m.reason));
-                let (text, seconds) = match (&outcome, &agent) {
-                    (Ok(intent), _) => (
+                // V4: the sentence as clauses ("amber on the desk and the
+                // walls on the bass"), applied in order; "what can I say"
+                // shows examples; with the agent on, what misses the way
+                // the agent takes goes to it (`intent::respond`), after the
+                // matched clauses applied, so it sees the room after them.
+                let clauses = crate::intent::parse_clauses(&sentence, &vocab);
+                let response = crate::intent::respond(
+                    &sentence,
+                    &clauses,
+                    &vocab,
+                    agent.is_some(),
+                    &mut help_page,
+                    |intent| {
                         apply_intent(
                             intent,
                             &vocab,
@@ -2389,57 +2532,46 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             &mut controls,
                             &mut voice_actions,
                             &mut switch_to,
-                        ),
-                        crate::intent::REPLY_S,
-                    ),
-                    // V3: a sentence no template fits, or one naming an
-                    // unknown behavior, goes to the agent with the room as
-                    // it is now (`agent::forwards`); the grammar's other
-                    // misses are its own answers and stay.
-                    (Err(_), Some(provider)) if ask_agent => {
-                        let head = glam::Vec3::from(input.head);
-                        let sizes: Vec<[f32; 2]> = input
-                            .room_boxes
-                            .iter()
-                            .chain(floor_box.iter())
-                            .map(|b| {
-                                let face = crate::surfaces::acting_face(
-                                    glam::Vec3::from(b.center),
-                                    glam::Quat::from_array(b.rot),
-                                    glam::Vec3::from(b.half),
-                                    head,
-                                );
-                                [2.0 * face.half[0], 2.0 * face.half[1]]
-                            })
-                            .collect();
-                        let room = crate::agent::room_state(
-                            &vocab,
-                            (mode == Mode::World).then_some(world_index),
-                            &sizes,
-                            &surface_lanes,
-                            &lane_boxes,
-                        );
-                        let request = provider.request(&sentence, &room);
-                        agent_call = Some(AgentCall {
-                            reply: crate::agent::spawn(
-                                provider.clone(),
-                                request,
-                                crate::agent::TIMEOUT,
-                            ),
-                            sentence: sentence.clone(),
-                            pointed: vocab.pointed,
-                            at: voice_at,
-                            started: Instant::now(),
-                        });
-                        (
-                            crate::agent::THINKING_LABEL.to_owned(),
-                            crate::agent::THINKING_S,
                         )
-                    }
-                    (Err(miss), _) => (crate::intent::miss_text(miss), crate::intent::MISS_S),
-                };
-                info!("{}", crate::intent::log_line(&sentence, &outcome, &text));
-                voice_label.show_for(text, voice_at.0, voice_at.1, seconds);
+                    },
+                );
+                if let (Some(asked), Some(provider)) = (&response.agent, &agent) {
+                    let head = glam::Vec3::from(input.head);
+                    let sizes: Vec<[f32; 2]> = input
+                        .room_boxes
+                        .iter()
+                        .chain(floor_box.iter())
+                        .map(|b| {
+                            let face = crate::surfaces::acting_face(
+                                glam::Vec3::from(b.center),
+                                glam::Quat::from_array(b.rot),
+                                glam::Vec3::from(b.half),
+                                head,
+                            );
+                            [2.0 * face.half[0], 2.0 * face.half[1]]
+                        })
+                        .collect();
+                    let room = crate::agent::room_state(
+                        &vocab,
+                        (mode == Mode::World).then_some(world_index),
+                        &sizes,
+                        &surface_lanes,
+                        &lane_boxes,
+                    );
+                    let request = provider.request(asked, &room);
+                    agent_call = Some(AgentCall {
+                        reply: crate::agent::spawn(provider.clone(), request, crate::agent::TIMEOUT),
+                        sentence: asked.clone(),
+                        pointed: vocab.pointed,
+                        at: voice_at,
+                        started: Instant::now(),
+                    });
+                }
+                info!(
+                    "{}",
+                    crate::intent::clauses_log_line(&sentence, &clauses, &response.label)
+                );
+                voice_label.show_for(response.label, voice_at.0, voice_at.1, response.seconds);
             }
             // V3: the agent's answer, polled (never waited for). Its
             // actions map onto intents through the grammar's resolution
@@ -2527,11 +2659,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     .or_else(|| label.now())
                     .map(|l| {
                         let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
-                        (l.text, l.alpha, pose)
+                        (l.text, l.alpha, l.level, pose)
                     })
                     .or_else(|| {
                         scan_label.now().map(|(text, alpha)| {
-                            (text, alpha, crate::label::scan_billboard(head, head_rot))
+                            (text, alpha, None, crate::label::scan_billboard(head, head_rot))
                         })
                     });
                 label_texture.show(&gfx, shown);
@@ -2979,6 +3111,12 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     })
                 })
             };
+            // Board #3751, V4: voice turned on from the menu after a launch
+            // that did not ask for the microphone: its grant, once a second.
+            if controls.voice && voice.is_some() && !voice_mic && granted_now(RECORD_AUDIO) {
+                voice_mic = true;
+                info!("permission RECORD_AUDIO granted: the voice window can open");
+            }
             for change in permission_watch.poll(asked_at.elapsed().as_secs_f32(), granted_now) {
                 match change {
                     Change::Granted { name, after_s } if name == USE_SCENE => {
@@ -3693,23 +3831,23 @@ fn system_prop(name: &str) -> Option<String> {
 /// The hand menu's saved state under the config dir.
 const HAND_MENU_FILE: &str = "hand_menu.json";
 
-/// Whether the saved hand menu has the debug panel on (off when there is
-/// no file or it does not parse).
-fn load_hand_menu(path: &std::path::Path) -> bool {
+/// The saved hand menu's toggles (`palm_panel::MenuFile`): the debug
+/// panel off and voice on when there is no file, it does not parse, or a
+/// field is missing.
+fn load_hand_menu(path: &std::path::Path) -> crate::palm_panel::MenuFile {
     std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("debug")?.as_bool())
-        .unwrap_or(false)
+        .map(|s| crate::palm_panel::MenuFile::parse(&s))
+        .unwrap_or_default()
 }
 
-/// Save the hand menu's debug toggle; a failure is logged, not fatal.
-fn save_hand_menu(path: &std::path::Path, debug: bool) {
-    let json = serde_json::json!({ "debug": debug }).to_string();
-    match std::fs::write(path, json) {
+/// Save the hand menu's toggles; a failure is logged, not fatal.
+fn save_hand_menu(path: &std::path::Path, menu: crate::palm_panel::MenuFile) {
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    match std::fs::write(path, menu.to_json()) {
         Ok(()) => info!(
-            "hand menu: debug panel {} (saved)",
-            if debug { "on" } else { "off" }
+            "hand menu: debug panel {} · voice {} (saved)",
+            on_off(menu.debug),
+            on_off(menu.voice)
         ),
         Err(e) => log::warn!("hand menu: saving {}: {e}", path.display()),
     }

@@ -357,9 +357,84 @@ impl PalmPanel {
     }
 }
 
+/// The hand menu's saved toggles, `hand_menu.json` under the config dir:
+/// the debug panel (off unless saved on) and the voice path (board #3751,
+/// V4: on unless saved off, so a file from before the toggle keeps voice
+/// on). A missing or broken file is the defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuFile {
+    pub debug: bool,
+    pub voice: bool,
+}
+
+impl Default for MenuFile {
+    fn default() -> Self {
+        Self {
+            debug: false,
+            voice: true,
+        }
+    }
+}
+
+impl MenuFile {
+    /// The file's text read leniently: a field that is missing or not a
+    /// boolean keeps its default.
+    pub fn parse(json: &str) -> Self {
+        let value = serde_json::from_str::<serde_json::Value>(json).unwrap_or_default();
+        let field = |name: &str, default: bool| {
+            value
+                .get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default)
+        };
+        let d = Self::default();
+        Self {
+            debug: field("debug", d.debug),
+            voice: field("voice", d.voice),
+        }
+    }
+
+    /// The file's text: `{"debug":false,"voice":true}`.
+    pub fn to_json(self) -> String {
+        serde_json::json!({ "debug": self.debug, "voice": self.voice }).to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_menu_file_round_trips_and_reads_voice_on_when_absent() {
+        for file in [
+            MenuFile {
+                debug: true,
+                voice: false,
+            },
+            MenuFile {
+                debug: false,
+                voice: true,
+            },
+        ] {
+            assert_eq!(MenuFile::parse(&file.to_json()), file);
+        }
+        // A file from before the Voice toggle: voice on.
+        assert_eq!(
+            MenuFile::parse(r#"{"debug": true}"#),
+            MenuFile {
+                debug: true,
+                voice: true,
+            }
+        );
+        assert!(!MenuFile::parse(r#"{"voice": false}"#).voice);
+        // No file, or a broken one: the defaults.
+        assert_eq!(MenuFile::parse(""), MenuFile::default());
+        assert_eq!(MenuFile::parse("{not json"), MenuFile::default());
+        assert_eq!(
+            MenuFile::parse(r#"{"debug": "yes", "voice": 1}"#),
+            MenuFile::default()
+        );
+    }
 
     const HEAD: Vec3 = Vec3::new(0.0, 1.6, 0.0);
 

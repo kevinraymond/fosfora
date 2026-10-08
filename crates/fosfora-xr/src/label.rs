@@ -43,6 +43,15 @@
 //! the room" instead ([`ScanState::NotAllowed`], [`with_scene_permission`]),
 //! held like the scan; once the grant arrives the requery scans again, and
 //! once the wait gives up the room's own state shows.
+//!
+//! **The voice path's label** (board #3751, V4) is the same label with two
+//! more things the render reads: a meter, a thin bar under "Listening…"
+//! whose length is the microphone's level ([`Label::meter`],
+//! `voice::meter_width`), and more than one line ("Didn't catch that" and
+//! a hint under it, or "what can I say"'s five examples): the text's
+//! `\n`s are lines, and the label grows down and up from its center by
+//! [`LINE_PX`] of the texture a line ([`tex_h`], [`Billboard::with_lines`]),
+//! up to [`MAX_LINES`].
 
 use glam::{Quat, Vec3};
 
@@ -54,6 +63,34 @@ pub const FADE_S: f32 = 0.4;
 /// The label's texture, width x height (px): large enough that the text
 /// is sharp up close, where the label is its narrowest.
 pub const LABEL_TEX: [u32; 2] = [1024, 192];
+/// The texture's height per line of a label of more than one line (px):
+/// a one-line label is [`LABEL_TEX`] high, two of these.
+pub const LINE_PX: u32 = 96;
+/// The most lines a label shows; a longer text's last ones are dropped.
+pub const MAX_LINES: usize = 6;
+/// The texture's height, for [`MAX_LINES`] (px); a label of fewer lines
+/// shows its top [`tex_h`].
+pub const LABEL_TEX_H_MAX: u32 = tex_h(MAX_LINES);
+
+/// The texture's height a label of `lines` lines shows (px): a line's
+/// pitch each, and one more for the margins, [`LABEL_TEX`]'s height for
+/// one.
+pub const fn tex_h(lines: usize) -> u32 {
+    let lines = if lines == 0 {
+        1
+    } else if lines > MAX_LINES {
+        MAX_LINES
+    } else {
+        lines
+    };
+    LINE_PX * (lines as u32 + 1)
+}
+
+/// The lines of a label's text: split at `\n`, at most [`MAX_LINES`].
+pub fn lines(text: &str) -> Vec<&str> {
+    text.split('\n').take(MAX_LINES).collect()
+}
+
 /// The label's width in the room per meter from the head (m/m, about 6.3
 /// degrees across), and its narrowest and widest (m); its height by the
 /// texture's aspect.
@@ -170,6 +207,18 @@ pub struct Billboard {
     pub half_h: f32,
 }
 
+impl Billboard {
+    /// This pose for a label of `lines` lines: as wide, taller by the
+    /// texture's height for them ([`tex_h`]), about the same center.
+    #[must_use]
+    pub fn with_lines(self, lines: usize) -> Self {
+        Self {
+            half_h: self.half_h * tex_h(lines) as f32 / LABEL_TEX[1] as f32,
+            ..self
+        }
+    }
+}
+
 /// The label's pose for a hit at `point` on a face with outward `normal`,
 /// seen from `head` turned by `head_rot`, [`label_w_m`] wide for its
 /// center's distance from the head.
@@ -221,6 +270,9 @@ pub struct LabelFrame<'a> {
     /// The hit and its face normal.
     pub point: Vec3,
     pub normal: Vec3,
+    /// The meter's level under the text (the voice window's microphone,
+    /// RMS on the ±1 scale), `None` for no meter.
+    pub level: Option<f32>,
 }
 
 /// The label across frames: at most one, the last action's.
@@ -228,6 +280,8 @@ pub struct LabelFrame<'a> {
 pub struct Label {
     /// The text, the hit's point and normal, the age and the life (s).
     shown: Option<(String, Vec3, Vec3, f32, f32)>,
+    /// The meter's level, until the next label.
+    level: Option<f32>,
 }
 
 impl Label {
@@ -242,6 +296,13 @@ impl Label {
     /// for the whole arm (`room_edit::ARM_S`, board #3336).
     pub fn show_for(&mut self, text: String, point: Vec3, normal: Vec3, seconds: f32) {
         self.shown = Some((text, point, normal, 0.0, seconds));
+        self.level = None;
+    }
+
+    /// The meter under the label showing: its level this frame (`None`
+    /// hides it). The next label shows without one.
+    pub fn meter(&mut self, level: Option<f32>) {
+        self.level = level.filter(|_| self.shown.is_some());
     }
 
     /// Age the label by `dt`; it goes at its life.
@@ -250,11 +311,15 @@ impl Label {
             *age += dt.max(0.0);
         }
         self.shown = self.shown.take().filter(|(.., age, life)| *age < *life);
+        if self.shown.is_none() {
+            self.level = None;
+        }
     }
 
     /// Drop the label (the mode went off).
     pub fn clear(&mut self) {
         self.shown = None;
+        self.level = None;
     }
 
     /// The label now, `None` when none shows.
@@ -266,6 +331,7 @@ impl Label {
                 alpha: fade_for(*age, *life),
                 point: *point,
                 normal: *normal,
+                level: self.level,
             })
     }
 }
@@ -359,7 +425,7 @@ mod render {
     use egui::{FontId, Pos2, Rect, Vec2};
     use fosfora_app::ui::theme::palette::Palette;
 
-    use super::{Billboard, GROUND_ALPHA, LABEL_TEX};
+    use super::{Billboard, GROUND_ALPHA, LABEL_TEX, LABEL_TEX_H_MAX, LINE_PX, lines, tex_h};
     use crate::gfx::{Gfx, PanelPose};
 
     /// The label's colors: the hand menu's theme (board #3523).
@@ -369,6 +435,13 @@ mod render {
     /// ends (px); a longer text shrinks to fit, down to [`MIN_FONT_PX`].
     const FONT_PX: f32 = 88.0;
     const MIN_FONT_PX: f32 = 40.0;
+    /// A label of more than one line: its text's largest size (px).
+    const LINES_FONT_PX: f32 = 64.0;
+    /// The meter under "Listening…": its height, its bottom's distance
+    /// from the ground's, and how far the text moves up for it (px).
+    const METER_H_PX: f32 = 12.0;
+    const METER_BOTTOM_PX: f32 = 30.0;
+    const METER_LIFT_PX: f32 = 18.0;
     const MARGIN_PX: f32 = 48.0;
     const CORNER_PX: u8 = 44;
     /// The ground's inset from the texture's edge (px).
@@ -383,8 +456,9 @@ mod render {
         /// Owns the image `Gfx`'s label bind group samples.
         _texture: wgpu::Texture,
         view: wgpu::TextureView,
-        /// The text and the alpha (in 1/255) last drawn.
-        drawn: Option<(String, u8)>,
+        /// The text, the alpha (in 1/255) and the meter's width (in
+        /// 1/256) last drawn.
+        drawn: Option<(String, u8, Option<u16>)>,
     }
 
     impl LabelTexture {
@@ -394,7 +468,7 @@ mod render {
                 label: Some("xr-label"),
                 size: wgpu::Extent3d {
                     width: LABEL_TEX[0],
-                    height: LABEL_TEX[1],
+                    height: LABEL_TEX_H_MAX,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -423,35 +497,48 @@ mod render {
             }
         }
 
-        /// Show `text` at `alpha` on `pose` this frame, or hide the label
-        /// with `None`.
-        pub fn show(&mut self, gfx: &Gfx, label: Option<(&str, f32, Billboard)>) {
-            let Some((text, alpha, pose)) = label else {
+        /// Show `text` at `alpha` on `pose` this frame, with a meter at
+        /// `level` under it (the voice window's microphone), or hide the
+        /// label with `None`. A text of several lines shows taller.
+        pub fn show(&mut self, gfx: &Gfx, label: Option<(&str, f32, Option<f32>, Billboard)>) {
+            let Some((text, alpha, level, pose)) = label else {
                 self.drawn = None;
                 gfx.set_label_pose(None);
                 return;
             };
             let step = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let meter = level.map(|l| (crate::voice::meter_width(l) * 256.0).round() as u16);
             if self
                 .drawn
                 .as_ref()
-                .is_none_or(|(t, a)| t != text || *a != step)
+                .is_none_or(|(t, a, m)| t != text || *a != step || *m != meter)
             {
-                self.draw(gfx, text, f32::from(step) / 255.0);
-                self.drawn = Some((text.to_owned(), step));
+                self.draw(
+                    gfx,
+                    text,
+                    f32::from(step) / 255.0,
+                    meter.map(|m| f32::from(m) / 256.0),
+                );
+                self.drawn = Some((text.to_owned(), step, meter));
             }
+            let n = lines(text).len();
+            let pose = pose.with_lines(n);
             gfx.set_label_pose(Some(PanelPose {
                 center: pose.center.to_array(),
                 right: (pose.right * pose.half_w).to_array(),
                 up: (pose.up * pose.half_h).to_array(),
-                v_max: 1.0,
+                v_max: tex_h(n) as f32 / LABEL_TEX_H_MAX as f32,
             }));
         }
 
-        /// Render `text` at `alpha` into the texture: the rounded ground
-        /// filling it, the text centered on it, shrunk to fit its width.
-        fn draw(&mut self, gfx: &Gfx, text: &str, alpha: f32) {
-            let size = Vec2::new(LABEL_TEX[0] as f32, LABEL_TEX[1] as f32);
+        /// Render `text` at `alpha` into the texture's top [`tex_h`]: the
+        /// rounded ground filling it, the text centered on it, a line at a
+        /// time, shrunk to fit its width; with `meter` (0..1), a bar that
+        /// long under a one-line text over its dim track.
+        fn draw(&mut self, gfx: &Gfx, text: &str, alpha: f32, meter: Option<f32>) {
+            let size = Vec2::new(LABEL_TEX[0] as f32, LABEL_TEX_H_MAX as f32);
+            let lines = lines(text);
+            let shown_h = tex_h(lines.len()) as f32;
             let mut raw = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
                 ..egui::RawInput::default()
@@ -462,7 +549,8 @@ mod render {
                 .native_pixels_per_point = Some(1.0);
             let output = self.ctx.run(raw, |ctx| {
                 let painter = ctx.layer_painter(egui::LayerId::background());
-                let ground = Rect::from_min_size(Pos2::ZERO, size).shrink(INSET_PX);
+                let ground =
+                    Rect::from_min_size(Pos2::ZERO, Vec2::new(size.x, shown_h)).shrink(INSET_PX);
                 painter.rect_filled(
                     ground,
                     CORNER_PX,
@@ -470,14 +558,54 @@ mod render {
                 );
                 let ink = PALETTE.text.gamma_multiply(alpha);
                 let room = ground.width() - 2.0 * MARGIN_PX;
-                let mut galley =
-                    painter.layout_no_wrap(text.to_owned(), FontId::proportional(FONT_PX), ink);
-                if galley.size().x > room {
-                    let px = (FONT_PX * room / galley.size().x).max(MIN_FONT_PX);
-                    galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(px), ink);
+                // One size for every line: the largest that fits the
+                // widest.
+                let largest = if lines.len() > 1 {
+                    LINES_FONT_PX
+                } else {
+                    FONT_PX
+                };
+                let layout = |px: f32| -> Vec<std::sync::Arc<egui::Galley>> {
+                    lines
+                        .iter()
+                        .map(|l| {
+                            painter.layout_no_wrap((*l).to_owned(), FontId::proportional(px), ink)
+                        })
+                        .collect()
+                };
+                let mut galleys = layout(largest);
+                let widest = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max);
+                if widest > room {
+                    galleys = layout((largest * room / widest).max(MIN_FONT_PX));
                 }
-                let at = ground.center() - galley.size() * 0.5;
-                painter.galley(at, galley, ink);
+                let lift = if meter.is_some() && galleys.len() == 1 {
+                    METER_LIFT_PX
+                } else {
+                    0.0
+                };
+                for (i, galley) in galleys.into_iter().enumerate() {
+                    let center = if lines.len() > 1 {
+                        Pos2::new(ground.center().x, (LINE_PX * (i as u32 + 1)) as f32)
+                    } else {
+                        ground.center() - Vec2::new(0.0, lift)
+                    };
+                    painter.galley(center - galley.size() * 0.5, galley, ink);
+                }
+                if let Some(width) = meter {
+                    let bottom = ground.bottom() - METER_BOTTOM_PX;
+                    let track = Rect::from_min_max(
+                        Pos2::new(ground.left() + MARGIN_PX, bottom - METER_H_PX),
+                        Pos2::new(ground.right() - MARGIN_PX, bottom),
+                    );
+                    painter.rect_filled(track, METER_H_PX * 0.5, ink.gamma_multiply(0.25));
+                    let fill = Rect::from_min_size(
+                        track.min,
+                        Vec2::new(track.width() * width.clamp(0.0, 1.0), track.height()),
+                    );
+                    if fill.width() > 0.5 {
+                        painter.rect_filled(fill, METER_H_PX * 0.5, ink);
+                    }
+                }
             });
             for (id, delta) in &output.textures_delta.set {
                 self.renderer
@@ -485,7 +613,7 @@ mod render {
             }
             let jobs = self.ctx.tessellate(output.shapes, output.pixels_per_point);
             let screen = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: LABEL_TEX,
+                size_in_pixels: [LABEL_TEX[0], LABEL_TEX_H_MAX],
                 pixels_per_point: output.pixels_per_point,
             };
             let mut encoder = gfx
@@ -593,6 +721,52 @@ mod tests {
         assert!(
             arm_text("frame 4", KIND_FRAME, B::Streamlines).ends_with("all frames -> streamlines")
         );
+    }
+
+    #[test]
+    fn the_meter_shows_with_its_label_until_the_next() {
+        let mut l = Label::default();
+        // No label, no meter.
+        l.meter(Some(0.1));
+        assert_eq!(l.now(), None);
+        l.show_for("Listening…".to_owned(), Vec3::ZERO, Vec3::Z, 7.0);
+        assert_eq!(l.now().unwrap().level, None);
+        l.meter(Some(0.1));
+        l.step(0.1);
+        assert_eq!(l.now().unwrap().level, Some(0.1));
+        l.meter(Some(0.02));
+        assert_eq!(l.now().unwrap().level, Some(0.02));
+        // The window closes: "…" without a meter.
+        l.show_for("…".to_owned(), Vec3::ZERO, Vec3::Z, 10.0);
+        assert_eq!(l.now().unwrap().level, None);
+        l.meter(Some(0.1));
+        l.clear();
+        assert_eq!(l.now(), None);
+        l.show("next effect".to_owned(), Vec3::ZERO, Vec3::Z);
+        assert_eq!(l.now().unwrap().level, None);
+    }
+
+    #[test]
+    fn a_label_of_several_lines_grows_by_a_line_each() {
+        assert_eq!(tex_h(1), LABEL_TEX[1]);
+        assert_eq!(tex_h(0), LABEL_TEX[1]);
+        assert_eq!(tex_h(2), 288);
+        assert_eq!(tex_h(5), 576);
+        assert_eq!(tex_h(MAX_LINES), LABEL_TEX_H_MAX);
+        assert_eq!(tex_h(MAX_LINES + 3), LABEL_TEX_H_MAX);
+        assert_eq!(lines("desk: amber"), ["desk: amber"]);
+        assert_eq!(
+            lines("Didn't catch that: \"x\"\nTry \"next effect\""),
+            ["Didn't catch that: \"x\"", "Try \"next effect\""]
+        );
+        assert_eq!(lines("1\n2\n3\n4\n5\n6\n7\n8").len(), MAX_LINES);
+        let head = Vec3::new(0.0, 1.6, 0.0);
+        let one = billboard(Vec3::new(0.0, 1.2, -0.5), Vec3::Z, head, Quat::IDENTITY);
+        assert_close!(one.with_lines(1).half_h, one.half_h);
+        let five = one.with_lines(5);
+        assert_close!(five.half_w, one.half_w);
+        assert_close!(five.half_h, one.half_h * 3.0);
+        assert_eq!(five.center, one.center);
     }
 
     #[test]

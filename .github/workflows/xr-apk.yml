@@ -112,9 +112,17 @@ jobs:
         with:
           path: ~/.cargo/bin/cargo-ndk
           key: cargo-ndk-${{ env.CARGO_NDK_VERSION }}-${{ runner.os }}
+      # rust-cache restores ~/.cargo/bin too, so the binary can be present
+      # while this step's own cache missed (its entry evicted by the larger
+      # caches below): check the installed version instead of the cache hit.
       - name: Install cargo-ndk
         if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-ndk --locked --version "$CARGO_NDK_VERSION"
+        run: |
+          if cargo ndk --version 2>/dev/null | grep -q "$CARGO_NDK_VERSION"; then
+            echo "cargo-ndk $CARGO_NDK_VERSION already installed"
+          else
+            cargo install cargo-ndk --locked --force --version "$CARGO_NDK_VERSION"
+          fi
 
       # The speech model, keyed on its SHA-256 so a run downloads it only
       # when the cache is cold; fetch-model.sh verifies a restored file too.

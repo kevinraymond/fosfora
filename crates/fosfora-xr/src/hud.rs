@@ -116,6 +116,10 @@ pub struct Controls {
     /// Music row; not saved, off at launch unless the launch source or
     /// `debug.fosfora.music` plays it; `music.rs`).
     pub music: bool,
+    /// The voice path listens (the hand menu's Voice toggle, saved in
+    /// `hand_menu.json`; board #3751, V4): off, neither the left fist nor
+    /// the thumb tap opens a window.
+    pub voice: bool,
 }
 
 /// What the panel's buttons asked for this frame.
@@ -137,6 +141,8 @@ pub enum Action {
     SetCloud(bool),
     /// The hand menu's Music row changed: play or stop (not saved).
     SetMusic(bool),
+    /// The hand menu's Voice toggle changed (saved; board #3751, V4).
+    SetVoice(bool),
     /// The "All: none" button: every room surface and every kind default
     /// to none, saved (board #3326, Kevin's debug ask).
     AllNone,
@@ -174,6 +180,7 @@ enum Target {
     ToggleEdit,
     ToggleCloud,
     ToggleMusic,
+    ToggleVoice,
     AllNone,
     /// A `STEPPERS` row: index, and up (+) or down (-).
     Step(usize, bool),
@@ -618,6 +625,10 @@ impl Hud {
             Some(Target::ToggleMusic) => {
                 controls.music = !controls.music;
                 actions.push(Action::SetMusic(controls.music));
+            }
+            Some(Target::ToggleVoice) => {
+                controls.voice = !controls.voice;
+                actions.push(Action::SetVoice(controls.voice));
             }
             Some(Target::AllNone) => actions.push(Action::AllNone),
             Some(Target::Color(up)) => {
@@ -1083,7 +1094,7 @@ fn panel_ui(
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, controls.edit_room));
-    block.push(music_row(controls.music));
+    block.push(music_row(controls.music, controls.voice));
     let bottom = grid::PANEL_H;
     rows.block(ui, bottom, &block);
     header_end > grid::block_top(bottom, block.len())
@@ -1102,7 +1113,7 @@ fn menu_ui(ui: &mut egui::Ui, controls: &Controls, view: &View<'_>, mut rows: Ro
         block.extend(surface_rows(view.surface_params));
     }
     block.push(cloud_row(controls.cloud, editing));
-    block.push(music_row(controls.music));
+    block.push(music_row(controls.music, controls.voice));
     debug_assert_eq!(block.len(), grid::menu_rows(editing));
     rows.block(ui, grid::menu_h(block.len()), &block);
 }
@@ -1157,15 +1168,19 @@ fn effect_row(effect: Option<(&str, usize, usize)>) -> Control<'static> {
     }
 }
 
-/// The music's row, the bottom row in both layouts: play or stop, the
-/// right cell empty (board #3472). The state is in the words, not a color.
-fn music_row(playing: bool) -> Control<'static> {
+/// The music's row, the bottom row in both layouts: play or stop (board
+/// #3472), and the voice path's toggle in the right cell (board #3751, V4),
+/// so no row count changes. The state is in the words, not a color.
+fn music_row(playing: bool, voice: bool) -> Control<'static> {
     Control::Pair([
         Some(Cell::Button(
             Target::ToggleMusic,
             crate::music::label(playing),
         )),
-        None,
+        Some(Cell::Button(
+            Target::ToggleVoice,
+            if voice { "Voice: on" } else { "Voice: off" },
+        )),
     ])
 }
 

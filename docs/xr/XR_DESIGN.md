@@ -322,13 +322,17 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   once. In world mode with more than one effect a swipe right steps to the
   next world effect and a swipe left to the previous, either hand, by the
   path the menu's `<` `>` take; nothing while the hand menu is up, nothing
-  from the right hand in Edit room. Forward, backward and the thumb tap are
-  logged and reserved. The decision (`consume`) is plain data with desktop
+  from the right hand in Edit room. Forward and backward are logged and
+  reserved; the thumb tap opens the voice window (board #3751, V4, the
+  Voice bullet below). The decision (`consume`) is plain data with desktop
   tests. Knob `debug.fosfora.micro 0|1`, default 1; 0 creates no action set.
-- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built").** The left fist
-  held is a push-to-talk window; the transcription shows on the label.
-  Knobs, read at launch:
-  - `debug.fosfora.voice 0|1`: the voice path; default 1 when the speech model was installed, else off with a log.
+- **Voice (board #3751, `VOICE_DESIGN.md`, "V1 as built" to "V4 as built").** The left fist
+  held is a push-to-talk window, and (V4) a thumb tap on either hand opens
+  one that closes on silence; the transcription shows on the label. The
+  hand menu's Voice toggle (the Music row's right cell) turns it on and
+  off, saved in `hand_menu.json`. Knobs, read at launch:
+  - `debug.fosfora.voice 0|1`: forces the hand menu's Voice toggle and saves it (on when the file lacks it); voice needs the speech model installed, else off with a log.
+  - `debug.fosfora.voicequiet <level>` (V4): a tap window closes once speech was heard and the microphone's level (RMS of the last 50 ms, ±1 scale) has stayed under this for 0.8 s; default 0.01 (-40 dBFS), tuned against the room's noise.
   - `debug.fosfora.voicethreads <n>`: whisper's threads for a transcription, 1..6, default 3.
   - `debug.fosfora.voicefile <path>`: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a window had closed (the unworn gate).
   - `debug.fosfora.say "<sentence>"` (V2): a sentence fed to the grammar as if heard, polled once a second, fed once per value.
@@ -647,7 +651,10 @@ beyond raw tip distance, and a proposal. Steps 1, 3 and 5 are built (see
 - **The poses** (`pose.rs`, with 0.1 s dwell and hysteresis): fist (finger
   curl under 55 mm), palm up (normal within 37° of up), open; hands together
   under 0.30 m. Murmur's hand behaviors read them; the Flux lift reads an
-  open far palm held still, facing down.
+  open far palm held still, facing down. With voice on (board #3751, V4)
+  the left fist is the voice path's opener everywhere, so Murmur sees an
+  open left hand and only the right fist is a predator; with voice off,
+  either fist is.
 
 ### Where the vocabulary collides
 
