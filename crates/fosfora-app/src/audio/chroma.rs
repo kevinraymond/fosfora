@@ -60,8 +60,15 @@ const KEY_FOLD_LO_MIDI: i32 = 54;
 /// observation deposits `W_BASS ×` its magnitude into the key fold. Kick transients
 /// fail the persistence and cents gates: a swept kick never parks on one semitone
 /// for [`BASS_PERSIST_HOPS`] at 86 fps.
-const BASS_BIN_LO: usize = 3; // 32.3 Hz at 44.1 k / 4096
-const BASS_BIN_HI: usize = 17; // 183 Hz — just under the MIDI 54 fold floor
+///
+/// The zone in Hz; [`CqtChroma::new`] converts it to bins at the running rate (#53). At
+/// 44.1 kHz / 4096 it is bins 3..=17 (32.3–183 Hz).
+const BASS_HZ_LO: f32 = 32.0;
+/// Just under the MIDI 54 fold floor (185 Hz).
+const BASS_HZ_HI: f32 = 184.0;
+/// Bound on the zone's width in bins, for the median scratch. 15 at 44.1 kHz; it only grows
+/// at device rates far below that.
+const BASS_BAND_MAX: usize = 64;
 /// Candidate must beat the local median by this factor (peak vs bass-band floor)…
 const BASS_MEDIAN_FACTOR: f32 = 2.0;
 /// …and an absolute magnitude floor (≈ −74 dBFS). Tuned while the spectrum read 6 dB low;
@@ -85,14 +92,15 @@ const TUNING_MODE_HALF: usize = 2;
 /// Material tuned a quarter tone off would otherwise flip its pitch-class names every
 /// time the estimate wobbles across the boundary.
 const TUNING_WRAP_HYSTERESIS: f32 = 5.0;
-/// Per-frame histogram decay: a 1,000-hop time constant, ≈ 11 s at the 86–94 Hz hop rate.
+/// Per-frame histogram decay at the reference hop rate: a 1,000-hop time constant, ≈ 11.6 s.
+/// Rescaled to the same time at other rates (#53).
 const TUNING_DECAY: f32 = 0.999;
 /// EMA rate for the smoothed cents offset (slow — tuning is near-constant per track).
 const TUNING_EMA: f32 = 0.02;
 /// Rebuild kernels once the tuning estimate has drifted this far from the built value…
 const KERNEL_REGEN_CENTS: f32 = 2.0;
-/// …and no more often than this (~3.2–3.5 s at the 86–94 Hz hop rate) to avoid per-frame
-/// kernel churn.
+/// …and no more often than this many frames at the reference hop rate (~3.5 s; rescaled to
+/// the same time at other rates, #53) to avoid per-frame kernel churn.
 const KERNEL_REGEN_MIN_FRAMES: u32 = 300;
 
 /// One sparse constant-Q kernel per semitone: (fft_bin, weight) pairs.
@@ -124,6 +132,12 @@ pub struct CqtChroma {
     bin_hz: f32,
     kernels: Vec<Kernel>, // N_SEMITONES entries
 
+    // Rate-dependent constants, resolved once (#53).
+    bass_bin_lo: usize,
+    bass_bin_hi: usize,
+    tuning_decay: f32,
+    kernel_regen_min_frames: u32,
+
     // Tuning estimator
     tuning_hist: Vec<f32>, // TUNING_BINS, cents histogram (magnitude-weighted, decaying)
     tuning_cents: f32,     // EMA'd global offset from A440, in cents (±(50 + hysteresis))
@@ -140,11 +154,21 @@ pub struct CqtChroma {
 }
 
 impl CqtChroma {
-    pub fn new(num_bins: usize, bin_hz: f32) -> Self {
+    /// `hop_rate` is hops per second.
+    pub fn new(num_bins: usize, bin_hz: f32, hop_rate: f32) -> Self {
+        let bass_bin_lo = ((BASS_HZ_LO / bin_hz).ceil() as usize).max(1);
+        let bass_bin_hi = ((BASS_HZ_HI / bin_hz).floor() as usize)
+            .min(bass_bin_lo + BASS_BAND_MAX - 1)
+            .max(bass_bin_lo);
         Self {
             num_bins,
             bin_hz,
             kernels: Self::build_kernels(num_bins, bin_hz, 0.0),
+            bass_bin_lo,
+            bass_bin_hi,
+            tuning_decay: super::rescale_decay(TUNING_DECAY, hop_rate),
+            kernel_regen_min_frames: super::rescale_hops(KERNEL_REGEN_MIN_FRAMES as usize, hop_rate)
+                as u32,
             tuning_hist: vec![0.0; TUNING_BINS],
             tuning_cents: 0.0,
             kernel_cents: 0.0,
@@ -228,16 +252,20 @@ impl CqtChroma {
     /// peak in 32–183 Hz, QIFFT-refined, tuning-compensated, near-semitone, persistent
     /// for [`BASS_PERSIST_HOPS`] frames.
     fn track_bass(&mut self, mag: &[f32]) -> Option<BassObs> {
-        let hi = BASS_BIN_HI.min(self.num_bins.saturating_sub(2));
+        let lo = self.bass_bin_lo;
+        let hi = self.bass_bin_hi.min(self.num_bins.saturating_sub(2));
+        if hi < lo {
+            return None;
+        }
         let mut best: Option<(usize, f32)> = None;
-        let mut band = [0.0f32; BASS_BIN_HI - BASS_BIN_LO + 1];
-        for (i, k) in (BASS_BIN_LO..=hi).enumerate() {
+        let mut band = [0.0f32; BASS_BAND_MAX];
+        for (i, k) in (lo..=hi).enumerate() {
             band[i] = mag[k];
             if mag[k] > mag[k - 1] && mag[k] >= mag[k + 1] && best.is_none_or(|(_, m)| mag[k] > m) {
                 best = Some((k, mag[k]));
             }
         }
-        let n_band = hi + 1 - BASS_BIN_LO;
+        let n_band = hi + 1 - lo;
         let median = {
             let b = &mut band[..n_band];
             b.sort_by(|a, c| a.total_cmp(c));
@@ -337,7 +365,7 @@ impl CqtChroma {
     /// EMA the mode toward the smoothed tuning offset.
     fn update_tuning(&mut self, mag: &[f32]) {
         for h in &mut self.tuning_hist {
-            *h *= TUNING_DECAY;
+            *h *= self.tuning_decay;
         }
 
         // Peaks are sharpest and most reliable in the low-mid range.
@@ -395,7 +423,7 @@ impl CqtChroma {
     fn maybe_regen_kernels(&mut self) {
         self.frames_since_regen = self.frames_since_regen.saturating_add(1);
         if (self.tuning_cents - self.kernel_cents).abs() > KERNEL_REGEN_CENTS
-            && self.frames_since_regen > KERNEL_REGEN_MIN_FRAMES
+            && self.frames_since_regen > self.kernel_regen_min_frames
         {
             self.kernels = Self::build_kernels(self.num_bins, self.bin_hz, self.tuning_cents);
             self.kernel_cents = self.tuning_cents;
@@ -445,6 +473,25 @@ fn circular_mode_cents(hist: &[f32]) -> Option<f32> {
 mod tests {
     use super::*;
 
+    /// The bass zone is fixed in Hz, so 48 kHz neither shifts it nor lets it reach the key
+    /// fold's floor at 185 Hz (#53).
+    #[test]
+    fn bass_zone_stays_in_hz_across_rates() {
+        let at_44 = CqtChroma::new(
+            num_bins(),
+            44_100.0 / FFT as f32,
+            crate::audio::REFERENCE_HOP_RATE,
+        );
+        assert_eq!((at_44.bass_bin_lo, at_44.bass_bin_hi), (3, 17));
+        let bh = bin_hz();
+        let at_48 = CqtChroma::new(num_bins(), bh, crate::audio::hop_rate(SR));
+        assert!(at_48.bass_bin_lo as f32 * bh >= BASS_HZ_LO);
+        assert!(at_48.bass_bin_hi as f32 * bh < 185.0);
+        // Same tuning time constant in seconds: decay per second matches.
+        let per_sec = |c: &CqtChroma, rate: f32| c.tuning_decay.powf(crate::audio::hop_rate(rate));
+        assert!((per_sec(&at_44, 44_100.0) - per_sec(&at_48, SR)).abs() < 1e-4);
+    }
+
     const SR: f32 = 48_000.0;
     const FFT: usize = 4096;
 
@@ -480,7 +527,7 @@ mod tests {
 
     #[test]
     fn a440_peaks_at_a_with_zero_tuning() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         let mag = sine_mag(440.0);
         let mut chroma = [0.0f32; N_CHROMA];
         for _ in 0..2000 {
@@ -497,7 +544,7 @@ mod tests {
 
     #[test]
     fn a432_still_peaks_at_a_and_estimates_flat_tuning() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         let mag = sine_mag(432.0);
         let mut chroma = [0.0f32; N_CHROMA];
         for _ in 0..3000 {
@@ -523,7 +570,7 @@ mod tests {
     /// the estimate through 0, a quarter tone from both, for hundreds of hops.
     #[test]
     fn tuning_crosses_the_wrap_the_short_way() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         // Measured by the QIFFT on these synthetic peaks as +46.5 and −42.5 cents.
         let sharp = sine_mag(392.0 * 2.0f32.powf(49.0 / 1200.0));
         let flat = sine_mag(440.0 * 2.0f32.powf(-45.0 / 1200.0));
@@ -576,7 +623,7 @@ mod tests {
 
     #[test]
     fn silence_is_finite_and_untuned() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         let mag = vec![0.0f32; num_bins()];
         for _ in 0..100 {
             let frame = cqt.compute(&mag);
@@ -593,7 +640,7 @@ mod tests {
     #[test]
     fn bass_tracker_attributes_sub_fundamentals() {
         for (hz, want_pc, name) in [(41.2, 4, "E1"), (32.7, 0, "C1"), (55.0, 9, "A1")] {
-            let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+            let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
             let mag = sine_mag(hz);
             let mut frame = cqt.compute(&mag);
             for _ in 0..5 {
@@ -608,7 +655,7 @@ mod tests {
     /// the persistence gate — the tracker must stay silent on it.
     #[test]
     fn bass_tracker_rejects_swept_kick() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         for i in 0..30 {
             let frame = cqt.compute(&sine_mag(80.0 - 4.0 * i as f32 % 50.0));
             assert!(frame.bass.is_none(), "sweep accepted at step {i}");
@@ -621,7 +668,7 @@ mod tests {
     /// the two outputs exist; it fails if the template ever leaks back into `e12`.
     #[test]
     fn pure_fold_has_no_subdominant_deposit() {
-        let mut cqt = CqtChroma::new(num_bins(), bin_hz());
+        let mut cqt = CqtChroma::new(num_bins(), bin_hz(), crate::audio::REFERENCE_HOP_RATE);
         let mag = sine_mag(440.0); // A, pitch class 9; its subdominant is D, class 2.
         let mut frame = cqt.compute(&mag);
         for _ in 0..10 {

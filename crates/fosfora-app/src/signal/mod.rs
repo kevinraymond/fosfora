@@ -98,7 +98,7 @@ pub fn run(args: &SignalCliArgs) -> Result<()> {
                 .unwrap_or_default()
         ));
     }
-    let hop_hz = f64::from(audio.sample_rate) / ANALYSIS_HOP as f64;
+    let hop_hz = f64::from(audio.analysis_rate()) / ANALYSIS_HOP as f64;
     log::info!(
         "signal: broadcasting /fosfora/v1 to {}:{} — device \"{}\", {:.1} Hz hops, {} Hz continuous{}{}",
         cfg.host,

@@ -124,6 +124,7 @@ pub struct HopAnalyzer {
 
 impl HopAnalyzer {
     pub fn new(sample_rate: f32, band_scale: BandScale, tempo_cfg: TempoConfig) -> Self {
+        let hop_rate = super::hop_rate(sample_rate);
         Self {
             dc_mono: DcBlocker::new(sample_rate),
             dc_left: DcBlocker::new(sample_rate),
@@ -131,7 +132,7 @@ impl HopAnalyzer {
             mono: Vec::with_capacity(ANALYSIS_HOP),
             stereo: Vec::with_capacity(ANALYSIS_HOP * 2),
             analyzer: FftAnalyzer::new(sample_rate, band_scale),
-            normalizer: FeatureNormalizer::new(),
+            normalizer: FeatureNormalizer::new(hop_rate),
             beat_detector: BeatDetector::new(sample_rate, tempo_cfg),
             key_detector: KeyDetector::new(sample_rate),
             loudness_meter: LoudnessMeter::new(sample_rate),
@@ -139,9 +140,9 @@ impl HopAnalyzer {
             structure_tracker: StructureTracker::new(),
             smoother: FeatureSmoother::new(),
             stereo_analyzer: StereoAnalyzer::with_sample_rate(sample_rate),
-            hpss_analyzer: HpssAnalyzer::new(),
+            hpss_analyzer: HpssAnalyzer::new(sample_rate),
             pitch_analyzer: PitchAnalyzer::new(sample_rate),
-            dmfcc_analyzer: DeltaMfccAnalyzer::new(),
+            dmfcc_analyzer: DeltaMfccAnalyzer::new(hop_rate),
             key_sidecar: KeySidecar::from_env(),
             structure_sidecar: StructureSidecar::from_env(),
             dt: ANALYSIS_HOP as f32 / sample_rate,

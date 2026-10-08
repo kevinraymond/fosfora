@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod beat;
 pub mod capture;
 pub mod chroma;
+pub mod decimate;
 pub mod downbeat;
 pub mod downmix;
 pub mod features;
@@ -521,7 +522,7 @@ impl AudioSystem {
                 Self {
                     receiver: rx,
                     latest: None,
-                    interp: FeatureInterpolator::new(sample_rate as u32),
+                    interp: FeatureInterpolator::new(decimate::analysis_rate(sample_rate as u32)),
                     latest_spectrum: vec![0.0; analyzer::SPECTRUM_BINS],
                     pending_mel: Vec::new(),
                     latest_mel: Vec::new(),
@@ -706,7 +707,7 @@ impl AudioSystem {
         // interpolation state so the playhead re-seeds from the new clock instead of
         // slewing across that gap. (`push` also guards this, but the device may also have
         // changed sample rate — so rebuild rather than just reset.)
-        self.interp = FeatureInterpolator::new(new.sample_rate);
+        self.interp = FeatureInterpolator::new(decimate::analysis_rate(new.sample_rate));
         self.latest_spectrum = std::mem::take(&mut new.latest_spectrum);
         self.pending_mel.clear();
         self.latest_mel.clear();
@@ -749,6 +750,12 @@ impl AudioSystem {
         // `self.reconnect` is likewise deliberately unswapped (A9 #1460): an episode spans the
         // backends it cycles through, so `new`'s fresh state must not clobber the live one.
         // `new` is dropped here — its Drop is a no-op since thread_handle is None and shutdown is true
+    }
+
+    /// The rate the analysis chain runs at: the device rate, halved while above 88.2 kHz
+    /// (#53). Hops, and so frame timestamps, run on this clock.
+    pub fn analysis_rate(&self) -> u32 {
+        decimate::analysis_rate(self.sample_rate)
     }
 
     /// Shared, live-tunable A18 structure-detection thresholds (#1510). The audio panel locks
@@ -1277,6 +1284,29 @@ impl Drop for AudioSystem {
 /// (87.5% overlap of the 4096-sample analysis window).
 pub const ANALYSIS_HOP: usize = 512;
 
+/// Hop rate the analysis chain's frame-counted windows and per-hop decays were tuned at:
+/// 44.1 kHz / [`ANALYSIS_HOP`] ≈ 86.1 Hz. At 48 kHz hops come ~9% faster, so a constant
+/// counted in hops would shrink by 9% in seconds; [`rescale_hops`] and [`rescale_decay`]
+/// carry each one to the running rate instead (#53).
+pub const REFERENCE_HOP_RATE: f32 = 44_100.0 / ANALYSIS_HOP as f32;
+
+/// Hops per second at `sample_rate`.
+pub fn hop_rate(sample_rate: f32) -> f32 {
+    sample_rate / ANALYSIS_HOP as f32
+}
+
+/// A window of `hops` tuned at [`REFERENCE_HOP_RATE`], resized to span the same time at
+/// `hop_rate`. Exact at the reference rate; never less than one hop.
+pub fn rescale_hops(hops: usize, hop_rate: f32) -> usize {
+    ((hops as f32 * hop_rate / REFERENCE_HOP_RATE).round() as usize).max(1)
+}
+
+/// A per-hop decay factor tuned at [`REFERENCE_HOP_RATE`], adjusted to keep the same time
+/// constant at `hop_rate`. Exact at the reference rate. For an EMA rate `a`, rescale `1 - a`.
+pub fn rescale_decay(decay: f32, hop_rate: f32) -> f32 {
+    decay.powf(REFERENCE_HOP_RATE / hop_rate)
+}
+
 /// Tap tempo (A7 #1458). A gap longer than this means the user stopped and started over,
 /// so the sequence resets; `TAP_WINDOW` taps are averaged and `TAP_MIN_TAPS` (2 intervals)
 /// are needed before a tempo is inferred at all.
@@ -1316,7 +1346,18 @@ fn audio_thread(
     // rather than waiting on the render thread.
     let mut tempo_cfg = tempo.lock().unwrap_or_else(|e| e.into_inner()).config;
     let mut struct_cfg = *tuning.lock().unwrap_or_else(|e| e.into_inner());
-    let mut hop_analyzer = HopAnalyzer::new(sample_rate, band_scale, tempo_cfg);
+    // #53: above 88.2 kHz the input is halved down to 44.1–88.2 kHz before analysis, so every
+    // stage below runs at a rate it was tuned for. The recording mirror keeps the device rate.
+    let mut decimator = decimate::StereoDecimator::new(sample_rate as u32);
+    let mut decimated: Vec<f32> = Vec::new();
+    let analysis_rate = decimate::analysis_rate(sample_rate as u32) as f32;
+    if decimator.is_active() {
+        log::info!(
+            "Analysis decimated {} Hz -> {analysis_rate} Hz",
+            sample_rate as u32
+        );
+    }
+    let mut hop_analyzer = HopAnalyzer::new(analysis_rate, band_scale, tempo_cfg);
     // A13 (#1464): the capture ring yields interleaved L,R. `read_buf` reads it raw; `mono_scratch`
     // holds the mono mix derived from it (fed to the recording mirror + FFT, exactly as before).
     let mut read_buf = vec![0.0f32; 8192]; // 4096 stereo frames; larger for the 4096-pt FFT
@@ -1386,8 +1427,14 @@ fn audio_thread(
             recording_ring.push(&mono_scratch);
         }
         // Queue mono for hop-aligned analysis, and the interleaved stereo in lockstep.
-        fifo.extend_from_slice(&mono_scratch);
-        fifo_stereo.extend_from_slice(stereo);
+        if decimator.is_active() {
+            decimator.process(stereo, &mut decimated);
+            fifo.extend(decimated.chunks_exact(2).map(|f| (f[0] + f[1]) * 0.5));
+            fifo_stereo.extend_from_slice(&decimated);
+        } else {
+            fifo.extend_from_slice(&mono_scratch);
+            fifo_stereo.extend_from_slice(stereo);
+        }
 
         // Process every complete hop the read produced (>=2 when catching up after a stall).
         let mut offset = 0;
@@ -1397,7 +1444,7 @@ fn audio_thread(
             let hop_stereo = &fifo_stereo[offset * 2..(offset + ANALYSIS_HOP) * 2];
             offset += ANALYSIS_HOP;
             samples_consumed += ANALYSIS_HOP as u64;
-            let timestamp = samples_consumed as f64 / sample_rate as f64;
+            let timestamp = samples_consumed as f64 / f64::from(analysis_rate);
 
             // A7 (#1458): snapshot the shared tempo config and drain the command mailbox
             // once per hop, same as the A18 tuning below. In auto mode the estimator owns the
@@ -1619,6 +1666,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// A 96 kHz device is decimated to 48 kHz before analysis (#53): it hops on the 48 kHz
+    /// clock, and its raw band levels match the 48 kHz capture of the same signal.
+    #[test]
+    fn high_rate_input_analyzes_like_its_decimated_rate() {
+        let at_96 = run_audio_thread_over(&golden_signal(96_000.0, 4.0), 96_000.0);
+        assert_eq!(
+            at_96.len(),
+            4 * 48_000 / ANALYSIS_HOP,
+            "96 kHz must hop on the 48 kHz clock"
+        );
+
+        // Raw (pre-normalization) levels, so the adaptive ranging can't hide or invent a gap.
+        let raw = |signal: &[f32]| {
+            let mut a = HopAnalyzer::new(48_000.0, BandScale::Db, TempoConfig::default());
+            let mut mono = [0.0f32; ANALYSIS_HOP];
+            let mut last = AudioFeatures::default();
+            for (h, st) in signal.chunks_exact(ANALYSIS_HOP * 2).enumerate() {
+                for (m, f) in mono.iter_mut().zip(st.chunks_exact(2)) {
+                    *m = (f[0] + f[1]) * 0.5;
+                }
+                let ts = ((h + 1) * ANALYSIS_HOP) as f64 / 48_000.0;
+                let cfg = (StructureConfig::default(), TempoConfig::default());
+                last = a
+                    .process_hop(&mono, st, ts, cfg.0, cfg.1, Vec::new())
+                    .pre_norm;
+            }
+            last
+        };
+        let mut decimated = Vec::new();
+        decimate::StereoDecimator::new(96_000)
+            .process(&golden_signal(96_000.0, 4.0), &mut decimated);
+        let (a, b) = (raw(&golden_signal(48_000.0, 4.0)), raw(&decimated));
+        for (name, x, y) in [
+            ("sub_bass", a.sub_bass, b.sub_bass),
+            ("bass", a.bass, b.bass),
+            ("low_mid", a.low_mid, b.low_mid),
+            ("mid", a.mid, b.mid),
+        ] {
+            assert!(
+                (x - y).abs() <= 0.02 * x.abs().max(0.05),
+                "{name}: 48 kHz {x} vs 96 kHz {y}"
+            );
+        }
+    }
+
     /// A burst of NaN/Inf from the capture device must not leave any feature non-finite, then
     /// or afterwards: running sums (loudness) and EMAs (normalizer) never recover from one (#51).
     #[test]
@@ -1664,6 +1756,9 @@ pub(crate) mod tests {
     /// Re-captured 2026-10-04 for the kick model (#3624): `kick` (8) is now the tree
     /// ensemble's score mapped so 0.5 means a kick; it moves on all three hops and nothing
     /// else does.
+    /// Re-captured 2026-10-08 for the structure tick grid (#53): ticks now average exactly
+    /// 10 Hz instead of 9.6 Hz, so `buildup` (59) moves on all three hops; the rest match to
+    /// ≤ 1e-7 last-digit rounding.
     // Captured verbatim at 7 decimal places; left exactly as the harness printed them so a
     // re-capture diffs cleanly against this block.
     #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -1673,13 +1768,13 @@ pub(crate) mod tests {
             [
                 0.1407876, 0.1420596, 0.6145152, 0.3154613, 0.0430347, 0.9350787, 0.6669751,
                 0.0566947, 0.0533245, 0.3560369, 0.0031109, 0.0127056, 0.0253217, 0.4416282,
-                0.0306153, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2709295,
-                0.6099496, 0.7784974, 0.7338392, 0.6270733, 0.5727628, 0.4557225, 0.3412039,
-                0.2734341, 0.2777484, 0.3016584, 0.3823771, 0.5377032, 0.6482748, 0.5863790,
+                0.0306153, 0.1347190, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.2709294,
+                0.6099497, 0.7784974, 0.7338393, 0.6270733, 0.5727629, 0.4557225, 0.3412039,
+                0.2734340, 0.2777483, 0.3016583, 0.3823771, 0.5377032, 0.6482748, 0.5863790,
                 0.3664406, 0.2348731, 0.0749160, 0.1860548, 0.1479038, 0.0841248, 0.3017020,
                 0.9999736, 0.2573203, 0.0413149, 0.8181818, 0.8052005, 0.8124636, 0.0000000,
                 0.7272727, 1.0000000, 0.0227470, 0.0000000, 0.0000000, 0.0000000, 0.3724320,
-                0.0194766, 0.9947287, 0.0000000, 0.2187184, 0.0000000, 0.1732833, 0.0598805,
+                0.0194766, 0.9947287, 0.0000000, 0.2222965, 0.0000000, 0.1732833, 0.0598805,
                 0.9940155, 0.6009381, 0.9461797, 0.4126789, 0.9999693, 0.4485310, 0.4881209,
                 0.4763152, 0.4603756, 0.5333704, 0.1859715, 0.4986978, 0.4986971, 0.3528318,
                 0.4987957, 0.4993192, 0.4987762, 0.4986998, 0.0000000, 0.0000000,
@@ -1690,13 +1785,13 @@ pub(crate) mod tests {
             [
                 0.1102263, 0.1081984, 0.7946914, 0.8267748, 0.7893429, 0.9627049, 0.8690839,
                 0.2188624, 0.1281905, 0.3564951, 0.0098162, 0.0128876, 0.0226174, 0.4402910,
-                0.0348674, 0.1681761, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4163287,
-                0.4930184, 0.5987619, 0.5700652, 0.4939170, 0.4750780, 0.5056299, 0.4571947,
-                0.4101900, 0.4235389, 0.4410454, 0.4640085, 0.5006856, 0.6367147, 0.5761620,
+                0.0348674, 0.1681761, 0.0000000, 0.0000000, 0.0000000, 0.0000000, 0.4163286,
+                0.4930184, 0.5987619, 0.5700653, 0.4939171, 0.4750780, 0.5056298, 0.4571946,
+                0.4101900, 0.4235388, 0.4410453, 0.4640084, 0.5006856, 0.6367147, 0.5761620,
                 0.3581127, 0.2241911, 0.0637431, 0.1728067, 0.1373570, 0.0722338, 0.3008879,
                 0.9999934, 0.2556811, 0.0375539, 0.8181818, 0.7882963, 0.7974412, 0.0210354,
                 0.7272727, 1.0000000, 0.0001375, 0.0000000, 0.0000000, 0.0000000, 0.3876600,
-                0.0201893, 0.9947813, 0.0000000, 0.4442507, 0.0000000, 0.3679971, 0.1145830,
+                0.0201893, 0.9947813, 0.0000000, 0.4392108, 0.0000000, 0.3679971, 0.1145830,
                 0.9699730, 0.6012337, 0.9462099, 0.3652980, 0.9999987, 0.4890743, 0.5026374,
                 0.4690950, 0.4539478, 0.5269762, 0.0719375, 0.4999769, 0.5000178, 0.3531286,
                 0.5012278, 0.5197853, 0.5005888, 0.5000213, 0.0000000, 0.0000000,
@@ -1707,13 +1802,13 @@ pub(crate) mod tests {
             [
                 0.1530726, 0.1504618, 0.7956443, 0.5298309, 0.0604075, 0.5831037, 0.5809369,
                 0.0753485, 0.0532104, 0.3561243, 0.0057274, 0.0126783, 0.0238795, 0.4389419,
-                0.0304028, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574384,
-                0.4586743, 0.5644627, 0.5217401, 0.4544856, 0.4380917, 0.5563500, 0.5298984,
-                0.4502431, 0.4356842, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
+                0.0304028, 0.1018582, 0.0000000, 0.6509761, 0.0000000, 0.0012428, 0.4574383,
+                0.4586742, 0.5644628, 0.5217401, 0.4544857, 0.4380916, 0.5563499, 0.5298982,
+                0.4502431, 0.4356841, 0.4874638, 0.5473089, 0.4820564, 0.6562741, 0.5932279,
                 0.3684024, 0.2376923, 0.0745927, 0.1856951, 0.1463016, 0.0798915, 0.3004525,
                 0.9999670, 0.2597559, 0.0414821, 0.8181818, 0.7969663, 0.7951008, 0.0411382,
                 0.8181818, 1.0000000, 0.6746101, 0.0000000, 0.0000000, 0.2500000, 0.3740249,
-                0.0193253, 0.9973397, 0.0000000, 0.4409111, 0.0000000, 0.1625745, 0.1114902,
+                0.0193253, 0.9973397, 0.0000000, 0.4568527, 0.0000000, 0.1625745, 0.1114902,
                 0.9936647, 0.6007999, 0.9458395, 0.3599527, 0.9999986, 0.4310307, 0.4896301,
                 0.4748437, 0.4592255, 0.5218306, 0.0867677, 0.5000031, 0.4999986, 0.3532110,
                 0.5011370, 0.5022405, 0.5006987, 0.5000429, 0.0000000, 3.0000000,

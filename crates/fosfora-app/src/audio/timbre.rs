@@ -42,6 +42,9 @@ impl DeltaMfcc {
 
 /// Rolling causal delta-MFCC over the last [`RING`] MFCC frames.
 pub struct DeltaMfccAnalyzer {
+    /// Converts the per-hop slope to per reference hop, so the values (and the binding ranges
+    /// users set on them) mean the same at every sample rate (#53).
+    slope_scale: f32,
     /// Ring of recent MFCC frames.
     ring: [[f32; N_MFCC]; RING],
     /// Next slot to overwrite (the oldest frame).
@@ -51,8 +54,10 @@ pub struct DeltaMfccAnalyzer {
 }
 
 impl DeltaMfccAnalyzer {
-    pub fn new() -> Self {
+    /// `hop_rate` is hops per second.
+    pub fn new(hop_rate: f32) -> Self {
         Self {
+            slope_scale: hop_rate / super::REFERENCE_HOP_RATE,
             ring: [[0.0; N_MFCC]; RING],
             pos: 0,
             filled: 0,
@@ -100,7 +105,7 @@ impl DeltaMfccAnalyzer {
             }
         }
         for d in &mut dmfcc {
-            *d /= denom;
+            *d = *d / denom * self.slope_scale;
         }
 
         // timbre_flux: L2 over coeffs 1..=12 — exclude the log-energy coef 0 so it tracks
@@ -110,12 +115,6 @@ impl DeltaMfccAnalyzer {
             dmfcc,
             timbre_flux: sq.sqrt(),
         }
-    }
-}
-
-impl Default for DeltaMfccAnalyzer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -132,7 +131,7 @@ mod tests {
 
     #[test]
     fn under_full_window_is_neutral() {
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         // Four pushes: fewer than RING (5) frames, so no slope yet.
         for i in 0..RING - 1 {
             let out = a.process(&only(1, i as f32), false);
@@ -144,7 +143,7 @@ mod tests {
     #[test]
     fn linear_ramp_recovers_slope() {
         // Coefficient 3 rises by exactly 0.5 per frame → slope 0.5; others flat → 0.
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         let mut out = DeltaMfcc::NEUTRAL;
         for i in 0..RING {
             out = a.process(&only(3, 0.5 * i as f32), false);
@@ -164,7 +163,7 @@ mod tests {
 
     #[test]
     fn steady_input_has_zero_delta() {
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         let frame = only(2, 1.0);
         let mut out = DeltaMfcc::NEUTRAL;
         for _ in 0..RING {
@@ -177,7 +176,7 @@ mod tests {
     #[test]
     fn timbre_flux_excludes_coef_zero() {
         // A ramp *only* in the log-energy coefficient (0): dmfcc[0] moves, but timbre_flux stays 0.
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         let mut out = DeltaMfcc::NEUTRAL;
         for i in 0..RING {
             out = a.process(&only(0, 2.0 * i as f32), false);
@@ -190,7 +189,7 @@ mod tests {
     fn silence_clears_ring_and_is_neutral() {
         // Fill the ring, then a silent frame resets it; the next loud frame must not spike a slope
         // across the gap (ring re-fills from empty → neutral until full again).
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         for i in 0..RING {
             a.process(&only(1, i as f32), false);
         }
@@ -203,7 +202,7 @@ mod tests {
 
     #[test]
     fn all_zeros_no_nan() {
-        let mut a = DeltaMfccAnalyzer::new();
+        let mut a = DeltaMfccAnalyzer::new(crate::audio::REFERENCE_HOP_RATE);
         let mut out = DeltaMfcc::NEUTRAL;
         for _ in 0..RING {
             out = a.process(&[0.0; N_MFCC], false);

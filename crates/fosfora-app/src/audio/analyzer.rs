@@ -314,7 +314,7 @@ impl FftAnalyzer {
         }
 
         // A11 (#1462): CQT-lite constant-Q chroma over the large (4096-pt) spectrum.
-        let cqt = CqtChroma::new(large.num_bins, large.bin_hz);
+        let cqt = CqtChroma::new(large.num_bins, large.bin_hz, super::hop_rate(sample_rate));
 
         let log2_bin_hz = (0..large.num_bins)
             .map(|i| {

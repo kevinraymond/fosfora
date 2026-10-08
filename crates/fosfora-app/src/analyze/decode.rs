@@ -1,9 +1,9 @@
-//! Decode a song file to interleaved stereo f32 at its native sample rate (#2027).
+//! Decode a song file to interleaved stereo f32 at the analysis rate (#2027).
 //!
-//! Deliberately *not* resampled: every detector in the chain is parameterized by sample rate
-//! at construction (`HopAnalyzer::new`), so feeding the file's own rate keeps the analysis
-//! identical to what a live capture at that rate would produce, and avoids a resampler
-//! becoming a second source of truth.
+//! Not resampled beyond what live capture does: every detector in the chain is parameterized
+//! by sample rate at construction (`HopAnalyzer::new`), and above 88.2 kHz the same
+//! [`decimate`](crate::audio::decimate) stage the audio thread runs halves the rate (#53). So
+//! a file analyzes identically to a live capture at its rate, with one source of truth.
 
 use std::fs::File;
 use std::path::Path;
@@ -22,6 +22,7 @@ pub struct DecodedAudio {
     /// Interleaved stereo samples — always an even length, exactly 2 per frame. This is the
     /// same layout the capture ring hands the audio thread, so the hop slicing matches.
     pub interleaved: Vec<f32>,
+    /// The analysis rate: the file's own rate, halved while above 88.2 kHz (#53).
     pub sample_rate: f32,
     /// Channel count of the *source*, before the stereo fold below. Reported so the analysis
     /// output can say whether the stereo field is real or synthesized from mono.
@@ -113,9 +114,16 @@ pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
         bail!("{} decoded to zero samples", path.display());
     }
 
+    let mut decimator = crate::audio::decimate::StereoDecimator::new(sample_rate as u32);
+    if decimator.is_active() {
+        let mut out = Vec::with_capacity(interleaved.len());
+        decimator.process(&interleaved, &mut out);
+        interleaved = out;
+    }
+
     Ok(DecodedAudio {
         interleaved,
-        sample_rate,
+        sample_rate: crate::audio::decimate::analysis_rate(sample_rate as u32) as f32,
         source_channels,
     })
 }

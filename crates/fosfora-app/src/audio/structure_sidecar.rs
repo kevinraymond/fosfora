@@ -77,7 +77,7 @@ const SCHEMA_VERSION: u32 = 4;
 pub struct StructureSidecar {
     out: BufWriter<File>,
     path: String,
-    last_tick: f64,
+    next_tick: f64,
     /// The meta line is written on the first `record`, because the tracker's live config is
     /// not known at construction (it arrives per hop from the shared `Arc<Mutex<_>>`).
     wrote_meta: bool,
@@ -93,14 +93,14 @@ impl StructureSidecar {
         Some(Self {
             out: BufWriter::new(file),
             path,
-            last_tick: -1.0,
+            next_tick: f64::NEG_INFINITY,
             wrote_meta: false,
         })
     }
 
     /// `pre_norm` feeds the fingerprint, `live` feeds the label machine, `trace` is the drop
-    /// machine's own account of the tick. Self-decimates to [`TICK_HZ`] on the same "first
-    /// call at or past the interval" rule the tracker uses — `trace.tick_index` lets a reader
+    /// machine's own account of the tick. Self-decimates to [`TICK_HZ`] with the tracker's own
+    /// [`tick_due`](super::structure::tick_due) rule — `trace.tick_index` lets a reader
     /// verify that alignment rather than assume it.
     pub fn record(
         &mut self,
@@ -110,10 +110,9 @@ impl StructureSidecar {
         trace: &DropTrace,
         cfg: &StructureConfig,
     ) {
-        if self.last_tick >= 0.0 && timestamp - self.last_tick < 1.0 / TICK_HZ {
+        if !super::structure::tick_due(&mut self.next_tick, timestamp, 1.0 / TICK_HZ) {
             return;
         }
-        self.last_tick = timestamp;
 
         if !self.wrote_meta {
             self.wrote_meta = true;
