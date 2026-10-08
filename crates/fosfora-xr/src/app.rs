@@ -21,7 +21,8 @@ use crate::pose::{Behavior, HandInput, HoldTrack, Plan, Pose, Poses, Tuning};
 use crate::scene::{WorldOptions, XrScene};
 use crate::surfaces::SurfaceWeights;
 use crate::voice::{
-    Event as VoiceEvent, Note as VoiceNote, PushToTalk, Voice, Window as VoiceWindow,
+    Event as VoiceEvent, Note as VoiceNote, Opener as VoiceOpener, Press as VoicePress, PushToTalk,
+    Voice, Window as VoiceWindow,
 };
 use crate::xr::{Flow, MrOptions, XrContext, XrSession};
 
@@ -214,8 +215,9 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //   adb shell setprop debug.fosfora.hands 0|1                (hand joints as obstacles + pinch)
     //   adb shell setprop debug.fosfora.micro 0|1                (board #3336: thumb microgestures, XR_META_hand_tracking_microgestures through one
     //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
-    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward,
-    //       backward and the thumb tap are logged and unassigned; default 1; 0 creates no action set; read at launch)
+    //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward
+    //       and backward are logged and unassigned; the thumb tap opens the voice window (board #3751, V4, with voice on); default 1;
+    //       0 creates no action set; read at launch)
     //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
     //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
     //       label shows what it did or "Didn't catch that", the log both; the fist opens the window in every mode, Edit room and the hand
@@ -223,6 +225,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       and saves as debug.fosfora.hud does the debug panel's; voice needs the speech model installed
     //       (assets/xr/models/ggml-base.en.bin); on at launch, the model loads and RECORD_AUDIO is asked for on any audio source; read at launch)
     //   adb shell setprop debug.fosfora.voicethreads 3           (the transcription's whisper threads, 1..6; default 3; read at launch)
+    //   adb shell setprop debug.fosfora.voicequiet 0.01          (board #3751, V4: a thumb tap opens a voice window too, either hand, which closes
+    //       once speech was heard and the microphone's level (RMS of the last 50 ms, ±1 scale) has stayed under this for 0.8 s, or at 6 s,
+    //       or on a second tap; default 0.01 (-40 dBFS); tune it against the room's noise; logged at launch, the closing level with each
+    //       close; read at launch)
     //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
     //       window had closed; the label shows it ahead of the head; read at launch)
     //   adb shell "setprop debug.fosfora.say 'the desk in amber'"   (board #3751, V2: a sentence fed to the grammar as if heard, voice on or
@@ -471,7 +477,17 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     };
     let mut voice_mic = mic_granted;
     let mut voice_mic_logged = false;
-    let mut push_to_talk = PushToTalk::default();
+    // V4: a thumb tap's window closes on silence, under this level (RMS on
+    // the ±1 scale), which the knob tunes against the room.
+    let voice_quiet = debug_prop("debug.fosfora.voicequiet")
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|q| q.is_finite() && *q > 0.0)
+        .unwrap_or(crate::voice::QUIET_LEVEL);
+    info!(
+        "voice: openers the left fist (closes on release) and a thumb tap (closes after {} s under {voice_quiet:.4} RMS, debug.fosfora.voicequiet)",
+        crate::voice::QUIET_S
+    );
+    let mut push_to_talk = PushToTalk::new(voice_quiet);
     // The voice path's own label (the editor's is stepped and cleared by
     // Edit room), and where it floats: the left palm at the window's
     // opening, facing the head.
@@ -2326,17 +2342,35 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             let mut sentence: Option<String> = None;
             if let Some(v) = voice.as_mut() {
                 let head = glam::Vec3::from(input.head);
-                if left_fist && controls.voice && !voice_mic && !voice_mic_logged {
+                // V4: a thumb tap on either hand is the second opener;
+                // with the hand menu's Voice toggle off neither the fist
+                // nor the tap does anything for voice.
+                let tap_hand = (0..2).find(|&h| input.micro.tap[h]);
+                if (left_fist || tap_hand.is_some())
+                    && controls.voice
+                    && !voice_mic
+                    && !voice_mic_logged
+                {
                     voice_mic_logged = true;
                     info!("voice: RECORD_AUDIO missing, the window stays closed");
                 }
-                // V4: with the hand menu's Voice toggle off the fist does
-                // nothing for voice.
-                match push_to_talk.step(left_fist && voice_mic && controls.voice, dt) {
-                    Some(VoiceEvent::Opened) => {
+                let listens = voice_mic && controls.voice;
+                let press = VoicePress {
+                    fist: left_fist && listens,
+                    tap: tap_hand.is_some() && listens,
+                    level: v.level(),
+                };
+                match push_to_talk.step_with(press, dt) {
+                    Some(VoiceEvent::Opened(opener)) => {
                         let at = input.hands.palm[0].map_or(head, |(p, _)| glam::Vec3::from(p));
                         voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
-                        match v.open() {
+                        let how = match opener {
+                            VoiceOpener::Fist => "left fist".to_owned(),
+                            VoiceOpener::Tap => {
+                                format!("thumb tap, {}", hand_name(tap_hand.unwrap_or(0)))
+                            }
+                        };
+                        match v.open(&how) {
                             Ok(()) => voice_label.show_for(
                                 crate::voice::LISTENING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2349,8 +2383,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                             }
                         }
                     }
-                    Some(VoiceEvent::Closed { seconds }) => {
-                        if v.close(seconds) {
+                    Some(VoiceEvent::Closed { seconds, why }) => {
+                        if v.close(seconds, why) {
                             voice_label.show_for(
                                 crate::voice::WAITING_LABEL.to_owned(),
                                 voice_at.0,
@@ -2375,7 +2409,13 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     None => {}
                 }
                 let idle = push_to_talk.window() == VoiceWindow::Closed;
-                match v.step(dt, idle) {
+                let note = v.step(dt, idle);
+                // V4: the microphone's level under "Listening…", this
+                // frame's.
+                if matches!(push_to_talk.window(), VoiceWindow::Open { .. }) {
+                    voice_label.meter(Some(v.level()));
+                }
+                match note {
                     Some(VoiceNote::FileQueued { .. }) => {
                         // The unworn path: the label ahead of the head.
                         push_to_talk.begin_closing();
@@ -2592,11 +2632,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     .or_else(|| label.now())
                     .map(|l| {
                         let pose = crate::label::billboard(l.point, l.normal, head, head_rot);
-                        (l.text, l.alpha, pose)
+                        (l.text, l.alpha, l.level, pose)
                     })
                     .or_else(|| {
                         scan_label.now().map(|(text, alpha)| {
-                            (text, alpha, crate::label::scan_billboard(head, head_rot))
+                            (text, alpha, None, crate::label::scan_billboard(head, head_rot))
                         })
                     });
                 label_texture.show(&gfx, shown);

@@ -13,10 +13,14 @@
 //! **The window.** A fist opens it only once it has lasted [`DWELL_S`] (a
 //! shorter one is a tracking glitch or a grab, not a press); release closes
 //! it, and so does [`MAX_S`] of holding, after which the fist has to open
-//! before it can press again. A closed window is [`Window::Closing`] until
-//! its transcription returns ([`PushToTalk::finish`]): a fist then is
-//! ignored, so two windows never overlap and one transcription runs at a
-//! time.
+//! before it can press again. V4: a thumb tap on the index (either hand,
+//! `microgestures.rs`) opens one too, which closes on silence: once speech
+//! has been heard and [`MIN_SPEECH_S`] has passed, [`QUIET_S`] under the
+//! quiet level closes it ([`level`], the RMS of the stream's last
+//! [`LEVEL_S`]), and so do [`MAX_S`] and a second tap. A closed window is
+//! [`Window::Closing`] until its transcription returns
+//! ([`PushToTalk::finish`]): a fist or a tap then is ignored, so two windows
+//! never overlap and one transcription runs at a time.
 //!
 //! **The device part** (Android, [`Voice`]): whisper.cpp through
 //! `whisper-rs` on one worker thread that loads `ggml-base.en.bin` at launch
@@ -31,6 +35,19 @@
 pub const DWELL_S: f32 = 0.15;
 /// The longest window (s): holding past it closes the window.
 pub const MAX_S: f32 = 6.0;
+/// A tap window (V4) closes once the level has stayed under the quiet
+/// level for this long (s)...
+pub const QUIET_S: f32 = 0.8;
+/// ...after at least this much audio (s), speech having been heard.
+pub const MIN_SPEECH_S: f32 = 0.6;
+/// The quiet level: RMS on the ±1 scale (-40 dBFS), the starting point the
+/// `debug.fosfora.voicequiet` knob tunes against the room.
+pub const QUIET_LEVEL: f32 = 0.01;
+/// The level is the RMS of the stream's last this many seconds.
+pub const LEVEL_S: f32 = 0.05;
+/// The meter's range under "Listening…": this many dB below full scale is
+/// an empty bar, full scale a full one.
+pub const METER_DB: f32 = 40.0;
 /// whisper's input rate (Hz).
 pub const WHISPER_RATE: u32 = 16_000;
 /// The shortest clip whisper transcribes (s): whisper.cpp returns nothing
@@ -49,29 +66,63 @@ pub const NOTHING_LABEL: &str = "Didn't catch that";
 pub const LISTENING_LABEL: &str = "Listening…";
 pub const WAITING_LABEL: &str = "…";
 
+/// What opened a window: the left fist held (closes on release), or a
+/// thumb tap (closes on silence).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opener {
+    Fist,
+    Tap,
+}
+
 /// The push-to-talk window.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Window {
-    /// Not listening; a fist that lasts [`DWELL_S`] opens it.
+    /// Not listening; a fist that lasts [`DWELL_S`], or a tap, opens it.
     #[default]
     Closed,
-    /// Listening for `since_s` seconds.
-    Open { since_s: f32 },
-    /// Closed, its transcription still running: fists are ignored.
+    /// Listening for `since_s` seconds, opened by `opener`.
+    Open { since_s: f32, opener: Opener },
+    /// Closed, its transcription still running: fists and taps are
+    /// ignored.
     Closing,
+}
+
+/// Why a window closed, for the log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Close {
+    /// The fist opened.
+    Release,
+    /// A tap window's silence: the level under the quiet level for
+    /// `quiet_s`, `level` the last frame's.
+    Quiet { quiet_s: f32, level: f32 },
+    /// [`MAX_S`] passed.
+    Max,
+    /// A second tap.
+    Tap,
 }
 
 /// What a step of the window did.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
     /// The window opened: start listening.
-    Opened,
+    Opened(Opener),
     /// The window closed after `seconds` of listening: transcribe.
-    Closed { seconds: f32 },
+    Closed { seconds: f32, why: Close },
 }
 
-/// The push-to-talk state machine: the left fist in, [`Event`]s out.
-#[derive(Debug, Clone, Default)]
+/// One frame's input to the window: the left fist, a thumb tap on either
+/// hand (its rising edge), and the stream's level ([`level`]; 0 before a
+/// window opens).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Press {
+    pub fist: bool,
+    pub tap: bool,
+    pub level: f32,
+}
+
+/// The push-to-talk state machine: the left fist and the thumb tap in,
+/// [`Event`]s out.
+#[derive(Debug, Clone)]
 pub struct PushToTalk {
     window: Window,
     /// How long the current fist has lasted while closed (s).
@@ -79,18 +130,74 @@ pub struct PushToTalk {
     /// [`MAX_S`] closed the window under a fist still held: it has to
     /// open before the next press counts.
     wait_release: bool,
+    /// A tap window's silence: whether speech has been heard (a frame at
+    /// or over the quiet level), and how long the level has been under it
+    /// since (s).
+    spoke: bool,
+    quiet_s: f32,
+    /// The quiet level ([`QUIET_LEVEL`] unless the knob sets it).
+    quiet: f32,
+}
+
+impl Default for PushToTalk {
+    fn default() -> Self {
+        Self::new(QUIET_LEVEL)
+    }
 }
 
 impl PushToTalk {
+    /// A closed window whose tap windows close under `quiet` (RMS).
+    pub fn new(quiet: f32) -> Self {
+        Self {
+            window: Window::Closed,
+            held_s: 0.0,
+            wait_release: false,
+            spoke: false,
+            quiet_s: 0.0,
+            quiet: quiet.max(0.0),
+        }
+    }
+
     pub fn window(&self) -> Window {
         self.window
     }
 
-    /// Advance by one frame of `dt` seconds with the fist this frame.
+    /// The quiet level tap windows close under.
+    pub fn quiet(&self) -> f32 {
+        self.quiet
+    }
+
+    /// Advance by one frame of `dt` seconds with the left fist alone (no
+    /// tap, no level).
     pub fn step(&mut self, fist: bool, dt: f32) -> Option<Event> {
+        self.step_with(
+            Press {
+                fist,
+                ..Press::default()
+            },
+            dt,
+        )
+    }
+
+    /// Advance by one frame of `dt` seconds with this frame's `press`. A
+    /// tap opens a window at once (it is an edge, not a hold); a fist
+    /// after [`DWELL_S`]. A fist window ignores taps and the level; a tap
+    /// window ignores the fist.
+    pub fn step_with(&mut self, press: Press, dt: f32) -> Option<Event> {
         let dt = dt.max(0.0);
+        let fist = press.fist;
         match self.window {
             Window::Closed => {
+                if press.tap {
+                    self.held_s = 0.0;
+                    self.spoke = false;
+                    self.quiet_s = 0.0;
+                    self.window = Window::Open {
+                        since_s: 0.0,
+                        opener: Opener::Tap,
+                    };
+                    return Some(Event::Opened(Opener::Tap));
+                }
                 if !fist {
                     self.held_s = 0.0;
                     self.wait_release = false;
@@ -102,23 +209,63 @@ impl PushToTalk {
                 self.held_s += dt;
                 if self.held_s >= DWELL_S - 1e-6 {
                     self.held_s = 0.0;
-                    self.window = Window::Open { since_s: 0.0 };
-                    return Some(Event::Opened);
+                    self.window = Window::Open {
+                        since_s: 0.0,
+                        opener: Opener::Fist,
+                    };
+                    return Some(Event::Opened(Opener::Fist));
                 }
                 None
             }
-            Window::Open { since_s } => {
+            Window::Open {
+                since_s,
+                opener: Opener::Fist,
+            } => {
                 if !fist {
-                    self.window = Window::Closing;
-                    return Some(Event::Closed { seconds: since_s });
+                    return Some(self.close(since_s, Close::Release));
                 }
                 let since_s = since_s + dt;
                 if since_s >= MAX_S - 1e-6 {
-                    self.window = Window::Closing;
                     self.wait_release = true;
-                    return Some(Event::Closed { seconds: since_s });
+                    return Some(self.close(since_s, Close::Max));
                 }
-                self.window = Window::Open { since_s };
+                self.window = Window::Open {
+                    since_s,
+                    opener: Opener::Fist,
+                };
+                None
+            }
+            Window::Open {
+                since_s,
+                opener: Opener::Tap,
+            } => {
+                // A fist held through a tap window must open before it
+                // presses once the window is done.
+                self.wait_release |= fist;
+                if press.tap {
+                    return Some(self.close(since_s, Close::Tap));
+                }
+                let since_s = since_s + dt;
+                if press.level >= self.quiet {
+                    self.spoke = true;
+                    self.quiet_s = 0.0;
+                } else if self.spoke {
+                    self.quiet_s += dt;
+                }
+                if self.spoke && since_s >= MIN_SPEECH_S - 1e-6 && self.quiet_s >= QUIET_S - 1e-6 {
+                    let why = Close::Quiet {
+                        quiet_s: self.quiet_s,
+                        level: press.level,
+                    };
+                    return Some(self.close(since_s, why));
+                }
+                if since_s >= MAX_S - 1e-6 {
+                    return Some(self.close(since_s, Close::Max));
+                }
+                self.window = Window::Open {
+                    since_s,
+                    opener: Opener::Tap,
+                };
                 None
             }
             Window::Closing => {
@@ -131,6 +278,14 @@ impl PushToTalk {
                 None
             }
         }
+    }
+
+    /// Close the open window after `seconds`, for `why`.
+    fn close(&mut self, seconds: f32, why: Close) -> Event {
+        self.window = Window::Closing;
+        self.spoke = false;
+        self.quiet_s = 0.0;
+        Event::Closed { seconds, why }
     }
 
     /// The closed window's transcription returned (or never started): the
@@ -163,6 +318,44 @@ impl PushToTalk {
             Window::Closing => true,
             Window::Open { .. } => false,
         }
+    }
+}
+
+/// The level of `samples` (any channel layout): their RMS on the ±1 scale,
+/// 0 for none.
+pub fn level(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    (sum / samples.len() as f64).sqrt() as f32
+}
+
+/// The tail of an interleaved stereo buffer at `rate` that [`level`] reads:
+/// its last [`LEVEL_S`].
+pub fn level_tail(stereo: &[f32], rate: u32) -> &[f32] {
+    let n = ((LEVEL_S * rate as f32) as usize * 2).min(stereo.len());
+    &stereo[stereo.len() - n..]
+}
+
+/// The meter's length under "Listening…" (0..1) for `level`: log-scaled
+/// over [`METER_DB`], so -40 dBFS and below (silence, the quiet level) is
+/// empty, -20 dBFS half and full scale the whole bar.
+pub fn meter_width(level: f32) -> f32 {
+    if !level.is_finite() || level <= 0.0 {
+        return 0.0;
+    }
+    ((20.0 * level.log10() + METER_DB) / METER_DB).clamp(0.0, 1.0)
+}
+
+/// The close's log words: `(release)`, `(quiet 0.8 s at 0.004)`, `(6 s)`,
+/// `(second tap)`.
+pub fn close_text(why: Close) -> String {
+    match why {
+        Close::Release => "(release)".to_owned(),
+        Close::Quiet { quiet_s, level } => format!("(quiet {quiet_s:.1} s at {level:.3})"),
+        Close::Max => format!("({MAX_S:.0} s)"),
+        Close::Tap => "(second tap)".to_owned(),
     }
 }
 
@@ -390,6 +583,9 @@ mod device {
         failed: bool,
         mic: Option<Mic>,
         captured: Vec<f32>,
+        /// The open window's level ([`super::level`] of its last
+        /// [`super::LEVEL_S`]), 0 with no window.
+        level: f32,
         scratch: Vec<f32>,
         closed_at: Option<Instant>,
         /// The `voicefile` path and the seconds left before it is read
@@ -425,6 +621,7 @@ mod device {
                 failed: false,
                 mic: None,
                 captured: Vec::new(),
+                level: 0.0,
                 scratch: vec![0.0; 8192],
                 closed_at: None,
                 file: file.map(|f| (f, FILE_DELAY_S)),
@@ -436,8 +633,15 @@ mod device {
             self.loaded
         }
 
-        /// The window opened: open its microphone stream.
-        pub fn open(&mut self) -> Result<()> {
+        /// The open window's level now (RMS of the stream's last
+        /// [`super::LEVEL_S`]), 0 with no window.
+        pub fn level(&self) -> f32 {
+            self.level
+        }
+
+        /// The window opened (`how`: "left fist", "thumb tap, right"):
+        /// open its microphone stream.
+        pub fn open(&mut self, how: &str) -> Result<()> {
             let started = Instant::now();
             let ring = Arc::new(RingBuffer::new());
             let stream = crate::audio::open_input(
@@ -449,6 +653,7 @@ mod device {
             )?;
             let rate = u32::try_from(stream.sample_rate()).unwrap_or(MIC_RATE);
             self.captured.clear();
+            self.level = 0.0;
             self.captured
                 .reserve((super::MAX_S * rate as f32 * 2.0) as usize + 8192);
             self.mic = Some(Mic {
@@ -457,26 +662,29 @@ mod device {
                 rate,
             });
             info!(
-                "voice: window open · mic stream opened in {:.1} ms",
+                "voice: window open ({how}) · mic stream opened in {:.1} ms",
                 started.elapsed().as_secs_f64() * 1e3
             );
             Ok(())
         }
 
-        /// The window closed after `seconds`: close the stream and hand the
-        /// audio to the worker. False when nothing was sent (no stream, or
-        /// the model is not loaded: logged), so the window can open again.
-        pub fn close(&mut self, seconds: f32) -> bool {
+        /// The window closed after `seconds`, for `why`: close the stream
+        /// and hand the audio to the worker. False when nothing was sent
+        /// (no stream, or the model is not loaded: logged), so the window
+        /// can open again.
+        pub fn close(&mut self, seconds: f32, why: super::Close) -> bool {
             let Some(mic) = self.mic.take() else {
                 return false;
             };
             self.drain(&mic);
+            self.level = 0.0;
             let rate = mic.rate;
             let started = Instant::now();
             drop(mic);
             let audio = std::mem::take(&mut self.captured);
             info!(
-                "voice: window closed after {seconds:.2} s · {:.2} s of audio · stream closed in {:.1} ms",
+                "voice: window closed after {seconds:.2} s {} · {:.2} s of audio · stream closed in {:.1} ms",
+                super::close_text(why),
                 audio.len() as f32 / (2.0 * rate as f32),
                 started.elapsed().as_secs_f64() * 1e3
             );
@@ -496,6 +704,7 @@ mod device {
         pub fn cancel(&mut self) {
             if self.mic.take().is_some() {
                 self.captured.clear();
+                self.level = 0.0;
                 info!("voice: window dropped (voice off)");
             }
         }
@@ -594,7 +803,8 @@ mod device {
             true
         }
 
-        /// Move what the stream has delivered into the window's buffer.
+        /// Move what the stream has delivered into the window's buffer,
+        /// and take the level of its last [`super::LEVEL_S`].
         fn drain(&mut self, mic: &Mic) {
             loop {
                 let n = mic.ring.read(&mut self.scratch);
@@ -603,6 +813,7 @@ mod device {
                 }
                 self.captured.extend_from_slice(&self.scratch[..n]);
             }
+            self.level = super::level(super::level_tail(&self.captured, mic.rate));
         }
     }
 
@@ -705,10 +916,14 @@ mod tests {
         for _ in 0..dwell_frames - 1 {
             assert_eq!(ptt.step(true, DT), None);
         }
-        assert_eq!(ptt.step(true, DT), Some(Event::Opened));
+        assert_eq!(ptt.step(true, DT), Some(Event::Opened(Opener::Fist)));
         assert!(hold(&mut ptt, true, 2.0).is_empty());
         assert!(matches!(ptt.window(), Window::Open { .. }));
-        let Some(Event::Closed { seconds }) = ptt.step(false, DT) else {
+        let Some(Event::Closed {
+            seconds,
+            why: Close::Release,
+        }) = ptt.step(false, DT)
+        else {
             panic!("no close on release");
         };
         assert!((seconds - 2.0).abs() < 1e-3, "{seconds}");
@@ -720,8 +935,12 @@ mod tests {
         let mut ptt = PushToTalk::default();
         let events = hold(&mut ptt, true, DWELL_S + MAX_S + 1.0);
         assert_eq!(events.len(), 2, "{events:?}");
-        assert_eq!(events[0], Event::Opened);
-        let Event::Closed { seconds } = events[1] else {
+        assert_eq!(events[0], Event::Opened(Opener::Fist));
+        let Event::Closed {
+            seconds,
+            why: Close::Max,
+        } = events[1]
+        else {
             panic!("{events:?}");
         };
         assert!((seconds - MAX_S).abs() < DT, "{seconds}");
@@ -729,7 +948,7 @@ mod tests {
         // Still the same fist: nothing.
         assert!(hold(&mut ptt, true, 1.0).is_empty());
         assert!(hold(&mut ptt, false, 0.1).is_empty());
-        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened]);
+        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
     }
 
     #[test]
@@ -745,7 +964,7 @@ mod tests {
         // dwell.
         ptt.finish();
         assert_eq!(ptt.window(), Window::Closed);
-        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened]);
+        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
     }
 
     #[test]
@@ -772,6 +991,241 @@ mod tests {
         hold(&mut ptt, false, 0.1);
         hold(&mut ptt, true, 0.5);
         assert!(!ptt.begin_closing());
+    }
+
+    /// Step `ptt` for `seconds` with this press every frame (the tap only
+    /// on the first frame), collecting the events.
+    fn press(ptt: &mut PushToTalk, tap: bool, level: f32, seconds: f32) -> Vec<Event> {
+        let frames = (seconds / DT).round() as usize;
+        (0..frames)
+            .filter_map(|i| {
+                ptt.step_with(
+                    Press {
+                        fist: false,
+                        tap: tap && i == 0,
+                        level,
+                    },
+                    DT,
+                )
+            })
+            .collect()
+    }
+
+    /// A level well over the quiet one: speech.
+    const SPEECH: f32 = 0.1;
+
+    #[test]
+    fn a_tap_opens_at_once_and_quiet_after_speech_closes_it() {
+        let mut ptt = PushToTalk::default();
+        assert_eq!(
+            press(&mut ptt, true, 0.0, DT),
+            vec![Event::Opened(Opener::Tap)]
+        );
+        assert!(press(&mut ptt, false, SPEECH, 1.0).is_empty());
+        // Under the quiet level: closes once it has lasted QUIET_S.
+        assert!(press(&mut ptt, false, 0.004, QUIET_S - 0.1).is_empty());
+        let events = press(&mut ptt, false, 0.004, 0.2);
+        let [
+            Event::Closed {
+                seconds,
+                why: Close::Quiet { quiet_s, level },
+            },
+        ] = events.as_slice()
+        else {
+            panic!("{events:?}");
+        };
+        assert!((seconds - (1.0 + QUIET_S)).abs() < 2.0 * DT, "{seconds}");
+        assert!((quiet_s - QUIET_S).abs() < DT, "{quiet_s}");
+        assert_close!(*level, 0.004);
+        assert_eq!(ptt.window(), Window::Closing);
+        assert_eq!(
+            close_text(Close::Quiet {
+                quiet_s: 0.8,
+                level: 0.004
+            }),
+            "(quiet 0.8 s at 0.004)"
+        );
+    }
+
+    #[test]
+    fn a_pause_between_words_does_not_close_a_tap_window() {
+        let mut ptt = PushToTalk::default();
+        press(&mut ptt, true, SPEECH, 0.5);
+        assert!(press(&mut ptt, false, 0.0, QUIET_S - 0.2).is_empty());
+        // Speech again: the quiet starts over.
+        assert!(press(&mut ptt, false, SPEECH, 0.3).is_empty());
+        assert!(press(&mut ptt, false, 0.0, QUIET_S - 0.2).is_empty());
+        assert!(matches!(
+            ptt.window(),
+            Window::Open {
+                opener: Opener::Tap,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn quiet_before_any_speech_does_not_close_and_max_does() {
+        let mut ptt = PushToTalk::default();
+        press(&mut ptt, true, 0.0, DT);
+        // Silence from the start: the wearer has not begun.
+        assert!(press(&mut ptt, false, 0.0, 3.0).is_empty());
+        assert!(matches!(ptt.window(), Window::Open { .. }));
+        let events = press(&mut ptt, false, 0.0, MAX_S);
+        let [Event::Closed { seconds, why }] = events.as_slice() else {
+            panic!("{events:?}");
+        };
+        assert_eq!(*why, Close::Max);
+        assert!((seconds - MAX_S).abs() < DT, "{seconds}");
+        // Speech that never stops: MAX_S closes it too.
+        ptt.finish();
+        press(&mut ptt, true, SPEECH, DT);
+        let events = press(&mut ptt, false, SPEECH, MAX_S + 0.5);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Closed {
+                    why: Close::Max,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_tap_closes_a_tap_window_at_once() {
+        let mut ptt = PushToTalk::default();
+        press(&mut ptt, true, SPEECH, 0.5);
+        let events = press(&mut ptt, true, SPEECH, DT);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Closed {
+                    why: Close::Tap,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+        // A tap while its transcription runs is ignored.
+        assert!(press(&mut ptt, true, 0.0, DT).is_empty());
+        assert_eq!(ptt.window(), Window::Closing);
+        ptt.finish();
+        assert_eq!(
+            press(&mut ptt, true, 0.0, DT),
+            vec![Event::Opened(Opener::Tap)]
+        );
+    }
+
+    #[test]
+    fn a_fist_window_is_unchanged_by_the_tap_rules() {
+        let mut ptt = PushToTalk::default();
+        let fist = |tap: bool, level: f32| Press {
+            fist: true,
+            tap,
+            level,
+        };
+        let mut events = Vec::new();
+        for i in 0..(3.0 / DT) as usize {
+            // Taps now and then, silence throughout.
+            events.extend(ptt.step_with(fist(i % 30 == 29, 0.0), DT));
+        }
+        assert_eq!(events, vec![Event::Opened(Opener::Fist)]);
+        assert!(matches!(
+            ptt.window(),
+            Window::Open {
+                opener: Opener::Fist,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ptt.step_with(Press::default(), DT),
+            Some(Event::Closed {
+                why: Close::Release,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_fist_held_through_a_tap_window_opens_before_it_presses() {
+        let mut ptt = PushToTalk::default();
+        press(&mut ptt, true, SPEECH, 0.5);
+        let mut events = Vec::new();
+        for _ in 0..(1.0 / DT) as usize {
+            events.extend(ptt.step_with(
+                Press {
+                    fist: true,
+                    tap: false,
+                    level: 0.0,
+                },
+                DT,
+            ));
+        }
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Closed {
+                why: Close::Quiet { .. },
+                ..
+            }]
+        ));
+        ptt.finish();
+        assert!(hold(&mut ptt, true, 1.0).is_empty());
+        assert!(hold(&mut ptt, false, 0.1).is_empty());
+        assert_eq!(hold(&mut ptt, true, 0.5), vec![Event::Opened(Opener::Fist)]);
+    }
+
+    #[test]
+    fn the_quiet_level_is_the_knobs() {
+        let mut ptt = PushToTalk::new(0.05);
+        assert_close!(ptt.quiet(), 0.05);
+        // 0.03 is speech at the default level, quiet at this one.
+        press(&mut ptt, true, 0.2, 0.3);
+        let events = press(&mut ptt, false, 0.03, 1.0);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [Event::Closed {
+                    why: Close::Quiet { .. },
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+        assert_close!(PushToTalk::default().quiet(), QUIET_LEVEL);
+    }
+
+    #[test]
+    fn level_is_the_rms_of_the_last_50_ms() {
+        assert_close!(level(&[]), 0.0);
+        assert_close!(level(&[0.5; 100]), 0.5);
+        assert_close!(level(&[0.5, -0.5, 0.5, -0.5]), 0.5);
+        let s = sine(440.0, 48_000, 1.0);
+        assert!((level(&s) - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3);
+        // 48 kHz stereo: 50 ms is 4800 samples, the last ones.
+        let mut stereo = vec![0.0; 48_000 * 2];
+        stereo.extend(vec![0.25; 4800]);
+        let tail = level_tail(&stereo, 48_000);
+        assert_eq!(tail.len(), 4800);
+        assert_close!(level(tail), 0.25);
+        assert_eq!(level_tail(&[0.1; 10], 48_000).len(), 10);
+    }
+
+    #[test]
+    fn the_meter_is_log_scaled_over_40_db() {
+        assert_close!(meter_width(0.0), 0.0);
+        assert_close!(meter_width(-0.1), 0.0);
+        assert_close!(meter_width(f32::NAN), 0.0);
+        // The quiet level, -40 dBFS: empty.
+        assert_close!(meter_width(QUIET_LEVEL), 0.0);
+        assert_close!(meter_width(0.001), 0.0);
+        // -20 dBFS: half; full scale: the whole bar.
+        assert_close!(meter_width(0.1), 0.5);
+        assert_close!(meter_width(1.0), 1.0);
+        assert_close!(meter_width(2.0), 1.0);
+        // Speech at -10 dBFS fills most of it.
+        assert!((meter_width(0.316) - 0.75).abs() < 0.01);
     }
 
     fn sine(freq: f32, rate: u32, seconds: f32) -> Vec<f32> {
