@@ -576,12 +576,12 @@ built; the rest is a decision.*
 
 - **The detector** (`pinch.rs`, fed by `input.rs`): thumb tip to index tip
   under 15 mm is a pinch, over 30 mm releases it. Since board #3336 a
-  crossing counts only when the tips **closed** to get there: at least 12 mm
-  nearer than at their widest within the last 0.3 s. A relaxed hand's tips
+  crossing counts only when the tips **closed** to get there: at least 8 mm
+  nearer than at their widest within the last 0.5 s. A relaxed hand's tips
   sit 20 to 30 mm apart and a deliberate pinch closes 15 mm or more in a
-  tenth of a second; a hand settling on a desk drifts a millimeter or two
-  a second and is reported once in the log as `pinch … not taken`, nothing
-  fires. The check runs on every frame under the threshold, so a hand already
+  tenth of a second, a slow, careful one over a whole second still 10 mm in
+  half of it; a hand settling on a desk drifts a millimeter or two a second
+  and is reported once in the log as `pinch … not taken`, nothing fires. The check runs on every frame under the threshold, so a hand already
   resting close that then pinches hard still fires.
 - **The gesture machine** (`gesture.rs`): one pinch at a time, either hand.
   Released before moving 25 mm and before 0.7 s is a **tap**; moving past

@@ -10,10 +10,11 @@
 //! only when the tips **closed** to get there: at least [`CLOSE_DROP_M`]
 //! nearer than they were within the last [`CLOSE_WINDOW_S`]. A deliberate
 //! pinch from a relaxed hand (tips 20 to 30 mm apart) closes 15 mm or more
-//! in a tenth of a second; a hand settling on a desk drifts a millimeter or
-//! two a second and never qualifies. The check runs on every frame the tips
-//! are under the threshold, so a hand already resting close that then
-//! pinches hard still fires.
+//! in a tenth of a second, and even a slow, careful one over a whole second
+//! closes 10 mm in half of it; a hand settling on a desk drifts a
+//! millimeter or two a second and never qualifies. The check runs on every
+//! frame the tips are under the threshold, so a hand already resting close
+//! that then pinches hard still fires.
 
 use std::collections::VecDeque;
 
@@ -23,9 +24,9 @@ pub const PINCH_ON_M: f32 = 0.015;
 pub const PINCH_OFF_M: f32 = 0.030;
 /// How much nearer (meters) the tips must be than at their widest within
 /// the last [`CLOSE_WINDOW_S`] for a crossing to count as a pinch.
-pub const CLOSE_DROP_M: f32 = 0.012;
+pub const CLOSE_DROP_M: f32 = 0.008;
 /// The window (seconds) the closing is judged over.
-pub const CLOSE_WINDOW_S: f32 = 0.30;
+pub const CLOSE_WINDOW_S: f32 = 0.50;
 // A pinch opens past where it closed, the closing fits inside the release
 // gap, and the window holds several frames at 72 Hz.
 const _: () =
@@ -179,6 +180,15 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_careful_pinch_over_a_second_still_counts() {
+        let mut p = PinchDetector::new();
+        assert!(sweep(&mut p, 0.030, 0.030, 0.3).is_empty());
+        // 30 mm to 3 mm over a full second: 13 mm in any half second.
+        let edges = sweep(&mut p, 0.030, 0.003, 1.0);
+        assert_eq!(edges, vec![PinchEdge::Began], "{edges:?}");
+    }
+
+    #[test]
     fn opening_again_judges_the_next_approach_afresh() {
         let mut p = PinchDetector::new();
         assert_eq!(sweep(&mut p, 0.025, 0.012, 2.0), vec![PinchEdge::Rejected]);
@@ -209,7 +219,7 @@ mod tests {
         // Wide once, then hold just over the threshold longer than the
         // window, then creep under it: the wide sample must not count.
         p.step(Some(0.060), DT);
-        assert!(sweep(&mut p, 0.016, 0.016, 0.5).is_empty());
+        assert!(sweep(&mut p, 0.016, 0.016, 0.7).is_empty());
         assert_eq!(sweep(&mut p, 0.016, 0.014, 0.1), vec![PinchEdge::Rejected]);
         assert!(p.recent_drop() < CLOSE_DROP_M);
     }
