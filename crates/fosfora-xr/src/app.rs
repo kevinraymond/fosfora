@@ -370,7 +370,7 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             }
         );
     }
-    let missing = crate::permissions::to_ask(&audio_source, scene_granted, mic_granted);
+    let missing = crate::permissions::to_ask(&audio_source, false, scene_granted, mic_granted);
     if ask
         && !missing.is_empty()
         && let Some(p) = &permissions
