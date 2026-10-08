@@ -24,7 +24,7 @@ The voice path's on-device provider (`crates/fosfora-xr/src/local.rs`): a
 17M decision model of our own, trained from the Apache-2.0
 `cross-encoder/ettin-reranker-17m-v1` (revision `9e4aa35`) with the MIT
 Bekko System One toolkit (commit `0fccbb8`) on synthetic cases generated
-from the voice path's own catalogue and naming (run 3,
+from the voice path's own catalog and naming (run 3,
 `docs/xr/MEASURED.md`, "Our own System One 17M, trained"). Not hosted yet:
 `MODELS.txt` carries a placeholder URL, and a dev build copies the files
 in from the training export.

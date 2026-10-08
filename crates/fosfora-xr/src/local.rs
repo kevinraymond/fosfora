@@ -1686,7 +1686,7 @@ mod tests {
                 "describe"
             ]
         );
-        // The behaviors per kind are the app's own catalogue, in its order.
+        // The behaviors per kind are the app's own catalog, in its order.
         for (kind, name) in KIND_NAMES {
             let app: Vec<&str> = SurfaceBehavior::catalogue(kind)
                 .iter()

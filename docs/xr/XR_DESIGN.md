@@ -55,6 +55,7 @@ every native library under `arm64-v8a`, with no 32-bit-only dependencies.
 | AAudio callbacks | Capture and playback; write only to the SPSC ring buffer (no DSP in callbacks, as on desktop) |
 | `fosfora-voice` (board #3751) | Loads the speech model at launch, then transcribes each closed push-to-talk window; results back over a channel the frame loop polls |
 | `fosfora-agent` (board #3751, V3) | One per sentence the grammar cannot match: the HTTPS call to the language model `voice.json` names and its parse; the answer back over a channel the frame loop polls |
+| `fosfora-local` (board #3751, V5) | The on-device provider: loads the decision model's spec, tokenizer and ONNX Runtime session after the speech model, then runs the cascade for each sentence the grammar misses (ONNX Runtime's intra-op threads under it, `debug.fosfora.localthreads`); answers over a per-sentence channel the frame loop polls. Never at the same time as a transcription: no voice window opens while it decides, and a sentence waits while a window is open or transcribing. Its session is parked for the process when the app goes away, never released |
 
 Render is single-threaded for the spike. Don't add a render thread until the
 measurements say the CPU side is the bottleneck.
@@ -336,7 +337,9 @@ board #3194). Mode `debug.fosfora.mode mr`; each part has its own knob.*
   - `debug.fosfora.voicethreads <n>`: whisper's threads for a transcription, 1..6, default 3.
   - `debug.fosfora.voicefile <path>`: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a window had closed (the unworn gate).
   - `debug.fosfora.say "<sentence>"` (V2): a sentence fed to the grammar as if heard, polled once a second, fed once per value.
-  - `debug.fosfora.agent 0|1` (V3, `VOICE_DESIGN.md`, "V3 as built"): a sentence the grammar cannot match goes to the language model `voice.json` names; default 1 whenever `voice.json` configures a provider, 0 keeps the call off for sweeps.
+  - `debug.fosfora.agent 0|1` (V3, `VOICE_DESIGN.md`, "V3 as built"): a sentence the grammar cannot match goes to the language model `voice.json` names; V5: with no `voice.json`, or one naming no `provider`, to the on-device model when its files are installed ("V5 as built"); default 1 whenever a provider is configured or installed, 0 keeps the agent off for sweeps.
+  - `debug.fosfora.localthreads <n>` (V5): the on-device provider's ONNX Runtime intra-op threads, 1..6, default 3 (as whisper's).
+  - `debug.fosfora.localmin <p>` (V5): the on-device provider's confidence floor on the action kind and the value, 0..1, default 0.35; an answer under it is the grammar's "Didn't catch that" with its hint, and changes nothing.
 - **Hand occluders.** The runtime's skinned hand mesh
   (`XR_FB_hand_tracking_mesh`, `xrGetHandMeshFB` once per hand through the
   `openxr-sys` function pointer: 1360 vertices, 2314 triangles, 26 joints
@@ -865,6 +868,22 @@ dependency in `android/app/build.gradle.kts`. The AAR ships
 binary lives in the repo. Building from `KhronosGroup/OpenXR-SDK-Source` stays
 the fallback if a newer loader is ever needed before Maven has it.
 
+## ONNX Runtime (board #3751, V5)
+
+The voice path's on-device provider (`local.rs`) runs its decision model on
+ONNX Runtime 1.28.0 (MIT), from the official Maven Central AAR
+`com.microsoft.onnxruntime:onnxruntime-android:1.28.0`, the way the OpenXR
+loader comes: a Gradle dependency, no binary in the repo. Only the AAR's
+`jni/arm64-v8a/libonnxruntime.so` (28.6 MB) reaches the APK's
+`lib/arm64-v8a/` (`android/app/build.gradle.kts` extracts it): its Java API
+and JNI binding serve Java callers, and the app has no code. The `ort`
+crate (`=2.0.0-rc.11`, the version the core pins; `load-dynamic`) dlopens
+it by name at the provider's load, which the classloader namespace resolves
+in the app's native library directory, as for the loader; the Activity's
+`ApplicationInfo.nativeLibraryDir` is the fallback path (`permissions.rs`
+has the JNI). The library needs only `libc`, `libm`, `libdl`, `liblog` and
+`libandroid`, so it does not need `libc++_shared.so`.
+
 ## Assets on Android
 
 Fosfora finds assets on the filesystem (`effect::loader::assets_dir()`: cwd,
@@ -891,6 +910,17 @@ staged as `xr/models/ggml-base.en.bin` and stored uncompressed in the APK.
 The install streams every file in chunks, so the model never sits whole in
 memory; like every asset it is copied again only when the stamp changes.
 
+*The decision model (board #3751, V5):* `s1-17m-int8.onnx` (29 MB, ours,
+Apache-2.0), `s1-17m-tokenizer.json` and `s1-17m-tokenizer_config.json`
+(Apache-2.0) are listed with their SHA-256s in `assets/xr/models/MODELS.txt`,
+which `scripts/xr/fetch-model.sh` reads for every model (the speech model's
+line too). Their URL is a placeholder until the model is hosted: the script
+then accepts a file already present whose SHA-256 matches (a dev build
+copies them in from the training export) and otherwise warns and goes on,
+so the APK builds without them and the provider is off with a log line.
+`s1-17m-spec.json` (the provider spec, ours and small) is committed. All
+four are staged as `xr/models/…`, the model stored uncompressed.
+
 *The agent's config (board #3751, V3):* `voice.json` under the config dir
 (`files/config/voice.json` in the app's data) names the language model a
 sentence the grammar cannot match goes to: `provider` (`anthropic` or
@@ -900,7 +930,10 @@ built"). It holds a key, so it is never committed (git-ignored wherever
 it sits) and never logged; it is read once at launch. Put it on the
 headset with
 `adb shell "run-as dev.fosfora.xr sh -c 'cat > files/config/voice.json'" < voice.json`
-and relaunch; without it the agent is off and says why in the log.
+and relaunch; without it the agent is off and says why in the log. V5:
+without it, or with one naming no `provider`, the agent is the on-device
+provider whenever its files are installed (`"provider": "local"` names it);
+a file naming `anthropic` or `openai` keeps V3's behavior.
 
 ## Glasses notes
 
