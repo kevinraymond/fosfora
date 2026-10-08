@@ -216,13 +216,18 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     //       action set on the EXT hand interaction profile; in world mode a thumb swipe right along the index steps to the next world
     //       effect, left to the previous, either hand, not while the hand menu is up nor from the right hand in Edit room; forward,
     //       backward and the thumb tap are logged and unassigned; default 1; 0 creates no action set; read at launch)
-    //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path, V1: hold the left fist to talk, release it (or 6 s pass)
-    //       and the transcription shows on the label and in the log, nothing acts on it yet; the fist opens the window in every mode,
-    //       Edit room and the hand menu included; default 1 when the speech model is installed (assets/xr/models/ggml-base.en.bin), else
-    //       off with a log; on, RECORD_AUDIO is asked for on any audio source; read at launch)
+    //   adb shell setprop debug.fosfora.voice 0|1                (board #3751: the voice path: hold the left fist to talk, release it (or 6 s pass)
+    //       and the transcription goes through the grammar (V2, intent.rs: the hand menu's and the room editor's actions by voice), the
+    //       label shows what it did or "Didn't catch that", the log both; the fist opens the window in every mode, Edit room and the hand
+    //       menu included; default 1 when the speech model is installed (assets/xr/models/ggml-base.en.bin), else off with a log; on,
+    //       RECORD_AUDIO is asked for on any audio source; read at launch)
     //   adb shell setprop debug.fosfora.voicethreads 3           (the transcription's whisper threads, 1..6; default 3; read at launch)
     //   adb shell setprop debug.fosfora.voicefile <path>         (unworn test: a 16 kHz mono 16-bit WAV transcribed 3 s after the model loads, as if a
     //       window had closed; the label shows it ahead of the head; read at launch)
+    //   adb shell "setprop debug.fosfora.say 'the desk in amber'"   (board #3751, V2: a sentence fed to the grammar as if heard, voice on or
+    //       off, for the unworn gate: logged `voice: heard "…" → <intent or miss> · label "…"`, the label ahead of the head; read at launch
+    //       and polled once a second, fed once per value (waiting for the room's anchors as debug.fosfora.surface does); an app cannot
+    //       clear a debug property, so to say the same sentence again set it to "" first, or to another sentence)
     //   adb shell setprop debug.fosfora.room 0|1                 (scene anchors as obstacles)
     //   adb shell setprop debug.fosfora.scenecapture 0|1         (no room anchors after the retries: launch Space Setup, then requery; default
     //       on until a room has been saved (no rooms/*.json: the first launch, board #3752), off once one has; 1 forces, 0 forbids)
@@ -451,6 +456,11 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
     // opening, facing the head.
     let mut voice_label = crate::label::Label::default();
     let mut voice_at = (glam::Vec3::ZERO, glam::Vec3::Z);
+    // V2, the grammar (`intent.rs`): the menu's actions a sentence asked
+    // for, applied by the next frame's action consumer with the hand
+    // menu's, and the `say` knob's last sentence fed.
+    let mut voice_actions: Vec<Action> = Vec::new();
+    let mut say_knob = crate::intent::SayKnob::default();
     // A USE_SCENE grant whose requery waits for a query or Space Setup in
     // flight, retried once a second.
     let mut room_pickup = false;
@@ -1465,6 +1475,10 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     switch_to = cycle_index(&parked, world_index, if step > 0 { 1 } else { -1 });
                 }
             }
+            // The hand menu's actions this frame, after the voice path's
+            // from the last (board #3751): one consumer, so a spoken
+            // toggle saves, logs and acts as the menu's press does.
+            let mut actions = std::mem::take(&mut voice_actions);
             if let Some(h) = hud.as_mut() {
                 if hud_test || h.shown() {
                     let view = View {
@@ -1502,42 +1516,45 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     };
                     for action in h.render(&gfx, &view, &mut controls) {
                         info!("debug panel: {action:?}");
-                        let n = world_effects.len();
-                        match action {
-                            Action::NextEffect if world && n > 1 => {
-                                switch_to = cycle_index(&parked, world_index, 1);
-                            }
-                            Action::PrevEffect if world && n > 1 => {
-                                switch_to = cycle_index(&parked, world_index, -1);
-                            }
-                            Action::Recenter => {
-                                anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
-                                moved = true;
-                            }
-                            Action::RescanRoom => rescan = true,
-                            Action::SetDebug(on) => save_hand_menu(&menu_file, on),
-                            Action::SetEditRoom(on) => info!(
-                                "edit room {}",
-                                if on {
-                                    "on: the right hand's pinches pick room surfaces"
-                                } else {
-                                    "off"
-                                }
-                            ),
-                            // Logged with the cloud's change, below.
-                            Action::SetCloud(_) => {}
-                            Action::AllNone => all_none = true,
-                            Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
-                            Action::SetMusic(on) => music.set(on),
-                            Action::SetPitcher(on) => info!(
-                                "pitcher {} ({}/s at {} m/s)",
-                                if on { "on" } else { "off" },
-                                controls.pitcher_rate,
-                                pitcher.speed
-                            ),
-                            _ => {}
-                        }
+                        actions.push(action);
                     }
+                }
+            }
+            for action in actions {
+                let n = world_effects.len();
+                match action {
+                    Action::NextEffect if world && n > 1 => {
+                        switch_to = cycle_index(&parked, world_index, 1);
+                    }
+                    Action::PrevEffect if world && n > 1 => {
+                        switch_to = cycle_index(&parked, world_index, -1);
+                    }
+                    Action::Recenter => {
+                        anchor = [input.head[0], MR_CUBE_Y, input.head[2]];
+                        moved = true;
+                    }
+                    Action::RescanRoom => rescan = true,
+                    Action::SetDebug(on) => save_hand_menu(&menu_file, on),
+                    Action::SetEditRoom(on) => info!(
+                        "edit room {}",
+                        if on {
+                            "on: the right hand's pinches pick room surfaces"
+                        } else {
+                            "off"
+                        }
+                    ),
+                    // Logged with the cloud's change, below.
+                    Action::SetCloud(_) => {}
+                    Action::AllNone => all_none = true,
+                    Action::SurfaceParam(param, up) => surface_step = Some((param, up)),
+                    Action::SetMusic(on) => music.set(on),
+                    Action::SetPitcher(on) => info!(
+                        "pitcher {} ({}/s at {} m/s)",
+                        if on { "on" } else { "off" },
+                        controls.pitcher_rate,
+                        pitcher.speed
+                    ),
+                    _ => {}
                 }
             }
             if all_none {
@@ -2220,6 +2237,8 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
             // with Edit room on, with the hand menu up, on Flock's fist
             // predator; voice is independent of the hands' other modes.
             voice_label.step(dt);
+            // The sentence heard this frame, for the grammar below.
+            let mut sentence: Option<String> = None;
             if let Some(v) = voice.as_mut() {
                 let head = glam::Vec3::from(input.head);
                 if left_fist && !voice_mic && !voice_mic_logged {
@@ -2285,10 +2304,97 @@ fn run_inner(app: &AndroidApp) -> Result<()> {
                     }
                     Some(VoiceNote::Heard { text, .. }) => {
                         push_to_talk.finish();
-                        voice_label.show(crate::voice::label_text(&text), voice_at.0, voice_at.1);
+                        let text = crate::voice::spoken(&text);
+                        if text.is_empty() {
+                            voice_label.show(
+                                crate::voice::NOTHING_LABEL.to_owned(),
+                                voice_at.0,
+                                voice_at.1,
+                            );
+                        } else {
+                            sentence = Some(text.to_owned());
+                        }
                     }
                     None => {}
                 }
+            }
+            // `debug.fosfora.say`: a sentence as if heard, for the unworn
+            // gate (fed once per value; it waits for the room's anchors as
+            // the `surface` knob does), its label ahead of the head.
+            if frame_index.is_multiple_of(72)
+                && let Some(said) = say_knob.poll(
+                    system_prop("debug.fosfora.say").as_deref(),
+                    has_room && input.room_id.is_none(),
+                )
+            {
+                info!("voice: debug.fosfora.say \"{said}\"");
+                let head = glam::Vec3::from(input.head);
+                let ahead = glam::Quat::from_array(input.head_rot) * glam::Vec3::NEG_Z;
+                let at = head + ahead * VOICE_FILE_LABEL_M;
+                voice_at = (at, (head - at).normalize_or(glam::Vec3::Z));
+                sentence = Some(said);
+            }
+            // Board #3751, V2: the sentence through the grammar, generated
+            // from what the frame holds (the world effects, the behaviors,
+            // the lane boxes by their friendly names, the surface under the
+            // editor's beam). The menu's intents go to the action consumer
+            // as the menu's presses do (the toggles set `controls` first,
+            // as the menu does); the surface intents write through the
+            // lanes' typed writers now, `lane_boxes` being this frame's.
+            if let Some(sentence) = sentence.take() {
+                let vocab = crate::intent::Vocabulary {
+                    effects: &world_effects,
+                    behaviors: &crate::surfaces::SurfaceBehavior::ALL,
+                    surfaces: crate::intent::surfaces(&lane_boxes),
+                    pointed: editor
+                        .hit()
+                        .filter(|_| controls.edit_room)
+                        .map(|h| h.index),
+                };
+                let outcome = crate::intent::parse(&sentence, &vocab);
+                let (text, seconds) = match &outcome {
+                    Ok(intent) => {
+                        use crate::intent::Intent;
+                        match *intent {
+                            Intent::NextEffect => voice_actions.push(Action::NextEffect),
+                            Intent::PrevEffect => voice_actions.push(Action::PrevEffect),
+                            // The effect showing has nothing parked, so
+                            // naming it switches nothing.
+                            Intent::Effect(i) => switch_to = Some(i),
+                            Intent::EditRoom(on) => {
+                                controls.edit_room = on;
+                                voice_actions.push(Action::SetEditRoom(on));
+                            }
+                            Intent::Cloud(on) => {
+                                controls.cloud = on;
+                                voice_actions.push(Action::SetCloud(on));
+                            }
+                            Intent::Pitcher(on) => {
+                                controls.pitcher = on;
+                                voice_actions.push(Action::SetPitcher(on));
+                            }
+                            Intent::Music(on) => {
+                                controls.music = on;
+                                voice_actions.push(Action::SetMusic(on));
+                            }
+                            Intent::Rescan => voice_actions.push(Action::RescanRoom),
+                            Intent::Recenter => voice_actions.push(Action::Recenter),
+                            Intent::AllNone => voice_actions.push(Action::AllNone),
+                            _ => {}
+                        }
+                        let text = crate::intent::apply(
+                            intent,
+                            &vocab,
+                            &mut surface_lanes,
+                            &lane_boxes,
+                        )
+                        .unwrap_or_else(|| crate::intent::reply(intent, &vocab));
+                        (text, crate::intent::REPLY_S)
+                    }
+                    Err(miss) => (crate::intent::miss_text(miss), crate::intent::MISS_S),
+                };
+                info!("{}", crate::intent::log_line(&sentence, &outcome, &text));
+                voice_label.show_for(text, voice_at.0, voice_at.1, seconds);
             }
             scan_label.step(scan_state, dt);
             {
